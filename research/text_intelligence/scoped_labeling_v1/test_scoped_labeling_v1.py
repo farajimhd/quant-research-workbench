@@ -4,8 +4,10 @@ import unittest
 import json
 import multiprocessing
 import os
+import queue
 import tempfile
 import concurrent.futures
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -27,7 +29,10 @@ from .persistence import (
     attach_sec_ticker,
     assert_certification,
     bounded_period_ranges,
+    execute_bounded_plan,
     interleaved_plan,
+    is_transient_clickhouse_error,
+    parse_args,
     relationship_rows,
 )
 from .schema import SCOPED_LABELING_VERSION
@@ -167,6 +172,165 @@ class ScopedLabelingTests(unittest.TestCase):
                 ("news", "2026-07-08", "2026-07-15"),
                 ("sec", "2026-07-08", "2026-07-15"),
             ],
+        )
+
+    def test_persistence_accepts_sixty_four_workers(self) -> None:
+        self.assertEqual(parse_args(["--workers", "64"]).workers, 64)
+
+    def test_transient_stream_failure_replays_one_bounded_unit(self) -> None:
+        class ImmediateResult:
+            def __init__(self, value=None, error=None):
+                self.value = value
+                self.error = error
+
+            def ready(self):
+                return True
+
+            def get(self):
+                if self.error:
+                    raise self.error
+                return self.value
+
+        completed = {
+            "source_rows": 10,
+            "label_rows": 14,
+            "relation_rows": 40,
+            "source_seconds": 1.0,
+            "classify_seconds": 2.0,
+            "write_seconds": 0.5,
+            "total_seconds": 3.5,
+        }
+
+        class RetryPool:
+            def __init__(self):
+                self.calls = 0
+
+            def apply_async(self, _function, _args):
+                self.calls += 1
+                if self.calls == 1:
+                    return ImmediateResult(
+                        error=RuntimeError("IncompleteRead(0 bytes read)")
+                    )
+                return ImmediateResult(value=completed)
+
+        pool = RetryPool()
+        progress_queue = queue.Queue()
+        stop_event = mock.Mock()
+        stop_event.is_set.return_value = False
+        results = execute_bounded_plan(
+            pool,
+            [("news", "2026-07-01", "2026-07-08")],
+            run_id="test-run",
+            insert_bytes=1024,
+            heartbeat_seconds=30,
+            worker_count=1,
+            stop_event=stop_event,
+            progress_queue=progress_queue,
+            completed_before=0,
+            total_units=1,
+            started_at=time.perf_counter(),
+            transient_retries=2,
+            # Exercise the scheduler state where the only failed job is
+            # waiting for backoff and no asynchronous work remains in flight.
+            retry_base_seconds=0.001,
+        )
+        self.assertEqual(results, [completed])
+        self.assertEqual(pool.calls, 2)
+
+    def test_nontransient_unit_failure_is_not_retried(self) -> None:
+        class FailedResult:
+            def ready(self):
+                return True
+
+            def get(self):
+                raise RuntimeError("DB::Exception: invalid source contract")
+
+        class FailedPool:
+            calls = 0
+
+            def apply_async(self, _function, _args):
+                self.calls += 1
+                return FailedResult()
+
+        pool = FailedPool()
+        stop_event = mock.Mock()
+        stop_event.is_set.return_value = False
+        with self.assertRaisesRegex(RuntimeError, "invalid source contract"):
+            execute_bounded_plan(
+                pool,
+                [("news", "2026-07-01", "2026-07-08")],
+                run_id="test-run",
+                insert_bytes=1024,
+                heartbeat_seconds=30,
+                worker_count=1,
+                stop_event=stop_event,
+                progress_queue=queue.Queue(),
+                completed_before=0,
+                total_units=1,
+                started_at=time.perf_counter(),
+                transient_retries=6,
+                retry_base_seconds=0,
+            )
+        self.assertEqual(pool.calls, 1)
+
+    def test_transient_unit_failure_stops_after_retry_limit(self) -> None:
+        class FailedResult:
+            def ready(self):
+                return True
+
+            def get(self):
+                raise RuntimeError("IncompleteRead(0 bytes read)")
+
+        class FailedPool:
+            calls = 0
+
+            def apply_async(self, _function, _args):
+                self.calls += 1
+                return FailedResult()
+
+        pool = FailedPool()
+        stop_event = mock.Mock()
+        stop_event.is_set.return_value = False
+        with self.assertRaisesRegex(RuntimeError, "IncompleteRead"):
+            execute_bounded_plan(
+                pool,
+                [("news", "2026-07-01", "2026-07-08")],
+                run_id="test-run",
+                insert_bytes=1024,
+                heartbeat_seconds=30,
+                worker_count=1,
+                stop_event=stop_event,
+                progress_queue=queue.Queue(),
+                completed_before=0,
+                total_units=1,
+                started_at=time.perf_counter(),
+                transient_retries=2,
+                retry_base_seconds=0,
+            )
+        self.assertEqual(pool.calls, 3)
+
+    def test_transient_classifier_rejects_clickhouse_data_errors(self) -> None:
+        self.assertTrue(
+            is_transient_clickhouse_error(
+                RuntimeError("IncompleteRead(0 bytes read)")
+            )
+        )
+        self.assertFalse(
+            is_transient_clickhouse_error(
+                RuntimeError("DB::Exception: unknown column")
+            )
+        )
+        self.assertTrue(
+            is_transient_clickhouse_error(
+                RuntimeError("ClickHouse HTTP 503 Service Unavailable")
+            )
+        )
+        self.assertFalse(
+            is_transient_clickhouse_error(
+                RuntimeError(
+                    "ClickHouse HTTP 503: DB::Exception: unknown column"
+                )
+            )
         )
 
     def test_process_worker_initializer_shares_stop_state(self) -> None:

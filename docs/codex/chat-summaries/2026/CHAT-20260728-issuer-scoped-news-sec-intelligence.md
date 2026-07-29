@@ -130,3 +130,27 @@ with no client console errors. The laptop ClickHouse authority was offline, so
 real data-connected UI rendering and execution of the reconciliation SQL remain
 an explicit operational validation gap. The temporary frontend review server
 was stopped and port 5173 was verified closed.
+
+## Historical backfill transport repair
+
+The first optimized workstation resume retained 87 of 1,730 weekly corpus
+units, then one News source stream for 2010-10-22 through 2010-10-29 closed
+after 797 rows with `IncompleteRead(0 bytes read)`. The parent previously
+treated any worker exception as fatal, so that one transient transport failure
+terminated the whole pool and left 16 stale `running` heartbeats.
+
+The persistence runner now replays the complete bounded week after only
+recognized transient ClickHouse transport failures. Each attempt creates a new
+client, partial label and relation writes remain idempotent under their
+`ReplacingMergeTree` identities, and durable unit coverage advances only after
+completion. Retries are prioritized after bounded exponential backoff and are
+reported in compact operator-safe terminal lines. Query or schema errors still
+fail immediately, while repeated transport failures fail after the configured
+limit instead of looping indefinitely.
+
+The supported ceiling is now 64 worker processes. Source queries default to one
+ClickHouse execution thread per worker, in-flight work is bounded to the worker
+count, and workers recycle after 32 units. This permits measured CPU scaling
+without allowing 64 Python processes to multiply into unrestricted
+ClickHouse-side parallelism. Existing completed periods remain authoritative;
+resume without `--rebuild-completed`.

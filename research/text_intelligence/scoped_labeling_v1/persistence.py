@@ -9,7 +9,6 @@ import queue
 import signal
 import time
 import uuid
-from collections import deque
 from dataclasses import dataclass, field
 from multiprocessing.pool import Pool
 from pathlib import Path
@@ -42,6 +41,9 @@ STATUS_TABLE = "scoped_text_labels_v4_build_status"
 RELATION_TABLE = "scoped_content_relations_v2"
 DEFAULT_INSERT_BYTES = 8 * 1024 * 1024
 DEFAULT_HEARTBEAT_SECONDS = 30.0
+DEFAULT_TRANSIENT_RETRIES = 6
+DEFAULT_RETRY_BASE_SECONDS = 2.0
+MAX_WORKERS = 64
 
 _WORKER_DATABASE = "q_live"
 _WORKER_STOP_EVENT: Any = None
@@ -71,7 +73,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--corpus", choices=("news", "sec", "both"), default="both"
     )
-    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help=(
+            "CPU worker processes (1-64). Higher is not always faster; "
+            "ClickHouse transport retries remain bounded per weekly unit."
+        ),
+    )
     parser.add_argument(
         "--period-days",
         type=int,
@@ -92,6 +102,21 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         help="Durable in-progress status cadence (5-300 seconds).",
     )
     parser.add_argument(
+        "--transient-retries",
+        type=int,
+        default=DEFAULT_TRANSIENT_RETRIES,
+        help=(
+            "Fresh-connection retries for a bounded unit after transient "
+            "ClickHouse transport failures (0-20)."
+        ),
+    )
+    parser.add_argument(
+        "--retry-base-seconds",
+        type=float,
+        default=DEFAULT_RETRY_BASE_SECONDS,
+        help="Initial retry delay; each repeated failure doubles it (0-300).",
+    )
+    parser.add_argument(
         "--certification-manifest",
         type=Path,
         default=certification_manifest,
@@ -103,14 +128,18 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
 def run(args: argparse.Namespace) -> dict:
     _validate_dates(args.start_date, args.end_date_exclusive)
-    if not 1 <= args.workers <= 32:
-        raise ValueError("--workers must be between 1 and 32")
+    if not 1 <= args.workers <= MAX_WORKERS:
+        raise ValueError(f"--workers must be between 1 and {MAX_WORKERS}")
     if not 1 <= args.period_days <= 31:
         raise ValueError("--period-days must be between 1 and 31")
     if not 1 <= args.insert_megabytes <= 64:
         raise ValueError("--insert-megabytes must be between 1 and 64")
     if not 5 <= args.heartbeat_seconds <= 300:
         raise ValueError("--heartbeat-seconds must be between 5 and 300")
+    if not 0 <= args.transient_retries <= 20:
+        raise ValueError("--transient-retries must be between 0 and 20")
+    if not 0 <= args.retry_base_seconds <= 300:
+        raise ValueError("--retry-base-seconds must be between 0 and 300")
     load_env_files(discover_env_files(Path.cwd()), verbose=True)
     corpora = ("news", "sec") if args.corpus == "both" else (args.corpus,)
     periods = bounded_period_ranges(
@@ -177,6 +206,9 @@ def run(args: argparse.Namespace) -> dict:
         processes=args.workers,
         initializer=initialize_worker,
         initargs=(args.database, stop_event, progress_queue),
+        # Recycle long-lived spawned workers before Python/regex/HTTP allocator
+        # fragmentation becomes material during a multi-million-document run.
+        maxtasksperchild=32,
     )
     try:
         results = execute_bounded_plan(
@@ -191,6 +223,8 @@ def run(args: argparse.Namespace) -> dict:
             completed_before=completed_before,
             total_units=len(plan),
             started_at=started_at,
+            transient_retries=args.transient_retries,
+            retry_base_seconds=args.retry_base_seconds,
         )
     except KeyboardInterrupt:
         stop_event.set()
@@ -262,18 +296,48 @@ def execute_bounded_plan(
     completed_before: int,
     total_units: int,
     started_at: float,
+    transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
+    retry_base_seconds: float = DEFAULT_RETRY_BASE_SECONDS,
 ) -> list[dict]:
-    """Keep only a bounded number of tasks and payloads in the parent."""
-    pending_items = deque(active)
-    jobs: list[tuple[Any, tuple[str, str, str]]] = []
+    """Execute bounded units with fresh-client retries for transient I/O.
+
+    A unit is the durability boundary. Its label and relationship writes use
+    ReplacingMergeTree identities, so replaying the complete unit after an
+    ambiguous or partial transport failure is safe. Completed units advance
+    progress exactly once; retries never inflate durable coverage.
+    """
+    pending_items = [
+        (identity, 0, 0.0) for identity in active
+    ]
+    jobs: list[tuple[Any, tuple[str, str, str], int]] = []
     results: list[dict] = []
-    max_in_flight = max(1, worker_count * 2)
+    max_in_flight = max(1, worker_count)
     active_progress: dict[tuple[str, str], dict] = {}
     last_active_print = started_at
+    retry_count = 0
 
     def submit_available() -> None:
+        if not pending_items or len(jobs) >= max_in_flight:
+            return
         while pending_items and len(jobs) < max_in_flight:
-            corpus, start, end = pending_items.popleft()
+            now = time.monotonic()
+            available = [
+                (index, item)
+                for index, item in enumerate(pending_items)
+                if item[2] <= now
+            ]
+            if not available:
+                break
+            # A failed unit is replayed before untouched work once its backoff
+            # expires, preventing one early transport failure from remaining
+            # non-durable until the end of a multi-year plan.
+            selected_index, selected = max(
+                available,
+                key=lambda value: (value[1][1], -value[0]),
+            )
+            identity, attempt, _ready_at = selected
+            pending_items.pop(selected_index)
+            corpus, start, end = identity
             result = pool.apply_async(
                 process_unit,
                 (
@@ -283,12 +347,14 @@ def execute_bounded_plan(
                     run_id,
                     insert_bytes,
                     heartbeat_seconds,
+                    attempt,
+                    transient_retries,
                 ),
             )
-            jobs.append((result, (corpus, start, end)))
+            jobs.append((result, identity, attempt))
 
     submit_available()
-    while jobs:
+    while jobs or pending_items:
         ready = [item for item in jobs if item[0].ready()]
         drain_progress_queue(progress_queue, active_progress)
         now = time.perf_counter()
@@ -300,10 +366,40 @@ def execute_bounded_plan(
                 elapsed=now - started_at,
             )
             last_active_print = now
-        for async_result, identity in ready:
-            jobs.remove((async_result, identity))
+        for async_result, identity, attempt in ready:
+            jobs.remove((async_result, identity, attempt))
             corpus, start, _ = identity
-            result = async_result.get()
+            try:
+                result = async_result.get()
+            except Exception as exc:
+                if (
+                    attempt >= transient_retries
+                    or not is_transient_clickhouse_error(exc)
+                ):
+                    raise
+                retry_count += 1
+                delay = retry_base_seconds * float(2**attempt)
+                next_attempt = attempt + 1
+                pending_items.append(
+                    (identity, next_attempt, time.monotonic() + delay)
+                )
+                active_progress[(corpus, start)] = {
+                    "corpus": corpus,
+                    "start": start,
+                    "stage": "retry",
+                    "source_rows": 0,
+                    "label_rows": 0,
+                    "relation_rows": 0,
+                    "attempt": next_attempt,
+                }
+                print(
+                    f"RETRY {corpus.upper():4} {start} | "
+                    f"attempt={next_attempt}/{transient_retries} "
+                    f"in={format_retry_delay(delay)} | "
+                    f"reason={safe_error_summary(exc)}",
+                    flush=True,
+                )
+                continue
             results.append(result)
             active_progress.pop((corpus, start), None)
             elapsed = time.perf_counter() - started_at
@@ -324,6 +420,7 @@ def execute_bounded_plan(
                 f"classify={result['classify_seconds']:.1f}s "
                 f"write={result['write_seconds']:.1f}s "
                 f"total={result['total_seconds']:.1f}s | "
+                f"retries={retry_count:,} | "
                 f"ETA={format_duration(eta_seconds)}",
                 flush=True,
             )
@@ -331,7 +428,14 @@ def execute_bounded_plan(
             break
         submit_available()
         if not ready:
-            time.sleep(0.25)
+            wait_seconds = 0.25
+            if not jobs and pending_items:
+                next_ready = min(item[2] for item in pending_items)
+                wait_seconds = min(
+                    0.25,
+                    max(0.01, next_ready - time.monotonic()),
+                )
+            time.sleep(wait_seconds)
     return results
 
 
@@ -366,8 +470,10 @@ def print_active_progress(
         if not rows:
             continue
         focus = min(rows, key=lambda row: row["start"])
+        retrying = sum(row.get("stage") == "retry" for row in rows)
         summaries.append(
-            f"{corpus.upper()} workers={len(rows)} "
+            f"{corpus.upper()} active={len(rows) - retrying} "
+            f"retry={retrying} "
             f"src={sum(int(row['source_rows']) for row in rows):,} "
             f"labels={sum(int(row['label_rows']) for row in rows):,} "
             f"oldest={focus['start']}"
@@ -475,6 +581,8 @@ def process_unit(
     run_id: str,
     insert_bytes: int = DEFAULT_INSERT_BYTES,
     heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS,
+    attempt: int = 0,
+    transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
 ) -> dict:
     database = _WORKER_DATABASE
     client = make_client()
@@ -600,7 +708,14 @@ def process_unit(
             status = (
                 "interrupted"
                 if isinstance(exc, InterruptedError)
-                else "failed"
+                else (
+                    "retrying"
+                    if (
+                        attempt < transient_retries
+                        and is_transient_clickhouse_error(exc)
+                    )
+                    else "failed"
+                )
             )
             total_seconds = time.perf_counter() - unit_started
             insert_status(
@@ -1304,11 +1419,27 @@ def interleaved_plan(
 
 
 def make_client() -> ClickHouseHttpClient:
+    query_threads = max(
+        1,
+        min(
+            8,
+            int(
+                os.environ.get(
+                    "SCOPED_LABELING_CLICKHOUSE_MAX_THREADS",
+                    "1",
+                )
+            ),
+        ),
+    )
     return ClickHouseHttpClient(
         default_clickhouse_url(),
         default_clickhouse_user(),
         default_clickhouse_password(),
         timeout_seconds=1800,
+        # At 64 CPU workers the source scans must not each fan out across all
+        # ClickHouse cores. One server thread per bounded query keeps database
+        # concurrency proportional to the explicitly chosen worker count.
+        default_query_params={"max_threads": query_threads},
     )
 
 
@@ -1333,6 +1464,74 @@ def format_duration(seconds: float) -> str:
     if seconds < 3600:
         return f"{seconds / 60:.1f}m"
     return f"{seconds / 3600:.1f}h"
+
+
+def format_retry_delay(seconds: float) -> str:
+    if seconds <= 0:
+        return "now"
+    return format_duration(seconds)
+
+
+def is_transient_clickhouse_error(exc: BaseException) -> bool:
+    """Return true only for transport failures safe for whole-unit replay."""
+    parts: list[str] = []
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        parts.append(f"{type(current).__name__}: {current!r}")
+        current = current.__cause__ or current.__context__
+    text = " | ".join(parts)
+    if any(
+        marker in text
+        for marker in (
+            "DB::Exception",
+            "ClickHouse HTTP 4",
+            "QUERY_WAS_CANCELLED",
+            "operator interruption requested",
+        )
+    ):
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "IncompleteRead",
+            "RemoteDisconnected",
+            "ConnectionResetError",
+            "ConnectionAbortedError",
+            "BrokenPipeError",
+            "URLError",
+            "ConnectionRefusedError",
+            "Connection reset",
+            "Connection broken",
+            "No connection could be made",
+            "WinError 10054",
+            "WinError 10060",
+            "Read timed out",
+            "TimeoutError",
+            "timed out",
+            "ClickHouse HTTP 502",
+            "ClickHouse HTTP 503",
+            "ClickHouse HTTP 504",
+            "ClickHouse JSONEachRow decode failed at response line",
+        )
+    )
+
+
+def safe_error_summary(exc: BaseException) -> str:
+    """Stable operator-facing reason without SQL, payloads, or source text."""
+    text = repr(exc)
+    if "IncompleteRead" in text:
+        return "source stream closed before completion"
+    if "JSONEachRow decode failed" in text:
+        return "source stream ended inside a row"
+    if "10054" in text or "ConnectionReset" in text:
+        return "ClickHouse connection reset"
+    if "10060" in text or "timed out" in text or "Timeout" in text:
+        return "ClickHouse request timed out"
+    if "RemoteDisconnected" in text or "Connection broken" in text:
+        return "ClickHouse disconnected"
+    return f"transient {type(exc).__name__}"
 
 
 def parse_utc(value: Any) -> dt.datetime:

@@ -110,6 +110,20 @@ the following operational guarantees:
 - Running workers write durable heartbeats and stage timings. The terminal
   prints compact 30-second active summaries and completion lines with source,
   classification, write, total, and ETA evidence.
+- A transient ClickHouse stream close, reset, timeout, or truncated
+  JSONEachRow response retries the complete bounded period through a fresh
+  connection. Partial inserts are safe because label and relationship
+  identities use `ReplacingMergeTree`; retrying never advances durable unit
+  coverage twice.
+- Retries use bounded exponential backoff (six by default) and remain visible
+  as one compact `RETRY` line. Deterministic ClickHouse/schema errors are not
+  retried and still stop the run.
+- Each source query uses one ClickHouse execution thread by default, preventing
+  64 Python workers from multiplying into unbounded database-side query
+  threads. Override only through
+  `SCOPED_LABELING_CLICKHOUSE_MAX_THREADS=1..8`.
+- Spawned workers recycle after 32 bounded periods to limit allocator and
+  regular-expression state growth during the multi-million-document build.
 - Ctrl+C is cooperative: workers stop at row boundaries, completed periods
   remain complete, and partial periods replay idempotently on the next run.
 
@@ -121,14 +135,25 @@ python -m research.text_intelligence.scoped_labeling_v1.run_persist `
   --execute --workers 16
 ```
 
-Increasing workers does not change label semantics, period identity, or resume
-behavior. Do not use `--rebuild-completed` merely to adopt the faster runner;
-already completed V4 periods are discovered and retained automatically.
+The supported ceiling is 64 workers:
+
+```powershell
+python -m research.text_intelligence.scoped_labeling_v1.run_persist `
+  --execute --workers 64 --transient-retries 6 --retry-base-seconds 2
+```
+
+Increasing workers does not change label semantics, period identity, retry
+identity, or resume behavior. It is useful only while CPU remains the
+bottleneck; a rising retry rate means ClickHouse or the network is saturated
+and fewer workers will finish sooner. Do not use `--rebuild-completed` merely
+to adopt the repaired runner; already completed V4 periods are discovered and
+retained automatically.
 
 ## Live integration
 
-News Gateway continues to own acquisition and canonical rendering. It sends one
-complete candidate to News Intelligence. News Intelligence:
+News Gateway continues to own acquisition and canonical rendering. It sends a
+lightweight post-persistence identity notice to Text Intelligence, which
+reloads the canonical rendered authority. Text Intelligence:
 
 1. runs V4 scoping once;
 2. selects eligible issuer units;
