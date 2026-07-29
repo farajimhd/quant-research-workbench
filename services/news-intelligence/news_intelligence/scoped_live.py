@@ -299,7 +299,9 @@ FORMAT JSONEachRow
 
     def _load_sec(self, notice: TextDocumentNotice) -> LoadedSource:
         filings = list(self.client.iter_json_each_row(f"""
-SELECT filing_id,cik,accession_number,toString(accepted_at_utc) source_timestamp,
+SELECT filing_id,cik,accession_number,
+       cityHash64(cik) % 64 AS document_partition,
+       toString(accepted_at_utc) source_timestamp,
        ifNull(company_name,'') company_name,ifNull(form_type,'') form_type,
        ifNull(items,'') filing_items,ifNull(toString(filing_date),'') filing_date,
        ifNull(toString(report_date),'') report_date,accepted_at_source
@@ -323,6 +325,7 @@ FORMAT JSONEachRow
                 self.client,
                 self.database,
                 ((cik, str(filing["accession_number"])),),
+                partition=int(filing["document_partition"]),
             )
         )
         for row in documents:
