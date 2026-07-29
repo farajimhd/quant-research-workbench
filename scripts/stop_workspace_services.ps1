@@ -249,7 +249,7 @@ if (-not $gracefulSignalSent) {
     Write-Warning "No matching console accepted Ctrl+C; proceeding to the bounded forced fallback."
 }
 
-$remainingIds = Wait-ForTargetsToExit -TargetIds $targetIds -TimeoutSeconds $GracefulTimeoutSeconds
+$remainingIds = @(Wait-ForTargetsToExit -TargetIds $targetIds -TimeoutSeconds $GracefulTimeoutSeconds)
 if ($remainingIds.Count -gt 0) {
     Write-Warning ("Force-stopping {0} process(es) that did not exit after Ctrl+C: {1}" -f $remainingIds.Count, ($remainingIds -join ", "))
     foreach ($targetPid in ($remainingIds | Sort-Object -Descending)) {
