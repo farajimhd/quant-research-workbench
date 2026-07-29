@@ -93,7 +93,6 @@ type TradingWorkspaceProps = {
   managementContent?: ReactNode;
   managementOpen?: boolean;
   onManagementClose?: () => void;
-  openContainerRequest?: { kind: WorkspaceContainerId; requestId: number; targetInstanceId?: string } | null;
 };
 
 class WorkspaceContainerErrorBoundary extends Component<
@@ -182,7 +181,6 @@ export function TradingWorkspace({
   managementContent,
   managementOpen = false,
   onManagementClose,
-  openContainerRequest,
 }: TradingWorkspaceProps) {
   const contentHostsRef = useRef(new Map<string, HTMLDivElement>());
 
@@ -211,7 +209,6 @@ export function TradingWorkspace({
   const [libraryOpen, setLibraryOpen] = useState(false);
   const canvasRef = useRef<HTMLElement | null>(null);
   const managementBodyRef = useRef<HTMLDivElement | null>(null);
-  const handledOpenRequestRef = useRef<TradingWorkspaceProps["openContainerRequest"]>(null);
 
   useLayoutEffect(() => {
     if (managementOpen && managementBodyRef.current) managementBodyRef.current.scrollTop = 0;
@@ -419,18 +416,6 @@ export function TradingWorkspace({
     setLibraryOpen(false);
     onManagementClose?.();
   }
-
-  useEffect(() => {
-    if (!openContainerRequest || handledOpenRequestRef.current === openContainerRequest) return;
-    handledOpenRequestRef.current = openContainerRequest;
-    const existingId = openContainerRequest.targetInstanceId && openIds.includes(openContainerRequest.targetInstanceId)
-      ? openContainerRequest.targetInstanceId
-      : openContainerRequest.targetInstanceId
-        ? undefined
-        : openIds.find((instanceId) => instances[instanceId] === openContainerRequest.kind || instanceId === openContainerRequest.kind || instanceId.startsWith(`${openContainerRequest.kind}-`));
-    if (existingId) focusContainer(existingId);
-    else addContainer(openContainerRequest.kind, openContainerRequest.targetInstanceId);
-  }, [openContainerRequest]);
 
   function updateLayout(id: string, patch: Partial<WorkspaceWindowLayout>) {
     setLayouts((current) => ({ ...current, [id]: { ...current[id], ...patch } }));

@@ -248,7 +248,7 @@ export function WorkspaceWindow({
           {titleBarActions}
           {canvasTargets.length > 1 ? <CanvasTargetSelect canvasTargets={canvasTargets} onMove={(canvasId) => onMoveToCanvas(id, canvasId)} title={title} /> : null}
           {canPopOut ? (
-            <button aria-label={`Open linked ${title} in a new canvas`} className="toolbar-button compact" onClick={() => onPopOut(id)} title="Open linked copy in a focus canvas" type="button">
+            <button aria-label={`Open ${title} in a new fullscreen canvas`} className="toolbar-button compact" onClick={() => onPopOut(id)} title="Open fullscreen copy in a new canvas" type="button">
               <ExternalLink size={12} />
             </button>
           ) : null}

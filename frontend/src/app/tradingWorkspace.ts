@@ -413,7 +413,7 @@ export function containerSupportsSymbolLink(containerId: WorkspaceContainerId): 
 }
 
 export function containerSupportsCanvasLink(containerId: WorkspaceContainerId): boolean {
-  return containerSupportsSymbolLink(containerId) || containerId === "scanner" || containerId === "signal_stream" || containerId === "watchlist";
+  return containerSupportsSymbolLink(containerId);
 }
 
 function sourceMap(live: WorkspaceSourceBinding, historical: WorkspaceSourceBinding): Partial<Record<TradingWorkspaceMode, WorkspaceSourceBinding>> {

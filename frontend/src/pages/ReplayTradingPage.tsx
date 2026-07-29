@@ -25,10 +25,8 @@ import {
   snapshotCanvasWorkspaceState,
   type CanvasRegistry,
 } from "../app/canvasWorkspace";
-import {
-  CanvasWorkspaceSurface,
-  type CanvasReplayRun,
-} from "./CanvasConfigurationPage";
+import { isTerminalReplayStatus, latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";
+import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
 type ReplayCheck = {
   evidence: string;
@@ -57,8 +55,6 @@ type ReplayPreflight = {
 };
 
 const REPLAY_SPEEDS = [1, 5, 30, 120, 0] as const;
-const REPLAY_UI_UPDATE_MS = 2_000;
-const TERMINAL_REPLAY_STATUSES = new Set(["completed", "failed", "stopped"]);
 
 export function ReplayTradingPage() {
   const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
@@ -123,41 +119,11 @@ export function ReplayTradingPage() {
     };
   }, [canvasSnapshot, configuredTickers, initialCash, refreshKey, run, sessionDate, startTime]);
 
-  useEffect(() => {
-    if (!run) return;
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${protocol}//${window.location.host}/api/trading/replay/runs/${encodeURIComponent(run.run_id)}/events`);
-    let pending: CanvasReplayRun | null = null;
-    let updateTimer: number | null = null;
-    const flush = () => {
-      updateTimer = null;
-      if (!pending) return;
-      const update = pending;
-      pending = null;
-      setRun((current) => latestReplayRun(current, update));
-    };
-    socket.onmessage = (event) => {
-      try {
-        const update = JSON.parse(String(event.data)) as CanvasReplayRun;
-        if (TERMINAL_REPLAY_STATUSES.has(update.status)) {
-          if (updateTimer !== null) window.clearTimeout(updateTimer);
-          updateTimer = null;
-          pending = null;
-          setRun((current) => latestReplayRun(current, update));
-          return;
-        }
-        pending = latestReplayRun(pending, update);
-        if (updateTimer === null) updateTimer = window.setTimeout(flush, REPLAY_UI_UPDATE_MS);
-      } catch {
-        setError("Replay returned an invalid runtime update.");
-      }
-    };
-    socket.onerror = () => setError("The Replay runtime event stream disconnected.");
-    return () => {
-      if (updateTimer !== null) window.clearTimeout(updateTimer);
-      socket.close();
-    };
-  }, [run?.run_id]);
+  useReplayRunEvents(
+    run?.run_id,
+    (update) => setRun((current) => latestReplayRun(current, update)),
+    setError,
+  );
 
   async function createRun() {
     if (!replayReady) return;
@@ -292,7 +258,7 @@ export function ReplayTradingPage() {
 function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRunChange: (run: CanvasReplayRun) => void; run: CanvasReplayRun }) {
   const [busy, setBusy] = useState("");
   const [controlError, setControlError] = useState("");
-  const terminal = TERMINAL_REPLAY_STATUSES.has(run.status);
+  const terminal = isTerminalReplayStatus(run.status);
   const active = ["running", "fast_forwarding"].includes(run.status);
 
   async function command(name: string, payload: Record<string, unknown> = {}) {
@@ -405,9 +371,4 @@ function formatReplayClock(value: string) {
     second: "2-digit",
     timeZone: "America/New_York",
   }).format(new Date(value));
-}
-
-function latestReplayRun(current: CanvasReplayRun | null, update: CanvasReplayRun) {
-  if (!current || current.run_id !== update.run_id) return update;
-  return Date.parse(update.updated_at) >= Date.parse(current.updated_at) ? update : current;
 }

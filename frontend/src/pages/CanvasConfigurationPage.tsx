@@ -15,13 +15,15 @@ import {
   canvasLinkGroupDefinition,
   canvasWorkspaceStorageKey,
   createCanvasRecord,
-  firstAvailableCanvasLinkGroup,
   focusCanvasUrl,
   ensureNewsReaderCanvas,
   readCanvasRegistry,
   readCanvasWorkspaceState,
+  readReplayCanvasFocusHandoff,
   removeCanvasRecord,
+  replayFocusCanvasUrl,
   snapshotCanvasWorkspaceState,
+  writeReplayCanvasFocusHandoff,
   writeCanvasRegistry,
   writeCanvasWorkspaceState,
   type CanvasAssignedLinkGroupId,
@@ -31,6 +33,7 @@ import {
   type CanvasRegistry,
   type CanvasWorkspaceState,
 } from "../app/canvasWorkspace";
+import { latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";
 import { ChartPanel, type ChartCatalogKnowledge, type ChartDisplayItem, type ChartPayload, type LiveEntryLine } from "../app/components/ChartPanel";
 import { AllNewsContainer, NewsDetailContainer, TickerNewsContainer } from "../app/components/NewsContainers";
 import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/components/SecContainers";
@@ -231,25 +234,6 @@ type CanvasPreview = {
   };
   trading: CanonicalTradingPreview;
   xbrl: PreviewRow[];
-};
-
-export type CanvasReplayRun = {
-  account_ids: string[];
-  canvas_revision: string;
-  canvas_profile: CanvasRegistry;
-  current_time: string;
-  error: string;
-  progress: number;
-  run_id: string;
-  session_date: string;
-  session_end: string;
-  session_start: string;
-  requested_start: string;
-  speed: number;
-  status: string;
-  updated_at: string;
-  warmup_events?: number;
-  processed_events?: number;
 };
 
 type CanvasScannerSnapshot = {
@@ -1313,12 +1297,43 @@ export function CanvasConfigurationPage() {
 
 export function CanvasFocusPage() {
   const params = new URLSearchParams(window.location.search);
+  const replayRunId = params.get("replay_run") || undefined;
+  const replayFocusToken = params.get("replay_focus") || undefined;
+  if (replayRunId && replayFocusToken) return <ReplayCanvasFocusPage focusToken={replayFocusToken} runId={replayRunId} />;
   const canvasId = params.get("canvas") || MAIN_CANVAS_ID;
   const requestedInstanceId = params.get("container") || undefined;
   const requestedNewsId = params.get("news") || undefined;
   const requestedSecCik = params.get("sec_cik") || undefined;
   const requestedSecAccession = params.get("sec_accession") || undefined;
   return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
+}
+
+function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runId: string }) {
+  const [handoff] = useState(() => readReplayCanvasFocusHandoff(focusToken));
+  const [run, setRun] = useState<CanvasReplayRun | null>(null);
+  const [error, setError] = useState(handoff ? "" : "This Replay focus link is missing or expired.");
+  const mergeFocusRun = useCallback((update: CanvasReplayRun) => {
+    setRun((current) => {
+      const latest = latestReplayRun(current, update);
+      return handoff ? { ...latest, canvas_profile: { ...handoff.profile, defaultState: handoff.state } } : latest;
+    });
+  }, [handoff]);
+
+  useEffect(() => {
+    if (!handoff) return;
+    let cancelled = false;
+    api<CanvasReplayRun>(`/api/trading/replay/runs/${encodeURIComponent(runId)}`, { timeoutMs: 20_000 })
+      .then((payload) => { if (!cancelled) mergeFocusRun(payload); })
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { cancelled = true; };
+  }, [handoff, mergeFocusRun, runId]);
+
+  useReplayRunEvents(handoff ? runId : undefined, mergeFocusRun, setError);
+
+  if (error && !run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
+  if (!run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Opening Replay focus canvas</strong><span>Restoring the selected container against the active run clock.</span></div></div>;
+  const focusedRun = error && !run.error ? { ...run, error } : run;
+  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} replayRun={focusedRun} />;
 }
 
 export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik }: { canvasId: string; manager: boolean; modeControls?: ReactNode; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string }) {
@@ -1337,8 +1352,6 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
   const [managementOpen, setManagementOpen] = useState(false);
   const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<string | null>(null);
   const [settingsContainerId, setSettingsContainerId] = useState<string | null>(null);
-  const [chartOpenRequest, setChartOpenRequest] = useState<{ kind: "chart"; requestId: number; targetInstanceId: string } | null>(null);
-  const [chartOpenError, setChartOpenError] = useState("");
   const managementEnabled = manager || Boolean(replayRun);
 
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
@@ -1496,6 +1509,14 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
         status: contextError ? "error" : "ready",
       };
     }
+    if (definition.id === "charts_quotes") {
+      return {
+        detail: "Canonical historical charts, NBBO updates, and trade prints for one symbol at the active Replay or Canvas clock.",
+        freshness: previewContext.previewTime,
+        sourceLabel: "QMD History",
+        status: contextError ? "error" : "ready",
+      };
+    }
     if (definition.id === "microstructure") {
       return {
         detail: "Canonical historical NBBO updates and trade prints decoded once against the same event sequence and active clock.",
@@ -1528,7 +1549,7 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
     }
     if (
       replayRun
-      && ["activity", "charts_quotes", "closed_trades", "fills", "journal", "orders", "performance_journal", "portfolio", "positions", "strategy"].includes(definition.id)
+      && ["activity", "closed_trades", "fills", "journal", "orders", "performance_journal", "portfolio", "positions", "strategy"].includes(definition.id)
     ) {
       return {
         detail: `${definition.title} projected from this Replay run's canonical simulated broker state and durable journal.`,
@@ -1596,35 +1617,48 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
       : { ...current, instanceSettings: { ...current.instanceSettings, [instanceId]: cloneDefaultSettings() } });
   }
 
-  function openChartForTicker(sourceInstanceId: string, tickerValue: string) {
+  function openChartsQuotesForTicker(tickerValue: string) {
     const symbol = tickerValue.trim().toUpperCase();
     if (!/^[A-Z][A-Z0-9.\-]{0,15}$/.test(symbol)) return;
-    const assignedGroup = registry.linkAssignments[sourceInstanceId] ?? "none";
-    const group = assignedGroup !== "none"
-      ? assignedGroup
-      : firstAvailableCanvasLinkGroup(registry.linkAssignments, workspaceState?.openIds ?? [sourceInstanceId]);
-    if (!group) {
-      setChartOpenError("A chart could not be linked because every link color is in use on this canvas. Unlink one active container and try again.");
-      return;
-    }
-    setChartOpenError("");
-    const linkedChartId = Object.entries(registry.linkAssignments).find(([instanceId, candidateGroup]) => candidateGroup === group && workspaceContainerKind(instanceId, workspaceState) === "chart")?.[0];
-    const chartId = linkedChartId ?? nextAvailableContainerInstanceId("chart", [
+    const instanceId = nextAvailableContainerInstanceId("charts_quotes", [
       ...Object.keys(registry.instanceSettings),
       ...Object.keys(registry.linkAssignments),
       ...(workspaceState?.openIds ?? []),
     ]);
-    updateRegistry((current) => ({
-      ...current,
-      instanceSettings: {
-        ...current.instanceSettings,
-        [chartId]: normalizeSettings({ ...instanceSettings(current, chartId), chart: { ...instanceSettings(current, chartId).chart, symbol } }),
+    const settings = instanceSettings(registry, instanceId);
+    const focusedSettings = normalizeSettings({
+      ...settings,
+      chart: { ...settings.chart, symbol },
+      charts_quotes: {
+        daily: { ...settings.charts_quotes.daily, symbol },
+        layout: settings.charts_quotes.layout,
+        main: { ...settings.charts_quotes.main, symbol },
+        month: { ...settings.charts_quotes.month, symbol },
       },
-      linkAssignments: { ...current.linkAssignments, [sourceInstanceId]: group, [chartId]: group },
-      linkContexts: { ...current.linkContexts, [group]: { ...current.linkContexts[group], symbol } },
-      linkOwners: { ...current.linkOwners, [group]: current.linkOwners[group] ?? sourceInstanceId },
-    }));
-    setChartOpenRequest((current) => ({ kind: "chart", requestId: (current?.requestId ?? 0) + 1, targetInstanceId: chartId }));
+    });
+    const state: CanvasWorkspaceState = {
+      groups: {},
+      instances: { [instanceId]: "charts_quotes" },
+      layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+      layouts: { [instanceId]: focusLayout() },
+      openIds: [instanceId],
+    };
+    const profile: CanvasRegistry = {
+      ...registry,
+      instanceSettings: {
+        ...registry.instanceSettings,
+        [instanceId]: focusedSettings,
+      },
+    };
+    if (replayRun) {
+      openReplayFocus(profile, state);
+      return;
+    }
+    const created = createCanvasRecord(profile, `${symbol} Charts & Quotes`);
+    writeCanvasWorkspaceState(created.canvas.id, state);
+    writeCanvasRegistry(created.registry);
+    setRegistry(created.registry);
+    window.open(focusCanvasUrl(created.canvas.id, instanceId), "_blank", "noopener,noreferrer");
   }
 
   function openNewCanvas(instanceId?: string, sourceLayout?: WorkspaceWindowLayout) {
@@ -1702,6 +1736,32 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
     window.open(focusCanvasUrl(created.canvas.id), "_blank", "noopener,noreferrer");
   }
 
+  function openReplayFocus(profile: CanvasRegistry, state: CanvasWorkspaceState) {
+    if (!replayRun) return;
+    const token = writeReplayCanvasFocusHandoff(profile, state);
+    window.open(replayFocusCanvasUrl(replayRun.run_id, token), "_blank", "noopener,noreferrer");
+  }
+
+  function openReplayContainerCanvas(instanceId: string, sourceLayout: WorkspaceWindowLayout) {
+    const containerId = workspaceContainerKind(instanceId, workspaceState);
+    openReplayFocus(registry, {
+      groups: {},
+      instances: { [instanceId]: containerId },
+      layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+      layouts: { [instanceId]: focusLayout(sourceLayout) },
+      openIds: [instanceId],
+    });
+  }
+
+  function openReplayGroupCanvas(groupId: string, sourceState: CanvasWorkspaceState) {
+    const groups = Object.fromEntries(Object.entries(sourceState.groups).map(([id, group]) => [id, {
+      ...group,
+      fullscreen: id === groupId,
+      minimized: false,
+    }]));
+    openReplayFocus(registry, { ...sourceState, groups, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION });
+  }
+
   function saveDefaultLayout() {
     if (!workspaceState) return;
     const defaultState = snapshotCanvasWorkspaceState(workspaceState);
@@ -1731,11 +1791,11 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
       </header>
 
       {contextError && replayRun ? <div aria-live="assertive" className="canvas-inline-error replay-runtime-error"><TriangleAlert aria-hidden="true" size={15} /><div><strong>Replay stopped</strong><span>{contextError}</span></div></div> : null}
-      {error || chartOpenError ? <div className="canvas-inline-error">{error || chartOpenError}</div> : null}
+      {error ? <div className="canvas-inline-error">{error}</div> : null}
 
       <TradingWorkspace
         allowMultipleInstances
-        canPopOut={!replayRun}
+        canPopOut
         canvasTargets={replayRun ? [] : canvasTargets}
         clockLabel=""
         commandBarVisible={false}
@@ -1754,9 +1814,8 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
         onMoveContainerToCanvas={replayRun ? undefined : moveContainer}
         onMoveGroupToCanvas={replayRun ? undefined : moveGroup}
         onManagementClose={() => setManagementOpen(false)}
-        openContainerRequest={chartOpenRequest}
-        onPopOutContainer={replayRun ? undefined : openNewCanvas}
-        onPopOutGroup={replayRun ? undefined : openGroupCanvas}
+        onPopOutContainer={replayRun ? openReplayContainerCanvas : openNewCanvas}
+        onPopOutGroup={replayRun ? openReplayGroupCanvas : openGroupCanvas}
         onStateChange={setWorkspaceState}
         renderContainer={(definition, instanceId) => {
           const settings = instanceSettings(registry, instanceId);
@@ -1806,7 +1865,7 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
             scannerError={scannerError}
             scannerLoading={scannerLoading}
             scannerSnapshot={scannerSnapshot}
-            onTickerChartOpen={(ticker) => openChartForTicker(instanceId, ticker)}
+            onTickerWorkspaceOpen={openChartsQuotesForTicker}
             previewContext={previewContext}
             requestedNewsId={requestedNewsId}
             requestedSecAccession={requestedSecAccession}
@@ -1876,7 +1935,7 @@ function ReplayCanvasManager({ revision }: { revision: string }) {
 
 type SettingsUpdater = (update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) => void;
 
-function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, onTickerChartOpen, preview, previewContext, requestedNewsId, requestedSecAccession, requestedSecCik, scannerError, scannerLoading, scannerSnapshot, settings, settingsOpen, symbolEditable, updateSettings }: {
+function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, onTickerWorkspaceOpen, preview, previewContext, requestedNewsId, requestedSecAccession, requestedSecCik, scannerError, scannerLoading, scannerSnapshot, settings, settingsOpen, symbolEditable, updateSettings }: {
   canvasId: string;
   chartCutoffMs: number;
   definition: WorkspaceContainerDefinition;
@@ -1888,7 +1947,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
   loading: boolean;
   onLinkChange: (group: CanvasLinkGroupId) => void;
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
-  onTickerChartOpen: (ticker: string) => void;
+  onTickerWorkspaceOpen: (ticker: string) => void;
   preview: CanvasPreview | null;
   scannerError: string;
   scannerLoading: boolean;
@@ -1933,19 +1992,19 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
           ? <div className="canvas-preview-loading">Building the complete historical scanner snapshot…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">Historical scanner unavailable: {scannerError}</div>
-            : <MarketScannerContainer asOf={scannerSnapshot?.as_of ?? new Date(chartCutoffMs).toISOString()} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} onTickerSelect={onTickerChartOpen} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
+            : <MarketScannerContainer asOf={scannerSnapshot?.as_of ?? new Date(chartCutoffMs).toISOString()} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
       : definition.id === "signal_stream"
         ? (scannerLoading || scannerSnapshot?.meta.status === "building") && !scannerSnapshot?.rows.length
           ? <div className="canvas-preview-loading">Loading the historical signal cross-section…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">Historical signals unavailable: {scannerError}</div>
-            : <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.signal_rows ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
+            : <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} scannerRows={scannerSnapshot?.signal_rows ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
       : definition.id === "watchlist"
         ? (scannerLoading || scannerSnapshot?.meta.status === "building") && !scannerSnapshot?.rows.length
           ? <div className="canvas-preview-loading">Loading the historical watchlist snapshot…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">Historical watchlist unavailable: {scannerError}</div>
-            : <WatchlistContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
+            : <WatchlistContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>

@@ -48,6 +48,8 @@ export const CANVAS_REGISTRY_STORAGE_KEY = "quant-research-workbench.canvas.regi
 export const CANVAS_PREVIEW_CONTEXT_STORAGE_KEY = "quant-research-workbench.canvas.preview-context.v1";
 export const CANVAS_SETTINGS_STORAGE_KEY = "quant-research-workbench.canvas.container-settings.v1";
 export const MAIN_CANVAS_STORAGE_KEY = "quant-research-workbench.trading-workspace.global.v1";
+const REPLAY_FOCUS_HANDOFF_PREFIX = "quant-research-workbench.replay-focus.";
+const REPLAY_FOCUS_HANDOFF_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const CANVAS_LINK_GROUPS: readonly CanvasLinkGroupDefinition[] = [
   { color: "var(--canvas-link-blue)", id: "A", label: "Blue" },
@@ -179,6 +181,44 @@ export function focusCanvasUrl(canvasId: string, containerId?: string) {
   url.searchParams.set("canvas", canvasId);
   if (containerId) url.searchParams.set("container", containerId);
   else url.searchParams.delete("container");
+  url.searchParams.delete("replay_focus");
+  url.searchParams.delete("replay_run");
+  url.hash = "canvas-focus";
+  return url.toString();
+}
+
+export type ReplayCanvasFocusHandoff = {
+  createdAt: number;
+  profile: CanvasRegistry;
+  state: CanvasWorkspaceState;
+};
+
+export function writeReplayCanvasFocusHandoff(profile: CanvasRegistry, state: CanvasWorkspaceState) {
+  pruneReplayCanvasFocusHandoffs();
+  const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const handoff: ReplayCanvasFocusHandoff = { createdAt: Date.now(), profile, state };
+  window.localStorage.setItem(`${REPLAY_FOCUS_HANDOFF_PREFIX}${token}`, JSON.stringify(handoff));
+  return token;
+}
+
+export function readReplayCanvasFocusHandoff(token: string): ReplayCanvasFocusHandoff | null {
+  try {
+    const handoff = JSON.parse(window.localStorage.getItem(`${REPLAY_FOCUS_HANDOFF_PREFIX}${token}`) || "null") as ReplayCanvasFocusHandoff | null;
+    if (!handoff || Date.now() - Number(handoff.createdAt) > REPLAY_FOCUS_HANDOFF_TTL_MS) return null;
+    const state = normalizeWorkspaceState(handoff.state);
+    if (!state || !handoff.profile) return null;
+    return { ...handoff, state };
+  } catch {
+    return null;
+  }
+}
+
+export function replayFocusCanvasUrl(runId: string, handoffToken: string) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("canvas");
+  url.searchParams.delete("container");
+  url.searchParams.set("replay_focus", handoffToken);
+  url.searchParams.set("replay_run", runId);
   url.hash = "canvas-focus";
   return url.toString();
 }
@@ -187,8 +227,24 @@ export function configurationCanvasUrl() {
   const url = new URL(window.location.href);
   url.searchParams.delete("canvas");
   url.searchParams.delete("container");
+  url.searchParams.delete("replay_focus");
+  url.searchParams.delete("replay_run");
   url.hash = "canvas-configuration";
   return url.toString();
+}
+
+function pruneReplayCanvasFocusHandoffs() {
+  const now = Date.now();
+  for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+    const key = window.localStorage.key(index);
+    if (!key?.startsWith(REPLAY_FOCUS_HANDOFF_PREFIX)) continue;
+    try {
+      const value = JSON.parse(window.localStorage.getItem(key) || "null") as Partial<ReplayCanvasFocusHandoff> | null;
+      if (!value?.createdAt || now - Number(value.createdAt) > REPLAY_FOCUS_HANDOFF_TTL_MS) window.localStorage.removeItem(key);
+    } catch {
+      window.localStorage.removeItem(key);
+    }
+  }
 }
 
 function defaultCanvasRegistry(): CanvasRegistry {
