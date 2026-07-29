@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -22,19 +23,9 @@ from research.mlops.clickhouse import (
 )
 from research.news_labeling.gpt_oss_v1.prompt import build_messages
 from research.news_labeling.gpt_oss_v1.schema import TRANSPORT_SCHEMA, validate_label
-from research.text_intelligence.scoped_labeling_v1.news_identity import (
-    NewsIssuerResolver,
-    load_news_issuer_resolver,
-)
-from research.text_intelligence.scoped_labeling_v1.pipeline import (
-    classify_news_document,
-)
 from research.text_intelligence.scoped_labeling_v1.schema import (
     SCOPED_LABELING_VERSION,
     ScopedLabel,
-)
-from research.text_intelligence.semantic_label_authority_v1.schema import (
-    SemanticDocument,
 )
 from services.market_hours import get_market_hours_client
 
@@ -56,6 +47,12 @@ class LiveCandidate(BaseModel):
 
 class LiveCandidateBatch(BaseModel):
     candidates: list[LiveCandidate] = Field(max_length=1000)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedNewsCandidate:
+    candidate: LiveCandidate
+    scoped_labels: tuple[ScopedLabel, ...]
 
 
 class LiveSessionUpdate(BaseModel):
@@ -87,50 +84,36 @@ class LiveNewsRuntime:
         ).rstrip("/")
         self.qmd_url = os.environ.get("NEWS_INTELLIGENCE_QMD_URL", "http://127.0.0.1:8795").rstrip("/")
         self.max_price = float(os.environ.get("NEWS_INTELLIGENCE_MAX_PRICE", "50"))
-        self.allowed_kinds = {
-            value.strip()
-            for value in os.environ.get(
-                "NEWS_INTELLIGENCE_ALLOWED_KINDS", "company,regulatory,analyst,editorial"
-            ).split(",")
-            if value.strip()
-        }
-        self.queue: asyncio.Queue[LiveCandidate | None] = asyncio.Queue(
+        self.queue: asyncio.Queue[PreparedNewsCandidate | None] = asyncio.Queue(
             maxsize=int(os.environ.get("NEWS_INTELLIGENCE_QUEUE_MAX", "4096"))
         )
         self.workers: list[asyncio.Task[None]] = []
-        self.reconcile_task: asyncio.Task[None] | None = None
         self.session_sync_task: asyncio.Task[None] | None = None
         self.pending_ids: set[str] = set()
         self.session = LiveSession()
         self.metrics = {
             "queued": 0, "processed": 0, "filtered": 0, "failed": 0,
-            "reconciled": 0, "session_sync_failures": 0,
+            "session_sync_failures": 0,
         }
         self.client = ClickHouseHttpClient(
             default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=15
         )
         self.database = os.environ.get("NEWS_INTELLIGENCE_DATABASE", "q_live")
         self.table = os.environ.get("NEWS_INTELLIGENCE_LABEL_TABLE", "news_semantic_label_v2")
-        self.issuer_resolver: NewsIssuerResolver | None = None
         self.market_hours = get_market_hours_client("NEWS_INTELLIGENCE")
+        self.loop: asyncio.AbstractEventLoop | None = None
 
     async def start(self) -> None:
+        self.loop = asyncio.get_running_loop()
         await asyncio.to_thread(self._ensure_table)
-        self.issuer_resolver = await asyncio.to_thread(
-            load_news_issuer_resolver, self.client, self.database
-        )
         count = max(1, int(os.environ.get("NEWS_INTELLIGENCE_WORKERS", "4")))
         self.workers = [asyncio.create_task(self._worker(i)) for i in range(count)]
-        self.reconcile_task = asyncio.create_task(self._reconcile_loop())
         self.session_sync_task = asyncio.create_task(self._session_sync_loop())
 
     async def stop(self) -> None:
         if self.session_sync_task:
             self.session_sync_task.cancel()
             await asyncio.gather(self.session_sync_task, return_exceptions=True)
-        if self.reconcile_task:
-            self.reconcile_task.cancel()
-            await asyncio.gather(self.reconcile_task, return_exceptions=True)
         for _ in self.workers:
             await self.queue.put(None)
         await self.queue.join()
@@ -172,32 +155,50 @@ class LiveNewsRuntime:
                 self.metrics["session_sync_failures"] += 1
             await asyncio.sleep(interval)
 
-    def enqueue(self, candidate: LiveCandidate) -> None:
+    def enqueue_prepared(self, item: PreparedNewsCandidate) -> None:
+        candidate = item.candidate
         if candidate.canonical_news_id in self.pending_ids:
             return
         self.pending_ids.add(candidate.canonical_news_id)
         try:
-            self.queue.put_nowait(candidate)
+            self.queue.put_nowait(item)
         except asyncio.QueueFull:
             self.pending_ids.discard(candidate.canonical_news_id)
             raise
         self.metrics["queued"] += 1
 
+    def enqueue_prepared_threadsafe(self, item: PreparedNewsCandidate) -> bool:
+        if self.loop is None:
+            raise RuntimeError("live News runtime has not started")
+        result: concurrent.futures.Future[bool] = concurrent.futures.Future()
+
+        def enqueue_on_loop() -> None:
+            try:
+                self.enqueue_prepared(item)
+            except Exception as exc:  # noqa: BLE001
+                result.set_exception(exc)
+            else:
+                result.set_result(True)
+
+        self.loop.call_soon_threadsafe(enqueue_on_loop)
+        return result.result(timeout=2.0)
+
     async def _worker(self, _index: int) -> None:
         while True:
-            candidate = await self.queue.get()
+            item = await self.queue.get()
             try:
-                if candidate is None:
+                if item is None:
                     return
-                await self._process(candidate)
+                await self._process(item)
             except Exception:
                 self.metrics["failed"] += 1
             finally:
-                if candidate is not None:
-                    self.pending_ids.discard(candidate.canonical_news_id)
+                if item is not None:
+                    self.pending_ids.discard(item.candidate.canonical_news_id)
                 self.queue.task_done()
 
-    async def _process(self, candidate: LiveCandidate) -> None:
+    async def _process(self, item: PreparedNewsCandidate) -> None:
+        candidate = item.candidate
         market_clock = await asyncio.to_thread(self.market_hours.snapshot, datetime.now(UTC))
         if not self.session.active or not market_clock.active_collection_window:
             self.metrics["filtered"] += 1
@@ -205,30 +206,8 @@ class LiveNewsRuntime:
         if not candidate.rendered_text.strip():
             self.metrics["filtered"] += 1
             return
-        document = SemanticDocument(
-            corpus="news",
-            source_id=candidate.canonical_news_id,
-            timestamp=candidate.published_at_utc,
-            title=candidate.title,
-            text=candidate.rendered_text,
-            entity_terms=tuple(candidate.tickers),
-            tickers=tuple(value.upper() for value in candidate.tickers),
-            metadata={
-                "author": candidate.author,
-                "url_domain": candidate.url_domain,
-                "channels": candidate.channels,
-                "provider_tags": candidate.provider_tags,
-                "links": candidate.links,
-                "quality_flags": candidate.quality_flags,
-                "rendered_text_hash": candidate.rendered_text_hash,
-            },
-        )
-        scoped_labels = classify_news_document(
-            document,
-            issuer_resolver=self.issuer_resolver,
-        )
         eligible = [
-            item for item in scoped_labels if item.forecast_trigger_eligible
+            label for label in item.scoped_labels if label.forecast_trigger_eligible
         ]
         if not eligible:
             self.metrics["filtered"] += 1
@@ -381,52 +360,6 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
             # Market AI separately reconciles/retries deep work by idempotency.
             return
 
-    async def _reconcile_loop(self) -> None:
-        interval = max(2.0, float(os.environ.get("NEWS_INTELLIGENCE_RECONCILE_SECONDS", "10")))
-        while True:
-            await asyncio.sleep(interval)
-            if not self.session.active or not self.session.started_at_utc:
-                continue
-            try:
-                candidates = await asyncio.to_thread(self._unlabeled_live_candidates)
-                for candidate in candidates:
-                    try:
-                        self.enqueue(candidate)
-                        self.metrics["reconciled"] += 1
-                    except asyncio.QueueFull:
-                        break
-            except Exception:
-                self.metrics["failed"] += 1
-
-    def _unlabeled_live_candidates(self) -> list[LiveCandidate]:
-        started = _parse_datetime(self.session.started_at_utc)
-        if started is None:
-            return []
-        start_sql = started.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
-        sql = f"""
-        SELECT e.canonical_news_id, toString(e.published_at_utc) AS published_at_utc,
-               e.title, r.rendered_text, r.rendered_text_hash, e.author, e.url_domain,
-               e.tickers, e.channels, e.provider_tags, e.links, r.quality_flags
-        FROM `{self.database}`.`benzinga_news_event_v2` FINAL AS e
-        INNER JOIN `{self.database}`.`benzinga_news_rendered_v2` FINAL AS r
-          ON e.canonical_news_id=r.canonical_news_id
-        LEFT JOIN
-          (SELECT canonical_news_id,rendered_text_hash FROM `{self.database}`.`{self.table}` FINAL
-           WHERE published_at_utc >= toDateTime64('{start_sql}', 6, 'UTC')) AS l
-          ON e.canonical_news_id=l.canonical_news_id
-         AND r.rendered_text_hash=l.rendered_text_hash
-        WHERE e.published_at_utc >= toDateTime64('{start_sql}', 6, 'UTC')
-          AND l.canonical_news_id=''
-        ORDER BY e.published_at_utc
-        LIMIT 500
-        FORMAT JSONEachRow
-        """
-        return [
-            LiveCandidate.model_validate(json.loads(line))
-            for line in self.client.execute(sql).splitlines()
-            if line.strip()
-        ]
-
     def _ensure_table(self) -> None:
         self.client.execute(
             f"""CREATE TABLE IF NOT EXISTS `{self.database}`.`{self.table}` (
@@ -511,13 +444,6 @@ def _post_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str, A
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"{url} HTTP {exc.code}: {exc.read().decode(errors='replace')[:500]}") from exc
-
-
-def _parse_datetime(value: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
 
 
 def _clickhouse_ts(value: datetime) -> str:

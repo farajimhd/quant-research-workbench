@@ -1,28 +1,33 @@
-# News Intelligence Service
+# Text Intelligence Service
 
-Domain service for live news eligibility and semantic labels.
+Shared domain service for deterministic News and SEC text labels, with an
+optional live News model path.
 
-The Python News Gateway owns provider acquisition and canonical V2 persistence.
-After that durable publish, this service accepts one complete rendered
-candidate, requires an explicitly active live-trading session, applies the
-shared `scoped_text_labeling_v4` issuer/event authority, then applies the
-point-in-time QMD price gate independently for every eligible issuer. It calls
-the provider-neutral Model Gateway with the intact article plus
-issuer-specific evidence, validates `gpt_oss_news_semantics_v1`, and writes one
-derived row per issuer unit to `q_live.news_semantic_label_v2`.
+News Gateway and SEC Gateway own acquisition and canonical persistence. After a
+canonical publish, they send only a corpus, source identity, and timestamp to
+this service. Bounded workers reload the canonical rendered authority, apply
+the shared `scoped_text_labeling_v4` issuer/event classifier, and persist
+versioned rows to `q_live.scoped_text_labels_v4` and
+`q_live.scoped_content_relations_v2`.
 
-Transient notification failures are healed from canonical V2 rows during the
-active session. The deeper Market AI request is asynchronous and cannot block
-the fast semantic label.
+`q_live.scoped_text_live_status_v2` binds completion to the exact rendered
+source hash. Reconciliation therefore repairs missed notices and reprocesses
+new News or SEC revisions without repeating current work. Deterministic labels
+run regardless of trading state. Only the optional live News model path
+requires an active Live session and point-in-time QMD price eligibility.
 
 ## Responsibilities
 
-- Route only eligible issuer event units; never poll a news provider.
+- Classify every completed canonical News and SEC document; never poll a source
+  provider.
+- Maintain source-hash idempotency and repair missed gateway notifications.
 - Preserve one canonical publication while separating issuer roles, evidence,
-  concepts, and semantic model results for multi-issuer events.
+  concepts, eligibility, and direction for multi-issuer events.
+- Persist News and SEC relationships through the same versioned authority.
+- Route only eligible News issuer units into optional live model inference.
 - Freeze the point-in-time QMD snapshot used for price eligibility.
 - Persist validated versioned semantic labels with model/cost/latency lineage.
-- Reconcile missed live notifications from canonical V2 tables.
+- Reconcile missed or revised canonical News and SEC text.
 - Serve fast financial sentiment and relevance models from local artifacts.
 - Optionally run entity/event extraction models from local artifacts.
 - Optionally call an OpenAI-compatible local LLM endpoint, usually vLLM, for
@@ -59,12 +64,15 @@ the fast semantic label.
 - `NEWS_INTELLIGENCE_BACKEND_URL`, default `http://127.0.0.1:8000`; this is
   polled to restore the explicit Live-session gate after either service restarts
 - `NEWS_INTELLIGENCE_QMD_URL`, default `http://127.0.0.1:8795`
-- `NEWS_INTELLIGENCE_ALLOWED_KINDS`, default `company,regulatory,analyst,editorial`
 - `NEWS_INTELLIGENCE_MAX_PRICE`, default `50`
 - `NEWS_INTELLIGENCE_WORKERS`, default `4`
 - `NEWS_INTELLIGENCE_QUEUE_MAX`, default `4096`
 - `NEWS_INTELLIGENCE_RECONCILE_SECONDS`, default `10`
 - `NEWS_INTELLIGENCE_LABEL_TABLE`, default `news_semantic_label_v2`
+- `TEXT_INTELLIGENCE_WORKERS`, default `4`, bounded to `16`
+- `TEXT_INTELLIGENCE_QUEUE_MAX`, default `8192`
+- `TEXT_INTELLIGENCE_RECONCILE_SECONDS`, default `30`
+- `TEXT_INTELLIGENCE_RECONCILE_HOURS`, default `72`
 
 ## Run
 
@@ -132,7 +140,14 @@ the OpenAI API or ChatGPT.
 GET /health
 GET /models
 POST /classify
+POST /documents
 ```
 
-The `/classify` response is intentionally provider-neutral. The gateway maps it
-onto persisted ClickHouse columns and websocket summary fields.
+`POST /documents` accepts a bounded batch of lightweight canonical notices:
+
+```json
+{"documents":[{"corpus":"news","source_id":"canonical-id","source_timestamp":"2026-07-28T14:30:00Z"}]}
+```
+
+`POST /classify` remains the provider-neutral interactive model API. It is not
+the persistence authority used by the gateways.

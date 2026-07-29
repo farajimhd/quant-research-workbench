@@ -120,7 +120,7 @@ paper or live accounts.
 | Text embeddings | `services/text_embed_gateway` | Tokenizes and embeds news and SEC text, persists model-ready outputs, and reconciles coverage. |
 | Reference and tradability data | `services/reference_gateway`, `pipelines/reference_data` | Point-in-time issuer/security/listing identity, symbol mapping, tradable universe, borrow, and market-publication context. This service was omitted from the initial app description but is required by live scanner and order safety paths. |
 | Broker access | `services/ibkr_gateway_supervisor` | Supervises IBKR Client Portal Gateway login/session state and supplies account checks used by real-live trading. |
-| News intelligence | `services/news-intelligence` | Experimental/TBD semantic classification service for normalized news. It does not own acquisition or canonical storage. Its eventual name and scope may expand to SEC or other text. |
+| Text intelligence | `services/news-intelligence` | Shared post-persistence `scoped_text_labeling_v4` authority for News and SEC, plus optional gated live News model inference. It does not own acquisition or canonical storage. |
 | Active model research | `research/packed_market_model` | Current causal packed-event model family and trainer. |
 | Shared data/ML infrastructure | `research/mlops` | Environment, ClickHouse, manifests, checkpoints, metrics, packed loaders, and other shared utilities. It is also imported by operational services and pipelines, so it cannot be archived with old models. |
 | Forecast serving | `services/market-ai` | Reserved production boundary for the final causal model. It is intentionally disabled today; code below `src/market_ai` is exploratory. |
@@ -350,9 +350,9 @@ decision.
 - `pipelines/*` remain necessary for historical completeness, repair, and the
   live/historical data contract even though operators interact mainly through
   services and the UI.
-- `services/news-intelligence` is not production-complete, but its proposed text
-  analysis role aligns with the app description. It needs scope/name review,
-  not automatic deletion.
+- `services/news-intelligence` is the shared deterministic News and SEC text
+  authority. Its optional local/remote model routes remain independently gated
+  and do not define canonical classification.
 
 ## Remaining Tasks to Reach the Final Working Version
 
@@ -383,9 +383,10 @@ required before the workbench is a complete end-to-end application:
 6. **Unify the operator workflow.** Reconnect, merge, or deliberately replace
    the disconnected simulation, strategy, backtest, market-data, and research
    pages so operators can move from research to deployment in one workspace.
-7. **Finalize text intelligence.** Decide the scope and final service boundary
-   for news and SEC intelligence, then integrate versioned outputs with the
-   canonical stores, live streams, model inputs, and operator UI.
+7. **Certify text intelligence.** The shared News/SEC V4 authority, live
+   gateway notices, reconciliation, and operator UI are integrated. Complete
+   production coverage and latency acceptance for optional semantic and market
+   model routes before enabling them in unattended trading.
 8. **Pass full-system release validation.** Prove replay/live parity, paper
    execution, service restart and recovery, stale-data behavior, risk controls,
    performance, and operational recovery before enabling unattended or live

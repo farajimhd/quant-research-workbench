@@ -59,6 +59,9 @@ class SecGatewayConfig:
     graceful_shutdown_seconds: float
     run_log_enabled: bool
     run_log_queue_size: int
+    intelligence_enabled: bool = True
+    intelligence_url: str = "http://127.0.0.1:8804"
+    intelligence_timeout_seconds: float = 2.0
 
     @classmethod
     def from_env(cls) -> "SecGatewayConfig":
@@ -113,6 +116,15 @@ class SecGatewayConfig:
             graceful_shutdown_seconds=env_float("SEC_GATEWAY_GRACEFUL_SHUTDOWN_SECONDS", 300.0),
             run_log_enabled=env_bool("SEC_GATEWAY_RUN_LOG_ENABLED", True),
             run_log_queue_size=env_int("SEC_GATEWAY_RUN_LOG_QUEUE_SIZE", 10_000),
+            intelligence_enabled=env_bool(
+                "SEC_TEXT_INTELLIGENCE_DISPATCH_ENABLED", True
+            ),
+            intelligence_url=env_string(
+                "SEC_TEXT_INTELLIGENCE_URL", "http://127.0.0.1:8804"
+            ).rstrip("/"),
+            intelligence_timeout_seconds=env_float(
+                "SEC_TEXT_INTELLIGENCE_DISPATCH_TIMEOUT_SECONDS", 2.0
+            ),
         )
 
     def public_dict(self) -> dict[str, object]:

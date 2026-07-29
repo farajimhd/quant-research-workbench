@@ -95,3 +95,38 @@ periods replay idempotently.
 
 The live V4 classifier, table identities, label semantics, and completion keys
 were not changed. Existing completed periods do not need rebuilding.
+
+## Live gateway and Canvas integration
+
+The post-backfill integration now has one runtime authority. News Gateway and
+SEC Gateway send only a lightweight canonical identity notice after durable
+rendered-text completion. The existing News Intelligence process now hosts a
+shared bounded Text Intelligence queue that reloads canonical News V2 or SEC V3
+text, applies `scoped_text_labeling_v4`, and persists both
+`scoped_text_labels_v4` and `scoped_content_relations_v2`. Deterministic work is
+independent of market hours, live-trading authorization, QMD price gates, and
+model availability.
+
+`scoped_text_live_status_v2` binds completion to the exact News rendered hash
+or ordered SEC rendered-document-set hash. A canonical anti-join reconciles
+missed notices and changed revisions. Eligible News issuer units are forwarded
+only after deterministic persistence; a second durable anti-join against
+`news_semantic_label_v2` repairs queue saturation or process interruption
+without repeating current deterministic rows.
+
+Backend News list and detail APIs now attach product-safe issuer-scoped labels
+and a compact summary. All News exposes semantic direction, event class, and
+concepts. Ticker News separates eligible event candidates from background and
+follow-up context. News Details shows a compact issuer-specific interpretation
+with role, evidence scope, source origin, timing, direction score, canonical
+concepts, exact evidence, and the three forecast/reaction/history eligibility
+flags. Raw database names, paths, and pipeline internals remain outside these
+product payloads and views.
+
+Validation covered 72 targeted Python tests, Python compilation, the frontend
+TypeScript/Vite production build, deterministic light/default and dark/maximum
+scale Canvas captures, and interactive mounting of all three News containers
+with no client console errors. The laptop ClickHouse authority was offline, so
+real data-connected UI rendering and execution of the reconciliation SQL remain
+an explicit operational validation gap. The temporary frontend review server
+was stopped and port 5173 was verified closed.

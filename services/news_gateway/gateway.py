@@ -1104,44 +1104,35 @@ class NewsGateway:
         """
         if not self.config.intelligence_enabled or not items:
             return
-        candidates: list[dict[str, Any]] = []
+        documents: list[dict[str, str]] = []
         for item in items:
             normalized = item.result.normalized_row
-            rendered = item.result.v2_rendered_row
-            links = normalized.get("article_links") or normalized.get("links") or []
-            candidates.append(
+            documents.append(
                 {
-                    "canonical_news_id": item.result.canonical_news_id,
-                    "published_at_utc": str(normalized.get("published_at_utc") or ""),
-                    "title": str(normalized.get("title") or ""),
-                    "rendered_text": str(rendered.get("rendered_text") or ""),
-                    "rendered_text_hash": str(rendered.get("rendered_text_hash") or ""),
-                    "author": str(normalized.get("author") or ""),
-                    "url_domain": str(normalized.get("url_domain") or ""),
-                    "tickers": list(normalized.get("tickers") or []),
-                    "channels": list(normalized.get("channels") or []),
-                    "provider_tags": list(normalized.get("provider_tags") or []),
-                    "links": list(links) if isinstance(links, list) else [],
-                    "quality_flags": list(rendered.get("quality_flags") or []),
+                    "corpus": "news",
+                    "source_id": item.result.canonical_news_id,
+                    "source_timestamp": str(
+                        normalized.get("published_at_utc") or ""
+                    ),
                 }
             )
         try:
             await asyncio.to_thread(
                 _post_json,
-                f"{self.config.intelligence_url}/candidates",
-                {"candidates": candidates},
+                f"{self.config.intelligence_url}/documents",
+                {"documents": documents},
                 self.config.intelligence_timeout_seconds,
             )
             self._log_event(
                 "news_intelligence_dispatched",
                 poll_id=poll_id,
-                candidate_count=len(candidates),
+                candidate_count=len(documents),
             )
         except Exception as exc:  # noqa: BLE001
             self._log_event(
                 "news_intelligence_dispatch_deferred",
                 poll_id=poll_id,
-                candidate_count=len(candidates),
+                candidate_count=len(documents),
                 error=f"{type(exc).__name__}: {exc}",
             )
 

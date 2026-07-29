@@ -55,6 +55,10 @@ from src.backend.market_data_service import (
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.news_classification import classify_news, classify_news_kind, news_classification_sql
+from src.backend.scoped_text_labels import (
+    load_scoped_news_labels,
+    scoped_news_summary,
+)
 from src.backend.sec_canvas_service import (
     sec_document_text_payload,
     sec_filing_detail_payload,
@@ -1345,6 +1349,18 @@ def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
     ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
     source_row = rows[0]
     classification = classify_news(source_row, len(ticker_rows))
+    try:
+        scoped_by_source = load_scoped_news_labels(
+            [news_id],
+            query_rows=clickhouse_json_each_row,
+            quote=sql_string,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="News intelligence is temporarily unavailable",
+        ) from exc
+    scoped_labels = scoped_by_source.get(news_id, [])
     # Product APIs expose only decision-relevant presentation fields. Database,
     # table, storage-path, ingestion-diagnostic, and agent/chat implementation
     # details must never cross into a user-facing response contract.
@@ -1360,6 +1376,8 @@ def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
             "text": source_row.get("text") or "",
             "title": source_row.get("title") or "",
             "url_domain": source_row.get("url_domain") or "",
+            "scoped_labels": scoped_labels,
+            "scoped_summary": scoped_news_summary(scoped_labels),
         },
         "tickers": sorted({str(row.get("ticker") or "").strip().upper() for row in ticker_rows if str(row.get("ticker") or "").strip()}),
     }
@@ -1486,6 +1504,24 @@ def trading_news_rows(
         raise HTTPException(status_code=503, detail="News is temporarily unavailable") from exc
     has_more = len(rows) > safe_limit
     rows = rows[:safe_limit]
+    try:
+        scoped_by_source = load_scoped_news_labels(
+            [str(row.get("canonical_news_id") or "") for row in rows],
+            query_rows=clickhouse_json_each_row,
+            quote=sql_string,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="News intelligence is temporarily unavailable",
+        ) from exc
+    for row in rows:
+        source_id = str(row.get("canonical_news_id") or "")
+        labels = scoped_by_source.get(source_id, [])
+        row["scoped_labels"] = labels
+        row["scoped_summary"] = scoped_news_summary(
+            labels, ticker=safe_ticker
+        )
     return {
         "as_of": cutoff.isoformat().replace("+00:00", "Z"),
         "has_more": has_more,

@@ -348,6 +348,19 @@ Shutdown is graceful: the service stops polling, waits for queued workers to
 finish up to `SEC_GATEWAY_GRACEFUL_SHUTDOWN_SECONDS`, writes final coverage, and
 then exits. If the timeout is exceeded, the event is logged in the run JSONL log.
 
+After a filing, documents, and rendered text complete canonical persistence,
+the worker sends a lightweight accession notice to the shared Text Intelligence
+service. SEC ingestion never waits for classification and is never rolled back
+when that service is unavailable. Text Intelligence reloads the rendered
+filing authority, persists `scoped_text_labeling_v4` labels and relationships,
+and reconciles missed notices or changed rendered-document hashes.
+
+```text
+SEC_TEXT_INTELLIGENCE_DISPATCH_ENABLED=true
+SEC_TEXT_INTELLIGENCE_URL=http://127.0.0.1:8804
+SEC_TEXT_INTELLIGENCE_DISPATCH_TIMEOUT_SECONDS=2
+```
+
 The submissions and companyfacts SEC API responses are cached by CIK. If a
 cached payload does not contain the newly discovered accession, the gateway
 bypasses it once and requests a fresh payload. Companyfacts 404 entries expire

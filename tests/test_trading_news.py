@@ -34,7 +34,7 @@ class TradingNewsTests(unittest.TestCase):
         self.assertEqual(payload["next_before"], "2026-07-10T13:44:00.000000Z")
         self.assertEqual(payload["next_before_id"], "n1")
         self.assertNotIn("source", payload)
-        sql = query_mock.call_args.args[0]
+        sql = query_mock.call_args_list[0].args[0]
         self.assertIn("has(n.tickers, 'AAPL')", sql)
         self.assertIn("benzinga_news_rendered_v2", sql)
         self.assertIn("r.source_revision_key=n.source_revision_key", sql)
@@ -57,7 +57,8 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("'multi'", sql)
         self.assertIn("'company'", sql)
         self.assertIn("LIMIT 2", sql)
-        self.assertEqual(query_mock.call_args.kwargs["timeout_seconds"], 12.0)
+        self.assertEqual(query_mock.call_args_list[0].kwargs["timeout_seconds"], 12.0)
+        self.assertIn("scoped_text_labels_v4", query_mock.call_args_list[1].args[0])
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_cursor_keeps_same_timestamp_rows_ordered(self, query_mock) -> None:
@@ -66,7 +67,7 @@ class TradingNewsTests(unittest.TestCase):
             before="2026-07-10T13:44:00Z",
             before_id="news-002",
         )
-        sql = query_mock.call_args.args[0]
+        sql = query_mock.call_args_list[0].args[0]
         self.assertIn("n.published_at_utc = page_before", sql)
         self.assertIn("n.canonical_news_id < 'news-002'", sql)
 
@@ -140,6 +141,7 @@ class TradingNewsTests(unittest.TestCase):
                 "raw_artifact_path": "C:/private/raw.json",
             }),
             json.dumps({"ticker": "AAPL", "canonical_news_id": "b2185e66008f39d6875a8f4449f82b7f"}),
+            "",
         ]
 
         payload = trading_news_detail("b2185e66008f39d6875a8f4449f82b7f")

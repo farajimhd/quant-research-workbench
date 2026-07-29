@@ -5,6 +5,12 @@ import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 
+from research.mlops.clickhouse import (
+    ClickHouseHttpClient,
+    default_clickhouse_password,
+    default_clickhouse_url,
+    default_clickhouse_user,
+)
 from services.gateway_core.dashboard import build_dashboard_snapshot
 from services.gateway_core.health import build_health_payload
 from services.gateway_core.uvicorn_logging import quiet_uvicorn_log_config, suppress_uvicorn_access_logger
@@ -13,19 +19,37 @@ from .config import IntelligenceConfig
 from .schemas import IntelligenceResponse, NewsArticleForClassification
 from .tiers import IntelligenceEngine
 from .live import LiveCandidate, LiveCandidateBatch, LiveNewsRuntime, LiveSessionUpdate
+from .scoped_live import (
+    ScopedTextRuntime,
+    TextDocumentNotice,
+    TextDocumentNoticeBatch,
+)
 
 config = IntelligenceConfig.from_env()
 engine = IntelligenceEngine(config)
 live_runtime = LiveNewsRuntime()
+scoped_runtime = ScopedTextRuntime(
+    client=ClickHouseHttpClient(
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+        timeout_seconds=30,
+    ),
+    database=live_runtime.database,
+    live_news=live_runtime,
+)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await live_runtime.start()
+    await scoped_runtime.start()
     try:
         yield
     finally:
+        await scoped_runtime.stop()
         await live_runtime.stop()
+        scoped_runtime.client.close()
 
 
 app = FastAPI(title="News Intelligence Service", lifespan=lifespan)
@@ -73,7 +97,13 @@ def update_live_session(update: LiveSessionUpdate) -> dict[str, object]:
 @app.post("/candidate", status_code=202)
 def enqueue_candidate(candidate: LiveCandidate) -> dict[str, object]:
     try:
-        live_runtime.enqueue(candidate)
+        scoped_runtime.enqueue(
+            TextDocumentNotice(
+                corpus="news",
+                source_id=candidate.canonical_news_id,
+                source_timestamp=candidate.published_at_utc,
+            )
+        )
     except asyncio.QueueFull as exc:
         raise HTTPException(status_code=503, detail="news intelligence queue is full") from exc
     return {"status": "queued", "canonical_news_id": candidate.canonical_news_id}
@@ -83,10 +113,26 @@ def enqueue_candidate(candidate: LiveCandidate) -> dict[str, object]:
 def enqueue_candidates(batch: LiveCandidateBatch) -> dict[str, object]:
     try:
         for candidate in batch.candidates:
-            live_runtime.enqueue(candidate)
+            scoped_runtime.enqueue(
+                TextDocumentNotice(
+                    corpus="news",
+                    source_id=candidate.canonical_news_id,
+                    source_timestamp=candidate.published_at_utc,
+                )
+            )
     except asyncio.QueueFull as exc:
         raise HTTPException(status_code=503, detail="news intelligence queue is full") from exc
     return {"status": "queued", "count": len(batch.candidates)}
+
+
+@app.post("/documents", status_code=202)
+def enqueue_documents(batch: TextDocumentNoticeBatch) -> dict[str, object]:
+    try:
+        for document in batch.documents:
+            scoped_runtime.enqueue(document)
+    except asyncio.QueueFull as exc:
+        raise HTTPException(status_code=503, detail="text intelligence queue is full") from exc
+    return {"status": "queued", "count": len(batch.documents)}
 
 
 def _snapshot_metrics() -> dict[str, object]:
@@ -102,6 +148,10 @@ def _snapshot_metrics() -> dict[str, object]:
         if payload.get("error") or payload.get("load_error"):
             failed += 1
     live_metrics = {**live_runtime.metrics, "queue_size": live_runtime.queue.qsize()}
+    deterministic_metrics = {
+        **scoped_runtime.metrics,
+        "deterministic_queue_size": scoped_runtime.queue.qsize(),
+    }
     return {
         "status": "running" if failed == 0 else "degraded",
         "bind": config.bind,
@@ -132,7 +182,9 @@ def _snapshot_metrics() -> dict[str, object]:
         ],
         "live_session": vars(live_runtime.session),
         "live_metrics": live_metrics,
+        "deterministic_metrics": deterministic_metrics,
         **live_metrics,
+        **deterministic_metrics,
     }
 
 

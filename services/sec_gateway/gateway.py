@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
+import urllib.request
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
@@ -365,6 +367,8 @@ class SecGateway:
         )
         try:
             result = await asyncio.to_thread(self._process_item, job.item, set())
+            if result.ingest_status == "complete":
+                await self._dispatch_text_intelligence(job.item)
             self._record_live_outcome(SecLiveOutcome(item=job.item, poll_id=job.poll_id, result=result), worker_index=worker_index)
         except Exception as exc:  # noqa: BLE001
             self.metrics.live_worker_failures += 1
@@ -388,6 +392,43 @@ class SecGateway:
                 self._inflight_accessions.discard(job.item.accession_number)
             self.metrics.live_active_workers = max(0, self.metrics.live_active_workers - 1)
             self.metrics.live_queue_size = self._live_queue.qsize()
+
+    async def _dispatch_text_intelligence(self, item: SecFeedItem) -> None:
+        """Notify deterministic text intelligence after canonical SEC completion."""
+        if not self.config.intelligence_enabled:
+            return
+        payload = {
+            "documents": [
+                {
+                    "corpus": "sec",
+                    "source_id": item.accession_number,
+                    "source_timestamp": (
+                        item.updated_at_utc.isoformat()
+                        if item.updated_at_utc
+                        else ""
+                    ),
+                }
+            ]
+        }
+        try:
+            await asyncio.to_thread(
+                _post_json_notice,
+                f"{self.config.intelligence_url}/documents",
+                payload,
+                self.config.intelligence_timeout_seconds,
+            )
+            self._log(
+                "sec_text_intelligence_dispatched",
+                accession_number=item.accession_number,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Classification is derived state. The shared service reconciles
+            # missed canonical filings without rolling back SEC ingestion.
+            self._log(
+                "sec_text_intelligence_dispatch_deferred",
+                accession_number=item.accession_number,
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     def _record_live_outcome(self, outcome: SecLiveOutcome, *, worker_index: int) -> None:
         result = outcome.result or SecWriteResult(skipped_existing=True)
@@ -1157,3 +1198,16 @@ def recent_row_time(row: dict[str, Any]) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _post_json_notice(
+    url: str, payload: dict[str, Any], timeout_seconds: float
+) -> None:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, separators=(",", ":")).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        response.read()

@@ -1,4 +1,4 @@
-import { Bot, Building2, Clock3, ExternalLink, FileCheck2, Flame, Globe2, Layers3, Lightbulb, Megaphone, Newspaper, RefreshCw, Search, Snowflake, TrendingUp } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Bot, Building2, CircleDot, Clock3, ExternalLink, FileCheck2, Flame, Globe2, History, Layers3, Lightbulb, Megaphone, Minus, Newspaper, RefreshCw, Search, Snowflake, TrendingUp } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 
 import { api, query } from "../../api/client";
@@ -30,6 +30,8 @@ type NewsRow = {
   ticker_link_sample?: string[];
   title: string;
   url_domain?: string;
+  scoped_labels?: ScopedNewsLabel[];
+  scoped_summary?: ScopedNewsSummary | null;
 };
 
 type NewsPayload = {
@@ -53,6 +55,8 @@ type NewsDetailPayload = {
     text: string;
     title: string;
     url_domain: string;
+    scoped_labels?: ScopedNewsLabel[];
+    scoped_summary?: ScopedNewsSummary | null;
   };
   tickers: string[];
 };
@@ -63,6 +67,39 @@ type NewsOrigin = "analyst" | "automated" | "editorial" | "issuer" | "regulatory
 type NewsScope = "market_wide" | "multi_ticker" | "single_ticker";
 type NewsFormat = "ai_generated" | "analyst_action" | "company_announcement" | "earnings_flash" | "editorial_coverage" | "general" | "insights" | "macro_release" | "multi_company_coverage" | "regulatory_filing" | "trading_halt" | "why_moving";
 type NewsClassification = { confidence: number; evidence: string[]; format: NewsFormat; is_company_news: boolean; kind: NewsKindValue; origin: NewsOrigin; scope: NewsScope; topics: string[]; version: string };
+type ScopedNewsLabel = {
+  content_role: string;
+  event_concepts: string[];
+  evidence_scope: string;
+  forecast_trigger_eligible: boolean;
+  issuer_history_context_eligible: boolean;
+  issuer_role: string;
+  labeling_version: string;
+  modality: string;
+  quality_flags: string[];
+  reaction_evaluation_eligible: boolean;
+  semantic_direction: string;
+  semantic_evidence_text: string;
+  semantic_score: number;
+  source_origin: string;
+  ticker: string;
+  time_orientation: string;
+  unit_id: string;
+  unit_role: string;
+};
+type ScopedNewsSummary = {
+  content_role: string;
+  event_concepts: string[];
+  forecast_trigger_eligible: boolean;
+  issuer_count: number;
+  issuer_history_context_eligible: boolean;
+  label_count: number;
+  labeling_version: string;
+  reaction_evaluation_eligible: boolean;
+  semantic_direction: string;
+  semantic_score: number;
+  source_origin: string;
+};
 type NewsTemperature = "cold" | "hot" | "old";
 type AllNewsSettings = { content: string; kind: string; lookbackHours: number; ticker: string };
 
@@ -90,12 +127,12 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
     </form>
     <NewsStatus state={state} />
     <div className="news-table-wrap">
-      <table className="news-table"><thead><tr><th>Time</th><th>Ticker</th><th>Type</th><th>Headline</th><th>Source</th><th>Text</th></tr></thead><tbody>
+      <table className="news-table"><thead><tr><th>Time</th><th>Ticker</th><th>Class</th><th>Headline</th><th>Source</th><th>Text</th></tr></thead><tbody>
         {state.rows.map((row) => <tr key={row.canonical_news_id} tabIndex={0}>
           <td><MarketTime className="news-row-time" dateStyle="short" includeDate value={row.published_at_utc} /></td>
           <td><TickerList presentations={presentations} tickers={row.ticker_link_sample} /></td>
-          <td><NewsKind classification={classificationFromRow(row)} /><NewsTopics kind={classificationFromRow(row).kind} topics={row.news_topics ?? row.classification?.topics} /></td>
-          <td><button className="news-headline-button" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title || "Untitled story"}</strong>{row.text_preview ? <small>{row.text_preview}</small> : null}</button></td>
+          <td><ScopedClass summary={row.scoped_summary} /><ScopedConcepts concepts={row.scoped_summary?.event_concepts} compact /></td>
+          <td><button className="news-headline-button" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><span className="news-headline-meta"><ScopedDirection summary={row.scoped_summary} /><NewsKind classification={classificationFromRow(row)} /></span><strong>{row.title || "Untitled story"}</strong>{row.text_preview ? <small>{row.text_preview}</small> : null}</button></td>
           <td>{row.url_domain || "—"}</td><td><NewsTextState row={row} /></td>
         </tr>)}
       </tbody></table>
@@ -111,14 +148,14 @@ export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settin
   const effectiveAsOf = state.asOf || asOf;
   const asOfMs = Date.parse(effectiveAsOf);
   const orderedRows = [...state.rows].sort(compareNewsRecency);
-  const companyRows = orderedRows.filter(isCompanyNews);
-  const otherRows = orderedRows.filter((row) => !isCompanyNews(row));
+  const eventRows = orderedRows.filter((row) => row.scoped_summary?.forecast_trigger_eligible);
+  const contextRows = orderedRows.filter((row) => !row.scoped_summary?.forecast_trigger_eligible);
   return <section className="ticker-news" aria-label={`${symbol} news`}>
     <header><div><TickerIdentityWithChange asOf={effectiveAsOf} className="ticker-news-symbol" inputAriaLabel="Ticker news symbol" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={effectiveAsOf} /></small></header>
     <NewsStatus state={state} compact />
     <div className="ticker-news-feed">
-      <TickerNewsSection asOf={effectiveAsOf} asOfMs={asOfMs} emptyLabel="No company-specific news in this window." label="Company news" rows={companyRows} showTeaser={settings.showTeaser} />
-      <TickerNewsSection asOf={effectiveAsOf} asOfMs={asOfMs} emptyLabel="No broader coverage in this window." label="Other coverage" rows={otherRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOf={effectiveAsOf} asOfMs={asOfMs} emptyLabel="No eligible issuer events in this window." label="Event candidates" rows={eventRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOf={effectiveAsOf} asOfMs={asOfMs} emptyLabel="No supporting coverage in this window." label="Context & follow-ups" rows={contextRows} showTeaser={settings.showTeaser} />
       {!state.loading && !state.rows.length ? <NewsEmpty label={`No ${symbol} news in the last ${settings.lookbackHours} hours.`} /> : null}
     </div>
   </section>;
@@ -137,7 +174,7 @@ function TickerNewsStory({ asOf, asOfMs, row, showTeaser }: { asOf: string; asOf
   const TemperatureIcon = newsTemperaturePresentation(tone).Icon;
   return <article data-tone={tone}>
     <div aria-label={`${tone} news`} className="ticker-news-marker" title={`${tone} news`}><TemperatureIcon size={14} /></div>
-    <div><div className="ticker-news-meta"><MarketTime dateStyle="short" includeDate={!sameExchangeDate(row.published_at_utc, asOf)} value={row.published_at_utc} /><em data-tone={tone}>{tone}</em><NewsKind classification={classificationFromRow(row)} /><NewsTopics kind={classificationFromRow(row).kind} topics={row.news_topics ?? row.classification?.topics} compact /><span>{row.url_domain}</span></div><button className="ticker-news-open" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title}</strong>{showTeaser && row.text_preview ? <p>{row.text_preview}</p> : null}</button></div>
+    <div><div className="ticker-news-meta"><MarketTime dateStyle="short" includeDate={!sameExchangeDate(row.published_at_utc, asOf)} value={row.published_at_utc} /><em data-tone={tone}>{tone}</em><ScopedDirection summary={row.scoped_summary} /><ScopedClass summary={row.scoped_summary} /><ScopedConcepts concepts={row.scoped_summary?.event_concepts} compact /><span>{row.url_domain}</span></div><button className="ticker-news-open" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title}</strong>{showTeaser && row.text_preview ? <p>{row.text_preview}</p> : null}</button></div>
   </article>;
 }
 
@@ -182,8 +219,11 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
   const tags = Array.from(new Set(classification.topics.concat(row.channels, row.provider_tags))).slice(0, 16);
   const tone = newsTemperature(row.published_at_utc, Date.parse(asOf));
   const kind = isNewsKind(row.news_kind) ? row.news_kind : classification.kind;
+  const scopedLabels = row.scoped_labels ?? [];
+  const scopedSummary = row.scoped_summary ?? null;
   return <article className="news-reader">
-    <header><div className="news-reader-kicker"><NewsTemperatureTag tone={tone} /><MarketTime includeDate value={row.published_at_utc} /><NewsKind classification={{ ...classification, kind }} /><span>{row.url_domain || "News"}</span></div><h1><MarketNumberText text={title} /></h1><div className="news-reader-byline"><span>{row.author || "Unknown author"}</span>{detailTickers.length === 1 ? <TickerIdentityWithChange asOf={asOf} logoUrl={presentations[detailTickers[0]]?.logo_url} ticker={detailTickers[0]} /> : <TickerList presentations={presentations} tickers={detailTickers} />}</div>{tags.length ? <div className="news-reader-tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}<ClassificationEvidence classification={classification} /></header>
+    <header><div className="news-reader-kicker"><NewsTemperatureTag tone={tone} /><MarketTime includeDate value={row.published_at_utc} /><NewsKind classification={{ ...classification, kind }} /><span>{row.url_domain || "News"}</span></div><h1><MarketNumberText text={title} /></h1><div className="news-reader-byline"><span>{row.author || "Unknown author"}</span>{detailTickers.length === 1 ? <TickerIdentityWithChange asOf={asOf} logoUrl={presentations[detailTickers[0]]?.logo_url} ticker={detailTickers[0]} /> : <TickerList presentations={presentations} tickers={detailTickers} />}</div>{scopedSummary ? <div className="news-reader-semantic-summary"><ScopedDirection summary={scopedSummary} /><ScopedClass summary={scopedSummary} /><ScopedConcepts concepts={scopedSummary.event_concepts} /></div> : <div className="news-label-pending">Deterministic classification pending</div>}{tags.length ? <div className="news-reader-tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}</header>
+    {scopedLabels.length ? <section className="news-reader-intelligence" aria-label="Issuer-specific interpretation"><header><strong>Issuer-specific interpretation</strong><span>{scopedLabels.length} {scopedLabels.length === 1 ? "view" : "views"}</span></header>{scopedLabels.map((label) => <ScopedLabelPanel key={`${label.unit_id}-${label.ticker}`} label={label} presentations={presentations} />)}</section> : null}
     {body ? <div className="news-reader-body">{articleParagraphs(body).map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 20)}`}><MarketNumberText text={paragraph} /></p>)}</div> : <NewsEmpty label="This record contains title metadata but no readable article text." />}
     <footer>{row.article_url ? <a href={row.article_url} rel="noreferrer" target="_blank">Open original source <ExternalLink size={12} /></a> : null}</footer>
   </article>;
@@ -250,16 +290,20 @@ function NewsEmpty({ label }: { label: string }) { return <div className="news-e
 function TickerList({ presentations, tickers = [] }: { presentations: Record<string, TickerPresentation>; tickers?: string[] }) { return <span className="news-tickers">{tickers.slice(0, 3).map((ticker) => <b key={ticker}><TickerIdentity logoUrl={presentations[ticker]?.logo_url} ticker={ticker} /></b>)}{tickers.length > 3 ? <b>+{tickers.length - 3}</b> : !tickers.length ? "—" : null}</span>; }
 function NewsTextState({ row }: { row: NewsRow }) { return <span className="news-text-state" data-state={row.is_title_only ? "title" : "full"}>{row.is_title_only ? "Title" : row.has_pdf ? "PDF" : row.has_external_text ? "Full" : "Body"}</span>; }
 function NewsKind({ classification }: { classification: NewsClassification }) { const values = { ai: { Icon: Bot, label: "AI" }, analyst: { Icon: TrendingUp, label: "Analyst" }, company: { Icon: Building2, label: classification.format === "earnings_flash" ? "Company earnings" : "Company" }, editorial: { Icon: Newspaper, label: "Editorial" }, insights: { Icon: Lightbulb, label: "Insights" }, market: { Icon: Globe2, label: classification.format === "trading_halt" ? "Trading halt" : "Market" }, multi: { Icon: Layers3, label: "Multi-company" }, regulatory: { Icon: FileCheck2, label: "Regulatory" }, why_moving: { Icon: Megaphone, label: "Why moving" } }; const value = values[classification.kind]; return <span className="news-kind" data-kind={classification.kind} title={`${Math.round(classification.confidence * 100)}% classification confidence`}><value.Icon size={11} />{value.label}</span>; }
-function NewsTopics({ compact = false, kind, topics = [] }: { compact?: boolean; kind?: NewsKindValue; topics?: string[] }) { const redundant = kind === "analyst" ? "analyst" : kind === "why_moving" ? "why moving" : kind === "ai" ? "AI generated" : ""; const relevant = topics.filter((topic) => topic !== redundant); const visible = relevant.slice(0, compact ? 1 : 2); if (!visible.length) return null; return <span className="news-topic-list">{visible.map((topic) => <span key={topic}>{topic}</span>)}{relevant.length > visible.length ? <span>+{relevant.length - visible.length}</span> : null}</span>; }
-function ClassificationEvidence({ classification }: { classification: NewsClassification }) { return <details className="news-classification-evidence"><summary>Why this label</summary><dl><dt>Origin</dt><dd>{readableLabel(classification.origin)}</dd><dt>Format</dt><dd>{readableLabel(classification.format)}</dd><dt>Scope</dt><dd>{readableLabel(classification.scope)}</dd><dt>Confidence</dt><dd>{Math.round(classification.confidence * 100)}%</dd>{classification.evidence.length ? <><dt>Evidence</dt><dd>{classification.evidence.join(" · ")}</dd></> : null}</dl></details>; }
+function ScopedDirection({ summary }: { summary?: ScopedNewsSummary | null }) { if (!summary) return <span className="news-semantic-direction" data-direction="pending"><CircleDot size={11} />Pending</span>; const direction = normalizeDirection(summary.semantic_direction); const Icon = direction === "positive" ? ArrowUpRight : direction === "negative" ? ArrowDownRight : Minus; return <span className="news-semantic-direction" data-direction={direction} title={`Text direction score ${formatSigned(summary.semantic_score)}`}><Icon size={12} />{direction === "positive" ? "Positive" : direction === "negative" ? "Negative" : "Neutral"} <small>{formatSigned(summary.semantic_score)}</small></span>; }
+function ScopedClass({ summary }: { summary?: ScopedNewsSummary | null }) { if (!summary) return <span className="news-scoped-class" data-state="pending">Unclassified</span>; return <span className="news-scoped-class" data-state={summary.forecast_trigger_eligible ? "event" : "context"} title={summary.forecast_trigger_eligible ? "Eligible primary event evidence" : "Supporting context or follow-up"}>{summary.forecast_trigger_eligible ? <CircleDot size={10} /> : <History size={10} />}{readableLabel(summary.content_role || summary.source_origin || "context")}</span>; }
+function ScopedConcepts({ compact = false, concepts = [] }: { compact?: boolean; concepts?: string[] }) { const readable = concepts.map(shortConcept).filter(Boolean); const visible = readable.slice(0, compact ? 1 : 3); if (!visible.length) return null; return <span className="news-scoped-concepts">{visible.map((concept) => <span key={concept}>{concept}</span>)}{readable.length > visible.length ? <span>+{readable.length - visible.length}</span> : null}</span>; }
+function ScopedLabelPanel({ label, presentations }: { label: ScopedNewsLabel; presentations: Record<string, TickerPresentation> }) { const summary: ScopedNewsSummary = { content_role: label.content_role, event_concepts: label.event_concepts, forecast_trigger_eligible: label.forecast_trigger_eligible, issuer_count: label.ticker ? 1 : 0, issuer_history_context_eligible: label.issuer_history_context_eligible, label_count: 1, labeling_version: label.labeling_version, reaction_evaluation_eligible: label.reaction_evaluation_eligible, semantic_direction: label.semantic_direction, semantic_score: label.semantic_score, source_origin: label.source_origin }; return <article className="news-scoped-label"><header>{label.ticker ? <TickerIdentity logoUrl={presentations[label.ticker]?.logo_url} ticker={label.ticker} /> : <strong>Document</strong>}<ScopedDirection summary={summary} /><ScopedClass summary={summary} /></header><div className="news-scoped-label-facts"><span><b>Issuer role</b>{readableLabel(label.issuer_role || "not specified")}</span><span><b>Evidence</b>{readableLabel(label.evidence_scope || "document")}</span><span><b>Origin</b>{readableLabel(label.source_origin || "unknown")}</span><span><b>Timing</b>{readableLabel(label.time_orientation || "not specified")}</span></div><ScopedConcepts concepts={label.event_concepts} />{label.semantic_evidence_text ? <details><summary>Text evidence</summary><p><MarketNumberText text={label.semantic_evidence_text} /></p></details> : null}<footer><span data-active={label.forecast_trigger_eligible}>Forecast trigger</span><span data-active={label.reaction_evaluation_eligible}>Reaction study</span><span data-active={label.issuer_history_context_eligible}>Issuer history</span></footer></article>; }
 function MarketNumberText({ text }: { text: string }) { const matches = Array.from(text.matchAll(MARKET_NUMBER_PATTERN)); if (!matches.length) return text; const parts: Array<string | ReactElement> = []; let cursor = 0; matches.forEach((match, index) => { const start = match.index; if (start > cursor) parts.push(text.slice(cursor, start)); const value = match[0]; const kind = /%|percent|basis|bps/i.test(value) ? "rate" : "price"; parts.push(<span className="market-number" data-market-number={kind} key={`${start}-${index}`}>{value}</span>); cursor = start + value.length; }); if (cursor < text.length) parts.push(text.slice(cursor)); return <>{parts}</>; }
 function NewsTemperatureTag({ tone }: { tone: NewsTemperature }) { const value = newsTemperaturePresentation(tone); return <span className="news-temperature" data-tone={tone}><value.Icon size={12} /><em>{value.label}</em></span>; }
 function newsTemperature(publishedAt: string, asOfMs: number): NewsTemperature { const publishedMs = Date.parse(publishedAt); const ageMinutes = Number.isFinite(publishedMs) && Number.isFinite(asOfMs) ? Math.max(0, (asOfMs - publishedMs) / 60_000) : Number.POSITIVE_INFINITY; return ageMinutes <= NEWS_HOT_MINUTES ? "hot" : ageMinutes <= NEWS_COLD_MINUTES ? "cold" : "old"; }
 function newsTemperaturePresentation(tone: NewsTemperature) { return tone === "hot" ? { Icon: Flame, label: "Hot" } : tone === "cold" ? { Icon: Snowflake, label: "Cold" } : { Icon: Clock3, label: "Old" }; }
 function isNewsKind(value: unknown): value is NewsKindValue { return ["ai", "analyst", "company", "editorial", "insights", "market", "multi", "regulatory", "why_moving"].includes(String(value)); }
 function classificationFromRow(row: NewsRow): NewsClassification { if (row.classification) return row.classification; const kind = isNewsKind(row.news_kind) ? row.news_kind : "market"; return { confidence: row.classification_confidence ?? 0.65, evidence: row.classification_evidence ?? [], format: row.news_format ?? "general", is_company_news: row.is_company_news ?? (kind === "company" || kind === "regulatory"), kind, origin: row.news_origin ?? "unknown", scope: row.news_scope ?? ((row.ticker_link_sample?.length ?? 0) === 1 ? "single_ticker" : (row.ticker_link_sample?.length ?? 0) > 1 ? "multi_ticker" : "market_wide"), topics: row.news_topics ?? [], version: "news_rules_v1" }; }
-function isCompanyNews(row: NewsRow) { return classificationFromRow(row).is_company_news; }
 function readableLabel(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+function shortConcept(value: string) { const leaf = value.split(".").at(-1) ?? value; return readableLabel(leaf); }
+function normalizeDirection(value: string) { const normalized = value.toLowerCase(); return ["positive", "upside", "bullish"].includes(normalized) ? "positive" : ["negative", "downside", "bearish"].includes(normalized) ? "negative" : "neutral"; }
+function formatSigned(value: number) { return `${value > 0 ? "+" : ""}${Number.isFinite(value) ? value.toFixed(2) : "0.00"}`; }
 const MARKET_NUMBER_PATTERN = /(?:[+\-−]\s*)?(?:[$€£¥]\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|[KMBT]))?|(?:USD|CAD|EUR|GBP|JPY|CNY|HKD|AUD)\s*\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|[KMBT]))?|\d[\d,]*(?:\.\d+)?\s*(?:USD|CAD|EUR|GBP|JPY|CNY|HKD|AUD)|\d[\d,]*(?:\.\d+)?\s*(?:%|percent(?:age points?)?|basis points?|bps))/gi;
 function articleParagraphs(value: string) { const explicit = value.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean); if (explicit.length > 1) return explicit; const sentences = value.split(/(?<=[.!?])\s+(?=["“‘']?[A-Z0-9])/).map((item) => item.trim()).filter(Boolean); const paragraphs: string[] = []; for (let index = 0; index < sentences.length; index += 4) paragraphs.push(sentences.slice(index, index + 4).join(" ")); return paragraphs.length ? paragraphs : [value]; }
 function stringList(value: unknown): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : []; }
