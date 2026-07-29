@@ -37,7 +37,13 @@ from pipelines.sec.edgar.sec_pipeline.xbrl_context import SecXbrlContextSync
 from pipelines.sec.edgar.sec_bulk_sources import DEFAULT_BULK_SOURCES
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.run_logger import AsyncRunLogger
-from services.sec_gateway.config import SecGatewayConfig, WORKSTATION_SHARE_CODE_ROOT_WIN, xbrl_context_sync_config
+from services.sec_gateway.config import (
+    SecGatewayConfig,
+    WORKSTATION_RUNTIME_ROOT_WIN,
+    WORKSTATION_SHARE_CODE_ROOT_WIN,
+    WORKSTATION_SHARE_RUNTIME_ROOT_WIN,
+    xbrl_context_sync_config,
+)
 from services.sec_gateway.preflight import PreflightError, PreflightReport, run_preflight
 from services.gateway_policy import backfill_auto_run_allowed, maintenance_window_message
 from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMarketHoursClient
@@ -531,9 +537,9 @@ class SecGateway:
     def _write_historical_fill_script(self, gaps: list[SecGap]) -> None:
         start = min(gap.start_utc.date() for gap in gaps)
         end = (datetime.now(UTC).date() + timedelta(days=1))
-        script_root = workstation_script_write_root(self.config)
-        sync_summary = sync_historical_gap_fill_dependencies(self.config, script_root)
-        root = script_root / "generated" / "sec_gateway_manual_gap_fill" / self._run_id
+        code_root = workstation_code_write_root(self.config)
+        sync_summary = sync_historical_gap_fill_dependencies(self.config, code_root)
+        root = workstation_runtime_write_root(self.config) / "sec_gateway" / "manual_gap_fill" / self._run_id
         data_root = workstation_script_data_root(self.config)
         prepared_root = data_root / "prepared"
         artifact_root = data_root / "sec_core"
@@ -1143,7 +1149,7 @@ def live_pending_source_reasons(rows: Any, *, expected_facts: int) -> list[str]:
     return reasons
 
 
-def workstation_script_write_root(config: SecGatewayConfig) -> Path:
+def workstation_code_write_root(config: SecGatewayConfig) -> Path:
     if config.is_workstation:
         return config.pipeline.workstation_code_root_win
     explicit = os.environ.get("SEC_GATEWAY_WORKSTATION_SHARE_CODE_ROOT_WIN", "").strip()
@@ -1152,14 +1158,23 @@ def workstation_script_write_root(config: SecGatewayConfig) -> Path:
     return WORKSTATION_SHARE_CODE_ROOT_WIN
 
 
+def workstation_runtime_write_root(config: SecGatewayConfig) -> Path:
+    if config.is_workstation:
+        return WORKSTATION_RUNTIME_ROOT_WIN
+    explicit = os.environ.get("SEC_GATEWAY_WORKSTATION_SHARE_RUNTIME_ROOT_WIN", "").strip()
+    if explicit:
+        return Path(explicit)
+    return WORKSTATION_SHARE_RUNTIME_ROOT_WIN
+
+
 def workstation_script_run_path(script_path: Path, config: SecGatewayConfig) -> Path:
     if config.is_workstation:
         return script_path
     try:
-        relative = script_path.relative_to(workstation_script_write_root(config))
+        relative = script_path.relative_to(workstation_runtime_write_root(config))
     except ValueError:
         return script_path
-    return config.pipeline.workstation_code_root_win / relative
+    return WORKSTATION_RUNTIME_ROOT_WIN / relative
 
 
 def sync_historical_gap_fill_dependencies(config: SecGatewayConfig, target_code_root: Path) -> dict[str, Any]:

@@ -175,14 +175,14 @@ When the gateway is started on the workstation and historical gaps are found,
 it writes the exact historical-fill PowerShell script under:
 
 ```text
-D:/TradingML/codes/quant_research_workbench_pipelines/generated/sec_gateway_manual_gap_fill/
+D:/TradingML/runtimes/sec_gateway/manual_gap_fill/
 ```
 
 When the gateway is started from another machine, it writes the same script
 through the workstation share:
 
 ```text
-\\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\generated\sec_gateway_manual_gap_fill\
+\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\sec_gateway\manual_gap_fill\
 ```
 
 The terminal still reports the workstation-local `D:/TradingML/...` path, so

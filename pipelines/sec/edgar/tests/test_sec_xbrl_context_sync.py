@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from datetime import UTC, date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import SecWriteResult
@@ -21,6 +22,7 @@ from pipelines.market_sip.events import clickhouse_build_sec_context as historic
 from research.mlops.packed_market.context import DEFAULTS, PackedContextConfig
 from services.gateway_core.dashboard import configured_tables
 from services.gateway_core.rich_renderer import metric_label
+from services.sec_gateway import gateway as sec_gateway_module
 from services.sec_gateway.gateway import SecGateway
 
 
@@ -367,6 +369,26 @@ class SecXbrlContextSyncTests(unittest.TestCase):
         self.assertEqual(result.ingest_status, "complete")
         self.assertEqual(result.xbrl_context_status, "failed")
         self.assertIn("mapping conflict", result.xbrl_context_error)
+
+    def test_gateway_writes_gap_scripts_to_workstation_runtime_not_code_root(self) -> None:
+        config = SimpleNamespace(
+            is_workstation=False,
+            pipeline=SimpleNamespace(
+                workstation_code_root_win=Path("D:/TradingML/codes/quant_research_workbench_pipelines"),
+            ),
+        )
+        share_root = sec_gateway_module.workstation_runtime_write_root(config)
+        script = share_root / "sec_gateway" / "manual_gap_fill" / "run-1" / "run.ps1"
+
+        self.assertEqual(
+            share_root,
+            Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes"),
+        )
+        self.assertEqual(
+            sec_gateway_module.workstation_script_run_path(script, config),
+            Path("D:/TradingML/runtimes/sec_gateway/manual_gap_fill/run-1/run.ps1"),
+        )
+        self.assertNotIn("codes", str(share_root).lower())
 
     def test_packed_model_defaults_to_v3_xbrl_context(self) -> None:
         self.assertEqual(PackedContextConfig().sec_xbrl_context_table, "sec_xbrl_context_v3")
