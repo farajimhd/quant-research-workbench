@@ -15,7 +15,10 @@ from src.backend.canvas_preview_service import (
 class CanvasScannerPayloadTest(unittest.TestCase):
     def test_reference_fields_merge_and_publish_coverage(self) -> None:
         as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
-        snapshot = ([{"symbol": "AAPL", "last": 200.0, "change_pct": 1.0, "change_5m_pct": 0.5}], {"row_count": 1})
+        snapshot = (
+            [{"symbol": "AAPL", "last": 200.0, "change_pct": 1.0, "change_5m_pct": 0.5}],
+            {"row_count": 1, "snapshot_at_utc": "2026-07-17T13:44:00+00:00", "status": "refreshing"},
+        )
         projection = {
             "AAPL": {
                 "company_name": "APPLE INC",
@@ -62,6 +65,7 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         self.assertEqual(payload["meta"]["field_coverage"]["exchange"], 0.0)
         self.assertEqual(payload["meta"]["field_coverage"]["xbrl_quality_score"], 100.0)
         self.assertEqual(payload["errors"], {})
+        self.assertEqual(payload["as_of"], "2026-07-17T13:44:00+00:00")
 
     def test_company_news_and_sec_labels_are_enriched_separately(self) -> None:
         as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)

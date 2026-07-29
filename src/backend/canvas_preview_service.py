@@ -132,8 +132,14 @@ def scanner_snapshot_payload(
     technical_windows: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Return the causal cross-sectional scanner independently of other Canvas sources."""
-    cutoff = as_of.astimezone(UTC)
     rows, meta = historical_scanner_snapshot(as_of, lookback_minutes=lookback_minutes)
+    effective_as_of = datetime.fromisoformat(
+        str(meta.get("snapshot_at_utc") or as_of.isoformat()).replace("Z", "+00:00")
+    )
+    if effective_as_of.tzinfo is None:
+        effective_as_of = effective_as_of.replace(tzinfo=UTC)
+    effective_as_of = effective_as_of.astimezone(UTC)
+    cutoff = effective_as_of
     errors: dict[str, str] = {}
     news: list[dict[str, Any]] = []
     sec: list[dict[str, Any]] = []
@@ -145,7 +151,7 @@ def scanner_snapshot_payload(
     }
     if technical_windows:
         technical_projection, technical_meta = historical_scanner_technical_projection(
-            as_of,
+            effective_as_of,
             calculation_windows=technical_windows,
         )
         for row in rows:
@@ -155,16 +161,16 @@ def scanner_snapshot_payload(
         futures = {
             "fundamentals": executor.submit(
                 historical_scanner_fundamental_projection,
-                as_of,
+                effective_as_of,
                 prices_by_ticker=prices_by_ticker,
             ),
             "news": executor.submit(_query_scanner_news_intelligence, cutoff),
             "qmd": executor.submit(
                 historical_scanner_qmd_projection_or_schedule,
-                as_of,
+                effective_as_of,
                 source_revision=str(meta.get("source_revision") or ""),
             ),
-            "reference": executor.submit(historical_scanner_reference_projection, as_of),
+            "reference": executor.submit(historical_scanner_reference_projection, effective_as_of),
             "sec": executor.submit(_query_scanner_sec_intelligence, cutoff),
         }
         for name, future in futures.items():
@@ -188,7 +194,7 @@ def scanner_snapshot_payload(
                     sec = future.result()
             except Exception as exc:
                 errors[name] = str(exc)
-    _merge_scanner_intelligence(rows, news, sec, as_of)
+    _merge_scanner_intelligence(rows, news, sec, effective_as_of)
     rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
     for rank, row in enumerate(rows, start=1):
         row["rank"] = rank
@@ -223,7 +229,7 @@ def scanner_snapshot_payload(
         },
     }
     return {
-        "as_of": as_of.isoformat(),
+        "as_of": effective_as_of.isoformat(),
         "errors": errors,
         "meta": meta,
         "rows": rows,

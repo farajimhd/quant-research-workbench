@@ -1327,9 +1327,6 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
   const [registry, setRegistry] = useState<CanvasRegistry>(() => replayRun?.canvas_profile ?? readCanvasRegistry());
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => replayRun ? replayPreviewContext(replayRun) : readPreviewContext());
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
-  const [scannerSnapshot, setScannerSnapshot] = useState<CanvasScannerSnapshot | null>(null);
-  const [scannerLoading, setScannerLoading] = useState(false);
-  const [scannerError, setScannerError] = useState("");
   const [contextReady, setContextReady] = useState(Boolean(replayRun));
   const [contextError, setContextError] = useState("");
   const [workspaceState, setWorkspaceState] = useState<CanvasWorkspaceState | null>(initialCanvasState);
@@ -1368,6 +1365,11 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
   const chartCutoffMs = useMemo(() => dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(), [previewContext]);
   const scannerCutoffMs = replayRun ? Math.floor(chartCutoffMs / 15_000) * 15_000 : chartCutoffMs;
+  const { error: scannerError, loading: scannerLoading, snapshot: scannerSnapshot } = useCanvasScannerSnapshot({
+    cutoffMs: scannerCutoffMs,
+    enabled: Boolean(scannerContainerKey) && contextReady,
+    technicalWindows: scannerTechnicalWindows,
+  });
   const previewClocks = useMemo(() => previewClockReadings(previewContext), [previewContext]);
   const clockIcons = [Clock3, MapPin];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
@@ -1483,51 +1485,6 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [activeSymbol, contextError, contextReady, previewContainerKey, previewContext.previewTime, previewContext.sessionDate, replayRun?.run_id]);
-
-  useEffect(() => {
-    if (!scannerContainerKey) {
-      setScannerSnapshot(null);
-      setScannerLoading(false);
-      setScannerError("");
-      return;
-    }
-    if (!contextReady) {
-      setScannerSnapshot(null);
-      setScannerLoading(true);
-      setScannerError("");
-      return;
-    }
-    const controller = new AbortController();
-    const asOf = new Date(scannerCutoffMs).toISOString();
-    let retryTimer: number | null = null;
-    setScannerSnapshot(null);
-    setScannerLoading(true);
-    setScannerError("");
-    const load = () => {
-      api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({ as_of: asOf, lookback_minutes: 15, technical_windows: scannerTechnicalWindows })}`, {
-        signal: controller.signal,
-        timeoutMs: 90000,
-      }).then((payload) => {
-        if (controller.signal.aborted) return;
-        setScannerSnapshot(payload);
-        setScannerError("");
-        if (payload.meta?.qmd_derived_status === "building" || payload.meta?.qmd_derived_status === "error") {
-          retryTimer = window.setTimeout(load, payload.meta.qmd_derived_status === "building" ? 5_000 : 60_000);
-        }
-      })
-        .catch((exc) => {
-          if (controller.signal.aborted) return;
-          setScannerSnapshot(null);
-          setScannerError(exc instanceof Error ? exc.message : String(exc));
-        })
-        .finally(() => { if (!controller.signal.aborted) setScannerLoading(false); });
-    };
-    load();
-    return () => {
-      controller.abort();
-      if (retryTimer !== null) window.clearTimeout(retryTimer);
-    };
-  }, [contextReady, scannerContainerKey, scannerCutoffMs, scannerTechnicalWindows]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (definition.id === "chart") {
@@ -1975,19 +1932,19 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
       : definition.id === "xbrl"
         ? <XbrlAnalysisContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.xbrl} symbol={linkContext.symbol} />
       : definition.id === "scanner"
-        ? scannerLoading && !scannerSnapshot
+        ? (scannerLoading || scannerSnapshot?.meta.status === "building") && !scannerSnapshot?.rows.length
           ? <div className="canvas-preview-loading">Building the complete historical scanner snapshot…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">Historical scanner unavailable: {scannerError}</div>
-            : <MarketScannerContainer asOf={new Date(chartCutoffMs).toISOString()} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} onTickerSelect={onTickerChartOpen} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
+            : <MarketScannerContainer asOf={scannerSnapshot?.as_of ?? new Date(chartCutoffMs).toISOString()} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} onTickerSelect={onTickerChartOpen} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
       : definition.id === "signal_stream"
-        ? scannerLoading && !scannerSnapshot
+        ? (scannerLoading || scannerSnapshot?.meta.status === "building") && !scannerSnapshot?.rows.length
           ? <div className="canvas-preview-loading">Loading the historical signal cross-section…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">Historical signals unavailable: {scannerError}</div>
             : <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.signal_rows ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
       : definition.id === "watchlist"
-        ? scannerLoading && !scannerSnapshot
+        ? (scannerLoading || scannerSnapshot?.meta.status === "building") && !scannerSnapshot?.rows.length
           ? <div className="canvas-preview-loading">Loading the historical watchlist snapshot…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">Historical watchlist unavailable: {scannerError}</div>
@@ -4024,6 +3981,101 @@ function cloneDefaultSettings() { return normalizeSettings(DEFAULT_SETTINGS); }
 function instanceSettings(registry: CanvasRegistry, instanceId: string) {
   const stored = registry.instanceSettings[instanceId] as Partial<ContainerSettings> | undefined;
   return stored ? normalizeSettings(stored) : instanceId === "chart" ? readSettings() : cloneDefaultSettings();
+}
+function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cutoffMs: number; enabled: boolean; technicalWindows: string }) {
+  const [snapshot, setSnapshot] = useState<CanvasScannerSnapshot | null>(null);
+  const [loading, setLoading] = useState(enabled);
+  const [error, setError] = useState("");
+  const targetRef = useRef({ asOf: "", enabled: false, key: "", technicalWindows: "" });
+  const mountedRef = useRef(true);
+  const inFlightRef = useRef(false);
+  const loadedKeyRef = useRef("");
+  const retryTimerRef = useRef<number | null>(null);
+
+  const pump = useCallback(() => {
+    if (!mountedRef.current || inFlightRef.current || !targetRef.current.enabled) return;
+    inFlightRef.current = true;
+    void (async () => {
+      try {
+        while (mountedRef.current) {
+          const target = targetRef.current;
+          if (!target.enabled || target.key === loadedKeyRef.current) break;
+          setLoading(true);
+          setError("");
+          try {
+            const payload = await api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({
+              as_of: target.asOf,
+              lookback_minutes: 15,
+              technical_windows: target.technicalWindows,
+            })}`, { timeoutMs: 90_000 });
+            if (!mountedRef.current) return;
+            if (!targetRef.current.enabled) return;
+            setSnapshot(payload);
+            setError("");
+            loadedKeyRef.current = target.key;
+            const refreshStatus = payload.meta?.status === "building" || payload.meta?.status === "error"
+              ? payload.meta.status
+              : payload.meta?.refresh_status === "building" || payload.meta?.refresh_status === "error"
+                ? payload.meta.refresh_status
+                : payload.meta?.qmd_derived_status;
+            if (
+              targetRef.current.key === target.key
+              && (refreshStatus === "building" || refreshStatus === "error")
+            ) {
+              const retryDelay = refreshStatus === "building" ? 5_000 : 60_000;
+              if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
+              retryTimerRef.current = window.setTimeout(() => {
+                retryTimerRef.current = null;
+                loadedKeyRef.current = "";
+                pump();
+              }, retryDelay);
+            }
+          } catch (reason) {
+            if (!mountedRef.current) return;
+            loadedKeyRef.current = target.key;
+            setError(reason instanceof Error ? reason.message : String(reason));
+            break;
+          }
+          if (targetRef.current.key === target.key) break;
+        }
+      } finally {
+        inFlightRef.current = false;
+        if (!mountedRef.current) return;
+        setLoading(false);
+        if (targetRef.current.enabled && targetRef.current.key !== loadedKeyRef.current) {
+          window.queueMicrotask(pump);
+        }
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const asOf = new Date(cutoffMs).toISOString();
+    const key = `${asOf}:${technicalWindows}`;
+    targetRef.current = { asOf, enabled, key, technicalWindows };
+    if (retryTimerRef.current !== null) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    if (!enabled) {
+      loadedKeyRef.current = "";
+      setSnapshot(null);
+      setLoading(false);
+      setError("");
+      return;
+    }
+    pump();
+  }, [cutoffMs, enabled, pump, technicalWindows]);
+
+  return { error, loading, snapshot };
 }
 function readPreviewContext(): CanvasPreviewContext { try { const parsed = JSON.parse(window.localStorage.getItem(CANVAS_PREVIEW_CONTEXT_STORAGE_KEY) || "null") as CanvasPreviewContext | null; return parsed?.sessionDate && parsed?.previewTime ? parsed : { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } catch { return { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } }
 function replayPreviewContext(run: CanvasReplayRun): CanvasPreviewContext {

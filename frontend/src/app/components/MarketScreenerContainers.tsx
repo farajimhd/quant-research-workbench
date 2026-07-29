@@ -15,8 +15,10 @@ export type ScannerSnapshotMeta = {
   qmd_derived_status?: "building" | "error" | "ready";
   qmd_indicator_row_count?: number;
   qmd_signal_event_count?: number;
+  refresh_status?: "building" | "error" | "ready";
   row_count?: number;
   snapshot_at_utc?: string;
+  status?: "building" | "error" | "ready" | "refreshing";
 };
 export type ScannerTimeframe = "100ms" | "1s" | "5s" | "10s" | "30s" | "1m" | "5m" | "15m" | "30m" | "1h" | "1d";
 export type TechnicalMetric = "change_pct" | "dollar_volume" | "high" | "low" | "quote_count" | "range_pct" | "relative_volume" | "trade_count" | "volume" | "vwap" | "vwap_distance_pct";

@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from src.backend.historical_scanner_service import (
+    _latest_cached_rows,
     _qmd_snapshot_complete,
     historical_scanner_fundamental_projection,
     historical_scanner_qmd_projection,
@@ -28,6 +29,29 @@ class FakeClient:
 
 
 class HistoricalScannerServiceTest(unittest.TestCase):
+    def test_latest_cached_snapshot_uses_a_non_conflicting_aggregate_alias(self) -> None:
+        class LatestClient:
+            def execute(self, sql: str, **_kwargs) -> str:
+                if "maxOrNull(snapshot_at_utc)" in sql:
+                    self.assert_query(sql)
+                    return '{"latest_snapshot_at_utc":"2026-07-17 13:44:00.000"}\n'
+                return ""
+
+            @staticmethod
+            def assert_query(sql: str) -> None:
+                if "AS latest_snapshot_at_utc" not in sql or "AS snapshot_at_utc" in sql:
+                    raise AssertionError(sql)
+
+        rows, snapshot_at = _latest_cached_rows(
+            LatestClient(),
+            datetime(2026, 7, 17, 13, 45, tzinfo=UTC),
+            15,
+            "revision",
+        )
+
+        self.assertEqual(rows, [])
+        self.assertEqual(snapshot_at, datetime(2026, 7, 17, 13, 44, tzinfo=UTC))
+
     def test_qmd_completion_rejects_empty_and_count_mismatched_artifacts(self) -> None:
         class CompletionClient:
             def __init__(self, indicator_count: int, stored_count: int) -> None:
@@ -144,18 +168,62 @@ class HistoricalScannerServiceTest(unittest.TestCase):
             )
         )
 
-    def test_full_universe_snapshot_is_materialized_once_and_revision_keyed(self) -> None:
+    def test_full_universe_snapshot_returns_cached_rows_while_exact_clock_builds(self) -> None:
         FakeClient.calls = []
-        with patch("src.backend.historical_scanner_service.ClickHouseHttpClient", FakeClient):
+        fallback_at = datetime(2026, 7, 17, 13, 44, tzinfo=UTC)
+        fallback_rows = [
+            {
+                "symbol": "AAPL",
+                "ticker": "AAPL",
+                "last": 200,
+                "change_pct": 1.5,
+                "change_5m_pct": 0.4,
+                "volume": 1000,
+                "trade_count": 10,
+                "quote_count": 20,
+            }
+        ]
+        with (
+            patch("src.backend.historical_scanner_service.ClickHouseHttpClient", FakeClient),
+            patch(
+                "src.backend.historical_scanner_service._latest_cached_rows",
+                return_value=(fallback_rows, fallback_at),
+            ),
+            patch(
+                "src.backend.historical_scanner_service._schedule_scanner_materialization",
+                return_value="building",
+            ) as schedule,
+        ):
             rows, meta = historical_scanner_snapshot(datetime(2026, 7, 17, 13, 45, tzinfo=UTC))
         self.assertEqual(rows[0]["ticker"], "AAPL")
         self.assertTrue(meta["complete_universe"])
-        self.assertTrue(meta["materialized"])
+        self.assertFalse(meta["materialized"])
         self.assertEqual(meta["source_revision"], "7:1200:2026-07-17 14:00:00")
-        insert = next(sql for sql in FakeClient.calls if "INSERT INTO" in sql)
-        self.assertIn("FROM market_sip_compact.events_2026", insert)
-        self.assertIn("GROUP BY ticker", insert)
-        self.assertNotIn("ticker IN", insert)
+        self.assertEqual(meta["snapshot_at_utc"], fallback_at.isoformat())
+        self.assertEqual(meta["status"], "refreshing")
+        self.assertEqual(meta["refresh_status"], "building")
+        schedule.assert_called_once()
+
+    def test_full_universe_snapshot_reports_building_without_a_cached_baseline(self) -> None:
+        with (
+            patch("src.backend.historical_scanner_service.ClickHouseHttpClient", FakeClient),
+            patch(
+                "src.backend.historical_scanner_service._latest_cached_rows",
+                return_value=([], None),
+            ),
+            patch(
+                "src.backend.historical_scanner_service._schedule_scanner_materialization",
+                return_value="building",
+            ),
+        ):
+            rows, meta = historical_scanner_snapshot(
+                datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
+            )
+
+        self.assertEqual(rows, [])
+        self.assertFalse(meta["complete_universe"])
+        self.assertEqual(meta["status"], "building")
+        self.assertEqual(meta["row_count"], 0)
 
     def test_reference_projection_is_one_causal_tradable_universe_query(self) -> None:
         class ReferenceClient:

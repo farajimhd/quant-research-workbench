@@ -1,5 +1,5 @@
 import { Activity, BookOpen, ChevronRight, CircleHelp, Radio, ShieldAlert, WifiOff } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import { api, query } from "../../api/client";
 import { CompactTapeQuoteCharts, QuoteChartGallery, TapeChartGallery } from "./MarketMicrostructureChartGallery";
@@ -482,8 +482,89 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
   const [marketState, setMarketState] = useState<MarketState | null>(null);
   const [connected, setConnected] = useState<ConnectionState>("connecting");
   const [error, setError] = useState("");
+  const historicalTargetRef = useRef({ end: "", key: "", start: "", ticker: "" });
+  const historicalLoadedKeyRef = useRef("");
+  const historicalInFlightRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  const pumpHistorical = useCallback(() => {
+    if (!mountedRef.current || historicalInFlightRef.current || !historicalTargetRef.current.key) return;
+    historicalInFlightRef.current = true;
+    void (async () => {
+      try {
+        while (mountedRef.current) {
+          const target = historicalTargetRef.current;
+          if (!target.key || target.key === historicalLoadedKeyRef.current) break;
+          setConnected("connecting");
+          setError("");
+          const [eventsResult, stateResult] = await Promise.allSettled([
+            api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(target.ticker)}${query({
+              end: target.end,
+              row_limit: MARKET_EVENT_SOURCE_LIMIT,
+              start: target.start,
+            })}`, { timeoutMs: 20_000 }),
+            api<MarketState>(`/api/trading/canvas-market-state/${encodeURIComponent(target.ticker)}${query({
+              end: target.end,
+              start: target.start,
+            })}`, { timeoutMs: 120_000 }),
+          ]);
+          if (!mountedRef.current) return;
+          if (!historicalTargetRef.current.key || historicalTargetRef.current.ticker !== target.ticker) {
+            continue;
+          }
+          if (eventsResult.status === "fulfilled") {
+            setEvents(
+              eventsResult.value.events
+                .filter((event) => event.ticker === target.ticker)
+                .sort(compareEvents)
+                .slice(-MARKET_EVENT_SOURCE_LIMIT),
+            );
+            setReferences(eventsResult.value.references ?? EMPTY_REFERENCES);
+            setError("");
+            setConnected("point-in-time");
+          } else {
+            setError(HISTORICAL_EVENTS_UNAVAILABLE);
+          }
+          if (stateResult.status === "fulfilled") setMarketState(stateResult.value);
+          historicalLoadedKeyRef.current = target.key;
+          if (historicalTargetRef.current.key === target.key) break;
+        }
+      } finally {
+        historicalInFlightRef.current = false;
+        if (!mountedRef.current) return;
+        if (historicalTargetRef.current.key && historicalTargetRef.current.key !== historicalLoadedKeyRef.current) {
+          window.queueMicrotask(pumpHistorical);
+        }
+      }
+    })();
+  }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!start || !end) {
+      historicalTargetRef.current = { end: "", key: "", start: "", ticker: "" };
+      historicalLoadedKeyRef.current = "";
+      return;
+    }
+    const ticker = symbol.trim().toUpperCase();
+    const key = `${ticker}:${start}:${end}`;
+    const tickerChanged = historicalTargetRef.current.ticker !== ticker;
+    historicalTargetRef.current = { end, key, start, ticker };
+    if (tickerChanged) {
+      historicalLoadedKeyRef.current = "";
+      setEvents([]);
+      setReferences(EMPTY_REFERENCES);
+      setMarketState(null);
+    }
+    pumpHistorical();
+  }, [end, pumpHistorical, start, symbol]);
+
+  useEffect(() => {
+    if (start && end) return;
     let active = true;
     let socket: WebSocket | null = null;
     let retryTimer: number | undefined;
@@ -500,16 +581,13 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
       return [...rows.values()].sort(compareEvents).slice(-MARKET_EVENT_SOURCE_LIMIT);
     });
 
-    const historical = Boolean(start && end);
-    const loadMarketState = () => api<MarketState>(`/api/trading/canvas-market-state/${encodeURIComponent(ticker)}${query({ end, start })}`, { timeoutMs: historical ? 120000 : 10000 })
+    const loadMarketState = () => api<MarketState>(`/api/trading/canvas-market-state/${encodeURIComponent(ticker)}`, { timeoutMs: 10000 })
       .then((payload) => { if (active) setMarketState(payload); })
       .catch(() => { if (active) setMarketState(null); });
     void loadMarketState();
-    api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ end, row_limit: MARKET_EVENT_SOURCE_LIMIT, start })}`, { timeoutMs: historical ? 20000 : 10000 })
-      .then((payload) => { if (active) { merge(payload.events); setReferences(payload.references ?? EMPTY_REFERENCES); if (historical) setConnected("point-in-time"); } })
-      .catch(() => { if (active) setError(historical ? HISTORICAL_EVENTS_UNAVAILABLE : MARKET_EVENTS_UNAVAILABLE); });
-
-    if (historical) return () => { active = false; };
+    api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ row_limit: MARKET_EVENT_SOURCE_LIMIT })}`, { timeoutMs: 10000 })
+      .then((payload) => { if (active) { merge(payload.events); setReferences(payload.references ?? EMPTY_REFERENCES); } })
+      .catch(() => { if (active) setError(MARKET_EVENTS_UNAVAILABLE); });
     const marketStateTimer = window.setInterval(loadMarketState, 2_000);
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";

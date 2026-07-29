@@ -158,6 +158,8 @@ _DERIVED_FUNDAMENTAL_KEYS = {
 
 _QMD_MATERIALIZATION_LOCK = Lock()
 _QMD_MATERIALIZATIONS: dict[str, dict[str, Any]] = {}
+_SCANNER_MATERIALIZATION_LOCK = Lock()
+_SCANNER_MATERIALIZATIONS: dict[str, dict[str, Any]] = {}
 
 
 def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -175,10 +177,18 @@ def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) 
     source_revision = _source_revision(client, source_database, snapshot_at)
     _ensure_snapshot_table(client)
     rows = _cached_rows(client, snapshot_at, lookback_minutes, source_revision)
-    materialized = False
+    effective_snapshot_at = snapshot_at
+    status = "ready"
     if not rows:
-        _materialize_snapshot(
+        rows, fallback_snapshot_at = _latest_cached_rows(
             client,
+            snapshot_at,
+            lookback_minutes,
+            source_revision,
+        )
+        if fallback_snapshot_at is not None:
+            effective_snapshot_at = fallback_snapshot_at
+        status = _schedule_scanner_materialization(
             source_database=source_database,
             table_prefix=table_prefix,
             snapshot_at=snapshot_at,
@@ -186,17 +196,18 @@ def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) 
             lookback_minutes=lookback_minutes,
             source_revision=source_revision,
         )
-        rows = _cached_rows(client, snapshot_at, lookback_minutes, source_revision)
-        materialized = True
     return rows, {
-        "complete_universe": True,
+        "complete_universe": bool(rows),
         "lookback_minutes": lookback_minutes,
-        "materialized": materialized,
+        "materialized": status == "ready",
+        "requested_snapshot_at_utc": snapshot_at.isoformat(),
         "row_count": len(rows),
         "schema_version": SCANNER_SCHEMA_VERSION,
-        "snapshot_at_utc": snapshot_at.isoformat(),
+        "snapshot_at_utc": effective_snapshot_at.isoformat(),
         "source_revision": source_revision,
-        "window_start_utc": window_start.isoformat(),
+        "refresh_status": status,
+        "status": status if effective_snapshot_at == snapshot_at else "refreshing",
+        "window_start_utc": (effective_snapshot_at - timedelta(minutes=lookback_minutes)).isoformat(),
     }
 
 
@@ -1223,6 +1234,117 @@ def _cached_rows(client: ClickHouseHttpClient, snapshot_at: datetime, lookback_m
         )
     )
     return [{**row, "ticker": str(row.get("symbol") or "")} for row in rows]
+
+
+def _latest_cached_rows(
+    client: ClickHouseHttpClient,
+    snapshot_at: datetime,
+    lookback_minutes: int,
+    source_revision: str,
+) -> tuple[list[dict[str, Any]], datetime | None]:
+    candidates = _json_rows(
+        client.execute(
+            f"""
+            SELECT toString(maxOrNull(snapshot_at_utc)) AS latest_snapshot_at_utc
+            FROM {SCANNER_TABLE} FINAL
+            WHERE snapshot_at_utc < parseDateTime64BestEffort({sql_string(_clock(snapshot_at))})
+              AND toDate(snapshot_at_utc, 'UTC') = toDate(parseDateTime64BestEffort({sql_string(_clock(snapshot_at))}), 'UTC')
+              AND lookback_minutes = {lookback_minutes}
+              AND schema_version = {sql_string(SCANNER_SCHEMA_VERSION)}
+              AND source_revision = {sql_string(source_revision)}
+            FORMAT JSONEachRow
+            """
+        )
+    )
+    raw = str((candidates[0] if candidates else {}).get("latest_snapshot_at_utc") or "").strip()
+    if not raw:
+        return [], None
+    fallback_snapshot_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if fallback_snapshot_at.tzinfo is None:
+        fallback_snapshot_at = fallback_snapshot_at.replace(tzinfo=UTC)
+    fallback_snapshot_at = fallback_snapshot_at.astimezone(UTC)
+    return (
+        _cached_rows(client, fallback_snapshot_at, lookback_minutes, source_revision),
+        fallback_snapshot_at,
+    )
+
+
+def _schedule_scanner_materialization(
+    *,
+    source_database: str,
+    table_prefix: str,
+    snapshot_at: datetime,
+    window_start: datetime,
+    lookback_minutes: int,
+    source_revision: str,
+) -> str:
+    key = f"{_clock(snapshot_at)}|{lookback_minutes}|{source_revision}|{SCANNER_SCHEMA_VERSION}"
+    now = monotonic()
+    with _SCANNER_MATERIALIZATION_LOCK:
+        state = _SCANNER_MATERIALIZATIONS.get(key)
+        retryable = state is None or (
+            state.get("status") == "error"
+            and now - float(state.get("finished_monotonic") or 0) >= 60
+        )
+        if retryable:
+            state = {"error": "", "started_monotonic": now, "status": "building"}
+            _SCANNER_MATERIALIZATIONS[key] = state
+            Thread(
+                target=_run_scanner_materialization,
+                kwargs={
+                    "key": key,
+                    "lookback_minutes": lookback_minutes,
+                    "snapshot_at": snapshot_at,
+                    "source_database": source_database,
+                    "source_revision": source_revision,
+                    "table_prefix": table_prefix,
+                    "window_start": window_start,
+                },
+                daemon=True,
+                name=f"canvas-scanner-{snapshot_at:%Y%m%d-%H%M}",
+            ).start()
+        return str(state.get("status") or "building")
+
+
+def _run_scanner_materialization(
+    *,
+    key: str,
+    source_database: str,
+    table_prefix: str,
+    snapshot_at: datetime,
+    window_start: datetime,
+    lookback_minutes: int,
+    source_revision: str,
+) -> None:
+    try:
+        client = ClickHouseHttpClient(
+            default_clickhouse_url(),
+            default_clickhouse_user(),
+            default_clickhouse_password(),
+        )
+        _materialize_snapshot(
+            client,
+            source_database=source_database,
+            table_prefix=table_prefix,
+            snapshot_at=snapshot_at,
+            window_start=window_start,
+            lookback_minutes=lookback_minutes,
+            source_revision=source_revision,
+        )
+    except Exception as exc:
+        with _SCANNER_MATERIALIZATION_LOCK:
+            _SCANNER_MATERIALIZATIONS[key] = {
+                "error": str(exc),
+                "finished_monotonic": monotonic(),
+                "status": "error",
+            }
+        return
+    with _SCANNER_MATERIALIZATION_LOCK:
+        _SCANNER_MATERIALIZATIONS[key] = {
+            "error": "",
+            "finished_monotonic": monotonic(),
+            "status": "ready",
+        }
 
 
 def _materialize_snapshot(
