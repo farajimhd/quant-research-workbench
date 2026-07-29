@@ -44,7 +44,7 @@ export function App() {
   }
 
   return (
-    <Layout compactContent={page === "canvas-configuration"} page={page} onPageChange={setPage} topbarCenter={topbarCenter} topbarStatus={page === "real-live-trading" ? <MarketStatusBadge value={liveStatus} /> : null}>
+    <Layout compactContent={page === "canvas-configuration" || page === "replay-trading"} page={page} onPageChange={setPage} topbarCenter={topbarCenter} topbarStatus={page === "real-live-trading" ? <MarketStatusBadge value={liveStatus} /> : null}>
       <div aria-hidden={page !== "real-live-trading"} className={page === "real-live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onMarketStatusChange={page === "real-live-trading" ? setLiveStatus : undefined} onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
       </div>

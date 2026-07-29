@@ -22,6 +22,7 @@ import {
   MAIN_CANVAS_ID,
   readCanvasRegistry,
   readCanvasWorkspaceState,
+  snapshotCanvasWorkspaceState,
   type CanvasRegistry,
 } from "../app/canvasWorkspace";
 import {
@@ -77,6 +78,7 @@ export function ReplayTradingPage() {
       .filter((ticker, index, values) => ticker && values.indexOf(ticker) === index),
     [canvasSnapshot],
   );
+  const replayReady = Boolean(canvasSnapshot.ready && preflight?.ready);
 
   useEffect(() => {
     if (run) return;
@@ -158,7 +160,7 @@ export function ReplayTradingPage() {
   }, [run?.run_id]);
 
   async function createRun() {
-    if (!preflight?.ready) return;
+    if (!replayReady) return;
     setCreating(true);
     setError("");
     try {
@@ -241,6 +243,16 @@ export function ReplayTradingPage() {
               {checking ? <span className="replay-checking"><Gauge size={15} /> Checking</span> : null}
             </header>
             <div className="replay-check-list">
+              <ReplayCheckRow check={{
+                evidence: canvasSnapshot.ready ? canvasSnapshot.revision : "Configure at least one container on the Main Canvas before approval.",
+                id: "canvas-layout",
+                label: "Canvas layout",
+                required: true,
+                status: canvasSnapshot.ready ? "ready" : "blocked",
+                summary: canvasSnapshot.ready
+                  ? `${canvasSnapshot.containerCount} configured container(s) will open inside the Replay viewport.`
+                  : "The current Main Canvas and saved default are both empty.",
+              }} />
               {preflight?.checks.map((check) => <ReplayCheckRow check={check} key={check.id} />)}
               {!preflight && checking ? <div className="replay-check-skeleton"><Gauge size={19} /><span><strong>Resolving dependencies</strong><small>QMD History, canonical coverage, runtime storage, symbols, and assignments.</small></span></div> : null}
             </div>
@@ -258,8 +270,8 @@ export function ReplayTradingPage() {
         </main>
 
         <aside className="replay-approval-panel">
-          <section className="replay-approval-card" data-ready={preflight?.ready ? "true" : "false"}>
-            <header><Play size={22} /><div><span>Ready state</span><strong>{preflight?.ready ? "Approval required" : checking ? "Checking dependencies" : "Blocked"}</strong></div></header>
+          <section className="replay-approval-card" data-ready={replayReady ? "true" : "false"}>
+            <header><Play size={22} /><div><span>Ready state</span><strong>{replayReady ? "Approval required" : checking ? "Checking dependencies" : "Blocked"}</strong></div></header>
             <div className="replay-approval-clock"><Clock3 size={18} /><span><small>Replay begins</small><strong>{sessionDate} · {startTime} ET</strong></span></div>
             <div className="replay-approval-stat"><Database size={16} /><span><strong>{formatInteger(preflight?.coverage.event_count)}</strong><small>canonical events in session</small></span></div>
             <div className="replay-approval-stat"><WalletCards size={16} /><span><strong>{Object.keys(preflight?.account_mapping ?? {}).length || 1}</strong><small>simulated account boundary</small></span></div>
@@ -268,7 +280,7 @@ export function ReplayTradingPage() {
               <span>Active assignments</span>
               {preflight.assignments.slice(0, 6).map((assignment) => <div key={assignment.assignment_id}><strong>{assignment.ticker}</strong><small>{assignment.account_id} · {assignment.status.replaceAll("_", " ")}</small></div>)}
             </div> : <div className="replay-market-only-note"><CircleStop size={16} /><span><strong>Market-only until assigned</strong><small>You can arm a configured strategy from Canvas after the run opens.</small></span></div>}
-            <button className="button primary replay-approve-button" disabled={checking || creating || !preflight?.ready} onClick={createRun} type="button"><Play size={17} /> {creating ? "Creating durable run…" : "Approve and open Canvas"}</button>
+            <button className="button primary replay-approve-button" disabled={checking || creating || !replayReady} onClick={createRun} type="button"><Play size={17} /> {creating ? "Creating durable run…" : "Approve and open Canvas"}</button>
             <small className="replay-approval-disclosure">Approval snapshots this Canvas revision and creates a journaled simulated run. No IBKR session or live order route is used.</small>
           </section>
         </aside>
@@ -335,17 +347,22 @@ function ReplayCheckRow({ check }: { check: ReplayCheck }) {
   </article>;
 }
 
-function readReplayCanvasProfile(): { label: string; profile: CanvasRegistry; revision: string } {
+function readReplayCanvasProfile(): { containerCount: number; label: string; profile: CanvasRegistry; ready: boolean; revision: string } {
   const registry = readCanvasRegistry();
-  const selectedState = registry.defaultState ?? readCanvasWorkspaceState(MAIN_CANVAS_ID);
+  const currentState = readCanvasWorkspaceState(MAIN_CANVAS_ID);
+  const selectedState = [currentState, registry.defaultState].find((state) => Boolean(state?.openIds.length));
+  const replayState = selectedState ? snapshotCanvasWorkspaceState(selectedState) : undefined;
   const profile: CanvasRegistry = {
     ...registry,
-    defaultState: selectedState ?? undefined,
+    defaultState: replayState,
   };
   const serialized = stableStringify(profile);
+  const containerCount = replayState?.openIds.length ?? 0;
   return {
-    label: selectedState ? `${selectedState.openIds.length} configured containers` : "Canvas defaults",
+    containerCount,
+    label: containerCount ? `${containerCount} configured containers` : "No configured containers",
     profile,
+    ready: containerCount > 0,
     revision: hashString(serialized),
   };
 }

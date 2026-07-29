@@ -158,6 +158,22 @@ export function writeCanvasWorkspaceState(canvasId: string, state: CanvasWorkspa
   window.localStorage.setItem(canvasWorkspaceStorageKey(canvasId), JSON.stringify(state));
 }
 
+export function snapshotCanvasWorkspaceState(state: CanvasWorkspaceState): CanvasWorkspaceState {
+  return {
+    ...state,
+    groups: Object.fromEntries(Object.entries(state.groups).map(([id, group]) => [id, {
+      ...group,
+      fullscreen: false,
+      minimized: false,
+    }])),
+    layouts: Object.fromEntries(Object.entries(state.layouts).map(([id, layout]) => [id, {
+      ...layout,
+      fullscreen: false,
+      minimized: false,
+    }])),
+  };
+}
+
 export function focusCanvasUrl(canvasId: string, containerId?: string) {
   const url = new URL(window.location.href);
   url.searchParams.set("canvas", canvasId);

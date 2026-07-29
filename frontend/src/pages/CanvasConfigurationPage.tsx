@@ -21,6 +21,7 @@ import {
   readCanvasRegistry,
   readCanvasWorkspaceState,
   removeCanvasRecord,
+  snapshotCanvasWorkspaceState,
   writeCanvasRegistry,
   writeCanvasWorkspaceState,
   type CanvasAssignedLinkGroupId,
@@ -1703,11 +1704,7 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
 
   function saveDefaultLayout() {
     if (!workspaceState) return;
-    const defaultState = {
-      ...workspaceState,
-      groups: Object.fromEntries(Object.entries(workspaceState.groups).map(([id, group]) => [id, { ...group, fullscreen: false, minimized: false }])),
-      layouts: Object.fromEntries(Object.entries(workspaceState.layouts).map(([id, layout]) => [id, { ...layout, fullscreen: false, minimized: false }])),
-    };
+    const defaultState = snapshotCanvasWorkspaceState(workspaceState);
     updateRegistry((current) => ({ ...current, defaultState }));
     setDefaultSaved(true);
   }
