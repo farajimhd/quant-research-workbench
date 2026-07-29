@@ -108,6 +108,10 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
 - `GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d`
 - `GET /snapshot/chart-macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d|1mo` (bounded chart history; monthly rows aggregate durable daily macro families)
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
+- `GET /snapshot/events?start=...&end=...&tickers=AAPL,MSFT&limit=...`
+  returns decoded market events with an explicit continuation cursor. Replay
+  uses this bounded pull contract so pausing does not leave a push stream
+  saturated or require buffering an unbounded remainder of the session.
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
 - `GET /snapshot/chart-bars/{ticker}?start=...&end=...&timeframe=100ms|1s|5s|10s|30s|1m|5m|1h&limit=...`
   (bounded chronological chart bars and indicators, canonical

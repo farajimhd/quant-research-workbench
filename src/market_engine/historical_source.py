@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import urllib.parse
+import urllib.request
 from datetime import datetime
 from typing import Any
-
-import websockets
 
 from src.market_engine.events import MarketEvent, QuoteEvent, TradeEvent
 from src.market_engine.sources import EventBatch, EventCursor
@@ -47,25 +47,49 @@ class QmdHistoricalEventSource:
 
     async def stream(self, cursor: EventCursor | None = None):
         if cursor and cursor.token:
-            raise ValueError("The Rust gateway owns historical cursor pagination; reconnect using the run checkpoint window")
-        query = urllib.parse.urlencode(
-            {
-                "start": self.start.isoformat(),
-                "end": self.end.isoformat(),
-                "tickers": ",".join(self.tickers),
-                "batch_size": self.batch_size,
-            }
-        )
-        events: list[MarketEvent] = []
-        async with websockets.connect(f"{_websocket_base(self.base_url)}/stream/events?{query}", max_size=16 * 1024 * 1024) as socket:
-            async for message in socket:
-                event = event_from_qmd_payload(json.loads(message))
-                events.append(event)
-                if len(events) >= self.batch_size:
-                    yield _batch(events)
-                    events = []
-        if events:
-            yield _batch(events)
+            raise ValueError("Reconnect historical events using a source-owned page boundary")
+        page_cursor: dict[str, Any] | None = None
+        while True:
+            payload = await asyncio.to_thread(self._read_page, page_cursor)
+            events = [
+                event_from_qmd_payload(dict(item))
+                for item in payload.get("events") or []
+            ]
+            if events:
+                yield _batch(events)
+            if payload.get("complete") or not events:
+                return
+            next_cursor = payload.get("next_cursor")
+            if not isinstance(next_cursor, dict):
+                raise RuntimeError("QMD historical event page omitted its continuation cursor")
+            page_cursor = next_cursor
+
+    def _read_page(self, cursor: dict[str, Any] | None) -> dict[str, Any]:
+        parameters: dict[str, Any] = {
+            "start": self.start.isoformat(),
+            "end": self.end.isoformat(),
+            "tickers": ",".join(self.tickers),
+            "limit": self.batch_size,
+        }
+        if cursor:
+            parameters.update(
+                {
+                    "cursor_sip_timestamp_us": int(cursor["sip_timestamp_us"]),
+                    "cursor_ticker": str(cursor["ticker"]),
+                    "cursor_ordinal": int(cursor["ordinal"]),
+                }
+            )
+        query = urllib.parse.urlencode(parameters)
+        with urllib.request.urlopen(
+            f"{self.base_url}/snapshot/events?{query}",
+            timeout=60,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if payload.get("error"):
+            raise RuntimeError(
+                f"QMD historical event page failed ({payload.get('source', 'unknown')}): {payload['error']}"
+            )
+        return payload
 
 
 def event_from_qmd_payload(payload: dict[str, Any]) -> MarketEvent:
@@ -115,12 +139,6 @@ def _batch(events: list[MarketEvent]) -> EventBatch:
         cursor=EventCursor(source="qmd_history_gateway", token=f"{last.ts.isoformat()}|{last.sequence}|{last.kind}", ts=last.ts),
         events=events,
     )
-
-
-def _websocket_base(base_url: str) -> str:
-    parsed = urllib.parse.urlsplit(base_url)
-    scheme = "wss" if parsed.scheme == "https" else "ws"
-    return urllib.parse.urlunsplit((scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
 
 
 def _validate_health(payload: dict[str, object]) -> dict[str, object]:

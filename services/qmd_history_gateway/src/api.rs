@@ -17,6 +17,7 @@ use chrono::{DateTime, Utc};
 use futures_util::SinkExt;
 use qmd_core::bars::is_supported_timeframe;
 use qmd_core::compact_event::LiveCompactEvent;
+use qmd_core::event::MarketEvent;
 use qmd_core::market_products::{
     parse_resolution_us, ConditionBarSnapshot, FamilyBarSnapshot, MacroBarSnapshot,
 };
@@ -94,6 +95,17 @@ struct StreamQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct EventPageQuery {
+    cursor_ordinal: Option<u64>,
+    cursor_sip_timestamp_us: Option<u64>,
+    cursor_ticker: Option<String>,
+    end: String,
+    limit: Option<usize>,
+    start: String,
+    tickers: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct DerivedStreamQuery {
     after_sequence: Option<u64>,
     as_of: Option<String>,
@@ -116,6 +128,13 @@ struct HealthPayload {
     status: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct MarketEventPage {
+    complete: bool,
+    events: Vec<MarketEvent>,
+    next_cursor: Option<HistoricalCursor>,
+}
+
 type ApiError = (StatusCode, Json<Value>);
 
 pub fn app(state: AppState) -> Router {
@@ -125,6 +144,7 @@ pub fn app(state: AppState) -> Router {
         .route("/coverage", get(coverage))
         .route("/coverage/latest", get(latest_coverage))
         .route("/snapshot/cache", get(cache_snapshot))
+        .route("/snapshot/events", get(event_page_snapshot))
         .route(
             "/snapshot/compact-events/{ticker}",
             get(compact_event_snapshot),
@@ -241,6 +261,54 @@ async fn compact_event_snapshot(
     }
     .map_err(service_error)?;
     Ok(Json(events))
+}
+
+async fn event_page_snapshot(
+    Query(query): Query<EventPageQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<MarketEventPage>, ApiError> {
+    let tickers = query
+        .tickers
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    let window = window(&query.start, &query.end, tickers)?;
+    let limit = query
+        .limit
+        .unwrap_or(state.config.batch_size)
+        .clamp(1, 100_000);
+    let cursor = match (
+        query.cursor_sip_timestamp_us,
+        query.cursor_ticker,
+        query.cursor_ordinal,
+    ) {
+        (None, None, None) => None,
+        (Some(sip_timestamp_us), Some(ticker), Some(ordinal)) => Some(HistoricalCursor {
+            ordinal,
+            sip_timestamp_us,
+            ticker,
+        }),
+        _ => return Err(bad_request(
+            "cursor_sip_timestamp_us, cursor_ticker, and cursor_ordinal must be supplied together",
+        )),
+    };
+    let (events, next_cursor) = state
+        .source
+        .fetch_batch(&window, cursor.as_ref(), limit)
+        .await
+        .map_err(service_error)?;
+    let complete = events.len() < limit || next_cursor.is_none();
+    Ok(Json(MarketEventPage {
+        complete,
+        events: events
+            .iter()
+            .map(|event| state.source.market_event(event))
+            .collect(),
+        next_cursor,
+    }))
 }
 
 async fn bar_snapshot(

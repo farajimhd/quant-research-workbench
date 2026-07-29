@@ -56,6 +56,8 @@ type ReplayPreflight = {
 };
 
 const REPLAY_SPEEDS = [1, 5, 30, 120, 0] as const;
+const REPLAY_UI_UPDATE_MS = 2_000;
+const TERMINAL_REPLAY_STATUSES = new Set(["completed", "failed", "stopped"]);
 
 export function ReplayTradingPage() {
   const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
@@ -123,16 +125,36 @@ export function ReplayTradingPage() {
     if (!run) return;
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(`${protocol}//${window.location.host}/api/trading/replay/runs/${encodeURIComponent(run.run_id)}/events`);
+    let pending: CanvasReplayRun | null = null;
+    let updateTimer: number | null = null;
+    const flush = () => {
+      updateTimer = null;
+      if (!pending) return;
+      const update = pending;
+      pending = null;
+      setRun((current) => latestReplayRun(current, update));
+    };
     socket.onmessage = (event) => {
       try {
         const update = JSON.parse(String(event.data)) as CanvasReplayRun;
-        setRun((current) => latestReplayRun(current, update));
+        if (TERMINAL_REPLAY_STATUSES.has(update.status)) {
+          if (updateTimer !== null) window.clearTimeout(updateTimer);
+          updateTimer = null;
+          pending = null;
+          setRun((current) => latestReplayRun(current, update));
+          return;
+        }
+        pending = latestReplayRun(pending, update);
+        if (updateTimer === null) updateTimer = window.setTimeout(flush, REPLAY_UI_UPDATE_MS);
       } catch {
         setError("Replay returned an invalid runtime update.");
       }
     };
     socket.onerror = () => setError("The Replay runtime event stream disconnected.");
-    return () => socket.close();
+    return () => {
+      if (updateTimer !== null) window.clearTimeout(updateTimer);
+      socket.close();
+    };
   }, [run?.run_id]);
 
   async function createRun() {
@@ -258,7 +280,7 @@ export function ReplayTradingPage() {
 function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRunChange: (run: CanvasReplayRun) => void; run: CanvasReplayRun }) {
   const [busy, setBusy] = useState("");
   const [controlError, setControlError] = useState("");
-  const terminal = ["completed", "failed", "stopped"].includes(run.status);
+  const terminal = TERMINAL_REPLAY_STATUSES.has(run.status);
   const active = ["running", "fast_forwarding"].includes(run.status);
 
   async function command(name: string, payload: Record<string, unknown> = {}) {
@@ -296,9 +318,14 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
       void command("fast_forward", { target_time: target });
     }} title="Process every event through the next five minutes without wall-clock pacing" type="button"><FastForward size={13} /></button>
     <label className="replay-speed-control"><Gauge aria-hidden="true" size={13} /><select aria-label="Replay speed" disabled={terminal || Boolean(busy)} onChange={(event) => command("set_speed", { speed: Number(event.target.value) })} value={run.speed}>{REPLAY_SPEEDS.map((speed) => <option key={speed} value={speed}>{speed === 0 ? "Max" : `${speed}×`}</option>)}</select></label>
-    <div className="replay-run-state" data-status={run.status}><i aria-hidden="true" /><span><strong>{run.status.replaceAll("_", " ")}</strong><small>{Math.round(run.progress * 100)}%</small></span></div>
+    <div className="replay-run-state" data-status={run.status}><i aria-hidden="true" /><span><strong>{run.status.replaceAll("_", " ")}</strong><small>{run.status === "warming" ? `${compactEventCount(run.warmup_events)} events` : `${Math.round(run.progress * 100)}%`}</small></span></div>
     {controlError ? <span className="replay-control-error" title={controlError}>Control failed</span> : null}
   </div>;
+}
+
+function compactEventCount(value?: number) {
+  if (!value) return "Preparing";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1, notation: "compact" }).format(value);
 }
 
 function ReplayCheckRow({ check }: { check: ReplayCheck }) {

@@ -12,6 +12,7 @@ from src.backend.replay_run_service import (
     ReplayRunDefinition,
     replay_preflight,
 )
+from src.market_engine.historical_source import QmdHistoricalEventSource
 from src.trading_runtime.domain import InstrumentContract
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.strategy_engine import (
@@ -120,6 +121,52 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(ValueError, "cannot exceed 20:00"):
             await controller.command("fast_forward", target_time=time(20, 0, 1))
+
+
+class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_paged_pull_releases_transport_between_replay_batches(self) -> None:
+        source = QmdHistoricalEventSource(
+            "http://127.0.0.1:8801",
+            start=datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK),
+            end=datetime(2026, 7, 28, 9, 46, tzinfo=NEW_YORK),
+            tickers=["AAPL"],
+            batch_size=1,
+        )
+        event = {
+            "ask_exchange": 11,
+            "ask_price": 100.1,
+            "ask_size": 100,
+            "bid_exchange": 12,
+            "bid_price": 100.0,
+            "bid_size": 100,
+            "conditions": [],
+            "indicators": [],
+            "ingest_ts": "2026-07-28T13:45:00+00:00",
+            "kind": "quote",
+            "raw": {},
+            "sequence": 1,
+            "tape": 3,
+            "ticker": "AAPL",
+            "ts": "2026-07-28T13:45:00+00:00",
+        }
+        cursor = {"ordinal": 1, "sip_timestamp_us": 1_774_708_700_000_000, "ticker": "AAPL"}
+        with patch.object(
+            source,
+            "_read_page",
+            side_effect=[
+                {"complete": False, "events": [event], "next_cursor": cursor},
+                {
+                    "complete": True,
+                    "events": [{**event, "sequence": 2, "ts": "2026-07-28T13:45:01+00:00"}],
+                    "next_cursor": None,
+                },
+            ],
+        ) as read_page:
+            batches = [batch async for batch in source.stream()]
+
+        self.assertEqual([batch.events[0].sequence for batch in batches], [1, 2])
+        self.assertEqual(read_page.call_args_list[0].args, (None,))
+        self.assertEqual(read_page.call_args_list[1].args, (cursor,))
 
 
 class ReplayPreflightTests(unittest.TestCase):

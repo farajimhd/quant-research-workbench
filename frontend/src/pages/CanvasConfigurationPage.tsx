@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, ArrowUp, ArrowUpDown, BadgeDollarSign, BarChart3, BookOpen, BriefcaseBusiness, Check, ChevronDown, ChevronRight, CircleDollarSign, Clock3, ExternalLink, Filter, Gauge, HelpCircle, Landmark, Link2, MapPin, PanelRightOpen, Plus, RefreshCcw, Search, Save, Settings2, ShieldCheck, Target, Trash2, Unlink, WalletCards, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, ArrowUpDown, BadgeDollarSign, BarChart3, BookOpen, BriefcaseBusiness, Check, ChevronDown, ChevronRight, CircleDollarSign, Clock3, ExternalLink, Filter, Gauge, HelpCircle, Landmark, Link2, MapPin, PanelRightOpen, Plus, RefreshCcw, Search, Save, Settings2, ShieldCheck, Target, Trash2, TriangleAlert, Unlink, WalletCards, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 import type { UTCTimestamp } from "lightweight-charts";
 
@@ -247,6 +247,8 @@ export type CanvasReplayRun = {
   speed: number;
   status: string;
   updated_at: string;
+  warmup_events?: number;
+  processed_events?: number;
 };
 
 type CanvasScannerSnapshot = {
@@ -1339,6 +1341,7 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
   const [settingsContainerId, setSettingsContainerId] = useState<string | null>(null);
   const [chartOpenRequest, setChartOpenRequest] = useState<{ kind: "chart"; requestId: number; targetInstanceId: string } | null>(null);
   const [chartOpenError, setChartOpenError] = useState("");
+  const managementEnabled = manager || Boolean(replayRun);
 
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
@@ -1768,17 +1771,18 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
           </div>
         </div>
         <MarketStatusBadge value={marketStatus} />
-        {contextError ? <span className="canvas-context-warning" title={contextError}>Saved clock</span> : null}
+        {contextError && !replayRun ? <span className="canvas-context-warning" title={contextError}>Saved clock</span> : null}
         <div className="canvas-mode-context-slot">{modeControls}<CanvasPerformanceStrip state={performanceState} /></div>
-        {manager ? <div className="canvas-toolbar-actions"><button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button><button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
+        {managementEnabled ? <div className="canvas-toolbar-actions">{manager ? <button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button> : null}<button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
+      {contextError && replayRun ? <div aria-live="assertive" className="canvas-inline-error replay-runtime-error"><TriangleAlert aria-hidden="true" size={15} /><div><strong>Replay stopped</strong><span>{contextError}</span></div></div> : null}
       {error || chartOpenError ? <div className="canvas-inline-error">{error || chartOpenError}</div> : null}
 
       <TradingWorkspace
         allowMultipleInstances
-        canPopOut
-        canvasTargets={canvasTargets}
+        canPopOut={!replayRun}
+        canvasTargets={replayRun ? [] : canvasTargets}
         clockLabel=""
         commandBarVisible={false}
         compact
@@ -1787,18 +1791,18 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
         definitionsOverride={TRADING_WORKSPACE_CONTAINERS}
         historicalSourceReady={!error}
         initialStateOverride={manager ? null : initialCanvasState}
-        layoutPreset={manager ? "global" : "focus"}
-        managementContent={manager ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} /> : null}
-        managementOpen={manager && managementOpen}
+        layoutPreset={managementEnabled ? "global" : "focus"}
+        managementContent={manager ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} /> : replayRun ? <ReplayCanvasManager revision={replayRun.canvas_revision} /> : null}
+        managementOpen={managementEnabled && managementOpen}
         metaForContainer={metaForContainer}
         mode="replay"
         onContainerAdded={registerContainerInstance}
-        onMoveContainerToCanvas={moveContainer}
-        onMoveGroupToCanvas={moveGroup}
+        onMoveContainerToCanvas={replayRun ? undefined : moveContainer}
+        onMoveGroupToCanvas={replayRun ? undefined : moveGroup}
         onManagementClose={() => setManagementOpen(false)}
         openContainerRequest={chartOpenRequest}
-        onPopOutContainer={openNewCanvas}
-        onPopOutGroup={openGroupCanvas}
+        onPopOutContainer={replayRun ? undefined : openNewCanvas}
+        onPopOutGroup={replayRun ? undefined : openGroupCanvas}
         onStateChange={setWorkspaceState}
         renderContainer={(definition, instanceId) => {
           const settings = instanceSettings(registry, instanceId);
@@ -1893,7 +1897,7 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
           </>;
         }}
         titleForContainer={(definition, instanceId) => containerInstanceTitle(definition.id, instanceId, workspaceState, registry)}
-        workspaceBadge={manager ? "Main" : "Focus"}
+        workspaceBadge={replayRun ? "Replay" : manager ? "Main" : "Focus"}
       />
     </div>
   );
@@ -1906,6 +1910,13 @@ function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () 
       <button aria-label={canvas.id === MAIN_CANVAS_ID ? `${canvas.label} is the default canvas` : `Open ${canvas.label}`} className="canvas-manager-open" disabled={canvas.id === MAIN_CANVAS_ID} onClick={() => onOpen(canvas.id)} title={canvas.id === MAIN_CANVAS_ID ? "Default Canvas" : "Open Canvas in a new page"} type="button"><span>{canvas.label}</span><small>{canvas.id === MAIN_CANVAS_ID ? "Default" : "Open"}</small>{canvas.id === MAIN_CANVAS_ID ? null : <ExternalLink size={11} />}</button>
       {canvas.id === MAIN_CANVAS_ID ? null : <button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button>}
     </article>)}</div>
+  </section>;
+}
+
+function ReplayCanvasManager({ revision }: { revision: string }) {
+  return <section aria-label="Replay layout scope" className="replay-layout-scope">
+    <ShieldCheck aria-hidden="true" size={15} />
+    <div><strong>Replay session layout</strong><small>Starts from approved Canvas {revision.slice(0, 10)}. Changes stay local to this open Replay workspace and do not rewrite Canvas defaults.</small></div>
   </section>;
 }
 
@@ -4016,7 +4027,7 @@ function instanceSettings(registry: CanvasRegistry, instanceId: string) {
 }
 function readPreviewContext(): CanvasPreviewContext { try { const parsed = JSON.parse(window.localStorage.getItem(CANVAS_PREVIEW_CONTEXT_STORAGE_KEY) || "null") as CanvasPreviewContext | null; return parsed?.sessionDate && parsed?.previewTime ? parsed : { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } catch { return { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } }
 function replayPreviewContext(run: CanvasReplayRun): CanvasPreviewContext {
-  const current = new Date(run.current_time);
+  const current = new Date(["created", "warming"].includes(run.status) ? run.requested_start : run.current_time);
   const previewTime = new Intl.DateTimeFormat("en-CA", {
     hour: "2-digit",
     hour12: false,

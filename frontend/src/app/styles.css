@@ -21086,6 +21086,28 @@ button {
   padding: 9px 11px;
 }
 
+.replay-runtime-error {
+  align-items: flex-start;
+  border-radius: 0;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+  line-height: 1.35;
+}
+
+.replay-runtime-error > div {
+  display: grid;
+  gap: 1px;
+}
+
+.replay-runtime-error strong {
+  font-size: 10px;
+}
+
+.replay-runtime-error span {
+  font-size: 9px;
+}
+
 .canvas-context-warning {
   background: var(--badge-warning-bg);
   border: 1px solid var(--badge-warning-border);
@@ -22576,6 +22598,32 @@ button {
   min-height: 0;
   overflow: hidden;
   padding: 0;
+}
+
+.workspace-management-sidebar .replay-layout-scope {
+  align-items: flex-start;
+  background: var(--badge-info-bg);
+  border: 1px solid var(--badge-info-border);
+  border-radius: 6px;
+  color: var(--badge-info-fg);
+  display: flex;
+  gap: 7px;
+  padding: 8px;
+}
+
+.replay-layout-scope > div {
+  display: grid;
+  gap: 2px;
+}
+
+.replay-layout-scope strong {
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.replay-layout-scope small {
+  font-size: 8px;
+  line-height: 1.4;
 }
 
 .workspace-management-sidebar .canvas-manager-strip > header {

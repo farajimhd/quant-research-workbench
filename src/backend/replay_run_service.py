@@ -449,7 +449,7 @@ class ReplayRunController:
             )
             await source.health()
             async for batch in source.stream():
-                for event in batch.events:
+                for event_index, event in enumerate(batch.events, start=1):
                     if self._stop_requested:
                         await self._finish("stopped")
                         return
@@ -488,6 +488,8 @@ class ReplayRunController:
                     else:
                         self.processed_events += 1
                         await self._after_event(event.ts)
+                    if event_index % 100 == 0:
+                        await asyncio.sleep(0)
             while frame_index < len(frames):
                 frame = frames[frame_index]
                 if frame.as_of >= self.definition.requested_start:
