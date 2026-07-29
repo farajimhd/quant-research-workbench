@@ -42,7 +42,10 @@ class IntelligenceConfig:
         return cls(
             bind=env_string("NEWS_INTELLIGENCE_BIND", "127.0.0.1:8804"),
             enable_llm=env_bool("NEWS_INTELLIGENCE_ENABLE_LLM", False),
-            enable_models=env_bool("NEWS_INTELLIGENCE_ENABLE_MODELS", True),
+            # Deterministic News/SEC V4 labeling is the required service path.
+            # Optional local model loading must be an explicit operator choice
+            # so a bare service start never allocates model/GPU resources.
+            enable_models=env_bool("NEWS_INTELLIGENCE_ENABLE_MODELS", False),
             llm_base_url=env_string("NEWS_INTELLIGENCE_LLM_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/"),
             llm_min_materiality=env_float("NEWS_INTELLIGENCE_LLM_MIN_MATERIALITY", 0.65),
             llm_min_text_chars=env_int("NEWS_INTELLIGENCE_LLM_MIN_TEXT_CHARS", 80),

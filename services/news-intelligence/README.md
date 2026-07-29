@@ -45,7 +45,8 @@ requires an active Live session and point-in-time QMD price eligibility.
 - `NEWS_INTELLIGENCE_STACK_VERSION`, default `news-intelligence-v1`
 - `NEWS_INTELLIGENCE_TAXONOMY_VERSION`, default `news-taxonomy-v1`
 - `NEWS_INTELLIGENCE_PROMPT_VERSION`, default `news-llm-prompt-v1`
-- `NEWS_INTELLIGENCE_ENABLE_MODELS`, default `true`
+- `NEWS_INTELLIGENCE_ENABLE_MODELS`, default `false`; set `true` explicitly to
+  load the configured optional local sentiment/NER models.
 - `NEWS_INTELLIGENCE_ENABLE_LLM`, default `false`
 - `NEWS_INTELLIGENCE_LLM_BASE_URL`, default `http://127.0.0.1:8000/v1`
 - `NEWS_INTELLIGENCE_LLM_MODEL`, default `Qwen/Qwen3-1.7B`
@@ -92,6 +93,37 @@ or:
 ```powershell
 .\scripts\run_news_intelligence.ps1
 ```
+
+The bare launcher runs the required deterministic News/SEC V4 classifier and
+reconciler only. It does not load local language models and does not call an
+LLM. Optional inference is an explicit operator choice:
+
+```powershell
+# Optional local sentiment/NER models.
+$env:NEWS_INTELLIGENCE_ENABLE_MODELS = "true"
+
+# Optional OpenAI-compatible LLM route.
+$env:NEWS_INTELLIGENCE_ENABLE_LLM = "true"
+.\scripts\run_news_intelligence.ps1
+```
+
+Unset either variable, or set it to `false`, to return to deterministic-only
+operation.
+
+### Starting after a historical backfill
+
+The finite V4 backfill and this continuous service may run concurrently because
+their label and relationship identities are idempotent. Delaying the service is
+safe only when no canonical News/SEC rows arrive outside the finite backfill's
+fixed date range, or when every missed row remains inside the service's recent
+reconciliation window when it eventually starts.
+
+The historical runner fixes `--end-date-exclusive` when it is launched. Rows
+published after that boundary are not part of that run. On service startup,
+`TEXT_INTELLIGENCE_RECONCILE_HOURS` defaults to 72 hours and is bounded to 720
+hours. Therefore, if gateways keep ingesting while a long backfill runs, start
+this service concurrently. Otherwise, post-boundary rows older than the
+reconciliation window require an explicit range-scoped V4 rebuild.
 
 ## Download Models
 
