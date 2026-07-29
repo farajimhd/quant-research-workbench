@@ -17,6 +17,7 @@ from pipelines.sec.edgar.sec_pipeline.xbrl_context import (
     source_company_fact_rows_sql,
     source_frame_observation_rows_sql,
 )
+from pipelines.market_sip.events.clickhouse_build_sec_context import bridge_cte_sql
 from research.mlops.packed_market.context import DEFAULTS, PackedContextConfig
 from services.gateway_core.dashboard import configured_tables
 from services.gateway_core.rich_renderer import metric_label
@@ -44,6 +45,22 @@ class SecXbrlContextSyncTests(unittest.TestCase):
         self.assertIn("f.accepted_at_utc IS NOT NULL", sql)
         self.assertIn("formatDateTime(f.accepted_at_utc", sql)
         self.assertIn("'UTC') AS accepted_at_utc", sql)
+        self.assertIn("SELECT DISTINCT", sql)
+        self.assertNotIn("any(bridge_id)", sql)
+        self.assertNotIn("max(confidence_score)", sql)
+
+    def test_historical_context_uses_exact_bridge_rows(self) -> None:
+        sql = bridge_cte_sql(
+            SimpleNamespace(
+                source_database="q_live",
+                source_bridge_table="id_sec_market_bridge_v3",
+            )
+        )
+
+        self.assertIn("SELECT DISTINCT", sql)
+        self.assertIn("bridge_id", sql)
+        self.assertNotIn("any(bridge_id)", sql)
+        self.assertNotIn("any(ifNull(security_id", sql)
 
     def test_recovery_reads_accession_rows_without_historical_join(self) -> None:
         config = XbrlContextSyncConfig()
@@ -251,8 +268,83 @@ class SecXbrlContextSyncTests(unittest.TestCase):
 
         result = gateway._process_item(item, set())
 
-        self.assertEqual(calls, ["ingest_pending", "pending", "source", "context", "ingest_complete"])
+        self.assertEqual(calls, ["ingest_pending", "pending", "source", "ingest_complete", "context"])
         self.assertEqual(result.xbrl_context_rows, 8)
+        self.assertEqual(result.xbrl_context_status, "ok")
+
+    def test_gateway_context_failure_does_not_reclassify_persisted_filing_as_failed(self) -> None:
+        calls: list[str] = []
+
+        class FakeContext:
+            def mark_pending(self, **_kwargs) -> None:
+                calls.append("context_pending")
+
+            def sync_rows(self, **_kwargs) -> XbrlContextSyncResult:
+                calls.append("context")
+                raise RuntimeError("mapping conflict")
+
+        class FakeManifest:
+            def mark_pending(self, **_kwargs) -> None:
+                calls.append("ingest_pending")
+
+            def mark_complete(self, **_kwargs) -> None:
+                calls.append("ingest_complete")
+
+            def mark_failed(self, **_kwargs) -> None:
+                calls.append("ingest_failed")
+
+        gateway = SecGateway.__new__(SecGateway)
+        gateway.config = SimpleNamespace(execute=True, xbrl_context_sync_enabled=True)
+        gateway._run_id = "test-run"
+        gateway._live_pipeline = SimpleNamespace(
+            process_feed_item=lambda *_args, **_kwargs: SimpleNamespace(
+                filing_row={"cik": "0000000123", "accession_number": "0000000123-26-000001"},
+                document_rows=[],
+                text_source_rows=[],
+                text_rows=[],
+                skip_rows=[],
+                xbrl_rows=SimpleNamespace(
+                    concept_rows=[],
+                    company_fact_rows=[{"company_fact_id": "fact-1"}],
+                    frame_rows=[],
+                    frame_observation_rows=[],
+                    companyfacts_status="available",
+                ),
+                source_cik="0000000123",
+                source_version_key="revision-key",
+                source_revision_at="2026-07-10 17:13:07.000",
+                source_revision_rank=123,
+                metadata_status="submissions_recent",
+                xbrl_expected=True,
+            )
+        )
+        gateway._writer = SimpleNamespace(
+            write_accession=lambda **_kwargs: SecWriteResult(filing_rows=1, xbrl_company_fact_rows=1)
+        )
+        gateway._live_manifest = FakeManifest()
+        gateway._xbrl_context = FakeContext()
+        gateway._log = lambda *_args, **_kwargs: None
+        gateway.logger = SimpleNamespace(exception=lambda *_args, **_kwargs: calls.append("context_logged"))
+        item = SecFeedItem(
+            accession_number="0000000123-26-000001",
+            accession_number_compact="000000012326000001",
+            cik="0000000123",
+            form_type="10-Q",
+            title="Example",
+            filing_detail_url="",
+            primary_document_url="",
+            updated_at_utc=datetime.now(UTC),
+        )
+
+        result = gateway._process_item(item, set())
+
+        self.assertEqual(
+            calls,
+            ["ingest_pending", "context_pending", "ingest_complete", "context", "context_logged"],
+        )
+        self.assertEqual(result.ingest_status, "complete")
+        self.assertEqual(result.xbrl_context_status, "failed")
+        self.assertIn("mapping conflict", result.xbrl_context_error)
 
     def test_packed_model_defaults_to_v3_xbrl_context(self) -> None:
         self.assertEqual(PackedContextConfig().sec_xbrl_context_table, "sec_xbrl_context_v3")

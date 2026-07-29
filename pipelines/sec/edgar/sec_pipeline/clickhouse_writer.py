@@ -54,6 +54,8 @@ class SecWriteResult:
     xbrl_frame_observation_rows: int = 0
     xbrl_context_rows: int = 0
     xbrl_context_pending_rows: int = 0
+    xbrl_context_status: str = "not_requested"
+    xbrl_context_error: str = ""
     ingest_status: str = "complete"
     pending_reason: str = ""
     skipped_existing: bool = False

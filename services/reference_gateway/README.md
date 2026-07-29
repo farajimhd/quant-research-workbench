@@ -16,15 +16,19 @@ SEC ingestion writes raw filing/text/XBRL rows only; downstream services such as
 `text_embed_gateway` read this bridge to convert SEC CIK/accession events into
 the same ticker-aligned context schema used by historical training data.
 
-The bridge has two explicit authorities. Direct mappings join a filing CIK to
-that issuer's active market listings. Curated rows in
+The bridge has two explicit authorities. Direct mappings join a filing CIK only
+to that issuer's active U.S. USD SIP-addressable common-stock or ADR listing.
+Curated rows in
 `q_live.id_issuer_relationship_v1` may map a non-listed filing issuer to an
 evidence-backed listed ultimate parent, but only when the filing issuer has no
-direct active listing. Relationship mappings are limited to the parent's U.S.
-USD common-stock or ADR symbol and carry `mapping_method =
-filing_issuer_to_listed_parent`. The gateway validates and publishes the curated
-relationship rows before every scheduled SEC bridge rebuild and removes stale
-relationship-derived bridge rows synchronously.
+eligible direct listing. Parent mappings use the same listing eligibility
+contract and carry `mapping_method = filing_issuer_to_listed_parent`. Before
+every scheduled rebuild, the gateway publishes the curated relationship
+authority, builds the complete bridge in a run-scoped staging table, validates
+source/target identity equality, listing eligibility, required fields, and
+non-overlapping ticker identity, then atomically exchanges the validated table
+into service. Obsolete direct and relationship-derived rows therefore cannot
+survive a successful rebuild.
 
 The gateway does not create or fill generic security fact tables and does not
 publish a second database alert stream. Canonical mapping problems remain in

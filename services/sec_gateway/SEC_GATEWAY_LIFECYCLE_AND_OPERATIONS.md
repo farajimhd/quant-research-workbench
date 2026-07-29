@@ -50,18 +50,20 @@ SEC current Atom feed
   -> canonical filing/entity/document/text/skip write
   -> companyfacts fetch when XBRL or inline-XBRL is present
   -> canonical XBRL write
+  -> complete live-ingest manifest transition
   -> point-in-time bridge lookup
   -> sec_xbrl_context_v3 write or durable pending manifest
-  -> complete live-ingest manifest transition
   -> targeted write audit and coverage update
 ```
 
-The queue is bounded. A worker does not report completion until every applicable
-canonical insert and context transition has returned successfully and
-`sec_filing_live_ingest_manifest_v3` records the exact source revision as
-`complete`. `pending`, `pending_source`, and `failed` revisions remain replayable.
-A durable `retry_after_utc` prevents a lagging SEC source from causing repeated
-downloads and ClickHouse writes on every feed poll.
+The queue is bounded. A worker records the exact source revision as `complete`
+after every applicable canonical insert succeeds. XBRL context is a derived,
+restart-safe product: its failure is reported independently and reconciled from
+the canonical rows after bridge repair; it does not falsely reclassify an
+already-persisted SEC filing as a failed download. `pending`, `pending_source`,
+and genuinely failed canonical revisions remain replayable. A durable
+`retry_after_utc` prevents a lagging SEC source from causing repeated downloads
+and ClickHouse writes on every feed poll.
 
 ## Source and Parsing Rules
 
@@ -95,9 +97,10 @@ The live writer and accession manifest preserve recoverability and idempotency:
 4. Write the readable derivative or explicit skip outcome for every applicable
    document.
 5. Write XBRL concept/fact/frame rows when the source has published them.
-6. Complete or durably defer XBRL context synchronization.
-7. Transition the exact accession revision to `complete` only after the required
-   writes return successfully.
+6. Transition the exact accession revision to `complete` after the required
+   canonical writes return successfully.
+7. Complete or durably defer the independently observable XBRL context
+   synchronization.
 8. Advance coverage and audit status only after that completion boundary.
 
 Current-row selection is based on deterministic source revision rank, not worker

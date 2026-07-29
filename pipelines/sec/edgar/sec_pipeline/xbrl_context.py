@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pipelines.market_sip.events.clickhouse_build_sec_context import create_xbrl_context_table_sql
+from pipelines.reference_data.sec_market_bridge import active_bridge_cte_sql
 from research.mlops.clickhouse import ClickHouseHttpClient, mergetree_settings_sql, parse_size_bytes, quote_ident, sql_string
 
 
@@ -452,25 +453,8 @@ FORMAT JSONEachRow
 
 def mapped_filing_rows_sql(config: XbrlContextSyncConfig, *, cik: str, accession_number: str) -> str:
     source = quote_ident(config.source_database)
-    bridge_database = quote_ident(config.bridge_database)
     return f"""
-WITH bridge AS
-(
-    SELECT
-        ifNull(ticker, '') AS ticker,
-        cik,
-        ifNull(accession_number, '') AS accession_number,
-        valid_from_date,
-        valid_to_date_exclusive,
-        any(bridge_id) AS bridge_id,
-        max(confidence_score) AS confidence_score
-    FROM {bridge_database}.{quote_ident(config.bridge_table)}
-    WHERE ifNull(ticker, '') != ''
-      AND mapping_status IN ('active', 'mapped', 'accepted', '')
-      AND cik = {sql_string(cik)}
-      AND (ifNull(accession_number, '') = '' OR accession_number = {sql_string(accession_number)})
-    GROUP BY ticker, cik, accession_number, valid_from_date, valid_to_date_exclusive
-)
+WITH {active_bridge_cte_sql(database=config.bridge_database, table=config.bridge_table)}
 SELECT
     b.ticker AS ticker,
     toUInt64(toUnixTimestamp64Micro(f.accepted_at_utc)) AS timestamp_us,

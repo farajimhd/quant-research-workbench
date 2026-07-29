@@ -27,10 +27,11 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from research.mlops.paths import machine_name  # noqa: E402
+from pipelines.reference_data.sec_market_bridge import us_market_listing_predicate_sql  # noqa: E402
 
 
 DEFAULT_TARGET_DATABASE = "q_live"
-DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/q_live_migration/step_06_bridge_features")
+DEFAULT_OUTPUT_ROOT_WIN = Path("D:/TradingML/runtimes/q_live_migration/step_06_bridge_features")
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validate-only", action="store_true", help="Validate current target rows without inserting.")
     parser.add_argument("--allow-non-empty-targets", action="store_true", help="Permit appending/upserting into non-empty target tables.")
     parser.add_argument("--skip-non-empty-targets", action="store_true", help="Resume mode: execute only specs whose target table is empty.")
+    parser.add_argument(
+        "--retain-sec-bridge-backup",
+        action="store_true",
+        help="After atomic SEC bridge publication, retain the prior table as a run-scoped backup instead of dropping it.",
+    )
     return parser.parse_args()
 
 
@@ -134,12 +140,31 @@ def main() -> None:
     ensure_empty_or_allowed(preflight, args)
     specs_to_execute = filter_specs_for_resume(specs, preflight, args.skip_non_empty_targets)
     insert_run_row(client, args.target_database, build_run_id, "running", inserted_at, rows_read=0, rows_written=0, rows_failed=0)
-    execution_rows = execute_specs(client, args, specs_to_execute, paths.execution_jsonl)
+    execution_rows = execute_specs(
+        client,
+        args,
+        specs_to_execute,
+        paths.execution_jsonl,
+        build_run_id=build_run_id,
+    )
     validations = validate_specs(client, args, specs)
     write_jsonl(paths.validation_jsonl, validations)
     write_summary(paths.summary_md, build_run_id, preflight, validations, execute=True)
     sync_rows = sync_validation_rows(build_run_id, validations, inserted_at)
     insert_json_each_row(client, args.target_database, "sync_validation_v1", sync_rows)
+    failed_validations = [row for row in validations if row["status"] != "pass"]
+    if failed_validations:
+        insert_run_row(
+            client,
+            args.target_database,
+            build_run_id,
+            "failed",
+            inserted_at,
+            rows_read=sum(row["expected_rows"] for row in validations),
+            rows_written=sum(row["inserted_delta"] for row in execution_rows),
+            rows_failed=len(failed_validations),
+        )
+        raise RuntimeError("step 06 validation failed: " + json.dumps(failed_validations, sort_keys=True))
     insert_run_row(
         client,
         args.target_database,
@@ -435,6 +460,7 @@ WHERE u.universe_date = toDate({literal_feature_date})
 
 
 def sec_market_bridge_source_ctes_sql(db: str) -> str:
+    eligible_listing = us_market_listing_predicate_sql()
     return f"""
 direct_bridge_rows AS
 (
@@ -460,9 +486,9 @@ direct_bridge_rows AS
     INNER JOIN {db}.id_security_v1 AS sec FINAL ON sec.issuer_id = iii.issuer_id
     INNER JOIN {db}.id_listing_v1 AS l FINAL ON l.security_id = sec.security_id
     LEFT JOIN {db}.id_symbol_v1 AS sym FINAL ON sym.listing_id = l.listing_id AND sym.primary_symbol_flag = 1
+    INNER JOIN {db}.ref_exchange_v1 AS ex FINAL ON ex.exchange_code = l.exchange_code
     WHERE iii.identifier_kind = 'cik'
-      AND sec.status = 'active'
-      AND l.listing_status = 'active'
+      AND {eligible_listing}
 ),
 direct_ciks AS
 (
@@ -502,13 +528,7 @@ relationship_bridge_rows AS
     WHERE rel.relationship_status = 'active'
       AND rel.relationship_type = 'listed_ultimate_parent'
       AND direct.cik = ''
-      AND sec.status = 'active'
-      AND l.listing_status = 'active'
-      AND l.currency_code = 'USD'
-      AND ex.iso_country_code = 'US'
-      AND sec.product_type = 'STK'
-      AND sym.asset_type = 'stock'
-      AND sym.instrument_type IN ('ADRC', 'CS')
+      AND {eligible_listing}
 ),
 all_bridge_rows AS
 (
@@ -564,23 +584,41 @@ def run_preflight(client: ClickHouseHttpClient, args: argparse.Namespace, specs:
     return rows
 
 
-def execute_specs(client: ClickHouseHttpClient, args: argparse.Namespace, specs: list[BuildSpec], log_path: Path) -> list[dict[str, Any]]:
+def execute_specs(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    specs: list[BuildSpec],
+    log_path: Path,
+    *,
+    build_run_id: str,
+) -> list[dict[str, Any]]:
     rows = []
     for index, spec in enumerate(specs, start=1):
         started = time.perf_counter()
         before_rows = scalar_int(client, f"SELECT count() FROM {quote_ident(args.target_database)}.{quote_ident(spec.target_table)}")
         row: dict[str, Any] = {"index": index, "name": spec.name, "target_table": spec.target_table, "target_rows_before": before_rows, "started_at_utc": datetime.now(UTC).isoformat()}
         try:
-            stale_rows_deleted = 0
             if spec.name == "sec_market_bridge":
-                stale_rows_deleted = delete_stale_relationship_bridge_rows(
+                publication = publish_sec_market_bridge_atomically(
                     client,
-                    database=args.target_database,
-                    target_table=spec.target_table,
+                    args,
+                    spec,
+                    build_run_id=build_run_id,
                 )
-            client.execute(spec.insert_sql)
+            else:
+                client.execute(spec.insert_sql)
+                publication = {}
             after_rows = scalar_int(client, f"SELECT count() FROM {quote_ident(args.target_database)}.{quote_ident(spec.target_table)}")
-            row.update({"status": "ok", "target_rows_after": after_rows, "inserted_delta": max(0, after_rows - before_rows), "stale_relationship_rows_deleted": stale_rows_deleted, "wall_seconds": round(time.perf_counter() - started, 3), "finished_at_utc": datetime.now(UTC).isoformat()})
+            row.update(
+                {
+                    "status": "ok",
+                    "target_rows_after": after_rows,
+                    "inserted_delta": after_rows if spec.name == "sec_market_bridge" else max(0, after_rows - before_rows),
+                    **publication,
+                    "wall_seconds": round(time.perf_counter() - started, 3),
+                    "finished_at_utc": datetime.now(UTC).isoformat(),
+                }
+            )
         except Exception as exc:
             row.update({"status": "failed", "target_rows_after": before_rows, "inserted_delta": 0, "error_type": type(exc).__name__, "error": str(exc), "wall_seconds": round(time.perf_counter() - started, 3), "finished_at_utc": datetime.now(UTC).isoformat()})
             write_jsonl_append(log_path, row)
@@ -591,43 +629,109 @@ def execute_specs(client: ClickHouseHttpClient, args: argparse.Namespace, specs:
     return rows
 
 
-def delete_stale_relationship_bridge_rows(
+def publish_sec_market_bridge_atomically(
     client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    spec: BuildSpec,
     *,
-    database: str,
-    target_table: str,
-) -> int:
+    build_run_id: str,
+) -> dict[str, Any]:
+    database = args.target_database
+    suffix = re.sub(r"[^A-Za-z0-9_]", "_", build_run_id)
+    staging_table = f"{spec.target_table}__stage_{suffix}"
+    backup_table = f"{spec.target_table}__backup_{suffix}"
     db = quote_ident(database)
-    rows = query_json_each_row(
+    target = f"{db}.{quote_ident(spec.target_table)}"
+    staging = f"{db}.{quote_ident(staging_table)}"
+
+    if table_exists(client, database, staging_table):
+        raise RuntimeError(f"SEC bridge staging table already exists: {database}.{staging_table}")
+    if args.retain_sec_bridge_backup and table_exists(client, database, backup_table):
+        raise RuntimeError(f"SEC bridge backup table already exists: {database}.{backup_table}")
+
+    clone_table_schema(
         client,
-        f"""
-WITH {sec_market_bridge_source_ctes_sql(db)}
-SELECT bridge_id
-FROM {db}.{quote_ident(target_table)} FINAL
-WHERE mapping_method = 'filing_issuer_to_listed_parent'
-  AND bridge_id NOT IN (SELECT bridge_id FROM bridge_source)
-""",
+        database=database,
+        source_table=spec.target_table,
+        target_table=staging_table,
     )
-    bridge_ids = sorted({str(row["bridge_id"]) for row in rows if str(row.get("bridge_id") or "")})
-    if not bridge_ids:
-        return 0
-    values = ", ".join(sql_string(value) for value in bridge_ids)
-    client.execute(
-        f"ALTER TABLE {db}.{quote_ident(target_table)} DELETE WHERE bridge_id IN ({values}) "
-        "SETTINGS mutations_sync = 2"
+    staged_insert_sql = rewrite_insert_target(
+        spec.insert_sql,
+        database=database,
+        source_table=spec.target_table,
+        target_table=staging_table,
     )
-    remaining = scalar_int(
+    client.execute(staged_insert_sql)
+    staged_validation = validate_sec_bridge_table(
         client,
-        f"SELECT count() FROM {db}.{quote_ident(target_table)} FINAL WHERE bridge_id IN ({values})",
+        database=database,
+        table=staging_table,
+        spec=spec,
     )
-    if remaining:
-        raise RuntimeError(f"failed to delete {remaining} stale relationship bridge row(s)")
-    return len(bridge_ids)
+    if staged_validation["status"] != "pass":
+        raise RuntimeError("SEC bridge staging validation failed: " + json.dumps(staged_validation, sort_keys=True))
+
+    prior_rows = scalar_int(client, f"SELECT count() FROM {target} FINAL")
+    client.execute(f"EXCHANGE TABLES {target} AND {staging}")
+    try:
+        published_validation = validate_sec_bridge_table(
+            client,
+            database=database,
+            table=spec.target_table,
+            spec=spec,
+        )
+        if published_validation["status"] != "pass":
+            raise RuntimeError("SEC bridge post-cutover validation failed: " + json.dumps(published_validation, sort_keys=True))
+    except Exception:
+        client.execute(f"EXCHANGE TABLES {target} AND {staging}")
+        raise
+
+    if args.retain_sec_bridge_backup:
+        client.execute(f"RENAME TABLE {staging} TO {db}.{quote_ident(backup_table)}")
+        retained_backup = backup_table
+    else:
+        client.execute(f"DROP TABLE {staging}")
+        retained_backup = ""
+
+    return {
+        "publication_mode": "atomic_exchange",
+        "prior_logical_rows": prior_rows,
+        "published_logical_rows": int(published_validation["target_rows"]),
+        "staging_table": staging_table,
+        "retained_backup_table": retained_backup,
+        "contract_validation": published_validation,
+    }
+
+
+def rewrite_insert_target(sql: str, *, database: str, source_table: str, target_table: str) -> str:
+    source = f"{quote_ident(database)}.{quote_ident(source_table)}"
+    target = f"{quote_ident(database)}.{quote_ident(target_table)}"
+    pattern = re.compile(r"(INSERT\s+INTO\s+)" + re.escape(source), flags=re.IGNORECASE)
+    rewritten, count = pattern.subn(r"\1" + target, sql, count=1)
+    if count != 1:
+        raise RuntimeError(f"could not rewrite INSERT target {source} to {target}")
+    return rewritten
 
 
 def validate_specs(client: ClickHouseHttpClient, args: argparse.Namespace, specs: list[BuildSpec]) -> list[dict[str, Any]]:
     rows = []
     for spec in specs:
+        if spec.name == "sec_market_bridge":
+            row = validate_sec_bridge_table(
+                client,
+                database=args.target_database,
+                table=spec.target_table,
+                spec=spec,
+            )
+            rows.append(row)
+            print(
+                f"validate {spec.name}: status={row['status']} expected={row['expected_rows']:,} "
+                f"target={row['target_rows']:,} mismatch={row['mismatch_count']:,} "
+                f"critical_empty={row['critical_empty']:,} source_set_mismatch={row['source_set_mismatch']:,} "
+                f"ineligible={row['ineligible_rows']:,} overlaps={row['overlapping_identity_pairs']:,}",
+                flush=True,
+            )
+            continue
         expected_rows = scalar_int(client, spec.expected_sql)
         target_rows = scalar_int(client, spec.target_count_sql)
         critical_empty = critical_empty_count(client, args.target_database, spec.target_table, spec.critical_columns) if target_rows else 0
@@ -646,6 +750,106 @@ def validate_specs(client: ClickHouseHttpClient, args: argparse.Namespace, specs
         rows.append(row)
         print(f"validate {spec.name}: status={status} expected={expected_rows:,} target={target_rows:,} mismatch={mismatch:,} critical_empty={critical_empty:,}", flush=True)
     return rows
+
+
+def validate_sec_bridge_table(
+    client: ClickHouseHttpClient,
+    *,
+    database: str,
+    table: str,
+    spec: BuildSpec,
+) -> dict[str, Any]:
+    db = quote_ident(database)
+    target = f"{db}.{quote_ident(table)}"
+    expected_rows = scalar_int(client, spec.expected_sql)
+    target_rows = scalar_int(client, f"SELECT count() FROM {target} FINAL")
+    critical_empty = critical_empty_count(client, database, table, spec.critical_columns) if target_rows else 0
+    source_duplicate_ids = scalar_int(
+        client,
+        f"""
+WITH {sec_market_bridge_source_ctes_sql(db)}
+SELECT count() - uniqExact(bridge_id)
+FROM bridge_source
+""",
+    )
+    source_set_mismatch = scalar_int(
+        client,
+        f"""
+WITH {sec_market_bridge_source_ctes_sql(db)},
+source_ids AS
+(
+    SELECT DISTINCT bridge_id
+    FROM bridge_source
+),
+target_ids AS
+(
+    SELECT bridge_id
+    FROM {target} FINAL
+)
+SELECT count()
+FROM source_ids AS s
+FULL OUTER JOIN target_ids AS t USING (bridge_id)
+WHERE s.bridge_id = '' OR t.bridge_id = ''
+""",
+    )
+    eligible = us_market_listing_predicate_sql(
+        security_alias="sec",
+        listing_alias="l",
+        symbol_alias="sym",
+        exchange_alias="ex",
+    )
+    ineligible_rows = scalar_int(
+        client,
+        f"""
+SELECT count()
+FROM {target} AS b FINAL
+LEFT JOIN {db}.id_security_v1 AS sec FINAL ON sec.security_id = b.security_id
+LEFT JOIN {db}.id_listing_v1 AS l FINAL ON l.listing_id = b.listing_id
+LEFT JOIN {db}.id_symbol_v1 AS sym FINAL ON sym.symbol_id = b.symbol_id
+LEFT JOIN {db}.ref_exchange_v1 AS ex FINAL ON ex.exchange_code = l.exchange_code
+WHERE NOT ifNull({eligible}, 0)
+""",
+    )
+    overlapping_identity_pairs = scalar_int(
+        client,
+        f"""
+SELECT count()
+FROM {target} AS a FINAL
+INNER JOIN {target} AS b FINAL
+    ON a.cik = b.cik
+   AND ifNull(a.ticker, '') = ifNull(b.ticker, '')
+   AND ifNull(a.accession_number, '') = ifNull(b.accession_number, '')
+   AND a.bridge_id < b.bridge_id
+WHERE ifNull(a.ticker, '') != ''
+  AND coalesce(a.valid_from_date, toDate('1970-01-01')) < coalesce(b.valid_to_date_exclusive, toDate('2100-01-01'))
+  AND coalesce(b.valid_from_date, toDate('1970-01-01')) < coalesce(a.valid_to_date_exclusive, toDate('2100-01-01'))
+""",
+    )
+    mismatch = abs(target_rows - expected_rows)
+    status = (
+        "pass"
+        if mismatch == 0
+        and critical_empty == 0
+        and source_duplicate_ids == 0
+        and source_set_mismatch == 0
+        and ineligible_rows == 0
+        and overlapping_identity_pairs == 0
+        else "fail"
+    )
+    return {
+        "name": spec.name,
+        "target_table": table,
+        "status": status,
+        "expected_rows": expected_rows,
+        "target_rows": target_rows,
+        "mismatch_count": mismatch,
+        "critical_empty": critical_empty,
+        "critical_columns": spec.critical_columns,
+        "source_duplicate_ids": source_duplicate_ids,
+        "source_set_mismatch": source_set_mismatch,
+        "ineligible_rows": ineligible_rows,
+        "overlapping_identity_pairs": overlapping_identity_pairs,
+    }
 
 
 def ensure_empty_or_allowed(preflight: list[dict[str, Any]], args: argparse.Namespace) -> None:
@@ -672,8 +876,8 @@ def sync_validation_rows(run_id: str, validations: list[dict[str, Any]], checked
                 "run_id": run_id,
                 "check_name": "row_count_after_step_06",
                 "target_table": row["target_table"],
-                "check_status": "pass" if row["mismatch_count"] == 0 else "fail",
-                "severity": "info" if row["mismatch_count"] == 0 else "error",
+                "check_status": row["status"],
+                "severity": "info" if row["status"] == "pass" else "error",
                 "expected_value": str(row["expected_rows"]),
                 "observed_value": str(row["target_rows"]),
                 "mismatch_count": row["mismatch_count"],
@@ -696,6 +900,44 @@ def sync_validation_rows(run_id: str, validations: list[dict[str, Any]], checked
                 "checked_at_utc": checked_at,
             }
         )
+        if row["name"] == "sec_market_bridge":
+            contract_mismatches = sum(
+                int(row.get(key) or 0)
+                for key in (
+                    "source_duplicate_ids",
+                    "source_set_mismatch",
+                    "ineligible_rows",
+                    "overlapping_identity_pairs",
+                )
+            )
+            rows.append(
+                {
+                    "validation_id": f"{run_id}:{row['name']}:authority_contract",
+                    "run_id": run_id,
+                    "check_name": "sec_market_bridge_authority_contract",
+                    "target_table": row["target_table"],
+                    "check_status": "pass" if contract_mismatches == 0 else "fail",
+                    "severity": "info" if contract_mismatches == 0 else "error",
+                    "expected_value": "0",
+                    "observed_value": str(contract_mismatches),
+                    "mismatch_count": contract_mismatches,
+                    "details_json": json.dumps(
+                        {
+                            key: row.get(key, 0)
+                            for key in (
+                                "source_duplicate_ids",
+                                "source_set_mismatch",
+                                "ineligible_rows",
+                                "overlapping_identity_pairs",
+                            )
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        default=str,
+                    ),
+                    "checked_at_utc": checked_at,
+                }
+            )
     return rows
 
 

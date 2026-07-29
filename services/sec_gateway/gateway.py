@@ -442,6 +442,8 @@ class SecGateway:
             self.metrics.xbrl_frame_observation_rows += result.xbrl_frame_observation_rows
             self.metrics.xbrl_context_rows += result.xbrl_context_rows
             self.metrics.xbrl_context_pending_rows += result.xbrl_context_pending_rows
+            if result.xbrl_context_status == "failed":
+                self.metrics.xbrl_context_sync_failures += 1
         if result.ingest_status == "complete":
             self.metrics.live_completed_filings += 1
         else:
@@ -455,7 +457,8 @@ class SecGateway:
             self.metrics.last_write_at_utc = completed_at
         self.metrics.last_worker_message = (
             f"Worker {worker_index} completed {outcome.item.accession_number}: "
-            f"{'skipped existing' if result.skipped_existing else result.ingest_status}."
+            f"{'skipped existing' if result.skipped_existing else result.ingest_status}"
+            f"{'; context=' + result.xbrl_context_status if result.xbrl_context_status != 'not_requested' else ''}."
         )
         if result.ingest_status == "complete":
             self._resolve_last_error(reason="live_job_completed")
@@ -979,31 +982,6 @@ class SecGateway:
                 skip_existing=False,
                 skip_same_revision=False,
             )
-            pending_reasons = live_pending_source_reasons(rows, expected_facts=expected_facts)
-            if pending_reasons:
-                reason = "; ".join(pending_reasons)
-                retry_after = datetime.now(UTC) + timedelta(seconds=max(1.0, self.config.source_retry_seconds))
-                self._live_manifest.mark_pending_source(
-                    error=reason,
-                    retry_after_utc=retry_after.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                    **manifest_row,
-                )
-                return replace(result, ingest_status="pending_source", pending_reason=reason)
-            if self.config.xbrl_context_sync_enabled and expected_facts + expected_frames:
-                sync = self._xbrl_context.sync_rows(
-                    cik=str(rows.filing_row["cik"]),
-                    accession_number=str(rows.filing_row["accession_number"]),
-                    company_fact_rows=rows.xbrl_rows.company_fact_rows,
-                    frame_observation_rows=rows.xbrl_rows.frame_observation_rows,
-                )
-                result = replace(
-                    result,
-                    xbrl_context_rows=sync.inserted_rows,
-                    xbrl_context_pending_rows=sync.missing_rows,
-                )
-                self._log("xbrl_context_synced", result=asdict(sync))
-            self._live_manifest.mark_complete(**manifest_row)
-            return result
         except Exception as exc:
             try:
                 self._live_manifest.mark_failed(error=repr(exc), **manifest_row)
@@ -1015,6 +993,52 @@ class SecGateway:
                     manifest_error=repr(manifest_exc),
                 )
             raise
+
+        pending_reasons = live_pending_source_reasons(rows, expected_facts=expected_facts)
+        if pending_reasons:
+            reason = "; ".join(pending_reasons)
+            retry_after = datetime.now(UTC) + timedelta(seconds=max(1.0, self.config.source_retry_seconds))
+            self._live_manifest.mark_pending_source(
+                error=reason,
+                retry_after_utc=retry_after.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                **manifest_row,
+            )
+            return replace(
+                result,
+                ingest_status="pending_source",
+                pending_reason=reason,
+                xbrl_context_status="pending_source",
+            )
+
+        self._live_manifest.mark_complete(**manifest_row)
+        if self.config.xbrl_context_sync_enabled and expected_facts + expected_frames:
+            try:
+                sync = self._xbrl_context.sync_rows(
+                    cik=str(rows.filing_row["cik"]),
+                    accession_number=str(rows.filing_row["accession_number"]),
+                    company_fact_rows=rows.xbrl_rows.company_fact_rows,
+                    frame_observation_rows=rows.xbrl_rows.frame_observation_rows,
+                )
+                result = replace(
+                    result,
+                    xbrl_context_rows=sync.inserted_rows,
+                    xbrl_context_pending_rows=sync.missing_rows,
+                    xbrl_context_status=sync.status,
+                    xbrl_context_error=sync.error,
+                )
+                self._log("xbrl_context_synced", result=asdict(sync))
+            except Exception as exc:  # noqa: BLE001
+                result = replace(
+                    result,
+                    xbrl_context_status="failed",
+                    xbrl_context_error=repr(exc),
+                )
+                self.logger.exception(
+                    "xbrl_context_sync_failed",
+                    exc,
+                    accession_number=item.accession_number,
+                )
+        return result
 
     def _reconcile_xbrl_context(self) -> None:
         limit = max(0, self.config.xbrl_context_reconcile_limit)
@@ -1045,6 +1069,8 @@ class SecGateway:
             "xbrl_facts": result.xbrl_company_fact_rows,
             "xbrl_context_rows": result.xbrl_context_rows,
             "xbrl_context_pending_rows": result.xbrl_context_pending_rows,
+            "xbrl_context_status": result.xbrl_context_status,
+            "xbrl_context_error": result.xbrl_context_error,
         }
         self._recent.insert(0, row)
         self._prune_recent_metadata()

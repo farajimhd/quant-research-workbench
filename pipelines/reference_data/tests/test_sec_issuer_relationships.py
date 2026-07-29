@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -22,6 +23,15 @@ class FakeIdentifierClient:
         ):
             rows.append(json.dumps({"cik": cik, "issuer_id": f"issuer-{index}"}))
         return "\n".join(rows)
+
+
+class RecordingClient:
+    def __init__(self) -> None:
+        self.sql: list[str] = []
+
+    def execute(self, sql: str) -> str:
+        self.sql.append(sql)
+        return ""
 
 
 class SecIssuerRelationshipTests(unittest.TestCase):
@@ -56,8 +66,99 @@ class SecIssuerRelationshipTests(unittest.TestCase):
         self.assertNotIn("direct.cik IS NULL", sql)
         self.assertIn("rel.parent_issuer_id", sql)
         self.assertIn("rel.child_cik AS cik", sql)
-        self.assertIn("ex.iso_country_code = 'US'", sql)
-        self.assertIn("sym.instrument_type IN ('ADRC', 'CS')", sql)
+        self.assertEqual(sql.count("ex.iso_country_code = 'US'"), 2)
+        self.assertEqual(sql.count("l.currency_code = 'USD'"), 2)
+        self.assertEqual(sql.count("sec.product_type = 'STK'"), 2)
+        self.assertEqual(sql.count("sym.instrument_type IN ('ADRC', 'CS')"), 2)
+        direct_sql = sql.split("direct_ciks AS", 1)[0]
+        self.assertIn("ref_exchange_v1 AS ex", direct_sql)
+        self.assertIn("sym.asset_type = 'stock'", direct_sql)
+
+    def test_bridge_insert_target_rewrite_is_exact(self) -> None:
+        specs = bridge.build_specs(
+            "q_live",
+            "test-run",
+            "2026-07-29 12:00:00.000",
+            date(2026, 7, 29),
+            sec_bridge_table="id_sec_market_bridge_v3",
+        )
+        spec = next(item for item in specs if item.name == "sec_market_bridge")
+
+        rewritten = bridge.rewrite_insert_target(
+            spec.insert_sql,
+            database="q_live",
+            source_table="id_sec_market_bridge_v3",
+            target_table="id_sec_market_bridge_v3__stage_test",
+        )
+
+        self.assertIn("INSERT INTO `q_live`.`id_sec_market_bridge_v3__stage_test`", rewritten)
+        self.assertNotIn("INSERT INTO `q_live`.`id_sec_market_bridge_v3`\n", rewritten)
+
+    def test_bridge_publication_atomically_exchanges_validated_stage(self) -> None:
+        specs = bridge.build_specs(
+            "q_live",
+            "test-run",
+            "2026-07-29 12:00:00.000",
+            date(2026, 7, 29),
+            sec_bridge_table="id_sec_market_bridge_v3",
+        )
+        spec = next(item for item in specs if item.name == "sec_market_bridge")
+        client = RecordingClient()
+        passed = {"status": "pass", "target_rows": 5_486}
+        args = SimpleNamespace(target_database="q_live", retain_sec_bridge_backup=False)
+
+        with (
+            mock.patch.object(bridge, "table_exists", return_value=False),
+            mock.patch.object(bridge, "clone_table_schema") as clone,
+            mock.patch.object(bridge, "scalar_int", return_value=14_750),
+            mock.patch.object(bridge, "validate_sec_bridge_table", side_effect=[passed, passed]),
+        ):
+            result = bridge.publish_sec_market_bridge_atomically(
+                client,
+                args,
+                spec,
+                build_run_id="test-run",
+            )
+
+        clone.assert_called_once()
+        exchanges = [sql for sql in client.sql if sql.startswith("EXCHANGE TABLES")]
+        self.assertEqual(len(exchanges), 1)
+        self.assertTrue(any(sql.startswith("DROP TABLE") for sql in client.sql))
+        self.assertEqual(result["publication_mode"], "atomic_exchange")
+        self.assertEqual(result["prior_logical_rows"], 14_750)
+        self.assertEqual(result["published_logical_rows"], 5_486)
+
+    def test_bridge_publication_rolls_back_failed_post_cutover_validation(self) -> None:
+        specs = bridge.build_specs(
+            "q_live",
+            "test-run",
+            "2026-07-29 12:00:00.000",
+            date(2026, 7, 29),
+            sec_bridge_table="id_sec_market_bridge_v3",
+        )
+        spec = next(item for item in specs if item.name == "sec_market_bridge")
+        client = RecordingClient()
+        passed = {"status": "pass", "target_rows": 5_486}
+        failed = {"status": "fail", "target_rows": 5_485}
+        args = SimpleNamespace(target_database="q_live", retain_sec_bridge_backup=False)
+
+        with (
+            mock.patch.object(bridge, "table_exists", return_value=False),
+            mock.patch.object(bridge, "clone_table_schema"),
+            mock.patch.object(bridge, "scalar_int", return_value=14_750),
+            mock.patch.object(bridge, "validate_sec_bridge_table", side_effect=[passed, failed]),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "post-cutover validation failed"):
+                bridge.publish_sec_market_bridge_atomically(
+                    client,
+                    args,
+                    spec,
+                    build_run_id="test-run",
+                )
+
+        exchanges = [sql for sql in client.sql if sql.startswith("EXCHANGE TABLES")]
+        self.assertEqual(len(exchanges), 2)
+        self.assertFalse(any(sql.startswith("DROP TABLE") for sql in client.sql))
 
     def test_targeted_embedding_selector_accepts_normalized_cik_allowlist(self) -> None:
         self.assertEqual(tokens.parse_sec_ciks("83246,0000312070,83246"), ("0000083246", "0000312070"))

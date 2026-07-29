@@ -30,6 +30,7 @@ from pipelines.sec.edgar.sec_pipeline.text_renderer import (  # noqa: E402
     SEC_PACKED_TEXT_RENDERER_VERSION,
     build_sec_text_context_row,
 )
+from pipelines.reference_data.sec_market_bridge import active_bridge_cte_sql  # noqa: E402
 
 
 DEFAULT_SOURCE_DATABASE = "q_live"
@@ -367,27 +368,10 @@ ORDER BY (ticker, timestamp_us, accession_number, xbrl_row_kind, taxonomy, tag, 
 
 
 def bridge_cte_sql(args: argparse.Namespace) -> str:
-    source_db = quote_ident(args.source_database)
-    return f"""
-bridge AS
-(
-    SELECT
-        ifNull(ticker, '') AS ticker,
-        cik,
-        ifNull(accession_number, '') AS accession_number,
-        valid_from_date,
-        valid_to_date_exclusive,
-        any(bridge_id) AS bridge_id,
-        any(ifNull(security_id, '')) AS security_id,
-        any(ifNull(listing_id, '')) AS listing_id,
-        any(ifNull(symbol_id, '')) AS symbol_id,
-        max(confidence_score) AS confidence_score
-    FROM {source_db}.{quote_ident(args.source_bridge_table)}
-    WHERE ifNull(ticker, '') != ''
-      AND mapping_status IN ('active', 'mapped', 'accepted', '')
-    GROUP BY ticker, cik, accession_number, valid_from_date, valid_to_date_exclusive
-)
-"""
+    return active_bridge_cte_sql(
+        database=args.source_database,
+        table=args.source_bridge_table,
+    )
 
 
 def insert_filing_context_sql(args: argparse.Namespace, *, start_date: date, end_date_exclusive: date) -> str:
