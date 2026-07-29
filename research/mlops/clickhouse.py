@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 from urllib import error, parse, request
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -285,6 +285,72 @@ class ClickHouseHttpClient:
         except error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"ClickHouse HTTP {exc.code} {exc.reason}: {body}") from exc
+
+    def iter_json_each_row(
+        self,
+        sql: str,
+        *,
+        query_id: str | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream a JSONEachRow query without materializing its response.
+
+        Streaming intentionally uses an independent HTTP response instead of
+        the optional persistent connection. This keeps the connection lock
+        free while the caller performs CPU work between rows and guarantees
+        that closing or abandoning the iterator closes the response.
+        """
+        if not re.search(
+            r"\bFORMAT\s+JSONEachRow\s*$",
+            sql.strip().rstrip(";"),
+            flags=re.IGNORECASE,
+        ):
+            raise ValueError("iter_json_each_row requires FORMAT JSONEachRow")
+        params = dict(self.default_query_params)
+        if query_id:
+            params["query_id"] = query_id
+        req = request.Request(
+            self._request_url(params),
+            data=sql.encode("utf-8"),
+            method="POST",
+        )
+        if self.user:
+            req.add_header("X-ClickHouse-User", self.user)
+        if self.password:
+            req.add_header("X-ClickHouse-Key", self.password)
+        try:
+            with request.urlopen(req, timeout=self.timeout_seconds) as response:
+                for line_number, raw_line in enumerate(response, start=1):
+                    if not raw_line.strip():
+                        continue
+                    if raw_line.strip() == b"__exception__":
+                        detail = response.read().decode(
+                            "utf-8", errors="replace"
+                        )
+                        raise RuntimeError(
+                            "ClickHouse streaming query failed after partial "
+                            f"output: {detail.strip()}"
+                        )
+                    try:
+                        value = json.loads(raw_line)
+                    except json.JSONDecodeError as exc:
+                        preview = raw_line[:240].decode(
+                            "utf-8", errors="replace"
+                        )
+                        raise RuntimeError(
+                            "ClickHouse JSONEachRow decode failed at response "
+                            f"line {line_number}: {preview!r}"
+                        ) from exc
+                    if not isinstance(value, dict):
+                        raise RuntimeError(
+                            "ClickHouse JSONEachRow response contained a "
+                            f"non-object at line {line_number}"
+                        )
+                    yield value
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"ClickHouse HTTP {exc.code} {exc.reason}: {body}"
+            ) from exc
 
     def close(self) -> None:
         with self._connection_lock:

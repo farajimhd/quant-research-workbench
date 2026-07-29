@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import datetime as dt
 import json
+import multiprocessing
+import os
+import queue
+import signal
+import time
 import uuid
+from collections import deque
+from dataclasses import dataclass, field
+from multiprocessing.pool import Pool
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Iterator, Sequence
 
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
@@ -18,10 +25,6 @@ from research.mlops.clickhouse import (
 )
 from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.paths import MLOpsPathConfig
-from research.text_intelligence.classification_authority_v2.evaluation import (
-    attach_sec_tickers,
-    json_rows,
-)
 from research.text_intelligence.candidate_inventory_v1.config import (
     CandidateInventoryConfig,
 )
@@ -37,6 +40,13 @@ from .schema import SCOPED_LABELING_VERSION, ScopedLabel
 TARGET_TABLE = "scoped_text_labels_v4"
 STATUS_TABLE = "scoped_text_labels_v4_build_status"
 RELATION_TABLE = "scoped_content_relations_v2"
+DEFAULT_INSERT_BYTES = 8 * 1024 * 1024
+DEFAULT_HEARTBEAT_SECONDS = 30.0
+
+_WORKER_DATABASE = "q_live"
+_WORKER_STOP_EVENT: Any = None
+_WORKER_PROGRESS_QUEUE: Any = None
+_WORKER_ISSUER_RESOLVER: NewsIssuerResolver | None = None
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -70,6 +80,18 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--database", default="q_live")
     parser.add_argument(
+        "--insert-megabytes",
+        type=int,
+        default=8,
+        help="Maximum serialized payload per label/relation insert (1-64 MiB).",
+    )
+    parser.add_argument(
+        "--heartbeat-seconds",
+        type=float,
+        default=30.0,
+        help="Durable in-progress status cadence (5-300 seconds).",
+    )
+    parser.add_argument(
         "--certification-manifest",
         type=Path,
         default=certification_manifest,
@@ -85,6 +107,10 @@ def run(args: argparse.Namespace) -> dict:
         raise ValueError("--workers must be between 1 and 32")
     if not 1 <= args.period_days <= 31:
         raise ValueError("--period-days must be between 1 and 31")
+    if not 1 <= args.insert_megabytes <= 64:
+        raise ValueError("--insert-megabytes must be between 1 and 64")
+    if not 5 <= args.heartbeat_seconds <= 300:
+        raise ValueError("--heartbeat-seconds must be between 5 and 300")
     load_env_files(discover_env_files(Path.cwd()), verbose=True)
     corpora = ("news", "sec") if args.corpus == "both" else (args.corpus,)
     periods = bounded_period_ranges(
@@ -92,7 +118,7 @@ def run(args: argparse.Namespace) -> dict:
         args.end_date_exclusive,
         args.period_days,
     )
-    plan = [(corpus, start, end) for corpus in corpora for start, end in periods]
+    plan = interleaved_plan(corpora, periods)
     client = make_client()
     try:
         counts = source_counts(client, args.database, plan)
@@ -111,11 +137,6 @@ def run(args: argparse.Namespace) -> dict:
             return {"execute": False, "source_counts": counts}
         assert_certification(args.certification_manifest)
         create_tables(client, args.database)
-        issuer_resolver = (
-            load_news_issuer_resolver(client, args.database)
-            if "news" in corpora
-            else None
-        )
         completed = (
             set()
             if args.rebuild_completed
@@ -130,36 +151,80 @@ def run(args: argparse.Namespace) -> dict:
         if (item[0], item[1], item[2], SCOPED_LABELING_VERSION)
         not in completed
     ]
-    results: list[dict] = []
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=args.workers,
-        thread_name_prefix="scoped-label",
-    ) as executor:
-        future_map = {
-            executor.submit(
-                process_unit,
-                args.database,
-                corpus,
-                start,
-                end,
-                run_id,
-                issuer_resolver,
-            ): (corpus, start, end)
-            for corpus, start, end in active
+    completed_before = len(plan) - len(active)
+    print(
+        f"BACKFILL START | durable={completed_before:,}/{len(plan):,} "
+        f"remaining={len(active):,} processes={args.workers} "
+        f"insert_limit={args.insert_megabytes}MiB",
+        flush=True,
+    )
+    if not active:
+        print("BACKFILL COMPLETE | every planned unit is durable", flush=True)
+        return {
+            "execute": True,
+            "run_id": run_id,
+            "completed_units": 0,
+            "label_rows": 0,
+            "relation_rows": 0,
         }
-        for index, future in enumerate(
-            concurrent.futures.as_completed(future_map), start=1
-        ):
-            corpus, start, _ = future_map[future]
-            result = future.result()
-            results.append(result)
-            print(
-                f"[{index:,}/{len(active):,}] {corpus} {start} "
-                f"source={result['source_rows']:,} "
-                f"labels={result['label_rows']:,} "
-                f"relations={result['relation_rows']:,}",
-                flush=True,
-            )
+
+    results: list[dict] = []
+    started_at = time.perf_counter()
+    context = multiprocessing.get_context("spawn")
+    stop_event = context.Event()
+    progress_queue = context.Queue()
+    pool = context.Pool(
+        processes=args.workers,
+        initializer=initialize_worker,
+        initargs=(args.database, stop_event, progress_queue),
+    )
+    try:
+        results = execute_bounded_plan(
+            pool,
+            active,
+            run_id=run_id,
+            insert_bytes=args.insert_megabytes * 1024 * 1024,
+            heartbeat_seconds=args.heartbeat_seconds,
+            worker_count=args.workers,
+            stop_event=stop_event,
+            progress_queue=progress_queue,
+            completed_before=completed_before,
+            total_units=len(plan),
+            started_at=started_at,
+        )
+    except KeyboardInterrupt:
+        stop_event.set()
+        print(
+            "\nINTERRUPT | stopping workers at row boundaries; completed "
+            "periods remain durable and partial periods will replay safely",
+            flush=True,
+        )
+        pool.terminate()
+        pool.join()
+        raise
+    except Exception:
+        stop_event.set()
+        print(
+            "BACKFILL FAILED | stopping other active workers; the failed "
+            "period remains resumable",
+            flush=True,
+        )
+        pool.terminate()
+        pool.join()
+        raise
+    else:
+        pool.close()
+        pool.join()
+    finally:
+        progress_queue.close()
+
+    elapsed = time.perf_counter() - started_at
+    print(
+        f"BACKFILL COMPLETE | this_run={len(results):,} "
+        f"durable={completed_before + len(results):,}/{len(plan):,} "
+        f"elapsed={format_duration(elapsed)}",
+        flush=True,
+    )
     return {
         "execute": True,
         "run_id": run_id,
@@ -169,27 +234,291 @@ def run(args: argparse.Namespace) -> dict:
     }
 
 
-def process_unit(
+def initialize_worker(
     database: str,
+    stop_event: Any,
+    progress_queue: Any = None,
+) -> None:
+    """Initialize one isolated CPU worker without copying source documents."""
+    global _WORKER_DATABASE, _WORKER_STOP_EVENT
+    global _WORKER_PROGRESS_QUEUE, _WORKER_ISSUER_RESOLVER
+    _WORKER_DATABASE = database
+    _WORKER_STOP_EVENT = stop_event
+    _WORKER_PROGRESS_QUEUE = progress_queue
+    _WORKER_ISSUER_RESOLVER = None
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def execute_bounded_plan(
+    pool: Pool,
+    active: Sequence[tuple[str, str, str]],
+    *,
+    run_id: str,
+    insert_bytes: int,
+    heartbeat_seconds: float,
+    worker_count: int,
+    stop_event: Any,
+    progress_queue: Any,
+    completed_before: int,
+    total_units: int,
+    started_at: float,
+) -> list[dict]:
+    """Keep only a bounded number of tasks and payloads in the parent."""
+    pending_items = deque(active)
+    jobs: list[tuple[Any, tuple[str, str, str]]] = []
+    results: list[dict] = []
+    max_in_flight = max(1, worker_count * 2)
+    active_progress: dict[tuple[str, str], dict] = {}
+    last_active_print = started_at
+
+    def submit_available() -> None:
+        while pending_items and len(jobs) < max_in_flight:
+            corpus, start, end = pending_items.popleft()
+            result = pool.apply_async(
+                process_unit,
+                (
+                    corpus,
+                    start,
+                    end,
+                    run_id,
+                    insert_bytes,
+                    heartbeat_seconds,
+                ),
+            )
+            jobs.append((result, (corpus, start, end)))
+
+    submit_available()
+    while jobs:
+        ready = [item for item in jobs if item[0].ready()]
+        drain_progress_queue(progress_queue, active_progress)
+        now = time.perf_counter()
+        if now - last_active_print >= 30.0 and active_progress:
+            print_active_progress(
+                active_progress,
+                durable=completed_before + len(results),
+                total=total_units,
+                elapsed=now - started_at,
+            )
+            last_active_print = now
+        for async_result, identity in ready:
+            jobs.remove((async_result, identity))
+            corpus, start, _ = identity
+            result = async_result.get()
+            results.append(result)
+            active_progress.pop((corpus, start), None)
+            elapsed = time.perf_counter() - started_at
+            durable = completed_before + len(results)
+            run_rate = len(results) / elapsed if elapsed > 0 else 0.0
+            eta_seconds = (
+                (total_units - durable) / run_rate
+                if run_rate > 0
+                else 0.0
+            )
+            print(
+                f"[{durable:,}/{total_units:,}] "
+                f"{corpus.upper():4} {start} COMPLETE | "
+                f"src={result['source_rows']:,} "
+                f"labels={result['label_rows']:,} "
+                f"relations={result['relation_rows']:,} | "
+                f"source={result['source_seconds']:.1f}s "
+                f"classify={result['classify_seconds']:.1f}s "
+                f"write={result['write_seconds']:.1f}s "
+                f"total={result['total_seconds']:.1f}s | "
+                f"ETA={format_duration(eta_seconds)}",
+                flush=True,
+            )
+        if stop_event.is_set():
+            break
+        submit_available()
+        if not ready:
+            time.sleep(0.25)
+    return results
+
+
+def drain_progress_queue(
+    progress_queue: Any,
+    active: dict[tuple[str, str], dict],
+) -> None:
+    while True:
+        try:
+            item = progress_queue.get_nowait()
+        except queue.Empty:
+            return
+        key = (str(item["corpus"]), str(item["start"]))
+        if item.get("stage") == "completed":
+            active.pop(key, None)
+        else:
+            active[key] = item
+
+
+def print_active_progress(
+    active: dict[tuple[str, str], dict],
+    *,
+    durable: int,
+    total: int,
+    elapsed: float,
+) -> None:
+    summaries = []
+    for corpus in ("news", "sec"):
+        rows = [
+            row for row in active.values() if row["corpus"] == corpus
+        ]
+        if not rows:
+            continue
+        focus = min(rows, key=lambda row: row["start"])
+        summaries.append(
+            f"{corpus.upper()} workers={len(rows)} "
+            f"src={sum(int(row['source_rows']) for row in rows):,} "
+            f"labels={sum(int(row['label_rows']) for row in rows):,} "
+            f"oldest={focus['start']}"
+        )
+    print(
+        f"ACTIVE [{durable:,}/{total:,}] elapsed={format_duration(elapsed)}"
+        f" | {' | '.join(summaries)}",
+        flush=True,
+    )
+
+
+@dataclass
+class JsonInsertBuffer:
+    """Serialize once and flush on both byte and row safety bounds."""
+
+    client: ClickHouseHttpClient
+    database: str
+    table: str
+    max_bytes: int = DEFAULT_INSERT_BYTES
+    max_rows: int = 20_000
+    _rows: list[str] = field(default_factory=list)
+    _bytes: int = 0
+
+    def add(self, row: dict) -> None:
+        encoded = json.dumps(
+            row,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        encoded_bytes = len(encoded.encode("utf-8")) + 1
+        if self._rows and (
+            self._bytes + encoded_bytes > self.max_bytes
+            or len(self._rows) >= self.max_rows
+        ):
+            self.flush()
+        self._rows.append(encoded)
+        self._bytes += encoded_bytes
+        if self._bytes >= self.max_bytes or len(self._rows) >= self.max_rows:
+            self.flush()
+
+    def extend(self, rows: Iterable[dict]) -> None:
+        for row in rows:
+            self.add(row)
+
+    def flush(self) -> None:
+        if not self._rows:
+            return
+        insert_serialized_rows(
+            self.client,
+            self.database,
+            self.table,
+            self._rows,
+        )
+        self._rows.clear()
+        self._bytes = 0
+
+
+def worker_issuer_resolver(
+    client: ClickHouseHttpClient,
+) -> NewsIssuerResolver:
+    global _WORKER_ISSUER_RESOLVER
+    if _WORKER_ISSUER_RESOLVER is None:
+        _WORKER_ISSUER_RESOLVER = load_news_issuer_resolver(
+            client,
+            _WORKER_DATABASE,
+        )
+    return _WORKER_ISSUER_RESOLVER
+
+
+def _stop_requested() -> bool:
+    return bool(
+        _WORKER_STOP_EVENT is not None
+        and _WORKER_STOP_EVENT.is_set()
+    )
+
+
+def publish_worker_progress(
+    *,
+    corpus: str,
+    start: str,
+    stage: str,
+    source_rows: int,
+    label_rows: int,
+    relation_rows: int,
+) -> None:
+    if _WORKER_PROGRESS_QUEUE is None:
+        return
+    _WORKER_PROGRESS_QUEUE.put(
+        {
+            "corpus": corpus,
+            "start": start,
+            "stage": stage,
+            "source_rows": source_rows,
+            "label_rows": label_rows,
+            "relation_rows": relation_rows,
+            "worker_pid": os.getpid(),
+        }
+    )
+
+
+def process_unit(
     corpus: str,
     start: str,
     end: str,
     run_id: str,
-    issuer_resolver: NewsIssuerResolver | None,
+    insert_bytes: int = DEFAULT_INSERT_BYTES,
+    heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS,
 ) -> dict:
+    database = _WORKER_DATABASE
     client = make_client()
+    source_count = 0
+    label_count = 0
+    relation_count = 0
+    classify_seconds = 0.0
+    write_seconds = 0.0
+    unit_started = time.perf_counter()
+    heartbeat_at = unit_started
+    label_buffer = JsonInsertBuffer(
+        client, database, TARGET_TABLE, insert_bytes
+    )
+    relation_buffer = JsonInsertBuffer(
+        client, database, RELATION_TABLE, insert_bytes
+    )
     try:
-        rows = (
-            fetch_news_period(client, database, start, end)
-            if corpus == "news"
-            else fetch_sec_period(client, database, start, end)
+        insert_status(
+            client, database, corpus, start, end, run_id,
+            0, 0, 0, "running", "", stage="source",
+            worker_pid=os.getpid(),
         )
-        label_rows: list[dict] = []
-        relation_rows: list[dict] = []
-        label_count = 0
-        relation_count = 0
+        publish_worker_progress(
+            corpus=corpus,
+            start=start,
+            stage="source",
+            source_rows=0,
+            label_rows=0,
+            relation_rows=0,
+        )
+        issuer_resolver = (
+            worker_issuer_resolver(client) if corpus == "news" else None
+        )
+        rows: Iterator[dict] = (
+            iter_news_period(client, database, start, end)
+            if corpus == "news"
+            else iter_sec_period(client, database, start, end)
+        )
         for row in rows:
+            if _stop_requested():
+                raise InterruptedError("operator interruption requested")
+            source_count += 1
             document = row_to_document(row, corpus)
+            classify_started = time.perf_counter()
             labels = (
                 classify_news_document(
                     document,
@@ -198,40 +527,93 @@ def process_unit(
                 if corpus == "news"
                 else classify_sec_document(document)
             )
-            label_rows.extend(
-                persistence_row(document, label, run_id) for label in labels
-            )
+            classify_seconds += time.perf_counter() - classify_started
+            write_started = time.perf_counter()
+            for label in labels:
+                label_buffer.add(persistence_row(document, label, run_id))
             for label in labels:
                 relations = relationship_rows(document, label, run_id)
-                relation_rows.extend(relations)
+                relation_buffer.extend(relations)
                 relation_count += len(relations)
             label_count += len(labels)
-            if len(label_rows) >= 1000:
-                insert_rows(client, database, TARGET_TABLE, label_rows)
-                label_rows.clear()
-            if len(relation_rows) >= 4000:
-                insert_rows(client, database, RELATION_TABLE, relation_rows)
-                relation_rows.clear()
-        if label_rows:
-            insert_rows(client, database, TARGET_TABLE, label_rows)
-        if relation_rows:
-            insert_rows(client, database, RELATION_TABLE, relation_rows)
+            write_seconds += time.perf_counter() - write_started
+            now = time.perf_counter()
+            if now - heartbeat_at >= heartbeat_seconds:
+                write_started = time.perf_counter()
+                insert_status(
+                    client, database, corpus, start, end, run_id,
+                    source_count, label_count, relation_count,
+                    "running", "", stage="classify",
+                    worker_pid=os.getpid(),
+                    classify_seconds=classify_seconds,
+                    write_seconds=write_seconds,
+                    total_seconds=now - unit_started,
+                )
+                write_seconds += time.perf_counter() - write_started
+                publish_worker_progress(
+                    corpus=corpus,
+                    start=start,
+                    stage="classify",
+                    source_rows=source_count,
+                    label_rows=label_count,
+                    relation_rows=relation_count,
+                )
+                heartbeat_at = now
+        write_started = time.perf_counter()
+        label_buffer.flush()
+        relation_buffer.flush()
+        write_seconds += time.perf_counter() - write_started
+        total_seconds = time.perf_counter() - unit_started
+        source_seconds = max(
+            0.0, total_seconds - classify_seconds - write_seconds
+        )
         insert_status(
             client, database, corpus, start, end, run_id,
-            len(rows), label_count, relation_count, "completed", "",
+            source_count, label_count, relation_count, "completed", "",
+            stage="completed", worker_pid=os.getpid(),
+            source_seconds=source_seconds,
+            classify_seconds=classify_seconds,
+            write_seconds=write_seconds,
+            total_seconds=total_seconds,
+        )
+        publish_worker_progress(
+            corpus=corpus,
+            start=start,
+            stage="completed",
+            source_rows=source_count,
+            label_rows=label_count,
+            relation_rows=relation_count,
         )
         return {
             "corpus": corpus,
             "start": start,
-            "source_rows": len(rows),
+            "source_rows": source_count,
             "label_rows": label_count,
             "relation_rows": relation_count,
+            "source_seconds": source_seconds,
+            "classify_seconds": classify_seconds,
+            "write_seconds": write_seconds,
+            "total_seconds": total_seconds,
         }
     except Exception as exc:
         try:
+            status = (
+                "interrupted"
+                if isinstance(exc, InterruptedError)
+                else "failed"
+            )
+            total_seconds = time.perf_counter() - unit_started
             insert_status(
                 client, database, corpus, start, end, run_id,
-                0, 0, 0, "failed", f"{type(exc).__name__}: {exc}"[:1000],
+                source_count, label_count, relation_count, status,
+                f"{type(exc).__name__}: {exc}"[:1000],
+                stage=status, worker_pid=os.getpid(),
+                source_seconds=max(
+                    0.0, total_seconds - classify_seconds - write_seconds
+                ),
+                classify_seconds=classify_seconds,
+                write_seconds=write_seconds,
+                total_seconds=total_seconds,
             )
         finally:
             raise
@@ -239,12 +621,12 @@ def process_unit(
         client.close()
 
 
-def fetch_news_period(
+def iter_news_period(
     client: ClickHouseHttpClient,
     database: str,
     start: str,
     end: str,
-) -> list[dict]:
+) -> Iterator[dict]:
     config = CandidateInventoryConfig()
     db = quote_ident(database)
     sql = f"""
@@ -277,25 +659,124 @@ WHERE e.published_at_utc >= toDateTime64({sql_string(start)}, 9, 'UTC')
 ORDER BY e.published_at_utc, e.canonical_news_id
 FORMAT JSONEachRow
 """
-    return json_rows(client.execute(sql))
+    yield from client.iter_json_each_row(sql)
 
 
-def fetch_sec_period(
+def iter_sec_period(
     client: ClickHouseHttpClient,
     database: str,
     start: str,
     end: str,
-) -> list[dict]:
+) -> Iterator[dict]:
     config = CandidateInventoryConfig()
     db = quote_ident(database)
-    sql = f"""
+    filing_sql = f"""
+SELECT
+ filing_id, cik, accession_number,
+ toString(accepted_at_utc) AS source_timestamp,
+ ifNull(company_name, '') AS company_name,
+ ifNull(form_type, '') AS form_type,
+ ifNull(items, '') AS filing_items,
+ ifNull(toString(filing_date), '') AS filing_date,
+ ifNull(toString(report_date), '') AS report_date,
+ accepted_at_source
+FROM {db}.{quote_ident(config.sec_filing_table)} FINAL
+WHERE accepted_at_utc >= toDateTime64({sql_string(start)}, 9, 'UTC')
+  AND accepted_at_utc < toDateTime64({sql_string(end)}, 9, 'UTC')
+ORDER BY accepted_at_utc, cik, accession_number
+FORMAT JSONEachRow
+"""
+    mappings: dict[str, list[dict]] = {}
+    stream = client.iter_json_each_row(filing_sql)
+    while True:
+        filings = list(next_rows(stream, 64))
+        if not filings:
+            break
+        unseen_ciks = {
+            str(row.get("cik") or "")
+            for row in filings
+            if row.get("cik") and str(row["cik"]) not in mappings
+        }
+        extend_sec_ticker_mappings(
+            client,
+            database,
+            unseen_ciks,
+            mappings,
+        )
+        filing_by_key = {
+            (str(row["cik"]), str(row["accession_number"])): row
+            for row in filings
+        }
+        documents = list(
+            iter_sec_documents_for_filings(
+                client,
+                database,
+                tuple(filing_by_key),
+            )
+        )
+        enriched: list[dict] = []
+        for row in documents:
+            filing = filing_by_key.get(
+                (str(row["cik"]), str(row["accession_number"]))
+            )
+            if filing is None:
+                raise RuntimeError(
+                    "SEC bounded document query returned an unrequested "
+                    "filing identity"
+                )
+            row.update(
+                {
+                    "source_timestamp": filing["source_timestamp"],
+                    "company_name": filing["company_name"],
+                    "form_type": filing["form_type"],
+                    "filing_items": filing["filing_items"],
+                    "filing_date": filing["filing_date"],
+                    "report_date": filing["report_date"],
+                    "accepted_at_source": filing["accepted_at_source"],
+                    "entity_terms": [
+                        row["cik"],
+                        filing["company_name"],
+                    ],
+                    "title": " ".join(
+                        value
+                        for value in (
+                            filing["company_name"],
+                            filing["form_type"],
+                            row["document_type"],
+                            row["description"],
+                        )
+                        if value
+                    ),
+                }
+            )
+            attach_sec_ticker(row, mappings)
+            enriched.append(row)
+        enriched.sort(
+            key=lambda row: (
+                str(row["source_timestamp"]),
+                str(row["source_id"]),
+            )
+        )
+        yield from enriched
+
+
+def iter_sec_documents_for_filings(
+    client: ClickHouseHttpClient,
+    database: str,
+    keys: Sequence[tuple[str, str]],
+) -> Iterator[dict]:
+    if not keys:
+        return
+    config = CandidateInventoryConfig()
+    db = quote_ident(database)
+    key_sql = ",".join(
+        f"({sql_string(cik)},{sql_string(accession)})"
+        for cik, accession in keys
+    )
+    yield from client.iter_json_each_row(f"""
 SELECT
  r.document_id AS source_id,
- toString(f.accepted_at_utc) AS source_timestamp,
- concat(ifNull(f.company_name, ''), ' ', ifNull(f.form_type, ''), ' ',
-        ifNull(d.document_type, ''), ' ', ifNull(d.description, '')) AS title,
  r.text,
- [r.cik, ifNull(f.company_name, '')] AS entity_terms,
  [] AS tickers,
  r.cik,
  r.accession_number,
@@ -309,31 +790,109 @@ SELECT
  ifNull(d.document_type, '') AS document_type,
  ifNull(d.document_role, '') AS document_role,
  ifNull(d.description, '') AS description,
- ifNull(d.document_name, '') AS document_name,
- ifNull(f.company_name, '') AS company_name,
- ifNull(f.form_type, '') AS form_type,
- ifNull(f.items, '') AS filing_items,
- ifNull(toString(f.filing_date), '') AS filing_date,
- ifNull(toString(f.report_date), '') AS report_date,
- f.accepted_at_source
-FROM {db}.{quote_ident(config.sec_rendered_table)} AS r FINAL
-LEFT JOIN {db}.{quote_ident(config.sec_document_table)} AS d FINAL
+ ifNull(d.document_name, '') AS document_name
+FROM
+(
+ SELECT *
+ FROM {db}.{quote_ident(config.sec_rendered_table)} FINAL
+ WHERE (cik, accession_number) IN ({key_sql})
+   AND notEmpty(text)
+) AS r
+LEFT JOIN
+(
+ SELECT document_id, cik, accession_number,
+        document_type, document_role, description, document_name
+ FROM {db}.{quote_ident(config.sec_document_table)} FINAL
+ WHERE (cik, accession_number) IN ({key_sql})
+) AS d
  ON d.document_id=r.document_id
  AND d.cik=r.cik
  AND d.accession_number=r.accession_number
-LEFT JOIN {db}.{quote_ident(config.sec_filing_table)} AS f FINAL
- ON f.filing_id=r.filing_id
- AND f.cik=r.cik
- AND f.accession_number=r.accession_number
-WHERE f.accepted_at_utc >= toDateTime64({sql_string(start)}, 9, 'UTC')
-  AND f.accepted_at_utc < toDateTime64({sql_string(end)}, 9, 'UTC')
-  AND notEmpty(r.text)
-ORDER BY f.accepted_at_utc, r.document_id
+ORDER BY r.cik, r.accession_number, r.document_id
 FORMAT JSONEachRow
-"""
-    rows = json_rows(client.execute(sql))
-    attach_sec_tickers(client, rows)
-    return rows
+""")
+
+
+def extend_sec_ticker_mappings(
+    client: ClickHouseHttpClient,
+    database: str,
+    ciks: Iterable[str],
+    mappings: dict[str, list[dict]],
+) -> None:
+    """Populate an incremental CIK cache without rescanning SEC documents."""
+    db = quote_ident(database)
+    pending = sorted({str(value) for value in ciks if value})
+    for cik in pending:
+        mappings.setdefault(cik, [])
+    for offset in range(0, len(pending), 500):
+        values = ",".join(
+            sql_string(value) for value in pending[offset : offset + 500]
+        )
+        for row in client.iter_json_each_row(f"""
+SELECT cik, ifNull(ticker, '') AS ticker,
+       ifNull(toString(valid_from_date), '') AS valid_from_date,
+       ifNull(toString(valid_to_date_exclusive), '')
+           AS valid_to_date_exclusive,
+       mapping_status, ambiguity_status, confidence_score
+FROM {db}.id_sec_market_bridge_v1 FINAL
+WHERE cik IN ({values}) AND notEmpty(ifNull(ticker, ''))
+FORMAT JSONEachRow
+"""):
+            mappings.setdefault(str(row["cik"]), []).append(row)
+
+
+def next_rows(rows: Iterator[dict], size: int) -> Iterator[dict]:
+    for _ in range(size):
+        try:
+            yield next(rows)
+        except StopIteration:
+            return
+
+
+def attach_sec_ticker(
+    row: dict,
+    mappings: dict[str, list[dict]],
+) -> None:
+    accepted = parse_utc(str(row["source_timestamp"])).date()
+    eligible = [
+        value
+        for value in mappings.get(str(row.get("cik") or ""), ())
+        if date_contains(value, accepted)
+        and str(value.get("mapping_status") or "") in {"resolved", "active"}
+        and str(value.get("ambiguity_status") or "")
+        not in {"ambiguous", "unresolved"}
+    ]
+    eligible.sort(
+        key=lambda value: (
+            -float(value.get("confidence_score") or 0.0),
+            str(value.get("ticker") or ""),
+        )
+    )
+    ticker = str(eligible[0]["ticker"]).upper() if eligible else ""
+    row["tickers"] = [ticker] if ticker else []
+    row["ticker_mapping_status"] = (
+        "resolved_point_in_time" if ticker else "missing"
+    )
+
+
+def fetch_news_period(
+    client: ClickHouseHttpClient,
+    database: str,
+    start: str,
+    end: str,
+) -> list[dict]:
+    """Compatibility helper for bounded tests and audits."""
+    return list(iter_news_period(client, database, start, end))
+
+
+def fetch_sec_period(
+    client: ClickHouseHttpClient,
+    database: str,
+    start: str,
+    end: str,
+) -> list[dict]:
+    """Compatibility helper for bounded tests and audits."""
+    return list(iter_sec_period(client, database, start, end))
 
 
 def row_to_document(row: dict, corpus: str) -> SemanticDocument:
@@ -517,6 +1076,12 @@ CREATE TABLE IF NOT EXISTS {db}.{quote_ident(STATUS_TABLE)}
  label_rows UInt64,
  relation_rows UInt64,
  status LowCardinality(String),
+ stage LowCardinality(String),
+ worker_pid UInt32,
+ source_seconds Float64,
+ classify_seconds Float64,
+ write_seconds Float64,
+ total_seconds Float64,
  error String,
  updated_at_utc DateTime64(6, 'UTC')
 )
@@ -549,6 +1114,18 @@ ORDER BY (
         f"ALTER TABLE {db}.{quote_ident(STATUS_TABLE)} "
         "ADD COLUMN IF NOT EXISTS relation_rows UInt64 AFTER label_rows"
     )
+    for definition in (
+        "stage LowCardinality(String) AFTER status",
+        "worker_pid UInt32 AFTER stage",
+        "source_seconds Float64 AFTER worker_pid",
+        "classify_seconds Float64 AFTER source_seconds",
+        "write_seconds Float64 AFTER classify_seconds",
+        "total_seconds Float64 AFTER write_seconds",
+    ):
+        client.execute(
+            f"ALTER TABLE {db}.{quote_ident(STATUS_TABLE)} "
+            f"ADD COLUMN IF NOT EXISTS {definition}"
+        )
 
 
 def insert_rows(
@@ -559,10 +1136,22 @@ def insert_rows(
 ) -> None:
     if not rows:
         return
-    body = "\n".join(
+    serialized = [
         json.dumps(row, ensure_ascii=False, separators=(",", ":"))
         for row in rows
-    )
+    ]
+    insert_serialized_rows(client, database, table, serialized)
+
+
+def insert_serialized_rows(
+    client: ClickHouseHttpClient,
+    database: str,
+    table: str,
+    serialized_rows: Sequence[str],
+) -> None:
+    if not serialized_rows:
+        return
+    body = "\n".join(serialized_rows)
     client.execute(
         f"INSERT INTO {quote_ident(database)}.{quote_ident(table)} "
         f"FORMAT JSONEachRow\n{body}"
@@ -581,6 +1170,13 @@ def insert_status(
     relation_rows: int,
     status: str,
     error: str,
+    *,
+    stage: str = "",
+    worker_pid: int = 0,
+    source_seconds: float = 0.0,
+    classify_seconds: float = 0.0,
+    write_seconds: float = 0.0,
+    total_seconds: float = 0.0,
 ) -> None:
     insert_rows(
         client,
@@ -596,6 +1192,12 @@ def insert_status(
             "label_rows": label_rows,
             "relation_rows": relation_rows,
             "status": status,
+            "stage": stage or status,
+            "worker_pid": worker_pid,
+            "source_seconds": source_seconds,
+            "classify_seconds": classify_seconds,
+            "write_seconds": write_seconds,
+            "total_seconds": total_seconds,
             "error": error,
             "updated_at_utc": _clickhouse_time(
                 dt.datetime.now(dt.timezone.utc).isoformat()
@@ -689,6 +1291,18 @@ def bounded_period_ranges(
     return output
 
 
+def interleaved_plan(
+    corpora: Sequence[str],
+    periods: Sequence[tuple[str, str]],
+) -> list[tuple[str, str, str]]:
+    """Advance requested corpora together instead of starving later corpora."""
+    return [
+        (corpus, start, end)
+        for start, end in periods
+        for corpus in corpora
+    ]
+
+
 def make_client() -> ClickHouseHttpClient:
     return ClickHouseHttpClient(
         default_clickhouse_url(),
@@ -709,6 +1323,40 @@ def _clickhouse_time(value: str) -> str:
 def _validate_dates(start: str, end: str) -> None:
     if dt.date.fromisoformat(start) >= dt.date.fromisoformat(end):
         raise ValueError("start date must precede end date")
+
+
+def format_duration(seconds: float) -> str:
+    if not seconds or seconds < 0:
+        return "unknown"
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.1f}m"
+    return f"{seconds / 3600:.1f}h"
+
+
+def parse_utc(value: Any) -> dt.datetime:
+    parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def date_contains(mapping: dict[str, Any], day: dt.date) -> bool:
+    start = str(mapping.get("valid_from_date") or "")
+    end = str(mapping.get("valid_to_date_exclusive") or "")
+    return (
+        (not start or dt.date.fromisoformat(start) <= day)
+        and (not end or day < dt.date.fromisoformat(end))
+    )
+
+
+def json_rows(value: str) -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in value.splitlines()
+        if line.strip()
+    ]
 
 
 def assert_certification(path: Path) -> None:

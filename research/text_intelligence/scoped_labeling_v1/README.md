@@ -97,7 +97,33 @@ The bounded, resumable worker path creates only new versioned products:
 The label table stores only issuer evidence and the canonical publication hash;
 the relationship table stores only graph edges. Canonical rendered News and SEC
 tables are never mutated. Work is partitioned by corpus and date window, with
-bounded label and relationship insert batches.
+the following operational guarantees:
+
+- CPU-heavy labeling runs in isolated worker processes rather than a Python
+  thread pool.
+- News rows are streamed directly from ClickHouse. SEC filing metadata is
+  streamed first, then exact primary-key document batches are read without a
+  corpus-wide rendered-text join.
+- News and SEC periods are interleaved, so one corpus cannot starve the other.
+- Label and relationship inserts are bounded by serialized bytes as well as
+  row count; the defaults cap each payload at 8 MiB.
+- Running workers write durable heartbeats and stage timings. The terminal
+  prints compact 30-second active summaries and completion lines with source,
+  classification, write, total, and ETA evidence.
+- Ctrl+C is cooperative: workers stop at row boundaries, completed periods
+  remain complete, and partial periods replay idempotently on the next run.
+
+The default eight processes are conservative. A workstation run can use more
+after observing that ClickHouse and memory remain healthy:
+
+```powershell
+python -m research.text_intelligence.scoped_labeling_v1.run_persist `
+  --execute --workers 16
+```
+
+Increasing workers does not change label semantics, period identity, or resume
+behavior. Do not use `--rebuild-completed` merely to adopt the faster runner;
+already completed V4 periods are discovered and retained automatically.
 
 ## Live integration
 

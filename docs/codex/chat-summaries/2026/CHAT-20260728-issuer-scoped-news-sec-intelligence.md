@@ -73,3 +73,25 @@ No historical V4 backfill was executed. After optional audit review, run:
 ```powershell
 python -m research.text_intelligence.scoped_labeling_v1.run_persist --execute
 ```
+
+## Persistence acceleration follow-up
+
+The first workstation backfill established a real baseline of 28 completed
+weekly News periods in roughly 61 minutes with zero failures, but exposed four
+systemic costs: whole-response materialization, CPU classification under a
+thread pool, small row-count-only writes, and a corpus-major plan that starved
+SEC.
+
+The V4 persistence runner now uses bounded Windows-spawn process workers,
+streams News rows, and reads SEC through small date-filtered filing batches plus
+exact `(cik, accession_number)` rendered-document reads. An incremental
+point-in-time CIK cache replaces both the broad SEC rendered-text join and
+per-document identity queries. News and SEC periods are interleaved. Inserts
+are bounded by serialized bytes and row count, workers publish durable
+heartbeats and stage timings, and the plain terminal reports compact active
+state plus per-completion source/classification/write time and ETA. Ctrl+C sets
+a shared cooperative stop signal; completed periods remain durable and partial
+periods replay idempotently.
+
+The live V4 classifier, table identities, label semantics, and completion keys
+were not changed. Existing completed periods do not need rebuilding.

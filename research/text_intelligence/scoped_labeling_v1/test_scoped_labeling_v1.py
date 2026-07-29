@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import unittest
 import json
+import multiprocessing
+import os
 import tempfile
+import concurrent.futures
 from pathlib import Path
+from unittest import mock
 
+from research.mlops.clickhouse import ClickHouseHttpClient
 from research.text_intelligence.semantic_label_authority_v1.schema import (
     SemanticDocument,
 )
@@ -18,11 +23,32 @@ from .news_identity import IssuerIdentity, NewsIssuerResolver
 from .pipeline import classify_news_document, classify_sec_document
 from .sec_extractor import extract_sec_units
 from .persistence import (
+    JsonInsertBuffer,
+    attach_sec_ticker,
     assert_certification,
     bounded_period_ranges,
+    interleaved_plan,
     relationship_rows,
 )
 from .schema import SCOPED_LABELING_VERSION
+
+
+def process_worker_probe() -> tuple[int, str, bool]:
+    from . import persistence
+
+    persistence.publish_worker_progress(
+        corpus="news",
+        start="2026-07-01",
+        stage="source",
+        source_rows=1,
+        label_rows=0,
+        relation_rows=0,
+    )
+    return (
+        os.getpid(),
+        persistence._WORKER_DATABASE,
+        persistence._stop_requested(),
+    )
 
 
 class ScopedLabelingTests(unittest.TestCase):
@@ -69,6 +95,161 @@ class ScopedLabelingTests(unittest.TestCase):
                 ("2026-07-01", "2026-07-08"),
                 ("2026-07-08", "2026-07-12"),
             ],
+        )
+
+    def test_clickhouse_json_each_row_is_streamed(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return iter((b'{"value":1}\n', b'{"value":2}\n'))
+
+            def read(self):
+                raise AssertionError("streaming path must not materialize")
+
+        client = ClickHouseHttpClient("http://localhost:8123", "", "")
+        with mock.patch(
+            "research.mlops.clickhouse.request.urlopen",
+            return_value=Response(),
+        ):
+            rows = list(
+                client.iter_json_each_row(
+                    "SELECT 1 FORMAT JSONEachRow"
+                )
+            )
+        self.assertEqual(rows, [{"value": 1}, {"value": 2}])
+
+    def test_clickhouse_stream_requires_json_each_row_contract(self) -> None:
+        client = ClickHouseHttpClient("http://localhost:8123", "", "")
+        with self.assertRaisesRegex(ValueError, "FORMAT JSONEachRow"):
+            list(client.iter_json_each_row("SELECT 1 FORMAT TSV"))
+
+    def test_clickhouse_stream_surfaces_server_exception(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return iter((b'{"value":1}\n', b"__exception__\n"))
+
+            def read(self):
+                return b"Code: 241. DB::Exception: memory limit"
+
+        client = ClickHouseHttpClient("http://localhost:8123", "", "")
+        with mock.patch(
+            "research.mlops.clickhouse.request.urlopen",
+            return_value=Response(),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "memory limit"):
+                list(
+                    client.iter_json_each_row(
+                        "SELECT 1 FORMAT JSONEachRow"
+                    )
+                )
+
+    def test_persistence_interleaves_corpora_by_period(self) -> None:
+        periods = [
+            ("2026-07-01", "2026-07-08"),
+            ("2026-07-08", "2026-07-15"),
+        ]
+        self.assertEqual(
+            interleaved_plan(("news", "sec"), periods),
+            [
+                ("news", "2026-07-01", "2026-07-08"),
+                ("sec", "2026-07-01", "2026-07-08"),
+                ("news", "2026-07-08", "2026-07-15"),
+                ("sec", "2026-07-08", "2026-07-15"),
+            ],
+        )
+
+    def test_process_worker_initializer_shares_stop_state(self) -> None:
+        from .persistence import initialize_worker
+
+        context = multiprocessing.get_context("spawn")
+        stop_event = context.Event()
+        progress_queue = context.Queue()
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=context,
+            initializer=initialize_worker,
+            initargs=("test_database", stop_event, progress_queue),
+        ) as executor:
+            pid, database, stopped = executor.submit(
+                process_worker_probe
+            ).result(timeout=20)
+            self.assertNotEqual(pid, os.getpid())
+            self.assertEqual(database, "test_database")
+            self.assertFalse(stopped)
+            stop_event.set()
+            _, _, stopped = executor.submit(
+                process_worker_probe
+            ).result(timeout=20)
+            self.assertTrue(stopped)
+        progress = progress_queue.get(timeout=5)
+        self.assertEqual(progress["source_rows"], 1)
+        progress_queue.close()
+
+    def test_insert_buffer_flushes_on_serialized_bytes(self) -> None:
+        client = mock.Mock()
+        buffer = JsonInsertBuffer(
+            client=client,
+            database="q_live",
+            table="labels",
+            max_bytes=40,
+            max_rows=100,
+        )
+        buffer.add({"text": "a" * 24})
+        buffer.add({"text": "b" * 24})
+        buffer.flush()
+        self.assertEqual(client.execute.call_count, 2)
+        for call in client.execute.call_args_list:
+            self.assertIn("FORMAT JSONEachRow", call.args[0])
+
+    def test_sec_mapping_is_point_in_time_and_confidence_ordered(self) -> None:
+        row = {
+            "cik": "0001",
+            "source_timestamp": "2026-07-10T12:00:00Z",
+        }
+        mappings = {
+            "0001": [
+                {
+                    "ticker": "OLD",
+                    "valid_from_date": "2020-01-01",
+                    "valid_to_date_exclusive": "2025-01-01",
+                    "mapping_status": "resolved",
+                    "ambiguity_status": "",
+                    "confidence_score": 1.0,
+                },
+                {
+                    "ticker": "LOW",
+                    "valid_from_date": "2025-01-01",
+                    "valid_to_date_exclusive": "",
+                    "mapping_status": "resolved",
+                    "ambiguity_status": "",
+                    "confidence_score": 0.5,
+                },
+                {
+                    "ticker": "HIGH",
+                    "valid_from_date": "2025-01-01",
+                    "valid_to_date_exclusive": "",
+                    "mapping_status": "active",
+                    "ambiguity_status": "",
+                    "confidence_score": 0.9,
+                },
+            ]
+        }
+        attach_sec_ticker(row, mappings)
+        self.assertEqual(row["tickers"], ["HIGH"])
+        self.assertEqual(
+            row["ticker_mapping_status"],
+            "resolved_point_in_time",
         )
 
     def test_persistence_requires_matching_clean_certification(self) -> None:
