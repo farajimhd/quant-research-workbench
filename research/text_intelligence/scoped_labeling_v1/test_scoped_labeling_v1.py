@@ -29,8 +29,12 @@ from .persistence import (
     attach_sec_ticker,
     assert_certification,
     bounded_period_ranges,
+    cleanup_inflight_statuses,
     execute_bounded_plan,
     interleaved_plan,
+    iter_bounded_source_batches,
+    iter_news_period,
+    iter_sec_documents_for_filings,
     is_transient_clickhouse_error,
     parse_args,
     relationship_rows,
@@ -176,6 +180,157 @@ class ScopedLabelingTests(unittest.TestCase):
 
     def test_persistence_accepts_sixty_four_workers(self) -> None:
         self.assertEqual(parse_args(["--workers", "64"]).workers, 64)
+
+    def test_news_query_bounds_final_inputs_before_join(self) -> None:
+        class CaptureClient:
+            sql = ""
+
+            def iter_json_each_row(self, sql):
+                self.sql = sql
+                return iter(())
+
+        client = CaptureClient()
+        self.assertEqual(
+            list(
+                iter_news_period(
+                    client,
+                    "q_live",
+                    "2011-01-28",
+                    "2011-02-04",
+                )
+            ),
+            [],
+        )
+        self.assertEqual(client.sql.count("PREWHERE published_date"), 2)
+        self.assertIn("FROM `q_live`.`benzinga_news_event_v2` FINAL", client.sql)
+        self.assertIn(
+            "FROM `q_live`.`benzinga_news_rendered_v2` FINAL",
+            client.sql,
+        )
+        self.assertNotIn(
+            "FROM `q_live`.`benzinga_news_event_v2` AS e FINAL",
+            client.sql,
+        )
+
+    def test_sec_document_query_uses_bounded_latest_rows(self) -> None:
+        class CaptureClient:
+            sql = ""
+
+            def iter_json_each_row(self, sql):
+                self.sql = sql
+                return iter(())
+
+        client = CaptureClient()
+        self.assertEqual(
+            list(
+                iter_sec_documents_for_filings(
+                    client,
+                    "q_live",
+                    (("0000000001", "0000000001-26-000001"),),
+                    partition=7,
+                )
+            ),
+            [],
+        )
+        self.assertNotIn(" FINAL", client.sql)
+        self.assertEqual(
+            client.sql.count("PREWHERE cityHash64(cik) % 64 = 7"),
+            2,
+        )
+        self.assertEqual(
+            client.sql.count(
+                "AND (cik, accession_number) IN"
+            ),
+            2,
+        )
+        self.assertIn(
+            "LIMIT 1 BY cik, accession_number, document_id, text_kind",
+            client.sql,
+        )
+        self.assertIn(
+            "LIMIT 1 BY cik, accession_number, sequence_number, document_id",
+            client.sql,
+        )
+
+    def test_bounded_source_is_fully_drained_before_return(self) -> None:
+        drained = False
+
+        def rows(*_args):
+            nonlocal drained
+            yield {"source_id": "one"}
+            yield {"source_id": "two"}
+            drained = True
+
+        with mock.patch(
+            "research.text_intelligence.scoped_labeling_v1.persistence."
+            "iter_news_period",
+            side_effect=rows,
+        ):
+            batches = list(
+                iter_bounded_source_batches(
+                    mock.Mock(),
+                    "q_live",
+                    "news",
+                    "2026-07-01",
+                    "2026-07-08",
+                )
+            )
+        self.assertTrue(drained)
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(
+            [row["source_id"] for row in batches[0]],
+            ["one", "two"],
+        )
+
+    def test_cleanup_converts_only_current_inflight_rows(self) -> None:
+        class CleanupClient:
+            closed = False
+
+            def iter_json_each_row(self, sql):
+                self.sql = sql
+                return iter(
+                    (
+                        {
+                            "corpus": "news",
+                            "period_start": "2026-07-01",
+                            "period_end_exclusive": "2026-07-08",
+                            "source_rows": 12,
+                            "label_rows": 20,
+                            "relation_rows": 40,
+                            "worker_pid": 123,
+                            "source_seconds": 1.0,
+                            "classify_seconds": 2.0,
+                            "write_seconds": 3.0,
+                            "total_seconds": 6.0,
+                        },
+                    )
+                )
+
+            def close(self):
+                self.closed = True
+
+        client = CleanupClient()
+        with (
+            mock.patch(
+                "research.text_intelligence.scoped_labeling_v1.persistence."
+                "make_client",
+                return_value=client,
+            ),
+            mock.patch(
+                "research.text_intelligence.scoped_labeling_v1.persistence."
+                "insert_status",
+            ) as insert_status,
+        ):
+            count = cleanup_inflight_statuses(
+                "q_live",
+                "run-1",
+                "peer failed",
+            )
+        self.assertEqual(count, 1)
+        self.assertTrue(client.closed)
+        self.assertIn("run_id='run-1'", client.sql)
+        self.assertIn("status IN ('running', 'retrying')", client.sql)
+        self.assertEqual(insert_status.call_args.args[9], "interrupted")
 
     def test_transient_stream_failure_replays_one_bounded_unit(self) -> None:
         class ImmediateResult:

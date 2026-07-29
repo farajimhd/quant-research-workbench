@@ -229,14 +229,19 @@ def run(args: argparse.Namespace) -> dict:
     except KeyboardInterrupt:
         stop_event.set()
         print(
-            "\nINTERRUPT | stopping workers at row boundaries; completed "
-            "periods remain durable and partial periods will replay safely",
+            "\nINTERRUPT | terminating active workers; completed periods "
+            "remain durable and interrupted periods will replay safely",
             flush=True,
         )
         pool.terminate()
         pool.join()
+        cleanup_inflight_statuses(
+            args.database,
+            run_id,
+            "run interrupted by operator",
+        )
         raise
-    except Exception:
+    except Exception as exc:
         stop_event.set()
         print(
             "BACKFILL FAILED | stopping other active workers; the failed "
@@ -245,6 +250,11 @@ def run(args: argparse.Namespace) -> dict:
         )
         pool.terminate()
         pool.join()
+        cleanup_inflight_statuses(
+            args.database,
+            run_id,
+            f"run aborted after peer failure: {safe_error_summary(exc)}",
+        )
         raise
     else:
         pool.close()
@@ -616,57 +626,61 @@ def process_unit(
         issuer_resolver = (
             worker_issuer_resolver(client) if corpus == "news" else None
         )
-        rows: Iterator[dict] = (
-            iter_news_period(client, database, start, end)
-            if corpus == "news"
-            else iter_sec_period(client, database, start, end)
-        )
-        for row in rows:
-            if _stop_requested():
-                raise InterruptedError("operator interruption requested")
-            source_count += 1
-            document = row_to_document(row, corpus)
-            classify_started = time.perf_counter()
-            labels = (
-                classify_news_document(
-                    document,
-                    issuer_resolver=issuer_resolver,
+        # Drain each bounded source batch before CPU classification. This
+        # deliberately closes the ClickHouse HTTP response promptly instead of
+        # holding the server-side formatter/socket open while documents are
+        # classified and inserted.
+        for rows in iter_bounded_source_batches(
+            client, database, corpus, start, end
+        ):
+            for row in rows:
+                if _stop_requested():
+                    raise InterruptedError("operator interruption requested")
+                source_count += 1
+                document = row_to_document(row, corpus)
+                classify_started = time.perf_counter()
+                labels = (
+                    classify_news_document(
+                        document,
+                        issuer_resolver=issuer_resolver,
+                    )
+                    if corpus == "news"
+                    else classify_sec_document(document)
                 )
-                if corpus == "news"
-                else classify_sec_document(document)
-            )
-            classify_seconds += time.perf_counter() - classify_started
-            write_started = time.perf_counter()
-            for label in labels:
-                label_buffer.add(persistence_row(document, label, run_id))
-            for label in labels:
-                relations = relationship_rows(document, label, run_id)
-                relation_buffer.extend(relations)
-                relation_count += len(relations)
-            label_count += len(labels)
-            write_seconds += time.perf_counter() - write_started
-            now = time.perf_counter()
-            if now - heartbeat_at >= heartbeat_seconds:
+                classify_seconds += time.perf_counter() - classify_started
                 write_started = time.perf_counter()
-                insert_status(
-                    client, database, corpus, start, end, run_id,
-                    source_count, label_count, relation_count,
-                    "running", "", stage="classify",
-                    worker_pid=os.getpid(),
-                    classify_seconds=classify_seconds,
-                    write_seconds=write_seconds,
-                    total_seconds=now - unit_started,
-                )
+                for label in labels:
+                    label_buffer.add(
+                        persistence_row(document, label, run_id)
+                    )
+                for label in labels:
+                    relations = relationship_rows(document, label, run_id)
+                    relation_buffer.extend(relations)
+                    relation_count += len(relations)
+                label_count += len(labels)
                 write_seconds += time.perf_counter() - write_started
-                publish_worker_progress(
-                    corpus=corpus,
-                    start=start,
-                    stage="classify",
-                    source_rows=source_count,
-                    label_rows=label_count,
-                    relation_rows=relation_count,
-                )
-                heartbeat_at = now
+                now = time.perf_counter()
+                if now - heartbeat_at >= heartbeat_seconds:
+                    write_started = time.perf_counter()
+                    insert_status(
+                        client, database, corpus, start, end, run_id,
+                        source_count, label_count, relation_count,
+                        "running", "", stage="classify",
+                        worker_pid=os.getpid(),
+                        classify_seconds=classify_seconds,
+                        write_seconds=write_seconds,
+                        total_seconds=now - unit_started,
+                    )
+                    write_seconds += time.perf_counter() - write_started
+                    publish_worker_progress(
+                        corpus=corpus,
+                        start=start,
+                        stage="classify",
+                        source_rows=source_count,
+                        label_rows=label_count,
+                        relation_rows=relation_count,
+                    )
+                    heartbeat_at = now
         write_started = time.perf_counter()
         label_buffer.flush()
         relation_buffer.flush()
@@ -736,6 +750,22 @@ def process_unit(
         client.close()
 
 
+def iter_bounded_source_batches(
+    client: ClickHouseHttpClient,
+    database: str,
+    corpus: str,
+    start: str,
+    end: str,
+) -> Iterator[list[dict]]:
+    """Yield source batches only after each ClickHouse response is closed."""
+    if corpus == "news":
+        yield list(iter_news_period(client, database, start, end))
+        return
+    if corpus != "sec":
+        raise ValueError(f"Unsupported corpus: {corpus}")
+    yield from iter_sec_period_batches(client, database, start, end)
+
+
 def iter_news_period(
     client: ClickHouseHttpClient,
     database: str,
@@ -763,14 +793,33 @@ SELECT
  r.text_contract,
  r.quality_flags,
  r.rendered_text_hash
-FROM {db}.{quote_ident(config.news_event_table)} AS e FINAL
-INNER JOIN {db}.{quote_ident(config.news_rendered_table)} AS r FINAL
+FROM
+(
+ SELECT
+  canonical_news_id, published_at_utc, published_date,
+  provider_article_id, source_revision_key, title, tickers, channels,
+  provider_tags, links, author, url_domain, article_url,
+  content_quality_flags
+ FROM {db}.{quote_ident(config.news_event_table)} FINAL
+ PREWHERE published_date >= toDate({sql_string(start)})
+   AND published_date < toDate({sql_string(end)})
+ WHERE published_at_utc >= toDateTime64({sql_string(start)}, 9, 'UTC')
+   AND published_at_utc < toDateTime64({sql_string(end)}, 9, 'UTC')
+) AS e
+INNER JOIN
+(
+ SELECT
+  published_date, provider_article_id, source_revision_key,
+  rendered_text, renderer_version, text_contract, quality_flags,
+  rendered_text_hash
+ FROM {db}.{quote_ident(config.news_rendered_table)} FINAL
+ PREWHERE published_date >= toDate({sql_string(start)})
+   AND published_date < toDate({sql_string(end)})
+ WHERE notEmpty(rendered_text)
+) AS r
  ON r.published_date=e.published_date
  AND r.provider_article_id=e.provider_article_id
  AND r.source_revision_key=e.source_revision_key
-WHERE e.published_at_utc >= toDateTime64({sql_string(start)}, 9, 'UTC')
-  AND e.published_at_utc < toDateTime64({sql_string(end)}, 9, 'UTC')
-  AND notEmpty(r.rendered_text)
 ORDER BY e.published_at_utc, e.canonical_news_id
 FORMAT JSONEachRow
 """
@@ -783,11 +832,22 @@ def iter_sec_period(
     start: str,
     end: str,
 ) -> Iterator[dict]:
+    for batch in iter_sec_period_batches(client, database, start, end):
+        yield from batch
+
+
+def iter_sec_period_batches(
+    client: ClickHouseHttpClient,
+    database: str,
+    start: str,
+    end: str,
+) -> Iterator[list[dict]]:
     config = CandidateInventoryConfig()
     db = quote_ident(database)
     filing_sql = f"""
 SELECT
  filing_id, cik, accession_number,
+ cityHash64(cik) % 64 AS document_partition,
  toString(accepted_at_utc) AS source_timestamp,
  ifNull(company_name, '') AS company_name,
  ifNull(form_type, '') AS form_type,
@@ -796,89 +856,103 @@ SELECT
  ifNull(toString(report_date), '') AS report_date,
  accepted_at_source
 FROM {db}.{quote_ident(config.sec_filing_table)} FINAL
+PREWHERE accepted_at_utc >= toDateTime64({sql_string(start)}, 9, 'UTC')
+  AND accepted_at_utc < toDateTime64({sql_string(end)}, 9, 'UTC')
 WHERE accepted_at_utc >= toDateTime64({sql_string(start)}, 9, 'UTC')
   AND accepted_at_utc < toDateTime64({sql_string(end)}, 9, 'UTC')
 ORDER BY accepted_at_utc, cik, accession_number
 FORMAT JSONEachRow
 """
     mappings: dict[str, list[dict]] = {}
-    stream = client.iter_json_each_row(filing_sql)
-    while True:
-        filings = list(next_rows(stream, 64))
-        if not filings:
-            break
-        unseen_ciks = {
-            str(row.get("cik") or "")
-            for row in filings
-            if row.get("cik") and str(row["cik"]) not in mappings
-        }
-        extend_sec_ticker_mappings(
-            client,
-            database,
-            unseen_ciks,
-            mappings,
-        )
-        filing_by_key = {
-            (str(row["cik"]), str(row["accession_number"])): row
-            for row in filings
-        }
-        documents = list(
-            iter_sec_documents_for_filings(
-                client,
-                database,
-                tuple(filing_by_key),
-            )
-        )
-        enriched: list[dict] = []
-        for row in documents:
-            filing = filing_by_key.get(
-                (str(row["cik"]), str(row["accession_number"]))
-            )
-            if filing is None:
-                raise RuntimeError(
-                    "SEC bounded document query returned an unrequested "
-                    "filing identity"
+    # Drain the bounded filing identity response before document lookup and
+    # CPU work. Keeping this stream open across nested queries caused idle
+    # formatter sockets and made transient disconnects likely.
+    all_filings = list(client.iter_json_each_row(filing_sql))
+    extend_sec_ticker_mappings(
+        client,
+        database,
+        {
+            str(row["cik"])
+            for row in all_filings
+            if row.get("cik")
+        },
+        mappings,
+    )
+    filing_by_key = {
+        (str(row["cik"]), str(row["accession_number"])): row
+        for row in all_filings
+    }
+    keys_by_partition: dict[int, list[tuple[str, str]]] = {}
+    for key, filing in filing_by_key.items():
+        partition = int(filing["document_partition"])
+        keys_by_partition.setdefault(partition, []).append(key)
+
+    for partition in sorted(keys_by_partition):
+        partition_keys = keys_by_partition[partition]
+        # Bound both SQL text and response size while retaining partition
+        # pruning. A weekly unit normally needs only a few queries per physical
+        # SEC hash partition.
+        for offset in range(0, len(partition_keys), 1_000):
+            enriched: list[dict] = []
+            documents = list(
+                iter_sec_documents_for_filings(
+                    client,
+                    database,
+                    partition_keys[offset:offset + 1_000],
+                    partition=partition,
                 )
-            row.update(
-                {
-                    "source_timestamp": filing["source_timestamp"],
-                    "company_name": filing["company_name"],
-                    "form_type": filing["form_type"],
-                    "filing_items": filing["filing_items"],
-                    "filing_date": filing["filing_date"],
-                    "report_date": filing["report_date"],
-                    "accepted_at_source": filing["accepted_at_source"],
-                    "entity_terms": [
-                        row["cik"],
-                        filing["company_name"],
-                    ],
-                    "title": " ".join(
-                        value
-                        for value in (
+            )
+            for row in documents:
+                filing = filing_by_key.get(
+                    (str(row["cik"]), str(row["accession_number"]))
+                )
+                if filing is None:
+                    raise RuntimeError(
+                        "SEC bounded document query returned an unrequested "
+                        "filing identity"
+                    )
+                row.update(
+                    {
+                        "source_timestamp": filing["source_timestamp"],
+                        "company_name": filing["company_name"],
+                        "form_type": filing["form_type"],
+                        "filing_items": filing["filing_items"],
+                        "filing_date": filing["filing_date"],
+                        "report_date": filing["report_date"],
+                        "accepted_at_source": filing["accepted_at_source"],
+                        "entity_terms": [
+                            row["cik"],
                             filing["company_name"],
-                            filing["form_type"],
-                            row["document_type"],
-                            row["description"],
-                        )
-                        if value
-                    ),
-                }
+                        ],
+                        "title": " ".join(
+                            value
+                            for value in (
+                                filing["company_name"],
+                                filing["form_type"],
+                                row["document_type"],
+                                row["description"],
+                            )
+                            if value
+                        ),
+                    }
+                )
+                attach_sec_ticker(row, mappings)
+                enriched.append(row)
+            enriched.sort(
+                key=lambda row: (
+                    str(row["source_timestamp"]),
+                    str(row["source_id"]),
+                )
             )
-            attach_sec_ticker(row, mappings)
-            enriched.append(row)
-        enriched.sort(
-            key=lambda row: (
-                str(row["source_timestamp"]),
-                str(row["source_id"]),
-            )
-        )
-        yield from enriched
+            yield enriched
 
 
 def iter_sec_documents_for_filings(
     client: ClickHouseHttpClient,
     database: str,
     keys: Sequence[tuple[str, str]],
+    *,
+    partition: int,
 ) -> Iterator[dict]:
     if not keys:
         return
@@ -908,21 +982,30 @@ SELECT
  ifNull(d.document_name, '') AS document_name
 FROM
 (
- SELECT *
- FROM {db}.{quote_ident(config.sec_rendered_table)} FINAL
- WHERE (cik, accession_number) IN ({key_sql})
-   AND notEmpty(text)
+ SELECT
+  document_id, text, cik, accession_number, filing_id, text_kind,
+  text_char_count, text_sha256, normalizer_version, extraction_method,
+  quality_flags
+ FROM {db}.{quote_ident(config.sec_rendered_table)}
+ PREWHERE cityHash64(cik) % 64 = {int(partition)}
+   AND (cik, accession_number) IN ({key_sql})
+ ORDER BY source_revision_rank DESC, inserted_at DESC
+ LIMIT 1 BY cik, accession_number, document_id, text_kind
 ) AS r
 LEFT JOIN
 (
  SELECT document_id, cik, accession_number,
         document_type, document_role, description, document_name
- FROM {db}.{quote_ident(config.sec_document_table)} FINAL
- WHERE (cik, accession_number) IN ({key_sql})
+ FROM {db}.{quote_ident(config.sec_document_table)}
+ PREWHERE cityHash64(cik) % 64 = {int(partition)}
+   AND (cik, accession_number) IN ({key_sql})
+ ORDER BY inserted_at DESC
+ LIMIT 1 BY cik, accession_number, sequence_number, document_id
 ) AS d
  ON d.document_id=r.document_id
  AND d.cik=r.cik
  AND d.accession_number=r.accession_number
+WHERE notEmpty(r.text)
 ORDER BY r.cik, r.accession_number, r.document_id
 FORMAT JSONEachRow
 """)
@@ -954,14 +1037,6 @@ WHERE cik IN ({values}) AND notEmpty(ifNull(ticker, ''))
 FORMAT JSONEachRow
 """):
             mappings.setdefault(str(row["cik"]), []).append(row)
-
-
-def next_rows(rows: Iterator[dict], size: int) -> Iterator[dict]:
-    for _ in range(size):
-        try:
-            yield next(rows)
-        except StopIteration:
-            return
 
 
 def attach_sec_ticker(
@@ -1319,6 +1394,74 @@ def insert_status(
             ),
         }],
     )
+
+
+def cleanup_inflight_statuses(
+    database: str,
+    run_id: str,
+    reason: str,
+) -> int:
+    """Close durable statuses left active when the parent terminates workers."""
+    client = make_client()
+    try:
+        rows = list(
+            client.iter_json_each_row(f"""
+SELECT
+ corpus,
+ toString(period_start) AS period_start,
+ toString(period_end_exclusive) AS period_end_exclusive,
+ source_rows,
+ label_rows,
+ relation_rows,
+ worker_pid,
+ source_seconds,
+ classify_seconds,
+ write_seconds,
+ total_seconds
+FROM {quote_ident(database)}.{quote_ident(STATUS_TABLE)} FINAL
+WHERE labeling_version={sql_string(SCOPED_LABELING_VERSION)}
+  AND run_id={sql_string(run_id)}
+  AND status IN ('running', 'retrying')
+FORMAT JSONEachRow
+""")
+        )
+        for row in rows:
+            insert_status(
+                client,
+                database,
+                str(row["corpus"]),
+                str(row["period_start"]),
+                str(row["period_end_exclusive"]),
+                run_id,
+                int(row["source_rows"]),
+                int(row["label_rows"]),
+                int(row["relation_rows"]),
+                "interrupted",
+                reason[:1000],
+                stage="interrupted",
+                worker_pid=int(row["worker_pid"]),
+                source_seconds=float(row["source_seconds"]),
+                classify_seconds=float(row["classify_seconds"]),
+                write_seconds=float(row["write_seconds"]),
+                total_seconds=float(row["total_seconds"]),
+            )
+        if rows:
+            print(
+                f"STATUS CLEANUP | interrupted={len(rows):,} "
+                f"run_id={run_id}",
+                flush=True,
+            )
+        return len(rows)
+    except Exception as exc:
+        # Status cleanup must never replace the originating failure.
+        print(
+            "STATUS CLEANUP WARNING | active rows could not be closed | "
+            f"reason={safe_error_summary(exc)}",
+            flush=True,
+        )
+        return 0
+    finally:
+        client.close()
 
 
 def completed_units(

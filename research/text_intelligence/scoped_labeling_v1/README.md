@@ -101,9 +101,16 @@ the following operational guarantees:
 
 - CPU-heavy labeling runs in isolated worker processes rather than a Python
   thread pool.
-- News rows are streamed directly from ClickHouse. SEC filing metadata is
-  streamed first, then exact primary-key document batches are read without a
-  corpus-wide rendered-text join.
+- Each News window applies partition predicates to both latest-row inputs
+  before joining, then fully drains that bounded response before CPU labeling.
+  This prevents `FINAL` from scanning the multi-year corpus and prevents CPU
+  work from holding a ClickHouse formatter socket open.
+- SEC filing identities are drained first and grouped by the rendered/document
+  tables' physical `cityHash64(cik) % 64` partition. Each partition batch uses
+  exact filing keys plus latest-row `LIMIT 1 BY` selection; its response is
+  closed before classification. This preserves `FINAL` semantics without a
+  corpus-wide merge and bounds worker memory even when a week contains
+  gigabytes of rendered filing text.
 - News and SEC periods are interleaved, so one corpus cannot starve the other.
 - Label and relationship inserts are bounded by serialized bytes as well as
   row count; the defaults cap each payload at 8 MiB.
@@ -124,18 +131,20 @@ the following operational guarantees:
   `SCOPED_LABELING_CLICKHOUSE_MAX_THREADS=1..8`.
 - Spawned workers recycle after 32 bounded periods to limit allocator and
   regular-expression state growth during the multi-million-document build.
-- Ctrl+C is cooperative: workers stop at row boundaries, completed periods
-  remain complete, and partial periods replay idempotently on the next run.
+- Ctrl+C terminates active workers promptly. The parent changes the current
+  run's remaining `running`/`retrying` statuses to `interrupted`; completed
+  periods remain complete and partial periods replay idempotently next time.
 
-The default eight processes are conservative. A workstation run can use more
-after observing that ClickHouse and memory remain healthy:
+The default eight processes are conservative. Sixteen is the recommended
+workstation starting point for the repaired bounded queries:
 
 ```powershell
 python -m research.text_intelligence.scoped_labeling_v1.run_persist `
   --execute --workers 16
 ```
 
-The supported ceiling is 64 workers:
+The supported ceiling is 64 workers, but it is a measured tuning ceiling rather
+than a recommended default:
 
 ```powershell
 python -m research.text_intelligence.scoped_labeling_v1.run_persist `
@@ -145,7 +154,9 @@ python -m research.text_intelligence.scoped_labeling_v1.run_persist `
 Increasing workers does not change label semantics, period identity, retry
 identity, or resume behavior. It is useful only while CPU remains the
 bottleneck; a rising retry rate means ClickHouse or the network is saturated
-and fewer workers will finish sooner. Do not use `--rebuild-completed` merely
+and fewer workers will finish sooner. SEC batches can contain large rendered
+documents, so confirm database memory, worker RSS, and retry rate before moving
+above 16. Do not use `--rebuild-completed` merely
 to adopt the repaired runner; already completed V4 periods are discovered and
 retained automatically.
 

@@ -154,3 +154,44 @@ count, and workers recycle after 32 units. This permits measured CPU scaling
 without allowing 64 Python processes to multiply into unrestricted
 ClickHouse-side parallelism. Existing completed periods remain authoritative;
 resume without `--rebuild-completed`.
+
+## Bounded-source repair
+
+The retry-enabled runner exposed an upstream query defect rather than an
+insufficient retry count. The failed 2011-01-28 News week contained 3,580
+articles, but every attempt scanned roughly 5.1 million rows and 6.9 GB because
+the date predicates sat outside a two-table `FINAL` join. Classification then
+kept the ClickHouse response open until the server formatter socket closed.
+The SEC exact-filing query had the same structural problem: each 64-filing
+batch scanned roughly 10.9 million rows and 26.35 GB through global `FINAL`
+subqueries.
+
+The repaired authority:
+
+- applies the News date partition predicate independently to event and rendered
+  latest-row inputs before joining;
+- drains the bounded News response before classification;
+- drains SEC filing identities, groups exact filing keys by the rendered and
+  document tables' physical `cityHash64(cik) % 64` partition, and uses bounded
+  latest-row `LIMIT 1 BY` selection;
+- drains each SEC partition response before classifying that batch, bounding
+  memory even when a weekly period contains gigabytes of filing text; and
+- changes any current-run `running` or `retrying` statuses to `interrupted`
+  after the parent terminates workers on fatal error or Ctrl+C.
+
+Validation against the live ClickHouse authority found:
+
+- the formerly failing News week returned 3,580/3,580 unique articles and
+  9,958,098 rendered characters;
+- the full repaired write path completed it with zero retries in 205.8 seconds,
+  persisting 5,849 labels and 24,093 relations; source acquisition took 1.1
+  seconds;
+- a representative SEC batch returned 304 documents and 9.1 MB in 1.26
+  seconds;
+- bounded latest-row SEC results matched partition-bounded `FINAL` exactly for
+  53/53 identities and text hashes; and
+- 41 stale active statuses from the stopped run were closed as `interrupted`.
+
+The workstation should resume with 16 workers. Sixty-four remains a supported
+ceiling, not a default; raising concurrency is justified only while CPU remains
+the bottleneck and database memory plus retry rate remain healthy.
