@@ -5,6 +5,7 @@ import { MarketStatusBadge, liveMarketStatus, type MarketStatus } from "./app/co
 import { CanvasConfigurationPage, CanvasFocusPage } from "./pages/CanvasConfigurationPage";
 import { HistoricalTradingPage } from "./pages/HistoricalTradingPage";
 import { RealLiveTradingPage } from "./pages/RealLiveTradingPage";
+import { ReplayTradingPage } from "./pages/ReplayTradingPage";
 import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
 
 const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
@@ -48,7 +49,7 @@ export function App() {
         {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onMarketStatusChange={page === "real-live-trading" ? setLiveStatus : undefined} onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
       </div>
       <div aria-hidden={page !== "replay-trading"} className={page === "replay-trading" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "replay-trading" || visitedPages.has("replay-trading") ? <HistoricalTradingPage mode="replay" /> : null}
+        {page === "replay-trading" || visitedPages.has("replay-trading") ? <ReplayTradingPage /> : null}
       </div>
       <div aria-hidden={page !== "backtest-trading"} className={page === "backtest-trading" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "backtest-trading" || visitedPages.has("backtest-trading") ? <HistoricalTradingPage mode="backtest" /> : null}

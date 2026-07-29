@@ -219,6 +219,7 @@ type CanvasPreview = {
     revision: number;
     signals: PreviewRow[];
     order_management?: PreviewRow[];
+    run_id?: string;
     state: string;
     strategy_id: string;
     name?: string;
@@ -229,6 +230,23 @@ type CanvasPreview = {
   };
   trading: CanonicalTradingPreview;
   xbrl: PreviewRow[];
+};
+
+export type CanvasReplayRun = {
+  account_ids: string[];
+  canvas_revision: string;
+  canvas_profile: CanvasRegistry;
+  current_time: string;
+  error: string;
+  progress: number;
+  run_id: string;
+  session_date: string;
+  session_end: string;
+  session_start: string;
+  requested_start: string;
+  speed: number;
+  status: string;
+  updated_at: string;
 };
 
 type CanvasScannerSnapshot = {
@@ -663,6 +681,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
   const historyRequestRef = useRef(false);
   const historyAbortRef = useRef<AbortController | null>(null);
   const requestKeyRef = useRef("");
+  const loadedCutoffRef = useRef(0);
 
   const loadEarlier = useCallback(() => {
     const ticker = symbol.trim().toUpperCase();
@@ -724,6 +743,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
     requestKeyRef.current = requestKey;
     historyCursorRef.current = null;
     historyRequestRef.current = false;
+    loadedCutoffRef.current = cutoffMs;
     setState({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
 
     const fetchHistoricalPage = () => {
@@ -772,7 +792,48 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
       if (requestKeyRef.current === requestKey) requestKeyRef.current = "";
       historyController.abort();
     };
-  }, [cutoffMs, indicatorColumns, pointInTime, rowBudget, sessionDate, symbol, timeframe]);
+  }, [indicatorColumns, pointInTime, rowBudget, sessionDate, symbol, timeframe]);
+
+  useEffect(() => {
+    const ticker = symbol.trim().toUpperCase();
+    const requestKey = `${ticker}:${timeframe}:${indicatorColumns}`;
+    if (!ticker || cutoffMs <= loadedCutoffRef.current || requestKeyRef.current !== requestKey) return;
+    loadedCutoffRef.current = cutoffMs;
+    const controller = new AbortController();
+    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, {
+      signal: controller.signal,
+      timeoutMs: 120000,
+    })
+      .then((payload) => {
+        if (controller.signal.aborted || requestKeyRef.current !== requestKey) return;
+        updateHistoryCursor(historyCursorRef, payload);
+        const aligned = alignHistoricalChartRows(
+          closedRowsAtCutoff(payload.history, timeframe, cutoffMs),
+          closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs),
+          payload.indicators_available,
+        );
+        setState((current) => {
+          const merged = mergeHistoricalChartPage(current.bars, current.indicators, aligned.bars, aligned.indicators, rowBudget);
+          return {
+            ...current,
+            bars: merged.bars,
+            canLoadEarlier: payload.has_more && !merged.atCapacity,
+            indicators: merged.indicators,
+            indicatorsAvailable: payload.indicators_available,
+            lastUpdateAt: new Date().toISOString(),
+            marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
+            structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
+            structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
+          };
+        });
+      })
+      .catch((reason) => {
+        if (!controller.signal.aborted && requestKeyRef.current === requestKey) {
+          setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason) }));
+        }
+      });
+    return () => controller.abort();
+  }, [cutoffMs, indicatorColumns, rowBudget, sessionDate, symbol, timeframe]);
 
   return { ...state, loadEarlier };
 }
@@ -1120,7 +1181,7 @@ function normalizePerformanceSnapshot(payload: CanonicalTradingPreview): Perform
   };
 }
 
-function useLivePerformanceState(): LivePerformanceState {
+function useLivePerformanceState(enabled = true): LivePerformanceState {
   const [accountKeys, setAccountKeys] = useState(readLiveAccountKeys);
   const [state, setState] = useState<LivePerformanceState>(() => {
     const cached = readCachedLivePerformance(accountKeys);
@@ -1128,14 +1189,19 @@ function useLivePerformanceState(): LivePerformanceState {
   });
 
   useEffect(() => {
+    if (!enabled) return;
     const syncAccounts = (event: StorageEvent) => {
       if (event.key === LIVE_ACCOUNT_KEYS_STORAGE_KEY) setAccountKeys(readLiveAccountKeys());
     };
     window.addEventListener("storage", syncAccounts);
     return () => window.removeEventListener("storage", syncAccounts);
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
+    if (!enabled) {
+      setState({ data: null, status: "loading" });
+      return;
+    }
     let cancelled = false;
     let controller: AbortController | null = null;
     let timer: number | null = null;
@@ -1193,7 +1259,7 @@ function useLivePerformanceState(): LivePerformanceState {
       if (timer !== null) window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", refreshVisible);
     };
-  }, [accountKeys.join(",")]);
+  }, [accountKeys.join(","), enabled]);
 
   return state;
 }
@@ -1252,15 +1318,17 @@ export function CanvasFocusPage() {
   return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
 }
 
-function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik }: { canvasId: string; manager: boolean; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string }) {
-  const [initialCanvasState] = useState<CanvasWorkspaceState | null>(() => focusCanvasState(canvasId, requestedInstanceId));
-  const [registry, setRegistry] = useState<CanvasRegistry>(readCanvasRegistry);
-  const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(readPreviewContext);
+export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik }: { canvasId: string; manager: boolean; modeControls?: ReactNode; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string }) {
+  const [initialCanvasState] = useState<CanvasWorkspaceState | null>(() => replayRun
+    ? replayRun.canvas_profile.defaultState ?? null
+    : focusCanvasState(canvasId, requestedInstanceId));
+  const [registry, setRegistry] = useState<CanvasRegistry>(() => replayRun?.canvas_profile ?? readCanvasRegistry());
+  const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => replayRun ? replayPreviewContext(replayRun) : readPreviewContext());
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
   const [scannerSnapshot, setScannerSnapshot] = useState<CanvasScannerSnapshot | null>(null);
   const [scannerLoading, setScannerLoading] = useState(false);
   const [scannerError, setScannerError] = useState("");
-  const [contextReady, setContextReady] = useState(false);
+  const [contextReady, setContextReady] = useState(Boolean(replayRun));
   const [contextError, setContextError] = useState("");
   const [workspaceState, setWorkspaceState] = useState<CanvasWorkspaceState | null>(initialCanvasState);
   const [loading, setLoading] = useState(true);
@@ -1296,10 +1364,17 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const activeLinkGroup = registry.linkAssignments[primaryChartId] ?? "none";
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
   const chartCutoffMs = useMemo(() => dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(), [previewContext]);
+  const scannerCutoffMs = replayRun ? Math.floor(chartCutoffMs / 15_000) * 15_000 : chartCutoffMs;
   const previewClocks = useMemo(() => previewClockReadings(previewContext), [previewContext]);
   const clockIcons = [Clock3, MapPin];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
-  const livePerformance = useLivePerformanceState();
+  const livePerformance = useLivePerformanceState(!replayRun);
+  const performanceState: LivePerformanceState = replayRun
+    ? {
+        data: preview?.trading.performance_snapshot ?? null,
+        status: preview?.trading.stale ? "stale" : preview ? "ready" : "loading",
+      }
+    : livePerformance;
 
   useEffect(() => {
     if (canvasId !== NEWS_READER_CANVAS_ID && canvasId !== SEC_READER_CANVAS_ID) return;
@@ -1308,12 +1383,22 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   }, [canvasId]);
 
   useEffect(() => {
+    if (replayRun) return;
     writeCanvasRegistry(registry);
-  }, [registry]);
+  }, [registry, replayRun]);
 
   useEffect(() => {
+    if (replayRun) return;
     window.localStorage.setItem(CANVAS_PREVIEW_CONTEXT_STORAGE_KEY, JSON.stringify(previewContext));
-  }, [previewContext]);
+  }, [previewContext, replayRun]);
+
+  useEffect(() => {
+    if (!replayRun) return;
+    const next = replayPreviewContext(replayRun);
+    setPreviewContext((current) => current.previewTime === next.previewTime && current.sessionDate === next.sessionDate ? current : next);
+    setContextReady(true);
+    setContextError(replayRun.error || "");
+  }, [replayRun?.current_time, replayRun?.error, replayRun?.session_date]);
 
   useEffect(() => {
     if (!linkPopoverContainerId) return;
@@ -1330,6 +1415,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   }, [linkPopoverContainerId]);
 
   useEffect(() => {
+    if (replayRun) return;
     const syncSharedCanvasState = (event: StorageEvent) => {
       if (event.key === CANVAS_REGISTRY_STORAGE_KEY) setRegistry(readCanvasRegistry());
       if (event.key === CANVAS_PREVIEW_CONTEXT_STORAGE_KEY) setPreviewContext(readPreviewContext());
@@ -1341,9 +1427,10 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
       window.removeEventListener("storage", syncSharedCanvasState);
       window.removeEventListener(CANVAS_REGISTRY_UPDATED_EVENT, syncLocalCanvasRegistry);
     };
-  }, []);
+  }, [replayRun]);
 
   useEffect(() => {
+    if (replayRun) return;
     let cancelled = false;
     api<CanvasContext>("/api/trading/canvas-context", { timeoutMs: 20000 })
       .then((payload) => {
@@ -1359,7 +1446,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
       .catch(() => { if (!cancelled) { setContextError("Historical coverage is temporarily unavailable."); setLoading(false); } })
       .finally(() => { if (!cancelled) setContextReady(true); });
     return () => { cancelled = true; };
-  }, []);
+  }, [replayRun]);
 
   useEffect(() => {
     if (!contextReady) return;
@@ -1372,21 +1459,27 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
     const controller = new AbortController();
     setLoading(true);
     setError("");
-    api<CanvasPreview>("/api/trading/canvas-preview", {
-      body: JSON.stringify({
-        chart_symbol: activeSymbol,
-        chart_timeframe: "1m",
-        preview_time: previewContext.previewTime,
-        session_date: previewContext.sessionDate,
-      }),
-      method: "POST",
-      signal: controller.signal,
-      timeoutMs: 60000,
-    }).then((payload) => { if (!controller.signal.aborted) setPreview(payload); })
+    const request = replayRun
+      ? api<CanvasPreview>(`/api/trading/replay/runs/${encodeURIComponent(replayRun.run_id)}/canvas${query({ symbol: activeSymbol })}`, {
+          signal: controller.signal,
+          timeoutMs: 60000,
+        })
+      : api<CanvasPreview>("/api/trading/canvas-preview", {
+          body: JSON.stringify({
+            chart_symbol: activeSymbol,
+            chart_timeframe: "1m",
+            preview_time: previewContext.previewTime,
+            session_date: previewContext.sessionDate,
+          }),
+          method: "POST",
+          signal: controller.signal,
+          timeoutMs: 60000,
+        });
+    request.then((payload) => { if (!controller.signal.aborted) setPreview(payload); })
       .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [activeSymbol, contextError, contextReady, previewContainerKey, previewContext.previewTime, previewContext.sessionDate]);
+  }, [activeSymbol, contextError, contextReady, previewContainerKey, previewContext.previewTime, previewContext.sessionDate, replayRun?.run_id]);
 
   useEffect(() => {
     if (!scannerContainerKey) {
@@ -1402,7 +1495,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
       return;
     }
     const controller = new AbortController();
-    const asOf = new Date(chartCutoffMs).toISOString();
+    const asOf = new Date(scannerCutoffMs).toISOString();
     let retryTimer: number | null = null;
     setScannerSnapshot(null);
     setScannerLoading(true);
@@ -1431,7 +1524,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
       controller.abort();
       if (retryTimer !== null) window.clearTimeout(retryTimer);
     };
-  }, [chartCutoffMs, contextReady, scannerContainerKey, scannerTechnicalWindows]);
+  }, [contextReady, scannerContainerKey, scannerCutoffMs, scannerTechnicalWindows]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (definition.id === "chart") {
@@ -1472,6 +1565,17 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
         status: scannerError ? "error" : scannerLoading ? "connecting" : scannerSnapshot ? "ready" : "idle",
       };
     }
+    if (
+      replayRun
+      && ["activity", "charts_quotes", "closed_trades", "fills", "journal", "orders", "performance_journal", "portfolio", "positions", "strategy"].includes(definition.id)
+    ) {
+      return {
+        detail: `${definition.title} projected from this Replay run's canonical simulated broker state and durable journal.`,
+        freshness: previewContext.previewTime,
+        sourceLabel: "Replay run",
+        status: replayRun.error ? "error" : preview ? "ready" : "connecting",
+      };
+    }
     const sourceError = preview?.errors[definition.id] ?? preview?.errors[definition.id === "sec" ? "sec" : definition.id === "xbrl" ? "xbrl" : ""];
     const newsContainer = ["news", "ticker_news", "news_detail"].includes(definition.id);
     const secContainer = ["sec", "ticker_sec", "sec_detail"].includes(definition.id);
@@ -1481,7 +1585,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
       sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : newsContainer || secContainer || definition.id === "xbrl" ? "Point-in-time" : "IBKR preview",
       status: sourceError ? "error" : newsContainer || secContainer || preview ? "ready" : "idle",
     };
-  }, [contextError, preview, previewContext.previewTime, scannerError, scannerLoading, scannerSnapshot]);
+  }, [contextError, preview, previewContext.previewTime, replayRun, scannerError, scannerLoading, scannerSnapshot]);
 
   const canvasTargets = registry.canvases.map((canvas, index) => ({
     color: ["var(--primary)", "var(--info)", "var(--success)", "var(--warning)"][index % 4],
@@ -1665,7 +1769,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
         </div>
         <MarketStatusBadge value={marketStatus} />
         {contextError ? <span className="canvas-context-warning" title={contextError}>Saved clock</span> : null}
-        <div className="canvas-mode-context-slot"><CanvasPerformanceStrip state={livePerformance} /></div>
+        <div className="canvas-mode-context-slot">{modeControls}<CanvasPerformanceStrip state={performanceState} /></div>
         {manager ? <div className="canvas-toolbar-actions"><button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button><button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
@@ -1678,7 +1782,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
         clockLabel=""
         commandBarVisible={false}
         compact
-        defaultOpenIds={manager ? MANAGER_DEFAULT_CONTAINER_IDS : initialCanvasState?.openIds ?? []}
+        defaultOpenIds={manager ? MANAGER_DEFAULT_CONTAINER_IDS : initialCanvasState?.openIds ?? MANAGER_DEFAULT_CONTAINER_IDS}
         defaultStateOverride={manager ? registry.defaultState ?? null : initialCanvasState}
         definitionsOverride={TRADING_WORKSPACE_CONTAINERS}
         historicalSourceReady={!error}
@@ -3589,7 +3693,10 @@ function StrategyOrderEntry({ strategy, symbol, trading }: { strategy?: CanvasPr
     setBusy(true);
     setMessage("");
     try {
-      const created = await api<PreviewRow>("/api/trading/strategy-assignments", {
+      const assignmentEndpoint = strategy?.run_id
+        ? `/api/trading/replay/runs/${encodeURIComponent(strategy.run_id)}/assignments`
+        : "/api/trading/strategy-assignments";
+      const created = await api<PreviewRow>(assignmentEndpoint, {
         body: JSON.stringify({
           account_id: accountId.trim(),
           conid: Number(conid),
@@ -3623,7 +3730,10 @@ function StrategyOrderEntry({ strategy, symbol, trading }: { strategy?: CanvasPr
     setBusy(true);
     setMessage("");
     try {
-      const updated = await api<PreviewRow>(`/api/trading/strategy-assignments/${encodeURIComponent(assignmentId)}/commands`, {
+      const commandEndpoint = strategy?.run_id
+        ? `/api/trading/replay/runs/${encodeURIComponent(strategy.run_id)}/assignments/${encodeURIComponent(assignmentId)}/commands`
+        : `/api/trading/strategy-assignments/${encodeURIComponent(assignmentId)}/commands`;
+      const updated = await api<PreviewRow>(commandEndpoint, {
         body: JSON.stringify({ command: commandName }),
         method: "POST",
       });
@@ -3905,6 +4015,17 @@ function instanceSettings(registry: CanvasRegistry, instanceId: string) {
   return stored ? normalizeSettings(stored) : instanceId === "chart" ? readSettings() : cloneDefaultSettings();
 }
 function readPreviewContext(): CanvasPreviewContext { try { const parsed = JSON.parse(window.localStorage.getItem(CANVAS_PREVIEW_CONTEXT_STORAGE_KEY) || "null") as CanvasPreviewContext | null; return parsed?.sessionDate && parsed?.previewTime ? parsed : { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } catch { return { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } }
+function replayPreviewContext(run: CanvasReplayRun): CanvasPreviewContext {
+  const current = new Date(run.current_time);
+  const previewTime = new Intl.DateTimeFormat("en-CA", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "America/New_York",
+  }).format(current);
+  return { previewTime, sessionDate: run.session_date };
+}
 function previousWeekdayIsoDate() { const value = new Date(); value.setDate(value.getDate() - 1); while (value.getDay() === 0 || value.getDay() === 6) value.setDate(value.getDate() - 1); const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 10); }
 function previewClockReadings(context: CanvasPreviewContext) {
   const instant = dateInTimeZone(context.sessionDate, context.previewTime, "America/New_York");
@@ -3920,12 +4041,12 @@ function previewClockReadings(context: CanvasPreviewContext) {
 }
 function dateInTimeZone(date: string, time: string, timeZone: string) {
   const [year, month, day] = date.split("-").map(Number);
-  const [hour, minute] = time.split(":").map(Number);
-  const desiredUtc = Date.UTC(year, month - 1, day, hour, minute);
+  const [hour, minute, second = 0] = time.split(":").map(Number);
+  const desiredUtc = Date.UTC(year, month - 1, day, hour, minute, second);
   let instant = new Date(desiredUtc);
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { day: "2-digit", hour: "2-digit", hourCycle: "h23", minute: "2-digit", month: "2-digit", timeZone, year: "numeric" }).formatToParts(instant).filter((part) => part.type !== "literal").map((part) => [part.type, Number(part.value)]));
-    const representedUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { day: "2-digit", hour: "2-digit", hourCycle: "h23", minute: "2-digit", month: "2-digit", second: "2-digit", timeZone, year: "numeric" }).formatToParts(instant).filter((part) => part.type !== "literal").map((part) => [part.type, Number(part.value)]));
+    const representedUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
     instant = new Date(instant.getTime() + desiredUtc - representedUtc);
   }
   return instant;

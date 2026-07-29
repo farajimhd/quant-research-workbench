@@ -105,18 +105,37 @@ the controlled cutover. Immutable saved-run artifacts remain readable through
 the canonical trading-state adapter; they are evidence, not executable
 strategy definitions or proof of replay/live brokerage parity.
 
-Replay setup accepts one exchange date only. Symbol and bar interval are
-container concerns inside the active replay, not run-level parameters. The
-home-page preflight calls `/api/trading/historical-preflight`, which verifies
-the Rust service identity, resolves the exchange window, and reads canonical
-day coverage through the gateway's `/coverage` resource. Replay then loads
-symbol bars in bounded chunks from `/api/trading/historical-bars`; the Rust
-gateway still calculates every bar from events.
+Replay setup accepts one exchange date, a 04:00-20:00 New York entry clock,
+and initial simulated cash. Approval snapshots the global Canvas profile and
+its revision. `/api/trading/replay/preflight` verifies the QMD History service
+identity, canonical day coverage, runtime storage, Canvas symbols, selected
+automatic assignments, and explicit source-account to simulated-account
+mapping before the run can be created.
 
-Backtest setup uses the same preflight but treats automatic strategy revisions
-and the shared run controller as required. Until those authorities are wired,
-the page reports the exact blockers and does not open an empty canvas or invoke
-the legacy prepared-bar routes.
+`ReplayRunController` is the transport authority. It reads canonical QMD
+events for the full extended session, causally warms market and indicator
+state before the approved entry clock without evaluating strategy orders, and
+then pauses. Play, pause, event-time step, fixed speed, maximum speed,
+forward-only seek, and stop change transport state; they never mutate event
+timestamps. Derived QMD frames enter the same `TradingRuntime` through
+account-bounded `StrategyObservation` values before the first later raw market
+event. The shared runtime, portfolio/risk engines, order planner,
+`SimulatedBrokerAdapter`, and immutable strategy revision remain the only
+trading authorities.
+
+Each run writes `manifest.json` and `journal.sqlite3` beneath
+`D:\TradingML\runtimes\trading\replay\<run_id>`. The manifest records the
+approved definition and Canvas snapshot; the WAL journal owns lifecycle,
+strategy decisions, orders, fills, assignments, and checkpoints. WebSocket
+updates publish the bounded run clock/status projection, while the Canvas read
+API projects canonical broker state and run-journal strategy evidence. The
+frontend renders the existing `CanvasWorkspaceSurface` with the approved
+profile, so Replay does not copy Canvas layout, settings, link, chart, scanner,
+or trading-container implementations and does not poll Live performance.
+
+Backtest remains a separate maximum-speed/debug lifecycle. Its setup reports
+the current dependency rather than invoking Replay's interactive controller
+or the retired prepared-bar routes.
 
 Market status has one UI contract with mode-specific authority. Replay,
 Backtest, and global Canvas preview derive pre-market (04:00-09:30), regular

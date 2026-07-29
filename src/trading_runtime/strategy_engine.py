@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
@@ -677,6 +677,54 @@ class AssignedLongMomentumStrategy:
 
     def assignments(self) -> tuple[StrategyAssignment, ...]:
         return tuple(self._assignments.values())
+
+    def upsert_assignment(self, assignment: StrategyAssignment) -> None:
+        self._assignments[(assignment.account_id, assignment.ticker.upper())] = assignment
+
+    def command_assignment(
+        self,
+        assignment_id: str,
+        command: str,
+        *,
+        event_time: datetime,
+        detail: dict[str, Any] | None = None,
+    ) -> StrategyAssignment:
+        normalized = command.strip().lower()
+        status_map = {
+            "arm": AssignmentStatus.WATCHING,
+            "resume": AssignmentStatus.WATCHING,
+            "pause": AssignmentStatus.PAUSED,
+            "disable": AssignmentStatus.DISABLED,
+            "complete": AssignmentStatus.COMPLETED,
+        }
+        if normalized not in {
+            *status_map,
+            "disable_after_exit",
+            "request_entry",
+            "force_entry",
+        }:
+            raise ValueError(f"Unsupported strategy assignment command: {command}")
+        for key, assignment in self._assignments.items():
+            if assignment.assignment_id != assignment_id:
+                continue
+            state = dict(assignment.state)
+            if normalized == "disable_after_exit":
+                state["disable_after_exit"] = True
+            elif normalized == "request_entry":
+                state["manual_entry_requested"] = True
+            elif normalized == "force_entry":
+                state["force_entry_requested"] = True
+            if detail:
+                state["last_command_detail"] = dict(detail)
+            updated = replace(
+                assignment,
+                status=status_map.get(normalized, assignment.status),
+                state=state,
+                updated_at=event_time,
+            )
+            self._assignments[key] = updated
+            return updated
+        raise KeyError(assignment_id)
 
     async def on_order_group_update(self, snapshot: Any) -> None:
         assignment_id = str(getattr(snapshot, "assignment_id", "") or "")

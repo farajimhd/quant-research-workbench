@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from enum import StrEnum
 from typing import Protocol
@@ -71,6 +71,11 @@ class RunConfig:
     account_ids: tuple[str, ...]
     anchor_date: date
     run_id: str = ""
+    checkpoint_interval_events: int = 1
+
+    def __post_init__(self) -> None:
+        if self.checkpoint_interval_events <= 0:
+            raise ValueError("checkpoint_interval_events must be positive")
 
     def resolved_run_id(self) -> str:
         return self.run_id or str(uuid4())
@@ -148,6 +153,7 @@ class TradingRuntime:
         )
         self.last_event_time: datetime | None = None
         self.processed_events = 0
+        self._latest_checkpoint_cursor = ""
         self._broker_stream_task: asyncio.Task[None] | None = None
         self._risk_refresh_task: asyncio.Task[None] | None = None
         self._canonical_session: CanonicalBrokerSession | None = None
@@ -242,7 +248,14 @@ class TradingRuntime:
             self._record_strategy_signals(evaluation, account_id)
             await self._execute_intents(evaluation, account_id, event)
         cursor = f"{event.ts.astimezone(timezone.utc).isoformat()}|{event.sequence}|{event.kind}"
-        self.journal.save_checkpoint(self.run_id, cursor, {"processed_events": self.processed_events}, event.ts)
+        self._latest_checkpoint_cursor = cursor
+        if self.processed_events % self.config.checkpoint_interval_events == 0:
+            self.journal.save_checkpoint(
+                self.run_id,
+                cursor,
+                {"processed_events": self.processed_events},
+                event.ts,
+            )
 
     async def process_market_signal(self, signal: MarketSignal) -> None:
         """Deliver one causal reusable signal without coupling QMD to order routing."""
@@ -267,6 +280,25 @@ class TradingRuntime:
             evaluation = normalize_strategy_evaluation(await handler(observation, account_id))
             self._record_strategy_signals(evaluation, account_id)
             await self._execute_intents(evaluation, account_id, None)
+        self._persist_strategy_assignments(observation.observed_at)
+
+    async def process_account_strategy_observation(
+        self,
+        observation: StrategyObservation,
+        account_id: str,
+    ) -> None:
+        """Evaluate one normalized observation against exactly one account boundary."""
+        if account_id not in self.config.account_ids:
+            raise ValueError(f"Strategy observation account is outside this run: {account_id}")
+        if self.last_event_time is not None and observation.observed_at < self.last_event_time:
+            raise ValueError("Strategy observations must not move behind the runtime clock")
+        handler = getattr(self.strategy, "on_observation", None)
+        if handler is None:
+            return
+        self.last_event_time = observation.observed_at
+        evaluation = normalize_strategy_evaluation(await handler(observation, account_id))
+        self._record_strategy_signals(evaluation, account_id)
+        await self._execute_intents(evaluation, account_id, None)
         self._persist_strategy_assignments(observation.observed_at)
 
     def _record_strategy_signals(
@@ -366,7 +398,27 @@ class TradingRuntime:
                     account_id=account_id, event_time=event_time, payload=position.to_cpapi(),
                 )
 
+    async def canonical_snapshot(self, *, as_of: datetime | None = None):
+        """Return the freshest canonical broker projection for UI and recovery consumers."""
+        if self._canonical_session is not None:
+            await self._canonical_session.reconcile()
+            snapshot = self._canonical_session.projector.snapshot()
+            self.portfolio.synchronize_canonical(snapshot)
+            return replace(snapshot, as_of=as_of) if as_of is not None else snapshot
+        raise RuntimeError("The configured broker does not expose canonical Replay state")
+
     async def finish(self, status: str = "completed") -> None:
+        if (
+            self.last_event_time is not None
+            and self._latest_checkpoint_cursor
+            and self.processed_events % self.config.checkpoint_interval_events != 0
+        ):
+            self.journal.save_checkpoint(
+                self.run_id,
+                self._latest_checkpoint_cursor,
+                {"processed_events": self.processed_events},
+                self.last_event_time,
+            )
         tasks = [task for task in (self._broker_stream_task, self._risk_refresh_task) if task]
         for task in tasks:
             task.cancel()

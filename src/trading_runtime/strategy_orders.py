@@ -244,6 +244,10 @@ class RuntimeIbkrStrategyOrderPlanner:
         self.limit_offset_bps = limit_offset_bps
         self._planner = IbkrStrategyOrderPlanner()
 
+    def upsert_instrument(self, instrument: InstrumentContract) -> None:
+        """Register point-in-time identity for an assignment added during a run."""
+        self.instruments[instrument.symbol.upper()] = instrument
+
     def plan(
         self,
         *,

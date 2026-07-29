@@ -422,6 +422,29 @@ class TradingJournal:
         ).fetchall()
         return [_record(row) for row in rows]
 
+    def recent_records(
+        self,
+        run_id: str,
+        *,
+        categories: tuple[str, ...],
+        limit: int = 5_000,
+    ) -> list[JournalRecord]:
+        if not categories:
+            return []
+        bounded_limit = max(1, min(int(limit), 50_000))
+        placeholders = ",".join("?" for _ in categories)
+        rows = self._connection.execute(
+            f"""
+            SELECT * FROM (
+                SELECT * FROM journal
+                WHERE run_id = ? AND category IN ({placeholders})
+                ORDER BY sequence DESC LIMIT ?
+            ) ORDER BY sequence
+            """,
+            (run_id, *categories, bounded_limit),
+        ).fetchall()
+        return [_record(row) for row in rows]
+
     def pending_outbox(self, limit: int = 500) -> list[JournalRecord]:
         rows = self._connection.execute(
             """

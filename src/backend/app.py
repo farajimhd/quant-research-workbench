@@ -31,6 +31,11 @@ from src.backend.portfolio_management_service import (
     portfolio_management_command,
     portfolio_management_snapshot,
 )
+from src.backend.replay_run_service import (
+    ReplayRunDefinition,
+    ReplayRunService,
+    replay_preflight,
+)
 from src.backend.market_data_service import (
     artifact_records,
     artifact_schema,
@@ -371,6 +376,7 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
 }
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
+replay_run_service = ReplayRunService()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -494,6 +500,26 @@ class HistoricalBarChunkRequest(BaseModel):
     window_minutes: int = Field(default=15, ge=1, le=30)
 
 
+class ReplayPreflightRequest(BaseModel):
+    session_date: date
+    start_time: str = "09:45:00"
+    initial_cash: float = Field(default=100_000.0, ge=1_000, le=1_000_000_000)
+    assignment_ids: list[str] = Field(default_factory=list, max_length=100)
+    tickers: list[str] = Field(default_factory=list, max_length=100)
+    canvas_revision: str = Field(default="", max_length=128)
+
+
+class ReplayRunCreateRequest(ReplayPreflightRequest):
+    canvas_profile: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReplayRunCommandRequest(BaseModel):
+    command: str
+    speed: float | None = None
+    target_time: str | None = None
+    step_seconds: float = Field(default=1.0, gt=0, le=60)
+
+
 class CanvasPreviewRequest(BaseModel):
     session_date: date
     preview_time: str = "09:45"
@@ -521,6 +547,16 @@ def parse_live_clock_minute(value: str) -> int | None:
     if hour < 0 or hour > 23 or minute < 0 or minute > 59:
         return None
     return hour * 60 + minute
+
+
+def _replay_clock_time(value: str):
+    normalized = str(value or "").strip()
+    for pattern in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(normalized, pattern).time()
+        except ValueError:
+            continue
+    raise ValueError("Replay start and target times must use HH:MM or HH:MM:SS")
 
 
 
@@ -4005,6 +4041,152 @@ def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[st
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/replay/preflight")
+def trading_replay_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
+    try:
+        return replay_preflight(
+            session_date=payload.session_date,
+            start_time=_replay_clock_time(payload.start_time),
+            initial_cash=payload.initial_cash,
+            assignment_ids=tuple(payload.assignment_ids),
+            tickers=tuple(payload.tickers),
+            canvas_revision=payload.canvas_revision,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/replay/runs")
+async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str, Any]:
+    try:
+        definition = ReplayRunDefinition(
+            session_date=payload.session_date,
+            start_time=_replay_clock_time(payload.start_time),
+            initial_cash=payload.initial_cash,
+            assignment_ids=tuple(payload.assignment_ids),
+            tickers=tuple(payload.tickers),
+            canvas_revision=payload.canvas_revision,
+            canvas_profile=dict(payload.canvas_profile),
+        )
+        preflight = replay_preflight(
+            session_date=definition.session_date,
+            start_time=definition.start_time,
+            initial_cash=definition.initial_cash,
+            assignment_ids=definition.assignment_ids,
+            tickers=definition.tickers,
+            canvas_revision=definition.canvas_revision,
+        )
+        if not preflight["ready"]:
+            raise ValueError("Replay dependencies changed after approval; run preflight again")
+        controller = await replay_run_service.create(definition)
+        return controller.snapshot()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/replay/runs")
+def trading_replay_runs() -> dict[str, Any]:
+    rows = replay_run_service.list()
+    return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
+
+
+@app.get("/api/trading/replay/runs/{run_id}")
+def trading_replay_run(run_id: str) -> dict[str, Any]:
+    try:
+        return replay_run_service.get(run_id).snapshot()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Replay run not found") from exc
+
+
+@app.post("/api/trading/replay/runs/{run_id}/commands")
+async def trading_replay_run_command(
+    run_id: str,
+    payload: ReplayRunCommandRequest,
+) -> dict[str, Any]:
+    try:
+        return await replay_run_service.get(run_id).command(
+            payload.command,
+            speed=payload.speed,
+            target_time=(
+                _replay_clock_time(payload.target_time)
+                if payload.target_time is not None
+                else None
+            ),
+            step_seconds=payload.step_seconds,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Replay run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/replay/runs/{run_id}/canvas")
+async def trading_replay_run_canvas(
+    run_id: str,
+    symbol: str = "AAPL",
+) -> dict[str, Any]:
+    try:
+        return await replay_run_service.get(run_id).canvas_payload(symbol)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Replay run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/replay/runs/{run_id}/assignments")
+async def trading_replay_assignment_create(
+    run_id: str,
+    payload: StrategyAssignmentSubmit,
+) -> dict[str, Any]:
+    try:
+        return await replay_run_service.get(run_id).add_assignment(payload.model_dump())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Replay run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/replay/runs/{run_id}/assignments/{assignment_id}/commands")
+async def trading_replay_assignment_command(
+    run_id: str,
+    assignment_id: str,
+    payload: StrategyAssignmentCommandSubmit,
+) -> dict[str, Any]:
+    try:
+        return await replay_run_service.get(run_id).command_assignment(
+            assignment_id,
+            payload.command,
+            payload.detail,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Replay run or assignment not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.websocket("/api/trading/replay/runs/{run_id}/events")
+async def trading_replay_run_events(websocket: WebSocket, run_id: str) -> None:
+    try:
+        controller = replay_run_service.get(run_id)
+    except KeyError:
+        await websocket.close(code=1008, reason="Replay run not found")
+        return
+    await websocket.accept()
+    queue = controller.subscribe()
+    try:
+        await websocket.send_json(controller.snapshot())
+        while True:
+            payload = await queue.get()
+            await websocket.send_json(payload)
+            if payload["status"] in {"completed", "stopped", "failed"}:
+                await websocket.close(code=1000)
+                return
+    except WebSocketDisconnect:
+        return
+    finally:
+        controller.unsubscribe(queue)
 
 
 @app.post("/api/trading/historical-bars")

@@ -16,6 +16,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from pipelines.reference_data.clickhouse_load_market_references import build_condition_token_rows
+from src.backend.qmd_gateway_client import ENRICHED_QMD_TIMEFRAMES
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.orchestrator import historical_run_window
 from src.trading_runtime.runtime import RunMode
@@ -753,6 +754,34 @@ def historical_bar_history_before(
     if resolved_as_of.tzinfo is None:
         raise ValueError("as_of must include a timezone")
     resolved_as_of = max(window_start, min(resolved_as_of, window_end))
+    if resolved_as_of <= window_start:
+        previous = _historical_gateway_get(
+            "/coverage/latest",
+            {"before": resolved_session_date.isoformat()},
+            timeout=15,
+        )
+        previous_session_before = (
+            resolved_session_date.isoformat()
+            if isinstance(previous, dict) and previous.get("session_date")
+            else ""
+        )
+        return {
+            "ticker": resolved_ticker,
+            "timeframe": resolved_timeframe,
+            "history": [],
+            "indicators": [],
+            "market_signal_events": [],
+            "structure_events": [],
+            "structure_level_history": [],
+            "indicators_available": resolved_timeframe in ENRICHED_QMD_TIMEFRAMES,
+            "earliest_session_date": "",
+            "has_more": bool(previous_session_before),
+            "has_more_in_session": False,
+            "next_before": "",
+            "previous_session_before": previous_session_before,
+            "as_of": resolved_as_of.isoformat(),
+            "source": "qmd_history_gateway",
+        }
     snapshot = _historical_gateway_get(
         f"/snapshot/chart-bars/{urllib.parse.quote(resolved_ticker)}",
         {
