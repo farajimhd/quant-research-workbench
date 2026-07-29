@@ -23,6 +23,12 @@ $secLauncher = Join-Path $PSScriptRoot "run_sec_gateway.ps1"
 $referenceLauncher = Join-Path $PSScriptRoot "run_reference_gateway.ps1"
 $ibkrLauncher = Join-Path $PSScriptRoot "run_ibkr_gateway_supervisor.ps1"
 $serviceTabHost = Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1"
+$terminalWindowTargetHelper = Join-Path $PSScriptRoot "windows_terminal_window_target.ps1"
+
+if (-not (Test-Path -LiteralPath $terminalWindowTargetHelper -PathType Leaf)) {
+    throw "Required Windows Terminal target helper is missing: $terminalWindowTargetHelper"
+}
+. $terminalWindowTargetHelper
 
 function Resolve-CondaEnvironmentPython {
     param([string]$EnvironmentName)
@@ -136,37 +142,6 @@ function ConvertTo-PowerShellEncodedCommand {
     return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
 }
 
-function Resolve-TerminalWindowTarget {
-    param(
-        [string]$Mode,
-        [string]$FallbackWindowName
-    )
-
-    $insideWindowsTerminal = -not [string]::IsNullOrWhiteSpace($env:WT_SESSION)
-    if ($Mode -eq "Caller") {
-        if (-not $insideWindowsTerminal) {
-            throw "-TerminalTarget Caller requires this script to run inside Windows Terminal (WT_SESSION is not set)."
-        }
-        return [pscustomobject]@{
-            Window = "0"
-            Description = "the invoking Windows Terminal window"
-        }
-    }
-    if ($Mode -eq "Auto" -and $insideWindowsTerminal) {
-        return [pscustomobject]@{
-            Window = "0"
-            Description = "the invoking Windows Terminal window"
-        }
-    }
-    if (-not $FallbackWindowName.Trim()) {
-        throw "-TerminalWindowName cannot be empty when a named Windows Terminal window is used."
-    }
-    return [pscustomobject]@{
-        Window = $FallbackWindowName.Trim()
-        Description = "named Windows Terminal window '$($FallbackWindowName.Trim())'"
-    }
-}
-
 function Assert-Launcher {
     param([string]$Path)
 
@@ -182,11 +157,14 @@ Assert-Launcher -Path $ibkrLauncher
 Assert-Launcher -Path $serviceTabHost
 
 $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe -EnvironmentName $CondaEnv
+$callerTerminalWindow = Get-WindowsTerminalCallerWindow `
+    -PythonExecutable $resolvedPython
 $resolvedWindowsTerminal = Resolve-WindowsTerminalExecutable -Requested $WindowsTerminalExe
 $powerShellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
-$terminalWindowTarget = Resolve-TerminalWindowTarget `
+$terminalWindowTarget = Resolve-WindowsTerminalTarget `
     -Mode $TerminalTarget `
-    -FallbackWindowName $TerminalWindowName
+    -FallbackWindowName $TerminalWindowName `
+    -CallerWindowHandle $callerTerminalWindow
 $pythonLiteral = ConvertTo-PowerShellLiteral -Value $resolvedPython
 $ibkrHealthUrlLiteral = ConvertTo-PowerShellLiteral -Value $IbkrSupervisorHealthUrl
 
@@ -273,10 +251,15 @@ function Open-ServiceTabs {
         $terminalWindowTarget.Description,
         "Open $($Tabs.Count) independent PowerShell service tabs"
     )) {
-        return
+        return $terminalWindowTarget
     }
 
-    $terminalArguments = @("-w", $terminalWindowTarget.Window)
+    $dispatchTarget = Confirm-WindowsTerminalTarget `
+        -Target $terminalWindowTarget `
+        -RequestedMode $TerminalTarget `
+        -FallbackWindowName $TerminalWindowName `
+        -PythonExecutable $resolvedPython
+    $terminalArguments = @("-w", $dispatchTarget.Window)
     for ($index = 0; $index -lt $Tabs.Count; $index++) {
         if ($index -gt 0) {
             $terminalArguments += ";"
@@ -300,9 +283,10 @@ function Open-ServiceTabs {
     if ($LASTEXITCODE -ne 0) {
         throw "Windows Terminal failed to create the service tabs (exit code $LASTEXITCODE)."
     }
+    return $dispatchTarget
 }
 
-Open-ServiceTabs -Tabs $serviceTabs
+$usedTerminalWindowTarget = Open-ServiceTabs -Tabs $serviceTabs
 
 if ($WhatIfPreference) {
     Write-Host ""
@@ -311,7 +295,7 @@ if ($WhatIfPreference) {
 }
 
 Write-Host ""
-Write-Host "Opened four independent PowerShell tabs in $($terminalWindowTarget.Description), in this order:"
+Write-Host "Opened four independent PowerShell tabs in $($usedTerminalWindowTarget.Description), in this order:"
 for ($index = 0; $index -lt $serviceTabs.Count; $index++) {
     Write-Host ("  {0}. {1}" -f ($index + 1), $serviceTabs[$index].Title)
 }

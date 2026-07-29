@@ -234,13 +234,15 @@ independent PowerShell tabs:
 .\scripts\start_workspace_services.ps1
 ```
 
-When invoked inside Windows Terminal, the complete tab group is added atomically
-to the window containing the calling tab. When invoked outside Windows
-Terminal, it opens or reuses the dedicated
+When invoked from a foreground Windows Terminal window, the starter captures
+that exact native window handle, reactivates and verifies it immediately before
+the atomic tab request, and adds the complete group there. This avoids relying
+on Windows Terminal's `-w 0` most-recent-window state alone. When the caller
+cannot be identified or reactivated, it opens or reuses the dedicated
 `quant-research-workbench-workspace` window instead of whichever terminal was
 last active. Pass `-TerminalTarget Named -TerminalWindowName <name>` to force a
-named window, or `-TerminalTarget Caller` to require invocation from Windows
-Terminal.
+named window, or `-TerminalTarget Caller` to require verified exact caller
+routing rather than allowing the named fallback.
 
 The starter delegates to `run_qmd_history_gateway.ps1`, `run_backend.ps1`, and
 `run_frontend.py`; it does not become a shared supervisor. Stop all matching
