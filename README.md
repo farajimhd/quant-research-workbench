@@ -228,11 +228,19 @@ python scripts/run_frontend.py dev
 ```
 
 To start QMD History, the backend, and the frontend together as three
-independent PowerShell tabs in one named Windows Terminal window:
+independent PowerShell tabs:
 
 ```powershell
 .\scripts\start_workspace_services.ps1
 ```
+
+When invoked inside Windows Terminal, the complete tab group is added atomically
+to the window containing the calling tab. When invoked outside Windows
+Terminal, it opens or reuses the dedicated
+`quant-research-workbench-workspace` window instead of whichever terminal was
+last active. Pass `-TerminalTarget Named -TerminalWindowName <name>` to force a
+named window, or `-TerminalTarget Caller` to require invocation from Windows
+Terminal.
 
 The starter delegates to `run_qmd_history_gateway.ps1`, `run_backend.ps1`, and
 `run_frontend.py`; it does not become a shared supervisor. Stop all matching
@@ -245,7 +253,10 @@ command lines or owners of ports 8801, 8000, and 5173, with:
 
 Shutdown sends Ctrl+C first, waits up to eight seconds, force-stops only
 survivors, rescans for reload-created children, and verifies the configured
-ports are free. Use `-QmdHistoryPort`, `-BackendPort`, and `-FrontendPort` on
+ports are free. A successfully stopped service tab exits cleanly and closes
+under Windows Terminal's normal `closeOnExit` behavior; genuine launcher
+failures retain their nonzero exit code and remain visible. Use
+`-QmdHistoryPort`, `-BackendPort`, and `-FrontendPort` on
 the stop script when the corresponding service was launched on a non-default
 port. Use `-PythonExe` on either script when the intended Python interpreter
 is not active or on `PATH`.
@@ -262,6 +273,11 @@ It opens independent PowerShell tabs in this exact order:
 2. SEC Gateway
 3. Reference Gateway
 4. IBKR Gateway Supervisor
+
+It uses the same caller-window behavior as the Workspace starter. Outside
+Windows Terminal its distinct fallback window is
+`quant-research-workbench-gateways`, so the Workspace and Gateway groups cannot
+capture each other's tabs. The four-tab request is atomic.
 
 Each tab delegates to the corresponding existing `run_*_gateway.ps1`
 launcher. The IBKR tab defaults to the `paper` account key; pass
@@ -286,7 +302,9 @@ unrelated process on port 5000 as IBKR. One Ctrl+C is sent per service console.
 The default 330-second grace window respects the News and SEC gateways' own
 300-second drain contracts before surviving processes are force-stopped.
 Reference child cycles and the IBKR Client Portal process remain owned by
-their respective parent services during graceful shutdown.
+their respective parent services during graceful shutdown. Successful
+stop-triggered exits also close the four service tabs while unrelated launcher
+failures remain visible.
 
 For a production-style local build:
 

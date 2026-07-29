@@ -7,7 +7,9 @@ param(
     [int]$FrontendPort = 5173,
     [string]$PythonExe = "",
     [string]$WindowsTerminalExe = "",
-    [string]$TerminalWindowName = "quant-research-workbench-services",
+    [ValidateSet("Auto", "Caller", "Named")]
+    [string]$TerminalTarget = "Auto",
+    [string]$TerminalWindowName = "quant-research-workbench-workspace",
     [switch]$NoBackendReload
 )
 
@@ -18,6 +20,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $qmdLauncher = Join-Path $PSScriptRoot "run_qmd_history_gateway.ps1"
 $backendLauncher = Join-Path $PSScriptRoot "run_backend.ps1"
 $frontendLauncher = Join-Path $PSScriptRoot "run_frontend.py"
+$serviceTabHost = Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1"
 
 function Resolve-PythonExecutable {
     param([string]$Requested)
@@ -99,13 +102,54 @@ function ConvertTo-PowerShellLiteral {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function ConvertTo-PowerShellEncodedCommand {
+    param([string]$Command)
+
+    return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
+}
+
+function Resolve-TerminalWindowTarget {
+    param(
+        [string]$Mode,
+        [string]$FallbackWindowName
+    )
+
+    $insideWindowsTerminal = -not [string]::IsNullOrWhiteSpace($env:WT_SESSION)
+    if ($Mode -eq "Caller") {
+        if (-not $insideWindowsTerminal) {
+            throw "-TerminalTarget Caller requires this script to run inside Windows Terminal (WT_SESSION is not set)."
+        }
+        return [pscustomobject]@{
+            Window = "0"
+            Description = "the invoking Windows Terminal window"
+        }
+    }
+    if ($Mode -eq "Auto" -and $insideWindowsTerminal) {
+        return [pscustomobject]@{
+            Window = "0"
+            Description = "the invoking Windows Terminal window"
+        }
+    }
+    if (-not $FallbackWindowName.Trim()) {
+        throw "-TerminalWindowName cannot be empty when a named Windows Terminal window is used."
+    }
+    return [pscustomobject]@{
+        Window = $FallbackWindowName.Trim()
+        Description = "named Windows Terminal window '$($FallbackWindowName.Trim())'"
+    }
+}
+
 Assert-Launcher -Path $qmdLauncher
 Assert-Launcher -Path $backendLauncher
 Assert-Launcher -Path $frontendLauncher
+Assert-Launcher -Path $serviceTabHost
 
 $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe
 $powerShellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
 $resolvedWindowsTerminal = Resolve-WindowsTerminalExecutable -Requested $WindowsTerminalExe
+$terminalWindowTarget = Resolve-TerminalWindowTarget `
+    -Mode $TerminalTarget `
+    -FallbackWindowName $TerminalWindowName
 $pythonDirectory = Split-Path -Parent $resolvedPython
 $cargoCommand = Get-Command cargo -ErrorAction SilentlyContinue
 $toolDirectories = @($pythonDirectory)
@@ -130,37 +174,72 @@ $frontendCommand = $pathAssignment +
     " dev -- --host " + (ConvertTo-PowerShellLiteral -Value $HostName) +
     " --port $FrontendPort"
 
-function Open-ServiceTab {
-    param(
-        [string]$Title,
-        [string]$Command
-    )
+function Open-ServiceTabs {
+    param([object[]]$Tabs)
 
     if (-not $PSCmdlet.ShouldProcess(
-        "$TerminalWindowName / $Title",
-        "Open an independent PowerShell tab in Windows Terminal"
+        $terminalWindowTarget.Description,
+        "Open $($Tabs.Count) independent PowerShell service tabs"
     )) {
         return
     }
 
-    & $resolvedWindowsTerminal `
-        -w $TerminalWindowName `
-        new-tab `
-        --title $Title `
-        -d $repoRoot `
-        $powerShellExe `
-        -NoLogo `
-        -NoProfile `
-        -ExecutionPolicy Bypass `
-        -Command $Command
+    $terminalArguments = @("-w", $terminalWindowTarget.Window)
+    for ($index = 0; $index -lt $Tabs.Count; $index++) {
+        if ($index -gt 0) {
+            $terminalArguments += ";"
+        }
+        $terminalArguments += @(
+            "new-tab",
+            "--title", $Tabs[$index].Title,
+            "--suppressApplicationTitle",
+            "-d", $repoRoot,
+            $powerShellExe,
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $serviceTabHost,
+            "-EncodedCommand", (ConvertTo-PowerShellEncodedCommand -Command $Tabs[$index].Command),
+            "-PowerShellExe", $powerShellExe
+        )
+    }
+
+    & $resolvedWindowsTerminal @terminalArguments
     if ($LASTEXITCODE -ne 0) {
-        throw "Windows Terminal failed to create the '$Title' tab (exit code $LASTEXITCODE)."
+        throw "Windows Terminal failed to create the service tabs (exit code $LASTEXITCODE)."
     }
 }
 
-Open-ServiceTab -Title "QMD History" -Command $qmdCommand
-Open-ServiceTab -Title "Backend" -Command $backendCommand
-Open-ServiceTab -Title "Frontend" -Command $frontendCommand
+$serviceTabs = @(
+    [pscustomobject]@{
+        Title = "QMD History"
+        Command = $qmdCommand
+    },
+    [pscustomobject]@{
+        Title = "Backend"
+        Command = $backendCommand
+    },
+    [pscustomobject]@{
+        Title = "Frontend"
+        Command = $frontendCommand
+    }
+)
+
+foreach ($serviceTab in $serviceTabs) {
+    $commandTokens = $null
+    $commandErrors = $null
+    [void][Management.Automation.Language.Parser]::ParseInput(
+        $serviceTab.Command,
+        [ref]$commandTokens,
+        [ref]$commandErrors
+    )
+    if ($commandErrors.Count -gt 0) {
+        $messages = @($commandErrors | ForEach-Object { $_.Message }) -join "; "
+        throw "The generated '$($serviceTab.Title)' PowerShell command is invalid: $messages"
+    }
+}
+
+Open-ServiceTabs -Tabs $serviceTabs
 
 if ($WhatIfPreference) {
     Write-Host ""
@@ -169,8 +248,9 @@ if ($WhatIfPreference) {
 }
 
 Write-Host ""
-Write-Host "Opened independent QMD History, Backend, and Frontend PowerShell tabs in Windows Terminal window '$TerminalWindowName'."
+Write-Host "Opened independent QMD History, Backend, and Frontend PowerShell tabs in $($terminalWindowTarget.Description)."
 Write-Host "This starter now exits instead of supervising the three launcher processes."
+Write-Host "A successful graceful stop exits each tab host cleanly so Windows Terminal closes the service tabs."
 Write-Host "QMD History: its launcher resolves QMD_HISTORY_BIND (default http://127.0.0.1:8801)."
 Write-Host "Backend:    http://$HostName`:$BackendPort"
 Write-Host "Frontend:   http://$HostName`:$FrontendPort"

@@ -3,7 +3,9 @@ param(
     [string]$CondaEnv = "ml4t",
     [string]$PythonExe = "",
     [string]$WindowsTerminalExe = "",
-    [string]$TerminalWindowName = "quant-research-workbench-services",
+    [ValidateSet("Auto", "Caller", "Named")]
+    [string]$TerminalTarget = "Auto",
+    [string]$TerminalWindowName = "quant-research-workbench-gateways",
     [ValidateNotNullOrEmpty()]
     [string]$IbkrAccount = "paper",
     [ValidateRange(0, 3600)]
@@ -20,6 +22,7 @@ $newsLauncher = Join-Path $PSScriptRoot "run_news_gateway.ps1"
 $secLauncher = Join-Path $PSScriptRoot "run_sec_gateway.ps1"
 $referenceLauncher = Join-Path $PSScriptRoot "run_reference_gateway.ps1"
 $ibkrLauncher = Join-Path $PSScriptRoot "run_ibkr_gateway_supervisor.ps1"
+$serviceTabHost = Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1"
 
 function Resolve-CondaEnvironmentPython {
     param([string]$EnvironmentName)
@@ -127,6 +130,43 @@ function ConvertTo-PowerShellLiteral {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function ConvertTo-PowerShellEncodedCommand {
+    param([string]$Command)
+
+    return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
+}
+
+function Resolve-TerminalWindowTarget {
+    param(
+        [string]$Mode,
+        [string]$FallbackWindowName
+    )
+
+    $insideWindowsTerminal = -not [string]::IsNullOrWhiteSpace($env:WT_SESSION)
+    if ($Mode -eq "Caller") {
+        if (-not $insideWindowsTerminal) {
+            throw "-TerminalTarget Caller requires this script to run inside Windows Terminal (WT_SESSION is not set)."
+        }
+        return [pscustomobject]@{
+            Window = "0"
+            Description = "the invoking Windows Terminal window"
+        }
+    }
+    if ($Mode -eq "Auto" -and $insideWindowsTerminal) {
+        return [pscustomobject]@{
+            Window = "0"
+            Description = "the invoking Windows Terminal window"
+        }
+    }
+    if (-not $FallbackWindowName.Trim()) {
+        throw "-TerminalWindowName cannot be empty when a named Windows Terminal window is used."
+    }
+    return [pscustomobject]@{
+        Window = $FallbackWindowName.Trim()
+        Description = "named Windows Terminal window '$($FallbackWindowName.Trim())'"
+    }
+}
+
 function Assert-Launcher {
     param([string]$Path)
 
@@ -139,10 +179,14 @@ Assert-Launcher -Path $newsLauncher
 Assert-Launcher -Path $secLauncher
 Assert-Launcher -Path $referenceLauncher
 Assert-Launcher -Path $ibkrLauncher
+Assert-Launcher -Path $serviceTabHost
 
 $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe -EnvironmentName $CondaEnv
 $resolvedWindowsTerminal = Resolve-WindowsTerminalExecutable -Requested $WindowsTerminalExe
 $powerShellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
+$terminalWindowTarget = Resolve-TerminalWindowTarget `
+    -Mode $TerminalTarget `
+    -FallbackWindowName $TerminalWindowName
 $pythonLiteral = ConvertTo-PowerShellLiteral -Value $resolvedPython
 $ibkrHealthUrlLiteral = ConvertTo-PowerShellLiteral -Value $IbkrSupervisorHealthUrl
 
@@ -222,38 +266,43 @@ foreach ($serviceTab in $serviceTabs) {
     }
 }
 
-function Open-ServiceTab {
-    param(
-        [string]$Title,
-        [string]$Command
-    )
+function Open-ServiceTabs {
+    param([object[]]$Tabs)
 
     if (-not $PSCmdlet.ShouldProcess(
-        "$TerminalWindowName / $Title",
-        "Open an independent PowerShell tab in Windows Terminal"
+        $terminalWindowTarget.Description,
+        "Open $($Tabs.Count) independent PowerShell service tabs"
     )) {
         return
     }
 
-    & $resolvedWindowsTerminal `
-        -w $TerminalWindowName `
-        new-tab `
-        --title $Title `
-        -d $repoRoot `
-        $powerShellExe `
-        -NoLogo `
-        -NoProfile `
-        -ExecutionPolicy Bypass `
-        -Command $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "Windows Terminal failed to create the '$Title' tab (exit code $LASTEXITCODE)."
+    $terminalArguments = @("-w", $terminalWindowTarget.Window)
+    for ($index = 0; $index -lt $Tabs.Count; $index++) {
+        if ($index -gt 0) {
+            $terminalArguments += ";"
+        }
+        $terminalArguments += @(
+            "new-tab",
+            "--title", $Tabs[$index].Title,
+            "--suppressApplicationTitle",
+            "-d", $repoRoot,
+            $powerShellExe,
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $serviceTabHost,
+            "-EncodedCommand", (ConvertTo-PowerShellEncodedCommand -Command $Tabs[$index].Command),
+            "-PowerShellExe", $powerShellExe
+        )
     }
-    Start-Sleep -Milliseconds 150
+
+    & $resolvedWindowsTerminal @terminalArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows Terminal failed to create the service tabs (exit code $LASTEXITCODE)."
+    }
 }
 
-foreach ($serviceTab in $serviceTabs) {
-    Open-ServiceTab -Title $serviceTab.Title -Command $serviceTab.Command
-}
+Open-ServiceTabs -Tabs $serviceTabs
 
 if ($WhatIfPreference) {
     Write-Host ""
@@ -262,10 +311,11 @@ if ($WhatIfPreference) {
 }
 
 Write-Host ""
-Write-Host "Opened four independent PowerShell tabs in Windows Terminal window '$TerminalWindowName', in this order:"
+Write-Host "Opened four independent PowerShell tabs in $($terminalWindowTarget.Description), in this order:"
 for ($index = 0; $index -lt $serviceTabs.Count; $index++) {
     Write-Host ("  {0}. {1}" -f ($index + 1), $serviceTabs[$index].Title)
 }
 Write-Host "This starter now exits instead of supervising the four launcher processes."
+Write-Host "A successful graceful stop exits each tab host cleanly so Windows Terminal closes the service tabs."
 Write-Host "Reference waits for IBKR Supervisor health, then at least $ReferenceDelaySeconds seconds, then ready/authenticated state."
 Write-Host "Stop all matching instances with scripts\stop_live_gateway_services.ps1."
