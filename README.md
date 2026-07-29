@@ -250,6 +250,37 @@ the stop script when the corresponding service was launched on a non-default
 port. Use `-PythonExe` on either script when the intended Python interpreter
 is not active or on `PATH`.
 
+The live support gateways have a separate ordered launcher:
+
+```powershell
+.\scripts\start_live_gateway_services.ps1
+```
+
+It opens independent PowerShell tabs in this exact order:
+
+1. News Gateway
+2. SEC Gateway
+3. Reference Gateway
+4. IBKR Gateway Supervisor
+
+Each tab delegates to the corresponding existing `run_*_gateway.ps1`
+launcher. The IBKR tab defaults to the `paper` account key; pass
+`-IbkrAccount <configured-key>` when another configured session is intended.
+Stop this group with:
+
+```powershell
+.\scripts\stop_live_gateway_services.ps1
+```
+
+The stop script matches the four service identities at any port plus exact
+owners of the configured HTTP ports 8796, 8797, 8799, and 8800. It also
+includes identified Client Portal child processes without treating every
+unrelated process on port 5000 as IBKR. One Ctrl+C is sent per service console.
+The default 330-second grace window respects the News and SEC gateways' own
+300-second drain contracts before surviving processes are force-stopped.
+Reference child cycles and the IBKR Client Portal process remain owned by
+their respective parent services during graceful shutdown.
+
 For a production-style local build:
 
 ```powershell
