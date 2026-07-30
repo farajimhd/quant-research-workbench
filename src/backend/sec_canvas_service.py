@@ -14,6 +14,10 @@ from research.mlops.clickhouse import (
     quote_ident,
     sql_string,
 )
+from src.backend.scoped_text_labels import (
+    load_scoped_sec_labels,
+    scoped_news_summary,
+)
 
 
 CIK_PATTERN = re.compile(r"^\d{1,10}$")
@@ -81,6 +85,9 @@ def sec_filings_payload(
     rows = rows[:safe_limit]
     if rows:
         enrich_filing_rows(client, rows, cutoff=cutoff, database=safe_database)
+    intelligence_status = enrich_sec_intelligence(
+        client, rows, cutoff=cutoff, database=safe_database
+    )
     try:
         labels = clickhouse_rows(client, taxonomy_labels_sql(safe_database))
     except Exception:
@@ -93,6 +100,7 @@ def sec_filings_payload(
         "next_before": str(last.get("accepted_at_utc") or ""),
         "next_before_accession": str(last.get("accession_number") or ""),
         "rows": rows,
+        "intelligence_status": intelligence_status,
         "window_start": (cutoff - timedelta(hours=safe_hours)).isoformat(),
     }
 
@@ -141,6 +149,9 @@ def sec_filing_detail_payload(cik: str, accession_number: str, *, as_of: str | N
         for row in identity_rows
         if row.get("ticker") and bridge_valid_on(row, accepted_date)
     })
+    intelligence_status = enrich_sec_intelligence(
+        client, [filing], cutoff=cutoff, database=safe_database
+    )
     facts = results.get("facts", [])
     fact_total = int((results.get("fact_count") or [{}])[0].get("row_count") or len(facts))
     facts = facts[:DEFAULT_FACT_PAGE_ROWS]
@@ -157,10 +168,85 @@ def sec_filing_detail_payload(cik: str, accession_number: str, *, as_of: str | N
         "facts_total": fact_total,
         "filing": filing,
         "identity": summarize_identity(identity_rows),
+        "intelligence_status": intelligence_status,
         "originals": results.get("originals", []),
         "status": "partial" if errors else "ready",
         "texts": results.get("texts", []),
     }
+
+
+def enrich_sec_intelligence(
+    client: ClickHouseHttpClient,
+    rows: list[dict[str, Any]],
+    *,
+    cutoff: datetime,
+    database: str,
+) -> str:
+    """Attach V5 document labels while preserving canonical filing availability."""
+    if not rows:
+        return "ready"
+    keys = [
+        (str(row.get("cik") or ""), str(row.get("accession_number") or ""))
+        for row in rows
+    ]
+    try:
+        documents = clickhouse_rows(
+            client, filing_document_ids_sql(keys, cutoff, database)
+        )
+        source_ids = [
+            str(document.get("document_id") or "") for document in documents
+        ]
+        labels_by_source = load_scoped_sec_labels(
+            source_ids,
+            query_rows=lambda sql: clickhouse_rows(client, sql),
+            quote=sql_string,
+        )
+    except Exception:
+        for row in rows:
+            row["scoped_labels"] = []
+            row["scoped_summary"] = None
+        return "unavailable"
+    labels_by_accession: dict[str, list[dict[str, Any]]] = {}
+    for document in documents:
+        accession = str(document.get("accession_number") or "")
+        labels_by_accession.setdefault(accession, []).extend(
+            labels_by_source.get(str(document.get("document_id") or ""), [])
+        )
+    for row in rows:
+        labels = labels_by_accession.get(
+            str(row.get("accession_number") or ""), []
+        )
+        row["scoped_labels"] = labels
+        row["scoped_summary"] = scoped_news_summary(labels)
+    return "ready"
+
+
+def filing_document_ids_sql(
+    keys: list[tuple[str, str]], cutoff: datetime, database: str
+) -> str:
+    if not keys:
+        return "SELECT '' AS accession_number, '' AS document_id WHERE 0 FORMAT JSONEachRow"
+    db = quote_ident(database)
+    key_sql = ",".join(
+        f"({sql_string(cik)},{sql_string(accession)})"
+        for cik, accession in keys
+    )
+    partitions = ",".join(
+        f"cityHash64({sql_string(cik)}) % 64"
+        for cik in sorted({cik for cik, _ in keys if cik})
+    )
+    instant = sql_string(clickhouse_timestamp(cutoff))
+    return f"""
+SELECT accession_number, document_id
+FROM {db}.sec_filing_document_v3
+PREWHERE cityHash64(cik) % 64 IN ({partitions or '0'})
+  AND (cik, accession_number) IN ({key_sql})
+WHERE (cik, accession_number) IN ({key_sql})
+  AND source_revision_at <= parseDateTime64BestEffort({instant})
+ORDER BY source_revision_rank DESC, inserted_at DESC
+LIMIT 1 BY cik, accession_number, document_id
+FORMAT JSONEachRow
+"""
 
 
 def sec_document_text_payload(

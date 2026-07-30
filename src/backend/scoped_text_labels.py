@@ -39,6 +39,50 @@ FORMAT JSONEachRow
     return dict(grouped)
 
 
+def load_scoped_sec_labels(
+    source_ids: list[str],
+    *,
+    query_rows: Callable[[str], list[dict[str, Any]]],
+    quote: Callable[[str], str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Load document-scoped SEC labels without making filing reads depend on them."""
+    return _load_scoped_labels(
+        "sec", source_ids, query_rows=query_rows, quote=quote
+    )
+
+
+def _load_scoped_labels(
+    corpus: str,
+    source_ids: list[str],
+    *,
+    query_rows: Callable[[str], list[dict[str, Any]]],
+    quote: Callable[[str], str],
+) -> dict[str, list[dict[str, Any]]]:
+    identities = sorted({value.strip() for value in source_ids if value.strip()})
+    if not identities:
+        return {}
+    values = ",".join(quote(value) for value in identities)
+    sql = f"""
+SELECT source_id,unit_id,ticker,unit_role,event_id,event_tickers,issuer_role,
+       evidence_scope,semantic_evidence_text,content_role,source_origin,
+       event_concepts,semantic_direction,semantic_score,
+       forecast_trigger_eligible,reaction_evaluation_eligible,
+       issuer_history_context_eligible,classification_json,labeling_version
+FROM q_live.scoped_text_labels_v5 FINAL
+WHERE corpus={quote(corpus)}
+  AND labeling_version={quote(SCOPED_LABELING_VERSION)}
+  AND source_id IN ({values})
+ORDER BY source_id,forecast_trigger_eligible DESC,
+         abs(semantic_score) DESC,ticker,unit_id
+FORMAT JSONEachRow
+"""
+    rows = query_rows(sql)
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row.get("source_id") or "")].append(label_payload(row))
+    return dict(grouped)
+
+
 def label_payload(row: dict[str, Any]) -> dict[str, Any]:
     classification = _json_object(row.get("classification_json"))
     return {
@@ -65,6 +109,22 @@ def label_payload(row: dict[str, Any]) -> dict[str, Any]:
         "modality": str(classification.get("modality") or ""),
         "time_orientation": str(classification.get("time_orientation") or ""),
         "quality_flags": _strings(classification.get("quality_flags")),
+        "confidence": float(classification.get("confidence") or 0.0),
+        "source_type": str(classification.get("source_type") or ""),
+        "source_subtype": str(classification.get("source_subtype") or ""),
+        "issuer_relationship": str(
+            classification.get("issuer_relationship") or ""
+        ),
+        "scope": str(classification.get("scope") or ""),
+        "prior_primary_context_eligible": bool(
+            classification.get("prior_primary_context_eligible")
+        ),
+        "episode_followup_eligible": bool(
+            classification.get("episode_followup_eligible")
+        ),
+        "semantic_direction_basis": str(
+            classification.get("semantic_direction_basis") or ""
+        ),
         "labeling_version": str(
             row.get("labeling_version") or SCOPED_LABELING_VERSION
         ),
@@ -94,11 +154,7 @@ def scoped_news_summary(
     directions = {
         str(row.get("semantic_direction") or "neutral") for row in relevant
     }
-    direction = (
-        next(iter(directions))
-        if len(directions) == 1
-        else str(primary.get("semantic_direction") or "neutral")
-    )
+    direction = next(iter(directions)) if len(directions) == 1 else "mixed"
     return {
         "content_role": primary.get("content_role") or "",
         "source_origin": primary.get("source_origin") or "",
@@ -124,6 +180,12 @@ def scoped_news_summary(
             {str(row.get("ticker") or "") for row in relevant if row.get("ticker")}
         ),
         "label_count": len(relevant),
+        "quality_flags": list(dict.fromkeys(
+            flag
+            for row in relevant
+            for flag in _strings(row.get("quality_flags"))
+        ))[:8],
+        "classified": True,
         "labeling_version": SCOPED_LABELING_VERSION,
     }
 

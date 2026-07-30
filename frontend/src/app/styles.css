@@ -24852,11 +24852,11 @@ button {
 }
 
 .news-all { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
-.news-query-bar { display: grid; grid-template-columns: minmax(190px, 1fr) auto auto 86px auto auto 26px; gap: 5px; align-items: end; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.news-query-bar { display: flex; flex-wrap: wrap; gap: 5px; align-items: end; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .news-search-submit { height: 27px; }
 .news-query-bar label { display: grid; gap: 2px; color: var(--muted-foreground); font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .news-query-bar input, .news-query-bar select { height: 27px; min-width: 0; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--foreground); font: inherit; font-size: 11px; padding: 0 7px; }
-.news-query-bar .news-search { position: relative; display: block; }
+.news-query-bar .news-search { position: relative; display: block; flex: 1 1 260px; }
 .news-query-bar .news-search svg { position: absolute; z-index: 1; left: 8px; top: 7px; color: var(--muted-foreground); }
 .news-query-bar .news-search input { width: 100%; padding-left: 27px; }
 .news-status { min-height: 27px; display: flex; gap: 12px; align-items: center; padding: 0 8px; border-bottom: 1px solid var(--border); color: var(--muted-foreground); font-size: 10px; white-space: nowrap; }
@@ -24881,7 +24881,7 @@ button {
 .ticker-news { display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
 .ticker-news > header { display: flex; align-items: center; justify-content: space-between; padding: 7px 9px; border-bottom: 1px solid var(--border); }
 .ticker-news > header div { display: flex; align-items: center; gap: 7px; }.ticker-news > header strong { font-size: 15px; }.ticker-news > header span, .ticker-news > header small { color: var(--muted-foreground); font-size: 10px; }.ticker-news > header > small { align-items: center; display: flex; gap: 4px; }
-.ticker-news-symbol > span { color: var(--foreground); font-size: 15px; font-weight: 700; }.ticker-news-symbol img { height: 24px; width: 24px; }
+.ticker-news-symbol > span { color: var(--foreground); font-size: 15px; font-weight: 700; }.ticker-news-symbol img { height: 34px; width: 34px; }
 .ticker-news-feed { min-height: 0; overflow: auto; }
 .ticker-news-section + .ticker-news-section { border-top: 1px solid var(--border); }
 .ticker-news-section > header { align-items: center; background: var(--surface-alt); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; padding: 5px 9px; position: sticky; top: 0; z-index: 1; }
@@ -24896,6 +24896,19 @@ button {
 .news-topic-list { display: inline-flex; min-width: 0; gap: 3px; align-items: center; color: var(--muted-foreground); }.news-topic-list > span { overflow: hidden; max-width: 88px; text-overflow: ellipsis; white-space: nowrap; }.news-topic-list > span + span::before { content: "\00b7"; margin-right: 3px; }
 .news-headline-meta { align-items: center; display: flex; gap: 6px; margin-bottom: 3px; }
 .news-semantic-direction, .news-scoped-class { align-items: center; display: inline-flex; font-size: 9px; font-weight: 690; gap: 3px; white-space: nowrap; }
+.news-semantic-direction[data-salient="true"] { border-left: 2px solid currentColor; display: inline-grid; font-size: 10.5px; font-variant-numeric: tabular-nums; grid-template-columns: auto auto; padding-left: 5px; }
+.news-semantic-direction[data-salient="true"] small { font-size: 11px; font-weight: 780; }
+.news-semantic-direction[data-direction="mixed"] { color: var(--info); }
+.news-eligibility { align-items: center; display: inline-flex; gap: 3px; }
+.news-eligibility b { border: 1px solid var(--border); color: var(--muted-foreground); display: grid; font-size: 8px; font-weight: 700; height: 17px; place-items: center; width: 17px; }
+.news-eligibility b[data-active="true"] { border-color: var(--foreground); color: var(--foreground); }
+.news-eligibility[data-state="pending"] { color: var(--muted-foreground); font-size: 9px; }
+.news-headline-source { color: var(--muted-foreground); display: block; font-size: 8.5px; margin-top: 2px; }
+.news-text-state[data-state="unrendered"] { color: var(--muted-foreground); text-decoration: underline dotted; }
+.news-intelligence-table, .sec-intelligence-table { min-width: 1120px; }
+.news-intelligence-table th:nth-child(4), .news-intelligence-table td:nth-child(4), .sec-intelligence-table th:nth-child(4), .sec-intelligence-table td:nth-child(4) { min-width: 112px; }
+.news-intelligence-table th:nth-child(6), .sec-intelligence-table th:nth-child(6) { width: 42%; }
+.news-reader-byline .ticker-identity img, .news-scoped-label .ticker-identity img { height: 34px; width: 34px; }
 .news-semantic-direction small { color: inherit; font-size: 8px; font-variant-numeric: tabular-nums; opacity: .76; }
 .news-semantic-direction[data-direction="positive"] { color: var(--success); }
 .news-semantic-direction[data-direction="negative"] { color: var(--danger); }
@@ -24943,15 +24956,14 @@ button {
 .canvas-settings-note { max-width: 250px; color: var(--muted-foreground); font-size: 10px; line-height: 1.4; }
 
 @container (max-width: 560px) {
-  .news-query-bar { grid-template-columns: minmax(150px, 1fr) auto auto 26px; }.news-query-bar > label:nth-of-type(2), .news-query-bar > label:nth-of-type(4), .news-query-bar > label:nth-of-type(5) { display: none; }
+  .news-query-bar .news-search { flex-basis: 100%; }
   .news-table th:nth-child(5), .news-table td:nth-child(5), .news-table th:nth-child(6), .news-table td:nth-child(6) { display: none; }
   .ticker-news-feed article p { display: none; }
   .news-scoped-label-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 700px) {
-  .news-query-bar { grid-template-columns: minmax(150px, 1fr) auto auto 26px; }
-  .news-query-bar > label:nth-of-type(2), .news-query-bar > label:nth-of-type(4), .news-query-bar > label:nth-of-type(5) { display: none; }
+  .news-query-bar .news-search { flex-basis: 100%; }
   .news-table th:nth-child(5), .news-table td:nth-child(5), .news-table th:nth-child(6), .news-table td:nth-child(6) { display: none; }
   .ticker-news-feed article p { display: none; }
   .news-scoped-label-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }

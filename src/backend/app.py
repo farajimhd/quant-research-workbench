@@ -1384,9 +1384,11 @@ def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
         SELECT
             n.title, n.article_url, n.url_domain, n.author, n.channels, n.provider_tags, n.links,
             formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
-            r.rendered_text AS text
+            ifNull(r.rendered_text, '') AS text,
+            if(empty(ifNull(r.source_revision_key, '')), 'unrendered',
+               if(r.source_count = 0, 'title_only', 'rendered')) AS render_status
         FROM q_live.benzinga_news_event_v2 AS n FINAL
-        INNER JOIN q_live.benzinga_news_rendered_v2 AS r FINAL
+        LEFT JOIN q_live.benzinga_news_rendered_v2 AS r FINAL
             ON r.published_date=n.published_date
             AND r.provider_article_id=n.provider_article_id
             AND r.source_revision_key=n.source_revision_key
@@ -1417,11 +1419,10 @@ def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
             query_rows=clickhouse_json_each_row,
             quote=sql_string,
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="News intelligence is temporarily unavailable",
-        ) from exc
+        intelligence_status = "ready"
+    except Exception:
+        scoped_by_source = {}
+        intelligence_status = "unavailable"
     scoped_labels = scoped_by_source.get(news_id, [])
     # Product APIs expose only decision-relevant presentation fields. Database,
     # table, storage-path, ingestion-diagnostic, and agent/chat implementation
@@ -1436,10 +1437,12 @@ def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
             "provider_tags": source_row.get("provider_tags") or [],
             "published_at_utc": source_row.get("published_at_utc") or "",
             "text": source_row.get("text") or "",
+            "render_status": source_row.get("render_status") or "unrendered",
             "title": source_row.get("title") or "",
             "url_domain": source_row.get("url_domain") or "",
             "scoped_labels": scoped_labels,
             "scoped_summary": scoped_news_summary(scoped_labels),
+            "intelligence_status": intelligence_status,
         },
         "tickers": sorted({str(row.get("ticker") or "").strip().upper() for row in ticker_rows if str(row.get("ticker") or "").strip()}),
     }
@@ -1455,6 +1458,11 @@ def trading_news_rows(
     kind: str = "all",
     before: str = "",
     before_id: str = "",
+    role: str = "",
+    origin: str = "",
+    direction: str = "",
+    eligibility: str = "",
+    label_state: str = "",
 ) -> dict[str, Any]:
     """Return a bounded point-in-time news page for Canvas news containers."""
     safe_limit = max(1, min(limit, 250))
@@ -1478,6 +1486,23 @@ def trading_news_rows(
     safe_kind = kind.strip().lower()
     if safe_kind not in {"all", "ai", "analyst", "company", "editorial", "insights", "market", "multi", "regulatory", "why_moving"}:
         raise HTTPException(status_code=400, detail="kind is invalid")
+    safe_role = role.strip().lower()
+    safe_origin = origin.strip().lower()
+    safe_direction = direction.strip().lower()
+    safe_eligibility = eligibility.strip().lower()
+    safe_label_state = label_state.strip().lower()
+    token_pattern = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+    for name, value in {
+        "role": safe_role,
+        "origin": safe_origin,
+        "direction": safe_direction,
+    }.items():
+        if value and not token_pattern.fullmatch(value):
+            raise HTTPException(status_code=400, detail=f"{name} is invalid")
+    if safe_eligibility not in {"", "forecast", "reaction", "history"}:
+        raise HTTPException(status_code=400, detail="eligibility is invalid")
+    if safe_label_state not in {"", "classified", "pending", "quality"}:
+        raise HTTPException(status_code=400, detail="label_state is invalid")
 
     database = "q_live"
     normalized_table = "benzinga_news_event_v2"
@@ -1500,6 +1525,44 @@ def trading_news_rows(
     ]
     if safe_ticker:
         filters.append(f"has(n.tickers, {sql_string(safe_ticker)})")
+    label_conditions = [
+        "l.corpus = 'news'",
+        "l.labeling_version = 'scoped_text_labeling_v5'",
+    ]
+    if safe_role:
+        label_conditions.append(f"l.content_role = {sql_string(safe_role)}")
+    if safe_origin:
+        label_conditions.append(f"l.source_origin = {sql_string(safe_origin)}")
+    if safe_direction:
+        label_conditions.append(
+            f"l.semantic_direction = {sql_string(safe_direction)}"
+        )
+    if safe_eligibility:
+        eligibility_column = {
+            "forecast": "forecast_trigger_eligible",
+            "reaction": "reaction_evaluation_eligible",
+            "history": "issuer_history_context_eligible",
+        }[safe_eligibility]
+        label_conditions.append(f"l.{eligibility_column} = 1")
+    label_exists = (
+        "n.canonical_news_id IN (SELECT source_id "
+        "FROM q_live.scoped_text_labels_v5 AS l FINAL "
+        f"WHERE {' AND '.join(label_conditions)})"
+    )
+    if safe_role or safe_origin or safe_direction or safe_eligibility:
+        filters.append(label_exists)
+    if safe_label_state == "classified":
+        filters.append(label_exists)
+    elif safe_label_state == "pending":
+        filters.append(f"NOT ({label_exists})")
+    elif safe_label_state == "quality":
+        filters.append(
+            "n.canonical_news_id IN (SELECT source_id "
+            "FROM q_live.scoped_text_labels_v5 AS l FINAL "
+            f"WHERE {' AND '.join(label_conditions)} "
+            "AND position(l.classification_json, 'quality_flags') > 0 "
+            "AND position(l.classification_json, '[]') = 0)"
+        )
     search_term = search.strip()
     if search_term:
         escaped = sql_string(search_term)
@@ -1509,9 +1572,9 @@ def trading_news_rows(
             f"ifNull(n.author, ''), ' ', ifNull(n.url_domain, '')), {escaped}) > 0"
         )
     if safe_content == "full":
-        filters.append("r.source_count > 0")
+        filters.append("ifNull(r.source_count, 0) > 0")
     elif safe_content == "title":
-        filters.append("r.source_count = 0")
+        filters.append("ifNull(r.source_count, 0) = 0")
     where_sql = " AND ".join(filters)
     ticker_links_sql = (
         "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), "
@@ -1543,11 +1606,13 @@ def trading_news_rows(
             {classification_sql["evidence"]} AS classification_evidence,
             has(n.content_quality_flags, 'external_text') AS has_external_text,
             has(n.content_quality_flags, 'pdf_text') AS has_pdf,
-            r.source_count = 0 AS is_title_only,
-            lengthUTF8(r.rendered_text) AS full_text_chars,
-            substring(r.rendered_text, 1, 320) AS text_preview
+            ifNull(r.source_count, 0) = 0 AS is_title_only,
+            if(empty(ifNull(r.source_revision_key, '')), 'unrendered',
+               if(r.source_count = 0, 'title_only', 'rendered')) AS render_status,
+            lengthUTF8(ifNull(r.rendered_text, '')) AS full_text_chars,
+            substring(ifNull(r.rendered_text, ''), 1, 320) AS text_preview
         FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-        INNER JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
+        LEFT JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
             ON r.published_date=n.published_date
             AND r.provider_article_id=n.provider_article_id
             AND r.source_revision_key=n.source_revision_key
@@ -1572,11 +1637,10 @@ def trading_news_rows(
             query_rows=clickhouse_json_each_row,
             quote=sql_string,
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="News intelligence is temporarily unavailable",
-        ) from exc
+        intelligence_status = "ready"
+    except Exception:
+        scoped_by_source = {}
+        intelligence_status = "unavailable"
     for row in rows:
         source_id = str(row.get("canonical_news_id") or "")
         labels = scoped_by_source.get(source_id, [])
@@ -1584,6 +1648,7 @@ def trading_news_rows(
         row["scoped_summary"] = scoped_news_summary(
             labels, ticker=safe_ticker
         )
+        row["intelligence_status"] = intelligence_status
     return {
         "as_of": cutoff.isoformat().replace("+00:00", "Z"),
         "has_more": has_more,
@@ -1592,6 +1657,7 @@ def trading_news_rows(
         "next_before": str(rows[-1].get("published_at_utc") or "") if has_more and rows else "",
         "next_before_id": str(rows[-1].get("canonical_news_id") or "") if has_more and rows else "",
         "rows": rows,
+        "intelligence_status": intelligence_status,
         "window_start": window_start.isoformat().replace("+00:00", "Z"),
     }
 
@@ -2835,10 +2901,18 @@ def trading_news(
     ticker: str = "",
     content: str = "all",
     kind: str = "all",
+    role: str = "",
+    origin: str = "",
+    direction: str = "",
+    eligibility: str = "",
+    label_state: str = "",
     before: str = "",
     before_id: str = "",
 ) -> dict[str, Any]:
-    return trading_news_rows(as_of, lookback_hours, limit, search, ticker, content, kind, before, before_id)
+    return trading_news_rows(
+        as_of, lookback_hours, limit, search, ticker, content, kind, before,
+        before_id, role, origin, direction, eligibility, label_state,
+    )
 
 
 @app.websocket("/api/trading/news/stream")

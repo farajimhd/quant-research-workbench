@@ -12,6 +12,7 @@ from src.backend.sec_canvas_service import (
     detail_text_metadata_sql,
     detail_text_page_sql,
     filing_list_sql,
+    filing_document_ids_sql,
     normalize_accession,
     normalize_cik,
     normalize_clickhouse_utc,
@@ -97,6 +98,18 @@ class SecCanvasServiceTests(unittest.TestCase):
 
         date_only = normalize_sec_filing_row({"form_type": "D", "items": None, "accepted_at_source": "archive_filing_date_midnight"})
         self.assertEqual(date_only["event_time_quality"], "date_only")
+
+    def test_scoped_label_lookup_uses_exact_filing_document_identities(self) -> None:
+        cutoff = datetime(2026, 7, 18, 14, 0, tzinfo=UTC)
+        sql = filing_document_ids_sql(
+            [("0000320193", "0000320193-25-000079")],
+            cutoff,
+            "q_live",
+        )
+        self.assertIn("sec_filing_document_v3", sql)
+        self.assertIn("(cik, accession_number) IN", sql)
+        self.assertIn("source_revision_at <=", sql)
+        self.assertIn("LIMIT 1 BY cik, accession_number, document_id", sql)
 
 
 if __name__ == "__main__":
