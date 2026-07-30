@@ -18,7 +18,7 @@ from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 4
+STRATEGY_REVISION = 5
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -90,21 +90,20 @@ def default_entry_decision_rules(parameters: dict[str, Any] | None = None) -> di
             ],
         },
         "confirmation": {
-            "operator": "weighted",
-            "minimum_score": float(entry.get("minimum_confirmation_score") or 0.55),
+            "operator": "all",
             "groups": [
                 _rule_group("qmd-alignment", "QMD flow and structure", "all", [
                     _condition("qmd-score", "indicator.flow_structure.score", "100ms", "greater_or_equal", value=float(dict(entry.get("qmd") or {}).get("minimum_score") or 0.3)),
                     _condition("qmd-confidence", "indicator.flow_structure.confidence", "100ms", "greater_or_equal", value=float(dict(entry.get("qmd") or {}).get("minimum_confidence") or 0.5)),
-                ], weight=float(dict(entry.get("qmd") or {}).get("weight") or 0.4)),
+                ]),
                 _rule_group("vwap-confirmation", "Price accepted above rising VWAP", "all", [
                     _condition("price-above-vwap", "market.last_price", "5s", "greater_or_equal", right_source_id="indicator.vwap.value", right_timeframe="5s"),
                     _condition("vwap-rising", "indicator.vwap.slope", "5s", "greater_or_equal", value=float(dict(entry.get("vwap") or {}).get("minimum_slope_bps_per_second") or 0)),
-                ], weight=float(dict(entry.get("vwap") or {}).get("weight") or 0.3)),
+                ]),
                 _rule_group("macd-confirmation", "MACD confirms momentum", "all", [
                     _condition("macd-line-over-signal", "indicator.macd.line", "5s", "greater_or_equal", right_source_id="indicator.macd.signal", right_timeframe="5s"),
                     _condition("macd-positive-histogram", "indicator.macd.histogram", "5s", "greater_than", value=0),
-                ], weight=float(dict(entry.get("macd") or {}).get("weight") or 0.3)),
+                ]),
             ],
         },
         "veto": {
@@ -277,9 +276,9 @@ def long_momentum_strategy_definition() -> dict[str, Any]:
             "taxonomy": {
                 "schema_version": 2,
                 "indicators": [
-                    {"key": "flow_structure_composite", "timeframe": "100ms", "role": "confirmation", "required": False, "maximum_age_ms": 300, "weight": 0.4, "minimum_score": 0.3, "minimum_confidence": 0.5},
-                    {"key": "vwap", "timeframe": "5s", "role": "confirmation", "required": False, "maximum_age_ms": 6000, "weight": 0.3},
-                    {"key": "macd", "timeframe": "5s", "role": "confirmation", "required": False, "maximum_age_ms": 6000, "weight": 0.3},
+                    {"key": "flow_structure_composite", "timeframe": "100ms", "role": "confirmation", "required": False, "maximum_age_ms": 300, "minimum_score": 0.3, "minimum_confidence": 0.5},
+                    {"key": "vwap", "timeframe": "5s", "role": "confirmation", "required": False, "maximum_age_ms": 6000},
+                    {"key": "macd", "timeframe": "5s", "role": "confirmation", "required": False, "maximum_age_ms": 6000},
                     {"key": "generic_structure", "timeframe": "1s", "role": "trigger", "required": True, "maximum_age_ms": 2000},
                 ],
                 "signals": [
@@ -318,9 +317,9 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "news_minimum_score": 0.7,
             "price_expansion_minimum_score": 0.65,
             "vwap_transition_minimum_score": 0.6,
-            "qmd": {"minimum_score": 0.3, "minimum_confidence": 0.5, "weight": 0.4},
-            "vwap": {"minimum_slope_bps_per_second": 0.0, "weight": 0.3},
-            "macd": {"require_positive_histogram": True, "weight": 0.3},
+            "qmd": {"minimum_score": 0.3, "minimum_confidence": 0.5},
+            "vwap": {"minimum_slope_bps_per_second": 0.0},
+            "macd": {"require_positive_histogram": True},
             "veto": {"flow_price_divergence": 0.75, "liquidity_dislocation": 0.75},
         },
         "sizing": {
@@ -636,6 +635,7 @@ class LongMomentumStrategyEngine:
                 "breakout_level": reference,
                 "breakout_buffer_bps": reference_buffer_bps,
                 "entry_reference_price": observation.price,
+                "entry_at": observation.observed_at.isoformat(),
                 "initial_stop": stop,
                 "active_stop": stop,
                 "high_water_price": observation.price,
@@ -692,13 +692,37 @@ class LongMomentumStrategyEngine:
                 else observation.price > breakout_level + breakout_buffer
             )
         )
-        exit_route = _matching_exit_route(
-            list(parameters.get("exit_routes") or []),
-            observation=observation,
-            protective_stop=stop,
-            failed_breakout=failed_breakout,
-            side=side,
+        protection_breached = (
+            observation.price <= stop if side == "long" else observation.price >= stop
         )
+        if protection_breached:
+            exit_route = {
+                "route_id": "oms-protective-stop",
+                "name": "OMS protective stop",
+                "mechanism": "protective_stop",
+                "position_fraction": 1.0,
+            }
+        else:
+            exit_rule_sets = list(
+                dict(
+                    dict(parameters.get("phase_policy") or {}).get("exit") or {}
+                ).get("rule_sets") or []
+            )
+            exit_route = (
+                _matching_exit_rule_set(
+                    exit_rule_sets,
+                    observation=observation,
+                    entry_at=str(state.get("entry_at") or ""),
+                )
+                if exit_rule_sets
+                else _matching_exit_route(
+                    list(parameters.get("exit_routes") or []),
+                    observation=observation,
+                    protective_stop=stop,
+                    failed_breakout=failed_breakout,
+                    side=side,
+                )
+            )
         manual_exit_requested = bool(state.pop("manual_exit_requested", False))
         if manual_exit_requested:
             exit_route = {
@@ -726,9 +750,8 @@ class LongMomentumStrategyEngine:
                 invalidation_price=stop,
                 trailing_amount=_trailing_amount(observation, parameters),
                 metadata={
-                    "proposed_exit_route_id": exit_route["route_id"],
-                    "proposed_exit_route_name": exit_route["name"],
-                    "proposed_exit_route_priority": exit_route["priority"],
+                    "proposed_exit_rule_set_id": exit_route["route_id"],
+                    "proposed_exit_rule_set_name": exit_route["name"],
                 },
             )
         if exit_route is not None and (
@@ -748,9 +771,10 @@ class LongMomentumStrategyEngine:
                 trailing_amount=_trailing_amount(observation, parameters),
                 order_intent=dict(exit_route.get("order_intent") or {}),
                 metadata={
+                    "exit_rule_set_id": exit_route["route_id"],
+                    "exit_rule_set_name": exit_route["name"],
                     "exit_route_id": exit_route["route_id"],
                     "exit_route_name": exit_route["name"],
-                    "exit_route_priority": exit_route["priority"],
                     "buy_back": bool(
                         assignment.permissions.reenter
                         and not state.get("disable_after_exit")
@@ -1309,8 +1333,10 @@ def evaluate_entry_decision_rules(
     for stage_name in ("trigger", "confirmation", "veto"):
         stage = dict(resolved.get(stage_name) or {})
         group_results: dict[str, bool] = {}
-        weights: dict[str, float] = {}
+        group_scores: dict[str, float] = {}
         for group in stage.get("groups") or []:
+            if not bool(group.get("enabled", True)):
+                continue
             group_id = str(group.get("group_id") or "")
             condition_results = [
                 _condition_matches(dict(condition), observation)
@@ -1318,25 +1344,30 @@ def evaluate_entry_decision_rules(
                 if bool(condition.get("enabled", True))
             ]
             operator = str(group.get("operator") or "all")
-            passed = (
-                bool(condition_results)
-                and (all(condition_results) if operator == "all" else any(condition_results))
+            score = (
+                sum(1 for matched in condition_results if matched)
+                / len(condition_results)
+                if condition_results
+                else 0.0
+            )
+            passed = bool(condition_results) and (
+                all(condition_results)
+                if operator == "all"
+                else score >= float(group.get("required_score") or 0)
+                if operator == "score"
+                else any(condition_results)
             )
             group_results[group_id] = passed
-            weights[group_id] = max(0.0, float(group.get("weight") or 0))
+            group_scores[group_id] = score
         matched = [group_id for group_id, passed in group_results.items() if passed]
         operator = str(stage.get("operator") or "any")
-        if operator == "weighted":
-            denominator = sum(weights.values()) or 1.0
-            score = sum(weights[group_id] for group_id in matched) / denominator
-            passed = score >= float(stage.get("minimum_score") or 0)
-        else:
-            score = 1.0 if matched else 0.0
-            passed = bool(group_results) and (
-                all(group_results.values()) if operator == "all" else bool(matched)
-            )
+        score = len(matched) / len(group_results) if group_results else 0.0
+        passed = bool(group_results) and (
+            all(group_results.values()) if operator == "all" else bool(matched)
+        )
         output[stage_name] = {
             "groups": group_results,
+            "group_scores": group_scores,
             "matched_groups": matched,
             "operator": operator,
             "passed": passed,
@@ -1507,6 +1538,46 @@ def _matching_exit_route(
     return None
 
 
+def _matching_exit_rule_set(
+    rule_sets: list[dict[str, Any]],
+    *,
+    observation: StrategyObservation,
+    entry_at: str,
+) -> dict[str, Any] | None:
+    elapsed_ms = 0
+    if entry_at:
+        try:
+            elapsed_ms = max(
+                0,
+                int(
+                    (
+                        observation.observed_at
+                        - datetime.fromisoformat(entry_at.replace("Z", "+00:00"))
+                    ).total_seconds()
+                    * 1000
+                ),
+            )
+        except ValueError:
+            elapsed_ms = 0
+    for rule_set in rule_sets:
+        if not bool(rule_set.get("enabled", True)):
+            continue
+        timing = dict(rule_set.get("timing") or {})
+        active_after_ms = int(timing.get("active_after_ms") or 0)
+        expires_after_ms = int(timing.get("expires_after_ms") or 0)
+        if elapsed_ms < active_after_ms:
+            continue
+        if expires_after_ms > 0 and elapsed_ms > expires_after_ms:
+            continue
+        if _rule_stage_passed(dict(rule_set.get("rules") or {}), observation):
+            return {
+                **rule_set,
+                "route_id": str(rule_set.get("rule_set_id") or ""),
+                "mechanism": str(rule_set.get("rule_set_id") or "exit_rule_set"),
+            }
+    return None
+
+
 def _rule_stage_passed(
     stage: dict[str, Any],
     observation: StrategyObservation,
@@ -1514,7 +1585,7 @@ def _rule_stage_passed(
     groups = list(stage.get("groups") or [])
     if not groups:
         return False
-    group_results: list[tuple[bool, float]] = []
+    group_results: list[bool] = []
     for group in groups:
         if not bool(group.get("enabled", True)):
             continue
@@ -1523,22 +1594,22 @@ def _rule_stage_passed(
             for condition in group.get("conditions") or []
             if bool(condition.get("enabled", True))
         ]
+        operator = str(group.get("operator") or "all")
+        score = sum(1 for matched in conditions if matched) / len(conditions) if conditions else 0.0
         passed = bool(conditions) and (
             all(conditions)
-            if str(group.get("operator") or "all") == "all"
+            if operator == "all"
+            else score >= float(group.get("required_score") or 0)
+            if operator == "score"
             else any(conditions)
         )
-        group_results.append((passed, max(0.0, float(group.get("weight") or 0))))
+        group_results.append(passed)
     if not group_results:
         return False
     operator = str(stage.get("operator") or "any")
     if operator == "all":
-        return all(passed for passed, _ in group_results)
-    if operator == "weighted":
-        total = sum(weight for _, weight in group_results) or 1.0
-        score = sum(weight for passed, weight in group_results if passed) / total
-        return score >= float(stage.get("minimum_score") or 0)
-    return any(passed for passed, _ in group_results)
+        return all(group_results)
+    return any(group_results)
 
 
 def _campaign_authority(
@@ -1581,8 +1652,7 @@ def _validate_entry_rules(rules: dict[str, Any]) -> None:
     for stage_name in ("trigger", "confirmation", "veto"):
         stage = dict(rules.get(stage_name) or {})
         operator = str(stage.get("operator") or "")
-        allowed = {"weighted"} if stage_name == "confirmation" else {"all", "any"}
-        if operator not in allowed:
+        if operator not in {"all", "any"}:
             raise ValueError(f"Entry {stage_name} operator is unsupported")
         groups = list(stage.get("groups") or [])
         if not groups:
@@ -1592,17 +1662,14 @@ def _validate_entry_rules(rules: dict[str, Any]) -> None:
         group_ids = [str(group.get("group_id") or "") for group in groups]
         if any(not group_id for group_id in group_ids) or len(set(group_ids)) != len(group_ids):
             raise ValueError(f"Entry {stage_name} rule group ids must be present and unique")
-        if operator == "weighted" and not 0 <= float(stage.get("minimum_score") or 0) <= 1:
-            raise ValueError("Entry confirmation minimum score must be between 0 and 1")
-        if operator == "weighted" and sum(
-            max(0.0, float(group.get("weight") or 0))
-            for group in groups
-            if bool(group.get("enabled", True))
-        ) <= 0:
-            raise ValueError("Entry confirmation requires positive enabled group weight")
         for group in groups:
-            if str(group.get("operator") or "") not in {"all", "any"}:
+            group_operator = str(group.get("operator") or "")
+            if group_operator not in {"all", "any", "score"}:
                 raise ValueError(f"Entry rule group {group.get('group_id')} operator is unsupported")
+            if group_operator == "score" and not 0 < float(group.get("required_score") or 0) <= 1:
+                raise ValueError(
+                    f"Entry rule group {group.get('group_id')} required score must be between zero and one"
+                )
             conditions = list(group.get("conditions") or [])
             if not conditions:
                 raise ValueError(f"Entry rule group {group.get('group_id')} requires a condition")
@@ -1701,14 +1768,14 @@ def _rule_group(
     operator: str,
     conditions: list[dict[str, Any]],
     *,
-    weight: float = 1.0,
+    required_score: float = 1.0,
 ) -> dict[str, Any]:
     return {
         "group_id": group_id,
         "label": label,
         "enabled": True,
         "operator": operator,
-        "weight": weight,
+        "required_score": required_score,
         "conditions": conditions,
     }
 

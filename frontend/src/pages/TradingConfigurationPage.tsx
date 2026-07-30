@@ -115,14 +115,13 @@ type RuleGroup = {
   enabled: boolean;
   group_id: string;
   label: string;
-  operator: "all" | "any";
-  weight: number;
+  operator: "all" | "any" | "score";
+  required_score: number;
 };
 
 type RuleStage = {
   groups: RuleGroup[];
-  minimum_score?: number;
-  operator: "all" | "any" | "weighted";
+  operator: "all" | "any";
 };
 
 type EntryRules = {
@@ -156,20 +155,16 @@ type AddStep = {
   step_id: string;
 };
 
-type ExitRoute = {
+type ExitRuleSet = {
   action: "close" | "reduce";
-  category: "protective" | "strategic" | "profit" | "emergency";
   enabled: boolean;
-  mechanism: string;
   name: string;
-  priority: number;
-  protected: boolean;
   position_fraction: number;
   order_intent: OrderIntentConfig;
   rules: RuleStage;
-  route_id: string;
-  settings: Record<string, Primitive>;
+  rule_set_id: string;
   summary: string;
+  timing: { active_after_ms: number; expires_after_ms: number };
 };
 
 type StrategyLifecycle = {
@@ -193,7 +188,7 @@ type StrategyLifecycle = {
     require_new_confirmation: boolean;
     rules: EntryRules;
   };
-  exit: { routes: ExitRoute[] };
+  exit: { rule_sets: ExitRuleSet[] };
 };
 
 type StrategySection = {
@@ -445,6 +440,26 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     }
   }
 
+  async function persistStrategy(value: StrategySection) {
+    setStatus("saving");
+    setMessage("");
+    try {
+      const nextDraft = await api<Draft>("/api/trading/configuration/draft/strategy", {
+        body: JSON.stringify({ payload: value }),
+        method: "PUT",
+      });
+      setDraft(nextDraft);
+      setDirtySection(null);
+      setStatus("saved");
+      setMessage("Strategy clone saved to the configuration draft.");
+      return nextDraft.strategy;
+    } catch (reason) {
+      setStatus("error");
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+      throw reason;
+    }
+  }
+
   async function publish() {
     if (!draft) return;
     setStatus("saving");
@@ -501,7 +516,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         />
       ) : draft ? (
         <>
-          {section === "strategy" ? <StrategyStudio draft={draft} section={draft.strategy} onChange={(value) => updateDraft("strategy", value)} /> : null}
+          {section === "strategy" ? <StrategyStudio draft={draft} section={draft.strategy} onChange={(value) => updateDraft("strategy", value)} onPersist={persistStrategy} /> : null}
           {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
           {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
           {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
@@ -539,8 +554,9 @@ function ConfigurationJourney({ active, draft }: { active: TradingConfigurationS
   );
 }
 
-function StrategyStudio({ draft, onChange, section }: { draft: Draft; onChange: (value: StrategySection) => void; section: StrategySection }) {
+function StrategyStudio({ draft, onChange, onPersist, section }: { draft: Draft; onChange: (value: StrategySection) => void; onPersist: (value: StrategySection) => Promise<StrategySection>; section: StrategySection }) {
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
+  const [cloning, setCloning] = useState(false);
   const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
   const profileInUse = draft.assignments.deployments.some((row) => row.profile_id === selected?.profile_id);
   useEffect(() => {
@@ -552,11 +568,16 @@ function StrategyStudio({ draft, onChange, section }: { draft: Draft; onChange: 
     onChange({ ...section, profiles: section.profiles.map((row) => row.profile_id === selected.profile_id ? next : row) });
   }
 
-  function cloneProfile() {
+  async function cloneProfile() {
     const id = uniqueId(`${selected.profile_id}-copy`, section.profiles.map((row) => row.profile_id));
     const next = { ...deepClone(selected), profile_id: id, name: `${selected.name} copy`, origin: "user" as const, protected: false, revision: 1 };
-    onChange({ ...section, profiles: [...section.profiles, next] });
-    setSelectedId(id);
+    setCloning(true);
+    try {
+      await onPersist({ ...section, profiles: [...section.profiles, next] });
+      setSelectedId(id);
+    } finally {
+      setCloning(false);
+    }
   }
 
   function createProfile(template?: StrategyProfile) {
@@ -622,7 +643,7 @@ function StrategyStudio({ draft, onChange, section }: { draft: Draft; onChange: 
             <textarea aria-label="Strategy Profile summary" onChange={(event) => replaceProfile({ ...selected, description: event.target.value })} rows={2} value={selected.description} />
           </div>
           <div className="configuration-heading-actions">
-            <button className="button compact" onClick={cloneProfile} type="button"><Clipboard size={14} /> Clone</button>
+            <button className="button compact" disabled={cloning} onClick={cloneProfile} type="button"><Clipboard size={14} /> {cloning ? "Cloning…" : "Clone"}</button>
             <button
               aria-label="Delete Strategy Profile"
               className="button compact danger"
@@ -661,7 +682,7 @@ function StrategyStudio({ draft, onChange, section }: { draft: Draft; onChange: 
             catalog={section.input_catalog}
             rules={entryRules}
             title="How the initial position is opened"
-            summary="Opportunity passes, weighted confirmation passes, and no blocker passes. The resulting order request is resolved by Portfolio and executed by OMS."
+            summary="Opportunity passes, configured confirmation rule sets pass, and no blocker passes. The resulting order request is resolved by Portfolio and executed by OMS."
             onChange={(value) => replaceProfile({
               ...selected,
               lifecycle: {
@@ -712,10 +733,10 @@ function StrategyStudio({ draft, onChange, section }: { draft: Draft; onChange: 
 
         <LifecyclePanel
           eyebrow="Phase 3"
-          summary={`${selected.lifecycle.exit.routes.filter((row) => row.enabled).length} active routes · protective stop always enabled`}
+          summary={`${selected.lifecycle.exit.rule_sets.filter((row) => row.enabled).length} active rule sets · OMS protection always active`}
           title="Exit"
         >
-          <ExitRoutesEditor catalog={section.input_catalog} profile={selected} onChange={replaceProfile} />
+          <ExitRuleSetsEditor catalog={section.input_catalog} draft={draft} profile={selected} onChange={replaceProfile} />
         </LifecyclePanel>
 
         <LifecyclePanel
@@ -820,7 +841,7 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
         />
       </div>
       <fieldset className="configuration-choice-set">
-        <legend>Eligible sessions <CircleHelp size={13} /></legend>
+        <legend>Eligible sessions</legend>
         <p>The strategy evaluates entries only during selected sessions. Protective exits remain active whenever a position exists.</p>
         <div>{sessions.map((session) => (
           <label key={session}>
@@ -881,69 +902,86 @@ function ReentryEditor({ catalog, onChange, profile }: {
   );
 }
 
-function ExitRoutesEditor({ catalog, onChange, profile }: {
+function ExitRuleSetsEditor({ catalog, draft, onChange, profile }: {
   catalog: StrategyInput[];
+  draft: Draft;
   onChange: (value: StrategyProfile) => void;
   profile: StrategyProfile;
 }) {
-  const routes = profile.lifecycle.exit.routes;
-  function replace(routeId: string, next: ExitRoute) {
+  const routes = profile.lifecycle.exit.rule_sets;
+  function replace(routeId: string, next: ExitRuleSet) {
     onChange({
       ...profile,
       lifecycle: {
         ...profile.lifecycle,
-        exit: { routes: routes.map((row) => row.route_id === routeId ? next : row) },
+        exit: { rule_sets: routes.map((row) => row.rule_set_id === routeId ? next : row) },
       },
     });
   }
+  function addRuleSet() {
+    const ruleSetId = uniqueId("new-exit-rule", routes.map((row) => row.rule_set_id));
+    const source = catalog[0];
+    onChange({
+      ...profile,
+      lifecycle: {
+        ...profile.lifecycle,
+        exit: {
+          rule_sets: [{
+            action: "close",
+            enabled: true,
+            name: "New exit rule set",
+            order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", outside_rth: false, partial_fill_policy: "complete_remainder", time_in_force: "DAY" },
+            position_fraction: 1,
+            rule_set_id: ruleSetId,
+            rules: {
+              operator: "all",
+              groups: [{
+                conditions: [{ comparator: source.value_type === "boolean" ? "is_true" : "greater_or_equal", condition_id: `${ruleSetId}-condition`, enabled: true, left_source_id: source.source_id, left_timeframe: source.timeframes[0], right_source_id: "", right_timeframe: "", value: source.value_type === "boolean" ? null : 0 }],
+                enabled: true,
+                group_id: `${ruleSetId}-group`,
+                label: "Exit evidence",
+                operator: "all",
+                required_score: 1,
+              }],
+            },
+            summary: "Describe when this exit becomes valid.",
+            timing: { active_after_ms: 0, expires_after_ms: 0 },
+          }, ...routes],
+        },
+      },
+    });
+  }
+  const deployment = draft.assignments.deployments.find((row) => row.profile_id === profile.profile_id);
+  const omsProfile = draft.oms.profiles.find((row) => row.profile_id === deployment?.oms_profile_id);
   return (
     <div className="strategy-exit-routes">
-      <p className="configuration-section-guide">Exit routes are evaluated by priority. A full exit may continue into Reentry; campaign termination is configured on the Deployment. Protective exits cannot be disabled or delayed.</p>
-      {routes.map((route) => (
-        <details className="strategy-exit-route" data-enabled={route.enabled ? "true" : "false"} key={route.route_id}>
+      <div className="configuration-protection-authority">
+        <ShieldCheck size={19} />
+        <div>
+          <span>OMS safety authority</span>
+          <strong>Protective stop is independent of strategic exit rules</strong>
+          <p>OMS calculates, submits, repairs, and reconciles the protective order. Strategy rules cannot disable or delay it. {omsProfile ? `${omsProfile.name} uses ${readableLabel(omsProfile.settings.protection.stop_method)}, a ${omsProfile.settings.protection.structure_buffer_bps} bps structure buffer, ${omsProfile.settings.protection.volatility_multiple}× volatility, ${omsProfile.settings.protection.maximum_risk_pct}% maximum risk, and trailing ${omsProfile.settings.protection.trailing_enabled ? "enabled" : "disabled"}.` : "Select an OMS profile in Deployment to resolve its exact parameters."}</p>
+          <a href="#oms-configuration">Configure OMS protection</a>
+        </div>
+      </div>
+      <div className="strategy-exit-heading"><p className="configuration-section-guide">Exit uses the same source-aware rule-set model as Entry and Reentry. Rule sets are evaluated from top to bottom; each owns its validity window, position action, and OMS order request.</p><button className="button compact" onClick={addRuleSet} type="button"><Plus size={14} /> Add rule set</button></div>
+      {routes.map((ruleSet) => (
+        <details className="strategy-exit-route" data-enabled={ruleSet.enabled ? "true" : "false"} key={ruleSet.rule_set_id}>
           <summary>
-            <div><span>{readableLabel(route.category)} · priority {route.priority}</span><strong>{route.name}</strong><p>{route.summary}</p></div>
-            <label className="configuration-switch" onClick={(event) => event.stopPropagation()} title={route.protected ? "Required safety route" : "Enable exit route"}>
-              <input checked={route.enabled} disabled={route.protected} onChange={(event) => replace(route.route_id, { ...route, enabled: event.target.checked })} type="checkbox" />
-              <span />
-            </label>
+            <div><span>Strategic exit · {ruleSet.action}</span><strong>{ruleSet.name}</strong><p>{ruleSet.summary}</p></div>
+            <label className="configuration-switch" onClick={(event) => event.stopPropagation()} title="Enable exit rule set"><input checked={ruleSet.enabled} onChange={(event) => replace(ruleSet.rule_set_id, { ...ruleSet, enabled: event.target.checked })} type="checkbox" /><span /></label>
             <ChevronDown size={17} />
           </summary>
           <div className="strategy-exit-route-body">
-          {route.protected ? (
-            <p className="configuration-locked-note"><LockKeyhole size={15} /> Protective-stop conditions and broker order type come from the shared OMS protection profile. Strategy configuration cannot weaken them.</p>
-          ) : (
-            <RuleStageEditor
-              catalog={catalog}
-              label={`${route.name} rules`}
-              onChange={(rules) => replace(route.route_id, { ...route, rules })}
-              stage={route.rules}
-            />
-          )}
-          <div className="configuration-field-grid">
-            {route.protected ? (
-              <div className="configuration-fixed-value"><span>Priority</span><strong>100 · First</strong><small>Fixed safety authority</small></div>
-            ) : <NumberField help="Higher-priority routes are evaluated first when several exit conditions occur together." label="Priority" maximum={99} minimum={0} onChange={(priority) => replace(route.route_id, { ...route, priority })} step={1} unit="0–99" value={route.priority} />}
-            {route.protected ? (
-              <div className="configuration-fixed-value"><span>Action</span><strong><LockKeyhole size={13} /> Close position</strong><small>Cannot be weakened</small></div>
-            ) : <SelectField help="Intent emitted when this route passes." label="Action" onChange={(action) => replace(route.route_id, { ...route, action: action as ExitRoute["action"] })} options={[{ label: "Close position", value: "close" }, { label: "Reduce position", value: "reduce" }]} value={route.action} />}
-            {!route.protected && route.action === "reduce" ? (
-              <NumberField help={{ role: "Controls how much of the current position this exit route asks Portfolio to release.", values: { "100%": "Close the entire position.", "Below 100%": "Emit a partial reduction and keep the remaining campaign position managed." } }} label="Position fraction" maximum={1} minimum={0.01} onChange={(position_fraction) => replace(route.route_id, { ...route, position_fraction })} step={0.05} unit="fraction" value={route.position_fraction} />
-            ) : null}
-            {route.mechanism === "bearish_qmd_macd" ? (
-              <>
-                <NumberField help="Signed QMD score at or below which adverse momentum becomes eligible." label="QMD score" maximum={1} minimum={-1} onChange={(qmd_score) => replace(route.route_id, { ...route, settings: { ...route.settings, qmd_score } })} step={0.05} unit="score" value={Number(route.settings.qmd_score ?? -0.35)} />
-                <NumberField help="Minimum confidence required for the adverse QMD score." label="QMD confidence" maximum={1} minimum={0} onChange={(qmd_confidence) => replace(route.route_id, { ...route, settings: { ...route.settings, qmd_confidence } })} step={0.05} unit="score" value={Number(route.settings.qmd_confidence ?? 0.55)} />
-                <BooleanField help="Require MACD line and histogram to confirm the adverse QMD evidence." label="Require bearish MACD" onChange={(require_macd_bearish) => replace(route.route_id, { ...route, settings: { ...route.settings, require_macd_bearish } })} value={Boolean(route.settings.require_macd_bearish)} />
-              </>
-            ) : null}
-          </div>
-          {!route.protected ? (
-            <OrderIntentEditor
-              value={route.order_intent}
-              onChange={(order_intent) => replace(route.route_id, { ...route, order_intent })}
-            />
-          ) : null}
+            <div className="strategy-exit-rule-meta"><label className="strategy-rule-name"><span>Rule set name</span><input onChange={(event) => replace(ruleSet.rule_set_id, { ...ruleSet, name: event.target.value })} value={ruleSet.name} /></label><label><span>Purpose</span><input onChange={(event) => replace(ruleSet.rule_set_id, { ...ruleSet, summary: event.target.value })} value={ruleSet.summary} /></label><button aria-label={`Delete ${ruleSet.name}`} className="button compact danger" disabled={routes.length <= 1} onClick={() => onChange({ ...profile, lifecycle: { ...profile.lifecycle, exit: { rule_sets: routes.filter((row) => row.rule_set_id !== ruleSet.rule_set_id) } } })} type="button"><Trash2 size={14} /></button></div>
+            <RuleStageEditor catalog={catalog} label={`${ruleSet.name} evidence`} onChange={(rules) => replace(ruleSet.rule_set_id, { ...ruleSet, rules })} stage={ruleSet.rules} />
+            <div className="configuration-field-grid">
+              <NumberField help={{ role: "Delay from confirmed entry until this rule set becomes eligible.", values: { "0 ms": "Active immediately.", "Positive value": "Matching evidence is ignored until this delay passes." } }} label="Active after" minimum={0} onChange={(active_after_ms) => replace(ruleSet.rule_set_id, { ...ruleSet, timing: { ...ruleSet.timing, active_after_ms } })} step={1000} unit="ms" value={ruleSet.timing.active_after_ms} />
+              <NumberField help={{ role: "Maximum age of this exit thesis from confirmed entry.", values: { "0 ms": "Never expires while the position is open.", "Positive value": "Stops evaluating after this duration." }, note: "For a failed-breakout thesis, 60,000 ms means losing the reference after one minute no longer counts as the original failed entry." }} label="Expires after" minimum={0} onChange={(expires_after_ms) => replace(ruleSet.rule_set_id, { ...ruleSet, timing: { ...ruleSet.timing, expires_after_ms } })} step={1000} unit="ms" value={ruleSet.timing.expires_after_ms} />
+              <SelectField help={{ role: "Position intent emitted when the evidence and timing pass.", values: { "Close position": "Request the entire current position.", "Reduce position": "Request only the configured fraction." } }} label="Action" onChange={(action) => replace(ruleSet.rule_set_id, { ...ruleSet, action: action as ExitRuleSet["action"] })} options={[{ label: "Close position", value: "close" }, { label: "Reduce position", value: "reduce" }]} value={ruleSet.action} />
+              {ruleSet.action === "reduce" ? <NumberField help={{ role: "Fraction of the current position to release.", values: { "1.0": "The full position.", "Below 1.0": "A partial reduction; the remainder stays managed." } }} label="Position fraction" maximum={1} minimum={0.01} onChange={(position_fraction) => replace(ruleSet.rule_set_id, { ...ruleSet, position_fraction })} step={0.05} unit="fraction" value={ruleSet.position_fraction} /> : null}
+            </div>
+            <OrderIntentEditor value={ruleSet.order_intent} onChange={(order_intent) => replace(ruleSet.rule_set_id, { ...ruleSet, order_intent })} />
           </div>
         </details>
       ))}
@@ -1001,7 +1039,7 @@ const RULE_STAGE_META = {
   },
   confirmation: {
     label: "Confirmation requirements",
-    summary: "Passing groups contribute their configured weight to the minimum confirmation score.",
+    summary: "Each rule set owns its own condition logic and optional required score.",
   },
   blockers: {
     label: "Entry blockers",
@@ -1061,7 +1099,7 @@ function DecisionRulesEditor({ catalog, importRules, onChange, rules, summary, t
         group_id: groupId,
         label: "New rule set",
         operator: "all",
-        weight: stageName === "confirmation" ? 0.25 : 1,
+        required_score: 1,
       }, ...stage.groups],
     });
     setOpenedGroupIds((current) => new Set(current).add(groupId));
@@ -1103,30 +1141,19 @@ function DecisionRulesEditor({ catalog, importRules, onChange, rules, summary, t
         const stage = rules[stageName];
         const meta = RULE_STAGE_META[stageName];
         return (
-          <section className="strategy-rule-stage" data-stage={stageName} key={stageName}>
+          <details className="strategy-rule-stage" data-stage={stageName} key={stageName}>
+            <summary><div><span>{stageName}</span><strong>{meta.label}</strong><p>{meta.summary}</p></div><span>{stage.groups.length} rule sets</span><ChevronDown size={16} /></summary>
+            <div className="strategy-rule-stage-body">
             <header>
               <div><span>{stageName}</span><strong>{meta.label}</strong><p>{meta.summary}</p></div>
               <div className="strategy-stage-controls">
-                {stageName === "confirmation" ? (
-                  <NumberField
-                    help="Minimum weighted fraction of confirmation groups that must pass."
-                    label="Required score"
-                    maximum={1}
-                    minimum={0}
-                    onChange={(minimum_score) => replaceStage(stageName, { ...stage, minimum_score })}
-                    step={0.05}
-                    unit="score"
-                    value={Number(stage.minimum_score ?? 0.55)}
-                  />
-                ) : (
                   <SelectField
-                    help="Choose whether any rule set or every rule set must pass."
+                    help={{ role: "Combines the enabled rule sets in this phase group.", values: { "Any rule set": "The phase group passes when one enabled rule set passes.", "All rule sets": "Every enabled rule set must pass." } }}
                     label="Stage logic"
                     onChange={(operator) => replaceStage(stageName, { ...stage, operator: operator as "all" | "any" })}
                     options={[{ label: "Any rule set", value: "any" }, { label: "All rule sets", value: "all" }]}
                     value={stage.operator}
                   />
-                )}
                 <button className="button compact" onClick={() => addGroup(stageName)} type="button"><Plus size={14} /> Add rule set</button>
                 {importRules?.[stageName]?.groups?.length ? (
                   <button className="button compact secondary" onClick={() => importStage(stageName)} type="button"><FileInput size={14} /> Add initial rules</button>
@@ -1143,25 +1170,24 @@ function DecisionRulesEditor({ catalog, importRules, onChange, rules, summary, t
                   onChange={(next) => replaceGroup(stageName, group.group_id, next)}
                   onRemove={() => replaceStage(stageName, { ...stage, groups: stage.groups.filter((row) => row.group_id !== group.group_id) })}
                   removable={stage.groups.length > 1}
-                  showWeight={stageName === "confirmation"}
                 />
               ))}
             </div>
-          </section>
+            </div>
+          </details>
         );
       })}
     </div>
   );
 }
 
-function RuleGroupEditor({ catalog, defaultOpen = false, group, onChange, onRemove, removable, showWeight }: {
+function RuleGroupEditor({ catalog, defaultOpen = false, group, onChange, onRemove, removable }: {
   catalog: StrategyInput[];
   defaultOpen?: boolean;
   group: RuleGroup;
   onChange: (value: RuleGroup) => void;
   onRemove: () => void;
   removable: boolean;
-  showWeight: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   function replaceCondition(conditionId: string, condition: RuleCondition) {
@@ -1191,14 +1217,14 @@ function RuleGroupEditor({ catalog, defaultOpen = false, group, onChange, onRemo
       <summary>
         <span className="strategy-rule-state" />
         <div><strong>{group.label}</strong><small>{group.conditions.length} conditions · {group.operator === "all" ? "all required" : "any may pass"}</small></div>
-        <span>{showWeight ? `${round(group.weight * 100)}% weight` : group.enabled ? "Enabled" : "Disabled"}</span>
+        <span>{group.enabled ? "Enabled" : "Disabled"}</span>
         <ChevronDown size={16} />
       </summary>
       <div className="strategy-rule-group-body">
       <header>
-        <label><span>Rule set name</span><input onChange={(event) => onChange({ ...group, label: event.target.value })} value={group.label} /></label>
-        <label><span>Conditions</span><select onChange={(event) => onChange({ ...group, operator: event.target.value as "all" | "any" })} value={group.operator}><option value="all">All must pass</option><option value="any">Any may pass</option></select></label>
-        {showWeight ? <label><span>Weight</span><input max={1} min={0} onChange={(event) => onChange({ ...group, weight: Number(event.target.value) })} step={0.05} type="number" value={group.weight} /></label> : null}
+        <label className="strategy-rule-name"><span>Rule set name</span><input onChange={(event) => onChange({ ...group, label: event.target.value })} value={group.label} /></label>
+        <label><span>Condition logic <FieldHelp content={{ role: "Defines how this rule set converts its conditions into one pass or fail result.", values: { "All must pass": "Every enabled condition must be true.", "Any may pass": "One enabled condition is enough.", "Required score": "The fraction of enabled conditions that pass must meet this rule set's score." } }} /></span><select onChange={(event) => onChange({ ...group, operator: event.target.value as RuleGroup["operator"] })} value={group.operator}><option value="all">All must pass</option><option value="any">Any may pass</option><option value="score">Required score</option></select></label>
+        {group.operator === "score" ? <label><span>Required score <FieldHelp content={{ role: "Minimum fraction of this rule set's enabled conditions that must pass.", values: { "1.0": "Every condition must pass.", "0.5": "At least half must pass." }, note: "This value belongs only to this rule set; there is no global confirmation score." }} /></span><input max={1} min={0.01} onChange={(event) => onChange({ ...group, required_score: Number(event.target.value) })} step={0.05} type="number" value={group.required_score} /></label> : null}
         <label className="configuration-enabled"><input checked={group.enabled} onChange={(event) => onChange({ ...group, enabled: event.target.checked })} type="checkbox" /> Enabled</label>
         <button aria-label={`Delete ${group.label}`} className="button compact danger" disabled={!removable} onClick={onRemove} type="button"><Trash2 size={14} /></button>
       </header>
@@ -1324,7 +1350,7 @@ function RuleStageEditor({ catalog, label, onChange, stage }: {
         group_id: groupId,
         label: "New rule set",
         operator: "all",
-        weight: 1,
+        required_score: 1,
       }, ...stage.groups],
     });
     setOpenedId(groupId);
@@ -1354,7 +1380,6 @@ function RuleStageEditor({ catalog, label, onChange, stage }: {
             onChange={(next) => onChange({ ...stage, groups: stage.groups.map((row) => row.group_id === group.group_id ? next : row) })}
             onRemove={() => onChange({ ...stage, groups: stage.groups.filter((row) => row.group_id !== group.group_id) })}
             removable={stage.groups.length > 1}
-            showWeight={false}
           />
         ))}
       </div>
@@ -1398,6 +1423,11 @@ function CapitalRequestEditor({ onChange, value }: {
             "Mandate fraction": "Request a percentage of this strategy's approved cash capacity on the account.",
             "Risk fraction": "Request a percentage of the account mandate's planned-risk budget.",
             "All available": "Request all remaining capacity allowed by the account mandate; this is not all account cash.",
+          },
+          parameters: {
+            "Request value": "Shares for fixed quantity, or a fraction for mandate and risk modes. All available has no independent value.",
+            "Request priority": "Portfolio uses 0–100 when several requests compete; risk and mandate limits remain authoritative.",
+            "Allow replacement": "Permits Portfolio to propose releasing a weaker position when the new request materially improves the account plan.",
           },
         }}
         label="Capital request"
@@ -1480,7 +1510,7 @@ function AddStepsEditor({ catalog, onChange, steps }: {
       rules: {
         groups: [{
           conditions: [{ comparator: source.value_type === "boolean" ? "is_true" : "greater_or_equal", condition_id: `${stepId}-condition`, enabled: true, left_source_id: source.source_id, left_timeframe: source.timeframes[0], right_source_id: "", right_timeframe: "", value: source.value_type === "boolean" ? null : 0 }],
-          enabled: true, group_id: `${stepId}-rule`, label: "Add trigger", operator: "all", weight: 1,
+          enabled: true, group_id: `${stepId}-rule`, label: "Add trigger", operator: "all", required_score: 1,
         }],
         operator: "any",
       },
@@ -1935,6 +1965,7 @@ function GuideCallout({ children, icon, title }: { children: ReactNode; icon: Re
 
 type HelpContent = string | {
   note?: string;
+  parameters?: Record<string, string>;
   role: string;
   values?: Record<string, string>;
 };
@@ -1961,7 +1992,7 @@ function FieldHelp({ content }: { content: HelpContent }) {
       );
       const availableBelow = viewportHeight - box.bottom - 12;
       const availableAbove = box.top - 12;
-      const top = detail.values || detail.note
+      const top = detail.values || detail.parameters || detail.note
         ? 12
         : height <= availableBelow
           ? box.bottom + 8
@@ -1984,7 +2015,7 @@ function FieldHelp({ content }: { content: HelpContent }) {
       window.removeEventListener("scroll", update, true);
       window.visualViewport?.removeEventListener("resize", update);
     };
-  }, [detail.note, detail.values, open]);
+  }, [detail.note, detail.parameters, detail.values, open]);
   return (
     <span className="configuration-help">
       <button
@@ -2003,6 +2034,9 @@ function FieldHelp({ content }: { content: HelpContent }) {
         <aside className="configuration-help-popover" id={tooltipId} ref={popover} role="tooltip" style={position}>
           <header><CircleHelp size={15} /><span>Parameter guide</span></header>
           <div><strong>Role</strong><p>{detail.role}</p></div>
+          {detail.parameters ? (
+            <div><strong>Parameters</strong><dl>{Object.entries(detail.parameters).map(([label, explanation]) => <div key={label}><dt>{label}</dt><dd>{explanation}</dd></div>)}</dl></div>
+          ) : null}
           {detail.values ? (
             <dl>{Object.entries(detail.values).map(([label, explanation]) => <div key={label}><dt>{label}</dt><dd>{explanation}</dd></div>)}</dl>
           ) : null}

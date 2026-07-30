@@ -22,7 +22,7 @@ The product deliberately separates concepts that were previously grouped under
 | Strategy Profile | User-configured or system-predefined instance of a Strategy Definition; mutable as a draft and immutable when published |
 | Strategy Input Definition | Code-owned provider, field, parameter, value type, supported timeframes, and runtime projection |
 | Decision Rule | User-configured comparison between a typed source and a constant or another typed source |
-| Decision Rule Group | Configurable ALL/ANY relationship between conditions; confirmation groups also carry explicit weights |
+| Decision Rule Set | Configurable ALL/ANY/required-score relationship between typed conditions; any score threshold is local to that rule set |
 | Capability Definition | Code-owned function contract, defaults, validation, help, UI schema, runtime handler, and compatible autonomy |
 | Capability Binding | System/user configuration of one capability on one Strategy Profile |
 | OMS Profile | Reusable versioned execution and protection behavior |
@@ -57,13 +57,14 @@ Every condition records:
 - its calculation timeframe or event/session clock;
 - the comparison operator;
 - either a typed threshold or another typed source; and
-- its containing ALL/ANY rule group.
+- its containing rule set and that rule set's ALL, ANY, or required-score
+  condition logic.
 
 Initial Entry contains three subordinate stages:
 
 1. opportunity groups select whether any or all configured opportunities pass;
-2. confirmation groups contribute declared weights to a configurable minimum
-   score; and
+2. confirmation rule sets decide their own condition logic; when score logic is
+   selected, the required score belongs to that rule set and nowhere else; and
 3. entry blockers prevent a new position when their configured Boolean
    relationship passes.
 
@@ -78,25 +79,29 @@ following primary behavioral areas:
    relative capital request, an OMS execution policy, cooldown, maximum
    attempts, and fresh-evidence requirements. Initial Entry rule sets can be
    copied into Reentry as editable copies; they are not linked aliases;
-4. Exit: ordered named routes with their own rule sets, position fraction,
-   execution policy, and protected, strategic, profit, or emergency semantics;
+4. Exit: ordered named rule sets using the same source, condition, grouping,
+   timing, position action, and execution-policy grammar as Entry and Reentry;
    and
 5. Capabilities: reusable code-defined functions that extend a lifecycle
    without replacing Entry, Reentry, or Exit.
 
-Exit routes are evaluated in declared priority order. The protective-stop route
-is always enabled, first, automatic, and close-only. Strategic routes may
-require operator authority, but neither a Strategy Profile, Deployment, nor
-account permission can weaken protective execution.
+Strategic exit rule sets are evaluated in declared list order. Each may define
+an activation delay and an expiry measured from the confirmed entry, so a
+failed-entry thesis cannot silently remain valid forever. Protective stops are
+not strategy exit rule sets: the deployed OMS Profile calculates, submits,
+repairs, and reconciles protection independently. Neither a Strategy Profile,
+Deployment, Portfolio mandate, nor account permission can weaken protective
+execution.
 
 A profile can therefore define price breaking either a confirmed QMD swing
-high or QMD VWAP by a configured buffer, require weighted flow-structure,
+high or QMD VWAP by a configured buffer, require scored flow-structure,
 VWAP-slope, and MACD confirmation, and reject a configured
 liquidity-dislocation signal. These are published data, not React-only
 presentation choices or hard-coded runtime branches.
 
 Publication validates source identities, timeframe support, comparisons,
-targets, unique rule identities, and confirmation weights. Replay requests
+targets, unique rule identities, per-rule-set required scores, exit timing,
+position actions, and order intents. Replay requests
 every timeframe referenced by the selected profile and keeps a point-in-time
 cache keyed by source and timeframe. Historical QMD market-signal lifecycle
 events are fetched from the QMD History scanner engine with an explicit ticker
@@ -165,11 +170,13 @@ Raw JSON is never the primary configuration interface.
   Reentry without creating hidden shared state.
 - Logical strategy behavior uses a guided rule builder with visible providers,
   source parameters, timeframes, comparisons, thresholds, Boolean grouping,
-  and confirmation weights.
+  and per-rule-set required scores.
 - Less frequently changed model, signal, and fixed technical parameters remain
   available under Advanced.
 - Every parameter has a readable label, contextual help, units, appropriate
-  control, and immediate range/choice constraints.
+  control, and immediate range/choice constraints. Help for compound controls
+  describes every nested parameter and how each selectable value changes
+  runtime behavior.
 - Editable controls use an accent treatment distinct from protected,
   inherited, and computed values. Section color and typography encode meaning
   and hierarchy; bold text is reserved for high-value identifiers and states.
@@ -205,7 +212,7 @@ Later draft edits or publications cannot mutate it.
 
 ## Runtime compatibility boundary
 
-The schema-v5 model is authoritative. `resolve_runtime_configurations()` orders
+The schema-v6 model is authoritative. `resolve_runtime_configurations()` orders
 every approved deployment eligible for a runtime mode by configured selection
 priority and projects each profile, Watch Universe, campaign policy, Portfolio,
 OMS, account, and campaign leg through one shared boundary. Individual

@@ -21,7 +21,6 @@ from src.trading_runtime.strategy_engine import (
     STRATEGY_ID,
     STRATEGY_REVISION,
     default_entry_decision_rules,
-    default_exit_routes,
     default_long_momentum_parameters,
     resolve_long_momentum_parameters,
     strategy_input_catalog,
@@ -29,7 +28,7 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 5
+CONFIGURATION_SCHEMA_VERSION = 6
 CONFIGURATION_SECTIONS = {"strategy", "assignments", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
@@ -435,18 +434,8 @@ def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
             "capital_request": _default_capital_request("mandate_fraction", 0.20),
             "order_intent": _default_order_intent("adaptive_urgent"),
         },
-        "exit": {
-            "routes": default_exit_routes(final_exit)
-        },
+        "exit": {"rule_sets": _default_exit_rule_sets(final_exit)},
     }
-    for route in lifecycle["exit"]["routes"]:
-        route["order_intent"] = _default_order_intent(
-            "adaptive_very_urgent"
-            if route.get("protected")
-            else "adaptive_urgent"
-        )
-        route["position_fraction"] = 1.0
-        route["rules"] = _default_exit_rule_stage(str(route.get("mechanism") or ""))
     return lifecycle
 
 
@@ -484,7 +473,7 @@ def _single_rule_stage(
             "group_id": group_id,
             "label": label,
             "operator": "all",
-            "weight": 1.0,
+            "required_score": 1.0,
             "enabled": True,
             "conditions": [{
                 "condition_id": f"{group_id}-condition",
@@ -523,6 +512,74 @@ def _default_exit_rule_stage(mechanism: str) -> dict[str, Any]:
             value=-0.35,
         )
     return {"operator": "any", "groups": []}
+
+
+def _default_exit_rule_sets(final_exit: dict[str, Any]) -> list[dict[str, Any]]:
+    failed = {
+        "rule_set_id": "failed-entry-thesis",
+        "name": "Failed entry thesis",
+        "summary": "Exit when price loses the configured entry reference during its validity window.",
+        "enabled": bool(final_exit.get("exit_on_failed_breakout", True)),
+        "rules": _default_exit_rule_stage("failed_breakout"),
+        "timing": {"active_after_ms": 0, "expires_after_ms": 60_000},
+        "action": "close",
+        "position_fraction": 1.0,
+        "order_intent": _default_order_intent("adaptive_urgent"),
+    }
+    adverse = {
+        "rule_set_id": "adverse-momentum",
+        "name": "Adverse momentum",
+        "summary": "Exit when the configured QMD and MACD evidence turns against the position.",
+        "enabled": bool(final_exit.get("bearish_momentum_enabled", True)),
+        "rules": {
+            "operator": "all",
+            "groups": [
+                _single_rule_stage(
+                    "adverse-qmd-score",
+                    "Adverse QMD score",
+                    "indicator.flow_structure.score",
+                    "100ms",
+                    "less_or_equal",
+                    value=float(final_exit.get("qmd_score") or -0.35),
+                )["groups"][0],
+                _single_rule_stage(
+                    "qmd-confidence",
+                    "QMD confidence",
+                    "indicator.flow_structure.confidence",
+                    "100ms",
+                    "greater_or_equal",
+                    value=float(final_exit.get("qmd_confidence") or 0.55),
+                )["groups"][0],
+                _single_rule_stage(
+                    "adverse-macd-line",
+                    "MACD line below signal",
+                    "indicator.macd.line",
+                    "5s",
+                    "less_than",
+                )["groups"][0],
+                _single_rule_stage(
+                    "adverse-macd-histogram",
+                    "Negative MACD histogram",
+                    "indicator.macd.histogram",
+                    "5s",
+                    "less_than",
+                    value=0,
+                )["groups"][0],
+            ],
+        },
+        "timing": {"active_after_ms": 0, "expires_after_ms": 0},
+        "action": "close",
+        "position_fraction": 1.0,
+        "order_intent": _default_order_intent("adaptive_urgent"),
+    }
+    adverse["rules"]["groups"][2]["conditions"][0].update({
+        "right_source_id": "indicator.macd.signal",
+        "right_timeframe": "5s",
+        "value": None,
+    })
+    if not bool(final_exit.get("require_macd_bearish", True)):
+        adverse["rules"]["groups"] = adverse["rules"]["groups"][:2]
+    return [failed, adverse]
 
 
 def _parameters_without_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
@@ -568,22 +625,114 @@ def _migrate_lifecycle_v5(
     reentry.setdefault("maximum_attempts", 0)
     reentry.setdefault("require_new_confirmation", True)
     exit_config = result.setdefault("exit", {})
-    exit_config.setdefault("routes", deepcopy(defaults["exit"]["routes"]))
-    default_routes = {
-        str(route["route_id"]): route
-        for route in defaults["exit"]["routes"]
-    }
-    for route in exit_config["routes"]:
-        route_default = default_routes.get(str(route.get("route_id")), {})
-        route.setdefault(
-            "rules",
-            deepcopy(route_default.get("rules") or {"operator": "any", "groups": []}),
+    if "routes" not in exit_config and "rule_sets" not in exit_config:
+        exit_config["rule_sets"] = deepcopy(defaults["exit"]["rule_sets"])
+    return result
+
+
+def _migrate_rule_stage_v6(stage: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(stage)
+    result["operator"] = (
+        str(result.get("operator"))
+        if str(result.get("operator")) in {"all", "any"}
+        else "all"
+    )
+    result.pop("minimum_score", None)
+    for group in result.get("groups") or []:
+        legacy_weight = float(group.pop("weight", 1.0) or 1.0)
+        if str(group.get("operator") or "") not in {"all", "any", "score"}:
+            group["operator"] = "all"
+        group.setdefault("required_score", max(0.01, min(1.0, legacy_weight)))
+    return result
+
+
+def _migrate_lifecycle_v6(
+    lifecycle: dict[str, Any],
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    result = _migrate_lifecycle_v5(lifecycle, parameters)
+    initial = dict(result.get("initial_entry") or {})
+    for key in ("opportunity", "confirmation", "blockers"):
+        initial[key] = _migrate_rule_stage_v6(dict(initial.get(key) or {}))
+    for step in initial.get("add_steps") or []:
+        step["rules"] = _migrate_rule_stage_v6(dict(step.get("rules") or {}))
+    result["initial_entry"] = initial
+    reentry = dict(result.get("reentry") or {})
+    reentry_rules = dict(reentry.get("rules") or {})
+    for key in ("opportunity", "confirmation", "blockers"):
+        reentry_rules[key] = _migrate_rule_stage_v6(
+            dict(reentry_rules.get(key) or {})
         )
-        route.setdefault(
-            "order_intent",
-            deepcopy(route_default.get("order_intent") or _default_order_intent("adaptive_urgent")),
+    reentry["rules"] = reentry_rules
+    result["reentry"] = reentry
+
+    exit_config = dict(result.get("exit") or {})
+    if not isinstance(exit_config.get("rule_sets"), list):
+        migrated: list[dict[str, Any]] = []
+        for route in sorted(
+            list(exit_config.get("routes") or []),
+            key=lambda row: -int(row.get("priority") or 0),
+        ):
+            mechanism = str(route.get("mechanism") or "")
+            if mechanism == "protective_stop":
+                continue
+            rules = _migrate_rule_stage_v6(dict(route.get("rules") or {}))
+            settings = dict(route.get("settings") or {})
+            if mechanism == "bearish_qmd_macd":
+                defaults = _default_exit_rule_sets({
+                    "qmd_score": settings.get("qmd_score", -0.35),
+                    "qmd_confidence": settings.get("qmd_confidence", 0.55),
+                    "require_macd_bearish": settings.get(
+                        "require_macd_bearish", True
+                    ),
+                    "bearish_momentum_enabled": route.get("enabled", True),
+                })[1]
+                rules = defaults["rules"]
+            migrated.append({
+                "rule_set_id": str(
+                    route.get("route_id") or f"exit-rule-{len(migrated) + 1}"
+                ),
+                "name": str(route.get("name") or "Exit rule set"),
+                "summary": str(route.get("summary") or ""),
+                "enabled": bool(route.get("enabled", True)),
+                "rules": rules,
+                "timing": {
+                    "active_after_ms": 0,
+                    "expires_after_ms": (
+                        60_000 if mechanism == "failed_breakout" else 0
+                    ),
+                },
+                "action": str(route.get("action") or "close"),
+                "position_fraction": float(
+                    route.get("position_fraction") or 1.0
+                ),
+                "order_intent": deepcopy(
+                    route.get("order_intent")
+                    or _default_order_intent("adaptive_urgent")
+                ),
+            })
+        exit_config["rule_sets"] = (
+            migrated
+            or deepcopy(
+                _default_exit_rule_sets(
+                    dict(parameters.get("final_exit") or {})
+                )
+            )
         )
-        route.setdefault("position_fraction", 1.0)
+    exit_config.pop("routes", None)
+    for rule_set in exit_config.get("rule_sets") or []:
+        rule_set["rules"] = _migrate_rule_stage_v6(
+            dict(rule_set.get("rules") or {})
+        )
+        rule_set.setdefault(
+            "timing", {"active_after_ms": 0, "expires_after_ms": 0}
+        )
+        rule_set.setdefault("action", "close")
+        rule_set.setdefault("position_fraction", 1.0)
+        rule_set.setdefault(
+            "order_intent", _default_order_intent("adaptive_urgent")
+        )
+    result["exit"] = exit_config
     return result
 
 
@@ -634,10 +783,7 @@ def _default_draft() -> dict[str, Any]:
             "long-momentum-conservative",
             "Long Momentum · Conservative",
             "Higher confirmation and smaller initial size for controlled evaluation.",
-            _overrides(parameters, {
-                "entry_rules.confirmation.minimum_score": 0.65,
-                "reentry.maximum_attempts": 1,
-            }),
+            _overrides(parameters, {"reentry.maximum_attempts": 1}),
             origin="system",
         ),
         _strategy_profile(
@@ -1007,7 +1153,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 lifecycle["reentry"]["enabled"] = bool(
                     legacy_reentry.get("enabled", True)
                 )
-            lifecycle = _migrate_lifecycle_v5(lifecycle, parameters)
+            lifecycle = _migrate_lifecycle_v6(lifecycle, parameters)
             initial_entry = dict(lifecycle.get("initial_entry") or {})
             _normalize_entry_rule_sources({
                 key: value
@@ -1022,7 +1168,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 _normalize_entry_rule_sources(
                     {"rules": dict(step.get("rules") or {})}
                 )
-            for route in dict(lifecycle.get("exit") or {}).get("routes") or []:
+            for route in dict(lifecycle.get("exit") or {}).get("rule_sets") or []:
                 _normalize_entry_rule_sources(
                     {"rules": dict(route.get("rules") or {})}
                 )
@@ -1270,47 +1416,34 @@ def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
     resolve_long_momentum_parameters(reentry_parameters)
     _validate_capital_request(dict(reentry.get("capital_request") or {}), "Reentry")
     _validate_order_intent(dict(reentry.get("order_intent") or {}), "Reentry")
-    routes = list(dict(lifecycle["exit"]).get("routes") or [])
-    route_ids = _unique_ids(routes, "route_id", "Strategy exit route")
-    if "protective-stop" not in route_ids:
-        raise ValueError("Strategy lifecycle requires the protective-stop exit route")
-    protective = next(
-        row for row in routes if str(row.get("route_id")) == "protective-stop"
-    )
-    if (
-        not bool(protective.get("enabled"))
-        or not bool(protective.get("protected"))
-        or str(protective.get("mechanism")) != "protective_stop"
-        or int(protective.get("priority") or 0) != 100
-        or str(protective.get("action")) != "close"
-    ):
-        raise ValueError("The protective-stop exit route cannot be disabled or replaced")
+    routes = list(dict(lifecycle["exit"]).get("rule_sets") or [])
+    _unique_ids(routes, "rule_set_id", "Strategy exit rule set")
+    if not routes:
+        raise ValueError("Strategy exit requires at least one rule set")
     for route in routes:
-        if str(route.get("category") or "") not in {
-            "protective",
-            "strategic",
-            "profit",
-            "emergency",
-        }:
-            raise ValueError(f"Exit route {route.get('name')} has an unsupported category")
         if str(route.get("action") or "") not in {"close", "reduce"}:
-            raise ValueError(f"Exit route {route.get('name')} has an unsupported action")
-        priority = int(route.get("priority") or 0)
-        if priority < 0 or priority > 100:
-            raise ValueError("Exit route priority must be between 0 and 100")
-        _validate_rule_stage(dict(route.get("rules") or {}), f"Exit route {route.get('name')}")
-        _validate_order_intent(dict(route.get("order_intent") or {}), f"Exit route {route.get('name')}")
+            raise ValueError(f"Exit rule set {route.get('name')} has an unsupported action")
+        timing = dict(route.get("timing") or {})
+        if int(timing.get("active_after_ms") or 0) < 0 or int(
+            timing.get("expires_after_ms") or 0
+        ) < 0:
+            raise ValueError("Exit rule-set timing cannot be negative")
+        _validate_rule_stage(dict(route.get("rules") or {}), f"Exit rule set {route.get('name')}")
+        _validate_order_intent(dict(route.get("order_intent") or {}), f"Exit rule set {route.get('name')}")
         position_fraction = float(route.get("position_fraction") or 0)
         if not 0 < position_fraction <= 1:
-            raise ValueError(f"Exit route {route.get('name')} position fraction must be between zero and one")
+            raise ValueError(f"Exit rule set {route.get('name')} position fraction must be between zero and one")
 
 
 def _validate_rule_stage(stage: dict[str, Any], label: str) -> None:
-    if str(stage.get("operator") or "") not in {"all", "any", "weighted"}:
+    if str(stage.get("operator") or "") not in {"all", "any"}:
         raise ValueError(f"{label} has unsupported rule-set logic")
     for group in stage.get("groups") or []:
-        if str(group.get("operator") or "") not in {"all", "any"}:
+        operator = str(group.get("operator") or "")
+        if operator not in {"all", "any", "score"}:
             raise ValueError(f"{label} has unsupported condition logic")
+        if operator == "score" and not 0 < float(group.get("required_score") or 0) <= 1:
+            raise ValueError(f"{label} required score must be between zero and one")
         if not list(group.get("conditions") or []):
             raise ValueError(f"{label} rule sets require at least one condition")
 
@@ -1414,8 +1547,9 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
     reentry = deepcopy(dict(lifecycle.get("reentry") or {}))
     reentry_rules = dict(reentry.pop("rules", {}) or {})
     parameters["reentry"] = reentry
-    exit_routes = list(dict(lifecycle.get("exit") or {}).get("routes") or [])
-    parameters["exit_routes"] = deepcopy(exit_routes)
+    exit_rule_sets = list(
+        dict(lifecycle.get("exit") or {}).get("rule_sets") or []
+    )
     parameters["strategy_behavior"] = behavior
     parameters["phase_policy"] = {
         "initial_entry": {
@@ -1432,26 +1566,7 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
             "capital_request": deepcopy(dict(reentry.get("capital_request") or {})),
             "order_intent": deepcopy(dict(reentry.get("order_intent") or {})),
         },
-    }
-    failed_breakout = next(
-        (row for row in exit_routes if row.get("mechanism") == "failed_breakout"),
-        {},
-    )
-    bearish = next(
-        (row for row in exit_routes if row.get("mechanism") == "bearish_qmd_macd"),
-        {},
-    )
-    bearish_settings = dict(bearish.get("settings") or {})
-    parameters["final_exit"] = {
-        "exit_on_failed_breakout": bool(failed_breakout.get("enabled", True)),
-        "qmd_score": float(bearish_settings.get("qmd_score") or -0.35),
-        "qmd_confidence": float(
-            bearish_settings.get("qmd_confidence") or 0.55
-        ),
-        "require_macd_bearish": bool(
-            bearish_settings.get("require_macd_bearish", True)
-        ),
-        "bearish_momentum_enabled": bool(bearish.get("enabled", True)),
+        "exit": {"rule_sets": deepcopy(exit_rule_sets)},
     }
     bindings = {str(row["capability_id"]): row for row in profile.get("capabilities") or [] if row.get("enabled", True)}
     pocket = bindings.get("profit-pocket")

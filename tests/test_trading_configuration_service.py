@@ -32,7 +32,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 5)
+        self.assertEqual(draft["schema_version"], 6)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 2)
         self.assertTrue(all(profile["editable"] for profile in draft["strategy"]["profiles"]))
@@ -58,13 +58,26 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         lifecycle = default_profile["lifecycle"]
         self.assertEqual(lifecycle["trading_behavior"]["side"], "long")
+        self.assertNotIn(
+            "minimum_score", lifecycle["initial_entry"]["confirmation"]
+        )
+        self.assertTrue(lifecycle["exit"]["rule_sets"])
+        self.assertNotIn("routes", lifecycle["exit"])
         self.assertEqual(
             lifecycle["initial_entry"]["capital_request"]["mode"],
             "mandate_fraction",
         )
         self.assertTrue(lifecycle["initial_entry"]["add_steps"])
         self.assertTrue(lifecycle["reentry"]["rules"]["opportunity"]["groups"])
-        self.assertTrue(lifecycle["exit"]["routes"][1]["rules"]["groups"])
+        self.assertTrue(lifecycle["exit"]["rule_sets"][1]["rules"]["groups"])
+        self.assertTrue(
+            any(
+                condition["left_source_id"]
+                == "indicator.flow_structure.score"
+                for group in lifecycle["exit"]["rule_sets"][1]["rules"]["groups"]
+                for condition in group["conditions"]
+            )
+        )
         self.assertNotIn("sizing", default_profile["parameters"])
         self.assertNotIn("maximum_position_quantity", str(default_profile))
         self.assertTrue(draft["assignments"]["universes"])
@@ -252,6 +265,34 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             return_value=long_momentum_strategy_definition(),
         ), self.assertRaisesRegex(ValueError, "must remain protected"):
             _validate_draft(draft, require_runtime_ready=False)
+
+    def test_cloned_strategy_profile_persists_in_the_authoritative_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            draft = self._draft()
+            journal.save_trading_configuration_draft(draft)
+            clone = deepcopy(draft["strategy"]["profiles"][0])
+            clone.update({
+                "profile_id": "long-momentum-clone",
+                "name": "Long Momentum clone",
+                "origin": "user",
+                "protected": False,
+            })
+            strategy = deepcopy(draft["strategy"])
+            strategy["profiles"].append(clone)
+            with self._service_patches(journal):
+                saved = update_configuration_section("strategy", strategy)
+                reloaded = journal.trading_configuration_draft()
+            journal.close()
+
+        self.assertEqual(
+            saved["strategy"]["profiles"][-1]["profile_id"],
+            "long-momentum-clone",
+        )
+        self.assertEqual(
+            reloaded["strategy"]["profiles"][-1]["profile_id"],
+            "long-momentum-clone",
+        )
 
     def test_strategy_definition_rejects_non_single_side_profile(self) -> None:
         draft = self._draft()

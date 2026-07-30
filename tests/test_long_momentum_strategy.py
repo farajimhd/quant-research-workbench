@@ -146,6 +146,26 @@ class LongMomentumStrategyTests(unittest.TestCase):
             {"qmd-alignment", "vwap-confirmation", "macd-confirmation"},
         )
 
+    def test_required_score_is_local_to_each_rule_set(self) -> None:
+        rules = default_long_momentum_parameters()["entry_rules"]
+        qmd_group = rules["confirmation"]["groups"][0]
+        qmd_group["operator"] = "score"
+        qmd_group["required_score"] = 0.5
+        partial = evaluate_entry_decision_rules(
+            rules, confirmed_observation(qmd_confidence=0.0)
+        )
+        self.assertTrue(partial["confirmation"]["groups"]["qmd-alignment"])
+        self.assertEqual(
+            partial["confirmation"]["group_scores"]["qmd-alignment"], 0.5
+        )
+
+        qmd_group["required_score"] = 1.0
+        strict = evaluate_entry_decision_rules(
+            rules, confirmed_observation(qmd_confidence=0.0)
+        )
+        self.assertFalse(strict["confirmation"]["groups"]["qmd-alignment"])
+        self.assertFalse(strict["confirmation"]["passed"])
+
     def test_confirmed_swing_break_enters_with_semantic_protection(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(assignment(), confirmed_observation())
         self.assertEqual(result.status, AssignmentStatus.ENTRY_PENDING)

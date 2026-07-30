@@ -22379,7 +22379,7 @@ button {
 
 /* Strategy configuration: semantic hierarchy, editable affordances, and portal help. */
 .configuration-workbench {
-  --strategy-edit-tone: var(--metric-accent-2);
+  --strategy-edit-tone: var(--canvas-link-blue);
 }
 .configuration-detail,
 .configuration-library {
@@ -22390,14 +22390,14 @@ button {
   font-weight: 620;
 }
 .strategy-lifecycle-panel {
-  --strategy-tone: var(--metric-accent-1);
+  --strategy-tone: var(--canvas-link-green);
   border-color: color-mix(in oklab, var(--strategy-tone) 24%, var(--border));
   box-shadow: 0 5px 18px color-mix(in oklab, var(--strategy-tone) 5%, transparent);
 }
-.strategy-lifecycle-panel[data-section="initial-entry"] { --strategy-tone: var(--metric-accent-2); }
-.strategy-lifecycle-panel[data-section="reentry"] { --strategy-tone: var(--metric-accent-3); }
-.strategy-lifecycle-panel[data-section="exit"] { --strategy-tone: var(--danger); }
-.strategy-lifecycle-panel[data-section="capabilities"] { --strategy-tone: var(--metric-accent-4); }
+.strategy-lifecycle-panel[data-section="initial-entry"] { --strategy-tone: var(--canvas-link-blue); }
+.strategy-lifecycle-panel[data-section="reentry"] { --strategy-tone: var(--canvas-link-violet); }
+.strategy-lifecycle-panel[data-section="exit"] { --strategy-tone: var(--canvas-link-rose); }
+.strategy-lifecycle-panel[data-section="capabilities"] { --strategy-tone: var(--canvas-link-orange); }
 .strategy-lifecycle-panel > summary {
   background: color-mix(in oklab, var(--strategy-tone) 4%, var(--surface));
   border-left: 4px solid color-mix(in oklab, var(--strategy-tone) 72%, var(--border));
@@ -22834,6 +22834,89 @@ button {
 
 .configuration-revision-layout > .configuration-json-inspector { grid-column: 1 / -1; }
 .configuration-publish-card label > span { align-items: center; display: flex; gap: 5px; }
+
+/* Strategy schema v6: neon semantic hierarchy and one rule-set visual grammar. */
+.strategy-rule-stage { --rule-tone: var(--canvas-link-blue); }
+.strategy-rule-stage[data-stage="confirmation"] { --rule-tone: var(--canvas-link-violet); }
+.strategy-rule-stage[data-stage="blockers"] { --rule-tone: var(--canvas-link-rose); }
+.strategy-rule-stage[data-stage="exit"] { --rule-tone: var(--canvas-link-orange); }
+.strategy-rule-stage > summary {
+  align-items: center;
+  background: color-mix(in oklab, var(--rule-tone) 7%, var(--surface-alt));
+  border-top: 3px solid var(--rule-tone);
+  cursor: pointer;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  list-style: none;
+  min-height: 76px;
+  padding: 14px 16px;
+}
+.strategy-rule-stage > summary::-webkit-details-marker { display: none; }
+.strategy-rule-stage > summary > div { display: grid; gap: 4px; }
+.strategy-rule-stage > summary > div > span {
+  color: var(--rule-tone);
+  font-size: 11.25px;
+  font-weight: 720;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.strategy-rule-stage > summary strong { font-size: 17px; font-weight: 640; }
+.strategy-rule-stage > summary p {
+  color: var(--muted-foreground);
+  font-size: 13.75px;
+  line-height: 1.45;
+  margin: 0;
+}
+.strategy-rule-stage > summary > span { color: var(--muted-foreground); font-size: 12.5px; }
+.strategy-rule-stage > summary > svg { color: var(--rule-tone); transition: transform .16s ease; }
+.strategy-rule-stage[open] > summary > svg { transform: rotate(180deg); }
+.strategy-rule-stage-body { border-top: 1px solid var(--border); display: grid; gap: 12px; padding: 14px; }
+.strategy-rule-stage-body > header {
+  align-items: end;
+  display: flex;
+  justify-content: flex-end;
+}
+.strategy-rule-stage-body > header > div:first-child { display: none; }
+.strategy-rule-group-body > header { align-items: end; grid-template-columns: minmax(240px, 420px) minmax(170px, 240px) minmax(150px, 190px) auto auto; }
+.strategy-rule-name input { max-width: 420px; }
+.configuration-help-popover dl > div {
+  background: color-mix(in oklab, var(--canvas-link-violet) 6%, var(--surface-alt));
+  border-left-color: var(--canvas-link-violet);
+}
+.configuration-help-popover dt { color: var(--canvas-link-violet); }
+.strategy-order-request,
+.strategy-add-plan { border-color: color-mix(in oklab, var(--canvas-link-blue) 45%, var(--border)); }
+.strategy-order-request > header span,
+.strategy-add-plan > header span { color: var(--canvas-link-blue); }
+.strategy-exit-route { border-color: color-mix(in oklab, var(--canvas-link-rose) 42%, var(--border)); }
+.strategy-exit-route > summary { background: color-mix(in oklab, var(--canvas-link-rose) 6%, var(--surface)); }
+.strategy-exit-route > summary > div > span { color: var(--canvas-link-rose); }
+.configuration-protection-authority {
+  align-items: flex-start;
+  background: color-mix(in oklab, var(--canvas-link-green) 7%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--canvas-link-green) 48%, var(--border));
+  border-left: 4px solid var(--canvas-link-green);
+  border-radius: 9px;
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+}
+.configuration-protection-authority > svg { color: var(--canvas-link-green); flex: 0 0 auto; }
+.configuration-protection-authority > div { display: grid; gap: 5px; }
+.configuration-protection-authority span { color: var(--canvas-link-green); font-size: 11.25px; font-weight: 720; letter-spacing: .07em; text-transform: uppercase; }
+.configuration-protection-authority strong { font-size: 16px; font-weight: 640; }
+.configuration-protection-authority p { color: var(--muted-foreground); font-size: 13.75px; line-height: 1.55; margin: 0; }
+.configuration-protection-authority a { color: var(--canvas-link-blue); font-size: 12.5px; font-weight: 650; width: fit-content; }
+.strategy-exit-heading { align-items: center; display: flex; gap: 16px; justify-content: space-between; }
+.strategy-exit-heading .configuration-section-guide { flex: 1 1 auto; margin: 0; }
+.strategy-exit-rule-meta { align-items: end; display: grid; gap: 10px; grid-template-columns: minmax(220px, 380px) minmax(280px, 1fr) auto; }
+.strategy-exit-rule-meta label { display: grid; gap: 5px; }
+.strategy-exit-rule-meta label > span { color: var(--muted-foreground); font-size: 11.25px; font-weight: 620; }
+.strategy-exit-rule-meta input { background: var(--surface); border: 1px solid var(--border); border-radius: 7px; color: var(--foreground); font-size: 15px; height: 42px; padding: 0 10px; }
+.configuration-detail-heading > div:first-child { max-width: 780px; }
+.configuration-detail-heading input { max-width: 460px; }
+.configuration-detail-heading textarea { max-width: 780px; }
 
 @media (max-width: 1100px) {
   .configuration-field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
