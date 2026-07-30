@@ -95,6 +95,43 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
             fragment,
         )
 
+    def test_submission_validation_accepts_only_equivalent_physical_repetitions(self) -> None:
+        client = mock.Mock()
+        client.execute.side_effect = [
+            "2\t1\t0\t0\t0\n",
+            "0\n",
+            "1\n",
+        ]
+        args = SimpleNamespace(database="sec_core", limit_ciks=1)
+
+        snapshot_refresh.validate_submission_stage(
+            client,
+            args,
+            ["sec_bulk_mirror_filing_v3"],
+            "run-id",
+        )
+
+        conflict_query = client.execute.call_args_list[1].args[0]
+        self.assertIn("HAVING count() > 1", conflict_query)
+        self.assertIn("uniqExact((", conflict_query)
+        self.assertIn("raw_submission_json", conflict_query)
+
+    def test_submission_validation_rejects_conflicting_duplicate_payloads(self) -> None:
+        client = mock.Mock()
+        client.execute.side_effect = [
+            "2\t1\t0\t0\t0\n",
+            "1\n",
+        ]
+        args = SimpleNamespace(database="sec_core", limit_ciks=1)
+
+        with self.assertRaisesRegex(RuntimeError, "conflicting_duplicate_keys=1"):
+            snapshot_refresh.validate_submission_stage(
+                client,
+                args,
+                ["sec_bulk_mirror_filing_v3"],
+                "run-id",
+            )
+
     def test_historical_bulk_ingest_batch_size_is_forwarded(self) -> None:
         with mock.patch.object(
             sys,

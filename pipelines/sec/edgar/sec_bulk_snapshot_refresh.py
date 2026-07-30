@@ -701,10 +701,53 @@ def validate_submission_stage(client: Any, args: Any, bases: list[str], run_id: 
         )
     )
     rows, unique_keys, missing_keys, non_utc_raw, unparsed_utc = metrics
-    if rows != unique_keys or missing_keys or non_utc_raw or unparsed_utc:
+    conflicting_duplicate_keys = 0
+    if rows != unique_keys:
+        # SEC bulk archives can repeat the same filing row within historical
+        # fragments. ReplacingMergeTree legitimately collapses an equivalent
+        # repetition under FINAL, but it must never arbitrate between different
+        # payloads for the same (CIK, accession) identity. Inspect only duplicate
+        # identities after the cardinality guard detects them.
+        conflicting_duplicate_keys = scalar_int(
+            client,
+            f"""
+            SELECT count()
+            FROM
+            (
+                SELECT cik, accession_number
+                FROM {filing}
+                GROUP BY cik, accession_number
+                HAVING count() > 1
+                   AND uniqExact((
+                       accession_number_compact,
+                       company_name,
+                       form_type,
+                       filing_date,
+                       report_date,
+                       accepted_at_utc,
+                       acceptance_datetime_raw,
+                       accepted_at_source,
+                       primary_document,
+                       primary_document_url,
+                       filing_detail_url,
+                       document_count,
+                       filing_size,
+                       items,
+                       act,
+                       file_number,
+                       film_number,
+                       source_kind,
+                       source_file_id,
+                       raw_submission_json
+                   )) > 1
+            )
+            """,
+        )
+    if conflicting_duplicate_keys or missing_keys or non_utc_raw or unparsed_utc:
         raise RuntimeError(
             "submission filing staging validation failed: "
             f"rows={rows:,} unique_keys={unique_keys:,} missing_keys={missing_keys:,} "
+            f"conflicting_duplicate_keys={conflicting_duplicate_keys:,} "
             f"non_utc_raw={non_utc_raw:,} unparsed_utc={unparsed_utc:,}"
         )
     required_bases = ["sec_bulk_mirror_filing_v3"] if int(args.limit_ciks) else bases
