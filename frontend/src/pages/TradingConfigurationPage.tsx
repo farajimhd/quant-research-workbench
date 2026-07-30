@@ -21,8 +21,9 @@ import {
   Sparkles,
   Trash2,
   TriangleAlert,
+  X,
 } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { api } from "../api/client";
@@ -140,9 +141,7 @@ type CapitalRequestConfig = {
 type OrderIntentConfig = {
   deadline_ms: number;
   execution_policy: string;
-  outside_rth: boolean;
   partial_fill_policy: "complete_remainder" | "accept_partial" | "cancel_remainder";
-  time_in_force: "DAY" | "GTC" | "IOC" | "OPG";
 };
 
 type AddStep = {
@@ -275,7 +274,6 @@ type OmsProfile = {
     entry_urgency: string;
     exit_urgency: string;
     limit_offset_bps: number;
-    outside_rth: boolean;
     protection: {
       maximum_risk_pct: number;
       stop_method: string;
@@ -284,7 +282,7 @@ type OmsProfile = {
       volatility_multiple: number;
     };
     tick_size: number;
-    time_in_force: string;
+    session_routing: "smart";
   };
 };
 type OmsSection = { profiles: OmsProfile[] };
@@ -678,21 +676,9 @@ function StrategyStudio({ draft, onChange, onPersist, section }: { draft: Draft;
           summary={`${entryRules.opportunity.groups.length} opportunity · ${entryRules.confirmation.groups.length} confirmation · ${entryRules.blockers.groups.length} blocker rule sets`}
           title="Initial Entry"
         >
-          <DecisionRulesEditor
-            catalog={section.input_catalog}
-            rules={entryRules}
-            title="How the initial position is opened"
-            summary="Opportunity passes, configured confirmation rule sets pass, and no blocker passes. The resulting order request is resolved by Portfolio and executed by OMS."
-            onChange={(value) => replaceProfile({
-              ...selected,
-              lifecycle: {
-                ...selected.lifecycle,
-                initial_entry: { ...selected.lifecycle.initial_entry, ...value },
-              },
-            })}
-          />
           <PhaseOrderEditor
             capitalRequest={selected.lifecycle.initial_entry.capital_request}
+            eligibleSessions={selected.lifecycle.trading_behavior.eligible_sessions}
             orderIntent={selected.lifecycle.initial_entry.order_intent}
             title="Initial order request"
             onCapitalRequest={(capital_request) => replaceProfile({
@@ -710,8 +696,22 @@ function StrategyStudio({ draft, onChange, onPersist, section }: { draft: Draft;
               },
             })}
           />
+          <DecisionRulesEditor
+            catalog={section.input_catalog}
+            rules={entryRules}
+            title="How the initial position is opened"
+            summary="Opportunity passes, configured confirmation rule sets pass, and no blocker passes. The resulting order request is resolved by Portfolio and executed by OMS."
+            onChange={(value) => replaceProfile({
+              ...selected,
+              lifecycle: {
+                ...selected.lifecycle,
+                initial_entry: { ...selected.lifecycle.initial_entry, ...value },
+              },
+            })}
+          />
           <AddStepsEditor
             catalog={section.input_catalog}
+            eligibleSessions={selected.lifecycle.trading_behavior.eligible_sessions}
             steps={selected.lifecycle.initial_entry.add_steps}
             onChange={(add_steps) => replaceProfile({
               ...selected,
@@ -876,6 +876,14 @@ function ReentryEditor({ catalog, onChange, profile }: {
   });
   return (
     <>
+      <PhaseOrderEditor
+        capitalRequest={reentry.capital_request}
+        eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions}
+        orderIntent={reentry.order_intent}
+        title="Reentry order request"
+        onCapitalRequest={(capital_request) => update({ ...reentry, capital_request })}
+        onOrderIntent={(order_intent) => update({ ...reentry, order_intent })}
+      />
       <p className="configuration-section-guide">A reentry occurs only after a full exit while the same Strategy Campaign retains ticker ownership. Adding to an open position is a capability, not a reentry.</p>
       <div className="configuration-field-grid">
         <BooleanField help="Permit another flat-to-open transition within the same ticker campaign." label="Enable reentry" onChange={(enabled) => update({ ...reentry, enabled })} value={reentry.enabled} />
@@ -890,13 +898,6 @@ function ReentryEditor({ catalog, onChange, profile }: {
         rules={reentry.rules}
         title="When a reentry becomes eligible"
         summary="Reentry owns an independent rule set. Import selected initial-entry groups as editable copies, then add reentry-only evidence as needed."
-      />
-      <PhaseOrderEditor
-        capitalRequest={reentry.capital_request}
-        orderIntent={reentry.order_intent}
-        title="Reentry order request"
-        onCapitalRequest={(capital_request) => update({ ...reentry, capital_request })}
-        onOrderIntent={(order_intent) => update({ ...reentry, order_intent })}
       />
     </>
   );
@@ -930,7 +931,7 @@ function ExitRuleSetsEditor({ catalog, draft, onChange, profile }: {
             action: "close",
             enabled: true,
             name: "New exit rule set",
-            order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", outside_rth: false, partial_fill_policy: "complete_remainder", time_in_force: "DAY" },
+            order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", partial_fill_policy: "complete_remainder" },
             position_fraction: 1,
             rule_set_id: ruleSetId,
             rules: {
@@ -981,7 +982,11 @@ function ExitRuleSetsEditor({ catalog, draft, onChange, profile }: {
               <SelectField help={{ role: "Position intent emitted when the evidence and timing pass.", values: { "Close position": "Request the entire current position.", "Reduce position": "Request only the configured fraction." } }} label="Action" onChange={(action) => replace(ruleSet.rule_set_id, { ...ruleSet, action: action as ExitRuleSet["action"] })} options={[{ label: "Close position", value: "close" }, { label: "Reduce position", value: "reduce" }]} value={ruleSet.action} />
               {ruleSet.action === "reduce" ? <NumberField help={{ role: "Fraction of the current position to release.", values: { "1.0": "The full position.", "Below 1.0": "A partial reduction; the remainder stays managed." } }} label="Position fraction" maximum={1} minimum={0.01} onChange={(position_fraction) => replace(ruleSet.rule_set_id, { ...ruleSet, position_fraction })} step={0.05} unit="fraction" value={ruleSet.position_fraction} /> : null}
             </div>
-            <OrderIntentEditor value={ruleSet.order_intent} onChange={(order_intent) => replace(ruleSet.rule_set_id, { ...ruleSet, order_intent })} />
+            <OrderIntentEditor
+              eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions}
+              value={ruleSet.order_intent}
+              onChange={(order_intent) => replace(ruleSet.rule_set_id, { ...ruleSet, order_intent })}
+            />
           </div>
         </details>
       ))}
@@ -1221,12 +1226,17 @@ function RuleGroupEditor({ catalog, defaultOpen = false, group, onChange, onRemo
         <ChevronDown size={16} />
       </summary>
       <div className="strategy-rule-group-body">
-      <header>
-        <label className="strategy-rule-name"><span>Rule set name</span><input onChange={(event) => onChange({ ...group, label: event.target.value })} value={group.label} /></label>
-        <label><span>Condition logic <FieldHelp content={{ role: "Defines how this rule set converts its conditions into one pass or fail result.", values: { "All must pass": "Every enabled condition must be true.", "Any may pass": "One enabled condition is enough.", "Required score": "The fraction of enabled conditions that pass must meet this rule set's score." } }} /></span><select onChange={(event) => onChange({ ...group, operator: event.target.value as RuleGroup["operator"] })} value={group.operator}><option value="all">All must pass</option><option value="any">Any may pass</option><option value="score">Required score</option></select></label>
-        {group.operator === "score" ? <label><span>Required score <FieldHelp content={{ role: "Minimum fraction of this rule set's enabled conditions that must pass.", values: { "1.0": "Every condition must pass.", "0.5": "At least half must pass." }, note: "This value belongs only to this rule set; there is no global confirmation score." }} /></span><input max={1} min={0.01} onChange={(event) => onChange({ ...group, required_score: Number(event.target.value) })} step={0.05} type="number" value={group.required_score} /></label> : null}
-        <label className="configuration-enabled"><input checked={group.enabled} onChange={(event) => onChange({ ...group, enabled: event.target.checked })} type="checkbox" /> Enabled</label>
-        <button aria-label={`Delete ${group.label}`} className="button compact danger" disabled={!removable} onClick={onRemove} type="button"><Trash2 size={14} /></button>
+      <header className="strategy-rule-toolbar">
+        <div className="strategy-rule-toolbar-heading"><span>Rule set controls</span><p>Name the evidence bundle, choose how its conditions combine, and decide whether it participates in evaluation.</p></div>
+        <div className="strategy-rule-toolbar-fields">
+          <label className="strategy-rule-name"><span>Rule set name</span><input onChange={(event) => onChange({ ...group, label: event.target.value })} value={group.label} /></label>
+          <label><span>Condition logic <FieldHelp title="Condition logic" content={{ role: "Defines how this rule set converts its enabled conditions into one pass or fail result.", values: { "All must pass": "Every enabled condition must be true.", "Any may pass": "One enabled condition is enough.", "Required score": "The fraction of enabled conditions that pass must meet this rule set's own score." }, note: "The score is local to this rule set. There is no global confirmation score." }} /></span><select onChange={(event) => onChange({ ...group, operator: event.target.value as RuleGroup["operator"] })} value={group.operator}><option value="all">All must pass</option><option value="any">Any may pass</option><option value="score">Required score</option></select></label>
+          {group.operator === "score" ? <label><span>Required score <FieldHelp title="Required score" content={{ role: "Minimum fraction of this rule set's enabled conditions that must pass.", values: { "1.0": "Every condition must pass.", "0.75": "At least three quarters must pass.", "0.5": "At least half must pass." }, note: "This value belongs only to this rule set; changing it does not affect any other confirmation or phase." }} /></span><input max={1} min={0.01} onChange={(event) => onChange({ ...group, required_score: Number(event.target.value) })} step={0.05} type="number" value={group.required_score} /></label> : null}
+          <div className="strategy-rule-toolbar-actions">
+            <label className="strategy-rule-enabled"><span><strong>{group.enabled ? "Enabled" : "Disabled"}</strong><small>{group.enabled ? "Included in evaluation" : "Ignored by runtime"}</small></span><span className="configuration-switch"><input checked={group.enabled} onChange={(event) => onChange({ ...group, enabled: event.target.checked })} type="checkbox" /><span /></span></label>
+            <button aria-label={`Delete ${group.label}`} className="button compact danger" disabled={!removable} onClick={onRemove} type="button"><Trash2 size={14} /> Delete</button>
+          </div>
+        </div>
       </header>
       <div className="strategy-rule-conditions">
         {group.conditions.map((condition, index) => (
@@ -1387,8 +1397,9 @@ function RuleStageEditor({ catalog, label, onChange, stage }: {
   );
 }
 
-function PhaseOrderEditor({ capitalRequest, onCapitalRequest, onOrderIntent, orderIntent, title }: {
+function PhaseOrderEditor({ capitalRequest, eligibleSessions, onCapitalRequest, onOrderIntent, orderIntent, title }: {
   capitalRequest: CapitalRequestConfig;
+  eligibleSessions: string[];
   onCapitalRequest: (value: CapitalRequestConfig) => void;
   onOrderIntent: (value: OrderIntentConfig) => void;
   orderIntent: OrderIntentConfig;
@@ -1396,9 +1407,14 @@ function PhaseOrderEditor({ capitalRequest, onCapitalRequest, onOrderIntent, ord
 }) {
   return (
     <section className="strategy-order-request">
-      <header><div><span>Portfolio + OMS handoff</span><strong>{title}</strong><p>The strategy requests relative capital and an execution policy. Portfolio resolves account-specific size; OMS chooses and manages broker orders.</p></div></header>
-      <CapitalRequestEditor onChange={onCapitalRequest} value={capitalRequest} />
-      <OrderIntentEditor onChange={onOrderIntent} value={orderIntent} />
+      <header>
+        <div><span>Portfolio + OMS handoff</span><strong>{title}</strong><p>The strategy describes intent. Portfolio resolves the approved account quantity, then OMS chooses session-safe broker instructions and manages the order.</p></div>
+        <div className="strategy-handoff-flow" aria-label="Order handoff sequence"><span>Strategy request</span><ChevronRight size={14} /><span>Portfolio approval</span><ChevronRight size={14} /><span>OMS execution</span></div>
+      </header>
+      <div className="strategy-handoff-grid">
+        <CapitalRequestEditor onChange={onCapitalRequest} value={capitalRequest} />
+        <OrderIntentEditor eligibleSessions={eligibleSessions} onChange={onOrderIntent} value={orderIntent} />
+      </div>
     </section>
   );
 }
@@ -1414,7 +1430,12 @@ function CapitalRequestEditor({ onChange, value }: {
     all_available: { label: "", unit: "", maximum: undefined },
   }[value.mode];
   return (
-    <div className="configuration-field-grid strategy-capital-request">
+    <article className="strategy-handoff-card strategy-capital-request">
+      <header>
+        <BriefcaseBusiness size={18} />
+        <div><span>Step 1 · Portfolio</span><strong>Capital request</strong><p>Ask for capital in relative terms. Portfolio applies the deployment mandate, buying power, current positions, risk limits, and competing requests before approving shares.</p></div>
+      </header>
+      <div className="configuration-field-grid">
       <SelectField
         help={{
           role: "Describes the strategy's relative capital request. Portfolio converts it into an account-specific quantity after applying mandates, current positions, buying power, and risk.",
@@ -1452,31 +1473,40 @@ function CapitalRequestEditor({ onChange, value }: {
       ) : (
         <div className="configuration-context-value"><span>Request value</span><strong>Portfolio resolves remaining mandate capacity</strong><small>No stale quantity field is retained.</small></div>
       )}
-      <NumberField help="Used by Portfolio when several strategy requests compete for limited account capacity. Higher values are considered first; risk limits still win." label="Request priority" maximum={100} minimum={0} onChange={(priority) => onChange({ ...value, priority })} step={1} unit="0–100" value={value.priority} />
-      <BooleanField help="Allows Portfolio to propose closing or reducing a lower-priority position when this request materially improves the account plan." label="Allow replacement" onChange={(allow_replacement) => onChange({ ...value, allow_replacement })} value={value.allow_replacement} />
-    </div>
+        <NumberField help={{ role: "Ranks this request when several strategies compete for limited account capacity.", values: { "Higher value": "Portfolio evaluates the request earlier.", "Lower value": "The request yields to stronger opportunities." }, note: "Priority never overrides cash, mandate, concentration, or risk controls." }} label="Request priority" maximum={100} minimum={0} onChange={(priority) => onChange({ ...value, priority })} step={1} unit="0–100" value={value.priority} />
+        <BooleanField help={{ role: "Allows Portfolio to propose funding this request by reducing or closing a weaker position.", parameters: { "Replacement threshold": "Configured on the Portfolio mandate and must show sufficient improvement before displacement is allowed." }, note: "The strategy grants permission; Portfolio decides whether replacement is safe and beneficial." }} label="Allow replacement" onChange={(allow_replacement) => onChange({ ...value, allow_replacement })} value={value.allow_replacement} />
+      </div>
+      <div className="strategy-handoff-result"><span>Portfolio output</span><strong>Approved quantity and account allocation</strong><small>The approved result may be smaller than requested or rejected with a reason.</small></div>
+    </article>
   );
 }
 
-function OrderIntentEditor({ onChange, value }: {
+function OrderIntentEditor({ eligibleSessions, onChange, value }: {
+  eligibleSessions: string[];
   onChange: (value: OrderIntentConfig) => void;
   value: OrderIntentConfig;
 }) {
+  const usesExtendedHours = eligibleSessions.some((session) => session === "premarket" || session === "after_hours");
   return (
-    <div className="configuration-field-grid strategy-order-intent">
+    <article className="strategy-handoff-card strategy-order-intent">
+      <header>
+        <Send size={18} />
+        <div><span>Step 2 · OMS</span><strong>Execution policy</strong><p>Choose urgency and fill behavior, not broker-specific flags. OMS converts this intent into the fastest compatible order for the selected sessions, account, venue, and broker.</p></div>
+      </header>
+      <div className="configuration-field-grid">
       <SelectField
         help={{
           role: "Selects the broker-neutral execution policy sent to OMS after this trigger passes.",
           values: {
-            Passive: "Posts without crossing the spread and waits for price improvement.",
-            Midpoint: "Starts near the bid/ask midpoint.",
-            "Adaptive patient": "Works patiently, then reprices within the configured deadline.",
-            "Adaptive regular": "Balances fill probability and price improvement.",
-            "Adaptive urgent": "Moves quickly toward the touch using protected limits.",
-            "Adaptive very urgent": "Uses the fastest bounded repricing; intended for protective or time-critical exits.",
-            "Immediate with limit": "Submits immediately with a hard price boundary; never becomes an unbounded market order.",
-            "IBKR native adaptive": "Delegates the working tactic to IBKR's reviewed adaptive algorithm.",
-            "Cancel if not filled": "Cancels the remaining quantity at the deadline instead of chasing.",
+            Passive: "Prioritizes price improvement and avoids crossing. Use only when a missed or slow fill is acceptable.",
+            Midpoint: "Starts near the spread midpoint. It can improve price but may miss a fast move or remain unfilled in a wide market.",
+            "Adaptive patient": "Works slowly inside the permitted price envelope. Best for price quality when the opportunity can wait.",
+            "Adaptive regular": "Balances fill probability and price improvement. This is the normal default for non-emergency orders.",
+            "Adaptive urgent": "Reprices quickly toward executable liquidity. It improves fill probability but may pay more spread or slippage.",
+            "Adaptive very urgent": "Uses the fastest bounded repricing for protection or time-critical exits. Expect the highest execution cost within the approved envelope.",
+            "Immediate with limit": "Submits immediately with a hard price boundary. It can remain unfilled beyond that limit.",
+            "IBKR native adaptive": "Uses IBKR's adaptive algorithm only when the broker and account support it; unsupported combinations must be rejected or safely mapped by OMS.",
+            "Cancel if not filled": "Stops working the remainder at the deadline. Use where a partial or absent fill is safer than chasing an expiring opportunity.",
           },
           note: "The strategy never emits raw broker orders. OMS remains the only authority that creates, modifies, cancels, and reconciles orders.",
         }}
@@ -1485,16 +1515,21 @@ function OrderIntentEditor({ onChange, value }: {
         options={["passive", "midpoint", "adaptive_patient", "adaptive_regular", "adaptive_urgent", "adaptive_very_urgent", "immediate_with_limit", "ibkr_native_adaptive", "cancel_if_not_filled"].map((policy) => ({ label: readableLabel(policy), value: policy }))}
         value={value.execution_policy}
       />
-      <SelectField help={{ role: "Controls how long the resulting broker order may remain active.", values: { DAY: "Valid for the current trading day.", GTC: "Remains active until filled or cancelled; use only when the surrounding strategy lifecycle supports overnight intent.", IOC: "Fills immediately available quantity and cancels the remainder.", OPG: "Eligible for the opening auction." } }} label="Time in force" onChange={(time_in_force) => onChange({ ...value, time_in_force: time_in_force as OrderIntentConfig["time_in_force"] })} options={["DAY", "GTC", "IOC", "OPG"].map((item) => ({ label: item, value: item }))} value={value.time_in_force} />
       <SelectField help={{ role: "Determines how OMS handles an incomplete fill.", values: { "Complete remainder": "Continue working the unfilled quantity under the selected policy.", "Accept partial": "Keep the fill received and stop requesting the remainder.", "Cancel remainder": "Cancel any remainder after the first partial fill." } }} label="Partial fill" onChange={(partial_fill_policy) => onChange({ ...value, partial_fill_policy: partial_fill_policy as OrderIntentConfig["partial_fill_policy"] })} options={["complete_remainder", "accept_partial", "cancel_remainder"].map((item) => ({ label: readableLabel(item), value: item }))} value={value.partial_fill_policy} />
       <NumberField help="Maximum time OMS may work this execution policy before its terminal policy is applied. Zero means the policy's immediate behavior." label="Execution deadline" minimum={0} onChange={(deadline_ms) => onChange({ ...value, deadline_ms })} step={50} unit="ms" value={value.deadline_ms} />
-      <BooleanField help="Allows OMS to submit outside regular trading hours when the account, venue, and selected order type permit it." label="Outside regular hours" onChange={(outside_rth) => onChange({ ...value, outside_rth })} value={value.outside_rth} />
-    </div>
+      </div>
+      <div className="strategy-smart-session">
+        <ShieldCheck size={17} />
+        <div><span>Smart session routing</span><strong>{eligibleSessions.map(readableLabel).join(", ") || "No eligible session selected"}</strong><p>{usesExtendedHours ? "OMS enables eligible extended-session routing and selects compatible broker instructions after account, venue, and order-type checks." : "OMS keeps the request in the regular session and chooses compatible broker instructions automatically."}</p></div>
+        <FieldHelp content={{ role: "Session routing is derived from Trading Behavior so entry, reentry, and exit requests cannot contradict the strategy's eligible sessions.", parameters: { "Eligible sessions": "Selected once in Trading Behavior.", "Time in force": "Chosen by OMS for the broker, venue, session, and execution method.", "Outside regular hours": "Enabled by OMS only when premarket or after-hours is selected and the broker path supports it." }, note: "Change session eligibility in Trading Behavior. Strategy phases intentionally do not expose raw time-in-force or outside-hours switches." }} />
+      </div>
+    </article>
   );
 }
 
-function AddStepsEditor({ catalog, onChange, steps }: {
+function AddStepsEditor({ catalog, eligibleSessions, onChange, steps }: {
   catalog: StrategyInput[];
+  eligibleSessions: string[];
   onChange: (value: AddStep[]) => void;
   steps: AddStep[];
 }) {
@@ -1506,7 +1541,7 @@ function AddStepsEditor({ catalog, onChange, steps }: {
       enabled: true,
       maximum_uses: 1,
       name: "New position add",
-      order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", outside_rth: false, partial_fill_policy: "complete_remainder", time_in_force: "DAY" },
+      order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", partial_fill_policy: "complete_remainder" },
       rules: {
         groups: [{
           conditions: [{ comparator: source.value_type === "boolean" ? "is_true" : "greater_or_equal", condition_id: `${stepId}-condition`, enabled: true, left_source_id: source.source_id, left_timeframe: source.timeframes[0], right_source_id: "", right_timeframe: "", value: source.value_type === "boolean" ? null : 0 }],
@@ -1532,7 +1567,7 @@ function AddStepsEditor({ catalog, onChange, steps }: {
                 <button className="button compact danger" onClick={() => onChange(steps.filter((row) => row.step_id !== step.step_id))} type="button"><Trash2 size={14} /> Remove step</button>
               </div>
               <RuleStageEditor catalog={catalog} label={`${step.name} rules`} onChange={(rules) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, rules } : row))} stage={step.rules} />
-              <PhaseOrderEditor capitalRequest={step.capital_request} orderIntent={step.order_intent} title={`${step.name} request`} onCapitalRequest={(capital_request) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, capital_request } : row))} onOrderIntent={(order_intent) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, order_intent } : row))} />
+              <PhaseOrderEditor capitalRequest={step.capital_request} eligibleSessions={eligibleSessions} orderIntent={step.order_intent} title={`${step.name} request`} onCapitalRequest={(capital_request) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, capital_request } : row))} onOrderIntent={(order_intent) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, order_intent } : row))} />
             </div>
           </details>
         ))}
@@ -1823,13 +1858,16 @@ function OmsEditor({ onChange, section }: { onChange: (value: OmsSection) => voi
           Strategy decides what it wants and Portfolio approves account quantity. OMS decides how to work the order, reconcile fills, and maintain broker-held protection without expanding the approved envelope.
         </GuideCallout>
         <ConfigGroup summary="Common execution choices used for new entries and exits." title="Execution behavior">
+          <div className="strategy-smart-session configuration-smart-routing">
+            <ShieldCheck size={17} />
+            <div><span>Smart session routing</span><strong>Automatic broker-compatible instructions</strong><p>OMS derives regular or extended-session handling from each Strategy Profile's Trading Behavior, then validates the account, venue, broker, and order type before submission.</p></div>
+            <FieldHelp content={{ role: "Keeps broker mechanics centralized in OMS while Strategy Profiles define only when they are eligible to trade.", parameters: { "Strategy input": "Eligible sessions from Trading Behavior.", "OMS decision": "Compatible time in force, outside-hours flag, venue, and broker order instructions.", "Safety gate": "Account, broker, venue, and order-type support must all permit the resolved instruction." }, note: "There is intentionally no manual time-in-force or outside-hours override here. A raw override could contradict the strategy session or broker capabilities." }} />
+          </div>
           <div className="configuration-field-grid">
             <SelectField help="Default urgency for entries. Strategy capabilities may select only an allowed profile." label="Entry urgency" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, entry_urgency: value } })} options={urgencyOptions()} value={selected.settings.entry_urgency} />
             <SelectField help="Default urgency for risk-reducing and final exits." label="Exit urgency" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, exit_urgency: value } })} options={urgencyOptions()} value={selected.settings.exit_urgency} />
             <NumberField help="Permitted limit-price offset from current execution evidence." label="Limit offset" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, limit_offset_bps: value } })} step={0.5} unit="bps" value={selected.settings.limit_offset_bps} />
             <NumberField help="Minimum price increment used by the planner." label="Tick size" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, tick_size: value } })} step={0.01} unit="price" value={selected.settings.tick_size} />
-            <SelectField help="Broker order lifetime." label="Time in force" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, time_in_force: value } })} options={["DAY", "GTC", "IOC", "OPG"].map((value) => ({ label: value, value }))} value={selected.settings.time_in_force} />
-            <BooleanField help="Permit execution outside the regular session when account policy also allows it." label="Outside regular hours" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, outside_rth: value } })} value={selected.settings.outside_rth} />
           </div>
         </ConfigGroup>
         <ConfigGroup summary="Stops and trails are held and reconciled by the shared OMS." title="Protection">
@@ -1970,78 +2008,57 @@ type HelpContent = string | {
   values?: Record<string, string>;
 };
 
-function FieldHelp({ content }: { content: HelpContent }) {
+function FieldHelp({ content, title = "Parameter guide" }: { content: HelpContent; title?: string }) {
   const anchor = useRef<HTMLButtonElement>(null);
-  const popover = useRef<HTMLElement>(null);
-  const tooltipId = useId();
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const dialogId = useId();
+  const titleId = `${dialogId}-title`;
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState({ left: 0, top: 0 });
   const detail = typeof content === "string" ? { role: content } : content;
-  useLayoutEffect(() => {
-    if (!open || !anchor.current) return;
-    const update = () => {
-      const box = anchor.current?.getBoundingClientRect();
-      if (!box) return;
-      const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-      const width = Math.min(360, viewportWidth - 24);
-      const left = Math.max(12, Math.min(viewportWidth - width - 12, box.left + box.width / 2 - width / 2));
-      const height = Math.min(
-        popover.current?.getBoundingClientRect().height ?? 110,
-        viewportHeight - 24,
-      );
-      const availableBelow = viewportHeight - box.bottom - 12;
-      const availableAbove = box.top - 12;
-      const top = detail.values || detail.parameters || detail.note
-        ? 12
-        : height <= availableBelow
-          ? box.bottom + 8
-          : height <= availableAbove
-            ? box.top - height - 8
-            : 12;
-      setPosition({ left, top });
+  useEffect(() => {
+    if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeButton.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
     };
-    update();
-    const frame = window.requestAnimationFrame(update);
-    const observer = new ResizeObserver(update);
-    if (popover.current) observer.observe(popover.current);
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
-    window.visualViewport?.addEventListener("resize", update);
+    document.addEventListener("keydown", closeOnEscape);
     return () => {
-      window.cancelAnimationFrame(frame);
-      observer.disconnect();
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
-      window.visualViewport?.removeEventListener("resize", update);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+      anchor.current?.focus();
     };
-  }, [detail.note, detail.parameters, detail.values, open]);
+  }, [open]);
   return (
     <span className="configuration-help">
       <button
-        aria-describedby={open ? tooltipId : undefined}
         aria-expanded={open}
-        aria-label="Explain this parameter"
-        onBlur={() => setOpen(false)}
-        onClick={(event) => { event.preventDefault(); setOpen(true); }}
-        onFocus={() => setOpen(true)}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
+        aria-haspopup="dialog"
+        aria-label={`Explain ${title}`}
+        onClick={(event) => { event.preventDefault(); event.stopPropagation(); setOpen(true); }}
         ref={anchor}
         type="button"
       ><CircleHelp size={15} /></button>
       {open ? createPortal(
-        <aside className="configuration-help-popover" id={tooltipId} ref={popover} role="tooltip" style={position}>
-          <header><CircleHelp size={15} /><span>Parameter guide</span></header>
-          <div><strong>Role</strong><p>{detail.role}</p></div>
-          {detail.parameters ? (
-            <div><strong>Parameters</strong><dl>{Object.entries(detail.parameters).map(([label, explanation]) => <div key={label}><dt>{label}</dt><dd>{explanation}</dd></div>)}</dl></div>
-          ) : null}
-          {detail.values ? (
-            <dl>{Object.entries(detail.values).map(([label, explanation]) => <div key={label}><dt>{label}</dt><dd>{explanation}</dd></div>)}</dl>
-          ) : null}
-          {detail.note ? <footer><strong>Important</strong><p>{detail.note}</p></footer> : null}
-        </aside>,
+        <div className="configuration-help-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+          <section aria-labelledby={titleId} aria-modal="true" className="configuration-help-dialog" id={dialogId} role="dialog">
+            <header>
+              <div className="configuration-help-dialog-title"><span><CircleHelp size={18} /></span><div><small>Configuration guide</small><h2 id={titleId}>{title}</h2></div></div>
+              <button aria-label="Close guide" onClick={() => setOpen(false)} ref={closeButton} type="button"><X size={18} /></button>
+            </header>
+            <div className="configuration-help-dialog-body">
+              <section><strong>What this controls</strong><p>{detail.role}</p></section>
+              {detail.parameters ? (
+                <section><strong>Parameters</strong><dl>{Object.entries(detail.parameters).map(([label, explanation]) => <div key={label}><dt>{label}</dt><dd>{explanation}</dd></div>)}</dl></section>
+              ) : null}
+              {detail.values ? (
+                <section><strong>Available values</strong><dl>{Object.entries(detail.values).map(([label, explanation]) => <div key={label}><dt>{label}</dt><dd>{explanation}</dd></div>)}</dl></section>
+              ) : null}
+              {detail.note ? <footer><strong>Important</strong><p>{detail.note}</p></footer> : null}
+            </div>
+          </section>
+        </div>,
         document.body,
       ) : null}
     </span>
@@ -2072,20 +2089,20 @@ function CapabilityField({ definition, onChange, value }: { definition: Capabili
 }
 
 function TextField({ help, label, onChange, value }: { help: HelpContent; label: string; onChange: (value: string) => void; value: string }) {
-  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} /></span><input onChange={(event) => onChange(event.target.value)} value={value} /></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><input onChange={(event) => onChange(event.target.value)} value={value} /></label>;
 }
 
 function NumberField({ help, label, maximum, minimum, onChange, step, unit, value }: { help: HelpContent; label: string; maximum?: number; minimum?: number; onChange: (value: number) => void; step: number; unit?: string; value: number }) {
   const fraction = unit === "fraction";
-  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} /></span><div className="configuration-number"><input max={fraction ? 100 : maximum} min={fraction ? 0 : minimum} onChange={(event) => onChange(fraction ? Number(event.target.value) / 100 : Number(event.target.value))} step={fraction ? step * 100 : step} type="number" value={fraction ? round(value * 100) : value} />{unit ? <em>{fraction ? "%" : unit}</em> : null}</div></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><div className="configuration-number"><input max={fraction ? 100 : maximum} min={fraction ? 0 : minimum} onChange={(event) => onChange(fraction ? Number(event.target.value) / 100 : Number(event.target.value))} step={fraction ? step * 100 : step} type="number" value={fraction ? round(value * 100) : value} />{unit ? <em>{fraction ? "%" : unit}</em> : null}</div></label>;
 }
 
 function SelectField({ help, label, onChange, options, value }: { help: HelpContent; label: string; onChange: (value: string) => void; options: Array<{ label: string; value: string }>; value: string }) {
-  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} /></span><select onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><select onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
 }
 
 function BooleanField({ help, label, onChange, value }: { help: HelpContent; label: string; onChange: (value: boolean) => void; value: boolean }) {
-  return <label className="configuration-field configuration-boolean" data-editable="true"><span>{label}<FieldHelp content={help} /></span><input checked={value} onChange={(event) => onChange(event.target.checked)} type="checkbox" /></label>;
+  return <label className="configuration-field configuration-boolean" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><input checked={value} onChange={(event) => onChange(event.target.checked)} type="checkbox" /></label>;
 }
 
 function ModeSelector({ modes, onChange }: { modes: RuntimeMode[]; onChange: (value: RuntimeMode[]) => void }) {
@@ -2176,7 +2193,6 @@ function choicesFor(path: string): readonly string[] | undefined {
   if (path.endsWith(".trigger")) return ["acceleration_slowdown", "favorable_move_pct", "volatility_multiple"];
   if (path.endsWith(".entry_urgency")) return ["patient", "regular", "urgent", "very_urgent"];
   if (path.endsWith(".exit_urgency")) return ["urgent", "very_urgent"];
-  if (path.endsWith(".time_in_force")) return ["DAY", "GTC", "IOC", "OPG"];
   return undefined;
 }
 

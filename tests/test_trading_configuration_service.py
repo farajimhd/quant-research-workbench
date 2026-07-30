@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from src.backend.trading_configuration_service import (
     _default_draft,
+    _migrate_draft,
     _validate_draft,
     approved_configuration,
     capability_catalog,
@@ -22,6 +23,39 @@ from src.trading_runtime.strategy_engine import long_momentum_strategy_definitio
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
+    def test_schema_v7_migration_removes_legacy_session_overrides(self) -> None:
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), patch(
+            "src.backend.trading_configuration_service.list_strategy_assignments",
+            return_value=[],
+        ):
+            legacy = _default_draft()
+        legacy["schema_version"] = 6
+        initial_intent = legacy["strategy"]["profiles"][0]["lifecycle"][
+            "initial_entry"
+        ]["order_intent"]
+        initial_intent["time_in_force"] = "GTC"
+        initial_intent["outside_rth"] = False
+        oms_settings = legacy["oms"]["profiles"][0]["settings"]
+        oms_settings["time_in_force"] = "IOC"
+        oms_settings["outside_rth"] = True
+        oms_settings.pop("session_routing", None)
+
+        migrated = _migrate_draft(legacy)
+
+        self.assertEqual(migrated["schema_version"], 7)
+        migrated_intent = migrated["strategy"]["profiles"][0]["lifecycle"][
+            "initial_entry"
+        ]["order_intent"]
+        self.assertNotIn("time_in_force", migrated_intent)
+        self.assertNotIn("outside_rth", migrated_intent)
+        migrated_oms = migrated["oms"]["profiles"][0]["settings"]
+        self.assertEqual(migrated_oms["session_routing"], "smart")
+        self.assertNotIn("time_in_force", migrated_oms)
+        self.assertNotIn("outside_rth", migrated_oms)
+
     def test_system_profiles_and_capabilities_are_user_configurable(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
@@ -32,7 +66,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 6)
+        self.assertEqual(draft["schema_version"], 7)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 2)
         self.assertTrue(all(profile["editable"] for profile in draft["strategy"]["profiles"]))
@@ -68,6 +102,13 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             "mandate_fraction",
         )
         self.assertTrue(lifecycle["initial_entry"]["add_steps"])
+        self.assertNotIn("time_in_force", lifecycle["initial_entry"]["order_intent"])
+        self.assertNotIn("outside_rth", lifecycle["initial_entry"]["order_intent"])
+        self.assertEqual(
+            draft["oms"]["profiles"][0]["settings"]["session_routing"], "smart"
+        )
+        self.assertNotIn("time_in_force", draft["oms"]["profiles"][0]["settings"])
+        self.assertNotIn("outside_rth", draft["oms"]["profiles"][0]["settings"])
         self.assertTrue(lifecycle["reentry"]["rules"]["opportunity"]["groups"])
         self.assertTrue(lifecycle["exit"]["rule_sets"][1]["rules"]["groups"])
         self.assertTrue(

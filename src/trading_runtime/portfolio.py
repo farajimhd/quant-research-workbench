@@ -833,7 +833,15 @@ class PortfolioManagementEngine:
         ticker = intent.ticker.upper()
         if ticker in {symbol.upper() for symbol in policy.restricted_symbols}:
             reasons.append("symbol_restricted")
-        if intent.outside_rth and not policy.allow_outside_rth:
+        requested_sessions = {
+            str(value)
+            for value in intent.metadata.get("eligible_sessions") or []
+        }
+        requests_extended_session = (
+            intent.metadata.get("session_routing") == "smart"
+            and bool(requested_sessions & {"premarket", "after_hours"})
+        ) or intent.outside_rth
+        if requests_extended_session and not policy.allow_outside_rth:
             reasons.append("outside_rth_not_allowed")
         if bool(intent.metadata.get("would_hold_overnight")) and not policy.allow_overnight:
             reasons.append("overnight_position_not_allowed")

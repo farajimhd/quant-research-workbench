@@ -365,8 +365,6 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "exit_urgency": "very_urgent",
             "limit_offset_bps": 5.0,
             "tick_size": 0.01,
-            "time_in_force": "DAY",
-            "outside_rth": False,
         },
     }
     parameters["exit_routes"] = default_exit_routes(parameters["final_exit"])
@@ -425,6 +423,10 @@ def default_exit_routes(final_exit: dict[str, Any] | None = None) -> list[dict[s
 
 def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     parameters = _deep_merge(default_long_momentum_parameters(), dict(overrides or {}))
+    execution = dict(parameters.get("execution") or {})
+    execution.pop("time_in_force", None)
+    execution.pop("outside_rth", None)
+    parameters["execution"] = execution
     side = str(dict(parameters.get("strategy_behavior") or {}).get("side") or "long")
     if side not in {"long", "short"}:
         raise ValueError("Strategy side must be long or short")
@@ -465,8 +467,6 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
         raise ValueError("Unsupported exit urgency")
     if float(parameters["execution"]["tick_size"]) <= 0:
         raise ValueError("Execution tick size must be positive")
-    if parameters["execution"]["time_in_force"] not in {"DAY", "GTC", "IOC", "OPG"}:
-        raise ValueError("Unsupported strategy time in force")
     _validate_exit_routes(list(parameters.get("exit_routes") or []))
     _validate_entry_rules(dict(parameters.get("entry_rules") or {}))
     phase_policy = dict(parameters.get("phase_policy") or {})
@@ -959,6 +959,10 @@ class LongMomentumStrategyEngine:
         intents: tuple[StrategyIntent, ...] = ()
         if action in {"enter_long", "add_long", "reduce_long", "take_profit", "exit", "enter_short", "add_short", "reduce_short", "cover"}:
             resolved_order_intent = dict(order_intent or {})
+            if "time_in_force" in resolved_order_intent or "outside_rth" in resolved_order_intent:
+                raise ValueError(
+                    "Strategy order intents cannot override OMS session routing"
+                )
             resolved_capital_request = capital_request or (
                 _capital_request(assignment.parameters, quantity=quantity, action=action)
                 if action in {"enter_long", "add_long", "enter_short", "add_short"}
@@ -982,8 +986,8 @@ class LongMomentumStrategyEngine:
                         action=action,
                     ) if resolved_order_intent else None,
                     urgency=str(assignment.parameters.get("execution", {}).get("entry_urgency") or "urgent") if action in {"enter_long", "add_long", "enter_short", "add_short"} else str(assignment.parameters.get("execution", {}).get("exit_urgency") or "very_urgent"),  # type: ignore[arg-type]
-                    time_in_force=str(resolved_order_intent.get("time_in_force") or assignment.parameters.get("execution", {}).get("time_in_force") or "DAY"),
-                    outside_rth=bool(resolved_order_intent.get("outside_rth", assignment.parameters.get("execution", {}).get("outside_rth", False))),
+                    time_in_force="",
+                    outside_rth=False,
                     reason=reason,
                     metadata={
                         "assignment_id": assignment.assignment_id,
@@ -995,6 +999,14 @@ class LongMomentumStrategyEngine:
                         ),
                         "position_quantity": observation.position_quantity,
                         "opportunity_score": score,
+                        "session_routing": "smart",
+                        "eligible_sessions": list(
+                            dict(
+                                assignment.parameters.get("strategy_behavior")
+                                or {}
+                            ).get("eligible_sessions")
+                            or ["regular"]
+                        ),
                         **(metadata or {}),
                     },
                 ),
@@ -1117,8 +1129,10 @@ def _validate_phase_capital_request(payload: dict[str, Any]) -> None:
 def _validate_phase_order_intent(payload: dict[str, Any]) -> None:
     ExecutionPolicyName(str(payload.get("execution_policy") or ""))
     PartialFillPolicy(str(payload.get("partial_fill_policy") or ""))
-    if str(payload.get("time_in_force") or "") not in {"DAY", "GTC", "IOC", "OPG"}:
-        raise ValueError("Strategy phase time in force is unsupported")
+    if "time_in_force" in payload or "outside_rth" in payload:
+        raise ValueError(
+            "Strategy phase session routing must be derived by OMS"
+        )
     if int(payload.get("deadline_ms") or 0) < 0:
         raise ValueError("Strategy phase execution deadline cannot be negative")
 

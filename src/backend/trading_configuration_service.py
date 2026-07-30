@@ -28,7 +28,7 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 6
+CONFIGURATION_SCHEMA_VERSION = 7
 CONFIGURATION_SECTIONS = {"strategy", "assignments", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
@@ -451,8 +451,6 @@ def _default_capital_request(mode: str, value: float) -> dict[str, Any]:
 def _default_order_intent(policy: str) -> dict[str, Any]:
     return {
         "execution_policy": policy,
-        "time_in_force": "DAY",
-        "outside_rth": False,
         "partial_fill_policy": "complete_remainder",
         "deadline_ms": 750,
     }
@@ -731,6 +729,41 @@ def _migrate_lifecycle_v6(
         rule_set.setdefault("position_fraction", 1.0)
         rule_set.setdefault(
             "order_intent", _default_order_intent("adaptive_urgent")
+        )
+    result["exit"] = exit_config
+    return result
+
+
+def _normalize_smart_order_intent(intent: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(intent)
+    result.pop("time_in_force", None)
+    result.pop("outside_rth", None)
+    return result
+
+
+def _migrate_lifecycle_v7(
+    lifecycle: dict[str, Any],
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    result = _migrate_lifecycle_v6(lifecycle, parameters)
+    initial = dict(result.get("initial_entry") or {})
+    initial["order_intent"] = _normalize_smart_order_intent(
+        dict(initial.get("order_intent") or {})
+    )
+    for step in initial.get("add_steps") or []:
+        step["order_intent"] = _normalize_smart_order_intent(
+            dict(step.get("order_intent") or {})
+        )
+    result["initial_entry"] = initial
+    reentry = dict(result.get("reentry") or {})
+    reentry["order_intent"] = _normalize_smart_order_intent(
+        dict(reentry.get("order_intent") or {})
+    )
+    result["reentry"] = reentry
+    exit_config = dict(result.get("exit") or {})
+    for rule_set in exit_config.get("rule_sets") or []:
+        rule_set["order_intent"] = _normalize_smart_order_intent(
+            dict(rule_set.get("order_intent") or {})
         )
     result["exit"] = exit_config
     return result
@@ -1083,8 +1116,6 @@ def merged_assignment_parameters(configuration: dict[str, Any], assignment: dict
         "exit_urgency": oms["exit_urgency"],
         "limit_offset_bps": float(oms["limit_offset_bps"]),
         "tick_size": float(oms["tick_size"]),
-        "time_in_force": oms["time_in_force"],
-        "outside_rth": bool(oms.get("outside_rth", False)),
     })
     protection = dict(oms.get("protection") or {})
     stop = base.setdefault("protection", {}).setdefault("stop", {})
@@ -1153,7 +1184,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 lifecycle["reentry"]["enabled"] = bool(
                     legacy_reentry.get("enabled", True)
                 )
-            lifecycle = _migrate_lifecycle_v6(lifecycle, parameters)
+            lifecycle = _migrate_lifecycle_v7(lifecycle, parameters)
             initial_entry = dict(lifecycle.get("initial_entry") or {})
             _normalize_entry_rule_sources({
                 key: value
@@ -1251,6 +1282,12 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             for row in defaults["oms"]["profiles"]
             if str(row["profile_id"]) not in existing_oms
         )
+        for oms_profile in result["oms"]["profiles"]:
+            settings = dict(oms_profile.get("settings") or {})
+            settings.pop("time_in_force", None)
+            settings.pop("outside_rth", None)
+            settings["session_routing"] = "smart"
+            oms_profile["settings"] = settings
         for binding in dict(result.get("accounts") or {}).get("bindings") or []:
             _normalize_account_binding(binding)
         return result
@@ -1281,6 +1318,9 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         "origin": "user",
         "settings": deepcopy(old["oms"]),
     }]
+    base["oms"]["profiles"][0]["settings"].pop("time_in_force", None)
+    base["oms"]["profiles"][0]["settings"].pop("outside_rth", None)
+    base["oms"]["profiles"][0]["settings"]["session_routing"] = "smart"
     base["accounts"] = deepcopy(old["accounts"])
     for binding in base["accounts"].get("bindings") or []:
         _normalize_account_binding(binding)
@@ -1476,8 +1516,10 @@ def _validate_order_intent(intent: dict[str, Any], label: str) -> None:
         "cancel_if_not_filled",
     }:
         raise ValueError(f"{label} execution policy is unsupported")
-    if str(intent.get("time_in_force") or "") not in {"DAY", "GTC", "IOC", "OPG"}:
-        raise ValueError(f"{label} time in force is unsupported")
+    if "time_in_force" in intent or "outside_rth" in intent:
+        raise ValueError(
+            f"{label} session routing must be derived by OMS from Trading Behavior"
+        )
     if str(intent.get("partial_fill_policy") or "") not in {
         "complete_remainder",
         "accept_partial",
@@ -1521,8 +1563,7 @@ def _default_oms_profile() -> dict[str, Any]:
             "exit_urgency": "very_urgent",
             "limit_offset_bps": 5.0,
             "tick_size": 0.01,
-            "time_in_force": "DAY",
-            "outside_rth": False,
+            "session_routing": "smart",
             "protection": {
                 "stop_method": "hybrid",
                 "structure_buffer_bps": 8.0,
@@ -1596,8 +1637,8 @@ def _validate_oms_settings(oms: dict[str, Any]) -> None:
         raise ValueError("OMS exit urgency is unsupported")
     if float(oms.get("limit_offset_bps") or 0) < 0 or float(oms.get("tick_size") or 0) <= 0:
         raise ValueError("OMS offset cannot be negative and tick size must be positive")
-    if str(oms.get("time_in_force") or "") not in {"DAY", "GTC", "IOC", "OPG"}:
-        raise ValueError("OMS time in force is unsupported")
+    if str(oms.get("session_routing") or "") != "smart":
+        raise ValueError("OMS session routing must use smart broker-aware mode")
     if str(dict(oms.get("protection") or {}).get("stop_method") or "") not in {"structure", "volatility", "hybrid"}:
         raise ValueError("Protection stop method is unsupported")
 

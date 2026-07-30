@@ -290,6 +290,7 @@ def _order(
     trailing_type: str | None = None,
     grouped: bool = False,
 ) -> OrderRequest:
+    time_in_force, outside_rth = _smart_broker_session_fields(intent)
     return OrderRequest(
         acctId=account_id,
         conid=instrument.conid,
@@ -300,8 +301,8 @@ def _order(
         cOID=client_id[:64] if client_id else "",
         parentId=parent_id,
         ticker=instrument.symbol,
-        tif=intent.time_in_force,
-        outsideRTH=intent.outside_rth,
+        tif=time_in_force,
+        outsideRTH=outside_rth,
         price=price,
         auxPrice=stop,
         trailingAmt=trailing,
@@ -309,6 +310,19 @@ def _order(
         listingExchange=instrument.exchange,
         isSingleGroup=grouped,
     )
+
+
+def _smart_broker_session_fields(intent: StrategyIntent) -> tuple[str, bool]:
+    if intent.metadata.get("session_routing") != "smart":
+        return intent.time_in_force or "DAY", intent.outside_rth
+    sessions = {
+        str(value)
+        for value in intent.metadata.get("eligible_sessions") or ["regular"]
+    }
+    # DAY plus outsideRTH is the portable IBKR contract for regular and
+    # extended sessions. The planner remains responsible for selecting the
+    # execution method; the broker adapter performs final capability checks.
+    return "DAY", bool(sessions & {"premarket", "after_hours"})
 
 
 def _slice_quantities(quantity: float, fractions: tuple[float, ...]) -> tuple[float, ...]:

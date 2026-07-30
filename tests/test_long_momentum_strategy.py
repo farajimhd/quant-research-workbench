@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import os
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -177,7 +178,10 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
     def test_short_profile_emits_relative_sell_intent_with_phase_order_policy(self) -> None:
         parameters = default_long_momentum_parameters()
-        parameters["strategy_behavior"] = {"side": "short"}
+        parameters["strategy_behavior"] = {
+            "side": "short",
+            "eligible_sessions": ["premarket", "regular"],
+        }
         parameters["phase_policy"] = {
             "initial_entry": {
                 "capital_request": {
@@ -188,8 +192,6 @@ class LongMomentumStrategyTests(unittest.TestCase):
                 },
                 "order_intent": {
                     "execution_policy": "adaptive_urgent",
-                    "time_in_force": "DAY",
-                    "outside_rth": False,
                     "partial_fill_policy": "complete_remainder",
                     "deadline_ms": 500,
                 },
@@ -209,6 +211,20 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(intent.capital_request.value, 0.2)
         self.assertIsNone(intent.capital_request.maximum_quantity)
         self.assertEqual(intent.execution_policy.name.value, "adaptive_urgent")
+        self.assertEqual(intent.time_in_force, "")
+        self.assertFalse(intent.outside_rth)
+        self.assertEqual(intent.metadata["session_routing"], "smart")
+        plan = IbkrStrategyOrderPlanner().plan(
+            account_id="DU123",
+            instrument=InstrumentContract(
+                "ibkr:265598", 265598, "AAPL", "STK", "USD"
+            ),
+            intent=replace(intent, quantity=100),
+            strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_REVISION,
+        )
+        self.assertTrue(all(order.tif == "DAY" for order in plan.orders))
+        self.assertTrue(all(order.outsideRTH for order in plan.orders))
         self.assertGreater(intent.invalidation_price or 0, intent.reference_price)
 
     def test_campaign_initial_entry_authority_requires_operator_confirmation(self) -> None:
@@ -413,6 +429,8 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertTrue(all(order.parentId == plan.orders[0].cOID for order in plan.orders[1:]))
         self.assertTrue(all(order.isSingleGroup for order in plan.orders))
         self.assertTrue(all(not order.cOID for order in plan.orders[1:]))
+        self.assertTrue(all(order.tif == "DAY" for order in plan.orders))
+        self.assertTrue(all(not order.outsideRTH for order in plan.orders))
         self.assertTrue(all("strategy" not in order.to_cpapi() for order in plan.orders))
         self.assertTrue(all("strategy_intent_id" not in order.to_cpapi() for order in plan.orders))
 

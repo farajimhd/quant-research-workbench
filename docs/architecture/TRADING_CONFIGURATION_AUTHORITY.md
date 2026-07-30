@@ -180,9 +180,14 @@ Raw JSON is never the primary configuration interface.
 - Editable controls use an accent treatment distinct from protected,
   inherited, and computed values. Section color and typography encode meaning
   and hierarchy; bold text is reserved for high-value identifiers and states.
-- Context help is rendered in a viewport-level overlay so it is not clipped by
-  panels. It explains the parameter's role, the meaning of each available
-  value, and any authority or safety consequence.
+- Context help opens only on click in a centered, viewport-level modal with its
+  own scroll area and explicit close action. It never disappears on pointer
+  movement or gets clipped by panels. It explains the parameter's role, the
+  meaning of each available value, and any authority or safety consequence.
+- Every Initial Entry, Add, Reentry, and Exit editor presents the
+  Portfolio + OMS handoff before its decision rules. Capital request and
+  execution policy use separate guided cards so relative sizing authority,
+  execution trade-offs, and the resulting downstream output remain explicit.
 - The Strategy Profile -> Deployment -> Capital mandate -> Publication journey
   remains visible across configuration pages.
 - Generated JSON is available on demand through a read-only advanced inspector.
@@ -212,7 +217,7 @@ Later draft edits or publications cannot mutate it.
 
 ## Runtime compatibility boundary
 
-The schema-v6 model is authoritative. `resolve_runtime_configurations()` orders
+The schema-v7 model is authoritative. `resolve_runtime_configurations()` orders
 every approved deployment eligible for a runtime mode by configured selection
 priority and projects each profile, Watch Universe, campaign policy, Portfolio,
 OMS, account, and campaign leg through one shared boundary. Individual
@@ -231,10 +236,15 @@ ordinary broker positions net; opposing campaigns must use separate
 non-netting account boundaries.
 
 Strategy phase order settings select a broker-neutral registered execution
-policy, time in force, outside-hours permission, partial-fill behavior, and
-deadline. They do not create broker orders. Portfolio must approve and size the
-semantic request before the shared OMS chooses and manages broker-native order
-types, replacements, partial fills, protection, and reconciliation.
+policy, partial-fill behavior, and deadline. Eligible sessions are configured
+once in Trading Behavior. A strategy phase and an OMS Profile cannot override
+time in force or outside-hours permission. The shared OMS derives those
+broker-facing fields from eligible sessions and validates the account, venue,
+broker, and order type before submission. Portfolio must first approve and size
+the semantic request; OMS then chooses and manages broker-native order types,
+session routing, replacements, partial fills, protection, and reconciliation.
+Schema-v7 migration removes legacy phase and OMS session flags so an older
+draft cannot reintroduce conflicting authority.
 
 An exit makes a position flat; it does not necessarily finish a campaign.
 `Exit and keep watching` retains the lease and enters Reentry wait. `Exit and
