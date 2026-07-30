@@ -21,13 +21,15 @@ from src.trading_runtime.strategy_engine import (
     STRATEGY_ID,
     STRATEGY_REVISION,
     default_entry_decision_rules,
+    default_exit_routes,
     default_long_momentum_parameters,
     resolve_long_momentum_parameters,
     strategy_input_catalog,
 )
+from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 3
+CONFIGURATION_SCHEMA_VERSION = 4
 CONFIGURATION_SECTIONS = {"strategy", "assignments", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
@@ -71,29 +73,6 @@ def capability_catalog() -> list[dict[str, Any]]:
                 _number("minimum_gain_pct", "Minimum gain", "Gain required before reducing.", "%", 0, 100, 0.05),
                 _number("quantity_fraction", "Position to sell", "Fraction of the open position to reduce.", "%", 0.01, 1, 0.05, display="fraction"),
                 _number("minimum_remaining_quantity", "Minimum remainder", "Do not leave a smaller residual position.", "shares", 0, 1_000_000, 1),
-            ],
-        },
-        {
-            "capability_id": "exit-watch-reenter",
-            "revision": 1,
-            "name": "Exit, watch & re-enter",
-            "category": "position_lifecycle",
-            "summary": "Exit weakness, keep observing, and re-enter only after a new causal confirmation.",
-            "order_entry_action": True,
-            "autonomy": ["manual", "confirm", "automatic"],
-            "defaults": {
-                "mode": "confirm",
-                "cooldown_ms": 1_000,
-                "maximum_attempts": 3,
-                "require_new_confirmation": True,
-                "swing_break_timeframe": "1s",
-            },
-            "parameters": [
-                _choice("mode", "Authority", "Whether re-entry is proposed, confirmed, or automatic.", ["manual", "confirm", "automatic"]),
-                _number("cooldown_ms", "Cooldown", "Minimum wait after exit before another entry.", "ms", 0, 3_600_000, 100),
-                _number("maximum_attempts", "Maximum attempts", "Maximum re-entries in one assignment lifecycle.", "attempts", 0, 20, 1),
-                _boolean("require_new_confirmation", "Require new confirmation", "Prevents re-entry from reusing stale evidence."),
-                _choice("swing_break_timeframe", "Swing timeframe", "Causal swing structure used for re-entry.", ["100ms", "1s", "5s", "10s"]),
             ],
         },
         {
@@ -217,7 +196,32 @@ def replay_configuration_snapshot() -> dict[str, Any]:
     _validate_draft(model)
     if not model.get("canvas", {}).get("profile"):
         raise ValueError("The approved trading configuration does not contain a Canvas profile")
-    runtime_payload = resolve_runtime_configuration(model, mode="replay")
+    runtimes = resolve_runtime_configurations(model, mode="replay")
+    if not runtimes:
+        raise ValueError("No enabled strategy deployment supports replay")
+    runtime_payload = deepcopy(runtimes[0])
+    runtime_payload["deployments"] = [
+        deepcopy(runtime["deployment"]) for runtime in runtimes
+    ]
+    runtime_payload["universes"] = [
+        deepcopy(runtime["universe"]) for runtime in runtimes
+    ]
+    runtime_payload["assignments"] = [
+        deepcopy(assignment)
+        for runtime in runtimes
+        for assignment in runtime["assignments"]
+    ]
+    runtime_payload["portfolio"]["mandates"] = [
+        deepcopy(mandate)
+        for runtime in runtimes
+        for mandate in runtime["portfolio"]["mandates"]
+    ]
+    binding_by_key = {
+        str(binding["account_key"]): deepcopy(binding)
+        for runtime in runtimes
+        for binding in runtime["accounts"]["bindings"]
+    }
+    runtime_payload["accounts"]["bindings"] = list(binding_by_key.values())
     runtime_payload["canvas"] = deepcopy(model["canvas"])
     return {
         "revision_id": approved["revision_id"],
@@ -230,6 +234,33 @@ def replay_configuration_snapshot() -> dict[str, Any]:
         "configuration_model": model,
         "payload": runtime_payload,
     }
+
+
+def resolve_runtime_configurations(
+    model: dict[str, Any],
+    *,
+    mode: str,
+) -> list[dict[str, Any]]:
+    migrated = _migrate_draft(model)
+    eligible = [
+        row
+        for row in dict(migrated["assignments"]).get("deployments") or []
+        if bool(row.get("enabled", True)) and mode in set(row.get("modes") or [])
+    ]
+    eligible.sort(
+        key=lambda row: (
+            -int(row.get("selection_priority") or 0),
+            str(row.get("deployment_id") or ""),
+        )
+    )
+    return [
+        resolve_runtime_configuration(
+            migrated,
+            mode=mode,
+            deployment_id=str(row["deployment_id"]),
+        )
+        for row in eligible
+    ]
 
 
 def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deployment_id: str = "") -> dict[str, Any]:
@@ -279,9 +310,52 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deploymen
         deepcopy(row) for row in deployment.get("runtime_assignments") or []
         if str(row.get("account_key")) in account_keys
     ]
+    universes = {
+        str(row["universe_id"]): row
+        for row in dict(model["assignments"]).get("universes") or []
+    }
+    universe = universes.get(str(deployment.get("universe_id") or ""))
+    if universe is None:
+        raise ValueError(
+            f"Deployment {deployment.get('deployment_id')} references an unknown Watch Universe"
+        )
+    for assignment in runtime_assignments:
+        ticker = str(assignment.get("ticker") or "").upper()
+        assignment.setdefault(
+            "campaign_id",
+            f"{deployment['deployment_id']}:{ticker}",
+        )
+        policy = dict(deployment.get("campaign_policy") or {})
+        existing_permissions = dict(assignment.get("permissions") or {})
+        assignment["permissions"] = {
+            **existing_permissions,
+            "observe": True,
+            "enter": str(policy.get("initial_entry_authority")) != "disabled",
+            "reenter": str(policy.get("reentry_authority")) != "disabled",
+            "exit": str(policy.get("exit_authority")) != "disabled",
+        }
+        assignment["strategy_id"] = str(profile["definition_id"])
+        assignment["strategy_revision"] = int(profile["definition_revision"])
+        assignment["profile_id"] = str(profile["profile_id"])
+        assignment["deployment_id"] = str(deployment["deployment_id"])
+        assignment["universe_id"] = str(deployment["universe_id"])
+        assignment["book_id"] = str(deployment["book_id"])
+        assignment["campaign_policy"] = deepcopy(policy)
+        assignment["resolved_parameters"] = merged_assignment_parameters(
+            {
+                "strategy": {"parameters": _parameters_with_capabilities(profile)},
+                "oms": deepcopy(dict(oms.get("settings") or {})),
+                "campaign_policy": deepcopy(policy),
+            },
+            assignment,
+        )
     return {
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "deployment": deepcopy(deployment),
+        "universe": deepcopy(universe),
+        "campaign_policy": deepcopy(
+            dict(deployment.get("campaign_policy") or {})
+        ),
         "strategy_profile": deepcopy(profile),
         "strategy": {
             "strategy_id": profile["definition_id"],
@@ -300,6 +374,78 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deploymen
         },
         "oms": deepcopy(dict(oms.get("settings") or {})),
         "accounts": {"bindings": bindings},
+    }
+
+
+def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
+    rules = deepcopy(
+        dict(parameters.get("entry_rules") or default_entry_decision_rules(parameters))
+    )
+    reentry = dict(parameters.get("reentry") or {})
+    final_exit = dict(parameters.get("final_exit") or {})
+    return {
+        "trading_behavior": {
+            "side": "long",
+            "eligible_sessions": ["regular"],
+            "evaluation_trigger": "indicator_update",
+            "adopt_manual_positions": True,
+        },
+        "initial_entry": {
+            "opportunity": deepcopy(dict(rules.get("trigger") or {})),
+            "confirmation": deepcopy(dict(rules.get("confirmation") or {})),
+            "blockers": deepcopy(dict(rules.get("veto") or {})),
+        },
+        "reentry": {
+            "enabled": bool(reentry.get("enabled", True)),
+            "reuse_initial_entry": True,
+            "cooldown_ms": int(reentry.get("cooldown_ms") or 0),
+            "maximum_attempts": int(reentry.get("maximum_attempts") or 0),
+            "require_new_confirmation": bool(
+                reentry.get("require_new_confirmation", True)
+            ),
+        },
+        "exit": {
+            "routes": default_exit_routes(final_exit)
+        },
+    }
+
+
+def _parameters_without_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(parameters)
+    for key in ("entry_rules", "reentry", "final_exit", "exit_routes"):
+        result.pop(key, None)
+    return result
+
+
+def _default_campaign_policy() -> dict[str, Any]:
+    return {
+        "initial_entry_authority": "confirm",
+        "reentry_authority": "confirm",
+        "exit_authority": "automatic",
+        "protective_exit_authority": "automatic",
+        "maximum_reentries": 3,
+        "reentry_cooldown_ms": 1_000,
+        "maximum_initial_watch_ms": 0,
+        "session_end_behavior": "keep_watching",
+        "retain_ticker_while_paused": True,
+    }
+
+
+def _default_universe(runtime_assignments: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "universe_id": "configured-watch-universe",
+        "name": "Configured watch universe",
+        "description": "Symbols explicitly approved for strategy evaluation.",
+        "source": "configured_symbols",
+        "symbols": sorted(
+            {
+                str(row.get("ticker") or "").upper()
+                for row in runtime_assignments
+                if str(row.get("ticker") or "").strip()
+            }
+        ),
+        "scanner_view_id": "",
+        "enabled": True,
     }
 
 
@@ -336,6 +482,9 @@ def _default_draft() -> dict[str, Any]:
             capability_modes={"profit-pocket": "confirm", "exit-watch-reenter": "confirm", "confirmed-pullback-add": "confirm"},
         ),
     ]
+    system_profiles[0]["protected"] = True
+    profile_templates = deepcopy(system_profiles[1:])
+    system_profiles = system_profiles[:1]
     source_assignments = list_strategy_assignments(active_only=True)
     account_ids = list(dict.fromkeys(str(row["account_id"]) for row in source_assignments)) or ["replay"]
     account_keys = {account_id: _account_key(account_id, index) for index, account_id in enumerate(account_ids)}
@@ -385,23 +534,31 @@ def _default_draft() -> dict[str, Any]:
     return {
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "strategy": {
+            "default_profile_id": "long-momentum-balanced",
             "definitions": [{
                 "strategy_id": definition["strategy_id"],
                 "revision": int(definition["revision"]),
                 "name": definition["name"],
                 "automatic": bool(definition.get("automatic", True)),
+                "direction": str(dict(definition.get("config") or {}).get("direction") or ""),
             }],
             "capability_catalog": capability_catalog(),
             "input_catalog": strategy_input_catalog(),
+            "profile_templates": profile_templates,
             "profiles": system_profiles,
         },
         "assignments": {
+            "universes": [_default_universe(runtime_assignments)],
             "deployments": [{
                 "deployment_id": "balanced-replay",
                 "name": "Balanced Replay",
                 "description": "Approved balanced strategy prepared for historical simulation.",
                 "profile_id": "long-momentum-balanced",
                 "oms_profile_id": "adaptive-regular",
+                "universe_id": "configured-watch-universe",
+                "book_id": "default",
+                "selection_priority": 50,
+                "campaign_policy": _default_campaign_policy(),
                 "mandate_ids": [row["mandate_id"] for row in mandates],
                 "enabled": True,
                 "modes": ["replay", "backtest", "backtest_debug"],
@@ -424,6 +581,9 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
     if not profiles:
         raise ValueError("At least one Strategy Profile is required")
     profile_ids = _unique_ids(profiles, "profile_id", "Strategy Profile")
+    default_profile_id = str(strategy.get("default_profile_id") or "")
+    if default_profile_id not in profile_ids:
+        raise ValueError("The protected default Strategy Profile is required")
     for profile in profiles:
         definition = get_strategy_definition(
             str(profile.get("definition_id") or ""),
@@ -431,7 +591,19 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         )
         if not definition.get("enabled", True):
             raise ValueError(f"Strategy definition for {profile.get('name')} is disabled")
-        resolve_long_momentum_parameters(dict(profile.get("parameters") or {}))
+        if str(profile.get("profile_id")) == default_profile_id and not bool(
+            profile.get("protected")
+        ):
+            raise ValueError("The default Strategy Profile must remain protected")
+        lifecycle = dict(profile.get("lifecycle") or {})
+        _validate_strategy_lifecycle(lifecycle)
+        direction = str(dict(definition.get("config") or {}).get("direction") or "")
+        configured_side = str(dict(lifecycle.get("trading_behavior") or {}).get("side") or "")
+        if direction == "long_only" and configured_side != "long":
+            raise ValueError(
+                f"Strategy Profile {profile.get('name')} uses a long-only implementation"
+            )
+        _parameters_with_capabilities(profile)
         for binding in profile.get("capabilities") or []:
             capability_id = str(binding.get("capability_id") or "")
             if capability_id not in catalog:
@@ -466,6 +638,24 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
     if require_runtime_ready and not deployments:
         raise ValueError("At least one Strategy Deployment is required")
     deployment_ids = _unique_ids(deployments, "deployment_id", "Strategy Deployment")
+    universes = list(dict(draft["assignments"]).get("universes") or [])
+    if require_runtime_ready and not universes:
+        raise ValueError("At least one Watch Universe is required")
+    universe_ids = _unique_ids(universes, "universe_id", "Watch Universe")
+    for universe in universes:
+        source = str(universe.get("source") or "")
+        if source not in {
+            "configured_symbols",
+            "scanner_view",
+            "watchlist",
+        }:
+            raise ValueError(
+                f"Watch Universe {universe.get('name')} has an unsupported source"
+            )
+        if require_runtime_ready and source != "configured_symbols":
+            raise ValueError(
+                f"Watch Universe {universe.get('name')} cannot be published until its {source} runtime resolver is available"
+            )
     mandates = list(dict(draft["portfolio"]).get("mandates") or [])
     mandate_ids = _unique_ids(mandates, "mandate_id", "Strategy-account mandate")
     for mandate in mandates:
@@ -483,6 +673,39 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
             raise ValueError(f"Deployment {deployment.get('deployment_id')} references an unknown Strategy Profile")
         if str(deployment.get("oms_profile_id") or "") not in oms_ids:
             raise ValueError(f"Deployment {deployment.get('deployment_id')} references an unknown OMS profile")
+        if str(deployment.get("universe_id") or "") not in universe_ids:
+            raise ValueError(
+                f"Deployment {deployment.get('deployment_id')} references an unknown Watch Universe"
+            )
+        if not str(deployment.get("book_id") or "").strip():
+            raise ValueError(
+                f"Deployment {deployment.get('deployment_id')} requires a portfolio book"
+            )
+        priority = int(deployment.get("selection_priority") or 0)
+        if priority < 0 or priority > 100:
+            raise ValueError("Deployment selection priority must be between 0 and 100")
+        validate_campaign_policy(dict(deployment.get("campaign_policy") or {}))
+        policy = dict(deployment.get("campaign_policy") or {})
+        if require_runtime_ready and str(policy.get("initial_entry_authority") or "") == "automatic":
+            universe = next(
+                row for row in universes
+                if str(row.get("universe_id")) == str(deployment.get("universe_id"))
+            )
+            universe_symbols = {
+                str(value).strip().upper()
+                for value in universe.get("symbols") or []
+                if str(value).strip()
+            }
+            identity_bound_symbols = {
+                str(row.get("ticker") or "").strip().upper()
+                for row in deployment.get("runtime_assignments") or []
+                if str(row.get("ticker") or "").strip() and int(row.get("conid") or 0) > 0
+            }
+            missing_identity = sorted(universe_symbols - identity_bound_symbols)
+            if missing_identity:
+                raise ValueError(
+                    f"Automatic deployment {deployment.get('name')} requires identity-bound assignments for: {', '.join(missing_identity)}"
+                )
         referenced_mandates = [
             row for row in mandates
             if str(row.get("deployment_id")) == str(deployment.get("deployment_id"))
@@ -513,6 +736,21 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
 def merged_assignment_parameters(configuration: dict[str, Any], assignment: dict[str, Any]) -> dict[str, Any]:
     base = deepcopy(dict(configuration["strategy"].get("parameters") or {}))
     _deep_merge(base, dict(assignment.get("parameters") or {}))
+    campaign_policy = dict(configuration.get("campaign_policy") or {})
+    reentry = base.setdefault("reentry", {})
+    if campaign_policy:
+        reentry["maximum_attempts"] = min(
+            int(reentry.get("maximum_attempts") or 0),
+            int(campaign_policy.get("maximum_reentries") or 0),
+        )
+        reentry["cooldown_ms"] = max(
+            int(reentry.get("cooldown_ms") or 0),
+            int(campaign_policy.get("reentry_cooldown_ms") or 0),
+        )
+        reentry["enabled"] = (
+            bool(reentry.get("enabled", True))
+            and str(campaign_policy.get("reentry_authority")) != "disabled"
+        )
     oms = dict(configuration["oms"])
     execution = base.setdefault("execution", {})
     execution.update({
@@ -542,18 +780,86 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         result["schema_version"] = CONFIGURATION_SCHEMA_VERSION
         result["strategy"].setdefault("profiles", [])
         result["strategy"].setdefault("capability_catalog", [])
+        result["strategy"]["default_profile_id"] = str(
+            result["strategy"].get("default_profile_id")
+            or "long-momentum-balanced"
+        )
+        result["strategy"]["profile_templates"] = deepcopy(
+            defaults["strategy"]["profile_templates"]
+        )
+        result["strategy"]["definitions"] = deepcopy(
+            defaults["strategy"]["definitions"]
+        )
         result["strategy"]["input_catalog"] = strategy_input_catalog()
         for profile in result["strategy"]["profiles"]:
             profile["definition_revision"] = STRATEGY_REVISION
-            parameters = dict(profile.get("parameters") or {})
+            parameters = resolve_long_momentum_parameters(
+                dict(profile.get("parameters") or {})
+            )
             if not isinstance(parameters.get("entry_rules"), dict):
                 parameters["entry_rules"] = default_entry_decision_rules(parameters)
             _normalize_entry_rule_sources(parameters["entry_rules"])
             parameters.pop("entry", None)
-            profile["parameters"] = resolve_long_momentum_parameters(parameters)
-        for definition in result["strategy"].get("definitions") or []:
-            if str(definition.get("strategy_id")) == STRATEGY_ID:
-                definition["revision"] = STRATEGY_REVISION
+            lifecycle = deepcopy(
+                dict(profile.get("lifecycle") or _default_strategy_lifecycle(parameters))
+            )
+            legacy_reentry = next(
+                (
+                    row
+                    for row in profile.get("capabilities") or []
+                    if str(row.get("capability_id")) == "exit-watch-reenter"
+                ),
+                None,
+            )
+            if legacy_reentry is not None and not profile.get("lifecycle"):
+                settings = dict(legacy_reentry.get("settings") or {})
+                lifecycle.setdefault("reentry", {}).update(
+                    {
+                        key: value
+                        for key, value in settings.items()
+                        if key
+                        in {
+                            "cooldown_ms",
+                            "maximum_attempts",
+                            "require_new_confirmation",
+                        }
+                    }
+                )
+                lifecycle["reentry"]["enabled"] = bool(
+                    legacy_reentry.get("enabled", True)
+                )
+            initial_entry = dict(lifecycle.get("initial_entry") or {})
+            for stage in initial_entry.values():
+                if isinstance(stage, dict):
+                    _normalize_entry_rule_sources({"stage": stage})
+            profile["lifecycle"] = lifecycle
+            profile["parameters"] = _parameters_without_lifecycle(parameters)
+            profile["protected"] = (
+                str(profile.get("profile_id"))
+                == result["strategy"]["default_profile_id"]
+            )
+            profile["capabilities"] = [
+                row
+                for row in profile.get("capabilities") or []
+                if str(row.get("capability_id")) != "exit-watch-reenter"
+            ]
+        template_ids = {
+            str(row.get("profile_id"))
+            for row in result["strategy"]["profile_templates"]
+        }
+        referenced_profile_ids = {
+            str(row.get("profile_id"))
+            for row in dict(result.get("assignments") or {}).get("deployments") or []
+        }
+        migrated_profiles: list[dict[str, Any]] = []
+        for profile in result["strategy"]["profiles"]:
+            profile_id = str(profile.get("profile_id"))
+            if profile_id in template_ids and profile_id not in referenced_profile_ids:
+                continue
+            if profile_id in template_ids:
+                profile["origin"] = "user"
+            migrated_profiles.append(profile)
+        result["strategy"]["profiles"] = migrated_profiles
         existing_profiles = {
             str(row.get("profile_id"))
             for row in dict(result.get("strategy") or {}).get("profiles") or []
@@ -561,7 +867,8 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         result["strategy"]["profiles"].extend(
             deepcopy(row)
             for row in defaults["strategy"]["profiles"]
-            if str(row["profile_id"]) not in existing_profiles
+            if str(row["profile_id"]) == result["strategy"]["default_profile_id"]
+            and str(row["profile_id"]) not in existing_profiles
         )
         existing_capabilities = {
             str(row.get("capability_id"))
@@ -572,6 +879,29 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             for row in capability_catalog()
             if str(row["capability_id"]) not in existing_capabilities
         )
+        result["strategy"]["capability_catalog"] = [
+            row
+            for row in result["strategy"]["capability_catalog"]
+            if str(row.get("capability_id")) != "exit-watch-reenter"
+        ]
+        result["assignments"].setdefault(
+            "universes",
+            deepcopy(defaults["assignments"]["universes"]),
+        )
+        universe_ids = {
+            str(row.get("universe_id"))
+            for row in result["assignments"]["universes"]
+        }
+        fallback_universe = (
+            next(iter(universe_ids))
+            if universe_ids
+            else "configured-watch-universe"
+        )
+        for deployment in result["assignments"].get("deployments") or []:
+            deployment.setdefault("universe_id", fallback_universe)
+            deployment.setdefault("book_id", "default")
+            deployment.setdefault("selection_priority", 50)
+            deployment.setdefault("campaign_policy", _default_campaign_policy())
         existing_oms = {
             str(row.get("profile_id"))
             for row in dict(result.get("oms") or {}).get("profiles") or []
@@ -631,12 +961,18 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         "minimum_replacement_improvement_pct": 20.0,
     } for key in account_keys]
     base["portfolio"]["mandates"] = mandates
-    base["assignments"] = {"deployments": [{
+    base["assignments"] = {
+        "universes": deepcopy(base["assignments"]["universes"]),
+        "deployments": [{
         "deployment_id": "migrated-deployment",
         "name": "Migrated deployment",
         "description": "Runtime deployment migrated from the original assignment configuration.",
         "profile_id": profile["profile_id"],
         "oms_profile_id": "migrated-oms",
+        "universe_id": "configured-watch-universe",
+        "book_id": "default",
+        "selection_priority": 50,
+        "campaign_policy": _default_campaign_policy(),
         "mandate_ids": [row["mandate_id"] for row in mandates],
         "enabled": True,
         "modes": ["replay", "backtest", "backtest_debug"],
@@ -655,6 +991,7 @@ def _strategy_profile(
     *,
     origin: str,
     capability_modes: dict[str, str] | None = None,
+    protected: bool = False,
 ) -> dict[str, Any]:
     modes = capability_modes or {}
     capabilities = []
@@ -677,8 +1014,10 @@ def _strategy_profile(
         "definition_revision": STRATEGY_REVISION,
         "origin": origin,
         "editable": True,
+        "protected": protected,
         "enabled": True,
-        "parameters": deepcopy(parameters),
+        "lifecycle": _default_strategy_lifecycle(parameters),
+        "parameters": _parameters_without_lifecycle(parameters),
         "capabilities": capabilities,
     }
 
@@ -687,6 +1026,63 @@ def _normalize_account_binding(binding: dict[str, Any]) -> None:
     account_key = str(binding.get("account_key") or "")
     fallback = "Replay account" if account_key == "replay" else account_key or "Trading account"
     binding["name"] = str(binding.get("name") or binding.get("display_name") or fallback)
+
+
+def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
+    required = {"trading_behavior", "initial_entry", "reentry", "exit"}
+    missing = required - set(lifecycle)
+    if missing:
+        raise ValueError(
+            f"Strategy lifecycle is missing: {', '.join(sorted(missing))}"
+        )
+    behavior = dict(lifecycle["trading_behavior"])
+    if str(behavior.get("side") or "") not in {"long", "short", "both"}:
+        raise ValueError("Strategy side must be long, short, or both")
+    sessions = set(behavior.get("eligible_sessions") or [])
+    if not sessions or not sessions <= {"premarket", "regular", "after_hours"}:
+        raise ValueError("Strategy eligible sessions are unsupported")
+    initial_entry = dict(lifecycle["initial_entry"])
+    runtime_rules = {
+        "trigger": deepcopy(dict(initial_entry.get("opportunity") or {})),
+        "confirmation": deepcopy(dict(initial_entry.get("confirmation") or {})),
+        "veto": deepcopy(dict(initial_entry.get("blockers") or {})),
+    }
+    parameters = default_long_momentum_parameters()
+    parameters["entry_rules"] = runtime_rules
+    resolve_long_momentum_parameters(parameters)
+    reentry = dict(lifecycle["reentry"])
+    if int(reentry.get("cooldown_ms") or 0) < 0:
+        raise ValueError("Strategy reentry cooldown cannot be negative")
+    if int(reentry.get("maximum_attempts") or 0) < 0:
+        raise ValueError("Strategy maximum reentries cannot be negative")
+    routes = list(dict(lifecycle["exit"]).get("routes") or [])
+    route_ids = _unique_ids(routes, "route_id", "Strategy exit route")
+    if "protective-stop" not in route_ids:
+        raise ValueError("Strategy lifecycle requires the protective-stop exit route")
+    protective = next(
+        row for row in routes if str(row.get("route_id")) == "protective-stop"
+    )
+    if (
+        not bool(protective.get("enabled"))
+        or not bool(protective.get("protected"))
+        or str(protective.get("mechanism")) != "protective_stop"
+        or int(protective.get("priority") or 0) != 100
+        or str(protective.get("action")) != "close"
+    ):
+        raise ValueError("The protective-stop exit route cannot be disabled or replaced")
+    for route in routes:
+        if str(route.get("category") or "") not in {
+            "protective",
+            "strategic",
+            "profit",
+            "emergency",
+        }:
+            raise ValueError(f"Exit route {route.get('name')} has an unsupported category")
+        if str(route.get("action") or "") not in {"close", "reduce"}:
+            raise ValueError(f"Exit route {route.get('name')} has an unsupported action")
+        priority = int(route.get("priority") or 0)
+        if priority < 0 or priority > 100:
+            raise ValueError("Exit route priority must be between 0 and 100")
 
 
 def _normalize_entry_rule_sources(entry_rules: dict[str, Any]) -> None:
@@ -737,19 +1133,41 @@ def _default_oms_profile() -> dict[str, Any]:
 
 def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
     parameters = deepcopy(dict(profile.get("parameters") or {}))
+    lifecycle = dict(profile.get("lifecycle") or {})
+    initial_entry = dict(lifecycle.get("initial_entry") or {})
+    parameters["entry_rules"] = {
+        "trigger": deepcopy(dict(initial_entry.get("opportunity") or {})),
+        "confirmation": deepcopy(dict(initial_entry.get("confirmation") or {})),
+        "veto": deepcopy(dict(initial_entry.get("blockers") or {})),
+    }
+    parameters["reentry"] = deepcopy(dict(lifecycle.get("reentry") or {}))
+    exit_routes = list(dict(lifecycle.get("exit") or {}).get("routes") or [])
+    parameters["exit_routes"] = deepcopy(exit_routes)
+    failed_breakout = next(
+        (row for row in exit_routes if row.get("mechanism") == "failed_breakout"),
+        {},
+    )
+    bearish = next(
+        (row for row in exit_routes if row.get("mechanism") == "bearish_qmd_macd"),
+        {},
+    )
+    bearish_settings = dict(bearish.get("settings") or {})
+    parameters["final_exit"] = {
+        "exit_on_failed_breakout": bool(failed_breakout.get("enabled", True)),
+        "qmd_score": float(bearish_settings.get("qmd_score") or -0.35),
+        "qmd_confidence": float(
+            bearish_settings.get("qmd_confidence") or 0.55
+        ),
+        "require_macd_bearish": bool(
+            bearish_settings.get("require_macd_bearish", True)
+        ),
+        "bearish_momentum_enabled": bool(bearish.get("enabled", True)),
+    }
     bindings = {str(row["capability_id"]): row for row in profile.get("capabilities") or [] if row.get("enabled", True)}
     pocket = bindings.get("profit-pocket")
     if pocket:
         _deep_merge(parameters.setdefault("profit_pocket", {}), dict(pocket.get("settings") or {}))
         parameters["profit_pocket"]["enabled"] = True
-    reentry = bindings.get("exit-watch-reenter")
-    if reentry:
-        settings = dict(reentry.get("settings") or {})
-        parameters.setdefault("reentry", {}).update({
-            key: value for key, value in settings.items()
-            if key in {"cooldown_ms", "maximum_attempts", "require_new_confirmation"}
-        })
-        parameters["reentry"]["enabled"] = True
     add = bindings.get("confirmed-pullback-add")
     if add:
         settings = dict(add.get("settings") or {})

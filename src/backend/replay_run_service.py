@@ -50,6 +50,7 @@ from src.trading_runtime.strategy_engine import (
     strategy_observation_source_values,
 )
 from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
+from src.trading_runtime.strategy_campaign import campaign_state
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -765,6 +766,10 @@ class ReplayRunController:
                 base,
                 position_quantity=float(position.quantity if position else 0),
                 average_price=float(position.avgPrice if position else 0),
+                manual_entry_request=bool(
+                    assignment.state.get("manual_entry_requested")
+                ),
+                force_entry=bool(assignment.state.get("force_entry_requested")),
             )
             await self._runtime.process_account_strategy_observation(
                 observation,
@@ -870,10 +875,24 @@ class ReplayRunController:
             if self._strategy is not None
             else []
         )
+        configuration = self.definition.configuration_revision["payload"]
+        universe_tickers = [
+            _ticker(symbol)
+            for universe in configuration.get("universes") or []
+            if bool(universe.get("enabled", True))
+            and str(universe.get("source") or "") == "configured_symbols"
+            for symbol in universe.get("symbols") or []
+            if str(symbol or "").strip()
+        ]
+        canvas_tickers = _canvas_profile_tickers(
+            dict(dict(configuration.get("canvas") or {}).get("profile") or {})
+        )
         tickers = tuple(
             dict.fromkeys(
                 [
                     *assignment_tickers,
+                    *universe_tickers,
+                    *sorted(canvas_tickers),
                     *(_ticker(value) for value in self.definition.tickers),
                 ]
             )
@@ -1036,9 +1055,18 @@ def replay_preflight(
     assignment_tickers = {
         str(row.get("ticker") or "").strip().upper() for row in assignments
     }
+    universe_tickers = {
+        _ticker(symbol)
+        for universe in configuration.get("universes") or []
+        if bool(universe.get("enabled", True))
+        and str(universe.get("source") or "") == "configured_symbols"
+        for symbol in universe.get("symbols") or []
+        if str(symbol or "").strip()
+    }
     resolved_tickers = sorted(
         {
             *assignment_tickers,
+            *universe_tickers,
             *configured_canvas_tickers,
             *(_ticker(value) for value in tickers),
         }
@@ -1269,18 +1297,72 @@ def _assignment_from_payload(
     source: str,
     configuration: dict[str, Any],
 ) -> StrategyAssignment:
-    strategy = dict(configuration["strategy"])
+    strategy = {
+        **dict(configuration["strategy"]),
+        "strategy_id": str(
+            payload.get("strategy_id")
+            or dict(configuration["strategy"]).get("strategy_id")
+            or ""
+        ),
+        "revision": int(
+            payload.get("strategy_revision")
+            or dict(configuration["strategy"]).get("revision")
+            or 0
+        ),
+        "profile_id": str(
+            payload.get("profile_id")
+            or dict(configuration["strategy"]).get("profile_id")
+            or ""
+        ),
+    }
+    deployment = {
+        **dict(configuration.get("deployment") or {}),
+        "deployment_id": str(
+            payload.get("deployment_id")
+            or dict(configuration.get("deployment") or {}).get("deployment_id")
+            or ""
+        ),
+        "book_id": str(
+            payload.get("book_id")
+            or dict(configuration.get("deployment") or {}).get("book_id")
+            or "default"
+        ),
+        "universe_id": str(
+            payload.get("universe_id")
+            or dict(configuration.get("deployment") or {}).get("universe_id")
+            or ""
+        ),
+    }
+    ticker = _ticker(payload["ticker"])
+    campaign_id = str(
+        payload.get("campaign_id")
+        or f"{deployment.get('deployment_id') or 'deployment'}:{ticker}"
+    )
+    state = campaign_state(
+        campaign_id=f"replay:{campaign_id}",
+        deployment_id=str(deployment.get("deployment_id") or ""),
+        profile_id=str(strategy.get("profile_id") or ""),
+        book_id=str(deployment.get("book_id") or "default"),
+        universe_id=str(deployment.get("universe_id") or ""),
+    )
+    state["campaign_policy"] = deepcopy(
+        dict(payload.get("campaign_policy") or configuration.get("campaign_policy") or {})
+    )
     return StrategyAssignment(
         assignment_id=f"replay-{payload['assignment_id']}",
         strategy_id=str(strategy["strategy_id"]),
         strategy_revision=int(strategy["revision"]),
         account_id=account_id,
-        ticker=_ticker(payload["ticker"]),
+        ticker=ticker,
         conid=int(payload["conid"]),
         status=AssignmentStatus(str(payload["status"])),
         permissions=StrategyPermissions(**dict(payload.get("permissions") or {})),
-        parameters=merged_assignment_parameters(configuration, payload),
-        state={},
+        parameters=(
+            dict(payload["resolved_parameters"])
+            if isinstance(payload.get("resolved_parameters"), dict)
+            else merged_assignment_parameters(configuration, payload)
+        ),
+        state=state,
         source=source,
         created_at=_aware_datetime(payload.get("created_at")),
         updated_at=_aware_datetime(payload.get("updated_at")),

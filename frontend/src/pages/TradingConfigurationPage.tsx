@@ -5,6 +5,7 @@ import {
   BriefcaseBusiness,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   CircleHelp,
   Clipboard,
@@ -75,6 +76,8 @@ type StrategyProfile = {
   enabled: boolean;
   name: string;
   origin: "system" | "user";
+  protected: boolean;
+  lifecycle: StrategyLifecycle;
   parameters: ParameterMap;
   profile_id: string;
   revision: number;
@@ -119,15 +122,48 @@ type RuleStage = {
 };
 
 type EntryRules = {
+  blockers: RuleStage;
   confirmation: RuleStage;
-  trigger: RuleStage;
-  veto: RuleStage;
+  opportunity: RuleStage;
+};
+
+type ExitRoute = {
+  action: "close" | "reduce";
+  category: "protective" | "strategic" | "profit" | "emergency";
+  enabled: boolean;
+  mechanism: string;
+  name: string;
+  priority: number;
+  protected: boolean;
+  route_id: string;
+  settings: Record<string, Primitive>;
+  summary: string;
+};
+
+type StrategyLifecycle = {
+  trading_behavior: {
+    adopt_manual_positions: boolean;
+    eligible_sessions: string[];
+    evaluation_trigger: string;
+    side: "long" | "short" | "both";
+  };
+  initial_entry: EntryRules;
+  reentry: {
+    cooldown_ms: number;
+    enabled: boolean;
+    maximum_attempts: number;
+    require_new_confirmation: boolean;
+    reuse_initial_entry: boolean;
+  };
+  exit: { routes: ExitRoute[] };
 };
 
 type StrategySection = {
   capability_catalog: CapabilityDefinition[];
-  definitions: Array<{ automatic: boolean; name: string; revision: number; strategy_id: string }>;
+  default_profile_id: string;
+  definitions: Array<{ automatic: boolean; direction: string; name: string; revision: number; strategy_id: string }>;
   input_catalog: StrategyInput[];
+  profile_templates: StrategyProfile[];
   profiles: StrategyProfile[];
 };
 
@@ -142,6 +178,18 @@ type RuntimeAssignment = {
 };
 
 type Deployment = {
+  book_id: string;
+  campaign_policy: {
+    exit_authority: string;
+    initial_entry_authority: string;
+    maximum_initial_watch_ms: number;
+    maximum_reentries: number;
+    protective_exit_authority: "automatic";
+    reentry_authority: string;
+    reentry_cooldown_ms: number;
+    retain_ticker_while_paused: boolean;
+    session_end_behavior: string;
+  };
   deployment_id: string;
   description: string;
   enabled: boolean;
@@ -151,9 +199,21 @@ type Deployment = {
   oms_profile_id: string;
   profile_id: string;
   runtime_assignments: RuntimeAssignment[];
+  selection_priority: number;
+  universe_id: string;
 };
 
-type AssignmentSection = { deployments: Deployment[] };
+type WatchUniverse = {
+  description: string;
+  enabled: boolean;
+  name: string;
+  scanner_view_id: string;
+  source: "configured_symbols" | "scanner_view" | "watchlist";
+  symbols: string[];
+  universe_id: string;
+};
+
+type AssignmentSection = { deployments: Deployment[]; universes: WatchUniverse[] };
 
 type PortfolioPolicy = Record<string, Primitive | string[]>;
 type Mandate = {
@@ -272,8 +332,6 @@ const FREQUENT_PARAMETERS = [
   field("sizing.request_value", "Request value", "Meaning depends on Capital request: shares for fixed quantity and a fraction for mandate or risk sizing.", "number", undefined, "value", 0.01),
   field("sizing.add_fraction", "Add size", "Fraction of the initial request used for an approved add.", "number", undefined, "fraction", 0.05),
   field("sizing.maximum_position_quantity", "Position ceiling", "Hard strategy-level quantity ceiling before Portfolio applies stricter account limits.", "number", undefined, "shares", 1),
-  field("profit_pocket.minimum_gain_pct", "Profit pocket gain", "Minimum open gain before profit-pocket logic can act.", "number", undefined, "%", 0.05),
-  field("reentry.cooldown_ms", "Re-entry cooldown", "Minimum time after an exit before re-entry becomes eligible.", "number", undefined, "ms", 100),
 ] as const;
 
 const LEGACY_ENTRY_LOGIC_PATHS = new Set([
@@ -412,7 +470,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         />
       ) : draft ? (
         <>
-          {section === "strategy" ? <StrategyStudio section={draft.strategy} onChange={(value) => updateDraft("strategy", value)} /> : null}
+          {section === "strategy" ? <StrategyStudio draft={draft} section={draft.strategy} onChange={(value) => updateDraft("strategy", value)} /> : null}
           {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
           {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
           {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
@@ -450,9 +508,10 @@ function ConfigurationJourney({ active, draft }: { active: TradingConfigurationS
   );
 }
 
-function StrategyStudio({ onChange, section }: { onChange: (value: StrategySection) => void; section: StrategySection }) {
+function StrategyStudio({ draft, onChange, section }: { draft: Draft; onChange: (value: StrategySection) => void; section: StrategySection }) {
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
   const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
+  const profileInUse = draft.assignments.deployments.some((row) => row.profile_id === selected?.profile_id);
   useEffect(() => {
     if (!section.profiles.some((row) => row.profile_id === selectedId)) setSelectedId(section.profiles[0]?.profile_id ?? "");
   }, [section.profiles, selectedId]);
@@ -464,21 +523,29 @@ function StrategyStudio({ onChange, section }: { onChange: (value: StrategySecti
 
   function cloneProfile() {
     const id = uniqueId(`${selected.profile_id}-copy`, section.profiles.map((row) => row.profile_id));
-    const next = { ...deepClone(selected), profile_id: id, name: `${selected.name} copy`, origin: "user" as const, revision: 1 };
+    const next = { ...deepClone(selected), profile_id: id, name: `${selected.name} copy`, origin: "user" as const, protected: false, revision: 1 };
     onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(id);
   }
 
-  function createProfile() {
-    const source = section.profiles[0];
+  function createProfile(template?: StrategyProfile) {
+    const source = template ?? section.profiles[0];
     const id = uniqueId("new-strategy-profile", section.profiles.map((row) => row.profile_id));
-    const next = { ...deepClone(source), profile_id: id, name: "New Strategy Profile", description: "Describe when and how this configured strategy should trade.", origin: "user" as const, revision: 1 };
+    const next = {
+      ...deepClone(source),
+      profile_id: id,
+      name: template ? template.name : "New Strategy Profile",
+      description: template ? template.description : "Describe when and how this configured strategy should trade.",
+      origin: "user" as const,
+      protected: false,
+      revision: 1,
+    };
     onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(id);
   }
 
   function removeProfile() {
-    if (section.profiles.length <= 1) return;
+    if (selected.protected || selected.profile_id === section.default_profile_id || profileInUse || section.profiles.length <= 1) return;
     const remaining = section.profiles.filter((row) => row.profile_id !== selected.profile_id);
     onChange({ ...section, profiles: remaining });
     setSelectedId(remaining[0]?.profile_id ?? "");
@@ -488,23 +555,33 @@ function StrategyStudio({ onChange, section }: { onChange: (value: StrategySecti
     !FREQUENT_PARAMETERS.some((fieldDefinition) => fieldDefinition.path === row.path)
     && !LEGACY_ENTRY_LOGIC_PATHS.has(row.path)
   ));
-  const entryRules = selected.parameters.entry_rules as EntryRules;
+  const entryRules = selected.lifecycle.initial_entry;
   return (
     <div className="configuration-workbench">
       <aside className="configuration-library">
         <header>
           <div><span>Strategy Profiles</span><strong>{section.profiles.length} configured</strong></div>
-          <button aria-label="Create Strategy Profile" onClick={createProfile} title="Create Strategy Profile" type="button"><Plus size={15} /></button>
+          <button aria-label="Create Strategy Profile" onClick={() => createProfile()} title="Create Strategy Profile" type="button"><Plus size={15} /></button>
         </header>
         <p>System profiles are safe starting points. They remain editable and can be cloned without changing the code definition.</p>
         <div>
           {section.profiles.map((profile) => (
             <button className={profile.profile_id === selected.profile_id ? "active" : ""} key={profile.profile_id} onClick={() => setSelectedId(profile.profile_id)} type="button">
-              <span><strong>{profile.name}</strong><small>{profile.origin} · v{profile.revision}</small></span>
+              <span><strong>{profile.name}</strong><small>{profile.protected ? "Protected default" : profile.origin} · v{profile.revision}</small></span>
               <ChevronRight size={14} />
             </button>
           ))}
         </div>
+        {section.profile_templates.length ? (
+          <section className="configuration-template-picker">
+            <span>System templates</span>
+            {section.profile_templates.map((template) => (
+              <button key={template.profile_id} onClick={() => createProfile(template)} type="button">
+                <strong>{template.name}</strong><small>Create editable profile</small>
+              </button>
+            ))}
+          </section>
+        ) : null}
       </aside>
 
       <main className="configuration-detail">
@@ -516,71 +593,76 @@ function StrategyStudio({ onChange, section }: { onChange: (value: StrategySecti
           </div>
           <div className="configuration-heading-actions">
             <button className="button compact" onClick={cloneProfile} type="button"><Clipboard size={14} /> Clone</button>
-            <button aria-label="Delete Strategy Profile" className="button compact danger" disabled={section.profiles.length <= 1} onClick={removeProfile} title="Delete profile" type="button"><Trash2 size={14} /></button>
+            <button
+              aria-label="Delete Strategy Profile"
+              className="button compact danger"
+              disabled={selected.protected || selected.profile_id === section.default_profile_id || profileInUse || section.profiles.length <= 1}
+              onClick={removeProfile}
+              title={selected.protected ? "The protected default profile cannot be removed" : profileInUse ? "Remove or change the referencing deployment first" : "Delete profile"}
+              type="button"
+            ><Trash2 size={14} /></button>
           </div>
         </section>
 
         <GuideCallout icon={<Sparkles size={17} />} title="Tune behavior first">
-          These values are most likely to change between experiments. Portfolio limits and OMS mechanics are configured separately so a strategy cannot silently expand account risk or broker authority.
+          A Strategy Profile defines reusable trading logic. Its deployment decides which universe it watches, who may act, and when the resulting ticker campaign stops.
         </GuideCallout>
 
-        <ConfigGroup summary="Build entry logic from explicit inputs. Every condition records its provider, source field, parameter, timeframe, comparison, and Boolean relationship." title="Decision logic & data sources">
+        <LifecyclePanel
+          defaultOpen
+          eyebrow="General configuration"
+          summary={`${readableLabel(selected.lifecycle.trading_behavior.side)} side · ${selected.lifecycle.trading_behavior.eligible_sessions.map(readableLabel).join(", ")}`}
+          title="Trading Behavior"
+        >
+          <TradingBehaviorEditor
+            definition={section.definitions.find((row) => row.strategy_id === selected.definition_id)}
+            profile={selected}
+            onChange={replaceProfile}
+          />
+        </LifecyclePanel>
+
+        <LifecyclePanel
+          defaultOpen
+          eyebrow="Phase 1"
+          summary={`${entryRules.opportunity.groups.length} opportunity · ${entryRules.confirmation.groups.length} confirmation · ${entryRules.blockers.groups.length} blocker rule sets`}
+          title="Initial Entry"
+        >
           <DecisionRulesEditor
             catalog={section.input_catalog}
             rules={entryRules}
             onChange={(value) => replaceProfile({
               ...selected,
-              parameters: { ...selected.parameters, entry_rules: value },
+              lifecycle: {
+                ...selected.lifecycle,
+                initial_entry: value,
+              },
             })}
           />
-        </ConfigGroup>
+        </LifecyclePanel>
 
-        <ConfigGroup summary="Sizing, profit-taking, and re-entry controls used most often during strategy iteration." title="Trading behavior">
-          <div className="configuration-field-grid">
-            {FREQUENT_PARAMETERS.map((definition) => (
-              <ParameterField
-                definition={definition}
-                key={definition.path}
-                value={getPath(selected.parameters, definition.path) as Primitive}
-                onChange={(value) => replaceProfile({ ...selected, parameters: setPath(selected.parameters, definition.path, value) })}
-              />
-            ))}
-          </div>
-        </ConfigGroup>
+        <LifecyclePanel
+          eyebrow="Phase 2"
+          summary={selected.lifecycle.reentry.enabled ? `Up to ${selected.lifecycle.reentry.maximum_attempts} reentries · ${selected.lifecycle.reentry.cooldown_ms} ms cooldown` : "Reentry disabled"}
+          title="Reentry"
+        >
+          <ReentryEditor profile={selected} onChange={replaceProfile} />
+        </LifecyclePanel>
 
-        <ConfigGroup summary="Attach code-defined functions, then configure their system defaults for this Strategy Profile." title="Capabilities">
-          <div className="capability-grid">
-            {section.capability_catalog.map((definition) => {
-              const binding = selected.capabilities.find((row) => row.capability_id === definition.capability_id);
-              if (!binding) return null;
-              return (
-                <article className="capability-card" data-enabled={binding.enabled ? "true" : "false"} key={definition.capability_id}>
-                  <header>
-                    <div><span>{definition.category.replaceAll("_", " ")}</span><strong>{definition.name}</strong></div>
-                    <label className="configuration-switch"><input checked={binding.enabled} onChange={(event) => replaceProfile(updateCapability(selected, binding.capability_id, { ...binding, enabled: event.target.checked }))} type="checkbox" /><span /></label>
-                  </header>
-                  <p>{definition.summary}</p>
-                  {definition.order_entry_action ? <em><BadgeCheck size={12} /> Appears in Order Entry</em> : null}
-                  {binding.enabled ? (
-                    <div className="capability-fields">
-                      {definition.parameters.map((parameter) => (
-                        <CapabilityField
-                          definition={parameter}
-                          key={parameter.key}
-                          value={binding.settings[parameter.key]}
-                          onChange={(value) => replaceProfile(updateCapability(selected, binding.capability_id, {
-                            ...binding,
-                            settings: { ...binding.settings, [parameter.key]: value },
-                          }))}
-                        />
-                      ))}
-                    </div>
-                  ) : null}
-                </article>
-              );
-            })}
-          </div>
-        </ConfigGroup>
+        <LifecyclePanel
+          eyebrow="Phase 3"
+          summary={`${selected.lifecycle.exit.routes.filter((row) => row.enabled).length} active routes · protective stop always enabled`}
+          title="Exit"
+        >
+          <ExitRoutesEditor profile={selected} onChange={replaceProfile} />
+        </LifecyclePanel>
+
+        <LifecyclePanel
+          eyebrow="Reusable functions"
+          summary={`${selected.capabilities.filter((row) => row.enabled).length} enabled capabilities`}
+          title="Capabilities"
+        >
+          <CapabilitiesEditor catalog={section.capability_catalog} profile={selected} onChange={replaceProfile} />
+        </LifecyclePanel>
 
         <details className="configuration-advanced">
           <summary><span><strong>Advanced strategy parameters</strong><small>Less frequently changed signal, protection, and implementation inputs</small></span><ChevronRight size={15} /></summary>
@@ -600,18 +682,232 @@ function StrategyStudio({ onChange, section }: { onChange: (value: StrategySecti
   );
 }
 
+function LifecyclePanel({ children, defaultOpen = false, eyebrow, summary, title }: {
+  children: ReactNode;
+  defaultOpen?: boolean;
+  eyebrow: string;
+  summary: string;
+  title: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const marker = {
+    "Trading Behavior": "TB",
+    "Initial Entry": "01",
+    "Reentry": "02",
+    "Exit": "03",
+    "Capabilities": "FX",
+  }[title] ?? "•";
+  return (
+    <details className="strategy-lifecycle-panel" onToggle={(event) => setOpen(event.currentTarget.open)} open={open}>
+      <summary>
+        <span aria-hidden="true" className="strategy-lifecycle-index">{marker}</span>
+        <span>
+          <small>{eyebrow}</small>
+          <strong>{title}</strong>
+          <em>{summary}</em>
+        </span>
+        <ChevronDown aria-hidden="true" size={18} />
+      </summary>
+      <div className="strategy-lifecycle-content">{children}</div>
+    </details>
+  );
+}
+
+function TradingBehaviorEditor({ definition, onChange, profile }: {
+  definition?: StrategySection["definitions"][number];
+  onChange: (value: StrategyProfile) => void;
+  profile: StrategyProfile;
+}) {
+  const behavior = profile.lifecycle.trading_behavior;
+  const supportedSides = definition?.direction === "long_only" ? ["long"] : ["long", "short", "both"];
+  const update = (next: StrategyLifecycle["trading_behavior"]) => onChange({
+    ...profile,
+    lifecycle: { ...profile.lifecycle, trading_behavior: next },
+  });
+  const sessions = ["premarket", "regular", "after_hours"];
+  return (
+    <>
+      <p className="configuration-section-guide">These settings describe the strategy itself. Account autonomy, concrete cash allocation, and broker execution remain in Deployment, Portfolio, and OMS.</p>
+      <div className="configuration-field-grid">
+        <SelectField
+          help={supportedSides.length === 1 ? "This registered strategy implementation supports long campaigns only." : "Direction this strategy implementation may request."}
+          label="Side"
+          onChange={(side) => update({ ...behavior, side: side as StrategyLifecycle["trading_behavior"]["side"] })}
+          options={supportedSides.map((value) => ({ label: readableLabel(value), value }))}
+          value={behavior.side}
+        />
+        <SelectField
+          help="Causal event that causes this strategy to re-evaluate its current ticker campaigns."
+          label="Evaluation trigger"
+          onChange={(evaluation_trigger) => update({ ...behavior, evaluation_trigger })}
+          options={["indicator_update", "signal_event", "bar_close"].map((value) => ({ label: readableLabel(value), value }))}
+          value={behavior.evaluation_trigger}
+        />
+        <BooleanField
+          help="Allow a manually opened position to be adopted by a campaign using this Strategy Profile."
+          label="Adopt manual positions"
+          onChange={(adopt_manual_positions) => update({ ...behavior, adopt_manual_positions })}
+          value={behavior.adopt_manual_positions}
+        />
+      </div>
+      <fieldset className="configuration-choice-set">
+        <legend>Eligible sessions <CircleHelp size={13} /></legend>
+        <p>The strategy evaluates entries only during selected sessions. Protective exits remain active whenever a position exists.</p>
+        <div>{sessions.map((session) => (
+          <label key={session}>
+            <input
+              checked={behavior.eligible_sessions.includes(session)}
+              onChange={(event) => update({
+                ...behavior,
+                eligible_sessions: event.target.checked
+                  ? [...behavior.eligible_sessions, session]
+                  : behavior.eligible_sessions.filter((value) => value !== session),
+              })}
+              type="checkbox"
+            />
+            {readableLabel(session)}
+          </label>
+        ))}</div>
+      </fieldset>
+      <div className="configuration-field-grid">
+        {FREQUENT_PARAMETERS.map((definition) => (
+          <ParameterField
+            definition={definition}
+            key={definition.path}
+            value={getPath(profile.parameters, definition.path) as Primitive}
+            onChange={(value) => onChange({ ...profile, parameters: setPath(profile.parameters, definition.path, value) })}
+          />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function ReentryEditor({ onChange, profile }: {
+  onChange: (value: StrategyProfile) => void;
+  profile: StrategyProfile;
+}) {
+  const reentry = profile.lifecycle.reentry;
+  const update = (next: StrategyLifecycle["reentry"]) => onChange({
+    ...profile,
+    lifecycle: { ...profile.lifecycle, reentry: next },
+  });
+  return (
+    <>
+      <p className="configuration-section-guide">A reentry occurs only after a full exit while the same Strategy Campaign retains ticker ownership. Adding to an open position is a capability, not a reentry.</p>
+      <div className="configuration-field-grid">
+        <BooleanField help="Permit another flat-to-open transition within the same ticker campaign." label="Enable reentry" onChange={(enabled) => update({ ...reentry, enabled })} value={reentry.enabled} />
+        <BooleanField help="Evaluate the same explicit opportunity, confirmation, and blocker rules used for the first entry." label="Reuse initial-entry rules" onChange={(reuse_initial_entry) => update({ ...reentry, reuse_initial_entry })} value={reentry.reuse_initial_entry} />
+        <BooleanField help="Evidence used for the previous entry cannot be reused without a newer causal update." label="Require new confirmation" onChange={(require_new_confirmation) => update({ ...reentry, require_new_confirmation })} value={reentry.require_new_confirmation} />
+        <NumberField help="Minimum time after a confirmed full exit before reentry becomes eligible." label="Cooldown" minimum={0} onChange={(cooldown_ms) => update({ ...reentry, cooldown_ms })} step={100} unit="ms" value={reentry.cooldown_ms} />
+        <NumberField help="Maximum reentries during one ticker campaign. Zero allows only the initial entry." label="Maximum attempts" minimum={0} onChange={(maximum_attempts) => update({ ...reentry, maximum_attempts })} step={1} unit="entries" value={reentry.maximum_attempts} />
+      </div>
+    </>
+  );
+}
+
+function ExitRoutesEditor({ onChange, profile }: {
+  onChange: (value: StrategyProfile) => void;
+  profile: StrategyProfile;
+}) {
+  const routes = profile.lifecycle.exit.routes;
+  function replace(routeId: string, next: ExitRoute) {
+    onChange({
+      ...profile,
+      lifecycle: {
+        ...profile.lifecycle,
+        exit: { routes: routes.map((row) => row.route_id === routeId ? next : row) },
+      },
+    });
+  }
+  return (
+    <div className="strategy-exit-routes">
+      <p className="configuration-section-guide">Exit routes are evaluated by priority. A full exit may continue into Reentry; campaign termination is configured on the Deployment. Protective exits cannot be disabled or delayed.</p>
+      {routes.map((route) => (
+        <article data-enabled={route.enabled ? "true" : "false"} key={route.route_id}>
+          <header>
+            <div><span>{readableLabel(route.category)} · priority {route.priority}</span><strong>{route.name}</strong><p>{route.summary}</p></div>
+            <label className="configuration-switch" title={route.protected ? "Required safety route" : "Enable exit route"}>
+              <input checked={route.enabled} disabled={route.protected} onChange={(event) => replace(route.route_id, { ...route, enabled: event.target.checked })} type="checkbox" />
+              <span />
+            </label>
+          </header>
+          <div className="configuration-field-grid">
+            {route.protected ? (
+              <div className="configuration-fixed-value"><span>Priority</span><strong>100 · First</strong><small>Fixed safety authority</small></div>
+            ) : <NumberField help="Higher-priority routes are evaluated first when several exit conditions occur together." label="Priority" maximum={99} minimum={0} onChange={(priority) => replace(route.route_id, { ...route, priority })} step={1} unit="0–99" value={route.priority} />}
+            {route.protected ? (
+              <div className="configuration-fixed-value"><span>Action</span><strong>Close position</strong><small>Cannot be weakened</small></div>
+            ) : <SelectField help="Intent emitted when this route passes." label="Action" onChange={(action) => replace(route.route_id, { ...route, action: action as ExitRoute["action"] })} options={[{ label: "Close position", value: "close" }, { label: "Reduce position", value: "reduce" }]} value={route.action} />}
+            {route.mechanism === "bearish_qmd_macd" ? (
+              <>
+                <NumberField help="Signed QMD score at or below which adverse momentum becomes eligible." label="QMD score" maximum={1} minimum={-1} onChange={(qmd_score) => replace(route.route_id, { ...route, settings: { ...route.settings, qmd_score } })} step={0.05} unit="score" value={Number(route.settings.qmd_score ?? -0.35)} />
+                <NumberField help="Minimum confidence required for the adverse QMD score." label="QMD confidence" maximum={1} minimum={0} onChange={(qmd_confidence) => replace(route.route_id, { ...route, settings: { ...route.settings, qmd_confidence } })} step={0.05} unit="score" value={Number(route.settings.qmd_confidence ?? 0.55)} />
+                <BooleanField help="Require MACD line and histogram to confirm the adverse QMD evidence." label="Require bearish MACD" onChange={(require_macd_bearish) => replace(route.route_id, { ...route, settings: { ...route.settings, require_macd_bearish } })} value={Boolean(route.settings.require_macd_bearish)} />
+              </>
+            ) : null}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function CapabilitiesEditor({ catalog, onChange, profile }: {
+  catalog: CapabilityDefinition[];
+  onChange: (value: StrategyProfile) => void;
+  profile: StrategyProfile;
+}) {
+  return (
+    <>
+      <p className="configuration-section-guide">Capabilities are code-defined reusable functions attached to a campaign lifecycle. They may extend position management or Order Entry, but they do not replace Initial Entry, Reentry, or Exit.</p>
+      <div className="capability-grid">
+        {catalog.map((definition) => {
+          const binding = profile.capabilities.find((row) => row.capability_id === definition.capability_id);
+          if (!binding) return null;
+          return (
+            <article className="capability-card" data-enabled={binding.enabled ? "true" : "false"} key={definition.capability_id}>
+              <header>
+                <div><span>{definition.category.replaceAll("_", " ")}</span><strong>{definition.name}</strong></div>
+                <label className="configuration-switch"><input checked={binding.enabled} onChange={(event) => onChange(updateCapability(profile, binding.capability_id, { ...binding, enabled: event.target.checked }))} type="checkbox" /><span /></label>
+              </header>
+              <p>{definition.summary}</p>
+              {definition.order_entry_action ? <em><BadgeCheck size={12} /> Appears in Order Entry</em> : null}
+              {binding.enabled ? (
+                <div className="capability-fields">
+                  {definition.parameters.map((parameter) => (
+                    <CapabilityField
+                      definition={parameter}
+                      key={parameter.key}
+                      value={binding.settings[parameter.key]}
+                      onChange={(value) => onChange(updateCapability(profile, binding.capability_id, {
+                        ...binding,
+                        settings: { ...binding.settings, [parameter.key]: value },
+                      }))}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 const RULE_STAGE_META = {
-  trigger: {
-    label: "Entry triggers",
-    summary: "At least one configured trigger must pass before confirmation is considered.",
+  opportunity: {
+    label: "Opportunity conditions",
+    summary: "Evidence that identifies a possible initial entry.",
   },
   confirmation: {
-    label: "Confirmation evidence",
+    label: "Confirmation requirements",
     summary: "Passing groups contribute their configured weight to the minimum confirmation score.",
   },
-  veto: {
-    label: "Veto conditions",
-    summary: "A passing veto group blocks entry even when trigger and confirmation rules pass.",
+  blockers: {
+    label: "Entry blockers",
+    summary: "A passing blocker prevents a new position even when opportunity and confirmation pass.",
   },
 } as const;
 
@@ -673,8 +969,8 @@ function DecisionRulesEditor({ catalog, onChange, rules }: {
       <div className="strategy-source-legend">
         <GitBranch size={18} />
         <div>
-          <strong>How entry is decided</strong>
-          <p>Trigger passes → weighted confirmation passes → no veto passes. Operational manual and force-entry requests remain explicit runtime actions.</p>
+          <strong>How initial entry is decided</strong>
+          <p>Opportunity passes, weighted confirmation passes, and no entry blocker passes. Manual and automatic authority is configured on the deployment.</p>
         </div>
       </div>
       {(Object.keys(RULE_STAGE_META) as Array<keyof EntryRules>).map((stageName) => {
@@ -868,6 +1164,7 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
   if (!selected) return <EmptyState title="No deployments" detail="Create a deployment to connect a Strategy Profile to accounts, Portfolio mandates, and OMS." />;
   const linkedMandates = draft.portfolio.mandates.filter((row) => row.deployment_id === selected.deployment_id);
   const readiness = [
+    { label: "Watch Universe selected", ready: section.universes.some((row) => row.universe_id === selected.universe_id) },
     { label: "Strategy Profile selected", ready: draft.strategy.profiles.some((row) => row.profile_id === selected.profile_id) },
     { label: "OMS profile selected", ready: draft.oms.profiles.some((row) => row.profile_id === selected.oms_profile_id) },
     { label: "Account mandate configured", ready: linkedMandates.length > 0 },
@@ -875,7 +1172,7 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
   ];
 
   function replace(next: Deployment) {
-    onChange({ deployments: section.deployments.map((row) => row.deployment_id === selected.deployment_id ? next : row) });
+    onChange({ ...section, deployments: section.deployments.map((row) => row.deployment_id === selected.deployment_id ? next : row) });
   }
 
   function createDeployment() {
@@ -886,12 +1183,26 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
       description: "Connect this deployment to account mandates before publishing.",
       profile_id: draft.strategy.profiles[0]?.profile_id ?? "",
       oms_profile_id: draft.oms.profiles[0]?.profile_id ?? "",
+      universe_id: section.universes[0]?.universe_id ?? "",
+      book_id: "default",
+      selection_priority: 50,
+      campaign_policy: {
+        initial_entry_authority: "confirm",
+        reentry_authority: "confirm",
+        exit_authority: "automatic",
+        protective_exit_authority: "automatic",
+        maximum_reentries: 3,
+        reentry_cooldown_ms: 1000,
+        maximum_initial_watch_ms: 0,
+        session_end_behavior: "keep_watching",
+        retain_ticker_while_paused: true,
+      },
       mandate_ids: [],
       enabled: true,
       modes: ["replay"],
       runtime_assignments: [],
     };
-    onChange({ deployments: [...section.deployments, next] });
+    onChange({ ...section, deployments: [...section.deployments, next] });
     setSelectedId(id);
   }
 
@@ -907,11 +1218,19 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
           <div><span>Usable Strategy Deployment</span><input aria-label="Deployment name" onChange={(event) => replace({ ...selected, name: event.target.value })} value={selected.name} /><textarea aria-label="Deployment summary" onChange={(event) => replace({ ...selected, description: event.target.value })} rows={2} value={selected.description} /></div>
           <label className="configuration-enabled"><input checked={selected.enabled} onChange={(event) => replace({ ...selected, enabled: event.target.checked })} type="checkbox" /> Enabled</label>
         </section>
-        <GuideCallout icon={<Network size={17} />} title="Profile → Deployment → Runtime assignment">
-          The profile defines decisions. This deployment selects shared policies and accounts. A runtime assignment later binds the deployment to a ticker without redefining its strategy.
+        <GuideCallout icon={<Network size={17} />} title="Profile → Deployment → Strategy Campaign">
+          The profile defines decisions. This deployment selects a Watch Universe and campaign authority. The shared Strategy Orchestrator grants one exclusive active campaign per ticker before Portfolio and OMS may act.
         </GuideCallout>
+        <ConfigGroup summary="Select which approved stock universe this strategy may evaluate. Several strategies may observe a stock, but only one active campaign may own it." title="1. Watch Universe">
+          <div className="configuration-field-grid">
+            <SelectField help="Configured source of eligible symbols for this deployment." label="Universe" onChange={(universe_id) => replace({ ...selected, universe_id })} options={section.universes.map((row) => ({ label: row.name, value: row.universe_id }))} value={selected.universe_id} />
+            <SelectField help="Ticker ownership is exclusive inside one portfolio book and runtime mode." label="Portfolio book" onChange={(book_id) => replace({ ...selected, book_id })} options={[{ label: "Default book", value: "default" }]} value={selected.book_id} />
+            <NumberField help="Higher values win deterministic selection when multiple eligible deployments request the same unowned ticker." label="Selection priority" maximum={100} minimum={0} onChange={(selection_priority) => replace({ ...selected, selection_priority })} step={1} unit="0–100" value={selected.selection_priority} />
+          </div>
+          <WatchUniverseEditor section={section} onChange={onChange} selectedId={selected.universe_id} />
+        </ConfigGroup>
         <div className="configuration-two-column">
-          <ConfigGroup summary="Select the configured behavior and shared execution profile." title="1. Strategy and execution">
+          <ConfigGroup summary="Select the configured behavior and shared execution profile." title="2. Strategy and execution">
             <div className="configuration-field-grid one-column">
               <SelectField help="Published Strategy Profile whose decision behavior this deployment runs." label="Strategy Profile" onChange={(value) => replace({ ...selected, profile_id: value })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={selected.profile_id} />
               <SelectField help="Reusable shared OMS and protection profile used to execute approved requests." label="OMS profile" onChange={(value) => replace({ ...selected, oms_profile_id: value })} options={draft.oms.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={selected.oms_profile_id} />
@@ -921,10 +1240,13 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
             <div className="configuration-readiness">{readiness.map((item) => <span data-ready={item.ready ? "true" : "false"} key={item.label}>{item.ready ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />}{item.label}</span>)}</div>
           </ConfigGroup>
         </div>
-        <ConfigGroup summary="Choose where this deployment may run. Live and Paper still require their independent operational gates." title="2. Runtime modes">
+        <ConfigGroup summary="Initial entry, reentry, and normal exit authority are independent. Protective exits always remain automatic." title="3. Campaign lifecycle authority">
+          <CampaignPolicyEditor deployment={selected} onChange={replace} />
+        </ConfigGroup>
+        <ConfigGroup summary="Choose where this deployment may run. Live and Paper still require their independent operational gates." title="4. Runtime modes">
           <ModeSelector modes={selected.modes} onChange={(modes) => replace({ ...selected, modes })} />
         </ConfigGroup>
-        <ConfigGroup summary="Capital authority is configured on Portfolio & Risk. This page shows the linked account mandates." title="3. Account mandates">
+        <ConfigGroup summary="Capital authority is configured on Portfolio & Risk. This page shows the linked account mandates." title="5. Account mandates">
           <div className="deployment-mandates">
             {linkedMandates.map((mandate) => <article key={mandate.mandate_id}><strong>{accountName(draft.accounts, mandate.account_key)}</strong><span>{percent(mandate.maximum_cash_fraction)} cash ceiling · {mandate.autonomy} · priority {mandate.priority}</span></article>)}
             {!linkedMandates.length ? <EmptyState title="No account mandate" detail="Open Portfolio & Risk and add an account mandate for this deployment." /> : null}
@@ -933,6 +1255,72 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
         </ConfigGroup>
       </main>
     </div>
+  );
+}
+
+function WatchUniverseEditor({ onChange, section, selectedId }: {
+  onChange: (value: AssignmentSection) => void;
+  section: AssignmentSection;
+  selectedId: string;
+}) {
+  const universe = section.universes.find((row) => row.universe_id === selectedId);
+  if (!universe) return <EmptyState title="Universe unavailable" detail="Select or create a Watch Universe before publishing this deployment." />;
+  const universeId = universe.universe_id;
+  function replace(next: WatchUniverse) {
+    onChange({ ...section, universes: section.universes.map((row) => row.universe_id === universeId ? next : row) });
+  }
+  return (
+    <div className="watch-universe-editor">
+      <div className="configuration-field-grid">
+        <label className="configuration-text-field"><span>Universe name</span><input onChange={(event) => replace({ ...universe, name: event.target.value })} value={universe.name} /></label>
+        <SelectField help="Configured symbols are runtime-ready. Scanner and Watchlist may be designed here, but publication stays blocked until their point-in-time membership resolver is registered." label="Source" onChange={(source) => replace({ ...universe, source: source as WatchUniverse["source"] })} options={["configured_symbols", "scanner_view", "watchlist"].map((value) => ({ label: readableLabel(value), value }))} value={universe.source} />
+      </div>
+      {universe.source !== "configured_symbols" ? (
+        <p className="configuration-safety-note"><TriangleAlert size={15} /> Draft-only source: connect and validate the {readableLabel(universe.source)} membership resolver before this release can be published.</p>
+      ) : null}
+      {universe.source === "configured_symbols" ? (
+        <label className="configuration-text-field">
+          <span>Symbols <small>Comma-separated</small></span>
+          <input onChange={(event) => replace({ ...universe, symbols: event.target.value.split(",").map((value) => value.trim().toUpperCase()).filter(Boolean) })} placeholder="AAPL, NVDA, TSLA" value={universe.symbols.join(", ")} />
+        </label>
+      ) : (
+        <label className="configuration-text-field">
+          <span>{universe.source === "scanner_view" ? "Scanner view id" : "Watchlist id"}</span>
+          <input onChange={(event) => replace({ ...universe, scanner_view_id: event.target.value })} value={universe.scanner_view_id} />
+        </label>
+      )}
+      <p>{universe.symbols.length} explicit symbols. Passive evaluation does not claim a ticker; ownership begins only when the orchestrator arms a campaign.</p>
+    </div>
+  );
+}
+
+function CampaignPolicyEditor({ deployment, onChange }: {
+  deployment: Deployment;
+  onChange: (value: Deployment) => void;
+}) {
+  const policy = deployment.campaign_policy;
+  const replace = (campaign_policy: Deployment["campaign_policy"]) => onChange({ ...deployment, campaign_policy });
+  const authorities = ["disabled", "manual", "confirm", "automatic"].map((value) => ({ label: readableLabel(value), value }));
+  return (
+    <>
+      <div className="campaign-authority-flow" aria-label="Campaign lifecycle authority">
+        <span><strong>1</strong> Initial entry</span><ChevronRight size={15} />
+        <span><strong>2</strong> Reentry</span><ChevronRight size={15} />
+        <span><strong>3</strong> Exit</span><ChevronRight size={15} />
+        <span><strong>✓</strong> Stop or keep watching</span>
+      </div>
+      <div className="configuration-field-grid">
+        <SelectField help="Who may authorize the first flat-to-open transition in a ticker campaign." label="Initial-entry authority" onChange={(initial_entry_authority) => replace({ ...policy, initial_entry_authority })} options={authorities.filter((row) => row.value !== "disabled")} value={policy.initial_entry_authority} />
+        <SelectField help="Who may authorize a later entry after a confirmed full exit." label="Reentry authority" onChange={(reentry_authority) => replace({ ...policy, reentry_authority })} options={authorities} value={policy.reentry_authority} />
+        <SelectField help="Who may authorize normal strategic exits. Protective exits remain automatic." label="Exit authority" onChange={(exit_authority) => replace({ ...policy, exit_authority })} options={authorities.filter((row) => row.value !== "disabled")} value={policy.exit_authority} />
+        <SelectField help="What happens to the ticker campaign at the configured session boundary." label="Session-end behavior" onChange={(session_end_behavior) => replace({ ...policy, session_end_behavior })} options={["keep_watching", "stop_when_flat", "exit_and_stop"].map((value) => ({ label: readableLabel(value), value }))} value={policy.session_end_behavior} />
+        <NumberField help="Operational ceiling applied even if the Strategy Profile permits more reentries." label="Campaign reentry ceiling" minimum={0} onChange={(maximum_reentries) => replace({ ...policy, maximum_reentries })} step={1} unit="entries" value={policy.maximum_reentries} />
+        <NumberField help="Operational cooldown applied before the Strategy Profile may evaluate another entry." label="Campaign cooldown" minimum={0} onChange={(reentry_cooldown_ms) => replace({ ...policy, reentry_cooldown_ms })} step={100} unit="ms" value={policy.reentry_cooldown_ms} />
+        <NumberField help="Maximum time to retain a newly armed ticker while waiting for its initial entry. Zero means no time limit." label="Initial watch limit" minimum={0} onChange={(maximum_initial_watch_ms) => replace({ ...policy, maximum_initial_watch_ms })} step={60000} unit="ms" value={policy.maximum_initial_watch_ms} />
+        <BooleanField help="A paused campaign keeps exclusive ticker ownership. Releasing it requires a separate safe handoff while flat." label="Retain ticker while paused" onChange={(retain_ticker_while_paused) => replace({ ...policy, retain_ticker_while_paused })} value={policy.retain_ticker_while_paused} />
+      </div>
+      <div className="configuration-safety-note"><ShieldCheck size={15} /><span><strong>Protective exits: Automatic</strong> — this authority is fixed and cannot be weakened by a strategy or deployment.</span></div>
+    </>
   );
 }
 

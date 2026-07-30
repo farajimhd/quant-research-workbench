@@ -32,6 +32,10 @@ from src.trading_runtime.strategy_engine import (
     long_momentum_strategy_definition,
     resolve_long_momentum_parameters,
 )
+from src.trading_runtime.strategy_campaign import (
+    StrategyCampaignOrchestrator,
+    campaign_state,
+)
 from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
 from src.trading_runtime.domain import InstrumentContract
 
@@ -133,21 +137,47 @@ def create_strategy_assignment(payload: dict[str, Any]) -> dict[str, Any]:
         reenter=bool(permissions_payload.get("reenter", False)),
     )
     now = datetime.now(ZoneInfo("UTC"))
+    ticker = str(payload.get("ticker") or "").strip().upper()
+    state = dict(payload.get("state") or {})
+    state.update(
+        campaign_state(
+            campaign_id=str(payload.get("campaign_id") or state.get("campaign_id") or f"{payload.get('strategy_id') or STRATEGY_ID}:{ticker}"),
+            deployment_id=str(payload.get("deployment_id") or state.get("campaign_deployment_id") or ""),
+            profile_id=str(payload.get("profile_id") or state.get("campaign_profile_id") or ""),
+            book_id=str(payload.get("book_id") or state.get("campaign_book_id") or "default"),
+            universe_id=str(payload.get("universe_id") or state.get("campaign_universe_id") or ""),
+        )
+    )
+    if isinstance(payload.get("campaign_policy"), dict):
+        state["campaign_policy"] = dict(payload["campaign_policy"])
     assignment = StrategyAssignment(
         assignment_id=str(payload.get("assignment_id") or uuid4()),
         strategy_id=str(payload.get("strategy_id") or STRATEGY_ID),
         strategy_revision=int(payload.get("strategy_revision") or STRATEGY_REVISION),
         account_id=str(payload.get("account_id") or "").strip(),
-        ticker=str(payload.get("ticker") or "").strip().upper(),
+        ticker=ticker,
         conid=int(payload.get("conid") or 0),
         status=AssignmentStatus(str(payload.get("status") or AssignmentStatus.WATCHING)),
         permissions=permissions,
         parameters=resolve_long_momentum_parameters(dict(payload.get("parameters") or {})),
-        state=dict(payload.get("state") or {}),
+        state=state,
         source=str(payload.get("source") or "order_entry"),
         created_at=now,
         updated_at=now,
     )
+    active_ticker_assignments = list_strategy_assignments(
+        ticker=ticker,
+        active_only=True,
+    )
+    if any(
+        str(row.get("account_id") or "") == assignment.account_id
+        and str(row.get("assignment_id") or "") != assignment.assignment_id
+        for row in active_ticker_assignments
+    ):
+        raise ValueError(
+            f"{ticker} already has an active campaign leg for {assignment.account_id}"
+        )
+    StrategyCampaignOrchestrator([*active_ticker_assignments, assignment])
     saved = trading_journal().save_strategy_assignment(assignment.payload())
     trading_journal().append(
         run_id=assignment.assignment_id,
@@ -185,7 +215,15 @@ def command_strategy_assignment(assignment_id: str, command: str, payload: dict[
         "disable": AssignmentStatus.DISABLED,
         "complete": AssignmentStatus.COMPLETED,
     }
-    if command not in {*status_map, "disable_after_exit", "request_entry", "force_entry"}:
+    if command not in {
+        *status_map,
+        "disable_after_exit",
+        "request_entry",
+        "force_entry",
+        "request_exit",
+        "exit_and_stop",
+        "exit_keep_watching",
+    }:
         raise ValueError(f"Unsupported strategy assignment command: {command}")
     state = dict(row.get("state") or {})
     status = status_map.get(command, AssignmentStatus(str(row["status"])))
@@ -195,6 +233,9 @@ def command_strategy_assignment(assignment_id: str, command: str, payload: dict[
         state["manual_entry_requested"] = True
     elif command == "force_entry":
         state["force_entry_requested"] = True
+    elif command in {"request_exit", "exit_and_stop", "exit_keep_watching"}:
+        state["manual_exit_requested"] = True
+        state["disable_after_exit"] = command == "exit_and_stop"
     row = {
         **row,
         "status": status.value,

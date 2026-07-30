@@ -153,6 +153,29 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertGreater(intent.profit_target_price or 0, intent.reference_price)
         self.assertGreater(intent.trailing_amount or 0, 0)
 
+    def test_campaign_initial_entry_authority_requires_operator_confirmation(self) -> None:
+        waiting = assignment(
+            state={
+                "campaign_policy": {
+                    "initial_entry_authority": "confirm",
+                    "reentry_authority": "confirm",
+                    "exit_authority": "automatic",
+                }
+            }
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            waiting, confirmed_observation()
+        )
+        self.assertEqual(
+            result.evaluation.signals[0].reason,
+            "initial_entry_confirmation_required",
+        )
+        confirmed = LongMomentumStrategyEngine().evaluate(
+            waiting,
+            confirmed_observation(manual_entry_request=True),
+        )
+        self.assertEqual(confirmed.evaluation.signals[0].action, "enter_long")
+
     def test_veto_blocks_entry_even_when_breakout_is_confirmed(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(
             assignment(), confirmed_observation(liquidity_dislocation_score=0.9)
@@ -179,6 +202,80 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(result.evaluation.signals[0].action, "exit")
         self.assertEqual(result.evaluation.signals[0].reason, "failed_breakout")
+
+    def test_configured_exit_route_priority_selects_the_authoritative_reason(self) -> None:
+        parameters = default_long_momentum_parameters()
+        for route in parameters["exit_routes"]:
+            if route["route_id"] == "failed-breakout":
+                route["priority"] = 60
+            if route["route_id"] == "bearish-momentum":
+                route["priority"] = 90
+        managed = assignment(
+            status=AssignmentStatus.MANAGING,
+            state={
+                "active_stop": 90.0,
+                "initial_stop": 90.0,
+                "breakout_level": 100.5,
+                "entry_reference_price": 101.0,
+                "high_water_price": 101.0,
+            },
+        )
+        managed = StrategyAssignment(
+            **{
+                **managed.payload(),
+                "status": AssignmentStatus.MANAGING,
+                "permissions": managed.permissions,
+                "parameters": parameters,
+                "created_at": NOW,
+                "updated_at": NOW,
+            }
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(
+                price=100.0,
+                position_quantity=100,
+                average_price=101.0,
+                qmd_score=-0.8,
+                qmd_confidence=0.9,
+                macd_line=-0.4,
+                macd_signal=-0.2,
+                macd_histogram=-0.2,
+            ),
+        )
+        signal = result.evaluation.signals[0]
+        self.assertEqual(signal.reason, "bearish_qmd_macd")
+        self.assertEqual(signal.metadata["exit_route_id"], "bearish-momentum")
+
+    def test_protective_exit_cannot_be_disabled_by_campaign_permissions(self) -> None:
+        managed = assignment(
+            status=AssignmentStatus.MANAGING,
+            permissions=StrategyPermissions(
+                enter=False,
+                add=False,
+                reduce=False,
+                exit=False,
+                reenter=False,
+            ),
+            state={
+                "active_stop": 100.0,
+                "initial_stop": 100.0,
+                "breakout_level": 101.0,
+                "entry_reference_price": 101.0,
+                "high_water_price": 101.0,
+                "campaign_policy": {"exit_authority": "manual"},
+            },
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(
+                price=99.0,
+                position_quantity=100,
+                average_price=101.0,
+            ),
+        )
+        self.assertEqual(result.evaluation.signals[0].reason, "protective_stop")
+        self.assertEqual(result.evaluation.signals[0].action, "exit")
 
     def test_bullish_choch_adds_only_with_confirmation(self) -> None:
         managed = assignment(
@@ -372,6 +469,17 @@ class LongMomentumServiceTests(unittest.TestCase):
                         "permissions": {"enter": True, "add": True, "reenter": True},
                     }
                 )
+                with self.assertRaisesRegex(
+                    ValueError, "already has an active campaign leg"
+                ):
+                    trading_runtime_service.create_strategy_assignment(
+                        {
+                            "account_id": "DU123",
+                            "ticker": "AAPL",
+                            "conid": 265598,
+                            "permissions": {"enter": True},
+                        }
+                    )
                 observation = confirmed_observation().payload()
                 evaluated = trading_runtime_service.evaluate_strategy_assignment(
                     created["assignment_id"], observation

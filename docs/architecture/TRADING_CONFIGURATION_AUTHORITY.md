@@ -29,15 +29,19 @@ The product deliberately separates concepts that were previously grouped under
 | Account | Stable application identity mapped to broker or simulated sessions |
 | Portfolio Policy | Reusable account safety, exposure, capital, and loss envelope |
 | Strategy-account mandate | Many-to-many rule governing how one deployment may use one account |
-| Strategy Deployment | Usable unit combining a Strategy Profile, capability bindings, OMS profile, runtime modes, and account mandates |
-| Runtime assignment | Operational binding of a published deployment to a ticker inside a run; never a configuration definition |
+| Watch Universe | Versioned source of symbols that deployments may evaluate; configured symbols, an approved Scanner view, or a Watchlist |
+| Strategy Deployment | Usable unit combining a Strategy Profile, Watch Universe, selection priority, campaign authority, OMS profile, runtime modes, and account mandates |
+| Strategy Campaign | One durable runtime lifecycle that exclusively owns a ticker in one portfolio book across initial entry, exits, and zero or more reentries |
+| Campaign account leg | Account-specific execution and position state belonging to one Strategy Campaign; several legs may share the same ticker lease |
+| Strategy Orchestrator | Shared runtime authority that grants and releases ticker leases and prevents conflicting active campaigns |
 | Approved Release | Immutable application snapshot consumed by new runs |
 
-System code may ship predefined Strategy Profiles and Capability defaults.
-These are starting configurations, not locked secrets: the user can modify or
-clone them, and the resulting draft is validated and published like any other
-profile. Capability behavior remains implemented in registered code; the UI
-configures only declared parameters and authority levels.
+System code may ship one protected default Strategy Profile plus predefined
+profile templates and Capability defaults. The default remains editable and
+cloneable but cannot be removed, renamed out of its stable identity, or
+weakened through generated JSON. Templates create ordinary user profiles.
+Capability behavior remains implemented in registered code; the UI configures
+only declared parameters and authority levels.
 
 ## Strategy inputs and decision logic
 
@@ -55,12 +59,31 @@ Every condition records:
 - either a typed threshold or another typed source; and
 - its containing ALL/ANY rule group.
 
-Entry logic has three explicit stages:
+Initial Entry contains three subordinate stages:
 
-1. trigger groups select whether any or all configured opportunities must pass;
+1. opportunity groups select whether any or all configured opportunities pass;
 2. confirmation groups contribute declared weights to a configurable minimum
    score; and
-3. veto groups block entry when their configured Boolean relationship passes.
+3. entry blockers prevent a new position when their configured Boolean
+   relationship passes.
+
+These stages are not peers of Exit or Reentry. A Strategy Profile has the
+following primary behavioral areas:
+
+1. Trading Behavior: side, eligible sessions, evaluation trigger, relative
+   capital request, and manual-position adoption;
+2. Initial Entry: opportunity, confirmation, and blocker rules;
+3. Reentry: whether another flat-to-open transition may occur in the same
+   campaign, cooldown, maximum attempts, and fresh-evidence requirements;
+4. Exit: ordered named routes with protected, strategic, profit, or emergency
+   semantics; and
+5. Capabilities: reusable code-defined functions that extend a lifecycle
+   without replacing Entry, Reentry, or Exit.
+
+Exit routes are evaluated in declared priority order. The protective-stop route
+is always enabled, first, automatic, and close-only. Strategic routes may
+require operator authority, but neither a Strategy Profile, Deployment, nor
+account permission can weaken protective execution.
 
 A profile can therefore define price breaking either a confirmed QMD swing
 high or QMD VWAP by a configured buffer, require weighted flow-structure,
@@ -80,11 +103,13 @@ Backtest adapters must populate the same typed observation contract.
 ## Authority flow
 
 ```text
-Strategy Definition + Capability Definitions
+Watch Universes + Strategy Definition + Capability Definitions
     -> configured Strategy Profile
-    -> Strategy Deployment + Strategy-account mandates + OMS Profile
+    -> Strategy Deployment + campaign authority + Strategy-account mandates + OMS Profile
     -> approved application release
-    -> Replay / Backtest / Live runtime assignment
+    -> passive strategy evaluation
+    -> Strategy Orchestrator grants one ticker lease
+    -> Strategy Campaign with one or more account legs
     -> strategy semantic request
     -> Portfolio account resolution, sizing, arbitration, and reservation
     -> OMS execution, broker lifecycle, and protection
@@ -109,8 +134,8 @@ and autonomy requirement. It does not silently release capital or bypass OMS.
 | Page | Owns |
 |---|---|
 | Canvas | Canvases, layouts, groups, containers, link contexts, and presentation settings |
-| Strategy Studio | Strategy Profiles, typed inputs, decision rules, and configurable Capability Bindings |
-| Strategy Deployments | Profile-to-OMS-to-mode composition and deployment readiness |
+| Strategy Studio | Protected default and user Strategy Profiles, Trading Behavior, Initial Entry, Reentry, ordered Exit routes, typed inputs, and Capability Bindings |
+| Strategy Deployments | Watch Universes, profile-to-OMS composition, deterministic selection priority, campaign lifecycle authority, runtime modes, and readiness |
 | Portfolio & Risk | Account policies and Strategy-account mandates |
 | OMS & Protection | Reusable named execution and protection profiles |
 | Accounts & Sessions | Stable application accounts and mode-specific session bindings |
@@ -125,8 +150,9 @@ and execution pace. Live owns session startup and operational controls.
 Raw JSON is never the primary configuration interface.
 
 - Every page starts with a concise summary of its responsibility and authority.
-- Strategy Studio presents frequently tuned entry, sizing, profit-taking, and
-  re-entry controls first.
+- Strategy Studio presents Trading Behavior, Initial Entry, Reentry, Exit, and
+  Capabilities as collapsible containers with descriptive headers and
+  at-a-glance configured summaries.
 - Logical strategy behavior uses a guided rule builder with visible providers,
   source parameters, timeframes, comparisons, thresholds, Boolean grouping,
   and confirmation weights.
@@ -137,8 +163,10 @@ Raw JSON is never the primary configuration interface.
 - The Strategy Profile -> Deployment -> Capital mandate -> Publication journey
   remains visible across configuration pages.
 - Generated JSON is available on demand through a read-only advanced inspector.
-- System profiles and capabilities identify their origin while remaining
-  cloneable and configurable.
+- The protected default profile explains why deletion is unavailable; user
+  profiles remain removable only when no Deployment references them.
+- Strategy Campaign controls distinguish Exit and keep watching from Exit and
+  stop, so closing a position never silently changes ticker ownership.
 
 ## Publication contract
 
@@ -146,7 +174,8 @@ Draft entities are mutable and non-executable. Publication:
 
 1. validates profiles against registered strategy implementations;
 2. validates capability settings against code-owned schemas;
-3. validates deployment references and runtime-mode readiness;
+3. validates Watch Universes, deployment references, deterministic selection
+   priority, and campaign authority;
 4. validates account policies and Strategy-account mandates;
 5. validates OMS/protection profiles;
 6. captures the complete configured Canvas registry;
@@ -160,15 +189,25 @@ Later draft edits or publications cannot mutate it.
 
 ## Runtime compatibility boundary
 
-The v2 model is authoritative. `resolve_runtime_configuration()` selects one
-approved deployment for a runtime mode and projects it into the existing shared
-strategy, Portfolio, OMS, account, and assignment contracts. This resolver is a
-single migration boundary, not a duplicated configuration store.
+The schema-v4 model is authoritative. `resolve_runtime_configurations()` orders
+every approved deployment eligible for a runtime mode by configured selection
+priority and projects each profile, Watch Universe, campaign policy, Portfolio,
+OMS, account, and campaign leg through one shared boundary. Individual
+deployment resolution remains available for explicit operational selection; it
+is not a second configuration store.
 
-Replay records both the complete approved model and its selected deployment.
-Capability bindings are merged into the registered strategy parameters only at
-this boundary. OMS remains a separate profile authority; the projection supplies
-the existing runtime planner until it accepts profile references directly.
+Replay records the complete approved model and every eligible Deployment.
+Configured-universe symbols join Canvas and active-campaign symbols in the
+historical stream. Every account leg carries its resolved profile parameters,
+campaign identity, deployment, universe, book, and phase authority. The shared
+Strategy Orchestrator permits several account legs in one campaign but rejects
+a second active campaign attempting to own the same ticker and book.
+
+An exit makes a position flat; it does not necessarily finish a campaign.
+`Exit and keep watching` retains the lease and enters Reentry wait. `Exit and
+stop` completes every safe account leg and releases the lease. Paused campaigns
+retain ownership by default. A release or handoff while exposed requires an
+explicit safe transition rather than silently abandoning the position.
 
 `initial_cash` configures `SimulatedBrokerAdapter` funding only. It is not a
 Portfolio policy and cannot bypass allocation, exposure, risk, capability,

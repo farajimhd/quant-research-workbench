@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from src.trading_runtime.signals import CapitalRequest, StrategyEvaluation, StrategyIntent, StrategySignal
 from src.market_engine.events import MarketEvent
+from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
@@ -363,9 +364,58 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "outside_rth": False,
         },
     }
+    parameters["exit_routes"] = default_exit_routes(parameters["final_exit"])
     parameters["entry_rules"] = default_entry_decision_rules(parameters)
     parameters.pop("entry", None)
     return parameters
+
+
+def default_exit_routes(final_exit: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    settings = dict(final_exit or {})
+    return [
+        {
+            "route_id": "protective-stop",
+            "name": "Protective stop",
+            "category": "protective",
+            "mechanism": "protective_stop",
+            "action": "close",
+            "priority": 100,
+            "enabled": True,
+            "protected": True,
+            "summary": "Close immediately when shared protection is breached.",
+            "settings": {},
+        },
+        {
+            "route_id": "failed-breakout",
+            "name": "Failed breakout",
+            "category": "strategic",
+            "mechanism": "failed_breakout",
+            "action": "close",
+            "priority": 80,
+            "enabled": bool(settings.get("exit_on_failed_breakout", True)),
+            "protected": False,
+            "summary": "Exit when price loses the structure that justified entry.",
+            "settings": {},
+        },
+        {
+            "route_id": "bearish-momentum",
+            "name": "Bearish momentum confirmation",
+            "category": "strategic",
+            "mechanism": "bearish_qmd_macd",
+            "action": "close",
+            "priority": 70,
+            "enabled": bool(settings.get("bearish_momentum_enabled", True)),
+            "protected": False,
+            "summary": "Exit when adverse QMD evidence and optional MACD confirmation pass.",
+            "settings": {
+                "qmd_score": float(settings.get("qmd_score") or -0.35),
+                "qmd_confidence": float(settings.get("qmd_confidence") or 0.55),
+                "require_macd_bearish": bool(
+                    settings.get("require_macd_bearish", True)
+                ),
+            },
+        },
+    ]
 
 
 def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -411,6 +461,7 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
         raise ValueError("Execution tick size must be positive")
     if parameters["execution"]["time_in_force"] not in {"DAY", "GTC", "IOC", "OPG"}:
         raise ValueError("Unsupported strategy time in force")
+    _validate_exit_routes(list(parameters.get("exit_routes") or []))
     _validate_entry_rules(dict(parameters.get("entry_rules") or {}))
     return parameters
 
@@ -446,6 +497,8 @@ class LongMomentumStrategyEngine:
     ) -> StrategyEngineResult:
         reentries = int(state.get("reentries") or 0)
         reentry = parameters["reentry"]
+        state.pop("manual_entry_requested", None)
+        state.pop("force_entry_requested", None)
         if assignment.status == AssignmentStatus.ENTRY_PENDING:
             return self._result(assignment, observation, "wait", "entry_fill_pending", 0.0, 1.0, state, AssignmentStatus.ENTRY_PENDING)
         if reentries > int(reentry["maximum_attempts"]):
@@ -457,6 +510,47 @@ class LongMomentumStrategyEngine:
             elapsed_ms = (observation.observed_at - last_exit).total_seconds() * 1000
             if elapsed_ms < float(reentry["cooldown_ms"]):
                 return self._result(assignment, observation, "wait", "reentry_cooldown", 0.0, 1.0, state, AssignmentStatus.REENTRY_COOLDOWN)
+        authority_key = (
+            "reentry_authority" if reentries else "initial_entry_authority"
+        )
+        authority = _campaign_authority(state, authority_key, "automatic")
+        if authority == "disabled":
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                "reentry_disabled" if reentries else "initial_entry_disabled",
+                0.0,
+                1.0,
+                state,
+                AssignmentStatus.COMPLETED,
+            )
+        if (
+            authority in {"manual", "confirm"}
+            and not observation.manual_entry_request
+            and not observation.force_entry
+        ):
+            reason = (
+                "reentry_manual_request_required"
+                if authority == "manual" and reentries
+                else "initial_entry_manual_request_required"
+                if authority == "manual"
+                else "reentry_confirmation_required"
+                if reentries
+                else "initial_entry_confirmation_required"
+            )
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                reason,
+                0.0,
+                1.0,
+                state,
+                AssignmentStatus.REENTRY_COOLDOWN
+                if reentries
+                else AssignmentStatus.WATCHING,
+            )
         if not assignment.permissions.enter and not observation.force_entry:
             return self._result(assignment, observation, "wait", "entry_not_authorized", 0.0, 1.0, state, AssignmentStatus.WATCHING)
         if not observation.market_open:
@@ -553,27 +647,54 @@ class LongMomentumStrategyEngine:
         breakout_level = float(state.get("breakout_level") or 0)
         breakout_buffer = observation.price * float(state.get("breakout_buffer_bps") or 0) / 10_000
         failed_breakout = bool(
-            parameters["final_exit"]["exit_on_failed_breakout"]
-            and breakout_level > 0
+            breakout_level > 0
             and observation.price < breakout_level - breakout_buffer
         )
-        bearish_qmd = (
-            observation.qmd_score <= float(parameters["final_exit"]["qmd_score"])
-            and observation.qmd_confidence >= float(parameters["final_exit"]["qmd_confidence"])
+        exit_route = _matching_exit_route(
+            list(parameters.get("exit_routes") or []),
+            observation=observation,
+            protective_stop=stop,
+            failed_breakout=failed_breakout,
         )
-        bearish_macd = (
-            observation.macd_histogram is not None
-            and observation.macd_histogram < 0
-            and observation.macd_line is not None
-            and observation.macd_signal is not None
-            and observation.macd_line < observation.macd_signal
-        )
-        final_signal_exit = bearish_qmd and (
-            bearish_macd or not parameters["final_exit"]["require_macd_bearish"]
-        )
-        if assignment.permissions.exit and (observation.price <= stop or failed_breakout or final_signal_exit):
-            reason = "protective_stop" if observation.price <= stop else "failed_breakout" if failed_breakout else "bearish_qmd_macd"
+        manual_exit_requested = bool(state.pop("manual_exit_requested", False))
+        if manual_exit_requested:
+            exit_route = {
+                "route_id": "manual-exit",
+                "name": "Operator-requested exit",
+                "mechanism": "manual_exit",
+                "priority": 100,
+            }
+        if (
+            exit_route is not None
+            and str(exit_route.get("mechanism")) != "protective_stop"
+            and not manual_exit_requested
+            and _campaign_authority(state, "exit_authority", "automatic")
+            in {"manual", "confirm"}
+        ):
+            return self._result(
+                assignment,
+                observation,
+                "hold",
+                "exit_confirmation_required",
+                observation.qmd_score,
+                _confirmation_confidence(observation),
+                state,
+                AssignmentStatus.MANAGING,
+                invalidation_price=stop,
+                trailing_amount=_trailing_amount(observation, parameters),
+                metadata={
+                    "proposed_exit_route_id": exit_route["route_id"],
+                    "proposed_exit_route_name": exit_route["name"],
+                    "proposed_exit_route_priority": exit_route["priority"],
+                },
+            )
+        if exit_route is not None and (
+            assignment.permissions.exit
+            or str(exit_route.get("mechanism")) == "protective_stop"
+        ):
+            reason = str(exit_route["mechanism"])
             state["last_exit_reason"] = reason
+            state["last_exit_route_id"] = str(exit_route["route_id"])
             state["last_exit_at"] = observation.observed_at.isoformat()
             state["reentries"] = int(state.get("reentries") or 0) + 1
             next_status = AssignmentStatus.COMPLETED if state.get("disable_after_exit") or not assignment.permissions.reenter else AssignmentStatus.REENTRY_COOLDOWN
@@ -582,6 +703,15 @@ class LongMomentumStrategyEngine:
                 max(observation.qmd_confidence, 0.5), state, next_status,
                 quantity=observation.position_quantity, invalidation_price=stop,
                 trailing_amount=_trailing_amount(observation, parameters),
+                metadata={
+                    "exit_route_id": exit_route["route_id"],
+                    "exit_route_name": exit_route["name"],
+                    "exit_route_priority": exit_route["priority"],
+                    "buy_back": bool(
+                        assignment.permissions.reenter
+                        and not state.get("disable_after_exit")
+                    ),
+                },
             )
 
         add = parameters["add"]
@@ -804,10 +934,15 @@ class AssignedLongMomentumStrategy:
     automatic = True
 
     def __init__(self, assignments: list[StrategyAssignment]) -> None:
+        self._campaigns = StrategyCampaignOrchestrator(assignments)
         self._assignments = {
             (assignment.account_id, assignment.ticker.upper()): assignment
             for assignment in assignments
         }
+        if len(self._assignments) != len(assignments):
+            raise ValueError(
+                "A Strategy Campaign may have only one active account leg per ticker and account"
+            )
         self._engine = LongMomentumStrategyEngine()
 
     async def on_event(self, event: MarketEvent, account_id: str) -> StrategyEvaluation:
@@ -824,8 +959,9 @@ class AssignedLongMomentumStrategy:
         assignment = self._assignments.get(key)
         if assignment is None:
             return StrategyEvaluation()
+        self._campaigns.assert_owner(assignment)
         result = self._engine.evaluate(assignment, observation)
-        self._assignments[key] = StrategyAssignment(
+        updated = StrategyAssignment(
             assignment_id=assignment.assignment_id,
             strategy_id=assignment.strategy_id,
             strategy_revision=assignment.strategy_revision,
@@ -840,13 +976,31 @@ class AssignedLongMomentumStrategy:
             created_at=assignment.created_at,
             updated_at=observation.observed_at,
         )
+        self._assignments[key] = updated
+        self._campaigns.register(updated)
         return result.evaluation
 
     def assignments(self) -> tuple[StrategyAssignment, ...]:
         return tuple(self._assignments.values())
 
     def upsert_assignment(self, assignment: StrategyAssignment) -> None:
-        self._assignments[(assignment.account_id, assignment.ticker.upper())] = assignment
+        key = (assignment.account_id, assignment.ticker.upper())
+        current = self._assignments.get(key)
+        if (
+            current is not None
+            and current.assignment_id != assignment.assignment_id
+            and current.status
+            not in {
+                AssignmentStatus.DISABLED,
+                AssignmentStatus.COMPLETED,
+                AssignmentStatus.ERROR,
+            }
+        ):
+            raise ValueError(
+                f"{assignment.ticker} already has an active campaign leg for {assignment.account_id}"
+            )
+        self._campaigns.register(assignment)
+        self._assignments[key] = assignment
 
     def command_assignment(
         self,
@@ -869,6 +1023,9 @@ class AssignedLongMomentumStrategy:
             "disable_after_exit",
             "request_entry",
             "force_entry",
+            "request_exit",
+            "exit_and_stop",
+            "exit_keep_watching",
         }:
             raise ValueError(f"Unsupported strategy assignment command: {command}")
         for key, assignment in self._assignments.items():
@@ -881,6 +1038,13 @@ class AssignedLongMomentumStrategy:
                 state["manual_entry_requested"] = True
             elif normalized == "force_entry":
                 state["force_entry_requested"] = True
+            elif normalized in {
+                "request_exit",
+                "exit_and_stop",
+                "exit_keep_watching",
+            }:
+                state["manual_exit_requested"] = True
+                state["disable_after_exit"] = normalized == "exit_and_stop"
             if detail:
                 state["last_command_detail"] = dict(detail)
             updated = replace(
@@ -890,6 +1054,7 @@ class AssignedLongMomentumStrategy:
                 updated_at=event_time,
             )
             self._assignments[key] = updated
+            self._campaigns.register(updated)
             return updated
         raise KeyError(assignment_id)
 
@@ -912,7 +1077,7 @@ class AssignedLongMomentumStrategy:
                     status = AssignmentStatus.COMPLETED
             else:
                 return
-            self._assignments[key] = StrategyAssignment(
+            updated = StrategyAssignment(
                 assignment_id=assignment.assignment_id,
                 strategy_id=assignment.strategy_id,
                 strategy_revision=assignment.strategy_revision,
@@ -927,6 +1092,8 @@ class AssignedLongMomentumStrategy:
                 created_at=assignment.created_at,
                 updated_at=getattr(snapshot, "updated_at", datetime.now(timezone.utc)),
             )
+            self._assignments[key] = updated
+            self._campaigns.register(updated)
             return
 
 
@@ -1098,6 +1265,79 @@ def _observation_field_value(observation: StrategyObservation, runtime_field: st
     if runtime_field == "bullish_choch":
         return observation.structure_event == "choch" and observation.structure_direction == "bullish"
     return getattr(observation, runtime_field, None)
+
+
+def _matching_exit_route(
+    routes: list[dict[str, Any]],
+    *,
+    observation: StrategyObservation,
+    protective_stop: float,
+    failed_breakout: bool,
+) -> dict[str, Any] | None:
+    for route in sorted(
+        (row for row in routes if bool(row.get("enabled", True))),
+        key=lambda row: (-int(row.get("priority") or 0), str(row.get("route_id") or "")),
+    ):
+        mechanism = str(route.get("mechanism") or "")
+        settings = dict(route.get("settings") or {})
+        if mechanism == "protective_stop" and observation.price <= protective_stop:
+            return route
+        if mechanism == "failed_breakout" and failed_breakout:
+            return route
+        if mechanism == "bearish_qmd_macd":
+            bearish_qmd = (
+                observation.qmd_score <= float(settings.get("qmd_score") or -0.35)
+                and observation.qmd_confidence
+                >= float(settings.get("qmd_confidence") or 0.55)
+            )
+            bearish_macd = (
+                observation.macd_histogram is not None
+                and observation.macd_histogram < 0
+                and observation.macd_line is not None
+                and observation.macd_signal is not None
+                and observation.macd_line < observation.macd_signal
+            )
+            if bearish_qmd and (
+                bearish_macd
+                or not bool(settings.get("require_macd_bearish", True))
+            ):
+                return route
+    return None
+
+
+def _campaign_authority(
+    state: dict[str, Any],
+    key: str,
+    default: str,
+) -> str:
+    return str(dict(state.get("campaign_policy") or {}).get(key) or default)
+
+
+def _validate_exit_routes(routes: list[dict[str, Any]]) -> None:
+    if not routes:
+        raise ValueError("Strategy exit routes are required")
+    ids = [str(row.get("route_id") or "") for row in routes]
+    if any(not route_id for route_id in ids) or len(ids) != len(set(ids)):
+        raise ValueError("Strategy exit route ids must be present and unique")
+    protective = next(
+        (row for row in routes if row.get("mechanism") == "protective_stop"),
+        None,
+    )
+    if (
+        protective is None
+        or not bool(protective.get("enabled"))
+        or not bool(protective.get("protected"))
+        or int(protective.get("priority") or 0) != 100
+        or str(protective.get("action")) != "close"
+    ):
+        raise ValueError("The protective-stop exit route cannot be disabled")
+    supported = {"protective_stop", "failed_breakout", "bearish_qmd_macd"}
+    for route in routes:
+        if str(route.get("mechanism") or "") not in supported:
+            raise ValueError(f"Unsupported strategy exit mechanism: {route.get('mechanism')}")
+        priority = int(route.get("priority") or 0)
+        if priority < 0 or priority > 100:
+            raise ValueError("Strategy exit route priority must be between 0 and 100")
 
 
 def _validate_entry_rules(rules: dict[str, Any]) -> None:

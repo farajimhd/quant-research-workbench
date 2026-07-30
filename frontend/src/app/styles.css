@@ -21760,6 +21760,32 @@ button {
 .configuration-library > div > button > span { display: grid; gap: 3px; min-width: 0; }
 .configuration-library > div > button strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .configuration-library > div > button small { color: var(--muted-foreground); font-size: 9px; text-transform: capitalize; }
+.configuration-template-picker {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px 13px;
+}
+.configuration-template-picker > span {
+  color: var(--muted-foreground);
+  font-size: 11.25px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+.configuration-template-picker > button {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--foreground);
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px;
+  text-align: left;
+}
+.configuration-template-picker > button:hover { border-color: var(--primary); }
+.configuration-template-picker strong { font-size: 13.75px; }
+.configuration-template-picker small { color: var(--muted-foreground); font-size: 11.25px; }
 
 .configuration-detail,
 .configuration-stack {
@@ -22139,6 +22165,220 @@ button {
   padding: 3px 1px;
 }
 
+.strategy-lifecycle-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.strategy-lifecycle-panel > summary {
+  align-items: center;
+  cursor: pointer;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  list-style: none;
+  min-height: 66px;
+  padding: 10px 14px;
+}
+.strategy-lifecycle-panel > summary::-webkit-details-marker { display: none; }
+.strategy-lifecycle-panel > summary:hover { background: var(--surface-alt); }
+.strategy-lifecycle-panel > summary > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
+.strategy-lifecycle-panel > summary small {
+  color: var(--primary);
+  font-size: 11.25px;
+  font-weight: 750;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.strategy-lifecycle-panel > summary strong { font-size: 17px; }
+.strategy-lifecycle-panel > summary em {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  font-style: normal;
+  line-height: 1.35;
+}
+.strategy-lifecycle-panel > summary > svg { color: var(--muted-foreground); transition: transform .15s ease; }
+.strategy-lifecycle-panel[open] > summary {
+  background: color-mix(in oklab, var(--primary) 5%, var(--surface));
+  border-bottom: 1px solid var(--border);
+}
+.strategy-lifecycle-panel[open] > summary > svg { transform: rotate(180deg); }
+.strategy-lifecycle-index {
+  align-items: center;
+  background: color-mix(in oklab, var(--primary) 10%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--primary) 32%, var(--border));
+  border-radius: 9px;
+  color: var(--primary);
+  display: flex;
+  font-size: 13px;
+  font-weight: 800;
+  height: 36px;
+  justify-content: center;
+  text-transform: uppercase;
+  width: 36px;
+}
+.strategy-lifecycle-content { display: grid; gap: 15px; padding: 15px; }
+.configuration-section-guide {
+  color: var(--muted-foreground);
+  font-size: 13.75px;
+  line-height: 1.55;
+  margin: 0;
+}
+.configuration-choice-set {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  padding: 11px 12px;
+}
+.configuration-choice-set legend {
+  align-items: center;
+  color: var(--foreground);
+  display: flex;
+  font-size: 13.75px;
+  font-weight: 700;
+  gap: 5px;
+  padding: 0 4px;
+}
+.configuration-choice-set p,
+.watch-universe-editor > p {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  line-height: 1.45;
+  margin: 0;
+}
+.configuration-choice-set > div { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.configuration-choice-set label {
+  align-items: center;
+  color: var(--foreground);
+  display: inline-flex;
+  font-size: 13.75px;
+  gap: 7px;
+}
+.strategy-exit-routes { display: grid; gap: 12px; }
+.strategy-exit-routes > article {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: grid;
+  gap: 12px;
+  padding: 13px;
+}
+.strategy-exit-routes > article[data-enabled="false"] { opacity: .7; }
+.strategy-exit-routes > article > header {
+  align-items: start;
+  display: flex;
+  gap: 15px;
+  justify-content: space-between;
+}
+.strategy-exit-routes > article > header > div { display: grid; gap: 3px; }
+.strategy-exit-routes > article > header span {
+  color: var(--primary);
+  font-size: 11.25px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+.strategy-exit-routes > article > header strong { font-size: 15px; }
+.strategy-exit-routes > article > header p {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  line-height: 1.45;
+  margin: 0;
+}
+.configuration-fixed-value {
+  align-content: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  display: grid;
+  gap: 3px;
+  min-height: 64px;
+  padding: 8px 10px;
+}
+.configuration-fixed-value span,
+.configuration-fixed-value small { color: var(--muted-foreground); font-size: 11.25px; }
+.configuration-fixed-value strong { font-size: 13.75px; }
+.configuration-switch input:disabled + span { cursor: not-allowed; opacity: .7; }
+.watch-universe-editor {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+}
+.configuration-text-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.configuration-text-field > span {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.configuration-text-field > span small { font-weight: 450; }
+.configuration-text-field input {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 15px;
+  height: 42px;
+  min-width: 0;
+  padding: 0 9px;
+  width: 100%;
+}
+.campaign-authority-flow {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+}
+.campaign-authority-flow span {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  font-size: 12.5px;
+  gap: 6px;
+}
+.campaign-authority-flow strong {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--primary);
+  display: inline-flex;
+  height: 25px;
+  justify-content: center;
+  width: 25px;
+}
+.campaign-authority-flow > svg { color: var(--muted-foreground); }
+.configuration-safety-note {
+  align-items: flex-start;
+  background: color-mix(in oklab, var(--success) 7%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--success) 28%, var(--border));
+  border-radius: 8px;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 12.5px;
+  gap: 8px;
+  line-height: 1.45;
+  margin-top: 13px;
+  padding: 10px 12px;
+}
+.configuration-safety-note > svg { color: var(--success); flex: 0 0 auto; }
+.configuration-safety-note strong { color: var(--foreground); }
+
 /* Configuration typography is intentionally 25% larger than the prior guided UI. */
 .configuration-page-header span { font-size: 12.5px; }
 .configuration-page-header h1 { font-size: 27.5px; }
@@ -22224,6 +22464,12 @@ button {
   .strategy-rule-condition { display: grid; grid-template-columns: minmax(0, 1fr); }
   .strategy-condition-index { display: none; }
   .strategy-source-detail { grid-column: 1; }
+  .strategy-lifecycle-panel > summary {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    padding: 9px 10px;
+  }
+  .strategy-lifecycle-index { height: 32px; width: 32px; }
+  .campaign-authority-flow > svg { display: none; }
 }
 
 .configuration-revision-layout > .configuration-json-inspector { grid-column: 1 / -1; }

@@ -135,6 +135,7 @@ from src.backend.trading_configuration_service import (
     replay_configuration_snapshot,
     update_configuration_section,
 )
+from src.trading_runtime.strategy_engine import STRATEGY_ID, STRATEGY_REVISION
 from src.backend.ticker_presentation_service import ticker_presentation_payload
 from src.backend.ticker_facts_service import ticker_fact_history_payload, ticker_facts_payload
 from src.data_provider.calendar import market_sessions, scan_market_source
@@ -458,8 +459,14 @@ class StrategyDefinitionSubmit(BaseModel):
 
 class StrategyAssignmentSubmit(BaseModel):
     assignment_id: str = ""
-    strategy_id: str = "long-momentum-campaign"
-    strategy_revision: int = 1
+    strategy_id: str = STRATEGY_ID
+    strategy_revision: int = STRATEGY_REVISION
+    campaign_id: str = ""
+    deployment_id: str = ""
+    profile_id: str = ""
+    book_id: str = "default"
+    universe_id: str = ""
+    campaign_policy: dict[str, Any] = Field(default_factory=dict)
     account_id: str
     ticker: str
     conid: int = Field(gt=0)
