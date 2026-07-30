@@ -46,7 +46,12 @@ export function useReplayRunEvents(
   useEffect(() => {
     if (!runId) return;
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${protocol}//${window.location.host}/api/trading/replay/runs/${encodeURIComponent(runId)}/events`);
+    const streamUrl = `${protocol}//${window.location.host}/api/trading/replay/runs/${encodeURIComponent(runId)}/events`;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let reconnectAttempt = 0;
+    let disposed = false;
+    let terminalReceived = false;
     let pending: CanvasReplayRun | null = null;
     let updateTimer: number | null = null;
     const flush = () => {
@@ -56,26 +61,45 @@ export function useReplayRunEvents(
       pending = null;
       onUpdateRef.current(update);
     };
-    socket.onmessage = (event) => {
-      try {
-        const update = JSON.parse(String(event.data)) as CanvasReplayRun;
-        if (isTerminalReplayStatus(update.status)) {
-          if (updateTimer !== null) window.clearTimeout(updateTimer);
-          updateTimer = null;
-          pending = null;
-          onUpdateRef.current(update);
-          return;
+    const connect = () => {
+      if (disposed || terminalReceived) return;
+      socket = new WebSocket(streamUrl);
+      socket.onopen = () => {
+        reconnectAttempt = 0;
+      };
+      socket.onmessage = (event) => {
+        try {
+          const update = JSON.parse(String(event.data)) as CanvasReplayRun;
+          if (isTerminalReplayStatus(update.status)) {
+            terminalReceived = true;
+            if (updateTimer !== null) window.clearTimeout(updateTimer);
+            updateTimer = null;
+            pending = null;
+            onUpdateRef.current(update);
+            socket?.close();
+            return;
+          }
+          pending = latestReplayRun(pending, update);
+          if (updateTimer === null) updateTimer = window.setTimeout(flush, REPLAY_UI_UPDATE_MS);
+        } catch {
+          onErrorRef.current("Replay returned an invalid runtime update.");
         }
-        pending = latestReplayRun(pending, update);
-        if (updateTimer === null) updateTimer = window.setTimeout(flush, REPLAY_UI_UPDATE_MS);
-      } catch {
-        onErrorRef.current("Replay returned an invalid runtime update.");
-      }
+      };
+      socket.onclose = () => {
+        socket = null;
+        if (disposed || terminalReceived) return;
+        reconnectAttempt += 1;
+        const delay = Math.min(5_000, 500 * 2 ** Math.min(reconnectAttempt - 1, 4));
+        reconnectTimer = window.setTimeout(connect, delay);
+      };
+      socket.onerror = () => socket?.close();
     };
-    socket.onerror = () => onErrorRef.current("The Replay runtime event stream disconnected.");
+    connect();
     return () => {
       if (updateTimer !== null) window.clearTimeout(updateTimer);
-      socket.close();
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      disposed = true;
+      socket?.close();
     };
   }, [runId]);
 }

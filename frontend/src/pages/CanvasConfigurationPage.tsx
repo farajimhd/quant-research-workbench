@@ -1332,13 +1332,12 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
 
   if (error && !run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
   if (!run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Opening Replay focus canvas</strong><span>Restoring the selected container against the active run clock.</span></div></div>;
-  const focusedRun = error && !run.error ? { ...run, error } : run;
-  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} replayRun={focusedRun} />;
+  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} replayRun={run} />;
 }
 
 export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik }: { canvasId: string; manager: boolean; modeControls?: ReactNode; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string }) {
   const [initialCanvasState] = useState<CanvasWorkspaceState | null>(() => replayRun
-    ? replayRun.canvas_profile.defaultState ?? null
+    ? replayRun.canvas_profile.defaultState ?? replayRun.canvas_profile.workspaceStates?.[canvasId] ?? null
     : focusCanvasState(canvasId, requestedInstanceId));
   const [registry, setRegistry] = useState<CanvasRegistry>(() => replayRun?.canvas_profile ?? readCanvasRegistry());
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => replayRun ? replayPreviewContext(replayRun) : readPreviewContext());
@@ -1737,14 +1736,16 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
   }
 
   function openReplayFocus(profile: CanvasRegistry, state: CanvasWorkspaceState) {
-    if (!replayRun) return;
+    if (!replayRun) return false;
     const token = writeReplayCanvasFocusHandoff(profile, state);
-    window.open(replayFocusCanvasUrl(replayRun.run_id, token), "_blank", "noopener,noreferrer");
+    const focusedWindow = window.open(replayFocusCanvasUrl(replayRun.run_id, token), "_blank");
+    if (focusedWindow) focusedWindow.opener = null;
+    return Boolean(focusedWindow);
   }
 
   function openReplayContainerCanvas(instanceId: string, sourceLayout: WorkspaceWindowLayout) {
     const containerId = workspaceContainerKind(instanceId, workspaceState);
-    openReplayFocus(registry, {
+    return openReplayFocus(registry, {
       groups: {},
       instances: { [instanceId]: containerId },
       layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
@@ -1759,7 +1760,13 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
       fullscreen: id === groupId,
       minimized: false,
     }]));
-    openReplayFocus(registry, { ...sourceState, groups, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION });
+    return openReplayFocus(registry, { ...sourceState, groups, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION });
+  }
+
+  function openReplayConfiguredCanvas(targetCanvasId: string) {
+    const state = registry.workspaceStates?.[targetCanvasId]
+      ?? (targetCanvasId === MAIN_CANVAS_ID ? registry.defaultState : undefined);
+    if (state) openReplayFocus(registry, snapshotCanvasWorkspaceState(state));
   }
 
   function saveDefaultLayout() {
@@ -1806,7 +1813,11 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
         historicalSourceReady={!error}
         initialStateOverride={manager ? null : initialCanvasState}
         layoutPreset={managementEnabled ? "global" : "focus"}
-        managementContent={manager ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} /> : replayRun ? <ReplayCanvasManager revision={replayRun.canvas_revision} /> : null}
+        managementContent={manager
+          ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} />
+          : replayRun
+            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openReplayConfiguredCanvas} /><ReplayCanvasManager revision={replayRun.canvas_revision} /></>
+            : null}
         managementOpen={managementEnabled && managementOpen}
         metaForContainer={metaForContainer}
         mode="replay"
@@ -1916,13 +1927,19 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
   );
 }
 
-function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () => void; onOpen: (id: string) => void; onRemove: (id: string) => void; registry: CanvasRegistry }) {
+function CanvasManager({ availableCanvasIds, onCreate, onOpen, onRemove, registry }: { availableCanvasIds?: Set<string>; onCreate?: () => void; onOpen: (id: string) => void; onRemove?: (id: string) => void; registry: CanvasRegistry }) {
+  const configurationMode = Boolean(onCreate && onRemove);
   return <section aria-label="Canvas manager" className="canvas-manager-strip">
-    <header><div><strong>Canvases</strong><small>Separate saved workspaces</small></div><button aria-label="New canvas" className="button secondary compact" onClick={onCreate} type="button"><Plus size={13} /> New</button></header>
-    <div className="canvas-manager-items">{registry.canvases.map((canvas) => <article key={canvas.id} data-main={canvas.id === MAIN_CANVAS_ID ? "true" : "false"}>
-      <button aria-label={canvas.id === MAIN_CANVAS_ID ? `${canvas.label} is the default canvas` : `Open ${canvas.label}`} className="canvas-manager-open" disabled={canvas.id === MAIN_CANVAS_ID} onClick={() => onOpen(canvas.id)} title={canvas.id === MAIN_CANVAS_ID ? "Default Canvas" : "Open Canvas in a new page"} type="button"><span>{canvas.label}</span><small>{canvas.id === MAIN_CANVAS_ID ? "Default" : "Open"}</small>{canvas.id === MAIN_CANVAS_ID ? null : <ExternalLink size={11} />}</button>
-      {canvas.id === MAIN_CANVAS_ID ? null : <button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button>}
-    </article>)}</div>
+    <header><div><strong>Canvases</strong><small>{configurationMode ? "Separate saved workspaces" : "Approved Replay profile"}</small></div>{onCreate ? <button aria-label="New canvas" className="button secondary compact" onClick={onCreate} type="button"><Plus size={13} /> New</button> : null}</header>
+    <div className="canvas-manager-items">{registry.canvases.map((canvas) => {
+      const available = configurationMode || availableCanvasIds?.has(canvas.id) || (canvas.id === MAIN_CANVAS_ID && Boolean(registry.defaultState));
+      const defaultCanvas = canvas.id === MAIN_CANVAS_ID;
+      const disabled = configurationMode ? defaultCanvas : !available;
+      return <article key={canvas.id} data-main={defaultCanvas ? "true" : "false"}>
+      <button aria-label={disabled ? `${canvas.label} is unavailable` : `Open ${canvas.label}`} className="canvas-manager-open" disabled={disabled} onClick={() => onOpen(canvas.id)} title={disabled ? (configurationMode ? "Default Canvas" : "No saved layout was captured") : "Open Canvas in a new page"} type="button"><span>{canvas.label}</span><small>{configurationMode && defaultCanvas ? "Default" : available ? "Open" : "Unavailable"}</small>{disabled ? null : <ExternalLink size={11} />}</button>
+      {defaultCanvas || !onRemove ? null : <button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button>}
+    </article>;
+    })}</div>
   </section>;
 }
 

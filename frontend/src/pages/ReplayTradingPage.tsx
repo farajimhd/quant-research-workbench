@@ -22,6 +22,7 @@ import {
   MAIN_CANVAS_ID,
   readCanvasRegistry,
   readCanvasWorkspaceState,
+  snapshotCanvasProfile,
   snapshotCanvasWorkspaceState,
   type CanvasRegistry,
 } from "../app/canvasWorkspace";
@@ -318,9 +319,13 @@ function readReplayCanvasProfile(): { containerCount: number; label: string; pro
   const currentState = readCanvasWorkspaceState(MAIN_CANVAS_ID);
   const selectedState = [currentState, registry.defaultState].find((state) => Boolean(state?.openIds.length));
   const replayState = selectedState ? snapshotCanvasWorkspaceState(selectedState) : undefined;
+  const capturedProfile = snapshotCanvasProfile(registry);
   const profile: CanvasRegistry = {
-    ...registry,
+    ...capturedProfile,
     defaultState: replayState,
+    workspaceStates: replayState
+      ? { ...capturedProfile.workspaceStates, [MAIN_CANVAS_ID]: replayState }
+      : capturedProfile.workspaceStates,
   };
   const serialized = stableStringify(profile);
   const containerCount = replayState?.openIds.length ?? 0;

@@ -37,6 +37,7 @@ export type CanvasRegistry = {
   linkAssignments: Partial<Record<string, CanvasLinkGroupId>>;
   linkContexts: Record<CanvasAssignedLinkGroupId, CanvasLinkContext>;
   linkOwners: Partial<Record<CanvasAssignedLinkGroupId, string>>;
+  workspaceStates?: Record<string, CanvasWorkspaceState>;
   version: 3;
 };
 
@@ -174,6 +175,14 @@ export function snapshotCanvasWorkspaceState(state: CanvasWorkspaceState): Canva
       minimized: false,
     }])),
   };
+}
+
+export function snapshotCanvasProfile(registry = readCanvasRegistry()): CanvasRegistry {
+  const workspaceStates = Object.fromEntries(registry.canvases.flatMap((canvas) => {
+    const state = readCanvasWorkspaceState(canvas.id);
+    return state ? [[canvas.id, snapshotCanvasWorkspaceState(state)]] : [];
+  }));
+  return { ...registry, workspaceStates };
 }
 
 export function focusCanvasUrl(canvasId: string, containerId?: string) {

@@ -76,8 +76,8 @@ type TradingWorkspaceProps = {
   onContainerAdded?: (instanceId: string, definition: WorkspaceContainerDefinition) => void;
   onMoveContainerToCanvas?: (id: string, canvasId: string, layout: WorkspaceWindowLayout) => void;
   onMoveGroupToCanvas?: (id: string, canvasId: string, state: CanvasWorkspaceState) => void;
-  onPopOutContainer?: (id: string, layout: WorkspaceWindowLayout) => void;
-  onPopOutGroup?: (id: string, state: CanvasWorkspaceState) => void;
+  onPopOutContainer?: (id: string, layout: WorkspaceWindowLayout) => boolean | void;
+  onPopOutGroup?: (id: string, state: CanvasWorkspaceState) => boolean | void;
   onStateChange?: (state: CanvasWorkspaceState) => void;
   renderContainer?: (definition: WorkspaceContainerDefinition, instanceId: string) => ReactNode;
   runLabel: string;
@@ -487,9 +487,16 @@ export function TradingWorkspace({
     removeWorkspaceNode(groupId);
   }
 
+  function popOutContainer(id: string) {
+    const layout = layouts[id];
+    if (!layout || !onPopOutContainer) return;
+    if (onPopOutContainer(id, layout) === false) return;
+    closeContainer(id);
+  }
+
   function popOutGroup(groupId: string) {
     if (!onPopOutGroup) return;
-    onPopOutGroup(groupId, workspaceNodeState(groupId));
+    if (onPopOutGroup(groupId, workspaceNodeState(groupId)) === false) return;
     removeWorkspaceNode(groupId);
   }
 
@@ -628,7 +635,7 @@ export function TradingWorkspace({
       onFocus={focusContainer}
       onLayoutChange={updateLayout}
       onMoveToCanvas={(windowId, targetCanvasId) => moveContainer(windowId, targetCanvasId)}
-      onPopOut={() => onPopOutContainer?.(id, layout)}
+      onPopOut={() => popOutContainer(id)}
       onReset={() => resetContainer(id)}
       onSelectionToggle={toggleNodeSelection}
       selected={selectedNodeIds.includes(id)}
