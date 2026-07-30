@@ -32,6 +32,7 @@ NOW = datetime(2026, 7, 24, 14, 0, tzinfo=timezone.utc)
 
 def assignment(
     *,
+    parameters: dict | None = None,
     status: AssignmentStatus = AssignmentStatus.WATCHING,
     permissions: StrategyPermissions | None = None,
     state: dict | None = None,
@@ -45,7 +46,7 @@ def assignment(
         conid=265598,
         status=status,
         permissions=permissions or StrategyPermissions(enter=True, add=True, reenter=True),
-        parameters=default_long_momentum_parameters(),
+        parameters=parameters or default_long_momentum_parameters(),
         state=state or {},
         created_at=NOW,
         updated_at=NOW,
@@ -82,7 +83,8 @@ class LongMomentumStrategyTests(unittest.TestCase):
     def test_definition_is_long_only_timeframe_aware_and_searchable(self) -> None:
         definition = long_momentum_strategy_definition()
         config = definition["config"]
-        self.assertEqual(config["direction"], "long_only")
+        self.assertEqual(config["direction"], "single_side")
+        self.assertEqual(config["supported_sides"], ["long", "short"])
         self.assertEqual(
             config["parameters"]["entry_rules"]["trigger"]["operator"],
             "any",
@@ -152,6 +154,42 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertLess(intent.invalidation_price or 0, intent.reference_price)
         self.assertGreater(intent.profit_target_price or 0, intent.reference_price)
         self.assertGreater(intent.trailing_amount or 0, 0)
+
+    def test_short_profile_emits_relative_sell_intent_with_phase_order_policy(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["strategy_behavior"] = {"side": "short"}
+        parameters["phase_policy"] = {
+            "initial_entry": {
+                "capital_request": {
+                    "mode": "mandate_fraction",
+                    "value": 0.2,
+                    "priority": 70,
+                    "allow_replacement": True,
+                },
+                "order_intent": {
+                    "execution_policy": "adaptive_urgent",
+                    "time_in_force": "DAY",
+                    "outside_rth": False,
+                    "partial_fill_policy": "complete_remainder",
+                    "deadline_ms": 500,
+                },
+                "add_steps": [],
+            }
+        }
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "enter_short")
+        intent = result.evaluation.intents[0]
+        self.assertEqual(intent.quantity, 0)
+        self.assertEqual(intent.capital_request.mode, "mandate_fraction")
+        self.assertEqual(intent.capital_request.value, 0.2)
+        self.assertIsNone(intent.capital_request.maximum_quantity)
+        self.assertEqual(intent.execution_policy.name.value, "adaptive_urgent")
+        self.assertGreater(intent.invalidation_price or 0, intent.reference_price)
 
     def test_campaign_initial_entry_authority_requires_operator_confirmation(self) -> None:
         waiting = assignment(

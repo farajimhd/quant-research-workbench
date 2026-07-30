@@ -32,7 +32,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 4)
+        self.assertEqual(draft["schema_version"], 5)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 2)
         self.assertTrue(all(profile["editable"] for profile in draft["strategy"]["profiles"]))
@@ -56,6 +56,17 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 for profile in draft["strategy"]["profiles"]
             )
         )
+        lifecycle = default_profile["lifecycle"]
+        self.assertEqual(lifecycle["trading_behavior"]["side"], "long")
+        self.assertEqual(
+            lifecycle["initial_entry"]["capital_request"]["mode"],
+            "mandate_fraction",
+        )
+        self.assertTrue(lifecycle["initial_entry"]["add_steps"])
+        self.assertTrue(lifecycle["reentry"]["rules"]["opportunity"]["groups"])
+        self.assertTrue(lifecycle["exit"]["routes"][1]["rules"]["groups"])
+        self.assertNotIn("sizing", default_profile["parameters"])
+        self.assertNotIn("maximum_position_quantity", str(default_profile))
         self.assertTrue(draft["assignments"]["universes"])
         self.assertEqual(
             draft["assignments"]["deployments"][0]["campaign_policy"][
@@ -172,7 +183,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             ["second-replay", "balanced-replay"],
         )
         assignment = runtimes[0]["assignments"][0]
-        self.assertEqual(assignment["campaign_id"], "second-replay:MSFT")
+        self.assertEqual(assignment["campaign_id"], "second-replay:MSFT:long")
         self.assertEqual(assignment["profile_id"], "long-momentum-balanced")
         self.assertIn("entry_rules", assignment["resolved_parameters"])
 
@@ -242,13 +253,13 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ), self.assertRaisesRegex(ValueError, "must remain protected"):
             _validate_draft(draft, require_runtime_ready=False)
 
-    def test_long_only_definition_rejects_unsupported_side(self) -> None:
+    def test_strategy_definition_rejects_non_single_side_profile(self) -> None:
         draft = self._draft()
-        draft["strategy"]["profiles"][0]["lifecycle"]["trading_behavior"]["side"] = "short"
+        draft["strategy"]["profiles"][0]["lifecycle"]["trading_behavior"]["side"] = "both"
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
-        ), self.assertRaisesRegex(ValueError, "long-only implementation"):
+        ), self.assertRaisesRegex(ValueError, "exactly one side"):
             _validate_draft(draft, require_runtime_ready=False)
 
     def test_external_universe_source_is_draftable_but_not_publishable(self) -> None:

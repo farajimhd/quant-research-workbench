@@ -22376,6 +22376,366 @@ button {
   margin-top: 13px;
   padding: 10px 12px;
 }
+
+/* Strategy configuration: semantic hierarchy, editable affordances, and portal help. */
+.configuration-workbench {
+  --strategy-edit-tone: var(--metric-accent-2);
+}
+.configuration-detail,
+.configuration-library {
+  font-weight: 450;
+}
+.configuration-detail strong,
+.configuration-library strong {
+  font-weight: 620;
+}
+.strategy-lifecycle-panel {
+  --strategy-tone: var(--metric-accent-1);
+  border-color: color-mix(in oklab, var(--strategy-tone) 24%, var(--border));
+  box-shadow: 0 5px 18px color-mix(in oklab, var(--strategy-tone) 5%, transparent);
+}
+.strategy-lifecycle-panel[data-section="initial-entry"] { --strategy-tone: var(--metric-accent-2); }
+.strategy-lifecycle-panel[data-section="reentry"] { --strategy-tone: var(--metric-accent-3); }
+.strategy-lifecycle-panel[data-section="exit"] { --strategy-tone: var(--danger); }
+.strategy-lifecycle-panel[data-section="capabilities"] { --strategy-tone: var(--metric-accent-4); }
+.strategy-lifecycle-panel > summary {
+  background: color-mix(in oklab, var(--strategy-tone) 4%, var(--surface));
+  border-left: 4px solid color-mix(in oklab, var(--strategy-tone) 72%, var(--border));
+}
+.strategy-lifecycle-panel[open] > summary {
+  background: color-mix(in oklab, var(--strategy-tone) 9%, var(--surface));
+}
+.strategy-lifecycle-panel > summary small,
+.strategy-lifecycle-panel > summary > svg {
+  color: color-mix(in oklab, var(--strategy-tone) 76%, var(--foreground));
+}
+.strategy-lifecycle-panel > summary strong {
+  font-family: var(--display-font, "Segoe UI Variable Display", "Segoe UI", sans-serif);
+  font-size: 17px;
+  font-weight: 630;
+}
+.strategy-lifecycle-index {
+  background: color-mix(in oklab, var(--strategy-tone) 13%, var(--surface));
+  border-color: color-mix(in oklab, var(--strategy-tone) 46%, var(--border));
+  color: color-mix(in oklab, var(--strategy-tone) 82%, var(--foreground));
+}
+.configuration-field[data-editable="true"] > span:first-child::before {
+  background: var(--strategy-edit-tone);
+  border-radius: 50%;
+  content: "";
+  height: 5px;
+  margin-right: 2px;
+  width: 5px;
+}
+.configuration-field[data-editable="true"] input:not([type="checkbox"]),
+.configuration-field[data-editable="true"] select {
+  background: color-mix(in oklab, var(--strategy-edit-tone) 4%, var(--control-background));
+  border-color: color-mix(in oklab, var(--strategy-edit-tone) 30%, var(--border));
+  box-shadow: inset 3px 0 0 color-mix(in oklab, var(--strategy-edit-tone) 45%, transparent);
+}
+.configuration-field[data-editable="true"]:focus-within input:not([type="checkbox"]),
+.configuration-field[data-editable="true"]:focus-within select {
+  background: color-mix(in oklab, var(--strategy-edit-tone) 8%, var(--control-background));
+  border-color: var(--strategy-edit-tone);
+}
+.configuration-boolean[data-editable="true"] {
+  background: color-mix(in oklab, var(--strategy-edit-tone) 4%, var(--control-background));
+  border-color: color-mix(in oklab, var(--strategy-edit-tone) 30%, var(--border));
+  box-shadow: inset 3px 0 0 color-mix(in oklab, var(--strategy-edit-tone) 45%, transparent);
+}
+.configuration-fixed-value,
+.configuration-context-value {
+  background:
+    linear-gradient(135deg, transparent 0 46%, color-mix(in oklab, var(--muted-foreground) 5%, transparent) 46% 54%, transparent 54% 100%),
+    var(--surface-alt);
+  background-size: 8px 8px;
+  border: 1px dashed color-mix(in oklab, var(--muted-foreground) 42%, var(--border));
+  border-radius: 7px;
+  display: grid;
+  gap: 4px;
+  min-height: 58px;
+  padding: 9px 10px;
+}
+.configuration-fixed-value > span,
+.configuration-context-value > span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 520;
+}
+.configuration-fixed-value > strong,
+.configuration-context-value > strong {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 12px;
+  font-weight: 560;
+  gap: 5px;
+}
+.configuration-fixed-value > small,
+.configuration-context-value > small {
+  color: var(--muted-foreground);
+  font-size: 9px;
+}
+.configuration-help {
+  align-items: center;
+  display: inline-flex;
+  position: static;
+}
+.configuration-help > button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  color: color-mix(in oklab, var(--strategy-edit-tone) 68%, var(--muted-foreground));
+  cursor: help;
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  width: 22px;
+}
+.configuration-help > button:hover,
+.configuration-help > button:focus-visible,
+.configuration-help > button[aria-expanded="true"] {
+  background: color-mix(in oklab, var(--strategy-edit-tone) 13%, var(--surface));
+  color: var(--strategy-edit-tone);
+  outline: 2px solid color-mix(in oklab, var(--strategy-edit-tone) 28%, transparent);
+}
+.configuration-help-popover {
+  background: var(--popover);
+  border: 1px solid color-mix(in oklab, var(--metric-accent-2) 42%, var(--border));
+  border-radius: 10px;
+  box-shadow: 0 18px 54px color-mix(in oklab, var(--foreground) 22%, transparent);
+  color: var(--foreground);
+  display: grid;
+  font-size: 13px;
+  gap: 11px;
+  line-height: 1.5;
+  max-height: min(520px, calc(100vh - 24px));
+  overflow: auto;
+  padding: 13px 14px;
+  position: fixed;
+  width: min(360px, calc(100vw - 24px));
+  z-index: 30000;
+}
+.configuration-help-popover > header {
+  align-items: center;
+  color: var(--metric-accent-2);
+  display: flex;
+  font-size: 10px;
+  font-weight: 720;
+  gap: 7px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.configuration-help-popover > div {
+  display: grid;
+  gap: 3px;
+}
+.configuration-help-popover strong {
+  color: var(--metric-accent-2);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.configuration-help-popover p {
+  color: var(--foreground);
+  font-weight: 430;
+  margin: 0;
+}
+.configuration-help-popover dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+.configuration-help-popover dl > div {
+  background: color-mix(in oklab, var(--metric-accent-2) 5%, var(--surface-alt));
+  border-left: 3px solid color-mix(in oklab, var(--metric-accent-2) 58%, var(--border));
+  border-radius: 0 6px 6px 0;
+  display: grid;
+  gap: 2px;
+  padding: 7px 9px;
+}
+.configuration-help-popover dt {
+  color: color-mix(in oklab, var(--metric-accent-2) 78%, var(--foreground));
+  font-size: 11px;
+  font-weight: 650;
+}
+.configuration-help-popover dd {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  margin: 0;
+}
+.configuration-help-popover > footer {
+  background: color-mix(in oklab, var(--warning) 9%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--warning) 32%, var(--border));
+  border-radius: 7px;
+  display: grid;
+  gap: 3px;
+  padding: 8px 9px;
+}
+.configuration-help-popover > footer strong { color: var(--warning); }
+.strategy-rule-stage {
+  --rule-tone: var(--metric-accent-2);
+  border-color: color-mix(in oklab, var(--rule-tone) 24%, var(--border));
+}
+.strategy-rule-stage[data-stage="confirmation"] { --rule-tone: var(--metric-accent-3); }
+.strategy-rule-stage[data-stage="blockers"],
+.strategy-rule-stage[data-stage="exit"] { --rule-tone: var(--danger); }
+.strategy-rule-stage > header {
+  background: color-mix(in oklab, var(--rule-tone) 6%, var(--surface-alt));
+  border-top: 3px solid color-mix(in oklab, var(--rule-tone) 55%, var(--border));
+}
+.strategy-rule-stage > header > div:first-child > span {
+  color: color-mix(in oklab, var(--rule-tone) 78%, var(--foreground));
+}
+.strategy-rule-stage > header strong {
+  font-size: 14px;
+  font-weight: 620;
+}
+.strategy-rule-group {
+  border-color: color-mix(in oklab, var(--rule-tone) 22%, var(--border));
+  overflow: hidden;
+  padding: 0;
+}
+.strategy-rule-group > summary,
+.strategy-add-step > summary {
+  align-items: center;
+  background: color-mix(in oklab, var(--rule-tone, var(--metric-accent-2)) 4%, var(--surface));
+  cursor: pointer;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  list-style: none;
+  min-height: 54px;
+  padding: 8px 11px;
+}
+.strategy-rule-group > summary::-webkit-details-marker,
+.strategy-add-step > summary::-webkit-details-marker,
+.strategy-exit-route > summary::-webkit-details-marker { display: none; }
+.strategy-rule-group > summary > div,
+.strategy-add-step > summary > div { display: grid; gap: 2px; }
+.strategy-rule-group > summary strong,
+.strategy-add-step > summary strong { font-size: 12px; font-weight: 610; }
+.strategy-rule-group > summary small,
+.strategy-add-step > summary small,
+.strategy-rule-group > summary > span:nth-child(3) { color: var(--muted-foreground); font-size: 10px; }
+.strategy-rule-group > summary > svg,
+.strategy-add-step > summary > svg,
+.strategy-exit-route > summary > svg { color: var(--muted-foreground); transition: transform .16s ease; }
+.strategy-rule-group[open] > summary > svg,
+.strategy-add-step[open] > summary > svg,
+.strategy-exit-route[open] > summary > svg { transform: rotate(180deg); }
+.strategy-rule-state {
+  background: var(--success);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--success) 13%, transparent);
+  height: 8px;
+  width: 8px;
+}
+.strategy-rule-group[data-enabled="false"] .strategy-rule-state { background: var(--muted-foreground); box-shadow: none; }
+.strategy-rule-group-body,
+.strategy-add-step-body {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+  padding: 11px;
+}
+.strategy-order-request,
+.strategy-add-plan {
+  border: 1px solid color-mix(in oklab, var(--metric-accent-2) 28%, var(--border));
+  border-radius: 9px;
+  display: grid;
+  gap: 12px;
+  padding: 13px;
+}
+.strategy-order-request > header,
+.strategy-add-plan > header {
+  align-items: start;
+  display: flex;
+  justify-content: space-between;
+}
+.strategy-order-request > header > div,
+.strategy-add-plan > header > div { display: grid; gap: 3px; }
+.strategy-order-request > header span,
+.strategy-add-plan > header span {
+  color: var(--metric-accent-2);
+  font-size: 10px;
+  font-weight: 680;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.strategy-order-request > header strong,
+.strategy-add-plan > header strong {
+  font-size: 14px;
+  font-weight: 620;
+}
+.strategy-order-request > header p,
+.strategy-add-plan > header p {
+  color: var(--muted-foreground);
+  line-height: 1.5;
+  margin: 0;
+  max-width: 850px;
+}
+.strategy-order-intent {
+  border-top: 1px dashed color-mix(in oklab, var(--metric-accent-2) 28%, var(--border));
+  padding-top: 12px;
+}
+.strategy-add-plan {
+  background: color-mix(in oklab, var(--metric-accent-3) 3%, var(--surface));
+  border-color: color-mix(in oklab, var(--metric-accent-3) 28%, var(--border));
+}
+.strategy-add-plan > div { display: grid; gap: 9px; }
+.strategy-add-step {
+  --rule-tone: var(--metric-accent-3);
+  background: var(--surface);
+  border: 1px solid color-mix(in oklab, var(--metric-accent-3) 28%, var(--border));
+  border-radius: 8px;
+  overflow: hidden;
+}
+.strategy-exit-routes { gap: 10px; }
+.strategy-exit-route {
+  background: var(--surface);
+  border: 1px solid color-mix(in oklab, var(--danger) 25%, var(--border));
+  border-radius: 8px;
+  overflow: hidden;
+}
+.strategy-exit-route > summary {
+  align-items: center;
+  background: color-mix(in oklab, var(--danger) 4%, var(--surface));
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  list-style: none;
+  padding: 11px 12px;
+}
+.strategy-exit-route > summary > div { display: grid; gap: 2px; }
+.strategy-exit-route > summary > div > span { color: var(--danger); font-size: 9px; font-weight: 680; letter-spacing: .05em; text-transform: uppercase; }
+.strategy-exit-route > summary strong { font-size: 13px; font-weight: 620; }
+.strategy-exit-route > summary p { color: var(--muted-foreground); margin: 0; }
+.strategy-exit-route-body { border-top: 1px solid var(--border); display: grid; gap: 12px; padding: 12px; }
+.configuration-locked-note {
+  align-items: flex-start;
+  background: color-mix(in oklab, var(--muted-foreground) 6%, var(--surface-alt));
+  border: 1px dashed color-mix(in oklab, var(--muted-foreground) 38%, var(--border));
+  border-radius: 7px;
+  color: var(--muted-foreground);
+  display: flex;
+  gap: 7px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 9px 10px;
+}
+@media (max-width: 900px) {
+  .strategy-order-request > header,
+  .strategy-add-plan > header,
+  .strategy-rule-stage > header { align-items: stretch; display: grid; }
+  .strategy-stage-controls { align-items: stretch; flex-wrap: wrap; }
+  .strategy-rule-group > summary { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .strategy-rule-group > summary > span:nth-child(3) { display: none; }
+}
 .configuration-safety-note > svg { color: var(--success); flex: 0 0 auto; }
 .configuration-safety-note strong { color: var(--foreground); }
 

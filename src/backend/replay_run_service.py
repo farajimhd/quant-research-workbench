@@ -1334,9 +1334,16 @@ def _assignment_from_payload(
         ),
     }
     ticker = _ticker(payload["ticker"])
+    side = str(
+        dict(
+            dict(configuration.get("strategy_profile") or {}).get("lifecycle") or {}
+        ).get("trading_behavior", {}).get("side")
+        or dict(dict(strategy.get("parameters") or {}).get("strategy_behavior") or {}).get("side")
+        or "long"
+    )
     campaign_id = str(
         payload.get("campaign_id")
-        or f"{deployment.get('deployment_id') or 'deployment'}:{ticker}"
+        or f"{deployment.get('deployment_id') or 'deployment'}:{ticker}:{side}"
     )
     state = campaign_state(
         campaign_id=f"replay:{campaign_id}",
@@ -1344,6 +1351,7 @@ def _assignment_from_payload(
         profile_id=str(strategy.get("profile_id") or ""),
         book_id=str(deployment.get("book_id") or "default"),
         universe_id=str(deployment.get("universe_id") or ""),
+        side=side,
     )
     state["campaign_policy"] = deepcopy(
         dict(payload.get("campaign_policy") or configuration.get("campaign_policy") or {})

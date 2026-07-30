@@ -31,7 +31,7 @@ The product deliberately separates concepts that were previously grouped under
 | Strategy-account mandate | Many-to-many rule governing how one deployment may use one account |
 | Watch Universe | Versioned source of symbols that deployments may evaluate; configured symbols, an approved Scanner view, or a Watchlist |
 | Strategy Deployment | Usable unit combining a Strategy Profile, Watch Universe, selection priority, campaign authority, OMS profile, runtime modes, and account mandates |
-| Strategy Campaign | One durable runtime lifecycle that exclusively owns a ticker in one portfolio book across initial entry, exits, and zero or more reentries |
+| Strategy Campaign | One durable runtime lifecycle that exclusively owns one ticker-side pair in one portfolio book across initial entry, exits, and zero or more reentries |
 | Campaign account leg | Account-specific execution and position state belonging to one Strategy Campaign; several legs may share the same ticker lease |
 | Strategy Orchestrator | Shared runtime authority that grants and releases ticker leases and prevents conflicting active campaigns |
 | Approved Release | Immutable application snapshot consumed by new runs |
@@ -70,13 +70,17 @@ Initial Entry contains three subordinate stages:
 These stages are not peers of Exit or Reentry. A Strategy Profile has the
 following primary behavioral areas:
 
-1. Trading Behavior: side, eligible sessions, evaluation trigger, relative
-   capital request, and manual-position adoption;
-2. Initial Entry: opportunity, confirmation, and blocker rules;
-3. Reentry: whether another flat-to-open transition may occur in the same
-   campaign, cooldown, maximum attempts, and fresh-evidence requirements;
-4. Exit: ordered named routes with protected, strategic, profit, or emergency
-   semantics; and
+1. Trading Behavior: exactly one side (`long` or `short`), eligible sessions,
+   evaluation trigger, and manual-position adoption;
+2. Initial Entry: opportunity, confirmation, and blocker rules, a relative
+   capital request, an OMS execution policy, and zero or more ordered add steps;
+3. Reentry: independent opportunity, confirmation, and blocker rules, a
+   relative capital request, an OMS execution policy, cooldown, maximum
+   attempts, and fresh-evidence requirements. Initial Entry rule sets can be
+   copied into Reentry as editable copies; they are not linked aliases;
+4. Exit: ordered named routes with their own rule sets, position fraction,
+   execution policy, and protected, strategic, profit, or emergency semantics;
+   and
 5. Capabilities: reusable code-defined functions that extend a lifecycle
    without replacing Entry, Reentry, or Exit.
 
@@ -123,8 +127,11 @@ Strategy may express sizing relatively through a `CapitalRequest`:
 - fraction of account risk;
 - all capacity available under the mandate.
 
-Portfolio translates the request into a final account quantity. A strategy
-cannot exceed account policy or mandate limits. When an explicitly permitted
+Each Initial Entry, Add, or Reentry transition owns its request. Strategy does
+not define a position share ceiling because it does not own account capacity or
+final quantity. Portfolio translates every request into a final account
+quantity and applies account policy, the strategy-account mandate, current
+positions, reservations, and arbitration rules. When an explicitly permitted
 request lacks capacity, Portfolio may create an auditable rebalance proposal.
 The proposal names the candidate position, evidence, improvement threshold,
 and autonomy requirement. It does not silently release capital or bypass OMS.
@@ -153,6 +160,9 @@ Raw JSON is never the primary configuration interface.
 - Strategy Studio presents Trading Behavior, Initial Entry, Reentry, Exit, and
   Capabilities as collapsible containers with descriptive headers and
   at-a-glance configured summaries.
+- Existing rule sets are collapsed by default, newly added rule sets appear
+  first and open immediately, and Initial Entry rules can be copied into
+  Reentry without creating hidden shared state.
 - Logical strategy behavior uses a guided rule builder with visible providers,
   source parameters, timeframes, comparisons, thresholds, Boolean grouping,
   and confirmation weights.
@@ -160,6 +170,12 @@ Raw JSON is never the primary configuration interface.
   available under Advanced.
 - Every parameter has a readable label, contextual help, units, appropriate
   control, and immediate range/choice constraints.
+- Editable controls use an accent treatment distinct from protected,
+  inherited, and computed values. Section color and typography encode meaning
+  and hierarchy; bold text is reserved for high-value identifiers and states.
+- Context help is rendered in a viewport-level overlay so it is not clipped by
+  panels. It explains the parameter's role, the meaning of each available
+  value, and any authority or safety consequence.
 - The Strategy Profile -> Deployment -> Capital mandate -> Publication journey
   remains visible across configuration pages.
 - Generated JSON is available on demand through a read-only advanced inspector.
@@ -189,7 +205,7 @@ Later draft edits or publications cannot mutate it.
 
 ## Runtime compatibility boundary
 
-The schema-v4 model is authoritative. `resolve_runtime_configurations()` orders
+The schema-v5 model is authoritative. `resolve_runtime_configurations()` orders
 every approved deployment eligible for a runtime mode by configured selection
 priority and projects each profile, Watch Universe, campaign policy, Portfolio,
 OMS, account, and campaign leg through one shared boundary. Individual
@@ -200,8 +216,18 @@ Replay records the complete approved model and every eligible Deployment.
 Configured-universe symbols join Canvas and active-campaign symbols in the
 historical stream. Every account leg carries its resolved profile parameters,
 campaign identity, deployment, universe, book, and phase authority. The shared
-Strategy Orchestrator permits several account legs in one campaign but rejects
-a second active campaign attempting to own the same ticker and book.
+Strategy Orchestrator permits several account legs in one campaign, rejects a
+competing campaign for the same ticker, book, and side, and permits one long
+plus one short campaign on the same ticker when they have distinct campaign
+identities. One brokerage account cannot host both legs simultaneously because
+ordinary broker positions net; opposing campaigns must use separate
+non-netting account boundaries.
+
+Strategy phase order settings select a broker-neutral registered execution
+policy, time in force, outside-hours permission, partial-fill behavior, and
+deadline. They do not create broker orders. Portfolio must approve and size the
+semantic request before the shared OMS chooses and manages broker-native order
+types, replacements, partial fills, protection, and reconciliation.
 
 An exit makes a position flat; it does not necessarily finish a campaign.
 `Exit and keep watching` retains the lease and enters Reentry wait. `Exit and

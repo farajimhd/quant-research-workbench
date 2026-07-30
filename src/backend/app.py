@@ -465,6 +465,7 @@ class StrategyAssignmentSubmit(BaseModel):
     deployment_id: str = ""
     profile_id: str = ""
     book_id: str = "default"
+    side: str = "long"
     universe_id: str = ""
     campaign_policy: dict[str, Any] = Field(default_factory=dict)
     account_id: str

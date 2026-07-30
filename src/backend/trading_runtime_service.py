@@ -139,13 +139,20 @@ def create_strategy_assignment(payload: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(ZoneInfo("UTC"))
     ticker = str(payload.get("ticker") or "").strip().upper()
     state = dict(payload.get("state") or {})
+    side = str(
+        payload.get("side")
+        or state.get("campaign_side")
+        or dict(dict(payload.get("parameters") or {}).get("strategy_behavior") or {}).get("side")
+        or "long"
+    ).lower()
     state.update(
         campaign_state(
-            campaign_id=str(payload.get("campaign_id") or state.get("campaign_id") or f"{payload.get('strategy_id') or STRATEGY_ID}:{ticker}"),
+            campaign_id=str(payload.get("campaign_id") or state.get("campaign_id") or f"{payload.get('strategy_id') or STRATEGY_ID}:{ticker}:{side}"),
             deployment_id=str(payload.get("deployment_id") or state.get("campaign_deployment_id") or ""),
             profile_id=str(payload.get("profile_id") or state.get("campaign_profile_id") or ""),
             book_id=str(payload.get("book_id") or state.get("campaign_book_id") or "default"),
             universe_id=str(payload.get("universe_id") or state.get("campaign_universe_id") or ""),
+            side=side,
         )
     )
     if isinstance(payload.get("campaign_policy"), dict):
@@ -175,7 +182,8 @@ def create_strategy_assignment(payload: dict[str, Any]) -> dict[str, Any]:
         for row in active_ticker_assignments
     ):
         raise ValueError(
-            f"{ticker} already has an active campaign leg for {assignment.account_id}"
+            f"{ticker} already has an active campaign leg for {assignment.account_id}; "
+            "opposing sides require separate non-netting accounts"
         )
     StrategyCampaignOrchestrator([*active_ticker_assignments, assignment])
     saved = trading_journal().save_strategy_assignment(assignment.payload())

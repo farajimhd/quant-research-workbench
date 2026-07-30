@@ -29,7 +29,7 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 4
+CONFIGURATION_SCHEMA_VERSION = 5
 CONFIGURATION_SECTIONS = {"strategy", "assignments", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
@@ -321,9 +321,13 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deploymen
         )
     for assignment in runtime_assignments:
         ticker = str(assignment.get("ticker") or "").upper()
+        side = str(
+            dict(dict(profile.get("lifecycle") or {}).get("trading_behavior") or {}).get("side")
+            or "long"
+        )
         assignment.setdefault(
             "campaign_id",
-            f"{deployment['deployment_id']}:{ticker}",
+            f"{deployment['deployment_id']}:{ticker}:{side}",
         )
         policy = dict(deployment.get("campaign_policy") or {})
         existing_permissions = dict(assignment.get("permissions") or {})
@@ -340,6 +344,7 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deploymen
         assignment["deployment_id"] = str(deployment["deployment_id"])
         assignment["universe_id"] = str(deployment["universe_id"])
         assignment["book_id"] = str(deployment["book_id"])
+        assignment["side"] = side
         assignment["campaign_policy"] = deepcopy(policy)
         assignment["resolved_parameters"] = merged_assignment_parameters(
             {
@@ -383,7 +388,12 @@ def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
     )
     reentry = dict(parameters.get("reentry") or {})
     final_exit = dict(parameters.get("final_exit") or {})
-    return {
+    initial_rules = {
+        "opportunity": deepcopy(dict(rules.get("trigger") or {})),
+        "confirmation": deepcopy(dict(rules.get("confirmation") or {})),
+        "blockers": deepcopy(dict(rules.get("veto") or {})),
+    }
+    lifecycle = {
         "trading_behavior": {
             "side": "long",
             "eligible_sessions": ["regular"],
@@ -391,29 +401,189 @@ def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
             "adopt_manual_positions": True,
         },
         "initial_entry": {
-            "opportunity": deepcopy(dict(rules.get("trigger") or {})),
-            "confirmation": deepcopy(dict(rules.get("confirmation") or {})),
-            "blockers": deepcopy(dict(rules.get("veto") or {})),
+            **deepcopy(initial_rules),
+            "capital_request": _default_capital_request("mandate_fraction", 0.20),
+            "order_intent": _default_order_intent("adaptive_urgent"),
+            "add_steps": [
+                {
+                    "step_id": "confirmed-position-add",
+                    "name": "Confirmed position add",
+                    "enabled": True,
+                    "rules": _single_rule_stage(
+                        "bullish-structure-add",
+                        "Bullish structure continuation",
+                        "indicator.structure.bullish_choch",
+                        "1s",
+                        "is_true",
+                    ),
+                    "capital_request": _default_capital_request(
+                        "mandate_fraction", 0.50
+                    ),
+                    "order_intent": _default_order_intent("adaptive_urgent"),
+                    "maximum_uses": 2,
+                }
+            ],
         },
         "reentry": {
             "enabled": bool(reentry.get("enabled", True)),
-            "reuse_initial_entry": True,
             "cooldown_ms": int(reentry.get("cooldown_ms") or 0),
             "maximum_attempts": int(reentry.get("maximum_attempts") or 0),
             "require_new_confirmation": bool(
                 reentry.get("require_new_confirmation", True)
             ),
+            "rules": deepcopy(initial_rules),
+            "capital_request": _default_capital_request("mandate_fraction", 0.20),
+            "order_intent": _default_order_intent("adaptive_urgent"),
         },
         "exit": {
             "routes": default_exit_routes(final_exit)
         },
     }
+    for route in lifecycle["exit"]["routes"]:
+        route["order_intent"] = _default_order_intent(
+            "adaptive_very_urgent"
+            if route.get("protected")
+            else "adaptive_urgent"
+        )
+        route["position_fraction"] = 1.0
+        route["rules"] = _default_exit_rule_stage(str(route.get("mechanism") or ""))
+    return lifecycle
+
+
+def _default_capital_request(mode: str, value: float) -> dict[str, Any]:
+    return {
+        "mode": mode,
+        "value": value,
+        "priority": 50,
+        "allow_replacement": False,
+    }
+
+
+def _default_order_intent(policy: str) -> dict[str, Any]:
+    return {
+        "execution_policy": policy,
+        "time_in_force": "DAY",
+        "outside_rth": False,
+        "partial_fill_policy": "complete_remainder",
+        "deadline_ms": 750,
+    }
+
+
+def _single_rule_stage(
+    group_id: str,
+    label: str,
+    source_id: str,
+    timeframe: str,
+    comparator: str,
+    *,
+    value: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "operator": "any",
+        "groups": [{
+            "group_id": group_id,
+            "label": label,
+            "operator": "all",
+            "weight": 1.0,
+            "enabled": True,
+            "conditions": [{
+                "condition_id": f"{group_id}-condition",
+                "left_source_id": source_id,
+                "left_timeframe": timeframe,
+                "comparator": comparator,
+                "right_source_id": "",
+                "right_timeframe": "",
+                "value": value,
+                "enabled": True,
+            }],
+        }],
+    }
+
+
+def _default_exit_rule_stage(mechanism: str) -> dict[str, Any]:
+    if mechanism == "failed_breakout":
+        stage = _single_rule_stage(
+            "lose-entry-structure",
+            "Lose entry structure",
+            "market.last_price",
+            "1s",
+            "less_than",
+        )
+        condition = stage["groups"][0]["conditions"][0]
+        condition["right_source_id"] = "indicator.structure.swing_high"
+        condition["right_timeframe"] = "1s"
+        return stage
+    if mechanism == "bearish_qmd_macd":
+        return _single_rule_stage(
+            "adverse-qmd",
+            "Adverse QMD momentum",
+            "indicator.flow_structure.score",
+            "100ms",
+            "less_or_equal",
+            value=-0.35,
+        )
+    return {"operator": "any", "groups": []}
 
 
 def _parameters_without_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(parameters)
-    for key in ("entry_rules", "reentry", "final_exit", "exit_routes"):
+    for key in ("entry_rules", "reentry", "final_exit", "exit_routes", "sizing", "add", "execution"):
         result.pop(key, None)
+    return result
+
+
+def _migrate_lifecycle_v5(
+    lifecycle: dict[str, Any],
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    result = deepcopy(lifecycle)
+    defaults = _default_strategy_lifecycle(parameters)
+    behavior = result.setdefault("trading_behavior", {})
+    behavior.setdefault("side", "long")
+    if behavior.get("side") == "both":
+        behavior["side"] = "long"
+    initial = result.setdefault("initial_entry", {})
+    for stage_name in ("opportunity", "confirmation", "blockers"):
+        initial.setdefault(stage_name, deepcopy(defaults["initial_entry"][stage_name]))
+    legacy_sizing = dict(parameters.get("sizing") or {})
+    initial.setdefault(
+        "capital_request",
+        _default_capital_request(
+            str(legacy_sizing.get("request_mode") or "mandate_fraction"),
+            float(legacy_sizing.get("request_value") or 0.20),
+        ),
+    )
+    initial.setdefault("order_intent", deepcopy(defaults["initial_entry"]["order_intent"]))
+    initial.setdefault("add_steps", deepcopy(defaults["initial_entry"]["add_steps"]))
+    reentry = result.setdefault("reentry", {})
+    reentry.pop("reuse_initial_entry", None)
+    reentry.setdefault("rules", {
+        stage_name: deepcopy(initial[stage_name])
+        for stage_name in ("opportunity", "confirmation", "blockers")
+    })
+    reentry.setdefault("capital_request", deepcopy(initial["capital_request"]))
+    reentry.setdefault("order_intent", deepcopy(initial["order_intent"]))
+    reentry.setdefault("enabled", True)
+    reentry.setdefault("cooldown_ms", 0)
+    reentry.setdefault("maximum_attempts", 0)
+    reentry.setdefault("require_new_confirmation", True)
+    exit_config = result.setdefault("exit", {})
+    exit_config.setdefault("routes", deepcopy(defaults["exit"]["routes"]))
+    default_routes = {
+        str(route["route_id"]): route
+        for route in defaults["exit"]["routes"]
+    }
+    for route in exit_config["routes"]:
+        route_default = default_routes.get(str(route.get("route_id")), {})
+        route.setdefault(
+            "rules",
+            deepcopy(route_default.get("rules") or {"operator": "any", "groups": []}),
+        )
+        route.setdefault(
+            "order_intent",
+            deepcopy(route_default.get("order_intent") or _default_order_intent("adaptive_urgent")),
+        )
+        route.setdefault("position_fraction", 1.0)
     return result
 
 
@@ -466,9 +636,6 @@ def _default_draft() -> dict[str, Any]:
             "Higher confirmation and smaller initial size for controlled evaluation.",
             _overrides(parameters, {
                 "entry_rules.confirmation.minimum_score": 0.65,
-                "sizing.request_value": 50.0,
-                "sizing.initial_quantity": 50.0,
-                "sizing.maximum_position_quantity": 150.0,
                 "reentry.maximum_attempts": 1,
             }),
             origin="system",
@@ -477,11 +644,17 @@ def _default_draft() -> dict[str, Any]:
             "long-momentum-semi-auto",
             "Long Momentum · Semi-automatic",
             "Operator-confirmed entries with configurable automated position management.",
-            _overrides(parameters, {"sizing.request_value": 100.0, "sizing.initial_quantity": 100.0}),
+            parameters,
             origin="system",
             capability_modes={"profit-pocket": "confirm", "exit-watch-reenter": "confirm", "confirmed-pullback-add": "confirm"},
         ),
     ]
+    system_profiles[1]["lifecycle"]["initial_entry"]["capital_request"] = (
+        _default_capital_request("mandate_fraction", 0.10)
+    )
+    system_profiles[1]["lifecycle"]["reentry"]["capital_request"] = (
+        _default_capital_request("mandate_fraction", 0.10)
+    )
     system_profiles[0]["protected"] = True
     profile_templates = deepcopy(system_profiles[1:])
     system_profiles = system_profiles[:1]
@@ -541,6 +714,10 @@ def _default_draft() -> dict[str, Any]:
                 "name": definition["name"],
                 "automatic": bool(definition.get("automatic", True)),
                 "direction": str(dict(definition.get("config") or {}).get("direction") or ""),
+                "supported_sides": list(
+                    dict(definition.get("config") or {}).get("supported_sides")
+                    or ["long"]
+                ),
             }],
             "capability_catalog": capability_catalog(),
             "input_catalog": strategy_input_catalog(),
@@ -597,11 +774,13 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
             raise ValueError("The default Strategy Profile must remain protected")
         lifecycle = dict(profile.get("lifecycle") or {})
         _validate_strategy_lifecycle(lifecycle)
-        direction = str(dict(definition.get("config") or {}).get("direction") or "")
+        definition_config = dict(definition.get("config") or {})
+        direction = str(definition_config.get("direction") or "")
         configured_side = str(dict(lifecycle.get("trading_behavior") or {}).get("side") or "")
-        if direction == "long_only" and configured_side != "long":
+        supported_sides = set(definition_config.get("supported_sides") or ["long"])
+        if configured_side not in supported_sides:
             raise ValueError(
-                f"Strategy Profile {profile.get('name')} uses a long-only implementation"
+                f"Strategy Profile {profile.get('name')} does not support the {configured_side} side"
             )
         _parameters_with_capabilities(profile)
         for binding in profile.get("capabilities") or []:
@@ -828,10 +1007,25 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 lifecycle["reentry"]["enabled"] = bool(
                     legacy_reentry.get("enabled", True)
                 )
+            lifecycle = _migrate_lifecycle_v5(lifecycle, parameters)
             initial_entry = dict(lifecycle.get("initial_entry") or {})
-            for stage in initial_entry.values():
-                if isinstance(stage, dict):
-                    _normalize_entry_rule_sources({"stage": stage})
+            _normalize_entry_rule_sources({
+                key: value
+                for key, value in initial_entry.items()
+                if key in {"opportunity", "confirmation", "blockers"}
+            })
+            reentry_rules = dict(
+                dict(lifecycle.get("reentry") or {}).get("rules") or {}
+            )
+            _normalize_entry_rule_sources(reentry_rules)
+            for step in initial_entry.get("add_steps") or []:
+                _normalize_entry_rule_sources(
+                    {"rules": dict(step.get("rules") or {})}
+                )
+            for route in dict(lifecycle.get("exit") or {}).get("routes") or []:
+                _normalize_entry_rule_sources(
+                    {"rules": dict(route.get("rules") or {})}
+                )
             profile["lifecycle"] = lifecycle
             profile["parameters"] = _parameters_without_lifecycle(parameters)
             profile["protected"] = (
@@ -1036,8 +1230,8 @@ def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
             f"Strategy lifecycle is missing: {', '.join(sorted(missing))}"
         )
     behavior = dict(lifecycle["trading_behavior"])
-    if str(behavior.get("side") or "") not in {"long", "short", "both"}:
-        raise ValueError("Strategy side must be long, short, or both")
+    if str(behavior.get("side") or "") not in {"long", "short"}:
+        raise ValueError("Each Strategy Profile must use exactly one side: long or short")
     sessions = set(behavior.get("eligible_sessions") or [])
     if not sessions or not sessions <= {"premarket", "regular", "after_hours"}:
         raise ValueError("Strategy eligible sessions are unsupported")
@@ -1050,11 +1244,32 @@ def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
     parameters = default_long_momentum_parameters()
     parameters["entry_rules"] = runtime_rules
     resolve_long_momentum_parameters(parameters)
+    _validate_capital_request(dict(initial_entry.get("capital_request") or {}), "Initial entry")
+    _validate_order_intent(dict(initial_entry.get("order_intent") or {}), "Initial entry")
+    add_steps = list(initial_entry.get("add_steps") or [])
+    _unique_ids(add_steps, "step_id", "Initial-entry add step")
+    for step in add_steps:
+        _validate_rule_stage(dict(step.get("rules") or {}), f"Add step {step.get('name')}")
+        _validate_capital_request(dict(step.get("capital_request") or {}), f"Add step {step.get('name')}")
+        _validate_order_intent(dict(step.get("order_intent") or {}), f"Add step {step.get('name')}")
+        if int(step.get("maximum_uses") or 0) < 1:
+            raise ValueError(f"Add step {step.get('name')} maximum uses must be positive")
     reentry = dict(lifecycle["reentry"])
     if int(reentry.get("cooldown_ms") or 0) < 0:
         raise ValueError("Strategy reentry cooldown cannot be negative")
     if int(reentry.get("maximum_attempts") or 0) < 0:
         raise ValueError("Strategy maximum reentries cannot be negative")
+    reentry_rules = dict(reentry.get("rules") or {})
+    runtime_reentry_rules = {
+        "trigger": deepcopy(dict(reentry_rules.get("opportunity") or {})),
+        "confirmation": deepcopy(dict(reentry_rules.get("confirmation") or {})),
+        "veto": deepcopy(dict(reentry_rules.get("blockers") or {})),
+    }
+    reentry_parameters = default_long_momentum_parameters()
+    reentry_parameters["entry_rules"] = runtime_reentry_rules
+    resolve_long_momentum_parameters(reentry_parameters)
+    _validate_capital_request(dict(reentry.get("capital_request") or {}), "Reentry")
+    _validate_order_intent(dict(reentry.get("order_intent") or {}), "Reentry")
     routes = list(dict(lifecycle["exit"]).get("routes") or [])
     route_ids = _unique_ids(routes, "route_id", "Strategy exit route")
     if "protective-stop" not in route_ids:
@@ -1083,6 +1298,61 @@ def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
         priority = int(route.get("priority") or 0)
         if priority < 0 or priority > 100:
             raise ValueError("Exit route priority must be between 0 and 100")
+        _validate_rule_stage(dict(route.get("rules") or {}), f"Exit route {route.get('name')}")
+        _validate_order_intent(dict(route.get("order_intent") or {}), f"Exit route {route.get('name')}")
+        position_fraction = float(route.get("position_fraction") or 0)
+        if not 0 < position_fraction <= 1:
+            raise ValueError(f"Exit route {route.get('name')} position fraction must be between zero and one")
+
+
+def _validate_rule_stage(stage: dict[str, Any], label: str) -> None:
+    if str(stage.get("operator") or "") not in {"all", "any", "weighted"}:
+        raise ValueError(f"{label} has unsupported rule-set logic")
+    for group in stage.get("groups") or []:
+        if str(group.get("operator") or "") not in {"all", "any"}:
+            raise ValueError(f"{label} has unsupported condition logic")
+        if not list(group.get("conditions") or []):
+            raise ValueError(f"{label} rule sets require at least one condition")
+
+
+def _validate_capital_request(request: dict[str, Any], label: str) -> None:
+    mode = str(request.get("mode") or "")
+    if mode not in {"fixed_quantity", "mandate_fraction", "risk_fraction", "all_available"}:
+        raise ValueError(f"{label} capital request mode is unsupported")
+    value = float(request.get("value") or 0)
+    if mode in {"mandate_fraction", "risk_fraction"} and not 0 < value <= 1:
+        raise ValueError(f"{label} capital request fraction must be between zero and one")
+    if mode == "fixed_quantity" and value <= 0:
+        raise ValueError(f"{label} fixed quantity must be positive")
+    if mode == "all_available" and value not in {0.0, 1.0}:
+        raise ValueError(f"{label} all-available requests do not accept a custom value")
+    if not 0 <= int(request.get("priority") or 0) <= 100:
+        raise ValueError(f"{label} capital request priority must be between zero and 100")
+
+
+def _validate_order_intent(intent: dict[str, Any], label: str) -> None:
+    if str(intent.get("execution_policy") or "") not in {
+        "passive",
+        "midpoint",
+        "adaptive_patient",
+        "adaptive_regular",
+        "adaptive_urgent",
+        "adaptive_very_urgent",
+        "immediate_with_limit",
+        "ibkr_native_adaptive",
+        "cancel_if_not_filled",
+    }:
+        raise ValueError(f"{label} execution policy is unsupported")
+    if str(intent.get("time_in_force") or "") not in {"DAY", "GTC", "IOC", "OPG"}:
+        raise ValueError(f"{label} time in force is unsupported")
+    if str(intent.get("partial_fill_policy") or "") not in {
+        "complete_remainder",
+        "accept_partial",
+        "cancel_remainder",
+    }:
+        raise ValueError(f"{label} partial-fill policy is unsupported")
+    if int(intent.get("deadline_ms") or 0) < 0:
+        raise ValueError(f"{label} execution deadline cannot be negative")
 
 
 def _normalize_entry_rule_sources(entry_rules: dict[str, Any]) -> None:
@@ -1140,9 +1410,29 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
         "confirmation": deepcopy(dict(initial_entry.get("confirmation") or {})),
         "veto": deepcopy(dict(initial_entry.get("blockers") or {})),
     }
-    parameters["reentry"] = deepcopy(dict(lifecycle.get("reentry") or {}))
+    behavior = deepcopy(dict(lifecycle.get("trading_behavior") or {}))
+    reentry = deepcopy(dict(lifecycle.get("reentry") or {}))
+    reentry_rules = dict(reentry.pop("rules", {}) or {})
+    parameters["reentry"] = reentry
     exit_routes = list(dict(lifecycle.get("exit") or {}).get("routes") or [])
     parameters["exit_routes"] = deepcopy(exit_routes)
+    parameters["strategy_behavior"] = behavior
+    parameters["phase_policy"] = {
+        "initial_entry": {
+            "capital_request": deepcopy(dict(initial_entry.get("capital_request") or {})),
+            "order_intent": deepcopy(dict(initial_entry.get("order_intent") or {})),
+            "add_steps": deepcopy(list(initial_entry.get("add_steps") or [])),
+        },
+        "reentry": {
+            "rules": {
+                "trigger": deepcopy(dict(reentry_rules.get("opportunity") or {})),
+                "confirmation": deepcopy(dict(reentry_rules.get("confirmation") or {})),
+                "veto": deepcopy(dict(reentry_rules.get("blockers") or {})),
+            },
+            "capital_request": deepcopy(dict(reentry.get("capital_request") or {})),
+            "order_intent": deepcopy(dict(reentry.get("order_intent") or {})),
+        },
+    }
     failed_breakout = next(
         (row for row in exit_routes if row.get("mechanism") == "failed_breakout"),
         {},
@@ -1171,11 +1461,16 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
     add = bindings.get("confirmed-pullback-add")
     if add:
         settings = dict(add.get("settings") or {})
-        parameters.setdefault("add", {}).update({
-            "enabled": True,
-            "maximum_adds": int(settings.get("maximum_adds") or 0),
-        })
-        parameters.setdefault("sizing", {})["add_fraction"] = float(settings.get("add_fraction") or 0)
+        add_steps = list(
+            parameters.setdefault("phase_policy", {})
+            .setdefault("initial_entry", {})
+            .get("add_steps") or []
+        )
+        if add_steps:
+            add_steps[0]["maximum_uses"] = int(
+                settings.get("maximum_adds") or add_steps[0].get("maximum_uses") or 1
+            )
+            parameters["phase_policy"]["initial_entry"]["add_steps"] = add_steps
     return resolve_long_momentum_parameters(parameters)
 
 

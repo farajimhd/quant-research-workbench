@@ -6,13 +6,19 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
+from src.trading_runtime.execution_policies import (
+    ExecutionEnvelope,
+    ExecutionPolicy,
+    ExecutionPolicyName,
+    PartialFillPolicy,
+)
 from src.trading_runtime.signals import CapitalRequest, StrategyEvaluation, StrategyIntent, StrategySignal
 from src.market_engine.events import MarketEvent
 from src.trading_runtime.strategy_campaign import StrategyCampaignOrchestrator
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 3
+STRATEGY_REVISION = 4
 
 RULE_COMPARATORS = {
     "above_by_bps",
@@ -255,7 +261,8 @@ def long_momentum_strategy_definition() -> dict[str, Any]:
         "automatic": True,
         "enabled": True,
         "config": {
-            "direction": "long_only",
+            "direction": "single_side",
+            "supported_sides": ["long", "short"],
             "parameters": parameters,
             "input_catalog": strategy_input_catalog(),
             "parameter_space": {
@@ -321,7 +328,6 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "request_value": 100.0,
             "initial_quantity": 100.0,
             "add_fraction": 0.5,
-            "maximum_position_quantity": 300.0,
         },
         "protection": {
             "stop": {
@@ -420,6 +426,9 @@ def default_exit_routes(final_exit: dict[str, Any] | None = None) -> list[dict[s
 
 def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     parameters = _deep_merge(default_long_momentum_parameters(), dict(overrides or {}))
+    side = str(dict(parameters.get("strategy_behavior") or {}).get("side") or "long")
+    if side not in {"long", "short"}:
+        raise ValueError("Strategy side must be long or short")
     if parameters["protection"]["stop"]["method"] not in {"structure", "volatility", "hybrid"}:
         raise ValueError("Unsupported protective stop method")
     sizing = parameters["sizing"]
@@ -432,10 +441,8 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
         raise ValueError("Unsupported strategy capital request mode")
     if float(sizing["request_value"]) < 0:
         raise ValueError("Strategy capital request value cannot be negative")
-    if float(sizing["initial_quantity"]) <= 0 or float(sizing["maximum_position_quantity"]) <= 0:
-        raise ValueError("Strategy quantities must be positive")
-    if float(sizing["initial_quantity"]) > float(sizing["maximum_position_quantity"]):
-        raise ValueError("Initial quantity cannot exceed maximum position quantity")
+    if float(sizing["initial_quantity"]) <= 0:
+        raise ValueError("Strategy fallback initial quantity must be positive")
     if not 0 < float(sizing["add_fraction"]) <= 1:
         raise ValueError("Add fraction must be between 0 and 1")
     if not 0 < float(parameters["profit_pocket"]["quantity_fraction"]) <= 1:
@@ -463,6 +470,18 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
         raise ValueError("Unsupported strategy time in force")
     _validate_exit_routes(list(parameters.get("exit_routes") or []))
     _validate_entry_rules(dict(parameters.get("entry_rules") or {}))
+    phase_policy = dict(parameters.get("phase_policy") or {})
+    if phase_policy:
+        for phase_name in ("initial_entry", "reentry"):
+            phase = dict(phase_policy.get(phase_name) or {})
+            if phase:
+                _validate_phase_capital_request(
+                    dict(phase.get("capital_request") or {})
+                )
+                _validate_phase_order_intent(dict(phase.get("order_intent") or {}))
+        for step in dict(phase_policy.get("initial_entry") or {}).get("add_steps") or []:
+            _validate_phase_capital_request(dict(step.get("capital_request") or {}))
+            _validate_phase_order_intent(dict(step.get("order_intent") or {}))
     return parameters
 
 
@@ -556,12 +575,17 @@ class LongMomentumStrategyEngine:
         if not observation.market_open:
             return self._result(assignment, observation, "wait", "market_not_open", 0.0, 1.0, state, AssignmentStatus.WATCHING)
 
-        rule_result = evaluate_entry_decision_rules(
-            dict(parameters.get("entry_rules") or {}),
-            observation,
+        phase_name = "reentry" if reentries else "initial_entry"
+        phase_policy = dict(parameters.get("phase_policy") or {})
+        phase = dict(phase_policy.get(phase_name) or {})
+        phase_rules = (
+            dict(phase.get("rules") or {})
+            if reentries
+            else dict(parameters.get("entry_rules") or {})
         )
+        rule_result = evaluate_entry_decision_rules(phase_rules, observation)
         reference_name, reference, reference_buffer_bps = _trigger_reference(
-            dict(parameters.get("entry_rules") or {}),
+            phase_rules,
             rule_result,
             observation,
         )
@@ -594,12 +618,19 @@ class LongMomentumStrategyEngine:
                 metadata={"triggers": triggered, "vetoes": vetoes, "confirmation": confirmation, "entry_rules": rule_result},
             )
 
-        stop = _initial_stop(observation, parameters, reference)
-        quantity = min(
-            float(parameters["sizing"]["initial_quantity"]),
-            float(parameters["sizing"]["maximum_position_quantity"]),
+        side = _strategy_side(parameters)
+        stop = _initial_stop(observation, parameters, reference, side=side)
+        capital_request = _phase_capital_request(
+            parameters,
+            phase_name,
+            fallback_quantity=float(parameters["sizing"]["initial_quantity"]),
         )
-        target = _luld_target(observation, parameters)
+        quantity = (
+            capital_request.value
+            if capital_request.mode == "fixed_quantity"
+            else 0.0
+        )
+        target = _luld_target(observation, parameters, side=side)
         state.update(
             {
                 "breakout_level": reference,
@@ -608,6 +639,7 @@ class LongMomentumStrategyEngine:
                 "initial_stop": stop,
                 "active_stop": stop,
                 "high_water_price": observation.price,
+                "low_water_price": observation.price,
                 "adds": 0,
                 "profit_takes": 0,
                 "entries": int(state.get("entries") or 0) + 1,
@@ -616,8 +648,8 @@ class LongMomentumStrategyEngine:
         return self._result(
             assignment,
             observation,
-            "enter_long",
-            "entry_confirmed",
+            "enter_long" if side == "long" else "enter_short",
+            "reentry_confirmed" if reentries else "entry_confirmed",
             confirmation_score,
             _confirmation_confidence(observation),
             state,
@@ -626,6 +658,8 @@ class LongMomentumStrategyEngine:
             invalidation_price=stop,
             profit_target_price=target,
             trailing_amount=_trailing_amount(observation, parameters),
+            capital_request=capital_request,
+            order_intent=dict(phase.get("order_intent") or {}),
             metadata={
                 "triggers": triggered,
                 "confirmation": confirmation,
@@ -641,20 +675,29 @@ class LongMomentumStrategyEngine:
         parameters: dict[str, Any],
         state: dict[str, Any],
     ) -> StrategyEngineResult:
-        state["high_water_price"] = max(float(state.get("high_water_price") or observation.price), observation.price)
-        state["active_stop"] = _ratcheted_stop(observation, parameters, state)
+        side = _strategy_side(parameters)
+        if side == "long":
+            state["high_water_price"] = max(float(state.get("high_water_price") or observation.price), observation.price)
+        else:
+            state["low_water_price"] = min(float(state.get("low_water_price") or observation.price), observation.price)
+        state["active_stop"] = _ratcheted_stop(observation, parameters, state, side=side)
         stop = float(state["active_stop"])
         breakout_level = float(state.get("breakout_level") or 0)
         breakout_buffer = observation.price * float(state.get("breakout_buffer_bps") or 0) / 10_000
         failed_breakout = bool(
             breakout_level > 0
-            and observation.price < breakout_level - breakout_buffer
+            and (
+                observation.price < breakout_level - breakout_buffer
+                if side == "long"
+                else observation.price > breakout_level + breakout_buffer
+            )
         )
         exit_route = _matching_exit_route(
             list(parameters.get("exit_routes") or []),
             observation=observation,
             protective_stop=stop,
             failed_breakout=failed_breakout,
+            side=side,
         )
         manual_exit_requested = bool(state.pop("manual_exit_requested", False))
         if manual_exit_requested:
@@ -699,10 +742,11 @@ class LongMomentumStrategyEngine:
             state["reentries"] = int(state.get("reentries") or 0) + 1
             next_status = AssignmentStatus.COMPLETED if state.get("disable_after_exit") or not assignment.permissions.reenter else AssignmentStatus.REENTRY_COOLDOWN
             return self._result(
-                assignment, observation, "exit", reason, observation.qmd_score,
+                assignment, observation, "exit" if side == "long" else "cover", reason, observation.qmd_score,
                 max(observation.qmd_confidence, 0.5), state, next_status,
-                quantity=observation.position_quantity, invalidation_price=stop,
+                quantity=observation.position_quantity * float(exit_route.get("position_fraction") or 1.0), invalidation_price=stop,
                 trailing_amount=_trailing_amount(observation, parameters),
+                order_intent=dict(exit_route.get("order_intent") or {}),
                 metadata={
                     "exit_route_id": exit_route["route_id"],
                     "exit_route_name": exit_route["name"],
@@ -714,47 +758,84 @@ class LongMomentumStrategyEngine:
                 },
             )
 
-        add = parameters["add"]
-        bullish_choch = observation.structure_event == "choch" and observation.structure_direction == "bullish"
-        add_rule_result = evaluate_entry_decision_rules(
-            dict(parameters.get("entry_rules") or {}),
-            observation,
+        confirmation: dict[str, bool] = {}
+        add_steps = list(
+            dict(
+                dict(parameters.get("phase_policy") or {}).get("initial_entry") or {}
+            ).get("add_steps") or []
         )
-        confirmation_score = float(add_rule_result["confirmation"]["score"])
-        confirmation = dict(add_rule_result["confirmation"]["groups"])
-        adds = int(state.get("adds") or 0)
-        maximum_qty = float(parameters["sizing"]["maximum_position_quantity"])
-        add_qty = min(
-            float(parameters["sizing"]["initial_quantity"]) * float(parameters["sizing"]["add_fraction"]),
-            max(0.0, maximum_qty - observation.position_quantity),
-        )
-        if (
-            assignment.permissions.add
-            and add["enabled"]
-            and bullish_choch
-            and adds < int(add["maximum_adds"])
-            and add_qty > 0
-            and bool(add_rule_result["confirmation"]["passed"])
-        ):
-            state["adds"] = adds + 1
+        if not add_steps and bool(dict(parameters.get("add") or {}).get("enabled")):
+            legacy_add = dict(parameters.get("add") or {})
+            legacy_rules = evaluate_entry_decision_rules(
+                dict(parameters.get("entry_rules") or {}),
+                observation,
+            )
+            if (
+                observation.structure_event == "choch"
+                and observation.structure_direction == ("bullish" if side == "long" else "bearish")
+                and bool(legacy_rules["confirmation"]["passed"])
+            ):
+                add_steps = [{
+                    "step_id": "legacy-confirmed-add",
+                    "name": "Legacy confirmed add",
+                    "enabled": True,
+                    "rules": {"operator": "any", "groups": []},
+                    "capital_request": {
+                        "mode": "fixed_quantity",
+                        "value": float(parameters["sizing"]["initial_quantity"])
+                        * float(parameters["sizing"]["add_fraction"]),
+                        "priority": 50,
+                        "allow_replacement": False,
+                    },
+                    "order_intent": {},
+                    "maximum_uses": int(legacy_add.get("maximum_adds") or 0),
+                    "_legacy_rules_passed": True,
+                }]
+        for add_step in add_steps:
+            uses = dict(state.get("add_step_uses") or {})
+            step_id = str(add_step.get("step_id") or "")
+            used = int(uses.get(step_id) or 0)
+            if (
+                not assignment.permissions.add
+                or not bool(add_step.get("enabled", True))
+                or used >= int(add_step.get("maximum_uses") or 1)
+                or not (
+                    bool(add_step.get("_legacy_rules_passed"))
+                    or _rule_stage_passed(dict(add_step.get("rules") or {}), observation)
+                )
+            ):
+                continue
+            add_request = _capital_request_from_payload(
+                dict(add_step.get("capital_request") or {})
+            )
+            add_qty = add_request.value if add_request.mode == "fixed_quantity" else 0.0
+            uses[step_id] = used + 1
+            state["add_step_uses"] = uses
+            state["adds"] = int(state.get("adds") or 0) + 1
             return self._result(
-                assignment, observation, "add_long", "bullish_choch_confirmed",
-                confirmation_score, _confirmation_confidence(observation), state,
+                assignment, observation, "add_long" if side == "long" else "add_short", step_id or "position_add",
+                observation.qmd_score, _confirmation_confidence(observation), state,
                 AssignmentStatus.MANAGING, quantity=add_qty, invalidation_price=stop,
                 trailing_amount=_trailing_amount(observation, parameters),
-                metadata={"confirmation": confirmation},
+                capital_request=add_request,
+                order_intent=dict(add_step.get("order_intent") or {}),
+                metadata={"add_step_id": step_id, "add_step_name": add_step.get("name")},
             )
 
         pocket = parameters["profit_pocket"]
         entry_price = float(state.get("entry_reference_price") or observation.average_price or observation.price)
-        gain_pct = (observation.price / entry_price - 1) * 100 if entry_price > 0 else 0
+        gain_pct = (
+            (observation.price / entry_price - 1) * 100
+            if side == "long"
+            else (entry_price / observation.price - 1) * 100
+        ) if entry_price > 0 else 0
         previous_acceleration = float(state.get("last_acceleration") or 0)
         threshold = float(pocket["acceleration_slowdown_threshold"])
         slowdown = previous_acceleration > threshold and observation.acceleration <= threshold
         favorable_pct = gain_pct >= float(pocket["minimum_gain_pct"])
         favorable_volatility = (
             observation.volatility > 0
-            and observation.price - entry_price >= observation.volatility * float(pocket["volatility_multiple"])
+            and abs(observation.price - entry_price) >= observation.volatility * float(pocket["volatility_multiple"])
         )
         trigger_name = str(pocket["trigger"])
         pocket_triggered = (
@@ -784,7 +865,7 @@ class LongMomentumStrategyEngine:
             state["last_exit_reason"] = "profit_pocket"
             state["last_exit_at"] = observation.observed_at.isoformat()
             return self._result(
-                assignment, observation, "exit", "profit_pocket",
+                assignment, observation, "exit" if side == "long" else "cover", "profit_pocket",
                 max(0.0, observation.qmd_score), _confirmation_confidence(observation),
                 state, AssignmentStatus.EXIT_PENDING, quantity=pocket_qty,
                 invalidation_price=stop,
@@ -820,6 +901,8 @@ class LongMomentumStrategyEngine:
         invalidation_price: float | None = None,
         profit_target_price: float | None = None,
         trailing_amount: float | None = None,
+        capital_request: CapitalRequest | None = None,
+        order_intent: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> StrategyEngineResult:
         event_id = str(uuid4())
@@ -829,7 +912,13 @@ class LongMomentumStrategyEngine:
             ticker=observation.ticker.upper(),
             event_time=observation.observed_at,
             action=action,  # type: ignore[arg-type]
-            direction="bearish" if action in {"reduce_long", "take_profit", "exit"} else "bullish" if action in {"enter_long", "add_long"} else "neutral",
+            direction=(
+                "bearish"
+                if action in {"reduce_long", "take_profit", "exit", "enter_short", "add_short"}
+                else "bullish"
+                if action in {"enter_long", "add_long", "reduce_short", "cover"}
+                else "neutral"
+            ),
             score=max(-1.0, min(1.0, score)),
             confidence=max(0.0, min(1.0, confidence)),
             reason=reason,
@@ -844,7 +933,13 @@ class LongMomentumStrategyEngine:
             },
         )
         intents: tuple[StrategyIntent, ...] = ()
-        if action in {"enter_long", "add_long", "reduce_long", "take_profit", "exit"}:
+        if action in {"enter_long", "add_long", "reduce_long", "take_profit", "exit", "enter_short", "add_short", "reduce_short", "cover"}:
+            resolved_order_intent = dict(order_intent or {})
+            resolved_capital_request = capital_request or (
+                _capital_request(assignment.parameters, quantity=quantity, action=action)
+                if action in {"enter_long", "add_long", "enter_short", "add_short"}
+                else None
+            )
             intents = (
                 StrategyIntent(
                     intent_id=event_id,
@@ -853,17 +948,18 @@ class LongMomentumStrategyEngine:
                     action=action,  # type: ignore[arg-type]
                     quantity=quantity,
                     reference_price=observation.price,
-                    capital_request=(
-                        _capital_request(assignment.parameters, quantity=quantity, action=action)
-                        if action in {"enter_long", "add_long"}
-                        else None
-                    ),
+                    capital_request=resolved_capital_request,
                     invalidation_price=invalidation_price,
                     profit_target_price=profit_target_price,
                     trailing_amount=trailing_amount,
-                    urgency=str(assignment.parameters.get("execution", {}).get("entry_urgency") or "urgent") if action in {"enter_long", "add_long"} else str(assignment.parameters.get("execution", {}).get("exit_urgency") or "very_urgent"),  # type: ignore[arg-type]
-                    time_in_force=str(assignment.parameters.get("execution", {}).get("time_in_force") or "DAY"),
-                    outside_rth=bool(assignment.parameters.get("execution", {}).get("outside_rth", False)),
+                    execution_policy=_execution_policy_from_phase(
+                        resolved_order_intent,
+                        observation=observation,
+                        action=action,
+                    ) if resolved_order_intent else None,
+                    urgency=str(assignment.parameters.get("execution", {}).get("entry_urgency") or "urgent") if action in {"enter_long", "add_long", "enter_short", "add_short"} else str(assignment.parameters.get("execution", {}).get("exit_urgency") or "very_urgent"),  # type: ignore[arg-type]
+                    time_in_force=str(resolved_order_intent.get("time_in_force") or assignment.parameters.get("execution", {}).get("time_in_force") or "DAY"),
+                    outside_rth=bool(resolved_order_intent.get("outside_rth", assignment.parameters.get("execution", {}).get("outside_rth", False))),
                     reason=reason,
                     metadata={
                         "assignment_id": assignment.assignment_id,
@@ -920,10 +1016,94 @@ def _capital_request(
     return CapitalRequest(
         mode=mode,  # type: ignore[arg-type]
         value=value,
-        maximum_quantity=float(sizing.get("maximum_position_quantity") or 0) or None,
         priority=int(sizing.get("priority") or 50),
         allow_replacement=bool(sizing.get("allow_replacement", False)),
     )
+
+
+def _capital_request_from_payload(payload: dict[str, Any]) -> CapitalRequest:
+    mode = str(payload.get("mode") or "mandate_fraction")
+    value = 1.0 if mode == "all_available" else float(payload.get("value") or 0)
+    return CapitalRequest(
+        mode=mode,  # type: ignore[arg-type]
+        value=value,
+        priority=int(payload.get("priority") or 50),
+        allow_replacement=bool(payload.get("allow_replacement", False)),
+    )
+
+
+def _phase_capital_request(
+    parameters: dict[str, Any],
+    phase_name: str,
+    *,
+    fallback_quantity: float,
+) -> CapitalRequest:
+    phase = dict(
+        dict(parameters.get("phase_policy") or {}).get(phase_name) or {}
+    )
+    payload = dict(phase.get("capital_request") or {})
+    if payload:
+        return _capital_request_from_payload(payload)
+    return CapitalRequest(mode="fixed_quantity", value=fallback_quantity)
+
+
+def _execution_policy_from_phase(
+    payload: dict[str, Any],
+    *,
+    observation: StrategyObservation,
+    action: str,
+) -> ExecutionPolicy:
+    name = ExecutionPolicyName(
+        str(payload.get("execution_policy") or ExecutionPolicyName.ADAPTIVE_REGULAR)
+    )
+    buying = action in {"enter_long", "add_long", "reduce_short", "cover"}
+    return ExecutionPolicy(
+        policy_id=f"strategy-{name.value}",
+        name=name,
+        envelope=ExecutionEnvelope(
+            maximum_buy_price=(
+                observation.price
+                if buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT
+                else None
+            ),
+            minimum_sell_price=(
+                observation.price
+                if not buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT
+                else None
+            ),
+            deadline_ms=int(payload.get("deadline_ms") or 750),
+        ),
+        partial_fill_policy=PartialFillPolicy(
+            str(payload.get("partial_fill_policy") or "complete_remainder")
+        ),
+        quote_source="qmd",
+    )
+
+
+def _validate_phase_capital_request(payload: dict[str, Any]) -> None:
+    _capital_request_from_payload(payload)
+    mode = str(payload.get("mode") or "")
+    value = float(payload.get("value") or 0)
+    if mode in {"mandate_fraction", "risk_fraction"} and not 0 < value <= 1:
+        raise ValueError("Strategy capital-request fraction must be between zero and one")
+    if mode == "fixed_quantity" and value <= 0:
+        raise ValueError("Strategy fixed-quantity request must be positive")
+
+
+def _validate_phase_order_intent(payload: dict[str, Any]) -> None:
+    ExecutionPolicyName(str(payload.get("execution_policy") or ""))
+    PartialFillPolicy(str(payload.get("partial_fill_policy") or ""))
+    if str(payload.get("time_in_force") or "") not in {"DAY", "GTC", "IOC", "OPG"}:
+        raise ValueError("Strategy phase time in force is unsupported")
+    if int(payload.get("deadline_ms") or 0) < 0:
+        raise ValueError("Strategy phase execution deadline cannot be negative")
+
+
+def _strategy_side(parameters: dict[str, Any]) -> str:
+    side = str(dict(parameters.get("strategy_behavior") or {}).get("side") or "long")
+    if side not in {"long", "short"}:
+        raise ValueError("Strategy side must be long or short")
+    return side
 
 
 class AssignedLongMomentumStrategy:
@@ -1067,9 +1247,9 @@ class AssignedLongMomentumStrategy:
                 continue
             state = dict(assignment.state)
             action = str(getattr(snapshot, "action", ""))
-            if action in {"enter_long", "add_long"}:
+            if action in {"enter_long", "add_long", "enter_short", "add_short"}:
                 status = AssignmentStatus.MANAGING
-            elif action in {"exit", "take_profit"}:
+            elif action in {"exit", "take_profit", "cover", "reduce_short"}:
                 if bool(getattr(snapshot, "reentry_after_fill", False)):
                     state["reentries"] = int(state.get("reentries") or 0) + 1
                     status = AssignmentStatus.REENTRY_COOLDOWN
@@ -1273,6 +1453,7 @@ def _matching_exit_route(
     observation: StrategyObservation,
     protective_stop: float,
     failed_breakout: bool,
+    side: str,
 ) -> dict[str, Any] | None:
     for route in sorted(
         (row for row in routes if bool(row.get("enabled", True))),
@@ -1280,9 +1461,19 @@ def _matching_exit_route(
     ):
         mechanism = str(route.get("mechanism") or "")
         settings = dict(route.get("settings") or {})
-        if mechanism == "protective_stop" and observation.price <= protective_stop:
+        if mechanism == "protective_stop" and (
+            observation.price <= protective_stop
+            if side == "long"
+            else observation.price >= protective_stop
+        ):
             return route
-        if mechanism == "failed_breakout" and failed_breakout:
+        rules = dict(route.get("rules") or {})
+        rules_passed = (
+            _rule_stage_passed(rules, observation)
+            if list(rules.get("groups") or [])
+            else True
+        )
+        if mechanism == "failed_breakout" and failed_breakout and rules_passed:
             return route
         if mechanism == "bearish_qmd_macd":
             bearish_qmd = (
@@ -1297,12 +1488,57 @@ def _matching_exit_route(
                 and observation.macd_signal is not None
                 and observation.macd_line < observation.macd_signal
             )
-            if bearish_qmd and (
-                bearish_macd
+            adverse_qmd = bearish_qmd if side == "long" else (
+                observation.qmd_score >= abs(float(settings.get("qmd_score") or -0.35))
+                and observation.qmd_confidence >= float(settings.get("qmd_confidence") or 0.55)
+            )
+            adverse_macd = bearish_macd if side == "long" else (
+                observation.macd_histogram is not None
+                and observation.macd_histogram > 0
+                and observation.macd_line is not None
+                and observation.macd_signal is not None
+                and observation.macd_line > observation.macd_signal
+            )
+            if adverse_qmd and rules_passed and (
+                adverse_macd
                 or not bool(settings.get("require_macd_bearish", True))
             ):
                 return route
     return None
+
+
+def _rule_stage_passed(
+    stage: dict[str, Any],
+    observation: StrategyObservation,
+) -> bool:
+    groups = list(stage.get("groups") or [])
+    if not groups:
+        return False
+    group_results: list[tuple[bool, float]] = []
+    for group in groups:
+        if not bool(group.get("enabled", True)):
+            continue
+        conditions = [
+            _condition_matches(dict(condition), observation)
+            for condition in group.get("conditions") or []
+            if bool(condition.get("enabled", True))
+        ]
+        passed = bool(conditions) and (
+            all(conditions)
+            if str(group.get("operator") or "all") == "all"
+            else any(conditions)
+        )
+        group_results.append((passed, max(0.0, float(group.get("weight") or 0))))
+    if not group_results:
+        return False
+    operator = str(stage.get("operator") or "any")
+    if operator == "all":
+        return all(passed for passed, _ in group_results)
+    if operator == "weighted":
+        total = sum(weight for _, weight in group_results) or 1.0
+        score = sum(weight for passed, weight in group_results if passed) / total
+        return score >= float(stage.get("minimum_score") or 0)
+    return any(passed for passed, _ in group_results)
 
 
 def _campaign_authority(
@@ -1481,16 +1717,39 @@ def _confirmation_confidence(observation: StrategyObservation) -> float:
     return max(0.0, min(1.0, (observation.qmd_confidence + (0.75 if observation.vwap is not None else 0) + (0.75 if observation.macd_line is not None else 0)) / 3))
 
 
-def _initial_stop(observation: StrategyObservation, parameters: dict[str, Any], reference: float | None) -> float:
+def _initial_stop(
+    observation: StrategyObservation,
+    parameters: dict[str, Any],
+    reference: float | None,
+    *,
+    side: str,
+) -> float:
     stop = parameters["protection"]["stop"]
-    structure_base = observation.swing_low or reference or observation.price
-    structure_stop = structure_base * (1 - float(stop["structure_buffer_bps"]) / 10_000)
+    structure_base = (
+        observation.swing_low if side == "long" else observation.swing_high
+    ) or reference or observation.price
+    direction = -1 if side == "long" else 1
+    structure_stop = structure_base * (
+        1 + direction * float(stop["structure_buffer_bps"]) / 10_000
+    )
     volatility = observation.volatility if observation.volatility > 0 else observation.price * 0.002
-    volatility_stop = observation.price - volatility * float(stop["volatility_multiple"])
+    volatility_stop = observation.price + direction * volatility * float(stop["volatility_multiple"])
     method = stop["method"]
-    selected = structure_stop if method == "structure" else volatility_stop if method == "volatility" else min(structure_stop, volatility_stop)
-    maximum_risk_floor = observation.price * (1 - float(stop["maximum_risk_pct"]) / 100)
-    return round(max(maximum_risk_floor, min(selected, observation.price * 0.9999)), 4)
+    selected = (
+        structure_stop
+        if method == "structure"
+        else volatility_stop
+        if method == "volatility"
+        else min(structure_stop, volatility_stop)
+        if side == "long"
+        else max(structure_stop, volatility_stop)
+    )
+    maximum_risk = observation.price * (
+        1 + direction * float(stop["maximum_risk_pct"]) / 100
+    )
+    if side == "long":
+        return round(max(maximum_risk, min(selected, observation.price * 0.9999)), 4)
+    return round(min(maximum_risk, max(selected, observation.price * 1.0001)), 4)
 
 
 def _trailing_amount(observation: StrategyObservation, parameters: dict[str, Any]) -> float | None:
@@ -1502,22 +1761,39 @@ def _trailing_amount(observation: StrategyObservation, parameters: dict[str, Any
     return round(max(volatility_distance, minimum_distance), 4)
 
 
-def _ratcheted_stop(observation: StrategyObservation, parameters: dict[str, Any], state: dict[str, Any]) -> float:
+def _ratcheted_stop(
+    observation: StrategyObservation,
+    parameters: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    side: str,
+) -> float:
     current = float(state.get("active_stop") or state.get("initial_stop") or 0)
     entry = float(state.get("entry_reference_price") or observation.average_price or observation.price)
-    gain_pct = (observation.price / entry - 1) * 100 if entry > 0 else 0
+    gain_pct = (
+        (observation.price / entry - 1) * 100
+        if side == "long"
+        else (entry / observation.price - 1) * 100
+    ) if entry > 0 else 0
     trailing = parameters["protection"]["trailing"]
     if not trailing["enabled"] or gain_pct < float(trailing["activation_gain_pct"]):
         return current
     distance = _trailing_amount(observation, parameters) or 0
-    return round(max(current, float(state["high_water_price"]) - distance), 4)
+    if side == "long":
+        return round(max(current, float(state["high_water_price"]) - distance), 4)
+    return round(min(current, float(state["low_water_price"]) + distance), 4)
 
 
-def _luld_target(observation: StrategyObservation, parameters: dict[str, Any]) -> float | None:
+def _luld_target(
+    observation: StrategyObservation,
+    parameters: dict[str, Any],
+    *,
+    side: str,
+) -> float | None:
     policy = parameters["protection"]["luld_profit_target"]
     if not policy["enabled"] or not observation.market_open:
         return None
-    if observation.upper_luld_price is None:
+    if side == "short" or observation.upper_luld_price is None:
         return None
     target = observation.upper_luld_price * (1 - float(policy["buffer_bps"]) / 10_000)
     return round(target, 4) if target > observation.price else None

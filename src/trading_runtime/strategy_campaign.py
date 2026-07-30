@@ -25,10 +25,11 @@ class CampaignLease:
     campaign_id: str
     book_id: str
     ticker: str
+    side: str
 
     @property
-    def key(self) -> tuple[str, str]:
-        return self.book_id, self.ticker.upper()
+    def key(self) -> tuple[str, str, str]:
+        return self.book_id, self.ticker.upper(), self.side
 
 
 def campaign_id_for(payload: Any) -> str:
@@ -38,12 +39,25 @@ def campaign_id_for(payload: Any) -> str:
         return explicit
     strategy_id = str(_value(payload, "strategy_id", "") or "strategy")
     ticker = str(_value(payload, "ticker", "") or "").upper()
-    return f"{strategy_id}:{ticker}"
+    return f"{strategy_id}:{ticker}:{campaign_side_for(payload)}"
 
 
 def campaign_book_for(payload: Any) -> str:
     state = dict(_value(payload, "state", {}) or {})
     return str(state.get("campaign_book_id") or "default").strip() or "default"
+
+
+def campaign_side_for(payload: Any) -> str:
+    state = dict(_value(payload, "state", {}) or {})
+    parameters = dict(_value(payload, "parameters", {}) or {})
+    side = str(
+        state.get("campaign_side")
+        or dict(parameters.get("strategy_behavior") or {}).get("side")
+        or "long"
+    ).strip().lower()
+    if side not in {"long", "short"}:
+        raise ValueError("Strategy Campaign side must be long or short")
+    return side
 
 
 def campaign_phase_for(payload: Any, *, position_quantity: float = 0.0) -> CampaignPhase:
@@ -59,7 +73,7 @@ def campaign_phase_for(payload: Any, *, position_quantity: float = 0.0) -> Campa
         return CampaignPhase.ENTRY_PENDING
     if status == "exit_pending":
         return CampaignPhase.EXIT_PENDING
-    if position_quantity > 0 or status == "managing":
+    if abs(position_quantity) > 0 or status == "managing":
         return CampaignPhase.MANAGING_POSITION
     if int(state.get("reentries") or 0) > 0 or status == "reentry_cooldown":
         return CampaignPhase.REENTRY_WAIT
@@ -70,7 +84,7 @@ class StrategyCampaignOrchestrator:
     """Owns exclusive strategy authority for one ticker in one portfolio book."""
 
     def __init__(self, assignments: Iterable[Any] = ()) -> None:
-        self._leases: dict[tuple[str, str], CampaignLease] = {}
+        self._leases: dict[tuple[str, str, str], CampaignLease] = {}
         self._assignment_campaigns: dict[str, str] = {}
         self._campaign_active_legs: dict[str, set[str]] = {}
         for assignment in assignments:
@@ -94,24 +108,33 @@ class StrategyCampaignOrchestrator:
             campaign_id=campaign_id,
             book_id=campaign_book_for(assignment),
             ticker=ticker,
+            side=campaign_side_for(assignment),
         )
+        if any(
+            row.campaign_id == campaign_id and row.key != lease.key
+            for row in self._leases.values()
+        ):
+            raise ValueError(
+                f"Strategy Campaign {campaign_id} cannot span multiple ticker-side leases"
+            )
         current = self._leases.get(lease.key)
         if current is not None and current.campaign_id != campaign_id:
             raise ValueError(
                 f"{ticker} is already owned by active Strategy Campaign "
-                f"{current.campaign_id} in book {lease.book_id}"
+                f"{current.campaign_id} on the {lease.side} side in book {lease.book_id}"
             )
         self._leases[lease.key] = lease
         self._campaign_active_legs.setdefault(campaign_id, set()).add(assignment_id)
         return lease
 
-    def lease_for(self, *, book_id: str, ticker: str) -> CampaignLease | None:
-        return self._leases.get((book_id or "default", ticker.upper()))
+    def lease_for(self, *, book_id: str, ticker: str, side: str = "long") -> CampaignLease | None:
+        return self._leases.get((book_id or "default", ticker.upper(), side.lower()))
 
     def assert_owner(self, assignment: Any) -> None:
         lease = self.lease_for(
             book_id=campaign_book_for(assignment),
             ticker=str(_value(assignment, "ticker", "") or ""),
+            side=campaign_side_for(assignment),
         )
         campaign_id = campaign_id_for(assignment)
         if lease is None or lease.campaign_id != campaign_id:
@@ -142,13 +165,17 @@ def campaign_state(
     profile_id: str,
     book_id: str,
     universe_id: str,
+    side: str,
 ) -> dict[str, str]:
+    if side not in {"long", "short"}:
+        raise ValueError("Strategy Campaign side must be long or short")
     return {
         "campaign_id": campaign_id,
         "campaign_deployment_id": deployment_id,
         "campaign_profile_id": profile_id,
         "campaign_book_id": book_id or "default",
         "campaign_universe_id": universe_id,
+        "campaign_side": side,
     }
 
 
