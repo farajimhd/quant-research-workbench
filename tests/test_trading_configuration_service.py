@@ -29,7 +29,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 2)
+        self.assertEqual(draft["schema_version"], 3)
         self.assertGreaterEqual(len(draft["strategy"]["profiles"]), 3)
         self.assertTrue(all(profile["editable"] for profile in draft["strategy"]["profiles"]))
         self.assertEqual(
@@ -38,6 +38,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertTrue(
             all(profile["capabilities"] for profile in draft["strategy"]["profiles"])
+        )
+        self.assertTrue(draft["strategy"]["input_catalog"])
+        self.assertTrue(
+            all(profile["parameters"]["entry_rules"]["trigger"]["groups"] for profile in draft["strategy"]["profiles"])
         )
 
     def test_published_release_is_immutable_and_replay_resolves_deployment(self) -> None:
@@ -127,6 +131,17 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             journal.close()
 
         self.assertEqual(saved["assignments"]["deployments"][0]["deployment_id"], "balanced-replay")
+
+    def test_unknown_strategy_input_cannot_enter_runtime_projection(self) -> None:
+        draft = self._draft()
+        condition = draft["strategy"]["profiles"][0]["parameters"]["entry_rules"]["trigger"]["groups"][0]["conditions"][0]
+        condition["left_source_id"] = "indicator.unregistered.value"
+
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), self.assertRaisesRegex(ValueError, "unknown left source"):
+            resolve_runtime_configuration(draft, mode="replay")
 
     def _draft(self) -> dict:
         with patch(

@@ -9,8 +9,10 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from src.backend.replay_run_service import (
+    ReplayDerivedFrame,
     ReplayRunController,
     ReplayRunDefinition,
+    _attach_historical_signals,
     _canvas_profile_tickers,
     replay_preflight,
 )
@@ -186,6 +188,36 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
+    def test_signal_lifecycles_are_attached_point_in_time(self) -> None:
+        start = datetime(2026, 7, 28, 13, 45, tzinfo=ZoneInfo("UTC"))
+        frames = [
+            ReplayDerivedFrame(start, {}, {}, 1, "AAPL", "1s"),
+            ReplayDerivedFrame(start.replace(second=1), {}, {}, 2, "AAPL", "1s"),
+            ReplayDerivedFrame(start.replace(second=2), {}, {}, 3, "AAPL", "1s"),
+        ]
+        events = [
+            {
+                "effective_at": start.isoformat(),
+                "score": 0.8,
+                "signal_key": "price_volume_expansion",
+                "state": "triggered",
+                "working_timeframe": "1s",
+            },
+            {
+                "effective_at": start.replace(second=2).isoformat(),
+                "score": 0.8,
+                "signal_key": "price_volume_expansion",
+                "state": "resolved",
+                "working_timeframe": "1s",
+            },
+        ]
+
+        _attach_historical_signals(frames, events)
+
+        self.assertEqual(frames[0].signals["price_volume_expansion@1s"], 0.8)
+        self.assertEqual(frames[1].signals["price_volume_expansion@1s"], 0.8)
+        self.assertNotIn("price_volume_expansion@1s", frames[2].signals)
+
     async def test_paged_pull_releases_transport_between_replay_batches(self) -> None:
         source = QmdHistoricalEventSource(
             "http://127.0.0.1:8801",

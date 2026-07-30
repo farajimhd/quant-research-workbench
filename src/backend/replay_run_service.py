@@ -7,6 +7,7 @@ import os
 import re
 import time
 import urllib.parse
+import urllib.request
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
@@ -45,6 +46,8 @@ from src.trading_runtime.strategy_engine import (
     StrategyAssignment,
     StrategyObservation,
     StrategyPermissions,
+    entry_rule_timeframes,
+    strategy_observation_source_values,
 )
 from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
 
@@ -131,6 +134,7 @@ class ReplayDerivedFrame:
     sequence: int
     ticker: str
     timeframe: str
+    signals: dict[str, float] = field(default_factory=dict)
 
 
 class ReplayRunController:
@@ -171,6 +175,7 @@ class ReplayRunController:
         self._account_map: dict[str, str] = {}
         self._quotes: dict[str, QuoteEvent] = {}
         self._previous_vwap: dict[tuple[str, str], tuple[datetime, float]] = {}
+        self._strategy_source_values: dict[str, dict[str, Any]] = {}
         self._canvas_state_cache: tuple[float, dict[str, Any]] | None = None
         self._runtime_finished = False
         self._stream_tickers: tuple[str, ...] = ()
@@ -699,6 +704,10 @@ class ReplayRunController:
             price=float(indicator.get("close") or bar.get("close") or 0),
             bid=float(quote.bid_price if quote else 0),
             ask=float(quote.ask_price if quote else 0),
+            previous_close=_optional_positive(
+                indicator.get("previous_close") or indicator.get("prev_close")
+            ),
+            previous_high=_optional_positive(indicator.get("previous_high")),
             swing_high=_optional_positive(indicator.get("structure_swing_high")),
             swing_low=_optional_positive(indicator.get("structure_swing_low")),
             structure_event=structure_event,
@@ -715,11 +724,35 @@ class ReplayRunController:
             qmd_bias=str(
                 indicator.get("flow_structure_composite_bias") or "neutral"
             ),
+            price_volume_expansion_score=float(
+                frame.signals.get(f"price_volume_expansion@{frame.timeframe}")
+                or indicator.get("price_volume_expansion_score")
+                or 0
+            ),
+            vwap_transition_score=float(
+                frame.signals.get(f"vwap_transition@{frame.timeframe}")
+                or indicator.get("vwap_transition_score")
+                or 0
+            ),
+            flow_price_divergence_score=float(
+                frame.signals.get(f"flow_price_divergence@{frame.timeframe}")
+                or indicator.get("flow_price_divergence_score")
+                or 0
+            ),
+            liquidity_dislocation_score=float(
+                frame.signals.get(f"liquidity_dislocation@{frame.timeframe}")
+                or indicator.get("liquidity_dislocation_score")
+                or 0
+            ),
             volatility=float(indicator.get("atr_14") or 0),
             upper_luld_price=_optional_positive(indicator.get("structure_luld_upper")),
             market_open=clock_time(9, 30) <= observed_market_time < clock_time(16, 0),
             source_signal_ids=(f"qmd-derived:{frame.ticker}:{frame.timeframe}:{frame.sequence}",),
+            source_timeframe=frame.timeframe,
         )
+        source_cache = self._strategy_source_values.setdefault(frame.ticker, {})
+        source_cache.update(strategy_observation_source_values(base, frame.timeframe))
+        base = replace(base, source_values=deepcopy(source_cache))
         for assignment in self._strategy.assignments():
             if assignment.ticker != frame.ticker:
                 continue
@@ -855,15 +888,9 @@ class ReplayRunController:
         if self._strategy is None:
             return []
         requests = {
-            (
-                assignment.ticker,
-                str(
-                    assignment.parameters.get("entry", {}).get(
-                        "breakout_timeframe", "1s"
-                    )
-                ),
-            )
+            (assignment.ticker, timeframe)
             for assignment in self._strategy.assignments()
+            for timeframe in entry_rule_timeframes(assignment.parameters)
         }
         if not requests:
             return []
@@ -878,8 +905,32 @@ class ReplayRunController:
                 for ticker, timeframe in sorted(requests)
             )
         )
+        signal_events = await asyncio.gather(
+            *(
+                _historical_signal_events(
+                    ticker=ticker,
+                    start=self.definition.session_start,
+                    end=self.definition.session_end,
+                )
+                for ticker in sorted({ticker for ticker, _ in requests})
+            )
+        )
+        events_by_ticker = {
+            ticker: events
+            for ticker, events in zip(
+                sorted({ticker for ticker, _ in requests}),
+                signal_events,
+                strict=True,
+            )
+        }
+        frames = [frame for group in groups for frame in group]
+        for ticker in events_by_ticker:
+            _attach_historical_signals(
+                [frame for frame in frames if frame.ticker == ticker],
+                events_by_ticker[ticker],
+            )
         return sorted(
-            [frame for group in groups for frame in group],
+            frames,
             key=lambda frame: (frame.as_of, frame.ticker, frame.timeframe, frame.sequence),
         )
 
@@ -1146,6 +1197,69 @@ async def _historical_derived_frames(
         )
         for index, (bar, indicator) in enumerate(zip(bars, indicators, strict=True), start=1)
     ]
+
+
+async def _historical_signal_events(
+    *,
+    ticker: str,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    query = urllib.parse.urlencode(
+        {
+            "as_of": end.isoformat(),
+            "end": end.isoformat(),
+            "start": start.isoformat(),
+            "tickers": ticker,
+        }
+    )
+    url = f"{historical_gateway_base_url().rstrip('/')}/snapshot/scanner-derived?{query}"
+
+    def fetch() -> dict[str, Any]:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    payload = await asyncio.to_thread(fetch)
+    if payload.get("error"):
+        raise RuntimeError(f"QMD historical signal stream failed for {ticker}: {payload['error']}")
+    return sorted(
+        [
+            dict(row)
+            for row in payload.get("recent_signal_events") or []
+            if str(row.get("ticker") or "").upper() == ticker.upper()
+        ],
+        key=lambda row: _aware_datetime(row.get("effective_at") or row.get("observed_at")),
+    )
+
+
+def _attach_historical_signals(
+    frames: list[ReplayDerivedFrame],
+    events: list[dict[str, Any]],
+) -> None:
+    active: dict[str, float] = {}
+    event_index = 0
+    ordered_frames = sorted(
+        frames,
+        key=lambda frame: (frame.as_of, frame.timeframe, frame.sequence),
+    )
+    for frame in ordered_frames:
+        while event_index < len(events):
+            event = events[event_index]
+            effective_at = _aware_datetime(
+                event.get("effective_at") or event.get("observed_at")
+            )
+            if effective_at > frame.as_of:
+                break
+            signal_key = str(event.get("signal_key") or "")
+            working_timeframe = str(event.get("working_timeframe") or "")
+            key = f"{signal_key}@{working_timeframe}" if signal_key and working_timeframe else ""
+            if key:
+                if str(event.get("state") or "") == "resolved":
+                    active.pop(key, None)
+                else:
+                    active[key] = float(event.get("score") or 0)
+            event_index += 1
+        frame.signals = dict(active)
 
 
 def _assignment_from_payload(

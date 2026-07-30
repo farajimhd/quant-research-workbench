@@ -20,6 +20,9 @@ The product deliberately separates concepts that were previously grouped under
 |---|---|
 | Strategy Definition | Code-owned implementation, schema, defaults, compatibility, and factory identity |
 | Strategy Profile | User-configured or system-predefined instance of a Strategy Definition; mutable as a draft and immutable when published |
+| Strategy Input Definition | Code-owned provider, field, parameter, value type, supported timeframes, and runtime projection |
+| Decision Rule | User-configured comparison between a typed source and a constant or another typed source |
+| Decision Rule Group | Configurable ALL/ANY relationship between conditions; confirmation groups also carry explicit weights |
 | Capability Definition | Code-owned function contract, defaults, validation, help, UI schema, runtime handler, and compatible autonomy |
 | Capability Binding | System/user configuration of one capability on one Strategy Profile |
 | OMS Profile | Reusable versioned execution and protection behavior |
@@ -35,6 +38,44 @@ These are starting configurations, not locked secrets: the user can modify or
 clone them, and the resulting draft is validated and published like any other
 profile. Capability behavior remains implemented in registered code; the UI
 configures only declared parameters and authority levels.
+
+## Strategy inputs and decision logic
+
+Logical behavior must not be represented as one ambiguous choice such as
+`breakout_reference`, and the runtime must not hide additional QMD, VWAP,
+MACD, news, or veto rules outside the published Strategy Profile.
+
+Every condition records:
+
+- the named input and provider, such as QMD indicator, QMD market signal,
+  market reference, or News signal;
+- the exact source parameter or field;
+- its calculation timeframe or event/session clock;
+- the comparison operator;
+- either a typed threshold or another typed source; and
+- its containing ALL/ANY rule group.
+
+Entry logic has three explicit stages:
+
+1. trigger groups select whether any or all configured opportunities must pass;
+2. confirmation groups contribute declared weights to a configurable minimum
+   score; and
+3. veto groups block entry when their configured Boolean relationship passes.
+
+A profile can therefore define price breaking either a confirmed QMD swing
+high or QMD VWAP by a configured buffer, require weighted flow-structure,
+VWAP-slope, and MACD confirmation, and reject a configured
+liquidity-dislocation signal. These are published data, not React-only
+presentation choices or hard-coded runtime branches.
+
+Publication validates source identities, timeframe support, comparisons,
+targets, unique rule identities, and confirmation weights. Replay requests
+every timeframe referenced by the selected profile and keeps a point-in-time
+cache keyed by source and timeframe. Historical QMD market-signal lifecycle
+events are fetched from the QMD History scanner engine with an explicit ticker
+filter, ordered by their effective time, and activated or resolved into that
+cache without reconstructing signal decisions in Python. Future Live and
+Backtest adapters must populate the same typed observation contract.
 
 ## Authority flow
 
@@ -68,7 +109,7 @@ and autonomy requirement. It does not silently release capital or bypass OMS.
 | Page | Owns |
 |---|---|
 | Canvas | Canvases, layouts, groups, containers, link contexts, and presentation settings |
-| Strategy Studio | Strategy Profiles and configurable Capability Bindings |
+| Strategy Studio | Strategy Profiles, typed inputs, decision rules, and configurable Capability Bindings |
 | Strategy Deployments | Profile-to-OMS-to-mode composition and deployment readiness |
 | Portfolio & Risk | Account policies and Strategy-account mandates |
 | OMS & Protection | Reusable named execution and protection profiles |
@@ -86,6 +127,9 @@ Raw JSON is never the primary configuration interface.
 - Every page starts with a concise summary of its responsibility and authority.
 - Strategy Studio presents frequently tuned entry, sizing, profit-taking, and
   re-entry controls first.
+- Logical strategy behavior uses a guided rule builder with visible providers,
+  source parameters, timeframes, comparisons, thresholds, Boolean grouping,
+  and confirmation weights.
 - Less frequently changed model, signal, and fixed technical parameters remain
   available under Advanced.
 - Every parameter has a readable label, contextual help, units, appropriate

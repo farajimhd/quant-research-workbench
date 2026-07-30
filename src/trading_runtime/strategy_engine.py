@@ -11,7 +11,123 @@ from src.market_engine.events import MarketEvent
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 2
+STRATEGY_REVISION = 3
+
+RULE_COMPARATORS = {
+    "above_by_bps",
+    "equals",
+    "greater_or_equal",
+    "greater_than",
+    "is_true",
+    "less_or_equal",
+    "less_than",
+}
+
+
+def strategy_input_catalog() -> list[dict[str, Any]]:
+    """Code-owned strategy inputs and their authoritative runtime projections."""
+
+    return [
+        _input("market.last_price", "Last price", "Market", "qmd-derived", "price", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
+        _input("market.previous_close", "Previous close", "Market", "qmd-reference", "previous_close", "price", ["session"]),
+        _input("market.previous_high", "Previous high", "Market", "qmd-reference", "previous_high", "price", ["session"]),
+        _input("indicator.structure.swing_high", "Confirmed swing high", "QMD indicator", "qmd", "swing_high", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
+        _input("indicator.structure.swing_low", "Confirmed swing low", "QMD indicator", "qmd", "swing_low", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
+        _input("indicator.structure.bullish_choch", "Bullish change of character", "QMD indicator", "qmd", "bullish_choch", "boolean", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"]),
+        _input("indicator.vwap.value", "VWAP", "QMD indicator", "qmd", "vwap", "price", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="value"),
+        _input("indicator.vwap.slope", "VWAP slope", "QMD indicator", "qmd", "vwap_slope_bps_per_second", "bps_per_second", ["100ms", "1s", "5s", "10s", "30s", "1m", "5m"], parameter="slope_bps_per_second"),
+        _input("indicator.flow_structure.score", "Flow-structure score", "QMD indicator", "qmd", "qmd_score", "score", ["100ms"], parameter="score"),
+        _input("indicator.flow_structure.confidence", "Flow-structure confidence", "QMD indicator", "qmd", "qmd_confidence", "score", ["100ms"], parameter="confidence"),
+        _input("indicator.macd.line", "MACD line", "Market indicator", "qmd", "macd_line", "number", ["1s", "5s", "10s", "30s", "1m", "5m"], parameter="line"),
+        _input("indicator.macd.signal", "MACD signal", "Market indicator", "qmd", "macd_signal", "number", ["1s", "5s", "10s", "30s", "1m", "5m"], parameter="signal"),
+        _input("indicator.macd.histogram", "MACD histogram", "Market indicator", "qmd", "macd_histogram", "number", ["1s", "5s", "10s", "30s", "1m", "5m"], parameter="histogram"),
+        _input("signal.price_volume_expansion.score", "Price-volume expansion score", "QMD market signal", "qmd", "price_volume_expansion_score", "score", ["1s", "10s", "30s", "1m"], parameter="score"),
+        _input("signal.vwap_transition.score", "VWAP transition score", "QMD market signal", "qmd", "vwap_transition_score", "score", ["1s", "10s", "30s", "1m"], parameter="score"),
+        _input("signal.flow_price_divergence.score", "Flow-price divergence score", "QMD market signal", "qmd", "flow_price_divergence_score", "score", ["100ms"], parameter="score"),
+        _input("signal.liquidity_dislocation.score", "Liquidity dislocation score", "QMD market signal", "qmd", "liquidity_dislocation_score", "score", ["100ms"], parameter="score"),
+        _input("signal.company_news.score", "Company news score", "News signal", "news", "news_score", "score", ["event"], parameter="score"),
+    ]
+
+
+def default_entry_decision_rules(parameters: dict[str, Any] | None = None) -> dict[str, Any]:
+    entry = dict((parameters or {}).get("entry") or {})
+    breakout_timeframe = str(entry.get("breakout_timeframe") or "1s")
+    breakout_source = {
+        "previous_close": "market.previous_close",
+        "previous_high": "market.previous_high",
+        "confirmed_swing_high": "indicator.structure.swing_high",
+        "bullish_choch": "indicator.structure.swing_high",
+    }.get(str(entry.get("breakout_reference") or ""), "indicator.structure.swing_high")
+    return {
+        "trigger": {
+            "operator": "any",
+            "groups": [
+                _rule_group("break-structure", "Break configured structure", "all", [
+                    _condition("price-over-structure", "market.last_price", breakout_timeframe, "above_by_bps", right_source_id=breakout_source, right_timeframe=breakout_timeframe, value=float(entry.get("breakout_buffer_bps") or 5)),
+                ]),
+                _rule_group("break-vwap", "Break VWAP", "all", [
+                    _condition("price-over-vwap", "market.last_price", breakout_timeframe, "above_by_bps", right_source_id="indicator.vwap.value", right_timeframe=breakout_timeframe, value=float(entry.get("breakout_buffer_bps") or 5)),
+                ]),
+                _rule_group("bullish-choch", "Bullish change of character", "all", [
+                    _condition("bullish-choch", "indicator.structure.bullish_choch", breakout_timeframe, "is_true"),
+                ]),
+                _rule_group("price-volume-expansion", "Price-volume expansion", "all", [
+                    _condition("price-volume-expansion-score", "signal.price_volume_expansion.score", "1s", "greater_or_equal", value=float(entry.get("price_expansion_minimum_score") or 0.65)),
+                ]),
+                _rule_group("vwap-transition", "VWAP transition", "all", [
+                    _condition("vwap-transition-score", "signal.vwap_transition.score", "10s", "greater_or_equal", value=float(entry.get("vwap_transition_minimum_score") or 0.6)),
+                ]),
+                _rule_group("company-news", "Company news", "all", [
+                    _condition("company-news-score", "signal.company_news.score", "event", "greater_or_equal", value=float(entry.get("news_minimum_score") or 0.7)),
+                ]),
+            ],
+        },
+        "confirmation": {
+            "operator": "weighted",
+            "minimum_score": float(entry.get("minimum_confirmation_score") or 0.55),
+            "groups": [
+                _rule_group("qmd-alignment", "QMD flow and structure", "all", [
+                    _condition("qmd-score", "indicator.flow_structure.score", "100ms", "greater_or_equal", value=float(dict(entry.get("qmd") or {}).get("minimum_score") or 0.3)),
+                    _condition("qmd-confidence", "indicator.flow_structure.confidence", "100ms", "greater_or_equal", value=float(dict(entry.get("qmd") or {}).get("minimum_confidence") or 0.5)),
+                ], weight=float(dict(entry.get("qmd") or {}).get("weight") or 0.4)),
+                _rule_group("vwap-confirmation", "Price accepted above rising VWAP", "all", [
+                    _condition("price-above-vwap", "market.last_price", "5s", "greater_or_equal", right_source_id="indicator.vwap.value", right_timeframe="5s"),
+                    _condition("vwap-rising", "indicator.vwap.slope", "5s", "greater_or_equal", value=float(dict(entry.get("vwap") or {}).get("minimum_slope_bps_per_second") or 0)),
+                ], weight=float(dict(entry.get("vwap") or {}).get("weight") or 0.3)),
+                _rule_group("macd-confirmation", "MACD confirms momentum", "all", [
+                    _condition("macd-line-over-signal", "indicator.macd.line", "5s", "greater_or_equal", right_source_id="indicator.macd.signal", right_timeframe="5s"),
+                    _condition("macd-positive-histogram", "indicator.macd.histogram", "5s", "greater_than", value=0),
+                ], weight=float(dict(entry.get("macd") or {}).get("weight") or 0.3)),
+            ],
+        },
+        "veto": {
+            "operator": "any",
+            "groups": [
+                _rule_group("flow-price-divergence", "Flow-price divergence", "all", [
+                    _condition("flow-price-divergence-score", "signal.flow_price_divergence.score", "100ms", "greater_or_equal", value=float(dict(entry.get("veto") or {}).get("flow_price_divergence") or 0.75)),
+                ]),
+                _rule_group("liquidity-dislocation", "Liquidity dislocation", "all", [
+                    _condition("liquidity-dislocation-score", "signal.liquidity_dislocation.score", "100ms", "greater_or_equal", value=float(dict(entry.get("veto") or {}).get("liquidity_dislocation") or 0.75)),
+                ]),
+            ],
+        },
+    }
+
+
+def entry_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
+    timeframes: set[str] = set()
+    for stage in dict(parameters.get("entry_rules") or {}).values():
+        if not isinstance(stage, dict):
+            continue
+        for group in stage.get("groups") or []:
+            if not bool(group.get("enabled", True)):
+                continue
+            for condition in group.get("conditions") or []:
+                for key in ("left_timeframe", "right_timeframe"):
+                    value = str(condition.get(key) or "")
+                    if value not in {"", "event", "session"}:
+                        timeframes.add(value)
+    return timeframes or {str(dict(parameters.get("entry") or {}).get("breakout_timeframe") or "1s")}
 
 
 class AssignmentStatus(StrEnum):
@@ -106,6 +222,8 @@ class StrategyObservation:
     manual_entry_request: bool = False
     force_entry: bool = False
     source_signal_ids: tuple[str, ...] = ()
+    source_timeframe: str = ""
+    source_values: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.observed_at.tzinfo is None:
@@ -138,13 +256,8 @@ def long_momentum_strategy_definition() -> dict[str, Any]:
         "config": {
             "direction": "long_only",
             "parameters": parameters,
+            "input_catalog": strategy_input_catalog(),
             "parameter_space": {
-                "entry.breakout_timeframe": ["100ms", "1s", "5s", "10s"],
-                "entry.breakout_reference": ["previous_close", "previous_high", "confirmed_swing_high", "bullish_choch"],
-                "entry.breakout_buffer_bps": [0, 3, 5, 10],
-                "entry.minimum_confirmation_score": [0.45, 0.55, 0.65, 0.75],
-                "entry.qmd.minimum_score": [0.15, 0.30, 0.50],
-                "entry.qmd.minimum_confidence": [0.35, 0.50, 0.70],
                 "protection.stop.method": ["structure", "volatility", "hybrid"],
                 "protection.stop.volatility_multiple": [0.75, 1.0, 1.25, 1.5, 2.0],
                 "profit_pocket.trigger": ["acceleration_slowdown", "favorable_move_pct", "volatility_multiple"],
@@ -163,7 +276,7 @@ def long_momentum_strategy_definition() -> dict[str, Any]:
                 ],
                 "signals": [
                     {"key": "price_volume_expansion", "timeframe": "1s", "role": "trigger", "required": False, "maximum_age_ms": 2000, "minimum_score": 0.65},
-                    {"key": "vwap_transition", "timeframe": "5s", "role": "trigger", "required": False, "maximum_age_ms": 6000, "minimum_score": 0.6},
+                    {"key": "vwap_transition", "timeframe": "10s", "role": "trigger", "required": False, "maximum_age_ms": 11000, "minimum_score": 0.6},
                     {"key": "flow_price_divergence", "timeframe": "100ms", "role": "veto", "required": False, "maximum_age_ms": 500},
                     {"key": "liquidity_dislocation", "timeframe": "100ms", "role": "veto", "required": False, "maximum_age_ms": 500},
                     {"key": "company_news", "role": "trigger", "required": False, "maximum_age_ms": 60000, "minimum_score": 0.7},
@@ -188,7 +301,7 @@ def long_momentum_strategy_definition() -> dict[str, Any]:
 
 
 def default_long_momentum_parameters() -> dict[str, Any]:
-    return {
+    parameters = {
         "entry": {
             "breakout_timeframe": "1s",
             "breakout_reference": "confirmed_swing_high",
@@ -250,17 +363,13 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "outside_rth": False,
         },
     }
+    parameters["entry_rules"] = default_entry_decision_rules(parameters)
+    parameters.pop("entry", None)
+    return parameters
 
 
 def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     parameters = _deep_merge(default_long_momentum_parameters(), dict(overrides or {}))
-    entry = parameters["entry"]
-    if entry["breakout_timeframe"] not in {"100ms", "1s", "5s", "10s", "30s", "1m", "5m"}:
-        raise ValueError("Unsupported entry breakout timeframe")
-    if entry["breakout_reference"] not in {"previous_close", "previous_high", "confirmed_swing_high", "bullish_choch"}:
-        raise ValueError("Unsupported entry breakout reference")
-    if not 0 <= float(entry["minimum_confirmation_score"]) <= 1:
-        raise ValueError("Entry minimum confirmation score must be between 0 and 1")
     if parameters["protection"]["stop"]["method"] not in {"structure", "volatility", "hybrid"}:
         raise ValueError("Unsupported protective stop method")
     sizing = parameters["sizing"]
@@ -302,6 +411,7 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
         raise ValueError("Execution tick size must be positive")
     if parameters["execution"]["time_in_force"] not in {"DAY", "GTC", "IOC", "OPG"}:
         raise ValueError("Unsupported strategy time in force")
+    _validate_entry_rules(dict(parameters.get("entry_rules") or {}))
     return parameters
 
 
@@ -352,30 +462,29 @@ class LongMomentumStrategyEngine:
         if not observation.market_open:
             return self._result(assignment, observation, "wait", "market_not_open", 0.0, 1.0, state, AssignmentStatus.WATCHING)
 
-        entry = parameters["entry"]
-        reference_name = str(entry["breakout_reference"])
-        reference = _entry_reference(observation, reference_name)
-        buffer = observation.price * float(entry["breakout_buffer_bps"]) / 10_000
-        structure_break = bool(reference and observation.price >= reference + buffer)
-        bullish_choch = observation.structure_event == "choch" and observation.structure_direction == "bullish"
-        triggers = {
-            "manual_entry_request": observation.manual_entry_request,
-            "force_entry": observation.force_entry,
-            "news": observation.news_score >= float(entry["news_minimum_score"]),
-            "price_volume_expansion": observation.price_volume_expansion_score >= float(entry["price_expansion_minimum_score"]),
-            "vwap_transition": observation.vwap_transition_score >= float(entry["vwap_transition_minimum_score"]),
-            "structure_break": structure_break,
-            "bullish_choch": bullish_choch,
-        }
-        triggered = [key for key, value in triggers.items() if value]
-        confirmation_score, confirmation = _confirmation_score(observation, entry)
-        vetoes = []
-        if observation.flow_price_divergence_score >= float(entry["veto"]["flow_price_divergence"]):
-            vetoes.append("flow_price_divergence")
-        if observation.liquidity_dislocation_score >= float(entry["veto"]["liquidity_dislocation"]):
-            vetoes.append("liquidity_dislocation")
+        rule_result = evaluate_entry_decision_rules(
+            dict(parameters.get("entry_rules") or {}),
+            observation,
+        )
+        reference_name, reference, reference_buffer_bps = _trigger_reference(
+            dict(parameters.get("entry_rules") or {}),
+            rule_result,
+            observation,
+        )
+        operational_triggers = [
+            key
+            for key, value in {
+                "manual_entry_request": observation.manual_entry_request,
+                "force_entry": observation.force_entry,
+            }.items()
+            if value
+        ]
+        triggered = [*operational_triggers, *rule_result["trigger"]["matched_groups"]]
+        confirmation_score = float(rule_result["confirmation"]["score"])
+        confirmation = dict(rule_result["confirmation"]["groups"])
+        vetoes = list(rule_result["veto"]["matched_groups"])
         can_enter = bool(triggered) and not vetoes and (
-            observation.force_entry or confirmation_score >= float(entry["minimum_confirmation_score"])
+            observation.force_entry or bool(rule_result["confirmation"]["passed"])
         )
         if not can_enter:
             reason = "entry_vetoed" if vetoes else "entry_confirmation_incomplete" if triggered else "waiting_for_entry_trigger"
@@ -388,7 +497,7 @@ class LongMomentumStrategyEngine:
                 _confirmation_confidence(observation),
                 state,
                 AssignmentStatus.WATCHING,
-                metadata={"triggers": triggered, "vetoes": vetoes, "confirmation": confirmation},
+                metadata={"triggers": triggered, "vetoes": vetoes, "confirmation": confirmation, "entry_rules": rule_result},
             )
 
         stop = _initial_stop(observation, parameters, reference)
@@ -400,6 +509,7 @@ class LongMomentumStrategyEngine:
         state.update(
             {
                 "breakout_level": reference,
+                "breakout_buffer_bps": reference_buffer_bps,
                 "entry_reference_price": observation.price,
                 "initial_stop": stop,
                 "active_stop": stop,
@@ -422,7 +532,12 @@ class LongMomentumStrategyEngine:
             invalidation_price=stop,
             profit_target_price=target,
             trailing_amount=_trailing_amount(observation, parameters),
-            metadata={"triggers": triggered, "confirmation": confirmation, "reference": reference_name},
+            metadata={
+                "triggers": triggered,
+                "confirmation": confirmation,
+                "reference": reference_name,
+                "entry_rules": rule_result,
+            },
         )
 
     def _evaluate_position(
@@ -436,7 +551,7 @@ class LongMomentumStrategyEngine:
         state["active_stop"] = _ratcheted_stop(observation, parameters, state)
         stop = float(state["active_stop"])
         breakout_level = float(state.get("breakout_level") or 0)
-        breakout_buffer = observation.price * float(parameters["entry"]["breakout_buffer_bps"]) / 10_000
+        breakout_buffer = observation.price * float(state.get("breakout_buffer_bps") or 0) / 10_000
         failed_breakout = bool(
             parameters["final_exit"]["exit_on_failed_breakout"]
             and breakout_level > 0
@@ -471,7 +586,12 @@ class LongMomentumStrategyEngine:
 
         add = parameters["add"]
         bullish_choch = observation.structure_event == "choch" and observation.structure_direction == "bullish"
-        confirmation_score, confirmation = _confirmation_score(observation, parameters["entry"])
+        add_rule_result = evaluate_entry_decision_rules(
+            dict(parameters.get("entry_rules") or {}),
+            observation,
+        )
+        confirmation_score = float(add_rule_result["confirmation"]["score"])
+        confirmation = dict(add_rule_result["confirmation"]["groups"])
         adds = int(state.get("adds") or 0)
         maximum_qty = float(parameters["sizing"]["maximum_position_quantity"])
         add_qty = min(
@@ -484,7 +604,7 @@ class LongMomentumStrategyEngine:
             and bullish_choch
             and adds < int(add["maximum_adds"])
             and add_qty > 0
-            and confirmation_score >= float(parameters["entry"]["minimum_confirmation_score"])
+            and bool(add_rule_result["confirmation"]["passed"])
         ):
             state["adds"] = adds + 1
             return self._result(
@@ -810,42 +930,311 @@ class AssignedLongMomentumStrategy:
             return
 
 
-def _entry_reference(observation: StrategyObservation, name: str) -> float | None:
-    if name == "previous_close":
-        return observation.previous_close
-    if name == "previous_high":
-        return observation.previous_high
-    if name == "confirmed_swing_high":
-        return observation.swing_high
-    if name == "bullish_choch" and observation.structure_event == "choch":
-        return observation.swing_high or observation.previous_high
-    return observation.swing_high or observation.previous_high or observation.previous_close
+def _trigger_reference(
+    rules: dict[str, Any],
+    result: dict[str, Any],
+    observation: StrategyObservation,
+) -> tuple[str, float | None, float]:
+    matched = set(dict(result.get("trigger") or {}).get("matched_groups") or [])
+    for group in dict(rules.get("trigger") or {}).get("groups") or []:
+        if str(group.get("group_id") or "") not in matched:
+            continue
+        for condition in group.get("conditions") or []:
+            if str(condition.get("comparator") or "") != "above_by_bps":
+                continue
+            source_id = str(condition.get("right_source_id") or "")
+            value = _source_value(
+                observation,
+                source_id,
+                str(condition.get("right_timeframe") or ""),
+            )
+            if value is not None:
+                return source_id, float(value), float(condition.get("value") or 0)
+    return "", None, 0.0
 
 
-def _confirmation_score(observation: StrategyObservation, entry: dict[str, Any]) -> tuple[float, dict[str, float]]:
-    qmd = 1.0 if (
-        observation.qmd_score >= float(entry["qmd"]["minimum_score"])
-        and observation.qmd_confidence >= float(entry["qmd"]["minimum_confidence"])
-    ) else 0.0
-    vwap = 1.0 if (
-        observation.vwap is not None
-        and observation.price >= observation.vwap
-        and observation.vwap_slope_bps_per_second >= float(entry["vwap"]["minimum_slope_bps_per_second"])
-    ) else 0.0
-    macd = 1.0 if (
-        observation.macd_line is not None
-        and observation.macd_signal is not None
-        and observation.macd_line >= observation.macd_signal
-        and (not entry["macd"]["require_positive_histogram"] or float(observation.macd_histogram or 0) > 0)
-    ) else 0.0
-    evidence = {"qmd": qmd, "vwap": vwap, "macd": macd}
-    weights = {
-        "qmd": float(entry["qmd"]["weight"]),
-        "vwap": float(entry["vwap"]["weight"]),
-        "macd": float(entry["macd"]["weight"]),
+def evaluate_entry_decision_rules(
+    rules: dict[str, Any],
+    observation: StrategyObservation,
+) -> dict[str, Any]:
+    resolved = rules or default_entry_decision_rules()
+    output: dict[str, Any] = {}
+    for stage_name in ("trigger", "confirmation", "veto"):
+        stage = dict(resolved.get(stage_name) or {})
+        group_results: dict[str, bool] = {}
+        weights: dict[str, float] = {}
+        for group in stage.get("groups") or []:
+            group_id = str(group.get("group_id") or "")
+            condition_results = [
+                _condition_matches(dict(condition), observation)
+                for condition in group.get("conditions") or []
+                if bool(condition.get("enabled", True))
+            ]
+            operator = str(group.get("operator") or "all")
+            passed = (
+                bool(condition_results)
+                and (all(condition_results) if operator == "all" else any(condition_results))
+            )
+            group_results[group_id] = passed
+            weights[group_id] = max(0.0, float(group.get("weight") or 0))
+        matched = [group_id for group_id, passed in group_results.items() if passed]
+        operator = str(stage.get("operator") or "any")
+        if operator == "weighted":
+            denominator = sum(weights.values()) or 1.0
+            score = sum(weights[group_id] for group_id in matched) / denominator
+            passed = score >= float(stage.get("minimum_score") or 0)
+        else:
+            score = 1.0 if matched else 0.0
+            passed = bool(group_results) and (
+                all(group_results.values()) if operator == "all" else bool(matched)
+            )
+        output[stage_name] = {
+            "groups": group_results,
+            "matched_groups": matched,
+            "operator": operator,
+            "passed": passed,
+            "score": score,
+        }
+    return output
+
+
+def strategy_observation_source_values(
+    observation: StrategyObservation,
+    timeframe: str,
+) -> dict[str, dict[str, Any]]:
+    values: dict[str, dict[str, Any]] = {}
+    for source in strategy_input_catalog():
+        supported = list(source["timeframes"])
+        if supported not in (["event"], ["session"]) and timeframe not in supported:
+            continue
+        value = _observation_field_value(observation, str(source["runtime_field"]))
+        if value is None:
+            continue
+        source_timeframe = (
+            str(source["timeframes"][0])
+            if source["timeframes"] in (["event"], ["session"])
+            else timeframe
+        )
+        values[f"{source['source_id']}@{source_timeframe}"] = {
+            "observed_at": observation.observed_at.isoformat(),
+            "value": value,
+        }
+    return values
+
+
+def _condition_matches(condition: dict[str, Any], observation: StrategyObservation) -> bool:
+    left = _source_value(
+        observation,
+        str(condition.get("left_source_id") or ""),
+        str(condition.get("left_timeframe") or ""),
+    )
+    if left is None:
+        return False
+    comparator = str(condition.get("comparator") or "")
+    if comparator == "is_true":
+        return bool(left)
+    right_source_id = str(condition.get("right_source_id") or "")
+    right = (
+        _source_value(
+            observation,
+            right_source_id,
+            str(condition.get("right_timeframe") or ""),
+        )
+        if right_source_id
+        else condition.get("value")
+    )
+    if right is None:
+        return False
+    if comparator == "equals":
+        return left == right
+    try:
+        left_number = float(left)
+        right_number = float(right)
+    except (TypeError, ValueError):
+        return False
+    if comparator == "above_by_bps":
+        return left_number >= right_number * (1 + float(condition.get("value") or 0) / 10_000)
+    if comparator == "greater_than":
+        return left_number > right_number
+    if comparator == "greater_or_equal":
+        return left_number >= right_number
+    if comparator == "less_than":
+        return left_number < right_number
+    if comparator == "less_or_equal":
+        return left_number <= right_number
+    return False
+
+
+def _source_value(
+    observation: StrategyObservation,
+    source_id: str,
+    timeframe: str,
+) -> Any:
+    cached = observation.source_values.get(f"{source_id}@{timeframe}")
+    if cached is None:
+        cached = observation.source_values.get(source_id)
+    if isinstance(cached, dict):
+        return cached.get("value")
+    if cached is not None:
+        return cached
+    source = next(
+        (row for row in strategy_input_catalog() if row["source_id"] == source_id),
+        None,
+    )
+    if source is None:
+        return None
+    supported = set(source["timeframes"])
+    if (
+        timeframe not in {"", "event", "session"}
+        and observation.source_timeframe
+        and timeframe != observation.source_timeframe
+        and supported not in ({"event"}, {"session"})
+    ):
+        return None
+    return _observation_field_value(observation, str(source["runtime_field"]))
+
+
+def _observation_field_value(observation: StrategyObservation, runtime_field: str) -> Any:
+    if runtime_field == "bullish_choch":
+        return observation.structure_event == "choch" and observation.structure_direction == "bullish"
+    return getattr(observation, runtime_field, None)
+
+
+def _validate_entry_rules(rules: dict[str, Any]) -> None:
+    catalog = {str(row["source_id"]): row for row in strategy_input_catalog()}
+    for stage_name in ("trigger", "confirmation", "veto"):
+        stage = dict(rules.get(stage_name) or {})
+        operator = str(stage.get("operator") or "")
+        allowed = {"weighted"} if stage_name == "confirmation" else {"all", "any"}
+        if operator not in allowed:
+            raise ValueError(f"Entry {stage_name} operator is unsupported")
+        groups = list(stage.get("groups") or [])
+        if not groups:
+            raise ValueError(f"Entry {stage_name} requires at least one rule group")
+        if not any(bool(group.get("enabled", True)) for group in groups):
+            raise ValueError(f"Entry {stage_name} requires at least one enabled rule group")
+        group_ids = [str(group.get("group_id") or "") for group in groups]
+        if any(not group_id for group_id in group_ids) or len(set(group_ids)) != len(group_ids):
+            raise ValueError(f"Entry {stage_name} rule group ids must be present and unique")
+        if operator == "weighted" and not 0 <= float(stage.get("minimum_score") or 0) <= 1:
+            raise ValueError("Entry confirmation minimum score must be between 0 and 1")
+        if operator == "weighted" and sum(
+            max(0.0, float(group.get("weight") or 0))
+            for group in groups
+            if bool(group.get("enabled", True))
+        ) <= 0:
+            raise ValueError("Entry confirmation requires positive enabled group weight")
+        for group in groups:
+            if str(group.get("operator") or "") not in {"all", "any"}:
+                raise ValueError(f"Entry rule group {group.get('group_id')} operator is unsupported")
+            conditions = list(group.get("conditions") or [])
+            if not conditions:
+                raise ValueError(f"Entry rule group {group.get('group_id')} requires a condition")
+            if bool(group.get("enabled", True)) and not any(
+                bool(condition.get("enabled", True)) for condition in conditions
+            ):
+                raise ValueError(
+                    f"Entry rule group {group.get('group_id')} requires an enabled condition"
+                )
+            condition_ids = [str(condition.get("condition_id") or "") for condition in conditions]
+            if any(not condition_id for condition_id in condition_ids) or len(set(condition_ids)) != len(condition_ids):
+                raise ValueError(f"Entry rule group {group.get('group_id')} condition ids must be present and unique")
+            for condition in conditions:
+                comparator = str(condition.get("comparator") or "")
+                if comparator not in RULE_COMPARATORS:
+                    raise ValueError(f"Entry rule condition {condition.get('condition_id')} comparator is unsupported")
+                left_source = catalog.get(str(condition.get("left_source_id") or ""))
+                if left_source is None:
+                    raise ValueError(f"Entry rule condition {condition.get('condition_id')} has unknown left source")
+                _validate_rule_timeframe(condition, "left_timeframe", left_source)
+                right_source_id = str(condition.get("right_source_id") or "")
+                if comparator == "above_by_bps" and not right_source_id:
+                    raise ValueError(
+                        f"Entry rule condition {condition.get('condition_id')} requires a target source"
+                    )
+                if right_source_id:
+                    right_source = catalog.get(right_source_id)
+                    if right_source is None:
+                        raise ValueError(f"Entry rule condition {condition.get('condition_id')} has unknown right source")
+                    _validate_rule_timeframe(condition, "right_timeframe", right_source)
+                elif comparator != "is_true" and condition.get("value") is None:
+                    raise ValueError(f"Entry rule condition {condition.get('condition_id')} requires a value")
+
+
+def _validate_rule_timeframe(
+    condition: dict[str, Any],
+    key: str,
+    source: dict[str, Any],
+) -> None:
+    timeframe = str(condition.get(key) or "")
+    if timeframe not in set(source["timeframes"]):
+        raise ValueError(
+            f"Entry rule source {source['source_id']} does not support timeframe {timeframe}"
+        )
+
+
+def _input(
+    source_id: str,
+    label: str,
+    category: str,
+    provider: str,
+    runtime_field: str,
+    value_type: str,
+    timeframes: list[str],
+    *,
+    parameter: str = "value",
+) -> dict[str, Any]:
+    return {
+        "source_id": source_id,
+        "label": label,
+        "category": category,
+        "provider": provider,
+        "runtime_field": runtime_field,
+        "value_type": value_type,
+        "timeframes": timeframes,
+        "parameter": parameter,
+        "summary": f"{label} supplied by {provider}; the configured timeframe is part of the rule contract.",
     }
-    denominator = sum(weights.values()) or 1.0
-    return sum(evidence[key] * weights[key] for key in evidence) / denominator, evidence
+
+
+def _condition(
+    condition_id: str,
+    left_source_id: str,
+    left_timeframe: str,
+    comparator: str,
+    *,
+    right_source_id: str = "",
+    right_timeframe: str = "",
+    value: Any = None,
+) -> dict[str, Any]:
+    return {
+        "condition_id": condition_id,
+        "enabled": True,
+        "left_source_id": left_source_id,
+        "left_timeframe": left_timeframe,
+        "comparator": comparator,
+        "right_source_id": right_source_id,
+        "right_timeframe": right_timeframe,
+        "value": value,
+    }
+
+
+def _rule_group(
+    group_id: str,
+    label: str,
+    operator: str,
+    conditions: list[dict[str, Any]],
+    *,
+    weight: float = 1.0,
+) -> dict[str, Any]:
+    return {
+        "group_id": group_id,
+        "label": label,
+        "enabled": True,
+        "operator": operator,
+        "weight": weight,
+        "conditions": conditions,
+    }
 
 
 def _confirmation_confidence(observation: StrategyObservation) -> float:

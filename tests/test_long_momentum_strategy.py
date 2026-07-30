@@ -18,6 +18,7 @@ from src.trading_runtime.strategy_engine import (
     StrategyObservation,
     StrategyPermissions,
     default_long_momentum_parameters,
+    evaluate_entry_decision_rules,
     long_momentum_strategy_definition,
 )
 from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner, RuntimeIbkrStrategyOrderPlanner
@@ -82,9 +83,66 @@ class LongMomentumStrategyTests(unittest.TestCase):
         definition = long_momentum_strategy_definition()
         config = definition["config"]
         self.assertEqual(config["direction"], "long_only")
-        self.assertIn("100ms", config["parameter_space"]["entry.breakout_timeframe"])
+        self.assertEqual(
+            config["parameters"]["entry_rules"]["trigger"]["operator"],
+            "any",
+        )
         self.assertEqual(config["taxonomy"]["indicators"][0]["timeframe"], "100ms")
         self.assertIn("position_event", config["taxonomy"]["evaluation_triggers"])
+        self.assertIn("signal.vwap_transition.score", {
+            row["source_id"] for row in config["input_catalog"]
+        })
+
+    def test_entry_rules_support_or_logic_across_explicit_sources(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["entry_rules"]["trigger"]["groups"] = [
+            next(
+                group for group in parameters["entry_rules"]["trigger"]["groups"]
+                if group["group_id"] == "break-vwap"
+            )
+        ]
+        configured = assignment()
+        configured = StrategyAssignment(
+            **{
+                **configured.payload(),
+                "status": AssignmentStatus.WATCHING,
+                "permissions": configured.permissions,
+                "parameters": parameters,
+                "created_at": NOW,
+                "updated_at": NOW,
+            }
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            configured,
+            confirmed_observation(price=100.3, swing_high=101.0),
+        )
+        self.assertEqual(result.evaluation.signals[0].action, "enter_long")
+        self.assertIn(
+            "break-vwap",
+            result.evaluation.signals[0].metadata["entry_rules"]["trigger"]["matched_groups"],
+        )
+
+    def test_rule_sources_resolve_their_configured_timeframes(self) -> None:
+        rules = default_long_momentum_parameters()["entry_rules"]
+        observation = confirmed_observation(
+            source_timeframe="1s",
+            source_values={
+                "indicator.flow_structure.score@100ms": {"value": 0.7},
+                "indicator.flow_structure.confidence@100ms": {"value": 0.8},
+                "market.last_price@5s": {"value": 101.0},
+                "indicator.vwap.value@5s": {"value": 100.2},
+                "indicator.vwap.slope@5s": {"value": 0.5},
+                "indicator.macd.line@5s": {"value": 0.4},
+                "indicator.macd.signal@5s": {"value": 0.2},
+                "indicator.macd.histogram@5s": {"value": 0.2},
+            },
+        )
+        result = evaluate_entry_decision_rules(rules, observation)
+        self.assertTrue(result["confirmation"]["passed"])
+        self.assertEqual(
+            set(result["confirmation"]["matched_groups"]),
+            {"qmd-alignment", "vwap-confirmation", "macd-confirmation"},
+        )
 
     def test_confirmed_swing_break_enters_with_semantic_protection(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(assignment(), confirmed_observation())

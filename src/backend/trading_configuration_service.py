@@ -20,12 +20,14 @@ from src.trading_runtime.portfolio import (
 from src.trading_runtime.strategy_engine import (
     STRATEGY_ID,
     STRATEGY_REVISION,
+    default_entry_decision_rules,
     default_long_momentum_parameters,
     resolve_long_momentum_parameters,
+    strategy_input_catalog,
 )
 
 
-CONFIGURATION_SCHEMA_VERSION = 2
+CONFIGURATION_SCHEMA_VERSION = 3
 CONFIGURATION_SECTIONS = {"strategy", "assignments", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
@@ -317,7 +319,7 @@ def _default_draft() -> dict[str, Any]:
             "Long Momentum · Conservative",
             "Higher confirmation and smaller initial size for controlled evaluation.",
             _overrides(parameters, {
-                "entry.minimum_confirmation_score": 0.65,
+                "entry_rules.confirmation.minimum_score": 0.65,
                 "sizing.request_value": 50.0,
                 "sizing.initial_quantity": 50.0,
                 "sizing.maximum_position_quantity": 150.0,
@@ -390,6 +392,7 @@ def _default_draft() -> dict[str, Any]:
                 "automatic": bool(definition.get("automatic", True)),
             }],
             "capability_catalog": capability_catalog(),
+            "input_catalog": strategy_input_catalog(),
             "profiles": system_profiles,
         },
         "assignments": {
@@ -533,9 +536,24 @@ def merged_assignment_parameters(configuration: dict[str, Any], assignment: dict
 
 
 def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
-    if int(raw.get("schema_version") or 0) >= CONFIGURATION_SCHEMA_VERSION and isinstance(raw.get("assignments"), dict):
+    if isinstance(raw.get("assignments"), dict) and isinstance(raw.get("strategy"), dict):
         result = deepcopy(raw)
         defaults = _default_draft()
+        result["schema_version"] = CONFIGURATION_SCHEMA_VERSION
+        result["strategy"].setdefault("profiles", [])
+        result["strategy"].setdefault("capability_catalog", [])
+        result["strategy"]["input_catalog"] = strategy_input_catalog()
+        for profile in result["strategy"]["profiles"]:
+            profile["definition_revision"] = STRATEGY_REVISION
+            parameters = dict(profile.get("parameters") or {})
+            if not isinstance(parameters.get("entry_rules"), dict):
+                parameters["entry_rules"] = default_entry_decision_rules(parameters)
+            _normalize_entry_rule_sources(parameters["entry_rules"])
+            parameters.pop("entry", None)
+            profile["parameters"] = resolve_long_momentum_parameters(parameters)
+        for definition in result["strategy"].get("definitions") or []:
+            if str(definition.get("strategy_id")) == STRATEGY_ID:
+                definition["revision"] = STRATEGY_REVISION
         existing_profiles = {
             str(row.get("profile_id"))
             for row in dict(result.get("strategy") or {}).get("profiles") or []
@@ -669,6 +687,26 @@ def _normalize_account_binding(binding: dict[str, Any]) -> None:
     account_key = str(binding.get("account_key") or "")
     fallback = "Replay account" if account_key == "replay" else account_key or "Trading account"
     binding["name"] = str(binding.get("name") or binding.get("display_name") or fallback)
+
+
+def _normalize_entry_rule_sources(entry_rules: dict[str, Any]) -> None:
+    for stage in entry_rules.values():
+        if not isinstance(stage, dict):
+            continue
+        for group in stage.get("groups") or []:
+            for condition in group.get("conditions") or []:
+                if (
+                    str(condition.get("left_source_id") or "")
+                    == "signal.vwap_transition.score"
+                    and str(condition.get("left_timeframe") or "") == "5s"
+                ):
+                    condition["left_timeframe"] = "10s"
+                if (
+                    str(condition.get("right_source_id") or "")
+                    == "signal.vwap_transition.score"
+                    and str(condition.get("right_timeframe") or "") == "5s"
+                ):
+                    condition["right_timeframe"] = "10s"
 
 
 def _default_oms_profile() -> dict[str, Any]:

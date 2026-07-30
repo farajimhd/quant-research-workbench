@@ -83,6 +83,7 @@ struct ScannerDerivedQuery {
     as_of: String,
     end: String,
     start: String,
+    tickers: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,7 +177,15 @@ async fn scanner_derived_snapshot(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<HistoricalScannerDerivedSnapshot>, ApiError> {
     let as_of = parse_timestamp(&query.as_of)?;
-    let mut replay_window = window(&query.start, &query.end, Vec::new())?;
+    let tickers = query
+        .tickers
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    let mut replay_window = window(&query.start, &query.end, tickers)?;
     replay_window.end = replay_window.end.min(as_of);
     state
         .scanner

@@ -80,9 +80,54 @@ type StrategyProfile = {
   revision: number;
 };
 
+type StrategyInput = {
+  category: string;
+  label: string;
+  parameter: string;
+  provider: string;
+  runtime_field: string;
+  source_id: string;
+  summary: string;
+  timeframes: string[];
+  value_type: string;
+};
+
+type RuleCondition = {
+  comparator: string;
+  condition_id: string;
+  enabled: boolean;
+  left_source_id: string;
+  left_timeframe: string;
+  right_source_id: string;
+  right_timeframe: string;
+  value: Primitive | null;
+};
+
+type RuleGroup = {
+  conditions: RuleCondition[];
+  enabled: boolean;
+  group_id: string;
+  label: string;
+  operator: "all" | "any";
+  weight: number;
+};
+
+type RuleStage = {
+  groups: RuleGroup[];
+  minimum_score?: number;
+  operator: "all" | "any" | "weighted";
+};
+
+type EntryRules = {
+  confirmation: RuleStage;
+  trigger: RuleStage;
+  veto: RuleStage;
+};
+
 type StrategySection = {
   capability_catalog: CapabilityDefinition[];
   definitions: Array<{ automatic: boolean; name: string; revision: number; strategy_id: string }>;
+  input_catalog: StrategyInput[];
   profiles: StrategyProfile[];
 };
 
@@ -223,10 +268,6 @@ const SECTION_META = {
 } as const;
 
 const FREQUENT_PARAMETERS = [
-  field("entry.breakout_timeframe", "Breakout timeframe", "Primary causal structure used to recognize the entry.", "choice", ["100ms", "1s", "5s", "10s"]),
-  field("entry.breakout_reference", "Breakout reference", "Reference price that must be broken before an entry becomes eligible.", "choice", ["previous_close", "previous_high", "confirmed_swing_high", "bullish_choch"]),
-  field("entry.breakout_buffer_bps", "Breakout buffer", "Extra distance above the reference required to avoid marginal breaks.", "number", undefined, "bps", 0.5),
-  field("entry.minimum_confirmation_score", "Confirmation score", "Minimum combined causal evidence required for an entry.", "number", undefined, "score", 0.05),
   field("sizing.request_mode", "Capital request", "Express size as a fixed quantity, fraction of mandate capacity, risk fraction, or all available mandate capacity.", "choice", ["fixed_quantity", "mandate_fraction", "risk_fraction", "all_available"]),
   field("sizing.request_value", "Request value", "Meaning depends on Capital request: shares for fixed quantity and a fraction for mandate or risk sizing.", "number", undefined, "value", 0.01),
   field("sizing.add_fraction", "Add size", "Fraction of the initial request used for an approved add.", "number", undefined, "fraction", 0.05),
@@ -234,6 +275,25 @@ const FREQUENT_PARAMETERS = [
   field("profit_pocket.minimum_gain_pct", "Profit pocket gain", "Minimum open gain before profit-pocket logic can act.", "number", undefined, "%", 0.05),
   field("reentry.cooldown_ms", "Re-entry cooldown", "Minimum time after an exit before re-entry becomes eligible.", "number", undefined, "ms", 100),
 ] as const;
+
+const LEGACY_ENTRY_LOGIC_PATHS = new Set([
+  "entry.breakout_timeframe",
+  "entry.breakout_reference",
+  "entry.breakout_buffer_bps",
+  "entry.minimum_confirmation_score",
+  "entry.news_minimum_score",
+  "entry.price_expansion_minimum_score",
+  "entry.vwap_transition_minimum_score",
+  "entry.qmd.minimum_score",
+  "entry.qmd.minimum_confidence",
+  "entry.qmd.weight",
+  "entry.vwap.minimum_slope_bps_per_second",
+  "entry.vwap.weight",
+  "entry.macd.require_positive_histogram",
+  "entry.macd.weight",
+  "entry.veto.flow_price_divergence",
+  "entry.veto.liquidity_dislocation",
+]);
 
 export function TradingConfigurationPage({ section }: { section: TradingConfigurationSection }) {
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -424,7 +484,11 @@ function StrategyStudio({ onChange, section }: { onChange: (value: StrategySecti
     setSelectedId(remaining[0]?.profile_id ?? "");
   }
 
-  const advanced = flattenPrimitives(selected.parameters).filter((row) => !FREQUENT_PARAMETERS.some((fieldDefinition) => fieldDefinition.path === row.path));
+  const advanced = flattenPrimitives(selected.parameters).filter((row) => (
+    !FREQUENT_PARAMETERS.some((fieldDefinition) => fieldDefinition.path === row.path)
+    && !LEGACY_ENTRY_LOGIC_PATHS.has(row.path)
+  ));
+  const entryRules = selected.parameters.entry_rules as EntryRules;
   return (
     <div className="configuration-workbench">
       <aside className="configuration-library">
@@ -460,7 +524,18 @@ function StrategyStudio({ onChange, section }: { onChange: (value: StrategySecti
           These values are most likely to change between experiments. Portfolio limits and OMS mechanics are configured separately so a strategy cannot silently expand account risk or broker authority.
         </GuideCallout>
 
-        <ConfigGroup summary="Entry, sizing, profit-taking, and re-entry controls used most often during strategy iteration." title="Trading behavior">
+        <ConfigGroup summary="Build entry logic from explicit inputs. Every condition records its provider, source field, parameter, timeframe, comparison, and Boolean relationship." title="Decision logic & data sources">
+          <DecisionRulesEditor
+            catalog={section.input_catalog}
+            rules={entryRules}
+            onChange={(value) => replaceProfile({
+              ...selected,
+              parameters: { ...selected.parameters, entry_rules: value },
+            })}
+          />
+        </ConfigGroup>
+
+        <ConfigGroup summary="Sizing, profit-taking, and re-entry controls used most often during strategy iteration." title="Trading behavior">
           <div className="configuration-field-grid">
             {FREQUENT_PARAMETERS.map((definition) => (
               <ParameterField
@@ -521,6 +596,267 @@ function StrategyStudio({ onChange, section }: { onChange: (value: StrategySecti
           </div>
         </details>
       </main>
+    </div>
+  );
+}
+
+const RULE_STAGE_META = {
+  trigger: {
+    label: "Entry triggers",
+    summary: "At least one configured trigger must pass before confirmation is considered.",
+  },
+  confirmation: {
+    label: "Confirmation evidence",
+    summary: "Passing groups contribute their configured weight to the minimum confirmation score.",
+  },
+  veto: {
+    label: "Veto conditions",
+    summary: "A passing veto group blocks entry even when trigger and confirmation rules pass.",
+  },
+} as const;
+
+const COMPARATOR_OPTIONS = [
+  { label: "Is above by", value: "above_by_bps" },
+  { label: "Is at least", value: "greater_or_equal" },
+  { label: "Is greater than", value: "greater_than" },
+  { label: "Is at most", value: "less_or_equal" },
+  { label: "Is less than", value: "less_than" },
+  { label: "Equals", value: "equals" },
+  { label: "Is true", value: "is_true" },
+];
+
+function DecisionRulesEditor({ catalog, onChange, rules }: {
+  catalog: StrategyInput[];
+  onChange: (value: EntryRules) => void;
+  rules: EntryRules;
+}) {
+  if (!rules) return <EmptyState title="Decision rules unavailable" detail="Reload the migrated configuration draft to receive the typed source model." />;
+
+  function replaceStage(stageName: keyof EntryRules, stage: RuleStage) {
+    onChange({ ...rules, [stageName]: stage });
+  }
+
+  function replaceGroup(stageName: keyof EntryRules, groupId: string, group: RuleGroup) {
+    const stage = rules[stageName];
+    replaceStage(stageName, { ...stage, groups: stage.groups.map((row) => row.group_id === groupId ? group : row) });
+  }
+
+  function addGroup(stageName: keyof EntryRules) {
+    const stage = rules[stageName];
+    const source = catalog[0];
+    const groupId = uniqueId(`${stageName}-rule`, stage.groups.map((row) => row.group_id));
+    const condition: RuleCondition = {
+      comparator: source.value_type === "boolean" ? "is_true" : "greater_or_equal",
+      condition_id: `${groupId}-condition`,
+      enabled: true,
+      left_source_id: source.source_id,
+      left_timeframe: source.timeframes[0],
+      right_source_id: "",
+      right_timeframe: "",
+      value: source.value_type === "boolean" ? null : 0,
+    };
+    replaceStage(stageName, {
+      ...stage,
+      groups: [...stage.groups, {
+        conditions: [condition],
+        enabled: true,
+        group_id: groupId,
+        label: "New rule set",
+        operator: "all",
+        weight: stageName === "confirmation" ? 0.25 : 1,
+      }],
+    });
+  }
+
+  return (
+    <div className="strategy-rule-editor">
+      <div className="strategy-source-legend">
+        <GitBranch size={18} />
+        <div>
+          <strong>How entry is decided</strong>
+          <p>Trigger passes → weighted confirmation passes → no veto passes. Operational manual and force-entry requests remain explicit runtime actions.</p>
+        </div>
+      </div>
+      {(Object.keys(RULE_STAGE_META) as Array<keyof EntryRules>).map((stageName) => {
+        const stage = rules[stageName];
+        const meta = RULE_STAGE_META[stageName];
+        return (
+          <section className="strategy-rule-stage" data-stage={stageName} key={stageName}>
+            <header>
+              <div><span>{stageName}</span><strong>{meta.label}</strong><p>{meta.summary}</p></div>
+              <div className="strategy-stage-controls">
+                {stageName === "confirmation" ? (
+                  <NumberField
+                    help="Minimum weighted fraction of confirmation groups that must pass."
+                    label="Required score"
+                    maximum={1}
+                    minimum={0}
+                    onChange={(minimum_score) => replaceStage(stageName, { ...stage, minimum_score })}
+                    step={0.05}
+                    unit="score"
+                    value={Number(stage.minimum_score ?? 0.55)}
+                  />
+                ) : (
+                  <SelectField
+                    help="Choose whether any rule set or every rule set must pass."
+                    label="Stage logic"
+                    onChange={(operator) => replaceStage(stageName, { ...stage, operator: operator as "all" | "any" })}
+                    options={[{ label: "Any rule set", value: "any" }, { label: "All rule sets", value: "all" }]}
+                    value={stage.operator}
+                  />
+                )}
+                <button className="button compact" onClick={() => addGroup(stageName)} type="button"><Plus size={14} /> Add rule set</button>
+              </div>
+            </header>
+            <div className="strategy-rule-groups">
+              {stage.groups.map((group) => (
+                <RuleGroupEditor
+                  catalog={catalog}
+                  group={group}
+                  key={group.group_id}
+                  onChange={(next) => replaceGroup(stageName, group.group_id, next)}
+                  onRemove={() => replaceStage(stageName, { ...stage, groups: stage.groups.filter((row) => row.group_id !== group.group_id) })}
+                  removable={stage.groups.length > 1}
+                  showWeight={stageName === "confirmation"}
+                />
+              ))}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function RuleGroupEditor({ catalog, group, onChange, onRemove, removable, showWeight }: {
+  catalog: StrategyInput[];
+  group: RuleGroup;
+  onChange: (value: RuleGroup) => void;
+  onRemove: () => void;
+  removable: boolean;
+  showWeight: boolean;
+}) {
+  function replaceCondition(conditionId: string, condition: RuleCondition) {
+    onChange({ ...group, conditions: group.conditions.map((row) => row.condition_id === conditionId ? condition : row) });
+  }
+
+  function addCondition() {
+    const source = catalog[0];
+    const conditionId = uniqueId(`${group.group_id}-condition`, group.conditions.map((row) => row.condition_id));
+    onChange({
+      ...group,
+      conditions: [...group.conditions, {
+        comparator: source.value_type === "boolean" ? "is_true" : "greater_or_equal",
+        condition_id: conditionId,
+        enabled: true,
+        left_source_id: source.source_id,
+        left_timeframe: source.timeframes[0],
+        right_source_id: "",
+        right_timeframe: "",
+        value: source.value_type === "boolean" ? null : 0,
+      }],
+    });
+  }
+
+  return (
+    <article className="strategy-rule-group" data-enabled={group.enabled ? "true" : "false"}>
+      <header>
+        <label><span>Rule set name</span><input onChange={(event) => onChange({ ...group, label: event.target.value })} value={group.label} /></label>
+        <label><span>Conditions</span><select onChange={(event) => onChange({ ...group, operator: event.target.value as "all" | "any" })} value={group.operator}><option value="all">All must pass</option><option value="any">Any may pass</option></select></label>
+        {showWeight ? <label><span>Weight</span><input max={1} min={0} onChange={(event) => onChange({ ...group, weight: Number(event.target.value) })} step={0.05} type="number" value={group.weight} /></label> : null}
+        <label className="configuration-enabled"><input checked={group.enabled} onChange={(event) => onChange({ ...group, enabled: event.target.checked })} type="checkbox" /> Enabled</label>
+        <button aria-label={`Delete ${group.label}`} className="button compact danger" disabled={!removable} onClick={onRemove} type="button"><Trash2 size={14} /></button>
+      </header>
+      <div className="strategy-rule-conditions">
+        {group.conditions.map((condition, index) => (
+          <RuleConditionEditor
+            catalog={catalog}
+            condition={condition}
+            index={index}
+            key={condition.condition_id}
+            onChange={(next) => replaceCondition(condition.condition_id, next)}
+            onRemove={() => onChange({ ...group, conditions: group.conditions.filter((row) => row.condition_id !== condition.condition_id) })}
+            removable={group.conditions.length > 1}
+          />
+        ))}
+      </div>
+      <button className="configuration-inline-action" onClick={addCondition} type="button"><Plus size={13} /> Add condition to this rule set</button>
+    </article>
+  );
+}
+
+function RuleConditionEditor({ catalog, condition, index, onChange, onRemove, removable }: {
+  catalog: StrategyInput[];
+  condition: RuleCondition;
+  index: number;
+  onChange: (value: RuleCondition) => void;
+  onRemove: () => void;
+  removable: boolean;
+}) {
+  const left = inputSource(catalog, condition.left_source_id);
+  const targetMode = condition.right_source_id ? "source" : "constant";
+  const right = condition.right_source_id ? inputSource(catalog, condition.right_source_id) : null;
+  const comparatorOptions = left?.value_type === "boolean"
+    ? COMPARATOR_OPTIONS.filter((row) => row.value === "is_true" || row.value === "equals")
+    : COMPARATOR_OPTIONS.filter((row) => row.value !== "is_true");
+
+  function selectLeft(sourceId: string) {
+    const source = inputSource(catalog, sourceId) ?? catalog[0];
+    onChange({
+      ...condition,
+      comparator: source.value_type === "boolean" ? "is_true" : condition.comparator === "is_true" ? "greater_or_equal" : condition.comparator,
+      left_source_id: source.source_id,
+      left_timeframe: source.timeframes[0],
+      value: source.value_type === "boolean" ? null : condition.value ?? 0,
+    });
+  }
+
+  function selectTargetMode(mode: string) {
+    if (mode === "source") {
+      const source = catalog.find((row) => row.value_type !== "boolean") ?? catalog[0];
+      onChange({ ...condition, right_source_id: source.source_id, right_timeframe: source.timeframes[0], value: condition.comparator === "above_by_bps" ? 0 : null });
+    } else {
+      onChange({ ...condition, right_source_id: "", right_timeframe: "", value: 0 });
+    }
+  }
+
+  return (
+    <div className="strategy-rule-condition">
+      <span className="strategy-condition-index">{index + 1}</span>
+      <label><span>Data source</span><select onChange={(event) => selectLeft(event.target.value)} value={condition.left_source_id}>{sourceOptions(catalog)}</select></label>
+      <label><span>Timeframe</span><select onChange={(event) => onChange({ ...condition, left_timeframe: event.target.value })} value={condition.left_timeframe}>{left?.timeframes.map((timeframe) => <option key={timeframe}>{timeframe}</option>)}</select></label>
+      <label><span>Comparison</span><select onChange={(event) => {
+        const comparator = event.target.value;
+        if (comparator === "above_by_bps" && !condition.right_source_id) {
+          const source = catalog.find((row) => row.value_type === left?.value_type && row.source_id !== condition.left_source_id) ?? catalog[0];
+          onChange({ ...condition, comparator, right_source_id: source.source_id, right_timeframe: source.timeframes[0], value: 0 });
+        } else {
+          onChange({ ...condition, comparator });
+        }
+      }} value={condition.comparator}>{comparatorOptions.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}</select></label>
+      {condition.comparator !== "is_true" ? (
+        <>
+          <label><span>Compare with</span><select disabled={condition.comparator === "above_by_bps"} onChange={(event) => selectTargetMode(event.target.value)} value={targetMode}><option value="constant">Fixed value</option><option value="source">Another source</option></select></label>
+          {targetMode === "source" ? (
+            <>
+              <label><span>Target source</span><select onChange={(event) => {
+                const source = inputSource(catalog, event.target.value) ?? catalog[0];
+                onChange({ ...condition, right_source_id: source.source_id, right_timeframe: source.timeframes[0] });
+              }} value={condition.right_source_id}>{sourceOptions(catalog, left?.value_type)}</select></label>
+              <label><span>Target timeframe</span><select onChange={(event) => onChange({ ...condition, right_timeframe: event.target.value })} value={condition.right_timeframe}>{right?.timeframes.map((timeframe) => <option key={timeframe}>{timeframe}</option>)}</select></label>
+            </>
+          ) : (
+            <label><span>Threshold</span><input onChange={(event) => onChange({ ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /></label>
+          )}
+          {condition.comparator === "above_by_bps" && targetMode === "source" ? <label><span>Buffer (bps)</span><input min={0} onChange={(event) => onChange({ ...condition, value: Number(event.target.value) })} step={0.5} type="number" value={Number(condition.value ?? 0)} /></label> : null}
+        </>
+      ) : null}
+      <button aria-label={`Delete condition ${index + 1}`} className="button compact danger" disabled={!removable} onClick={onRemove} type="button"><Trash2 size={13} /></button>
+      <div className="strategy-source-detail">
+        <strong>{left?.provider ?? "Unknown provider"}</strong>
+        <span>{left?.category} · {left?.parameter} · runtime field {left?.runtime_field}</span>
+        <p>{left?.summary}</p>
+      </div>
     </div>
   );
 }
@@ -933,6 +1269,21 @@ function ConfigurationLoading() {
 
 function updateCapability(profile: StrategyProfile, id: string, binding: CapabilityBinding): StrategyProfile {
   return { ...profile, capabilities: profile.capabilities.map((row) => row.capability_id === id ? binding : row) };
+}
+
+function inputSource(catalog: StrategyInput[], sourceId: string) {
+  return catalog.find((row) => row.source_id === sourceId);
+}
+
+function sourceOptions(catalog: StrategyInput[], valueType?: string) {
+  const categories = [...new Set(catalog.map((row) => row.category))];
+  return categories.map((category) => (
+    <optgroup key={category} label={category}>
+      {catalog.filter((row) => row.category === category && (!valueType || row.value_type === valueType)).map((source) => (
+        <option key={source.source_id} value={source.source_id}>{source.label} · {source.parameter}</option>
+      ))}
+    </optgroup>
+  ));
 }
 
 function field(path: string, label: string, help: string, kind: FieldDefinition["kind"], choices?: readonly string[], unit?: string, step?: number): FieldDefinition {
