@@ -65,6 +65,23 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "complete bulk snapshot"):
             require_complete_bulk_sources("submissions,companyfacts")
 
+    def test_historical_bulk_ingest_batch_size_is_forwarded(self) -> None:
+        with mock.patch.object(
+            sys,
+            "argv",
+            ["sec_historical_gap_fill.py", "--bulk-ingest-batch-size", "43210"],
+        ):
+            args = historical.parse_args()
+
+        command = next(
+            item.command
+            for item in historical.build_commands(args, Path("logs"))
+            if item.stage == "bulk-ingest"
+        )
+
+        self.assertEqual(args.bulk_ingest_batch_size, 43210)
+        self.assertEqual(command[command.index("--batch-size") + 1], "43210")
+
     def test_acceptance_repair_executes_only_in_execute_mode(self) -> None:
         command = ["python", "sec_acceptance_raw_metadata_repair.py"]
 

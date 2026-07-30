@@ -341,6 +341,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bulk-sources", default=DEFAULT_BULK_SOURCES)
     parser.add_argument("--bulk-download-concurrency", type=int, default=2)
     parser.add_argument("--bulk-file-root-ch", default=env_string("SEC_CORE_ARTIFACT_ROOT_CH", "/mnt/d/market-data"))
+    parser.add_argument(
+        "--bulk-ingest-batch-size",
+        type=int,
+        default=int(os.environ.get("SEC_BULK_INGEST_BATCH_SIZE", "50000")),
+        help="Row batch size forwarded to sec_bulk_clickhouse_ingest.py.",
+    )
     parser.add_argument("--bulk-ingest-max-threads", type=int, default=int(os.environ.get("SEC_BULK_CLICKHOUSE_MAX_THREADS", "32")))
     parser.add_argument("--bulk-ingest-max-memory", default=os.environ.get("SEC_BULK_CLICKHOUSE_MAX_MEMORY", "96G"))
     parser.add_argument("--bulk-minimum-row-ratio", type=float, default=float(os.environ.get("SEC_BULK_MINIMUM_ROW_RATIO", "0.95")))
@@ -557,6 +563,8 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     args.core_output_root_win,
                     "--clickhouse-file-root",
                     args.bulk_file_root_ch,
+                    "--batch-size",
+                    str(max(1, args.bulk_ingest_batch_size)),
                     "--max-threads",
                     str(max(1, args.bulk_ingest_max_threads)),
                     "--max-memory-usage",
