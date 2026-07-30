@@ -65,6 +65,36 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "complete bulk snapshot"):
             require_complete_bulk_sources("submissions,companyfacts")
 
+    def test_submission_fragments_cannot_override_recent_filing_identity(self) -> None:
+        common = {
+            "raw": "`sec_core`.`raw`",
+            "filing_stage": "`sec_core`.`filing_stage`",
+            "artifact": SimpleNamespace(source_file_id="source-id"),
+            "now": "now64(9, 'UTC')",
+            "cik": "cik_expression",
+            "is_fragment": "is_fragment_expression",
+            "filing_payload_type": "Tuple(accessionNumber Array(String))",
+            "args": SimpleNamespace(max_threads=4, max_memory_usage="4G"),
+        }
+
+        recent = snapshot_refresh.submission_filings_insert_sql(
+            **common,
+            include_fragments=False,
+        )
+        fragment = snapshot_refresh.submission_filings_insert_sql(
+            **common,
+            include_fragments=True,
+        )
+
+        self.assertIn("WHERE (NOT (is_fragment_expression))", recent)
+        self.assertNotIn("NOT IN", recent)
+        self.assertIn("WHERE (is_fragment_expression)", fragment)
+        self.assertIn(
+            "(cik, accession_number) NOT IN "
+            "(SELECT cik, accession_number FROM `sec_core`.`filing_stage`)",
+            fragment,
+        )
+
     def test_historical_bulk_ingest_batch_size_is_forwarded(self) -> None:
         with mock.patch.object(
             sys,

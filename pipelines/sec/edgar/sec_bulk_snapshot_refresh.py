@@ -262,7 +262,68 @@ def build_submissions_tables(client: Any, args: Any, artifact: Any, run_id: str,
         "acceptanceDateTime Array(String), form Array(String), primaryDocument Array(String), "
         "size Array(String), items Array(String), act Array(String), fileNumber Array(String), filmNumber Array(String))"
     )
-    filings_sql = f"""
+    execute_stage(
+        client,
+        "submissions",
+        "build recent filings",
+        submission_filings_insert_sql(
+            raw=raw,
+            filing_stage=filing_stage,
+            artifact=artifact,
+            now=now,
+            cik=cik,
+            is_fragment=is_fragment,
+            filing_payload_type=filing_payload_type,
+            include_fragments=False,
+            args=args,
+        ),
+    )
+    execute_stage(
+        client,
+        "submissions",
+        "build historical fragment filings",
+        submission_filings_insert_sql(
+            raw=raw,
+            filing_stage=filing_stage,
+            artifact=artifact,
+            now=now,
+            cik=cik,
+            is_fragment=is_fragment,
+            filing_payload_type=filing_payload_type,
+            include_fragments=True,
+            args=args,
+        ),
+    )
+
+    validate_submission_stage(client, args, bases, run_id)
+    return {base: scalar_int(client, f"SELECT count() FROM {table(args.database, stage_name(base, run_id))} FINAL") for base in bases}
+
+
+def submission_filings_insert_sql(
+    *,
+    raw: str,
+    filing_stage: str,
+    artifact: Any,
+    now: str,
+    cik: str,
+    is_fragment: str,
+    filing_payload_type: str,
+    include_fragments: bool,
+    args: Any,
+) -> str:
+    source_filter = is_fragment if include_fragments else f"NOT ({is_fragment})"
+    # The SEC submissions archive may temporarily repeat a boundary accession
+    # in both the issuer's authoritative `filings.recent` arrays and an older
+    # `*-submissions-*` fragment. Load recent rows first and admit a fragment
+    # only when that complete identity is absent. Do not use DISTINCT or weaken
+    # validation: duplicates within either source class remain integrity errors.
+    authority_filter = (
+        f"AND (cik, accession_number) NOT IN "
+        f"(SELECT cik, accession_number FROM {filing_stage})"
+        if include_fragments
+        else ""
+    )
+    return f"""
         INSERT INTO {filing_stage}
         WITH
             {cik} AS cik,
@@ -330,13 +391,12 @@ def build_submissions_tables(client: Any, args: Any, artifact: Any, run_id: str,
             {now} AS last_seen_at_utc
         FROM {raw}
         ARRAY JOIN arrayEnumerate(accessions) AS filing_index
-        WHERE accession_number != '' AND cik != ''
+        WHERE ({source_filter})
+          AND accession_number != ''
+          AND cik != ''
+          {authority_filter}
         SETTINGS max_partitions_per_insert_block = 1000, {query_settings(args)}
     """
-    execute_stage(client, "submissions", "build filings", filings_sql)
-
-    validate_submission_stage(client, args, bases, run_id)
-    return {base: scalar_int(client, f"SELECT count() FROM {table(args.database, stage_name(base, run_id))} FINAL") for base in bases}
 
 
 def build_companyfacts_tables(client: Any, args: Any, artifact: Any, run_id: str, raw_table: str) -> dict[str, int]:
