@@ -236,8 +236,13 @@ def _label_unit(
         issuer_role=unit.issuer_role,
         evidence_scope=unit.evidence_scope,
         publication_text_hash=hashlib.sha256(
-            unit.text.encode("utf-8")
+            parent.text.encode("utf-8")
         ).hexdigest(),
+        evidence_text_hash=hashlib.sha256(
+            unit.semantic_text.encode("utf-8")
+        ).hexdigest(),
+        evidence_start=unit.start,
+        evidence_end=unit.end,
         semantic_evidence_text=unit.semantic_text,
         classification=classification_dict,
         semantic=semantic.as_dict(),

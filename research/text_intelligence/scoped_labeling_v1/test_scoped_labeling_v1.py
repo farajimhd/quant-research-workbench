@@ -25,11 +25,15 @@ from .news_identity import IssuerIdentity, NewsIssuerResolver
 from .pipeline import classify_news_document, classify_sec_document
 from .sec_extractor import extract_sec_units
 from .persistence import (
+    MAX_EXACT_DOCUMENT_KEY_SQL_BYTES,
     JsonInsertBuffer,
+    PermanentPayloadError,
+    _bounded_document_key_sql,
     attach_sec_ticker,
     assert_certification,
     bounded_period_ranges,
     cleanup_inflight_statuses,
+    compact_semantic_payload,
     execute_bounded_plan,
     interleaved_plan,
     iter_bounded_source_batches,
@@ -214,10 +218,22 @@ class ScopedLabelingTests(unittest.TestCase):
 
     def test_sec_document_query_uses_bounded_latest_rows(self) -> None:
         class CaptureClient:
-            sql = ""
+            sql: list[str] = []
 
             def iter_json_each_row(self, sql):
-                self.sql = sql
+                self.sql.append(sql)
+                if len(self.sql) == 1:
+                    return iter(({
+                        "document_id": "doc-1",
+                        "cik": "0000000001",
+                        "accession_number": "0000000001-26-000001",
+                        "filing_id": "filing-1",
+                        "sequence_number": 1,
+                        "document_type": "EX-99.1",
+                        "document_role": "press_release_exhibit",
+                        "description": "Press release",
+                        "document_name": "release.htm",
+                    },))
                 return iter(())
 
         client = CaptureClient()
@@ -232,25 +248,50 @@ class ScopedLabelingTests(unittest.TestCase):
             ),
             [],
         )
-        self.assertNotIn(" FINAL", client.sql)
+        combined = "\n".join(client.sql)
+        self.assertNotIn(" FINAL", combined)
         self.assertEqual(
-            client.sql.count("PREWHERE cityHash64(cik) % 64 = 7"),
+            combined.count("PREWHERE cityHash64(cik) % 64 = 7"),
             2,
         )
         self.assertEqual(
-            client.sql.count(
+            combined.count(
                 "AND (cik, accession_number) IN"
             ),
-            2,
+            1,
+        )
+        self.assertIn(
+            "AND (cik, accession_number, document_id) IN",
+            combined,
         )
         self.assertIn(
             "LIMIT 1 BY cik, accession_number, document_id, text_kind",
-            client.sql,
+            combined,
         )
         self.assertIn(
             "LIMIT 1 BY cik, accession_number, sequence_number, document_id",
-            client.sql,
+            combined,
         )
+
+    def test_sec_exact_document_identity_sql_is_byte_bounded(self) -> None:
+        identities = tuple(
+            (
+                f"{index:010d}",
+                f"{index:010d}-26-{index:06d}",
+                f"{index:064x}",
+            )
+            for index in range(10_000)
+        )
+        batches = tuple(_bounded_document_key_sql(identities))
+        self.assertGreater(len(batches), 1)
+        self.assertEqual(
+            sum(batch.count("),(") + 1 for batch in batches),
+            len(identities),
+        )
+        self.assertTrue(all(
+            len(batch.encode("utf-8")) <= MAX_EXACT_DOCUMENT_KEY_SQL_BYTES
+            for batch in batches
+        ))
 
     def test_bounded_source_is_fully_drained_before_return(self) -> None:
         drained = False
@@ -530,6 +571,92 @@ class ScopedLabelingTests(unittest.TestCase):
         self.assertEqual(client.execute.call_count, 2)
         for call in client.execute.call_args_list:
             self.assertIn("FORMAT JSONEachRow", call.args[0])
+
+    def test_insert_buffer_rejects_one_oversized_row_before_transport(
+        self,
+    ) -> None:
+        client = mock.Mock()
+        buffer = JsonInsertBuffer(
+            client=client,
+            database="q_live",
+            table="labels",
+            max_bytes=1_000,
+            max_row_bytes=100,
+        )
+        with self.assertRaisesRegex(
+            PermanentPayloadError,
+            "news / source-1 / unit-1 / EXMP",
+        ):
+            buffer.add({
+                "corpus": "news",
+                "source_id": "source-1",
+                "unit_id": "unit-1",
+                "ticker": "EXMP",
+                "text": "x" * 200,
+            })
+        client.execute.assert_not_called()
+        self.assertFalse(
+            is_transient_clickhouse_error(
+                PermanentPayloadError("oversized compact label")
+            )
+        )
+
+    def test_compact_semantic_payload_excludes_repeated_source_text(
+        self,
+    ) -> None:
+        compact = compact_semantic_payload({
+            "authority_version": "authority-v1",
+            "source_id": "unit-1",
+            "corpus": "sec",
+            "blocks": [{
+                "text": "source text that must not be persisted",
+                "kind": "paragraph",
+            }],
+            "spans": [
+                {
+                    "span_type": "financial",
+                    "subtype": "money",
+                    "raw": "$25 million",
+                    "normalized": "25000000",
+                    "unit": "USD",
+                    "context": "repeated audit context",
+                },
+                {
+                    "span_type": "financial",
+                    "subtype": "money",
+                    "raw": "$25 million",
+                    "normalized": "25000000",
+                    "unit": "USD",
+                    "context": "repeated audit context",
+                },
+            ],
+            "normalized_semantic_text": "another complete text copy",
+            "labels": [],
+            "content_role": "primary_event",
+            "origin": "regulatory_primary",
+            "sentiment": "neutral",
+            "sentiment_score": 0.0,
+            "modality": "confirmed",
+            "time_orientation": "current",
+            "keywords": ["offering"],
+            "candidates": [],
+            "quality_flags": [],
+        })
+        encoded = json.dumps(compact)
+        self.assertNotIn("source text that must not be persisted", encoded)
+        self.assertNotIn("another complete text copy", encoded)
+        self.assertNotIn("repeated audit context", encoded)
+        self.assertEqual(
+            compact["normalized_values"],
+            [{
+                "span_type": "financial",
+                "subtype": "money",
+                "normalized": "25000000",
+                "unit": "USD",
+                "count": 2,
+            }],
+        )
+        self.assertEqual(compact["audit_counts"]["typed_spans"], 2)
 
     def test_sec_mapping_is_point_in_time_and_confidence_ordered(self) -> None:
         row = {
@@ -1211,6 +1338,48 @@ Pursuant to the requirements of the Securities Exchange Act, the registrant sign
         self.assertEqual(len(units), 1)
         self.assertIn("registered direct offering", units[0].text)
         self.assertNotIn("signed this report", units[0].text)
+
+    def test_sec_extractor_excludes_asset_level_xml_by_taxonomy(self) -> None:
+        units = extract_sec_units(
+            source_id="asset-data",
+            title="EX-102",
+            text=(
+                "<assetData>originalLoanAmount=42814.75; "
+                "originalInterestRatePercentage=0.0599</assetData>"
+            ),
+            ticker="",
+            metadata={
+                "document_type": "EX-102",
+                "document_role": "material_exhibit",
+                "description": "Asset-level data file",
+            },
+        )
+        self.assertEqual(units, ())
+
+    def test_sec_extractor_splits_large_narrative_evidence(self) -> None:
+        text = (
+            "ITEM 1.01\n"
+            + "The company entered into a financing agreement. "
+            + ("Material commercial terms and obligations apply. " * 2_000)
+        )
+        units = extract_sec_units(
+            source_id="large-contract",
+            title="8-K",
+            text=text,
+            ticker="EXMP",
+            metadata={
+                "document_type": "8-K",
+                "document_role": "primary_document",
+            },
+        )
+        self.assertGreater(len(units), 1)
+        self.assertTrue(
+            all(len(unit.semantic_text) <= 32_000 for unit in units)
+        )
+        self.assertEqual(
+            sum(unit.semantic_text.count("Material") for unit in units),
+            2_000,
+        )
 
     def test_sec_labels_only_relevant_units(self) -> None:
         document = SemanticDocument(

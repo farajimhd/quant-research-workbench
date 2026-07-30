@@ -4,9 +4,10 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
-SCOPED_LABELING_VERSION = "scoped_text_labeling_v4"
+SCOPED_LABELING_VERSION = "scoped_text_labeling_v5"
 NEWS_EXTRACTOR_VERSION = "news_event_scope_v4"
-SEC_EXTRACTOR_VERSION = "sec_relevant_section_v2"
+SEC_EXTRACTOR_VERSION = "sec_relevant_section_v3"
+PERSISTENCE_CONTRACT_VERSION = "compact_semantic_label_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +67,9 @@ class ScopedLabel:
     issuer_role: str
     evidence_scope: str
     publication_text_hash: str
+    evidence_text_hash: str
+    evidence_start: int
+    evidence_end: int
     semantic_evidence_text: str
     classification: dict[str, Any]
     semantic: dict[str, Any]

@@ -5,7 +5,7 @@ from collections import defaultdict
 from typing import Any, Callable
 
 
-SCOPED_LABELING_VERSION = "scoped_text_labeling_v4"
+SCOPED_LABELING_VERSION = "scoped_text_labeling_v5"
 
 
 def load_scoped_news_labels(
@@ -24,7 +24,7 @@ SELECT source_id,unit_id,ticker,unit_role,event_id,event_tickers,issuer_role,
        event_concepts,semantic_direction,semantic_score,
        forecast_trigger_eligible,reaction_evaluation_eligible,
        issuer_history_context_eligible,classification_json,labeling_version
-FROM q_live.scoped_text_labels_v4 FINAL
+FROM q_live.scoped_text_labels_v5 FINAL
 WHERE corpus='news'
   AND labeling_version={quote(SCOPED_LABELING_VERSION)}
   AND source_id IN ({values})

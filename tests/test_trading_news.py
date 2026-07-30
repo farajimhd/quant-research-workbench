@@ -58,7 +58,7 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("'company'", sql)
         self.assertIn("LIMIT 2", sql)
         self.assertEqual(query_mock.call_args_list[0].kwargs["timeout_seconds"], 12.0)
-        self.assertIn("scoped_text_labels_v4", query_mock.call_args_list[1].args[0])
+        self.assertIn("scoped_text_labels_v5", query_mock.call_args_list[1].args[0])
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_cursor_keeps_same_timestamp_rows_ordered(self, query_mock) -> None:

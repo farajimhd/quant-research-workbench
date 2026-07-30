@@ -51,7 +51,7 @@ class ScopedTextLabelPresentationTests(unittest.TestCase):
         self.assertEqual(list(grouped), ["article-1"])
         self.assertEqual(grouped["article-1"][0]["ticker"], "AAA")
         self.assertEqual(grouped["article-1"][0]["modality"], "confirmed")
-        self.assertIn("scoped_text_labels_v4", queries[0])
+        self.assertIn("scoped_text_labels_v5", queries[0])
         self.assertIn(SCOPED_LABELING_VERSION, queries[0])
 
     def test_summary_selects_requested_ticker_and_preserves_all_eligibility(self) -> None:

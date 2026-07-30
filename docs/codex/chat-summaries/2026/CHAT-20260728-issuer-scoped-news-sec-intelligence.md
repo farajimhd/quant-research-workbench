@@ -195,3 +195,41 @@ Validation against the live ClickHouse authority found:
 The workstation should resume with 16 workers. Sixty-four remains a supported
 ceiling, not a default; raising concurrency is justified only while CPU remains
 the bottleneck and database memory plus retry rate remain healthy.
+
+## Compact V5 persistence repair
+
+The resumed V4 build later completed 891 units but failed on SEC week
+2020-01-17 through 2020-01-24. The failure was deterministic, not transient:
+a 142.2-million-character `EX-102` asset-level XML schedule was treated as
+prose, and ordinary large sections also expanded through thousands of repeated
+typed-span contexts. One 90.9 KB evidence unit produced a 3.98 MB
+`semantic_json`; the failing insert eventually contained an approximately
+100 MB JSON object.
+
+V5 repairs the authority at its source and persistence contracts:
+
+- SEC document eligibility now reuses the SEC Gateway taxonomy before rendered
+  text is transferred. Structured asset schedules, XBRL/fund datasets, and
+  administrative products remain canonical SEC data but are not classified as
+  prose.
+- Eligible narrative evidence is selected structurally and split into bounded
+  32,000-character units with source hash and offsets.
+- Production `semantic_json` contains decisions, concepts, keywords, bounded
+  deduplicated normalized values, and audit counts. It no longer duplicates
+  blocks, full normalized source text, individual spans, or span contexts.
+- A serialized label row above 2 MiB is rejected locally as a permanent
+  contract defect before transport.
+- Exact rendered-document keys are emitted through 64 KiB SQL batches. This
+  fixes the additional query-size defect found when the first V5 validation
+  expanded thousands of eligible identities into a 262 KB `IN` clause.
+- New physical authorities are `scoped_text_labels_v5`,
+  `scoped_content_relations_v3`, and
+  `scoped_text_labels_v5_build_status`; V4 remains intact during rebuild and
+  cutover.
+
+Certification passed all 15 required News/SEC audits. The exact formerly
+failing SEC week then completed with zero retries in 509.7 seconds, processing
+11,018 eligible rendered documents into 47,212 compact labels and 146,140
+relations. The written labels all use `compact_semantic_label_v1`; maximum
+`semantic_json` was 45,993 bytes, maximum evidence was 31,977 bytes, and the
+known 142.2 MB `EX-102` document produced zero label rows.

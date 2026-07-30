@@ -6,9 +6,11 @@ optional live News model path.
 News Gateway and SEC Gateway own acquisition and canonical persistence. After a
 canonical publish, they send only a corpus, source identity, and timestamp to
 this service. Bounded workers reload the canonical rendered authority, apply
-the shared `scoped_text_labeling_v4` issuer/event classifier, and persist
-versioned rows to `q_live.scoped_text_labels_v4` and
-`q_live.scoped_content_relations_v2`.
+the shared `scoped_text_labeling_v5` issuer/event classifier, and persist
+compact versioned rows to `q_live.scoped_text_labels_v5` and
+`q_live.scoped_content_relations_v3`. Canonical rendered text is referenced by
+hash and bounded offsets; the live service does not duplicate full text,
+blocks, or per-span context into production label rows.
 
 `q_live.scoped_text_live_status_v2` binds completion to the exact rendered
 source hash. Reconciliation therefore repairs missed notices and reprocesses
@@ -94,7 +96,7 @@ or:
 .\scripts\run_news_intelligence.ps1
 ```
 
-The bare launcher runs the required deterministic News/SEC V4 classifier and
+The bare launcher runs the required deterministic News/SEC V5 classifier and
 reconciler only. It does not load local language models and does not call an
 LLM. Optional inference is an explicit operator choice:
 
@@ -112,7 +114,7 @@ operation.
 
 ### Starting after a historical backfill
 
-The finite V4 backfill and this continuous service may run concurrently because
+The finite V5 backfill and this continuous service may run concurrently because
 their label and relationship identities are idempotent. Delaying the service is
 safe only when no canonical News/SEC rows arrive outside the finite backfill's
 fixed date range, or when every missed row remains inside the service's recent
@@ -123,7 +125,7 @@ published after that boundary are not part of that run. On service startup,
 `TEXT_INTELLIGENCE_RECONCILE_HOURS` defaults to 72 hours and is bounded to 720
 hours. Therefore, if gateways keep ingesting while a long backfill runs, start
 this service concurrently. Otherwise, post-boundary rows older than the
-reconciliation window require an explicit range-scoped V4 rebuild.
+reconciliation window require an explicit range-scoped V5 rebuild.
 
 ## Download Models
 

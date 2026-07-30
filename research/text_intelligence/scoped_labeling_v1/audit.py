@@ -118,7 +118,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     output = (
         MLOpsPathConfig.from_env().runtimes_root
         / "text_intelligence"
-        / "scoped_labeling_v4"
+        / "scoped_labeling_v5"
         / "certification"
     )
     parser = argparse.ArgumentParser(

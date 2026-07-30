@@ -1,4 +1,4 @@
-# Issuer-Scoped News and SEC Intelligence V4
+# Issuer-Scoped News and SEC Intelligence V5
 
 This package implements the eight-stage authority used to organize News and
 SEC evidence without replacing or duplicating canonical rendered text.
@@ -28,7 +28,7 @@ SEC evidence without replacing or duplicating canonical rendered text.
    issuer, and concept edges. It does not copy publication or filing text.
 8. **Live and downstream consumption** makes News Intelligence use this same
    issuer-scoping authority for live notifications and historical
-   reconciliation. Market AI and prior-news context read the resulting V4
+   reconciliation. Market AI and prior-news context read the resulting V5
    semantic stream.
 
 ## Multi-issuer contract
@@ -65,7 +65,7 @@ python -m research.text_intelligence.scoped_labeling_v1.run_certification
 Generated evidence is written only to:
 
 ```text
-<machine runtime root>/text_intelligence/scoped_labeling_v4/certification
+<machine runtime root>/text_intelligence/scoped_labeling_v5/certification
 ```
 
 The exact regression set includes a multi-issuer acquisition/analyst case,
@@ -90,14 +90,28 @@ python -m research.text_intelligence.scoped_labeling_v1.run_persist --execute
 
 The bounded, resumable worker path creates only new versioned products:
 
-- `q_live.scoped_text_labels_v4`
-- `q_live.scoped_content_relations_v2`
-- `q_live.scoped_text_labels_v4_build_status`
+- `q_live.scoped_text_labels_v5`
+- `q_live.scoped_content_relations_v3`
+- `q_live.scoped_text_labels_v5_build_status`
 
-The label table stores only issuer evidence and the canonical publication hash;
-the relationship table stores only graph edges. Canonical rendered News and SEC
-tables are never mutated. Work is partitioned by corpus and date window, with
-the following operational guarantees:
+The V5 label table stores a compact semantic product plus source references.
+It intentionally does not duplicate canonical rendered text, extracted blocks,
+or per-span context. Evidence is resolved through `source_text_hash`,
+`evidence_text_hash`, and bounded source offsets. Repeated typed values are
+persisted once with a count; diagnostic spans remain an in-memory/audit concern
+rather than a production-row payload.
+
+SEC document eligibility reuses the SEC Gateway document taxonomy before
+rendered text is transferred. Machine-readable asset schedules, XBRL datasets,
+administrative documents, and similar non-narrative exhibits remain intact in
+the canonical SEC authority but are not treated as prose. Eligible narrative
+evidence is structurally selected and split into bounded 32,000-character units
+without truncating a selected fragment.
+
+The relationship table stores only graph edges. Canonical rendered News and SEC
+tables are never mutated. V4 products are retained during the V5 rebuild and
+cutover. Work is partitioned by corpus and date window, with the following
+operational guarantees:
 
 - CPU-heavy labeling runs in isolated worker processes rather than a Python
   thread pool.
@@ -113,7 +127,10 @@ the following operational guarantees:
   gigabytes of rendered filing text.
 - News and SEC periods are interleaved, so one corpus cannot starve the other.
 - Label and relationship inserts are bounded by serialized bytes as well as
-  row count; the defaults cap each payload at 8 MiB.
+  row count; the defaults cap each payload at 8 MiB. A single label row above
+  2 MiB is rejected locally as a permanent contract defect before ClickHouse
+  transport, so deterministic payload defects are never retried as transient
+  stream failures.
 - Running workers write durable heartbeats and stage timings. The terminal
   prints compact 30-second active summaries and completion lines with source,
   classification, write, total, and ETA evidence.
@@ -157,8 +174,8 @@ bottleneck; a rising retry rate means ClickHouse or the network is saturated
 and fewer workers will finish sooner. SEC batches can contain large rendered
 documents, so confirm database memory, worker RSS, and retry rate before moving
 above 16. Do not use `--rebuild-completed` merely
-to adopt the repaired runner; already completed V4 periods are discovered and
-retained automatically.
+to adopt the repaired runner. V5 is a new semantic and physical authority, so
+it requires one complete V5 build; reruns then retain completed V5 periods.
 
 ## Live integration
 
@@ -166,7 +183,7 @@ News Gateway continues to own acquisition and canonical rendering. It sends a
 lightweight post-persistence identity notice to Text Intelligence, which
 reloads the canonical rendered authority. Text Intelligence:
 
-1. runs V4 scoping once;
+1. runs V5 scoping once;
 2. selects eligible issuer units;
 3. independently applies the point-in-time QMD price gate;
 4. sends the intact article plus issuer-scoped evidence to the model route;
@@ -174,4 +191,4 @@ reloads the canonical rendered authority. Text Intelligence:
 6. dispatches Market AI independently per issuer.
 
 The idempotency identity includes article, unit, ticker, rendered-text hash, and
-V4 labeling version.
+V5 labeling version.

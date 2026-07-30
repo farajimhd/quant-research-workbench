@@ -9,6 +9,7 @@ import queue
 import signal
 import time
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from multiprocessing.pool import Pool
 from pathlib import Path
@@ -33,13 +34,21 @@ from research.text_intelligence.semantic_label_authority_v1.schema import (
 
 from .pipeline import classify_news_document, classify_sec_document
 from .news_identity import NewsIssuerResolver, load_news_issuer_resolver
-from .schema import SCOPED_LABELING_VERSION, ScopedLabel
+from .schema import (
+    PERSISTENCE_CONTRACT_VERSION,
+    SCOPED_LABELING_VERSION,
+    ScopedLabel,
+)
+from .sec_extractor import sec_document_labeling_eligible
 
 
-TARGET_TABLE = "scoped_text_labels_v4"
-STATUS_TABLE = "scoped_text_labels_v4_build_status"
-RELATION_TABLE = "scoped_content_relations_v2"
+TARGET_TABLE = "scoped_text_labels_v5"
+STATUS_TABLE = "scoped_text_labels_v5_build_status"
+RELATION_TABLE = "scoped_content_relations_v3"
 DEFAULT_INSERT_BYTES = 8 * 1024 * 1024
+DEFAULT_MAX_ROW_BYTES = 2 * 1024 * 1024
+MAX_COMPACT_SEMANTIC_VALUES = 256
+MAX_EXACT_DOCUMENT_KEY_SQL_BYTES = 64 * 1024
 DEFAULT_HEARTBEAT_SECONDS = 30.0
 DEFAULT_TRANSIENT_RETRIES = 6
 DEFAULT_RETRY_BASE_SECONDS = 2.0
@@ -55,7 +64,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     certification_manifest = (
         MLOpsPathConfig.from_env().runtimes_root
         / "text_intelligence"
-        / "scoped_labeling_v4"
+        / "scoped_labeling_v5"
         / "certification"
         / "manifest.json"
     )
@@ -503,6 +512,7 @@ class JsonInsertBuffer:
     database: str
     table: str
     max_bytes: int = DEFAULT_INSERT_BYTES
+    max_row_bytes: int = DEFAULT_MAX_ROW_BYTES
     max_rows: int = 20_000
     _rows: list[str] = field(default_factory=list)
     _bytes: int = 0
@@ -514,6 +524,16 @@ class JsonInsertBuffer:
             separators=(",", ":"),
         )
         encoded_bytes = len(encoded.encode("utf-8")) + 1
+        if encoded_bytes > self.max_row_bytes:
+            identity = " / ".join(
+                str(row.get(key) or "<missing>")
+                for key in ("corpus", "source_id", "unit_id", "ticker")
+            )
+            raise PermanentPayloadError(
+                "compact label row exceeds the production payload contract: "
+                f"{encoded_bytes:,} bytes > {self.max_row_bytes:,} bytes; "
+                f"identity={identity}; table={self.database}.{self.table}"
+            )
         if self._rows and (
             self._bytes + encoded_bytes > self.max_bytes
             or len(self._rows) >= self.max_rows
@@ -539,6 +559,10 @@ class JsonInsertBuffer:
         )
         self._rows.clear()
         self._bytes = 0
+
+
+class PermanentPayloadError(ValueError):
+    """A deterministic row-contract violation that replay cannot repair."""
 
 
 def worker_issuer_resolver(
@@ -962,53 +986,124 @@ def iter_sec_documents_for_filings(
         f"({sql_string(cik)},{sql_string(accession)})"
         for cik, accession in keys
     )
-    yield from client.iter_json_each_row(f"""
-SELECT
- r.document_id AS source_id,
- r.text,
- [] AS tickers,
- r.cik,
- r.accession_number,
- r.filing_id,
- r.text_kind,
- r.text_char_count,
- r.text_sha256,
- r.normalizer_version AS source_normalizer_version,
- r.extraction_method,
- r.quality_flags,
- ifNull(d.document_type, '') AS document_type,
- ifNull(d.document_role, '') AS document_role,
- ifNull(d.description, '') AS description,
- ifNull(d.document_name, '') AS document_name
+    documents = list(client.iter_json_each_row(f"""
+SELECT *
 FROM
 (
  SELECT
-  document_id, text, cik, accession_number, filing_id, text_kind,
-  text_char_count, text_sha256, normalizer_version, extraction_method,
-  quality_flags
- FROM {db}.{quote_ident(config.sec_rendered_table)}
- PREWHERE cityHash64(cik) % 64 = {int(partition)}
-   AND (cik, accession_number) IN ({key_sql})
- ORDER BY source_revision_rank DESC, inserted_at DESC
- LIMIT 1 BY cik, accession_number, document_id, text_kind
-) AS r
-LEFT JOIN
-(
- SELECT document_id, cik, accession_number,
-        document_type, document_role, description, document_name
+  document_id, cik, accession_number, filing_id, sequence_number,
+  document_type, document_role, description, document_name
  FROM {db}.{quote_ident(config.sec_document_table)}
  PREWHERE cityHash64(cik) % 64 = {int(partition)}
    AND (cik, accession_number) IN ({key_sql})
  ORDER BY inserted_at DESC
  LIMIT 1 BY cik, accession_number, sequence_number, document_id
-) AS d
- ON d.document_id=r.document_id
- AND d.cik=r.cik
- AND d.accession_number=r.accession_number
-WHERE notEmpty(r.text)
-ORDER BY r.cik, r.accession_number, r.document_id
+)
+ORDER BY cik, accession_number, sequence_number, document_id
 FORMAT JSONEachRow
-""")
+"""))
+    eligible = [
+        row for row in documents if sec_document_labeling_eligible(row)
+    ]
+    if not eligible:
+        return
+    metadata = {
+        (
+            str(row["cik"]),
+            str(row["accession_number"]),
+            str(row["document_id"]),
+        ): row
+        for row in eligible
+    }
+    for document_sql in _bounded_document_key_sql(metadata):
+        for row in client.iter_json_each_row(f"""
+SELECT
+ document_id AS source_id,
+ text,
+ tickers,
+ cik,
+ accession_number,
+ filing_id,
+ text_kind,
+ text_char_count,
+ text_sha256,
+ source_normalizer_version,
+ extraction_method,
+ quality_flags
+FROM
+(
+ SELECT
+  document_id,
+  text,
+  [] AS tickers,
+  cik,
+  accession_number,
+  filing_id,
+  text_kind,
+  text_char_count,
+  text_sha256,
+  normalizer_version AS source_normalizer_version,
+  extraction_method,
+  quality_flags
+ FROM {db}.{quote_ident(config.sec_rendered_table)}
+ PREWHERE cityHash64(cik) % 64 = {int(partition)}
+   AND (cik, accession_number, document_id) IN ({document_sql})
+ ORDER BY source_revision_rank DESC, inserted_at DESC
+ LIMIT 1 BY cik, accession_number, document_id, text_kind
+)
+ORDER BY cik, accession_number, document_id
+FORMAT JSONEachRow
+"""):
+            identity = (
+                str(row["cik"]),
+                str(row["accession_number"]),
+                str(row["source_id"]),
+            )
+            document = metadata.get(identity)
+            if document is None:
+                raise RuntimeError(
+                    "SEC rendered document lost its exact metadata identity: "
+                    f"{identity[0]} / {identity[1]} / {identity[2]}"
+                )
+            row.update({
+                "document_type": str(document.get("document_type") or ""),
+                "document_role": str(document.get("document_role") or ""),
+                "description": str(document.get("description") or ""),
+                "document_name": str(document.get("document_name") or ""),
+            })
+            yield row
+
+
+def _bounded_document_key_sql(
+    identities: Iterable[tuple[str, str, str]],
+    *,
+    max_bytes: int = MAX_EXACT_DOCUMENT_KEY_SQL_BYTES,
+) -> Iterator[str]:
+    """Yield exact SEC identity clauses well below ClickHouse query limits."""
+    batch: list[str] = []
+    batch_bytes = 0
+    for cik, accession, document_id in identities:
+        encoded = (
+            "("
+            f"{sql_string(cik)},{sql_string(accession)},"
+            f"{sql_string(document_id)}"
+            ")"
+        )
+        encoded_bytes = len(encoded.encode("utf-8")) + (1 if batch else 0)
+        if encoded_bytes > max_bytes:
+            raise PermanentPayloadError(
+                "one SEC document identity exceeds the bounded SQL contract: "
+                f"{encoded_bytes:,} bytes > {max_bytes:,} bytes"
+            )
+        if batch and batch_bytes + encoded_bytes > max_bytes:
+            yield ",".join(batch)
+            batch = []
+            batch_bytes = 0
+            encoded_bytes -= 1
+        batch.append(encoded)
+        batch_bytes += encoded_bytes
+    if batch:
+        yield ",".join(batch)
 
 
 def extend_sec_ticker_mappings(
@@ -1110,6 +1205,7 @@ def persistence_row(
 ) -> dict:
     semantic = label.semantic
     classification = label.classification
+    compact_semantic = compact_semantic_payload(semantic)
     return {
         "corpus": document.corpus,
         "source_id": document.source_id,
@@ -1125,8 +1221,10 @@ def persistence_row(
         "event_tickers": label.event_tickers,
         "issuer_role": label.issuer_role,
         "evidence_scope": label.evidence_scope,
+        "evidence_text_hash": label.evidence_text_hash,
+        "evidence_start": label.evidence_start,
+        "evidence_end": label.evidence_end,
         "semantic_evidence_text": label.semantic_evidence_text,
-        "relevant_text": semantic["normalized_semantic_text"],
         "observed_direction": label.observed_reaction.direction,
         "observed_move_pct": label.observed_reaction.move_pct,
         "observed_resulting_price": label.observed_reaction.resulting_price,
@@ -1145,7 +1243,12 @@ def persistence_row(
         "issuer_history_context_eligible": int(
             label.issuer_history_context_eligible
         ),
-        "semantic_json": json.dumps(semantic, separators=(",", ":")),
+        "semantic_contract": PERSISTENCE_CONTRACT_VERSION,
+        "semantic_json": json.dumps(
+            compact_semantic,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
         "classification_json": json.dumps(
             classification, separators=(",", ":")
         ),
@@ -1154,6 +1257,79 @@ def persistence_row(
         "updated_at_utc": _clickhouse_time(
             dt.datetime.now(dt.timezone.utc).isoformat()
         ),
+    }
+
+
+def compact_semantic_payload(semantic: dict[str, Any]) -> dict[str, Any]:
+    """Persist decisions and bounded value summaries, never source replicas."""
+    spans = list(semantic.get("spans") or ())
+    span_type_counts = Counter(
+        str(span.get("span_type") or "unknown") for span in spans
+    )
+    value_counts: Counter[tuple[str, str, str, str]] = Counter()
+    for span in spans:
+        normalized = str(span.get("normalized") or "").strip()
+        if not normalized:
+            continue
+        value_counts[(
+            str(span.get("span_type") or ""),
+            str(span.get("subtype") or ""),
+            normalized,
+            str(span.get("unit") or ""),
+        )] += 1
+    priority = {
+        "financial": 0,
+        "market_identity": 1,
+        "temporal": 2,
+        "identifier": 3,
+        "entity": 4,
+        "quantity": 5,
+    }
+    ordered_values = sorted(
+        value_counts.items(),
+        key=lambda item: (
+            priority.get(item[0][0], 6),
+            -item[1],
+            item[0],
+        ),
+    )
+    selected_values = ordered_values[:MAX_COMPACT_SEMANTIC_VALUES]
+    return {
+        "contract_version": PERSISTENCE_CONTRACT_VERSION,
+        "authority_version": str(semantic.get("authority_version") or ""),
+        "source_id": str(semantic.get("source_id") or ""),
+        "corpus": str(semantic.get("corpus") or ""),
+        "content_role": str(semantic.get("content_role") or ""),
+        "origin": str(semantic.get("origin") or ""),
+        "sentiment": str(semantic.get("sentiment") or ""),
+        "sentiment_score": float(semantic.get("sentiment_score") or 0.0),
+        "modality": str(semantic.get("modality") or ""),
+        "time_orientation": str(semantic.get("time_orientation") or ""),
+        "labels": list(semantic.get("labels") or ()),
+        "keywords": list(semantic.get("keywords") or ()),
+        "candidates": list(semantic.get("candidates") or ()),
+        "normalized_values": [
+            {
+                "span_type": key[0],
+                "subtype": key[1],
+                "normalized": key[2],
+                "unit": key[3],
+                "count": count,
+            }
+            for key, count in selected_values
+        ],
+        "quality_flags": list(semantic.get("quality_flags") or ()),
+        "audit_counts": {
+            "structural_blocks": len(semantic.get("blocks") or ()),
+            "typed_spans": len(spans),
+            "span_types": dict(sorted(span_type_counts.items())),
+            "unique_normalized_values": len(ordered_values),
+            "persisted_normalized_values": len(selected_values),
+            "omitted_normalized_values": max(
+                0,
+                len(ordered_values) - len(selected_values),
+            ),
+        },
     }
 
 
@@ -1228,8 +1404,10 @@ CREATE TABLE IF NOT EXISTS {db}.{quote_ident(TARGET_TABLE)}
  event_tickers Array(LowCardinality(String)),
  issuer_role LowCardinality(String),
  evidence_scope LowCardinality(String),
+ evidence_text_hash FixedString(64),
+ evidence_start UInt64,
+ evidence_end UInt64,
  semantic_evidence_text String,
- relevant_text String,
  observed_direction LowCardinality(String),
  observed_move_pct Nullable(Float64),
  observed_resulting_price Nullable(Float64),
@@ -1244,6 +1422,7 @@ CREATE TABLE IF NOT EXISTS {db}.{quote_ident(TARGET_TABLE)}
  forecast_trigger_eligible UInt8,
  reaction_evaluation_eligible UInt8,
  issuer_history_context_eligible UInt8,
+ semantic_contract LowCardinality(String),
  semantic_json String,
  classification_json String,
  labeling_version LowCardinality(String),
@@ -1617,6 +1796,8 @@ def format_retry_delay(seconds: float) -> str:
 
 def is_transient_clickhouse_error(exc: BaseException) -> bool:
     """Return true only for transport failures safe for whole-unit replay."""
+    if isinstance(exc, PermanentPayloadError):
+        return False
     parts: list[str] = []
     current: BaseException | None = exc
     visited: set[int] = set()
