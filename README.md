@@ -45,9 +45,18 @@ runtime calendar, configure an IBKR-shaped simulated account, and open the
 shared source-aware container canvas. Replay includes its anchor date;
 Backtest selects exchange sessions before its exclusive anchor date.
 
-The new shared-workspace layout and container presentation are configured once
-under `Configuration -> Canvas`; Replay and Backtest do not expose separate
-canvas designers. The configuration page defaults to a 09:45 New York preview
+Application behavior is configured only under `Configuration`: Canvas,
+Strategies, Assignments, Portfolio & Risk, OMS & Protection, and Accounts &
+Sessions. `Configuration -> Approved Revisions` publishes those sections and
+the complete Canvas registry as one immutable revision. Replay consumes the
+latest approved revision and pins it for the entire run; it does not read
+mutable drafts or copy configuration into a mode-specific implementation.
+Live and Backtest Debug must use this same authority when their runtime
+cutovers are completed.
+
+The shared-workspace layout and container presentation are configured under
+`Configuration -> Canvas`; Replay and Backtest do not expose separate canvas
+designers. The Canvas page defaults to a 09:45 New York preview
 and renders every container. Its read-only header keeps ET, browser-local, and
 UTC timestamps synchronized to the second without mixing ticker context into
 the clock. The same compact header labels pre-market, regular, after-hours, or

@@ -21470,6 +21470,157 @@ button {
 .journal-review-editor select,
 .journal-review-editor textarea { background: var(--surface-alt); border: 1px solid var(--border); color: var(--foreground); font: inherit; min-height: 28px; padding: 5px 7px; }
 .journal-review-editor textarea { min-height: 68px; resize: vertical; }
+
+.trading-configuration-page {
+  display: grid;
+  gap: 16px;
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 24px;
+}
+
+.configuration-page-header {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 18px 20px;
+}
+
+.configuration-page-icon {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--primary);
+  display: flex;
+  height: 42px;
+  justify-content: center;
+  width: 42px;
+}
+
+.configuration-page-header > div:nth-child(2) { min-width: 0; }
+.configuration-page-header span { color: var(--muted-foreground); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.configuration-page-header h1 { font-size: 22px; line-height: 1.2; margin: 2px 0 4px; }
+.configuration-page-header p { color: var(--muted-foreground); font-size: 12px; line-height: 1.45; margin: 0; max-width: 720px; }
+
+.configuration-revision-badge {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 1px;
+  min-width: 148px;
+  padding: 9px 11px;
+}
+
+.configuration-revision-badge[data-approved="true"] { border-color: color-mix(in srgb, var(--success) 42%, var(--border)); }
+.configuration-revision-badge small { color: var(--muted-foreground); font-size: 9px; text-transform: uppercase; }
+.configuration-revision-badge strong { color: var(--foreground); font-size: 12px; }
+.configuration-revision-badge span { font-size: 10px; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
+
+.configuration-message {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--success) 40%, var(--border));
+  border-radius: 8px;
+  color: var(--success);
+  display: flex;
+  font-size: 11px;
+  gap: 8px;
+  padding: 9px 12px;
+}
+.configuration-message.error { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); color: var(--danger); }
+
+.configuration-editor-card,
+.configuration-publish-card,
+.configuration-history-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.configuration-editor-card > header,
+.configuration-publish-card > header,
+.configuration-history-card > header {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  padding: 13px 16px;
+}
+.configuration-editor-card > header div,
+.configuration-publish-card > header div,
+.configuration-history-card > header { gap: 2px; }
+.configuration-editor-card > header div,
+.configuration-publish-card > header div { display: grid; }
+.configuration-editor-card header strong,
+.configuration-publish-card header strong,
+.configuration-history-card header strong { font-size: 12px; }
+.configuration-editor-card header span,
+.configuration-publish-card header span,
+.configuration-history-card header span { color: var(--muted-foreground); font-size: 10px; }
+
+.configuration-editor-note {
+  align-items: center;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 10px;
+  gap: 7px;
+  padding: 9px 16px;
+}
+.configuration-editor-card > label { display: grid; gap: 7px; padding: 14px 16px 16px; }
+.configuration-editor-card > label > span,
+.configuration-publish-card label > span { color: var(--muted-foreground); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.configuration-editor-card textarea {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--foreground);
+  font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  min-height: min(62vh, 680px);
+  padding: 13px;
+  resize: vertical;
+  tab-size: 2;
+}
+.configuration-editor-card textarea:focus,
+.configuration-publish-card input:focus { border-color: var(--primary); outline: 2px solid color-mix(in srgb, var(--primary) 18%, transparent); }
+
+.configuration-revision-layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); }
+.configuration-publish-card > p { color: var(--muted-foreground); font-size: 11px; line-height: 1.55; margin: 0; padding: 14px 16px 4px; }
+.configuration-publish-proof { display: grid; gap: 7px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px 16px; }
+.configuration-publish-proof span { align-items: center; color: var(--success); display: flex; font-size: 10px; gap: 6px; text-transform: capitalize; }
+.configuration-publish-proof span[data-ready="false"] { color: var(--danger); }
+.configuration-publish-card label { display: grid; gap: 6px; padding: 0 16px 12px; }
+.configuration-publish-card input {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--foreground);
+  font: inherit;
+  padding: 9px 10px;
+}
+.configuration-publish-card > button { margin: 0 16px 16px; width: calc(100% - 32px); }
+.configuration-history-card > div { display: grid; max-height: 560px; overflow: auto; }
+.configuration-history-card article { align-items: center; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; padding: 11px 14px; }
+.configuration-history-card article[data-current="true"] { background: color-mix(in srgb, var(--success) 8%, var(--surface)); }
+.configuration-history-card article > span { display: grid; gap: 2px; }
+.configuration-history-card article strong { font-size: 11px; }
+.configuration-history-card article small { color: var(--muted-foreground); font-size: 9px; }
+.configuration-history-card article code { color: var(--muted-foreground); font-size: 9px; }
+.configuration-empty-history { color: var(--muted-foreground); font-size: 11px; line-height: 1.5; padding: 20px; text-align: center; }
+
+@media (max-width: 860px) {
+  .trading-configuration-page { padding: 14px; }
+  .configuration-page-header { grid-template-columns: auto minmax(0, 1fr); }
+  .configuration-revision-badge { grid-column: 1 / -1; }
+  .configuration-revision-layout { grid-template-columns: 1fr; }
+}
 .journal-review-tags,
 .journal-review-note { grid-column: 1 / -1; }
 .journal-review-editor > button { align-items: center; background: var(--primary); border: 0; color: var(--primary-foreground); cursor: pointer; display: flex; font-size: 9px; font-weight: 750; gap: 5px; justify-self: start; min-height: 28px; padding: 0 9px; }

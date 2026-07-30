@@ -7,6 +7,7 @@ import os
 import re
 import time
 import urllib.parse
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
 from pathlib import Path
@@ -18,27 +19,32 @@ import websockets
 
 from src.backend.canonical_trading_service import trading_state_payload
 from src.backend.trading_runtime_service import (
-    get_strategy_definition,
     historical_day_coverage,
     historical_gateway_base_url,
     historical_gateway_snapshot,
-    list_strategy_assignments,
+)
+from src.backend.trading_configuration_service import (
+    merged_assignment_parameters,
+    replay_configuration_snapshot,
 )
 from src.market_engine.events import MarketEvent, QuoteEvent
 from src.market_engine.historical_source import QmdHistoricalEventSource
 from src.trading_runtime.domain import InstrumentContract, TradingMode
 from src.trading_runtime.journal import TradingJournal
+from src.trading_runtime.portfolio import (
+    PortfolioAccountProfile,
+    PortfolioGroupPolicy,
+    PortfolioManagementEngine,
+    portfolio_policy_from_payload,
+)
 from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
 from src.trading_runtime.strategy_engine import (
     AssignmentStatus,
     AssignedLongMomentumStrategy,
-    STRATEGY_ID,
-    STRATEGY_REVISION,
     StrategyAssignment,
     StrategyObservation,
     StrategyPermissions,
-    resolve_long_momentum_parameters,
 )
 from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
 
@@ -67,8 +73,7 @@ class ReplayRunDefinition:
     initial_cash: float = 100_000.0
     assignment_ids: tuple[str, ...] = ()
     tickers: tuple[str, ...] = ()
-    canvas_revision: str = ""
-    canvas_profile: dict[str, Any] = field(default_factory=dict)
+    configuration_revision: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not 4 <= self.start_time.hour <= 20:
@@ -81,6 +86,8 @@ class ReplayRunDefinition:
             raise ValueError("Replay initial cash must be between 1,000 and 1,000,000,000")
         if len(self.tickers) > 100:
             raise ValueError("Replay supports at most 100 explicitly configured symbols")
+        if not self.configuration_revision.get("revision_id"):
+            raise ValueError("Replay requires an approved trading configuration revision")
 
     @property
     def session_start(self) -> datetime:
@@ -95,6 +102,9 @@ class ReplayRunDefinition:
         return datetime.combine(self.session_date, self.start_time, tzinfo=NEW_YORK)
 
     def payload(self) -> dict[str, Any]:
+        approved = self.configuration_revision
+        configuration = dict(approved.get("payload") or {})
+        canvas = dict(configuration.get("canvas") or {})
         return {
             "session_date": self.session_date.isoformat(),
             "start_time": self.start_time.isoformat(timespec="seconds"),
@@ -104,8 +114,12 @@ class ReplayRunDefinition:
             "initial_cash": self.initial_cash,
             "assignment_ids": list(self.assignment_ids),
             "tickers": list(self.tickers),
-            "canvas_revision": self.canvas_revision,
-            "canvas_profile": self.canvas_profile,
+            "configuration_revision_id": approved.get("revision_id", ""),
+            "configuration_revision": approved.get("revision", 0),
+            "configuration_label": approved.get("label", ""),
+            "configuration_content_hash": approved.get("content_hash", ""),
+            "canvas_revision": canvas.get("revision", ""),
+            "canvas_profile": canvas.get("profile") or {},
         }
 
 
@@ -241,16 +255,20 @@ class ReplayRunController:
         if account_id not in self.account_ids:
             raise ValueError("Replay assignment must use one of the run's simulated accounts")
         now = self.current_time or self.definition.requested_start
+        strategy_config = dict(self.definition.configuration_revision["payload"]["strategy"])
         assignment = StrategyAssignment(
             assignment_id=str(payload.get("assignment_id") or uuid4()),
-            strategy_id=str(payload.get("strategy_id") or STRATEGY_ID),
-            strategy_revision=int(payload.get("strategy_revision") or STRATEGY_REVISION),
+            strategy_id=str(payload.get("strategy_id") or strategy_config["strategy_id"]),
+            strategy_revision=int(payload.get("strategy_revision") or strategy_config["revision"]),
             account_id=account_id,
             ticker=_ticker(payload.get("ticker")),
             conid=int(payload.get("conid") or 0),
             status=AssignmentStatus(str(payload.get("status") or AssignmentStatus.WATCHING)),
             permissions=StrategyPermissions(**dict(payload.get("permissions") or {})),
-            parameters=resolve_long_momentum_parameters(dict(payload.get("parameters") or {})),
+            parameters=merged_assignment_parameters(
+                self.definition.configuration_revision["payload"],
+                {"parameters": dict(payload.get("parameters") or {})},
+            ),
             state=dict(payload.get("state") or {}),
             source=str(payload.get("source") or "replay_canvas"),
             created_at=now,
@@ -335,8 +353,11 @@ class ReplayRunController:
                 if self._strategy is not None
                 else []
             ),
-            "canvas_revision": self.definition.canvas_revision,
-            "canvas_profile": self.definition.canvas_profile,
+            **{
+                key: value
+                for key, value in self.definition.payload().items()
+                if key.startswith("configuration_") or key.startswith("canvas_")
+            },
             "tickers": list(self.definition.tickers),
         }
 
@@ -379,13 +400,18 @@ class ReplayRunController:
         ticker_assignments = [
             row for row in assignments if str(row.get("ticker") or "").upper() == ticker
         ]
-        definition = get_strategy_definition(STRATEGY_ID, STRATEGY_REVISION)
+        configuration = self.definition.configuration_revision["payload"]
+        strategy_configuration = dict(configuration["strategy"])
+        definition = {
+            **strategy_configuration,
+            "config": {"parameters": strategy_configuration.get("parameters") or {}},
+        }
         strategy = {
             "fixture": False,
             "run_id": self.run_id,
-            "strategy_id": STRATEGY_ID,
-            "name": definition["name"],
-            "revision": STRATEGY_REVISION,
+            "strategy_id": strategy_configuration["strategy_id"],
+            "name": strategy_configuration["name"],
+            "revision": strategy_configuration["revision"],
             "automatic": True,
             "state": ticker_assignments[0]["status"] if ticker_assignments else "not_assigned",
             "definition": definition,
@@ -506,20 +532,31 @@ class ReplayRunController:
             await self._finish("failed")
 
     async def _initialize_runtime(self) -> None:
+        configuration = self.definition.configuration_revision["payload"]
+        strategy_configuration = dict(configuration["strategy"])
         source_assignments = self._selected_assignments()
-        self._account_map = {
-            source: f"SIM-{index + 1:02d}-{_slug(source)}"
-            for index, source in enumerate(
-                dict.fromkeys(str(row["account_id"]) for row in source_assignments)
-            )
+        bindings = [
+            dict(row)
+            for row in configuration["accounts"]["bindings"]
+            if bool(row.get("enabled", True)) and "replay" in list(row.get("modes") or [])
+        ]
+        simulated_by_key = {
+            str(binding["account_key"]): f"SIM-{index + 1:02d}-{_slug(str(binding['account_key']))}"
+            for index, binding in enumerate(bindings)
         }
-        if not self._account_map:
-            self._account_map = {"replay": "SIM-REPLAY"}
+        self._account_map = {
+            str(binding.get("source_account_id") or binding["account_key"]): simulated_by_key[
+                str(binding["account_key"])
+            ]
+            for binding in bindings
+        }
+        self._account_map.update(simulated_by_key)
         assignments = [
             _assignment_from_payload(
                 row,
-                account_id=self._account_map[str(row["account_id"])],
+                account_id=simulated_by_key[str(row["account_key"])],
                 source=f"replay:{row.get('source') or 'configured'}",
+                configuration=configuration,
             )
             for row in source_assignments
         ]
@@ -537,10 +574,58 @@ class ReplayRunController:
         }
         self._planner = RuntimeIbkrStrategyOrderPlanner(
             instruments,
-            strategy_id=STRATEGY_ID,
-            strategy_revision=STRATEGY_REVISION,
+            strategy_id=str(strategy_configuration["strategy_id"]),
+            strategy_revision=int(strategy_configuration["revision"]),
+            limit_offset_bps=float(configuration["oms"]["limit_offset_bps"]),
         )
         self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
+        self._journal.append(
+            run_id=self.run_id,
+            category="configuration",
+            entity_type="approved_trading_configuration",
+            entity_id=str(self.definition.configuration_revision["revision_id"]),
+            payload=deepcopy(self.definition.configuration_revision),
+            event_time=self.definition.requested_start,
+        )
+        policies = {
+            str(row["policy_id"]): portfolio_policy_from_payload(dict(row))
+            for row in configuration["portfolio"]["policies"]
+        }
+        portfolio_profiles = [
+            PortfolioAccountProfile(
+                account_key=str(binding["account_key"]),
+                account_id=simulated_by_key[str(binding["account_key"])],
+                mode="replay",
+                account_class=str(binding.get("account_class") or "simulated"),
+                policy=policies[str(binding["portfolio_policy_id"])],
+                session_key=str(binding.get("session_key") or "replay"),
+                enabled=bool(binding.get("enabled", True)),
+                base_currency=str(binding.get("base_currency") or "USD"),
+                strategy_allocations={
+                    str(strategy_configuration["strategy_id"]): float(
+                        binding.get("strategy_allocation", 1.0)
+                    )
+                },
+            )
+            for binding in bindings
+        ]
+        groups = [
+            PortfolioGroupPolicy(
+                group_id=str(row["group_id"]),
+                account_keys=tuple(str(value) for value in row.get("account_keys") or ()),
+                maximum_gross_exposure=float(row["maximum_gross_exposure"]),
+                maximum_ticker_exposure=float(row["maximum_ticker_exposure"]),
+            )
+            for row in configuration["portfolio"].get("groups") or ()
+        ]
+        portfolio = PortfolioManagementEngine(
+            portfolio_profiles,
+            journal=self._journal,
+            run_id=self.run_id,
+            strategy_id=str(strategy_configuration["strategy_id"]),
+            strategy_revision=int(strategy_configuration["revision"]),
+            groups=groups,
+        )
         broker = SimulatedBrokerAdapter(
             list(self.account_ids),
             SimulationConfig(initial_cash=self.definition.initial_cash),
@@ -549,8 +634,8 @@ class ReplayRunController:
         self._runtime = TradingRuntime(
             RunConfig(
                 mode=RunMode.REPLAY,
-                strategy_id=STRATEGY_ID,
-                strategy_revision=STRATEGY_REVISION,
+                strategy_id=str(strategy_configuration["strategy_id"]),
+                strategy_revision=int(strategy_configuration["revision"]),
                 account_ids=self.account_ids,
                 anchor_date=self.definition.session_date,
                 run_id=self.run_id,
@@ -560,6 +645,7 @@ class ReplayRunController:
             self._strategy,
             self._journal,
             intent_planner=self._planner,
+            portfolio=portfolio,
         )
         await self._runtime.initialize()
 
@@ -716,7 +802,11 @@ class ReplayRunController:
             queue.put_nowait(payload)
 
     def _selected_assignments(self) -> list[dict[str, Any]]:
-        rows = list_strategy_assignments(active_only=True)
+        rows = [
+            dict(row)
+            for row in self.definition.configuration_revision["payload"]["assignments"]
+            if str(row.get("status") or "") not in {"disabled", "completed", "error"}
+        ]
         if self.definition.assignment_ids:
             selected = set(self.definition.assignment_ids)
             rows = [row for row in rows if str(row.get("assignment_id")) in selected]
@@ -786,6 +876,7 @@ class ReplayRunController:
             "schema_version": 1,
             "run": self.snapshot(),
             "definition": self.definition.payload(),
+            "approved_configuration": self.definition.configuration_revision,
             "runtime_root": str(self.runtime_root),
             "journal_path": str(self.run_dir / "journal.sqlite3"),
         }
@@ -845,15 +936,19 @@ def replay_preflight(
     initial_cash: float,
     assignment_ids: tuple[str, ...] = (),
     tickers: tuple[str, ...] = (),
-    canvas_revision: str = "",
+    configuration_revision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    approved = configuration_revision or replay_configuration_snapshot()
+    configuration = approved["payload"]
+    canvas = dict(configuration["canvas"])
+    configured_canvas_tickers = _canvas_profile_tickers(dict(canvas.get("profile") or {}))
     definition = ReplayRunDefinition(
         session_date=session_date,
         start_time=start_time,
         initial_cash=initial_cash,
         assignment_ids=assignment_ids,
         tickers=tickers,
-        canvas_revision=canvas_revision,
+        configuration_revision=approved,
     )
     gateway = historical_gateway_snapshot()
     coverage: dict[str, Any] = {}
@@ -863,7 +958,11 @@ def replay_preflight(
             coverage = historical_day_coverage(session_date)
         except Exception as exc:
             coverage_error = str(exc)
-    assignments = list_strategy_assignments(active_only=True)
+    assignments = [
+        dict(row)
+        for row in configuration["assignments"]
+        if str(row.get("status") or "") not in {"disabled", "completed", "error"}
+    ]
     if assignment_ids:
         selected = set(assignment_ids)
         assignments = [
@@ -875,6 +974,7 @@ def replay_preflight(
     resolved_tickers = sorted(
         {
             *assignment_tickers,
+            *configured_canvas_tickers,
             *(_ticker(value) for value in tickers),
         }
     )
@@ -892,6 +992,15 @@ def replay_preflight(
     event_count = int(coverage.get("event_count") or 0)
     ticker_count = int(coverage.get("ticker_count") or 0)
     checks = [
+        _check(
+            "approved_configuration",
+            "Approved configuration",
+            bool(approved.get("revision_id") and approved.get("content_hash")),
+            f"Revision {approved.get('revision')} · {approved.get('label')} is pinned for the full run."
+            if approved.get("revision_id")
+            else "No approved configuration revision is available.",
+            str(approved.get("content_hash") or ""),
+        ),
         _check(
             "historical_source",
             "QMD History",
@@ -926,7 +1035,7 @@ def replay_preflight(
             f"{len(resolved_tickers)} configured symbol(s): {', '.join(resolved_tickers[:8])}"
             if resolved_tickers
             else "No Canvas symbol or active strategy assignment is available.",
-            "Canvas link contexts plus selected strategy assignments",
+            "Approved Canvas link contexts plus approved strategy assignments",
         ),
         _check(
             "strategy_assignments",
@@ -937,21 +1046,23 @@ def replay_preflight(
             if assignments
             else "No automatic assignment is selected; Replay remains available for market inspection.",
             ", ".join(
-                f"{row.get('ticker')}@{row.get('account_id')}" for row in assignments
+                f"{row.get('ticker')}@{row.get('account_key')}" for row in assignments
             )
             or "Optional for market-only Replay",
             required=bool(assignment_ids),
         ),
     ]
     ready = all(check["status"] == "ready" for check in checks if check["required"])
+    bindings = [
+        dict(row)
+        for row in configuration["accounts"]["bindings"]
+        if bool(row.get("enabled", True)) and "replay" in list(row.get("modes") or [])
+    ]
     account_map = {
-        source: f"SIM-{index + 1:02d}-{_slug(source)}"
-        for index, source in enumerate(
-            dict.fromkeys(str(row["account_id"]) for row in assignments)
-        )
+        str(row.get("source_account_id") or row["account_key"]):
+            f"SIM-{index + 1:02d}-{_slug(str(row['account_key']))}"
+        for index, row in enumerate(bindings)
     }
-    if not account_map:
-        account_map = {"replay": "SIM-REPLAY"}
     return {
         "schema_version": 1,
         "ready": ready,
@@ -962,7 +1073,12 @@ def replay_preflight(
         "assignments": assignments,
         "account_mapping": account_map,
         "tickers": resolved_tickers,
-        "canvas_revision": canvas_revision,
+        "configuration_revision_id": approved["revision_id"],
+        "configuration_revision": approved["revision"],
+        "configuration_label": approved["label"],
+        "configuration_content_hash": approved["content_hash"],
+        "canvas_revision": canvas["revision"],
+        "canvas_profile": canvas["profile"],
     }
 
 
@@ -1023,22 +1139,54 @@ def _assignment_from_payload(
     *,
     account_id: str,
     source: str,
+    configuration: dict[str, Any],
 ) -> StrategyAssignment:
+    strategy = dict(configuration["strategy"])
     return StrategyAssignment(
         assignment_id=f"replay-{payload['assignment_id']}",
-        strategy_id=str(payload["strategy_id"]),
-        strategy_revision=int(payload["strategy_revision"]),
+        strategy_id=str(strategy["strategy_id"]),
+        strategy_revision=int(strategy["revision"]),
         account_id=account_id,
         ticker=_ticker(payload["ticker"]),
         conid=int(payload["conid"]),
         status=AssignmentStatus(str(payload["status"])),
         permissions=StrategyPermissions(**dict(payload.get("permissions") or {})),
-        parameters=resolve_long_momentum_parameters(dict(payload.get("parameters") or {})),
+        parameters=merged_assignment_parameters(configuration, payload),
         state={},
         source=source,
         created_at=_aware_datetime(payload.get("created_at")),
         updated_at=_aware_datetime(payload.get("updated_at")),
     )
+
+
+def _canvas_profile_tickers(profile: dict[str, Any]) -> set[str]:
+    tickers: set[str] = set()
+    active_instances = {
+        str(instance_id)
+        for state in dict(profile.get("workspaceStates") or {}).values()
+        for instance_id in dict(state.get("instances") or {})
+    }
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "symbol" and str(item or "").strip():
+                    tickers.add(_ticker(item))
+                else:
+                    visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    link_assignments = dict(profile.get("linkAssignments") or {})
+    link_contexts = dict(profile.get("linkContexts") or {})
+    instance_settings = dict(profile.get("instanceSettings") or {})
+    for instance_id in active_instances:
+        group = str(link_assignments.get(instance_id) or "")
+        if group:
+            visit(link_contexts.get(group) or {})
+        visit(instance_settings.get(instance_id) or {})
+    return tickers
 
 
 def _check(

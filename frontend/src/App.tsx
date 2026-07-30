@@ -7,8 +7,9 @@ import { HistoricalTradingPage } from "./pages/HistoricalTradingPage";
 import { RealLiveTradingPage } from "./pages/RealLiveTradingPage";
 import { ReplayTradingPage } from "./pages/ReplayTradingPage";
 import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
+import { TradingConfigurationPage, type TradingConfigurationSection } from "./pages/TradingConfigurationPage";
 
-const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
+const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -57,6 +58,11 @@ export function App() {
       <div aria-hidden={page !== "canvas-configuration"} className={page === "canvas-configuration" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "canvas-configuration" || visitedPages.has("canvas-configuration") ? <CanvasConfigurationPage /> : null}
       </div>
+      {configurationSection(page) ? (
+        <div className="page-cache-panel active">
+          <TradingConfigurationPage section={configurationSection(page) ?? "strategy"} />
+        </div>
+      ) : null}
       {servicePageMode(page) ? (
         <div className="page-cache-panel active">
           <ServicesPage mode={servicePageMode(page) ?? "dashboard"} onNavigate={(mode) => setPage(pageForServiceMode(mode))} />
@@ -64,6 +70,16 @@ export function App() {
       ) : null}
     </Layout>
   );
+}
+
+function configurationSection(page: PageKey): TradingConfigurationSection | null {
+  if (page === "strategy-configuration") return "strategy";
+  if (page === "assignment-configuration") return "assignments";
+  if (page === "portfolio-configuration") return "portfolio";
+  if (page === "oms-configuration") return "oms";
+  if (page === "account-configuration") return "accounts";
+  if (page === "revision-configuration") return "revisions";
+  return null;
 }
 
 function servicePageMode(page: PageKey): ServicePageMode | null {

@@ -23,6 +23,28 @@ must not construct a different order type for simulation. Live and simulated
 brokers both expose accounts, preview, place, warning reply, modify, cancel,
 live orders, executions, positions, account summary, and ledger resources.
 
+## Configuration authority
+
+Configuration pages define and publish versioned application behavior.
+Replay, Backtest, Backtest Debug, Live, and Paper consume approved revisions
+and must never contain copied configuration or mode-specific implementations
+of the same rules.
+
+One approved revision contains the immutable strategy identity, revision, and
+parameters; strategy-to-account assignments; portfolio allocation and risk
+policies; OMS execution and protection settings; stable account/session
+bindings; and the complete Canvas registry. Draft sections are mutable but
+non-executable. Publishing validates and hashes the complete profile. A run
+pins that revision at creation, so later draft edits or approvals cannot alter
+it.
+
+Operational run-local actions may pause, arm, or add an assignment, but cannot
+redefine its strategy or replace the approved portfolio/OMS policy.
+`initial_cash` is a simulation scenario input: it funds the simulated broker
+but never replaces approved allocation, risk, execution, or protection policy.
+The full contract is documented in
+[Trading Configuration Authority](TRADING_CONFIGURATION_AUTHORITY.md).
+
 ## Historical semantics
 
 The date selected for Backtest is an exclusive anchor: the configured number
@@ -106,11 +128,12 @@ the canonical trading-state adapter; they are evidence, not executable
 strategy definitions or proof of replay/live brokerage parity.
 
 Replay setup accepts one exchange date, a 04:00-20:00 New York entry clock,
-and initial simulated cash. Approval snapshots the global Canvas profile and
-its revision. `/api/trading/replay/preflight` verifies the QMD History service
-identity, canonical day coverage, runtime storage, Canvas symbols, selected
-automatic assignments, and explicit source-account to simulated-account
-mapping before the run can be created.
+and initial simulated cash. It does not accept mutable Canvas, strategy,
+portfolio, or OMS configuration. `/api/trading/replay/preflight` resolves the
+latest approved application revision and verifies its identity and content
+hash, QMD History service identity, canonical day coverage, runtime storage,
+approved Canvas symbols, approved automatic assignments, and explicit stable
+account-key to simulated-account mapping before the run can be created.
 
 `ReplayRunController` is the transport authority. It reads canonical QMD
 events for the full extended session, causally warms market and indicator
@@ -125,7 +148,8 @@ trading authorities.
 
 Each run writes `manifest.json` and `journal.sqlite3` beneath
 `D:\TradingML\runtimes\trading\replay\<run_id>`. The manifest records the
-approved definition and Canvas snapshot; the WAL journal owns lifecycle,
+approved application revision identity, content hash, full configuration, and
+Canvas snapshot; the WAL journal owns lifecycle,
 strategy decisions, orders, fills, assignments, and checkpoints. WebSocket
 updates publish the bounded run clock/status projection, while the Canvas read
 API projects canonical broker state and run-journal strategy evidence. The

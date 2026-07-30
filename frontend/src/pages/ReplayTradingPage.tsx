@@ -15,17 +15,10 @@ import {
   TriangleAlert,
   WalletCards,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
-import {
-  MAIN_CANVAS_ID,
-  readCanvasRegistry,
-  readCanvasWorkspaceState,
-  snapshotCanvasProfile,
-  snapshotCanvasWorkspaceState,
-  type CanvasRegistry,
-} from "../app/canvasWorkspace";
+import { MAIN_CANVAS_ID } from "../app/canvasWorkspace";
 import { isTerminalReplayStatus, latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
@@ -39,7 +32,7 @@ type ReplayCheck = {
 };
 
 type ReplayAssignment = {
-  account_id: string;
+  account_key: string;
   assignment_id: string;
   status: string;
   ticker: string;
@@ -51,6 +44,11 @@ type ReplayPreflight = {
   canvas_revision: string;
   checks: ReplayCheck[];
   coverage: { event_count?: number; ticker_count?: number };
+  configuration_content_hash: string;
+  configuration_label: string;
+  configuration_revision: number;
+  configuration_revision_id: string;
+  canvas_profile: Record<string, unknown>;
   ready: boolean;
   tickers: string[];
 };
@@ -68,14 +66,21 @@ export function ReplayTradingPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [run, setRun] = useState<CanvasReplayRun | null>(null);
   const [recentRuns, setRecentRuns] = useState<CanvasReplayRun[]>([]);
-  const canvasSnapshot = useMemo(readReplayCanvasProfile, [refreshKey]);
-  const configuredTickers = useMemo(
-    () => Object.values(canvasSnapshot.profile.linkContexts)
-      .map((context) => String(context?.symbol || "").trim().toUpperCase())
-      .filter((ticker, index, values) => ticker && values.indexOf(ticker) === index),
-    [canvasSnapshot],
-  );
-  const replayReady = Boolean(canvasSnapshot.ready && preflight?.ready);
+  const replayReady = Boolean(preflight?.ready);
+
+  useEffect(() => {
+    const refreshOnEntry = () => {
+      if (window.location.hash === "#replay-trading") {
+        setRefreshKey((value) => value + 1);
+      }
+    };
+    window.addEventListener("hashchange", refreshOnEntry);
+    window.addEventListener("quant-trading-configuration-published", refreshOnEntry);
+    return () => {
+      window.removeEventListener("hashchange", refreshOnEntry);
+      window.removeEventListener("quant-trading-configuration-published", refreshOnEntry);
+    };
+  }, []);
 
   useEffect(() => {
     if (run) return;
@@ -92,11 +97,10 @@ export function ReplayTradingPage() {
       setError("");
       api<ReplayPreflight>("/api/trading/replay/preflight", {
         body: JSON.stringify({
-          canvas_revision: canvasSnapshot.revision,
+          configuration_revision_id: preflight?.configuration_revision_id ?? "",
           initial_cash: initialCash,
           session_date: sessionDate,
           start_time: startTime,
-          tickers: configuredTickers,
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -118,7 +122,7 @@ export function ReplayTradingPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [canvasSnapshot, configuredTickers, initialCash, refreshKey, run, sessionDate, startTime]);
+  }, [initialCash, refreshKey, run, sessionDate, startTime]);
 
   useReplayRunEvents(
     run?.run_id,
@@ -133,12 +137,10 @@ export function ReplayTradingPage() {
     try {
       const created = await api<CanvasReplayRun>("/api/trading/replay/runs", {
         body: JSON.stringify({
-          canvas_profile: canvasSnapshot.profile,
-          canvas_revision: canvasSnapshot.revision,
+          configuration_revision_id: preflight?.configuration_revision_id,
           initial_cash: initialCash,
           session_date: sessionDate,
           start_time: startTime,
-          tickers: configuredTickers,
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -172,7 +174,7 @@ export function ReplayTradingPage() {
         </div>
         <div className="replay-canvas-proof">
           <ShieldCheck size={19} />
-          <span><small>Canvas configuration</small><strong>{canvasSnapshot.label}</strong><em>{canvasSnapshot.revision.slice(0, 10)}</em></span>
+          <span><small>Approved configuration</small><strong>{preflight ? `Revision ${preflight.configuration_revision}` : "Resolving"}</strong><em>{preflight?.configuration_content_hash.slice(0, 10) ?? "—"}</em></span>
         </div>
       </header>
 
@@ -210,16 +212,6 @@ export function ReplayTradingPage() {
               {checking ? <span className="replay-checking"><Gauge size={15} /> Checking</span> : null}
             </header>
             <div className="replay-check-list">
-              <ReplayCheckRow check={{
-                evidence: canvasSnapshot.ready ? canvasSnapshot.revision : "Configure at least one container on the Main Canvas before approval.",
-                id: "canvas-layout",
-                label: "Canvas layout",
-                required: true,
-                status: canvasSnapshot.ready ? "ready" : "blocked",
-                summary: canvasSnapshot.ready
-                  ? `${canvasSnapshot.containerCount} configured container(s) will open inside the Replay viewport.`
-                  : "The current Main Canvas and saved default are both empty.",
-              }} />
               {preflight?.checks.map((check) => <ReplayCheckRow check={check} key={check.id} />)}
               {!preflight && checking ? <div className="replay-check-skeleton"><Gauge size={19} /><span><strong>Resolving dependencies</strong><small>QMD History, canonical coverage, runtime storage, symbols, and assignments.</small></span></div> : null}
             </div>
@@ -242,13 +234,13 @@ export function ReplayTradingPage() {
             <div className="replay-approval-clock"><Clock3 size={18} /><span><small>Replay begins</small><strong>{sessionDate} · {startTime} ET</strong></span></div>
             <div className="replay-approval-stat"><Database size={16} /><span><strong>{formatInteger(preflight?.coverage.event_count)}</strong><small>canonical events in session</small></span></div>
             <div className="replay-approval-stat"><WalletCards size={16} /><span><strong>{Object.keys(preflight?.account_mapping ?? {}).length || 1}</strong><small>simulated account boundary</small></span></div>
-            <div className="replay-approval-stat"><CheckCircle2 size={16} /><span><strong>{preflight?.tickers.length ?? configuredTickers.length}</strong><small>configured symbols</small></span></div>
+            <div className="replay-approval-stat"><CheckCircle2 size={16} /><span><strong>{preflight?.tickers.length ?? 0}</strong><small>configured symbols</small></span></div>
             {preflight?.assignments.length ? <div className="replay-assignment-summary">
               <span>Active assignments</span>
-              {preflight.assignments.slice(0, 6).map((assignment) => <div key={assignment.assignment_id}><strong>{assignment.ticker}</strong><small>{assignment.account_id} · {assignment.status.replaceAll("_", " ")}</small></div>)}
+              {preflight.assignments.slice(0, 6).map((assignment) => <div key={assignment.assignment_id}><strong>{assignment.ticker}</strong><small>{assignment.account_key} · {assignment.status.replaceAll("_", " ")}</small></div>)}
             </div> : <div className="replay-market-only-note"><CircleStop size={16} /><span><strong>Market-only until assigned</strong><small>You can arm a configured strategy from Canvas after the run opens.</small></span></div>}
             <button className="button primary replay-approve-button" disabled={checking || creating || !replayReady} onClick={createRun} type="button"><Play size={17} /> {creating ? "Creating durable run…" : "Approve and open Canvas"}</button>
-            <small className="replay-approval-disclosure">Approval snapshots this Canvas revision and creates a journaled simulated run. No IBKR session or live order route is used.</small>
+            <small className="replay-approval-disclosure">Approval pins the published application revision and creates a journaled simulated run. Draft changes cannot alter it. No IBKR session or live order route is used.</small>
           </section>
         </aside>
       </div>
@@ -312,47 +304,6 @@ function ReplayCheckRow({ check }: { check: ReplayCheck }) {
     <span className="replay-check-icon">{check.status === "ready" ? <CheckCircle2 size={18} /> : <TriangleAlert size={18} />}</span>
     <div><header><strong>{check.label}</strong>{check.required ? <em>Required</em> : <em>Optional</em>}</header><p>{check.summary}</p><small>{check.evidence}</small></div>
   </article>;
-}
-
-function readReplayCanvasProfile(): { containerCount: number; label: string; profile: CanvasRegistry; ready: boolean; revision: string } {
-  const registry = readCanvasRegistry();
-  const currentState = readCanvasWorkspaceState(MAIN_CANVAS_ID);
-  const selectedState = [currentState, registry.defaultState].find((state) => Boolean(state?.openIds.length));
-  const replayState = selectedState ? snapshotCanvasWorkspaceState(selectedState) : undefined;
-  const capturedProfile = snapshotCanvasProfile(registry);
-  const profile: CanvasRegistry = {
-    ...capturedProfile,
-    defaultState: replayState,
-    workspaceStates: replayState
-      ? { ...capturedProfile.workspaceStates, [MAIN_CANVAS_ID]: replayState }
-      : capturedProfile.workspaceStates,
-  };
-  const serialized = stableStringify(profile);
-  const containerCount = replayState?.openIds.length ?? 0;
-  return {
-    containerCount,
-    label: containerCount ? `${containerCount} configured containers` : "No configured containers",
-    profile,
-    ready: containerCount > 0,
-    revision: hashString(serialized),
-  };
-}
-
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function hashString(value: string) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `canvas-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 function previousWeekdayIsoDate() {

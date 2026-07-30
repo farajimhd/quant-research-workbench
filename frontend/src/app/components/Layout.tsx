@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, Check, ChevronLeft, ChevronRight, FlaskConical, History, PanelsTopLeft, Palette, ServerCog, Wifi } from "lucide-react";
+import { Activity, BadgeCheck, BriefcaseBusiness, Check, ChevronLeft, ChevronRight, FlaskConical, GitBranch, History, Network, PanelsTopLeft, Palette, ServerCog, ShieldCheck, UsersRound, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "canvas-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
+export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "canvas-configuration" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
@@ -30,7 +30,13 @@ const navGroups = [
   {
     label: "Configuration",
     items: [
-      { key: "canvas-configuration" as PageKey, label: "Canvas", icon: PanelsTopLeft }
+      { key: "canvas-configuration" as PageKey, label: "Canvas", icon: PanelsTopLeft },
+      { key: "strategy-configuration" as PageKey, label: "Strategies", icon: GitBranch },
+      { key: "assignment-configuration" as PageKey, label: "Assignments", icon: Network },
+      { key: "portfolio-configuration" as PageKey, label: "Portfolio & Risk", icon: BriefcaseBusiness },
+      { key: "oms-configuration" as PageKey, label: "OMS & Protection", icon: ShieldCheck },
+      { key: "account-configuration" as PageKey, label: "Accounts & Sessions", icon: UsersRound },
+      { key: "revision-configuration" as PageKey, label: "Approved Revisions", icon: BadgeCheck }
     ]
   },
   {

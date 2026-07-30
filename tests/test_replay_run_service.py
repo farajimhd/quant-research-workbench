@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import asdict
 from datetime import date, datetime, time
 from pathlib import Path
 from unittest.mock import patch
@@ -10,11 +11,13 @@ from zoneinfo import ZoneInfo
 from src.backend.replay_run_service import (
     ReplayRunController,
     ReplayRunDefinition,
+    _canvas_profile_tickers,
     replay_preflight,
 )
 from src.market_engine.historical_source import QmdHistoricalEventSource
 from src.trading_runtime.domain import InstrumentContract
 from src.trading_runtime.journal import TradingJournal
+from src.trading_runtime.portfolio import PortfolioPolicy
 from src.trading_runtime.strategy_engine import (
     AssignmentStatus,
     AssignedLongMomentumStrategy,
@@ -23,11 +26,67 @@ from src.trading_runtime.strategy_engine import (
     StrategyAssignment,
     StrategyPermissions,
     resolve_long_momentum_parameters,
+    default_long_momentum_parameters,
 )
 from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
 
 
 NEW_YORK = ZoneInfo("America/New_York")
+
+
+def approved_configuration(*, assignments: list[dict] | None = None) -> dict:
+    return {
+        "revision_id": "configuration-test",
+        "revision": 1,
+        "label": "Test configuration",
+        "content_hash": "test-hash",
+        "approved_at": "2026-07-28T12:00:00+00:00",
+        "payload": {
+            "schema_version": 1,
+            "strategy": {
+                "strategy_id": STRATEGY_ID,
+                "revision": STRATEGY_REVISION,
+                "name": "Long Momentum Campaign",
+                "parameters": default_long_momentum_parameters(),
+            },
+            "assignments": assignments or [],
+            "portfolio": {"policies": [asdict(PortfolioPolicy())], "groups": []},
+            "oms": {
+                "entry_urgency": "urgent",
+                "exit_urgency": "very_urgent",
+                "limit_offset_bps": 5.0,
+                "tick_size": 0.01,
+                "time_in_force": "DAY",
+                "outside_rth": False,
+                "protection": {
+                    "stop_method": "hybrid",
+                    "structure_buffer_bps": 8.0,
+                    "volatility_multiple": 1.25,
+                    "maximum_risk_pct": 1.5,
+                    "trailing_enabled": True,
+                },
+            },
+            "accounts": {
+                "bindings": [{
+                    "account_key": "primary",
+                    "source_account_id": "DU123456",
+                    "account_class": "simulated",
+                    "base_currency": "USD",
+                    "session_key": "replay",
+                    "portfolio_policy_id": "default",
+                    "enabled": True,
+                    "modes": ["replay"],
+                }]
+            },
+            "canvas": {
+                "revision": "canvas-test",
+                "profile": {
+                    "defaultState": {"openIds": ["chart"]},
+                    "linkContexts": {"chart": {"symbol": "AAPL"}},
+                },
+            },
+        },
+    }
 
 
 class ReplayRunDefinitionTests(unittest.TestCase):
@@ -37,6 +96,7 @@ class ReplayRunDefinitionTests(unittest.TestCase):
             start_time=time(9, 45),
             initial_cash=250_000,
             tickers=("AAPL",),
+            configuration_revision=approved_configuration(),
         )
 
         self.assertEqual(definition.session_start.isoformat(), "2026-07-28T04:00:00-04:00")
@@ -48,6 +108,7 @@ class ReplayRunDefinitionTests(unittest.TestCase):
             ReplayRunDefinition(
                 session_date=date(2026, 7, 28),
                 start_time=time(3, 59),
+                configuration_revision=approved_configuration(),
             )
 
 
@@ -59,8 +120,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
                     session_date=date(2026, 7, 28),
                     start_time=time(9, 45),
                     tickers=("AAPL",),
-                    canvas_revision="canvas-test",
-                    canvas_profile={"defaultState": {"openIds": ["chart"]}},
+                    configuration_revision=approved_configuration(),
                 ),
                 runtime_root=Path(directory),
             )
@@ -92,6 +152,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
                 session_date=date(2026, 7, 28),
                 start_time=time(9, 45),
                 tickers=("AAPL",),
+                configuration_revision=approved_configuration(),
             ),
             runtime_root=Path(tempfile.gettempdir()),
         )
@@ -113,6 +174,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
                 session_date=date(2026, 7, 28),
                 start_time=time(19, 58),
                 tickers=("AAPL",),
+                configuration_revision=approved_configuration(),
             ),
             runtime_root=Path(tempfile.gettempdir()),
         )
@@ -170,9 +232,31 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReplayPreflightTests(unittest.TestCase):
+    def test_canvas_symbols_include_only_active_configured_instances(self) -> None:
+        profile = {
+            "workspaceStates": {
+                "main": {
+                    "instances": {"chart": "chart", "chart-2": "chart"},
+                    "openIds": ["chart", "chart-2"],
+                }
+            },
+            "linkAssignments": {"chart": "A", "closed-chart": "B"},
+            "linkContexts": {
+                "A": {"symbol": "AAPL"},
+                "B": {"symbol": "SHOULD_NOT_STREAM"},
+                "C": {"symbol": "UNUSED"},
+            },
+            "instanceSettings": {
+                "chart-2": {"chart": {"symbol": "MSFT"}},
+                "closed-chart": {"chart": {"symbol": "CLOSED"}},
+            },
+        }
+
+        self.assertEqual(_canvas_profile_tickers(profile), {"AAPL", "MSFT"})
+
     def test_preflight_maps_live_accounts_to_explicit_simulated_boundaries(self) -> None:
         assignment = {
-            "account_id": "DU123456",
+            "account_key": "primary",
             "assignment_id": "assignment-1",
             "conid": 265598,
             "status": "watching",
@@ -189,9 +273,6 @@ class ReplayPreflightTests(unittest.TestCase):
                 "ticker_count": 1,
             },
         ), patch(
-            "src.backend.replay_run_service.list_strategy_assignments",
-            return_value=[assignment],
-        ), patch(
             "src.backend.replay_run_service.replay_runtime_root",
             return_value=Path(directory),
         ):
@@ -200,10 +281,11 @@ class ReplayPreflightTests(unittest.TestCase):
                 start_time=time(9, 45),
                 initial_cash=100_000,
                 tickers=("AAPL",),
+                configuration_revision=approved_configuration(assignments=[assignment]),
             )
 
         self.assertTrue(result["ready"])
-        self.assertEqual(result["account_mapping"], {"DU123456": "SIM-01-DU123456"})
+        self.assertEqual(result["account_mapping"], {"DU123456": "SIM-01-PRIMARY"})
         self.assertTrue(all(check["status"] == "ready" for check in result["checks"]))
 
 

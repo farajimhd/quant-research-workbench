@@ -127,6 +127,14 @@ from src.backend.trading_runtime_service import (
     save_trade_annotation,
     trading_taxonomy_catalog,
 )
+from src.backend.trading_configuration_service import (
+    approved_configuration,
+    configuration_draft,
+    configuration_revisions,
+    publish_configuration,
+    replay_configuration_snapshot,
+    update_configuration_section,
+)
 from src.backend.ticker_presentation_service import ticker_presentation_payload
 from src.backend.ticker_facts_service import ticker_fact_history_payload, ticker_facts_payload
 from src.data_provider.calendar import market_sessions, scan_market_source
@@ -506,11 +514,21 @@ class ReplayPreflightRequest(BaseModel):
     initial_cash: float = Field(default=100_000.0, ge=1_000, le=1_000_000_000)
     assignment_ids: list[str] = Field(default_factory=list, max_length=100)
     tickers: list[str] = Field(default_factory=list, max_length=100)
-    canvas_revision: str = Field(default="", max_length=128)
+    configuration_revision_id: str = Field(default="", max_length=128)
 
 
 class ReplayRunCreateRequest(ReplayPreflightRequest):
-    canvas_profile: dict[str, Any] = Field(default_factory=dict)
+    pass
+
+
+class TradingConfigurationSectionSubmit(BaseModel):
+    payload: Any
+
+
+class TradingConfigurationPublishSubmit(BaseModel):
+    label: str = Field(min_length=1, max_length=200)
+    canvas_revision: str = Field(min_length=1, max_length=128)
+    canvas_profile: dict[str, Any]
 
 
 class ReplayRunCommandRequest(BaseModel):
@@ -4009,6 +4027,48 @@ def trading_taxonomy() -> dict[str, Any]:
     return trading_taxonomy_catalog()
 
 
+@app.get("/api/trading/configuration/draft")
+def trading_configuration_draft() -> dict[str, Any]:
+    return configuration_draft()
+
+
+@app.put("/api/trading/configuration/draft/{section}")
+def trading_configuration_section_update(
+    section: str,
+    payload: TradingConfigurationSectionSubmit,
+) -> dict[str, Any]:
+    try:
+        return update_configuration_section(section, payload.payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/configuration/revisions")
+def trading_configuration_revision_list() -> dict[str, Any]:
+    rows = configuration_revisions()
+    return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
+
+
+@app.get("/api/trading/configuration/approved")
+def trading_configuration_approved() -> dict[str, Any]:
+    result = approved_configuration()
+    return {"schema_version": 1, "approved": result}
+
+
+@app.post("/api/trading/configuration/publish")
+def trading_configuration_publish(
+    payload: TradingConfigurationPublishSubmit,
+) -> dict[str, Any]:
+    try:
+        return publish_configuration(
+            label=payload.label,
+            canvas_revision=payload.canvas_revision,
+            canvas_profile=payload.canvas_profile,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/historical-gateway")
 def trading_historical_gateway() -> dict[str, Any]:
     return historical_gateway_snapshot()
@@ -4046,13 +4106,19 @@ def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[st
 @app.post("/api/trading/replay/preflight")
 def trading_replay_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
     try:
+        configuration_revision = replay_configuration_snapshot()
+        if (
+            payload.configuration_revision_id
+            and payload.configuration_revision_id != configuration_revision["revision_id"]
+        ):
+            raise ValueError("The approved configuration changed; review Replay preflight again")
         return replay_preflight(
             session_date=payload.session_date,
             start_time=_replay_clock_time(payload.start_time),
             initial_cash=payload.initial_cash,
             assignment_ids=tuple(payload.assignment_ids),
             tickers=tuple(payload.tickers),
-            canvas_revision=payload.canvas_revision,
+            configuration_revision=configuration_revision,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -4061,14 +4127,16 @@ def trading_replay_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
 @app.post("/api/trading/replay/runs")
 async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str, Any]:
     try:
+        configuration_revision = replay_configuration_snapshot()
+        if payload.configuration_revision_id != configuration_revision["revision_id"]:
+            raise ValueError("The approved configuration changed; review Replay preflight again")
         definition = ReplayRunDefinition(
             session_date=payload.session_date,
             start_time=_replay_clock_time(payload.start_time),
             initial_cash=payload.initial_cash,
             assignment_ids=tuple(payload.assignment_ids),
             tickers=tuple(payload.tickers),
-            canvas_revision=payload.canvas_revision,
-            canvas_profile=dict(payload.canvas_profile),
+            configuration_revision=configuration_revision,
         )
         preflight = replay_preflight(
             session_date=definition.session_date,
@@ -4076,7 +4144,7 @@ async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str
             initial_cash=definition.initial_cash,
             assignment_ids=definition.assignment_ids,
             tickers=definition.tickers,
-            canvas_revision=definition.canvas_revision,
+            configuration_revision=configuration_revision,
         )
         if not preflight["ready"]:
             raise ValueError("Replay dependencies changed after approval; run preflight again")
