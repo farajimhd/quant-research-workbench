@@ -6,7 +6,6 @@ import json
 import os
 import re
 import sys
-import tarfile
 import time
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -18,7 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipelines.sec.edgar.sec_filing_text_extract_parts import parse_filing  # noqa: E402
+from pipelines.sec.edgar.sec_filing_text_extract_parts import (  # noqa: E402
+    is_sec_submission_member,
+    open_sec_source,
+    parse_filing,
+)
 from research.mlops.clickhouse import (  # noqa: E402
     ClickHouseHttpClient,
     default_clickhouse_password,
@@ -111,8 +114,14 @@ exact AS
 SELECT
     d.cik,
     d.accession_number,
-    any(ifNull(d.source_archive_path, '')) AS archive_path,
-    any(d.source_archive_member) AS member
+    argMax(ifNull(d.source_archive_path, ''), tuple(d.source_revision_rank, d.source_version_key)) AS archive_path,
+    argMax(d.source_archive_member, tuple(d.source_revision_rank, d.source_version_key)) AS member,
+    toString(argMax(d.source_archive_date, tuple(d.source_revision_rank, d.source_version_key))) AS source_archive_date,
+    argMax(d.source_version_key, tuple(d.source_revision_rank, d.source_version_key)) AS source_version_key,
+    toString(argMax(d.source_revision_at, tuple(d.source_revision_rank, d.source_version_key))) AS source_revision_at,
+    argMax(d.source_revision_rank, tuple(d.source_revision_rank, d.source_version_key)) AS source_revision_rank,
+    argMax(d.source_revision_kind, tuple(d.source_revision_rank, d.source_version_key)) AS source_revision_kind,
+    ifNull(argMax(d.pac_event_id, tuple(d.source_revision_rank, d.source_version_key)), '') AS pac_event_id
 FROM {qi(args.database)}.sec_filing_document_v3 AS d FINAL
 LEFT ANTI JOIN exact AS e
     ON d.cik = e.cik AND d.accession_number = e.accession_number
@@ -143,11 +152,11 @@ def audit_archive(archive_path: str, wanted: dict[str, list[dict[str, str]] | di
     }
     found: set[str] = set()
     try:
-        with tarfile.open(archive_path, "r:gz") as archive:
+        with open_sec_source(Path(archive_path)) as archive:
             for member in archive:
                 key = member.name.lstrip("./")
                 expected_values = wanted.get(key)
-                if expected_values is None or not member.isfile():
+                if expected_values is None or not member.isfile() or not is_sec_submission_member(member.name):
                     continue
                 expected_rows = expected_values if isinstance(expected_values, list) else [expected_values]
                 handle = archive.extractfile(member)
@@ -168,6 +177,12 @@ def audit_archive(archive_path: str, wanted: dict[str, list[dict[str, str]] | di
                                 "stored_accession": expected["accession_number"],
                                 "sgml_accession": parsed["accession_number"],
                                 "expected_document_count": len(parsed["documents"]),
+                                "source_archive_date": str(expected.get("source_archive_date") or ""),
+                                "source_version_key": str(expected.get("source_version_key") or ""),
+                                "source_revision_at": str(expected.get("source_revision_at") or ""),
+                                "source_revision_rank": int(expected.get("source_revision_rank") or 0),
+                                "source_revision_kind": str(expected.get("source_revision_kind") or ""),
+                                "pac_event_id": str(expected.get("pac_event_id") or ""),
                             }
                         )
         result["missing"] = sum(

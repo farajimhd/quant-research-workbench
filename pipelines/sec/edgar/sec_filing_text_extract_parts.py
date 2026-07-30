@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import hashlib
+import io
 import json
 import os
 import re
@@ -239,6 +240,36 @@ PAC_COLUMNS = [
 
 
 @dataclass(frozen=True, slots=True)
+class DirectSecSourceMember:
+    name: str
+
+    def isfile(self) -> bool:
+        return True
+
+
+class DirectSecSource:
+    """Expose one retained live accession file through the archive-reader contract."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.member = DirectSecSourceMember(path.name)
+
+    def __enter__(self) -> DirectSecSource:
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
+        return None
+
+    def __iter__(self):
+        yield self.member
+
+    def extractfile(self, member: DirectSecSourceMember) -> io.BytesIO | None:
+        if member != self.member:
+            return None
+        return io.BytesIO(self.path.read_bytes())
+
+
+@dataclass(frozen=True, slots=True)
 class FilingParent:
     filing_id: str
     accession_number: str
@@ -465,8 +496,12 @@ def worker_payload(args: argparse.Namespace, archive: Path, parts_root: Path, so
 
 def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     archive = Path(payload["archive_path"])
-    archive_date = archive_date_from_name(archive.name)
+    archive_date = source_date(
+        archive,
+        explicit_date=str(payload.get("source_archive_date") or ""),
+    )
     archive_date_text = archive_date.isoformat()
+    source_kind = str(payload.get("source_kind") or source_kind_for_path(archive))
     parent_resolution_mode = resolve_parent_resolution_mode(payload)
     part_prefix = f"{archive_date:%Y%m%d}_{int(payload['archive_index']):06d}"
     parts_root = Path(payload["parts_root"])
@@ -511,6 +546,11 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         parents[(normalize_cik(parent.cik), normalize_accession(parent.accession_number))] = parent
     target_accessions = {normalize_accession(value) for value in payload.get("target_accessions") or []}
     target_members = {str(value) for value in payload.get("target_members") or []}
+    normalized_target_members = {value.lstrip("./") for value in target_members}
+    preserved_revisions = {
+        normalize_accession(accession): SourceRevision(**revision)
+        for accession, revision in (payload.get("source_revisions") or {}).items()
+    }
     inserted_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     stats: dict[str, Any] = {
         "archive_date": archive_date_text,
@@ -545,15 +585,19 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     }
     filing_parent_count = entity_count = archive_accession_count = doc_count = text_source_count = text_count = skip_count = pac_count = 0
     try:
-        with tarfile.open(archive, "r:gz") as tar:
+        with open_sec_source(archive) as tar:
             for member_sequence, member in enumerate(tar, start=1):
                 stop_event = payload.get("stop_event")
                 if stop_event is not None and stop_event.is_set():
                     stats["status"] = "cancelled"
                     break
-                if not member.isfile() or not member.name.lower().endswith(".nc"):
+                if not member.isfile() or not is_sec_submission_member(member.name):
                     continue
-                if target_members and member.name not in target_members:
+                if (
+                    target_members
+                    and member.name not in target_members
+                    and member.name.lstrip("./") not in normalized_target_members
+                ):
                     continue
                 if payload["max_filings_per_archive"] and stats["filings"] >= payload["max_filings_per_archive"]:
                     stats["truncated_by_limit"] = True
@@ -588,13 +632,15 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                     pac_count += len(pac_rows)
                     stats["pac_filings"] += 1
                     continue
-                revision = source_revision(
-                    archive_date=archive_date,
-                    archive_member=member.name,
-                    archive_path=archive,
-                    source_content_sha256=source_sha,
-                    occurrence_sequence=member_sequence,
-                )
+                revision = preserved_revisions.get(normalize_accession(filing["accession_number"]))
+                if revision is None:
+                    revision = source_revision(
+                        archive_date=archive_date,
+                        archive_member=member.name,
+                        archive_path=archive,
+                        source_content_sha256=source_sha,
+                        occurrence_sequence=member_sequence,
+                    )
                 parent = resolve_parent(parents, filing)
                 if parent is None:
                     stats["parent_missing_filings"] += 1
@@ -633,7 +679,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                         revision=revision,
                         source_run_id=str(payload["source_run_id"]),
                         inserted_at=inserted_at,
-                        source_kind="daily_archive",
+                        source_kind=source_kind,
                     )
                 )
                 archive_accession_count += 1
@@ -1557,6 +1603,35 @@ def archive_date_from_name(name: str) -> date:
     if not match:
         raise ValueError(f"invalid SEC archive name: {name}")
     return datetime.strptime(match.group(1), "%Y%m%d").date()
+
+
+def source_date(path: Path, *, explicit_date: str = "") -> date:
+    if explicit_date:
+        return date.fromisoformat(explicit_date[:10])
+    if re.fullmatch(r"\d{8}\.nc\.tar\.gz", path.name, flags=re.IGNORECASE):
+        return archive_date_from_name(path.name)
+    try:
+        return date(int(path.parents[2].name), int(path.parents[1].name), int(path.parent.name))
+    except (IndexError, TypeError, ValueError) as exc:
+        raise ValueError(f"cannot infer SEC source date from path: {path}") from exc
+
+
+def source_kind_for_path(path: Path) -> str:
+    return "daily_archive" if path.name.lower().endswith(".tar.gz") else "live_accession_text"
+
+
+def is_sec_submission_member(name: str) -> bool:
+    return Path(name).suffix.lower() in {".nc", ".txt"}
+
+
+def open_sec_source(path: Path) -> tarfile.TarFile | DirectSecSource:
+    if not path.is_file():
+        raise FileNotFoundError(f"SEC source does not exist: {path}")
+    if tarfile.is_tarfile(path):
+        return tarfile.open(path, "r:*")
+    if is_sec_submission_member(path.name):
+        return DirectSecSource(path)
+    raise tarfile.ReadError(f"unsupported SEC source format: {path}")
 
 
 def validate_date(value: str, label: str) -> None:

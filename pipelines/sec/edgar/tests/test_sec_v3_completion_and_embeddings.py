@@ -30,6 +30,23 @@ from pipelines.sec.edgar.sec_pipeline import submissions
 
 
 class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
+    def test_historical_start_stage_resumes_selected_lifecycle_in_order(self) -> None:
+        commands = [
+            historical.StageCommand("first", [], Path("first.log"), False),
+            historical.StageCommand("repair", [], Path("repair.log"), True),
+            historical.StageCommand("audit", [], Path("audit.log"), False),
+        ]
+
+        selected = historical.commands_from_start_stage(commands, "repair")
+
+        self.assertEqual([command.stage for command in selected], ["repair", "audit"])
+
+    def test_historical_start_stage_rejects_stage_outside_selected_lifecycle(self) -> None:
+        commands = [historical.StageCommand("audit", [], Path("audit.log"), False)]
+
+        with self.assertRaisesRegex(SystemExit, "not in the selected lifecycle"):
+            historical.commands_from_start_stage(commands, "bulk-download")
+
     def test_required_archive_date_uses_last_completed_weekday(self) -> None:
         self.assertEqual(
             historical.required_archive_through_date("2026-07-12", today_utc=date(2026, 7, 13)),
@@ -390,6 +407,47 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(result["mismatched"], 1)
         self.assertEqual(result["mismatches"][0]["expected_document_count"], 1)
 
+    def test_archive_identity_audit_reads_plain_live_accession_source(self) -> None:
+        raw = b"""<SEC-DOCUMENT>0000320335-26-000210.txt
+<SEC-HEADER>
+ACCESSION NUMBER: 0000320335-26-000210
+CONFORMED SUBMISSION TYPE: 4
+FILED AS OF DATE: 20260730
+REPORTING-OWNER:
+    OWNER DATA:
+        COMPANY CONFORMED NAME: OWNER PERSON
+        CENTRAL INDEX KEY: 0001765569
+ISSUER:
+    COMPANY DATA:
+        COMPANY CONFORMED NAME: GLOBE LIFE INC.
+        CENTRAL INDEX KEY: 0000320335
+</SEC-HEADER>
+<DOCUMENT><TYPE>4<SEQUENCE>1<FILENAME>form4.xml<TEXT>x</TEXT></DOCUMENT>
+"""
+        with tempfile.TemporaryDirectory() as temp_root:
+            source_path = Path(temp_root) / "0000320335-26-000210.txt"
+            source_path.write_bytes(raw)
+            result = archive_identity.audit_archive(
+                str(source_path),
+                {
+                    source_path.name: [{
+                        "cik": "0001765569",
+                        "accession_number": "0000320335-26-000210",
+                        "source_archive_date": "2026-07-30",
+                        "source_version_key": "live-version",
+                        "source_revision_at": "2026-07-30 18:14:00.000",
+                        "source_revision_rank": 1,
+                        "source_revision_kind": "live_feed_occurrence",
+                        "pac_event_id": "",
+                    }]
+                },
+            )
+
+        self.assertEqual(result["archive_errors"], 0)
+        self.assertEqual(result["mismatched"], 1)
+        self.assertEqual(result["mismatches"][0]["sgml_cik"], "0000320335")
+        self.assertEqual(result["mismatches"][0]["source_version_key"], "live-version")
+
     def test_identity_repair_deletes_document_key_last(self) -> None:
         self.assertEqual(identity_repair.DOCUMENT_TABLES_CHILD_FIRST[-1], "sec_filing_document_v3")
         self.assertEqual(
@@ -421,6 +479,75 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(deleted, 2)
         self.assertIn("SETTINGS mutations_sync=2", statements[1])
         self.assertTrue(statements[2].startswith("SELECT count()"))
+
+    def test_identity_repair_cleans_canonical_parent_last(self) -> None:
+        self.assertEqual(identity_repair.CANONICAL_TABLES_CHILD_FIRST[-1], ("sec_filing_v3", "cik"))
+        self.assertEqual(
+            identity_repair.identity_predicate("0001765569", "0000320335-26-000210", cik_column="primary_cik"),
+            "primary_cik='0001765569' AND accession_number='0000320335-26-000210'",
+        )
+
+    def test_identity_repair_preserves_live_source_revision_in_worker_payload(self) -> None:
+        args = SimpleNamespace(
+            database="q_live",
+            clickhouse_url="http://127.0.0.1:8123",
+            user="default",
+            password="",
+            parquet_row_group_mb=8,
+            parquet_file_mb=32,
+            parquet_compression_level=1,
+        )
+        row = {
+            "sgml_accession": "0000320335-26-000210",
+            "source_archive_date": "2026-07-30",
+            "source_version_key": "version",
+            "source_revision_at": "2026-07-30 22:14:00.000",
+            "source_revision_rank": 123,
+            "source_revision_kind": "live_feed_occurrence",
+            "pac_event_id": "",
+            "member": "0000320335-26-000210.txt",
+        }
+
+        payload = identity_repair.worker_payload(
+            args,
+            "repair",
+            Path("parts"),
+            1,
+            r"D:\market-data\sec-edgar\live-raw\2026\07\30\0000320335-26-000210.txt",
+            [row],
+        )
+
+        self.assertEqual(payload["source_kind"], "live_accession_text")
+        self.assertEqual(payload["source_archive_date"], "2026-07-30")
+        self.assertEqual(
+            payload["source_revisions"]["0000320335-26-000210"]["source_version_key"],
+            "version",
+        )
+
+    def test_identity_repair_reconciles_live_manifest_primary_cik(self) -> None:
+        statements: list[str] = []
+        responses = iter(["1\n", "1\n", "", "0\n", "1\n"])
+
+        class FakeClient:
+            def execute(self, sql: str) -> str:
+                statements.append(sql)
+                return next(responses)
+
+        result = identity_repair.reconcile_live_ingest_manifest(
+            FakeClient(),
+            SimpleNamespace(database="q_live", mutations_sync=2),
+            [{
+                "sgml_accession": "0000320335-26-000210",
+                "source_version_key": "version",
+                "stored_cik": "0001765569",
+                "sgml_cik": "0000320335",
+                "source_revision_kind": "live_feed_occurrence",
+            }],
+        )
+
+        self.assertEqual(result, {"candidates": 1, "updated_rows": 1})
+        self.assertIn("UPDATE primary_cik='0000320335'", statements[2])
+        self.assertIn("SETTINGS mutations_sync=2", statements[2])
 
     def test_archive_identity_table_probe_uses_string_literals(self) -> None:
         statements: list[str] = []

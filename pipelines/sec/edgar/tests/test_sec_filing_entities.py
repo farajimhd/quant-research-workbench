@@ -105,6 +105,30 @@ CONFORMED SUBMISSION TYPE: 8-K
         self.assertEqual(primary_filing_entity(entities).cik, "0000000002")
         self.assertEqual(sum(entity.cik == "0000000002" for entity in entities), 1)
 
+    def test_plain_live_sgml_prefers_issuer_over_reporting_owner(self) -> None:
+        header = """REPORTING-OWNER:
+
+    OWNER DATA:
+        COMPANY CONFORMED NAME: OWNER PERSON
+        CENTRAL INDEX KEY: 0001765569
+
+ISSUER:
+
+    COMPANY DATA:
+        COMPANY CONFORMED NAME: GLOBE LIFE INC.
+        CENTRAL INDEX KEY: 0000320335
+"""
+        entities = parse_filing_entities(header)
+
+        self.assertEqual(
+            [(entity.role, entity.cik, entity.name) for entity in entities],
+            [
+                ("reporting_owner", "0001765569", "OWNER PERSON"),
+                ("issuer", "0000320335", "GLOBE LIFE INC."),
+            ],
+        )
+        self.assertEqual(primary_filing_entity(entities).cik, "0000320335")
+
     def test_legacy_header_preserves_source_cik_without_accession_inference(self) -> None:
         entities = parse_filing_entities("COMPANY CONFORMED NAME: LEGACY CO\nCENTRAL INDEX KEY: 1234\n")
         self.assertEqual([(item.role, item.cik) for item in entities], [("submission_entity", "0000001234")])

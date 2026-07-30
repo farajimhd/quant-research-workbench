@@ -68,7 +68,20 @@ historical text corpus:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --finalize-only --execute
 ```
 
-This scans SGML headers into `sec_filing_entity_v3` and
+If a required stage fails after earlier stages completed, resume from that
+explicit lifecycle boundary rather than repeating successful work:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --finalize-only --start-stage archive-identity-repair --execute
+```
+
+`--start-stage` retains the selected lifecycle order and runs the named stage
+plus every downstream stage. It fails before execution when the requested stage
+does not belong to the full or `--finalize-only` lifecycle.
+
+Finalization scans both daily gzip archives and retained live-accession
+`.txt`/`.nc` submissions through the same source-reader contract. Tagged and
+plain SEC SGML entity sections are parsed into `sec_filing_entity_v3` and
 `sec_filing_archive_accession_v3`, preserving embedded CIK relationships,
 archive occurrence, document counts, source hashes, revision rank,
 `ACCEPTANCE-DATETIME`, and `PRIVATE-TO-PUBLIC` evidence. It then extracts only
@@ -82,7 +95,9 @@ Before the final archive identity audit, finalization also repairs existing
 document/text rows stored under a non-primary entity CIK. It reparses only the
 mismatched archive members, inserts and verifies the complete subject-company
 filing/document/source/rendered lineage, invalidates stale v3 model rows, and
-synchronously deletes the old document key last. This makes the repair
+synchronously deletes stale entity, archive-accession, and filing-parent keys
+only after the corrected lineage is complete. The exact live-ingest manifest
+identity is reconciled at the same verified boundary. This makes the repair
 restart-safe while retaining the reporting-person relationship in
 `sec_filing_entity_v3`.
 

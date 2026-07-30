@@ -79,6 +79,18 @@ Coverage can skip immutable completed range work, but mutable bulk snapshots are
 always reconciled. A failed required stage stops the run and does not write final
 semantic coverage.
 
+A stopped lifecycle can resume at a verified stage boundary with
+`--start-stage <stage>`. For example, a failure in final identity reconciliation
+can be resumed with:
+
+```powershell
+python sec_historical_gap_fill.py --finalize-only --start-stage archive-identity-repair --execute
+```
+
+The named stage and all downstream stages run in their original order; earlier
+successful stages are not repeated. An unknown stage or a stage excluded by
+`--finalize-only` fails before any subprocess starts.
+
 ## Finalizer Lifecycle
 
 `sec_historical_gap_fill.py --finalize-only --execute` performs the bounded
@@ -89,7 +101,10 @@ post-rebuild reconciliation without reprocessing the entire text corpus:
 3. Reconcile filing parents.
 4. Enrich unresolved acceptance metadata from submissions.
 5. Apply exact acceptance timestamp repairs from submissions and archives.
-6. Repair document/text rows stored under a non-primary SGML entity CIK.
+6. Repair document/text rows stored under a non-primary SGML entity CIK. The
+   identity reader accepts both daily gzip archives and retained direct
+   live-accession submissions, and parses both tagged and plain SEC SGML entity
+   sections through one shared authority.
 7. Audit archive identity.
 8. Rebuild the SEC bridge and XBRL context.
 9. Run the fail-fast integrity audit.

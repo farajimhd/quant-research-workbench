@@ -40,7 +40,13 @@ DOCUMENT_TABLES_CHILD_FIRST = (
     "sec_filing_text_v3",
     "sec_filing_document_v3",
 )
+CANONICAL_TABLES_CHILD_FIRST = (
+    ("sec_filing_entity_v3", "primary_cik"),
+    ("sec_filing_archive_accession_v3", "primary_cik"),
+    ("sec_filing_v3", "cik"),
+)
 MODEL_TABLES = ("sec_filing_text_tokens_v3", "sec_filing_text_embeddings_v3")
+LIVE_INGEST_MANIFEST_TABLE = "sec_filing_live_ingest_manifest_v3"
 
 
 def parse_args() -> argparse.Namespace:
@@ -111,6 +117,7 @@ def main() -> int:
         extraction = extract_and_insert(client, args, candidates, run_id, parts_root, ingest_args)
         verification = verify_replacements(client, args.database, candidates, run_id)
         cleanup = delete_stale_identities(client, args, candidates)
+        live_manifest = reconcile_live_ingest_manifest(client, args, candidates)
     except Exception as exc:
         manifest["status"] = "failed"
         manifest["error"] = repr(exc)
@@ -122,6 +129,7 @@ def main() -> int:
         "extraction": extraction,
         "verification": verification,
         "cleanup": cleanup,
+        "live_manifest": live_manifest,
     })
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     print("summary=" + json.dumps({
@@ -223,8 +231,25 @@ def worker_payload(
     archive_path: str,
     rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    revisions = {
+        str(row["sgml_accession"]): {
+            "source_version_key": str(row["source_version_key"]),
+            "source_revision_at": str(row["source_revision_at"]),
+            "source_revision_rank": int(row["source_revision_rank"]),
+            "source_revision_kind": str(row["source_revision_kind"]),
+            "pac_event_id": str(row.get("pac_event_id") or ""),
+        }
+        for row in rows
+    }
     return {
         "archive_path": archive_path,
+        "source_archive_date": str(rows[0]["source_archive_date"]),
+        "source_kind": (
+            "daily_archive"
+            if archive_path.lower().endswith(".tar.gz")
+            else "live_accession_text"
+        ),
+        "source_revisions": revisions,
         "archive_index": archive_index,
         "parts_root": str(parts_root),
         "source_run_id": run_id,
@@ -267,7 +292,15 @@ def verify_replacements(
     client: ClickHouseHttpClient, database: str, candidates: list[dict[str, Any]], run_id: str
 ) -> dict[str, int]:
     db = quote_ident(database)
-    totals = {"documents": 0, "sources": 0, "rendered": 0, "skips": 0}
+    totals = {
+        "filings": 0,
+        "entities": 0,
+        "archive_accessions": 0,
+        "documents": 0,
+        "sources": 0,
+        "rendered": 0,
+        "skips": 0,
+    }
     for row in candidates:
         cik = sql_string(str(row["sgml_cik"]))
         accession = sql_string(str(row["sgml_accession"]))
@@ -276,6 +309,9 @@ def verify_replacements(
             f"""
 SELECT
     count() AS documents,
+    (SELECT count() FROM {db}.sec_filing_v3 WHERE cik={cik} AND accession_number={accession} AND source_run_id={run}) AS filings,
+    (SELECT count() FROM {db}.sec_filing_entity_v3 WHERE primary_cik={cik} AND accession_number={accession} AND source_run_id={run}) AS entities,
+    (SELECT count() FROM {db}.sec_filing_archive_accession_v3 WHERE primary_cik={cik} AND accession_number={accession} AND source_run_id={run}) AS archive_accessions,
     (SELECT count() FROM {db}.sec_filing_text_v3 WHERE cik={cik} AND accession_number={accession} AND source_run_id={run}) AS sources,
     (SELECT count() FROM {db}.sec_filing_text_rendered_v3 WHERE cik={cik} AND accession_number={accession} AND source_run_id={run}) AS rendered,
     (SELECT count() FROM {db}.sec_filing_document_skip_v3 WHERE cik={cik} AND accession_number={accession} AND source_run_id={run}) AS skips
@@ -292,6 +328,12 @@ FORMAT JSONEachRow
             )
         if int(result["rendered"]) + int(result["skips"]) != expected:
             raise RuntimeError(f"replacement text/skip lineage incomplete: {row} result={result}")
+        if int(result["filings"]) != 1:
+            raise RuntimeError(f"replacement filing parent missing or duplicated: {row} result={result}")
+        if int(result["entities"]) < 1:
+            raise RuntimeError(f"replacement filing entities missing: {row} result={result}")
+        if int(result["archive_accessions"]) != 1:
+            raise RuntimeError(f"replacement accession inventory missing or duplicated: {row} result={result}")
         for key in totals:
             totals[key] += int(result[key])
     return totals
@@ -312,11 +354,69 @@ def delete_stale_identities(
             totals[f"{args.database}.{table}"] += delete_and_verify(
                 client, args.database, table, predicate, args.mutations_sync
             )
+        for table, cik_column in CANONICAL_TABLES_CHILD_FIRST:
+            canonical_predicate = identity_predicate(
+                str(row["stored_cik"]),
+                str(row["stored_accession"]),
+                cik_column=cik_column,
+            )
+            totals[f"{args.database}.{table}"] += delete_and_verify(
+                client, args.database, table, canonical_predicate, args.mutations_sync
+            )
     return dict(totals)
 
 
-def identity_predicate(cik: str, accession_number: str) -> str:
-    return f"cik={sql_string(cik)} AND accession_number={sql_string(accession_number)}"
+def reconcile_live_ingest_manifest(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    candidates: list[dict[str, Any]],
+) -> dict[str, int]:
+    if not identity_audit.table_exists(client, args.database, LIVE_INGEST_MANIFEST_TABLE):
+        return {"candidates": 0, "updated_rows": 0}
+    target = f"{quote_ident(args.database)}.{quote_ident(LIVE_INGEST_MANIFEST_TABLE)}"
+    updated_rows = 0
+    live_candidates = [
+        row
+        for row in candidates
+        if str(row.get("source_revision_kind") or "") == "live_feed_occurrence"
+    ]
+    for row in live_candidates:
+        accession = sql_string(str(row["sgml_accession"]))
+        version = sql_string(str(row["source_version_key"]))
+        old_cik = sql_string(str(row["stored_cik"]))
+        new_cik = sql_string(str(row["sgml_cik"]))
+        predicate = (
+            f"accession_number={accession} AND source_version_key={version} "
+            f"AND primary_cik={old_cik}"
+        )
+        before = int(client.execute(f"SELECT count() FROM {target} FINAL WHERE {predicate} FORMAT TSV").strip() or "0")
+        if before:
+            client.execute(
+                f"ALTER TABLE {target} UPDATE primary_cik={new_cik} "
+                f"WHERE accession_number={accession} AND source_version_key={version} "
+                f"SETTINGS mutations_sync={int(args.mutations_sync)}"
+            )
+        remaining = int(client.execute(f"SELECT count() FROM {target} FINAL WHERE {predicate} FORMAT TSV").strip() or "0")
+        corrected = int(
+            client.execute(
+                f"SELECT count() FROM {target} FINAL "
+                f"WHERE accession_number={accession} AND source_version_key={version} AND primary_cik={new_cik} FORMAT TSV"
+            ).strip()
+            or "0"
+        )
+        if remaining or (before and corrected != 1):
+            raise RuntimeError(
+                "live ingest manifest identity reconciliation failed "
+                f"accession={row['sgml_accession']} remaining={remaining} corrected={corrected}"
+            )
+        updated_rows += before
+    return {"candidates": len(live_candidates), "updated_rows": updated_rows}
+
+
+def identity_predicate(cik: str, accession_number: str, *, cik_column: str = "cik") -> str:
+    if cik_column not in {"cik", "primary_cik"}:
+        raise ValueError(f"unsupported CIK column: {cik_column}")
+    return f"{cik_column}={sql_string(cik)} AND accession_number={sql_string(accession_number)}"
 
 
 def delete_and_verify(

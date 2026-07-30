@@ -306,6 +306,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run only source inventory, targeted document/timestamp repair, derived refresh, and final audit.",
     )
+    parser.add_argument(
+        "--start-stage",
+        default="",
+        help=(
+            "Resume at this stage and run every subsequent selected stage. "
+            "The stage must exist after --finalize-only filtering when that option is used."
+        ),
+    )
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--python-executable", default=sys.executable)
     parser.add_argument("--read-database", default=env_string("SEC_CLICKHOUSE_READ_DATABASE", "q_live"))
@@ -411,6 +419,17 @@ def required_archive_is_local(args: argparse.Namespace) -> bool:
     return path.is_file() and path.stat().st_size > 0
 
 
+def commands_from_start_stage(commands: list[StageCommand], start_stage: str) -> list[StageCommand]:
+    requested = start_stage.strip()
+    if not requested:
+        return commands
+    for index, command in enumerate(commands):
+        if command.stage == requested:
+            return commands[index:]
+    available = ", ".join(command.stage for command in commands)
+    raise SystemExit(f"--start-stage {requested!r} is not in the selected lifecycle. Available stages: {available}")
+
+
 def main() -> None:
     args = parse_args()
     try:
@@ -433,11 +452,14 @@ def main() -> None:
     commands = build_commands(args, logs_root)
     if args.finalize_only:
         commands = [command for command in commands if command.stage in FINALIZE_ONLY_STAGES]
+    commands = commands_from_start_stage(commands, args.start_stage)
     manifest = {
         "run_id": run_id,
         "created_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "script": str(Path(__file__).resolve()),
         "execute": bool(args.execute),
+        "finalize_only": bool(args.finalize_only),
+        "start_stage": args.start_stage,
         "start_date": args.start_date,
         "end_date": args.end_date,
         "read_database": args.read_database,

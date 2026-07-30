@@ -17,10 +17,15 @@ SECTION_ROLES = {
 }
 PRIMARY_ROLE_PRIORITY = ("issuer", "subject_company", "filer", "reporting_owner", "filed_by", "submission_entity")
 _SECTION_START = re.compile(
-    r"<(SUBJECT-COMPANY|ISSUER|FILER|REPORTING-OWNER|FILED-BY)>\s*",
-    flags=re.IGNORECASE,
+    r"(?:<(?P<tag>SUBJECT-COMPANY|ISSUER|FILER|REPORTING-OWNER|FILED-BY)>\s*"
+    r"|^\s*(?P<label>SUBJECT[- ]COMPANY|ISSUER|FILER|REPORTING[- ]OWNER|FILED[- ]BY)\s*:\s*$)",
+    flags=re.IGNORECASE | re.MULTILINE,
 )
-_DATA_START = re.compile(r"<(COMPANY-DATA|OWNER-DATA)>\s*", flags=re.IGNORECASE)
+_DATA_START = re.compile(
+    r"(?:<(?P<tag>COMPANY-DATA|OWNER-DATA)>\s*"
+    r"|^\s*(?P<label>COMPANY DATA|OWNER DATA)\s*:\s*$)",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,9 +44,13 @@ def parse_filing_entities(header_text: str) -> list[FilingEntity]:
     for ordinal, match in enumerate(sections, start=1):
         end = sections[ordinal].start() if ordinal < len(sections) else len(header_text)
         block = header_text[match.end() : end]
-        role = SECTION_ROLES[match.group(1).upper()]
+        section_name = (match.group("tag") or match.group("label") or "").upper().replace(" ", "-")
+        role = SECTION_ROLES[section_name]
         for data_block in _slice_data_blocks(block) or [block]:
-            cik = normalize_cik(_tag_value(data_block, "CIK"))
+            cik = normalize_cik(
+                _tag_value(data_block, "CIK")
+                or _header_value(data_block, "CENTRAL INDEX KEY")
+            )
             if not cik or cik == "0000000000" or (role, cik) in seen:
                 continue
             seen.add((role, cik))
@@ -49,7 +58,10 @@ def parse_filing_entities(header_text: str) -> list[FilingEntity]:
                 FilingEntity(
                     cik=cik,
                     role=role,
-                    name=_tag_value(data_block, "CONFORMED-NAME"),
+                    name=(
+                        _tag_value(data_block, "CONFORMED-NAME")
+                        or _header_value(data_block, "COMPANY CONFORMED NAME")
+                    ),
                     section_ordinal=ordinal,
                 )
             )
