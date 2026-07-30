@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from src.trading_runtime.signals import StrategyEvaluation, StrategyIntent, StrategySignal
+from src.trading_runtime.signals import CapitalRequest, StrategyEvaluation, StrategyIntent, StrategySignal
 from src.market_engine.events import MarketEvent
 
 
@@ -202,7 +202,13 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "macd": {"require_positive_histogram": True, "weight": 0.3},
             "veto": {"flow_price_divergence": 0.75, "liquidity_dislocation": 0.75},
         },
-        "sizing": {"initial_quantity": 100.0, "add_fraction": 0.5, "maximum_position_quantity": 300.0},
+        "sizing": {
+            "request_mode": "fixed_quantity",
+            "request_value": 100.0,
+            "initial_quantity": 100.0,
+            "add_fraction": 0.5,
+            "maximum_position_quantity": 300.0,
+        },
         "protection": {
             "stop": {
                 "method": "hybrid",
@@ -258,14 +264,23 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
     if parameters["protection"]["stop"]["method"] not in {"structure", "volatility", "hybrid"}:
         raise ValueError("Unsupported protective stop method")
     sizing = parameters["sizing"]
+    if sizing["request_mode"] not in {
+        "fixed_quantity",
+        "mandate_fraction",
+        "risk_fraction",
+        "all_available",
+    }:
+        raise ValueError("Unsupported strategy capital request mode")
+    if float(sizing["request_value"]) < 0:
+        raise ValueError("Strategy capital request value cannot be negative")
     if float(sizing["initial_quantity"]) <= 0 or float(sizing["maximum_position_quantity"]) <= 0:
         raise ValueError("Strategy quantities must be positive")
     if float(sizing["initial_quantity"]) > float(sizing["maximum_position_quantity"]):
         raise ValueError("Initial quantity cannot exceed maximum position quantity")
     if not 0 < float(sizing["add_fraction"]) <= 1:
         raise ValueError("Add fraction must be between 0 and 1")
-    if float(parameters["profit_pocket"]["quantity_fraction"]) != 1:
-        raise ValueError("Revision 2 profit pockets must close the full position before re-entry")
+    if not 0 < float(parameters["profit_pocket"]["quantity_fraction"]) <= 1:
+        raise ValueError("Profit-pocket quantity fraction must be between 0 and 1")
     if parameters["profit_pocket"]["trigger"] not in {"acceleration_slowdown", "favorable_move_pct", "volatility_multiple"}:
         raise ValueError("Unsupported profit-pocket trigger")
     if int(parameters["reentry"]["cooldown_ms"]) < 0 or int(parameters["reentry"]["maximum_attempts"]) < 0:
@@ -588,6 +603,11 @@ class LongMomentumStrategyEngine:
                     action=action,  # type: ignore[arg-type]
                     quantity=quantity,
                     reference_price=observation.price,
+                    capital_request=(
+                        _capital_request(assignment.parameters, quantity=quantity, action=action)
+                        if action in {"enter_long", "add_long"}
+                        else None
+                    ),
                     invalidation_price=invalidation_price,
                     profit_target_price=profit_target_price,
                     trailing_amount=trailing_amount,
@@ -604,6 +624,7 @@ class LongMomentumStrategyEngine:
                             assignment.parameters.get("execution", {}).get("tick_size") or 0.01
                         ),
                         "position_quantity": observation.position_quantity,
+                        "opportunity_score": score,
                         **(metadata or {}),
                     },
                 ),
@@ -627,6 +648,32 @@ class LongMomentumStrategyEngine:
             "evidence": metadata or {},
         }
         return StrategyEngineResult(StrategyEvaluation(signals=(signal,), intents=intents), state, status, payload)
+
+
+def _capital_request(
+    parameters: dict[str, Any],
+    *,
+    quantity: float,
+    action: str,
+) -> CapitalRequest:
+    sizing = dict(parameters.get("sizing") or {})
+    mode = str(sizing.get("request_mode") or "fixed_quantity")
+    if mode not in {"fixed_quantity", "mandate_fraction", "risk_fraction", "all_available"}:
+        raise ValueError(f"Unsupported strategy capital request mode: {mode}")
+    value = (
+        quantity
+        if mode == "fixed_quantity"
+        else float(sizing.get("request_value") or 1.0)
+    )
+    if action in {"add_long", "add_short"} and mode != "fixed_quantity":
+        value *= float(sizing.get("add_fraction") or 0)
+    return CapitalRequest(
+        mode=mode,  # type: ignore[arg-type]
+        value=value,
+        maximum_quantity=float(sizing.get("maximum_position_quantity") or 0) or None,
+        priority=int(sizing.get("priority") or 50),
+        allow_replacement=bool(sizing.get("allow_replacement", False)),
+    )
 
 
 class AssignedLongMomentumStrategy:

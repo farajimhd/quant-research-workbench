@@ -3,15 +3,22 @@ import {
   BookOpenCheck,
   Boxes,
   BriefcaseBusiness,
+  Check,
   CheckCircle2,
+  ChevronRight,
+  CircleHelp,
+  Clipboard,
   GitBranch,
   Network,
+  Plus,
   Save,
   Send,
   ShieldCheck,
+  Sparkles,
+  Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api } from "../api/client";
 import { readCanvasRegistry, snapshotCanvasProfile } from "../app/canvasWorkspace";
@@ -24,12 +31,146 @@ export type TradingConfigurationSection =
   | "accounts"
   | "revisions";
 
+type RuntimeMode = "replay" | "backtest" | "backtest_debug" | "paper" | "live";
+type Primitive = boolean | number | string;
+type ParameterMap = Record<string, unknown>;
+
+type CapabilityParameter = {
+  display?: string;
+  help: string;
+  key: string;
+  label: string;
+  maximum?: number;
+  minimum?: number;
+  options?: string[];
+  step?: number;
+  type: "boolean" | "choice" | "number";
+  unit?: string;
+};
+
+type CapabilityDefinition = {
+  capability_id: string;
+  category: string;
+  defaults: Record<string, Primitive>;
+  name: string;
+  order_entry_action: boolean;
+  parameters: CapabilityParameter[];
+  revision: number;
+  summary: string;
+};
+
+type CapabilityBinding = {
+  capability_id: string;
+  enabled: boolean;
+  revision: number;
+  settings: Record<string, Primitive>;
+};
+
+type StrategyProfile = {
+  capabilities: CapabilityBinding[];
+  definition_id: string;
+  definition_revision: number;
+  description: string;
+  editable: boolean;
+  enabled: boolean;
+  name: string;
+  origin: "system" | "user";
+  parameters: ParameterMap;
+  profile_id: string;
+  revision: number;
+};
+
+type StrategySection = {
+  capability_catalog: CapabilityDefinition[];
+  definitions: Array<{ automatic: boolean; name: string; revision: number; strategy_id: string }>;
+  profiles: StrategyProfile[];
+};
+
+type RuntimeAssignment = {
+  account_key: string;
+  assignment_id: string;
+  conid: number;
+  parameters?: ParameterMap;
+  permissions?: Record<string, boolean>;
+  status?: string;
+  ticker: string;
+};
+
+type Deployment = {
+  deployment_id: string;
+  description: string;
+  enabled: boolean;
+  mandate_ids: string[];
+  modes: RuntimeMode[];
+  name: string;
+  oms_profile_id: string;
+  profile_id: string;
+  runtime_assignments: RuntimeAssignment[];
+};
+
+type AssignmentSection = { deployments: Deployment[] };
+
+type PortfolioPolicy = Record<string, Primitive | string[]>;
+type Mandate = {
+  account_key: string;
+  allow_replacement: boolean;
+  autonomy: "manual" | "confirm" | "automatic";
+  deployment_id: string;
+  enabled: boolean;
+  mandate_id: string;
+  maximum_cash_fraction: number;
+  maximum_planned_risk_fraction: number;
+  maximum_positions: number;
+  minimum_replacement_improvement_pct: number;
+  priority: number;
+};
+type PortfolioSection = { groups: ParameterMap[]; mandates: Mandate[]; policies: PortfolioPolicy[] };
+
+type OmsProfile = {
+  description: string;
+  editable: boolean;
+  name: string;
+  origin: "system" | "user";
+  profile_id: string;
+  revision: number;
+  settings: {
+    entry_urgency: string;
+    exit_urgency: string;
+    limit_offset_bps: number;
+    outside_rth: boolean;
+    protection: {
+      maximum_risk_pct: number;
+      stop_method: string;
+      structure_buffer_bps: number;
+      trailing_enabled: boolean;
+      volatility_multiple: number;
+    };
+    tick_size: number;
+    time_in_force: string;
+  };
+};
+type OmsSection = { profiles: OmsProfile[] };
+
+type AccountBinding = {
+  account_class: string;
+  account_key: string;
+  base_currency: string;
+  enabled: boolean;
+  modes: RuntimeMode[];
+  name: string;
+  portfolio_policy_id: string;
+  session_key: string;
+  source_account_id: string;
+};
+type AccountSection = { bindings: AccountBinding[] };
+
 type Draft = {
-  accounts: unknown;
-  assignments: unknown;
-  oms: unknown;
-  portfolio: unknown;
-  strategy: unknown;
+  accounts: AccountSection;
+  assignments: AssignmentSection;
+  oms: OmsSection;
+  portfolio: PortfolioSection;
+  schema_version: number;
+  strategy: StrategySection;
   updated_at?: string;
 };
 
@@ -44,49 +185,62 @@ type Revision = {
 
 const SECTION_META = {
   strategy: {
-    eyebrow: "Decision authority",
+    eyebrow: "Step 1 · Define behavior",
     icon: GitBranch,
-    title: "Strategies",
-    description: "Select the executable strategy revision and its approved parameter set.",
+    title: "Strategy Studio",
+    description: "Create or adapt a Strategy Profile, tune its most-used behavior, then attach configurable capabilities. Profiles describe decisions; they do not own account capital or broker execution.",
   },
   assignments: {
-    eyebrow: "Deployment scope",
+    eyebrow: "Step 2 · Make it usable",
     icon: Network,
-    title: "Assignments",
-    description: "Bind approved strategies to account keys and instruments. Replay may change assignment state locally, but never the definition.",
+    title: "Strategy Deployments",
+    description: "Turn a published Strategy Profile into a usable deployment by selecting its OMS profile, runtime modes, and account mandates. Ticker assignments remain run-local operational state.",
   },
   portfolio: {
-    eyebrow: "Capital authority",
+    eyebrow: "Step 3 · Allocate capital",
     icon: BriefcaseBusiness,
     title: "Portfolio & Risk",
-    description: "Define allocation, exposure, loss, drawdown, capability, and emergency limits consumed by the shared portfolio engine.",
+    description: "Set stable account safety policies, then define exactly how much of each account a deployment may use and whether it may propose replacing another position.",
   },
   oms: {
-    eyebrow: "Execution authority",
+    eyebrow: "Shared execution authority",
     icon: ShieldCheck,
     title: "OMS & Protection",
-    description: "Configure execution urgency, price protection, order timing, stop construction, and trailing behavior used by the shared OMS.",
+    description: "Create reusable execution and protection profiles. Strategies select a profile; the shared OMS owns order tactics, broker lifecycle, partial fills, and protection.",
   },
   accounts: {
-    eyebrow: "Runtime binding",
+    eyebrow: "Stable runtime boundaries",
     icon: Boxes,
     title: "Accounts & Sessions",
-    description: "Map stable application account keys to mode-specific broker or simulated sessions and portfolio policies.",
+    description: "Define stable application accounts and map them to broker or simulated sessions. Account capabilities and risk policy remain independent from any single strategy.",
   },
   revisions: {
-    eyebrow: "Publication gate",
+    eyebrow: "Final publication gate",
     icon: BookOpenCheck,
-    title: "Approved Revisions",
-    description: "Publish one immutable application configuration. Replay pins it for the complete run, including every configured Canvas.",
+    title: "Approved Releases",
+    description: "Validate and publish one immutable release. New Replay runs pin the complete release, including Strategy Deployments, policies, OMS profiles, accounts, and every configured Canvas.",
   },
 } as const;
+
+const FREQUENT_PARAMETERS = [
+  field("entry.breakout_timeframe", "Breakout timeframe", "Primary causal structure used to recognize the entry.", "choice", ["100ms", "1s", "5s", "10s"]),
+  field("entry.breakout_reference", "Breakout reference", "Reference price that must be broken before an entry becomes eligible.", "choice", ["previous_close", "previous_high", "confirmed_swing_high", "bullish_choch"]),
+  field("entry.breakout_buffer_bps", "Breakout buffer", "Extra distance above the reference required to avoid marginal breaks.", "number", undefined, "bps", 0.5),
+  field("entry.minimum_confirmation_score", "Confirmation score", "Minimum combined causal evidence required for an entry.", "number", undefined, "score", 0.05),
+  field("sizing.request_mode", "Capital request", "Express size as a fixed quantity, fraction of mandate capacity, risk fraction, or all available mandate capacity.", "choice", ["fixed_quantity", "mandate_fraction", "risk_fraction", "all_available"]),
+  field("sizing.request_value", "Request value", "Meaning depends on Capital request: shares for fixed quantity and a fraction for mandate or risk sizing.", "number", undefined, "value", 0.01),
+  field("sizing.add_fraction", "Add size", "Fraction of the initial request used for an approved add.", "number", undefined, "fraction", 0.05),
+  field("sizing.maximum_position_quantity", "Position ceiling", "Hard strategy-level quantity ceiling before Portfolio applies stricter account limits.", "number", undefined, "shares", 1),
+  field("profit_pocket.minimum_gain_pct", "Profit pocket gain", "Minimum open gain before profit-pocket logic can act.", "number", undefined, "%", 0.05),
+  field("reentry.cooldown_ms", "Re-entry cooldown", "Minimum time after an exit before re-entry becomes eligible.", "number", undefined, "ms", 100),
+] as const;
 
 export function TradingConfigurationPage({ section }: { section: TradingConfigurationSection }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [approved, setApproved] = useState<Revision | null>(null);
   const [revisions, setRevisions] = useState<Revision[]>([]);
-  const [editor, setEditor] = useState("");
   const [label, setLabel] = useState("");
+  const [dirtySection, setDirtySection] = useState<TradingConfigurationSection | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "saving" | "saved" | "error">("loading");
   const [message, setMessage] = useState("");
   const meta = SECTION_META[section];
@@ -105,9 +259,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         setDraft(nextDraft);
         setApproved(approvedPayload.approved);
         setRevisions(revisionPayload.rows);
-        if (section !== "revisions") {
-          setEditor(JSON.stringify(nextDraft[section], null, 2));
-        }
+        setDirtySection(null);
         setStatus("ready");
       })
       .catch((reason) => {
@@ -115,34 +267,29 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         setMessage(reason instanceof Error ? reason.message : String(reason));
         setStatus("error");
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [section]);
 
-  const changed = useMemo(() => {
-    if (!draft || section === "revisions") return false;
-    try {
-      return JSON.stringify(JSON.parse(editor)) !== JSON.stringify(draft[section]);
-    } catch {
-      return true;
-    }
-  }, [draft, editor, section]);
+  function updateDraft<K extends keyof Draft>(key: K, value: Draft[K]) {
+    setDraft((current) => current ? { ...current, [key]: value } : current);
+    setDirtySection(section);
+    setMessage("");
+    setStatus("ready");
+  }
 
   async function saveSection() {
-    if (section === "revisions") return;
+    if (!draft || section === "revisions") return;
     setStatus("saving");
     setMessage("");
     try {
-      const payload = JSON.parse(editor);
       const nextDraft = await api<Draft>(`/api/trading/configuration/draft/${section}`, {
-        body: JSON.stringify({ payload }),
+        body: JSON.stringify({ payload: draft[section] }),
         method: "PUT",
       });
       setDraft(nextDraft);
-      setEditor(JSON.stringify(nextDraft[section], null, 2));
+      setDirtySection(null);
       setStatus("saved");
-      setMessage("Draft saved. Runtime behavior is unchanged until a revision is published.");
+      setMessage("Draft saved. Active and approved runs remain unchanged until you publish a release.");
     } catch (reason) {
       setStatus("error");
       setMessage(reason instanceof Error ? reason.message : String(reason));
@@ -150,17 +297,14 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   }
 
   async function publish() {
+    if (!draft) return;
     setStatus("saving");
     setMessage("");
     try {
       const canvas = canvasApprovalSnapshot();
       if (!canvas.ready) throw new Error("Configure at least one Canvas container before publishing.");
       const revision = await api<Revision>("/api/trading/configuration/publish", {
-        body: JSON.stringify({
-          canvas_profile: canvas.profile,
-          canvas_revision: canvas.revision,
-          label,
-        }),
+        body: JSON.stringify({ canvas_profile: canvas.profile, canvas_revision: canvas.revision, label }),
         method: "POST",
       });
       setApproved(revision);
@@ -168,7 +312,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       window.dispatchEvent(new CustomEvent("quant-trading-configuration-published"));
       setLabel("");
       setStatus("saved");
-      setMessage(`Revision ${revision.revision} is approved and is now the only configuration new Replay runs consume.`);
+      setMessage(`Release ${revision.revision} is approved. New Replay runs now pin this exact configuration.`);
     } catch (reason) {
       setStatus("error");
       setMessage(reason instanceof Error ? reason.message : String(reason));
@@ -187,6 +331,8 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         <RevisionBadge approved={approved} />
       </header>
 
+      <ConfigurationJourney active={section} draft={draft} />
+
       {message ? (
         <div className={`configuration-message ${status === "error" ? "error" : "success"}`}>
           {status === "error" ? <TriangleAlert size={17} /> : <CheckCircle2 size={17} />}
@@ -204,56 +350,446 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           onLabelChange={setLabel}
           onPublish={publish}
         />
-      ) : (
-        <section className="configuration-editor-card">
-          <header>
-            <div>
-              <strong>Draft {meta.title.toLowerCase()}</strong>
-              <span>Validated against the same domain contracts used by the trading runtime.</span>
-            </div>
-            <button className="button primary compact" disabled={!changed || status === "saving" || status === "loading"} onClick={saveSection} type="button">
-              <Save size={14} /> Save draft
+      ) : draft ? (
+        <>
+          {section === "strategy" ? <StrategyStudio section={draft.strategy} onChange={(value) => updateDraft("strategy", value)} /> : null}
+          {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
+          {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
+          {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
+          {section === "accounts" ? <AccountsEditor draft={draft} onChange={(value) => updateDraft("accounts", value)} /> : null}
+          <div className="configuration-save-bar">
+            <span>{dirtySection === section ? "Unsaved draft changes" : "Draft matches saved configuration"}</span>
+            <button className="button primary" disabled={dirtySection !== section || status === "saving"} onClick={saveSection} type="button">
+              <Save size={15} /> {status === "saving" ? "Saving…" : "Save draft"}
             </button>
-          </header>
-          <div className="configuration-editor-note">
-            <BadgeCheck size={16} />
-            <span>Editing this draft cannot alter an active Replay. Publish from Approved Revisions when all sections are ready.</span>
           </div>
-          <label>
-            <span>Structured configuration</span>
-            <textarea
-              aria-label={`${meta.title} structured configuration`}
-              disabled={status === "loading"}
-              onChange={(event) => setEditor(event.target.value)}
-              spellCheck={false}
-              value={editor}
-            />
-          </label>
+          <JsonInspector label={`${meta.title} generated JSON`} value={draft[section]} />
+        </>
+      ) : <ConfigurationLoading />}
+    </div>
+  );
+}
+
+function ConfigurationJourney({ active, draft }: { active: TradingConfigurationSection; draft: Draft | null }) {
+  const steps = [
+    { key: "strategy", label: "Strategy Profile", ready: Boolean(draft?.strategy.profiles.length) },
+    { key: "assignments", label: "Deployment", ready: Boolean(draft?.assignments.deployments.length) },
+    { key: "portfolio", label: "Capital mandates", ready: Boolean(draft?.portfolio.mandates.length) },
+    { key: "revisions", label: "Publish", ready: false },
+  ];
+  return (
+    <nav aria-label="Configuration journey" className="configuration-journey">
+      {steps.map((step, index) => (
+        <a aria-current={active === step.key ? "step" : undefined} data-ready={step.ready ? "true" : "false"} href={`#${pageForSection(step.key as TradingConfigurationSection)}`} key={step.key}>
+          <span>{step.ready ? <Check size={13} /> : index + 1}</span>
+          <strong>{step.label}</strong>
+          {index < steps.length - 1 ? <ChevronRight size={14} /> : null}
+        </a>
+      ))}
+    </nav>
+  );
+}
+
+function StrategyStudio({ onChange, section }: { onChange: (value: StrategySection) => void; section: StrategySection }) {
+  const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
+  const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
+  useEffect(() => {
+    if (!section.profiles.some((row) => row.profile_id === selectedId)) setSelectedId(section.profiles[0]?.profile_id ?? "");
+  }, [section.profiles, selectedId]);
+  if (!selected) return <EmptyState title="No Strategy Profiles" detail="Create a profile from a registered strategy definition." />;
+
+  function replaceProfile(next: StrategyProfile) {
+    onChange({ ...section, profiles: section.profiles.map((row) => row.profile_id === selected.profile_id ? next : row) });
+  }
+
+  function cloneProfile() {
+    const id = uniqueId(`${selected.profile_id}-copy`, section.profiles.map((row) => row.profile_id));
+    const next = { ...deepClone(selected), profile_id: id, name: `${selected.name} copy`, origin: "user" as const, revision: 1 };
+    onChange({ ...section, profiles: [...section.profiles, next] });
+    setSelectedId(id);
+  }
+
+  function createProfile() {
+    const source = section.profiles[0];
+    const id = uniqueId("new-strategy-profile", section.profiles.map((row) => row.profile_id));
+    const next = { ...deepClone(source), profile_id: id, name: "New Strategy Profile", description: "Describe when and how this configured strategy should trade.", origin: "user" as const, revision: 1 };
+    onChange({ ...section, profiles: [...section.profiles, next] });
+    setSelectedId(id);
+  }
+
+  function removeProfile() {
+    if (section.profiles.length <= 1) return;
+    const remaining = section.profiles.filter((row) => row.profile_id !== selected.profile_id);
+    onChange({ ...section, profiles: remaining });
+    setSelectedId(remaining[0]?.profile_id ?? "");
+  }
+
+  const advanced = flattenPrimitives(selected.parameters).filter((row) => !FREQUENT_PARAMETERS.some((fieldDefinition) => fieldDefinition.path === row.path));
+  return (
+    <div className="configuration-workbench">
+      <aside className="configuration-library">
+        <header>
+          <div><span>Strategy Profiles</span><strong>{section.profiles.length} configured</strong></div>
+          <button aria-label="Create Strategy Profile" onClick={createProfile} title="Create Strategy Profile" type="button"><Plus size={15} /></button>
+        </header>
+        <p>System profiles are safe starting points. They remain editable and can be cloned without changing the code definition.</p>
+        <div>
+          {section.profiles.map((profile) => (
+            <button className={profile.profile_id === selected.profile_id ? "active" : ""} key={profile.profile_id} onClick={() => setSelectedId(profile.profile_id)} type="button">
+              <span><strong>{profile.name}</strong><small>{profile.origin} · v{profile.revision}</small></span>
+              <ChevronRight size={14} />
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <main className="configuration-detail">
+        <section className="configuration-detail-heading">
+          <div>
+            <span>Configured Strategy Profile</span>
+            <input aria-label="Strategy Profile name" onChange={(event) => replaceProfile({ ...selected, name: event.target.value })} value={selected.name} />
+            <textarea aria-label="Strategy Profile summary" onChange={(event) => replaceProfile({ ...selected, description: event.target.value })} rows={2} value={selected.description} />
+          </div>
+          <div className="configuration-heading-actions">
+            <button className="button compact" onClick={cloneProfile} type="button"><Clipboard size={14} /> Clone</button>
+            <button aria-label="Delete Strategy Profile" className="button compact danger" disabled={section.profiles.length <= 1} onClick={removeProfile} title="Delete profile" type="button"><Trash2 size={14} /></button>
+          </div>
         </section>
-      )}
+
+        <GuideCallout icon={<Sparkles size={17} />} title="Tune behavior first">
+          These values are most likely to change between experiments. Portfolio limits and OMS mechanics are configured separately so a strategy cannot silently expand account risk or broker authority.
+        </GuideCallout>
+
+        <ConfigGroup summary="Entry, sizing, profit-taking, and re-entry controls used most often during strategy iteration." title="Trading behavior">
+          <div className="configuration-field-grid">
+            {FREQUENT_PARAMETERS.map((definition) => (
+              <ParameterField
+                definition={definition}
+                key={definition.path}
+                value={getPath(selected.parameters, definition.path) as Primitive}
+                onChange={(value) => replaceProfile({ ...selected, parameters: setPath(selected.parameters, definition.path, value) })}
+              />
+            ))}
+          </div>
+        </ConfigGroup>
+
+        <ConfigGroup summary="Attach code-defined functions, then configure their system defaults for this Strategy Profile." title="Capabilities">
+          <div className="capability-grid">
+            {section.capability_catalog.map((definition) => {
+              const binding = selected.capabilities.find((row) => row.capability_id === definition.capability_id);
+              if (!binding) return null;
+              return (
+                <article className="capability-card" data-enabled={binding.enabled ? "true" : "false"} key={definition.capability_id}>
+                  <header>
+                    <div><span>{definition.category.replaceAll("_", " ")}</span><strong>{definition.name}</strong></div>
+                    <label className="configuration-switch"><input checked={binding.enabled} onChange={(event) => replaceProfile(updateCapability(selected, binding.capability_id, { ...binding, enabled: event.target.checked }))} type="checkbox" /><span /></label>
+                  </header>
+                  <p>{definition.summary}</p>
+                  {definition.order_entry_action ? <em><BadgeCheck size={12} /> Appears in Order Entry</em> : null}
+                  {binding.enabled ? (
+                    <div className="capability-fields">
+                      {definition.parameters.map((parameter) => (
+                        <CapabilityField
+                          definition={parameter}
+                          key={parameter.key}
+                          value={binding.settings[parameter.key]}
+                          onChange={(value) => replaceProfile(updateCapability(selected, binding.capability_id, {
+                            ...binding,
+                            settings: { ...binding.settings, [parameter.key]: value },
+                          }))}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+        </ConfigGroup>
+
+        <details className="configuration-advanced">
+          <summary><span><strong>Advanced strategy parameters</strong><small>Less frequently changed signal, protection, and implementation inputs</small></span><ChevronRight size={15} /></summary>
+          <div className="configuration-field-grid">
+            {advanced.map((item) => (
+              <ParameterField
+                definition={field(item.path, readableLabel(item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))}
+                key={item.path}
+                value={item.value}
+                onChange={(value) => replaceProfile({ ...selected, parameters: setPath(selected.parameters, item.path, value) })}
+              />
+            ))}
+          </div>
+        </details>
+      </main>
+    </div>
+  );
+}
+
+function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value: AssignmentSection) => void }) {
+  const section = draft.assignments;
+  const [selectedId, setSelectedId] = useState(section.deployments[0]?.deployment_id ?? "");
+  const selected = section.deployments.find((row) => row.deployment_id === selectedId) ?? section.deployments[0];
+  if (!selected) return <EmptyState title="No deployments" detail="Create a deployment to connect a Strategy Profile to accounts, Portfolio mandates, and OMS." />;
+  const linkedMandates = draft.portfolio.mandates.filter((row) => row.deployment_id === selected.deployment_id);
+  const readiness = [
+    { label: "Strategy Profile selected", ready: draft.strategy.profiles.some((row) => row.profile_id === selected.profile_id) },
+    { label: "OMS profile selected", ready: draft.oms.profiles.some((row) => row.profile_id === selected.oms_profile_id) },
+    { label: "Account mandate configured", ready: linkedMandates.length > 0 },
+    { label: "Replay enabled", ready: selected.modes.includes("replay") },
+  ];
+
+  function replace(next: Deployment) {
+    onChange({ deployments: section.deployments.map((row) => row.deployment_id === selected.deployment_id ? next : row) });
+  }
+
+  function createDeployment() {
+    const id = uniqueId("new-deployment", section.deployments.map((row) => row.deployment_id));
+    const next: Deployment = {
+      deployment_id: id,
+      name: "New deployment",
+      description: "Connect this deployment to account mandates before publishing.",
+      profile_id: draft.strategy.profiles[0]?.profile_id ?? "",
+      oms_profile_id: draft.oms.profiles[0]?.profile_id ?? "",
+      mandate_ids: [],
+      enabled: true,
+      modes: ["replay"],
+      runtime_assignments: [],
+    };
+    onChange({ deployments: [...section.deployments, next] });
+    setSelectedId(id);
+  }
+
+  return (
+    <div className="configuration-workbench">
+      <aside className="configuration-library">
+        <header><div><span>Deployments</span><strong>{section.deployments.length} configured</strong></div><button onClick={createDeployment} title="Create deployment" type="button"><Plus size={15} /></button></header>
+        <p>A deployment is the usable unit selected by Replay, Backtest, Live, or Order Entry.</p>
+        <div>{section.deployments.map((row) => <button className={row.deployment_id === selected.deployment_id ? "active" : ""} key={row.deployment_id} onClick={() => setSelectedId(row.deployment_id)} type="button"><span><strong>{row.name}</strong><small>{row.enabled ? "Enabled" : "Disabled"} · {row.modes.join(", ")}</small></span><ChevronRight size={14} /></button>)}</div>
+      </aside>
+      <main className="configuration-detail">
+        <section className="configuration-detail-heading">
+          <div><span>Usable Strategy Deployment</span><input aria-label="Deployment name" onChange={(event) => replace({ ...selected, name: event.target.value })} value={selected.name} /><textarea aria-label="Deployment summary" onChange={(event) => replace({ ...selected, description: event.target.value })} rows={2} value={selected.description} /></div>
+          <label className="configuration-enabled"><input checked={selected.enabled} onChange={(event) => replace({ ...selected, enabled: event.target.checked })} type="checkbox" /> Enabled</label>
+        </section>
+        <GuideCallout icon={<Network size={17} />} title="Profile → Deployment → Runtime assignment">
+          The profile defines decisions. This deployment selects shared policies and accounts. A runtime assignment later binds the deployment to a ticker without redefining its strategy.
+        </GuideCallout>
+        <div className="configuration-two-column">
+          <ConfigGroup summary="Select the configured behavior and shared execution profile." title="1. Strategy and execution">
+            <div className="configuration-field-grid one-column">
+              <SelectField help="Published Strategy Profile whose decision behavior this deployment runs." label="Strategy Profile" onChange={(value) => replace({ ...selected, profile_id: value })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={selected.profile_id} />
+              <SelectField help="Reusable shared OMS and protection profile used to execute approved requests." label="OMS profile" onChange={(value) => replace({ ...selected, oms_profile_id: value })} options={draft.oms.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={selected.oms_profile_id} />
+            </div>
+          </ConfigGroup>
+          <ConfigGroup summary="A release cannot run until its references and account mandates are complete." title="Readiness">
+            <div className="configuration-readiness">{readiness.map((item) => <span data-ready={item.ready ? "true" : "false"} key={item.label}>{item.ready ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />}{item.label}</span>)}</div>
+          </ConfigGroup>
+        </div>
+        <ConfigGroup summary="Choose where this deployment may run. Live and Paper still require their independent operational gates." title="2. Runtime modes">
+          <ModeSelector modes={selected.modes} onChange={(modes) => replace({ ...selected, modes })} />
+        </ConfigGroup>
+        <ConfigGroup summary="Capital authority is configured on Portfolio & Risk. This page shows the linked account mandates." title="3. Account mandates">
+          <div className="deployment-mandates">
+            {linkedMandates.map((mandate) => <article key={mandate.mandate_id}><strong>{accountName(draft.accounts, mandate.account_key)}</strong><span>{percent(mandate.maximum_cash_fraction)} cash ceiling · {mandate.autonomy} · priority {mandate.priority}</span></article>)}
+            {!linkedMandates.length ? <EmptyState title="No account mandate" detail="Open Portfolio & Risk and add an account mandate for this deployment." /> : null}
+          </div>
+          <a className="configuration-inline-link" href="#portfolio-configuration">Configure account mandates <ChevronRight size={13} /></a>
+        </ConfigGroup>
+      </main>
+    </div>
+  );
+}
+
+function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: PortfolioSection) => void }) {
+  const section = draft.portfolio;
+  const [selectedPolicyId, setSelectedPolicyId] = useState(String(section.policies[0]?.policy_id ?? ""));
+  const policyIndex = Math.max(0, section.policies.findIndex((row) => String(row.policy_id) === selectedPolicyId));
+  const policy = section.policies[policyIndex];
+
+  function updatePolicy(key: string, value: Primitive) {
+    const policies = section.policies.map((row, index) => index === policyIndex ? { ...row, [key]: value } : row);
+    onChange({ ...section, policies });
+  }
+
+  function addMandate() {
+    const deployment = draft.assignments.deployments[0];
+    const account = draft.accounts.bindings[0];
+    if (!deployment || !account) return;
+    const mandateId = uniqueId(`${deployment.deployment_id}-${account.account_key}`, section.mandates.map((row) => row.mandate_id));
+    const mandate: Mandate = {
+      mandate_id: mandateId,
+      deployment_id: deployment.deployment_id,
+      account_key: account.account_key,
+      enabled: true,
+      maximum_cash_fraction: 0.3,
+      maximum_planned_risk_fraction: 0.01,
+      maximum_positions: 10,
+      priority: 50,
+      autonomy: "confirm",
+      allow_replacement: false,
+      minimum_replacement_improvement_pct: 20,
+    };
+    onChange({ ...section, mandates: [...section.mandates, mandate] });
+  }
+
+  function replaceMandate(id: string, next: Mandate) {
+    const mandates = section.mandates.map((row) => row.mandate_id === id ? next : row);
+    onChange({ ...section, mandates });
+  }
+
+  return (
+    <div className="configuration-stack">
+      <GuideCallout icon={<BriefcaseBusiness size={17} />} title="Strategy requests are relative; Portfolio makes them account-specific">
+        A strategy may request an aggressive allocation, but the mandate and current account state determine final quantity. Replacement is a separately governed, auditable proposal—not an implicit strategy side effect.
+      </GuideCallout>
+      <ConfigGroup summary="Stable account-level limits apply to every strategy using the account." title="Account safety policy">
+        <div className="configuration-toolbar">
+          <SelectField help="Policy revision being edited." label="Policy" onChange={setSelectedPolicyId} options={section.policies.map((row) => ({ label: String(row.policy_id), value: String(row.policy_id) }))} value={selectedPolicyId} />
+        </div>
+        {policy ? <div className="configuration-field-grid">
+          {[
+            field("eligible_equity_fraction", "Eligible equity", "Fraction of account equity available to all trading mandates.", "number", undefined, "fraction", 0.05),
+            field("minimum_cash_reserve", "Cash reserve", "Cash that Portfolio must leave unused.", "number", undefined, "currency", 100),
+            field("maximum_buying_power_utilization", "Buying power use", "Maximum fraction of broker buying power Portfolio may consume.", "number", undefined, "fraction", 0.05),
+            field("maximum_position_fraction", "Position ceiling", "Maximum account equity attributable to one position.", "number", undefined, "fraction", 0.01),
+            field("maximum_open_risk_fraction", "Open risk ceiling", "Maximum aggregate planned open risk.", "number", undefined, "fraction", 0.005),
+            field("maximum_open_positions", "Open positions", "Maximum simultaneous positions for this account policy.", "number", undefined, "positions", 1),
+            field("maximum_daily_loss", "Daily loss limit", "New entries stop when the loss limit is reached.", "number", undefined, "currency", 100),
+            field("maximum_drawdown", "Drawdown limit", "Hard peak-to-trough account control.", "number", undefined, "currency", 100),
+          ].map((definition) => <ParameterField definition={definition} key={definition.path} value={policy[definition.path] as Primitive} onChange={(value) => updatePolicy(definition.path, value)} />)}
+        </div> : null}
+      </ConfigGroup>
+      <ConfigGroup
+        action={<button className="button compact" onClick={addMandate} type="button"><Plus size={14} /> Add mandate</button>}
+        summary="Many-to-many account rules: the same deployment may receive different capital, risk, priority, and autonomy on each account."
+        title="Strategy-account mandates"
+      >
+        <div className="mandate-grid">
+          {section.mandates.map((mandate) => (
+            <article className="mandate-card" key={mandate.mandate_id}>
+              <header>
+                <div><strong>{deploymentName(draft.assignments, mandate.deployment_id)}</strong><span>{accountName(draft.accounts, mandate.account_key)}</span></div>
+                <button aria-label="Delete mandate" onClick={() => onChange({ ...section, mandates: section.mandates.filter((row) => row.mandate_id !== mandate.mandate_id) })} title="Delete mandate" type="button"><Trash2 size={14} /></button>
+              </header>
+              <div className="configuration-field-grid one-column">
+                <SelectField help="Deployment allowed to request capital." label="Deployment" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, deployment_id: value })} options={draft.assignments.deployments.map((row) => ({ label: row.name, value: row.deployment_id }))} value={mandate.deployment_id} />
+                <SelectField help="Account whose cash, positions, and risk state govern the request." label="Account" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, account_key: value })} options={draft.accounts.bindings.map((row) => ({ label: row.name, value: row.account_key }))} value={mandate.account_key} />
+                <NumberField help="Maximum account cash this strategy deployment may use." label="Maximum cash" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, maximum_cash_fraction: value })} step={0.05} unit="fraction" value={mandate.maximum_cash_fraction} />
+                <NumberField help="Maximum planned loss admitted for one request under this mandate." label="Planned risk" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, maximum_planned_risk_fraction: value })} step={0.001} unit="fraction" value={mandate.maximum_planned_risk_fraction} />
+                <NumberField help="Higher values are considered first when capital requests compete." label="Priority" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, priority: value })} step={1} unit="0–100" value={mandate.priority} />
+                <SelectField help="Whether actions execute automatically or require operator involvement." label="Autonomy" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, autonomy: value as Mandate["autonomy"] })} options={["manual", "confirm", "automatic"].map((value) => ({ label: readableLabel(value), value }))} value={mandate.autonomy} />
+                <BooleanField help="Allows Portfolio to propose reductions or exits to fund a stronger request." label="Allow replacement proposals" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, allow_replacement: value })} value={mandate.allow_replacement} />
+                {mandate.allow_replacement ? <NumberField help="Required improvement over an existing position before replacement can be proposed." label="Minimum improvement" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, minimum_replacement_improvement_pct: value })} step={1} unit="%" value={mandate.minimum_replacement_improvement_pct} /> : null}
+              </div>
+            </article>
+          ))}
+        </div>
+      </ConfigGroup>
+    </div>
+  );
+}
+
+function OmsEditor({ onChange, section }: { onChange: (value: OmsSection) => void; section: OmsSection }) {
+  const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
+  const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
+  if (!selected) return <EmptyState title="No OMS profile" detail="Create a shared execution and protection profile." />;
+  function replace(next: OmsProfile) {
+    onChange({ profiles: section.profiles.map((row) => row.profile_id === selected.profile_id ? next : row) });
+  }
+  function clone() {
+    const id = uniqueId(`${selected.profile_id}-copy`, section.profiles.map((row) => row.profile_id));
+    const next = { ...deepClone(selected), profile_id: id, name: `${selected.name} copy`, origin: "user" as const, revision: 1 };
+    onChange({ profiles: [...section.profiles, next] });
+    setSelectedId(id);
+  }
+  return (
+    <div className="configuration-workbench">
+      <aside className="configuration-library">
+        <header><div><span>OMS profiles</span><strong>{section.profiles.length} configured</strong></div><button onClick={clone} title="Clone OMS profile" type="button"><Plus size={15} /></button></header>
+        <p>Reusable profiles keep execution mechanics consistent across strategies and modes.</p>
+        <div>{section.profiles.map((row) => <button className={row.profile_id === selected.profile_id ? "active" : ""} key={row.profile_id} onClick={() => setSelectedId(row.profile_id)} type="button"><span><strong>{row.name}</strong><small>{row.origin} · v{row.revision}</small></span><ChevronRight size={14} /></button>)}</div>
+      </aside>
+      <main className="configuration-detail">
+        <section className="configuration-detail-heading"><div><span>Reusable OMS profile</span><input aria-label="OMS profile name" onChange={(event) => replace({ ...selected, name: event.target.value })} value={selected.name} /><textarea aria-label="OMS profile summary" onChange={(event) => replace({ ...selected, description: event.target.value })} rows={2} value={selected.description} /></div><button className="button compact" onClick={clone} type="button"><Clipboard size={14} /> Clone</button></section>
+        <GuideCallout icon={<ShieldCheck size={17} />} title="Execution mechanics are shared">
+          Strategy decides what it wants and Portfolio approves account quantity. OMS decides how to work the order, reconcile fills, and maintain broker-held protection without expanding the approved envelope.
+        </GuideCallout>
+        <ConfigGroup summary="Common execution choices used for new entries and exits." title="Execution behavior">
+          <div className="configuration-field-grid">
+            <SelectField help="Default urgency for entries. Strategy capabilities may select only an allowed profile." label="Entry urgency" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, entry_urgency: value } })} options={urgencyOptions()} value={selected.settings.entry_urgency} />
+            <SelectField help="Default urgency for risk-reducing and final exits." label="Exit urgency" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, exit_urgency: value } })} options={urgencyOptions()} value={selected.settings.exit_urgency} />
+            <NumberField help="Permitted limit-price offset from current execution evidence." label="Limit offset" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, limit_offset_bps: value } })} step={0.5} unit="bps" value={selected.settings.limit_offset_bps} />
+            <NumberField help="Minimum price increment used by the planner." label="Tick size" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, tick_size: value } })} step={0.01} unit="price" value={selected.settings.tick_size} />
+            <SelectField help="Broker order lifetime." label="Time in force" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, time_in_force: value } })} options={["DAY", "GTC", "IOC", "OPG"].map((value) => ({ label: value, value }))} value={selected.settings.time_in_force} />
+            <BooleanField help="Permit execution outside the regular session when account policy also allows it." label="Outside regular hours" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, outside_rth: value } })} value={selected.settings.outside_rth} />
+          </div>
+        </ConfigGroup>
+        <ConfigGroup summary="Stops and trails are held and reconciled by the shared OMS." title="Protection">
+          <div className="configuration-field-grid">
+            <SelectField help="Choose structural, volatility, or stricter hybrid invalidation." label="Stop method" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, protection: { ...selected.settings.protection, stop_method: value } } })} options={["structure", "volatility", "hybrid"].map((value) => ({ label: readableLabel(value), value }))} value={selected.settings.protection.stop_method} />
+            <NumberField help="Distance beyond causal structure before invalidation." label="Structure buffer" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, protection: { ...selected.settings.protection, structure_buffer_bps: value } } })} step={0.5} unit="bps" value={selected.settings.protection.structure_buffer_bps} />
+            <NumberField help="Volatility distance used when structure alone is insufficient." label="Volatility multiple" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, protection: { ...selected.settings.protection, volatility_multiple: value } } })} step={0.05} unit="×" value={selected.settings.protection.volatility_multiple} />
+            <NumberField help="Maximum strategy risk percentage used when constructing protection." label="Maximum risk" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, protection: { ...selected.settings.protection, maximum_risk_pct: value } } })} step={0.1} unit="%" value={selected.settings.protection.maximum_risk_pct} />
+            <BooleanField help="Allow protection to tighten as favorable evidence develops." label="Trailing enabled" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, protection: { ...selected.settings.protection, trailing_enabled: value } } })} value={selected.settings.protection.trailing_enabled} />
+          </div>
+        </ConfigGroup>
+      </main>
+    </div>
+  );
+}
+
+function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: AccountSection) => void }) {
+  const section = draft.accounts;
+  function replace(index: number, next: AccountBinding) {
+    onChange({ bindings: section.bindings.map((row, rowIndex) => rowIndex === index ? next : row) });
+  }
+  function addAccount() {
+    const accountKey = uniqueId("account", section.bindings.map((row) => row.account_key));
+    onChange({ bindings: [...section.bindings, {
+      account_key: accountKey,
+      name: "New account",
+      source_account_id: "replay",
+      account_class: "simulated",
+      base_currency: "USD",
+      session_key: "replay",
+      portfolio_policy_id: String(draft.portfolio.policies[0]?.policy_id ?? "default"),
+      enabled: true,
+      modes: ["replay"],
+    }] });
+  }
+  return (
+    <div className="configuration-stack">
+      <GuideCallout icon={<Boxes size={17} />} title="One stable key, mode-specific session binding">
+        Deployments and Portfolio mandates reference the stable account key. Replay uses simulated state; Paper and Live later bind the same policy contract to authenticated broker accounts.
+      </GuideCallout>
+      <ConfigGroup action={<button className="button compact" onClick={addAccount} type="button"><Plus size={14} /> Add account</button>} summary="Account settings change less frequently than strategy behavior and remain reusable across deployments." title="Configured accounts">
+        <div className="account-config-grid">
+          {section.bindings.map((account, index) => (
+            <article className="account-config-card" key={account.account_key}>
+              <header><div><strong>{account.name}</strong><span>{account.account_key}</span></div><label className="configuration-switch"><input checked={account.enabled} onChange={(event) => replace(index, { ...account, enabled: event.target.checked })} type="checkbox" /><span /></label></header>
+              <div className="configuration-field-grid one-column">
+                <TextField help="Human-readable name shown throughout configuration and runtime evidence." label="Account name" onChange={(value) => replace(index, { ...account, name: value })} value={account.name} />
+                <TextField help="Stable application identity. Existing mandates refer to this value." label="Account key" onChange={(value) => replace(index, { ...account, account_key: value })} value={account.account_key} />
+                <TextField help="IBKR account ID or simulated runtime account identity." label="Source account" onChange={(value) => replace(index, { ...account, source_account_id: value })} value={account.source_account_id} />
+                <SelectField help="Determines broker capability and regulatory constraints." label="Account class" onChange={(value) => replace(index, { ...account, account_class: value })} options={["simulated", "cash", "margin", "registered"].map((value) => ({ label: readableLabel(value), value }))} value={account.account_class} />
+                <SelectField help="Reusable account-level capital and risk policy." label="Portfolio policy" onChange={(value) => replace(index, { ...account, portfolio_policy_id: value })} options={draft.portfolio.policies.map((row) => ({ label: String(row.policy_id), value: String(row.policy_id) }))} value={account.portfolio_policy_id} />
+                <TextField help="Gateway or simulated session identity used to locate runtime state." label="Session key" onChange={(value) => replace(index, { ...account, session_key: value })} value={account.session_key} />
+                <TextField help="Currency used for Portfolio limits and account summaries." label="Base currency" onChange={(value) => replace(index, { ...account, base_currency: value.toUpperCase() })} value={account.base_currency} />
+              </div>
+              <ModeSelector modes={account.modes} onChange={(modes) => replace(index, { ...account, modes })} />
+            </article>
+          ))}
+        </div>
+      </ConfigGroup>
     </div>
   );
 }
 
 function RevisionBadge({ approved }: { approved: Revision | null }) {
-  return (
-    <div className="configuration-revision-badge" data-approved={approved ? "true" : "false"}>
-      <small>Runtime authority</small>
-      <strong>{approved ? `Revision ${approved.revision}` : "Not published"}</strong>
-      <span>{approved ? approved.label : "Replay is gated"}</span>
-    </div>
-  );
+  return <div className="configuration-revision-badge" data-approved={approved ? "true" : "false"}><small>Runtime authority</small><strong>{approved ? `Release ${approved.revision}` : "Not published"}</strong><span>{approved ? approved.label : "Replay is gated"}</span></div>;
 }
 
-function RevisionPublisher({
-  approved,
-  draft,
-  label,
-  onLabelChange,
-  onPublish,
-  publishing,
-  revisions,
-}: {
+function RevisionPublisher({ approved, draft, label, onLabelChange, onPublish, publishing, revisions }: {
   approved: Revision | null;
   draft: Draft | null;
   label: string;
@@ -263,43 +799,213 @@ function RevisionPublisher({
   revisions: Revision[];
 }) {
   const canvas = useMemo(canvasApprovalSnapshot, [approved, draft]);
+  const checks = draft ? releaseReadiness(draft) : [];
+  const configurationReady = checks.every((check) => check.ready);
   return (
     <div className="configuration-revision-layout">
       <section className="configuration-publish-card">
-        <header>
-          <div><span>Completion gate</span><strong>Publish the application configuration</strong></div>
-          <Send size={18} />
-        </header>
-        <p>Publishing snapshots Strategies, Assignments, Portfolio & Risk, OMS & Protection, Accounts & Sessions, and the complete Canvas registry into one immutable revision.</p>
+        <header><div><span>Completion gate</span><strong>Publish the application release</strong></div><Send size={18} /></header>
+        <p>A release freezes every referenced Strategy Profile, capability setting, deployment, mandate, policy, OMS profile, account binding, and Canvas. Active runs never change underneath you.</p>
         <div className="configuration-publish-proof">
-          {["strategy", "assignments", "portfolio", "oms", "accounts"].map((item) => (
-            <span key={item}><CheckCircle2 size={14} /> {item.replaceAll("_", " ")}</span>
-          ))}
+          {checks.map((check) => <span data-ready={check.ready ? "true" : "false"} key={check.label}>{check.ready ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />} {check.label} · {check.detail}</span>)}
           <span data-ready={canvas.ready ? "true" : "false"}><CheckCircle2 size={14} /> Canvas · {canvas.containerCount} containers</span>
         </div>
-        <label>
-          <span>Approval label</span>
-          <input onChange={(event) => onLabelChange(event.target.value)} placeholder="Replay acceptance candidate" value={label} />
-        </label>
-        <button className="button primary" disabled={!draft || !canvas.ready || !label.trim() || publishing} onClick={onPublish} type="button">
-          <Send size={15} /> {publishing ? "Publishing…" : "Publish revision"}
-        </button>
+        <label><span>Release label <FieldHelp text="Use a short operational label that explains what this release is intended to validate." /></span><input onChange={(event) => onLabelChange(event.target.value)} placeholder="Replay strategy-studio acceptance" value={label} /></label>
+        <button className="button primary" disabled={!draft || !configurationReady || !canvas.ready || !label.trim() || publishing} onClick={onPublish} type="button"><Send size={15} /> {publishing ? "Publishing…" : "Publish release"}</button>
       </section>
-
       <section className="configuration-history-card">
-        <header><span>Immutable history</span><strong>{revisions.length} approved revision{revisions.length === 1 ? "" : "s"}</strong></header>
-        <div>
-          {revisions.map((revision) => (
-            <article data-current={revision.revision_id === approved?.revision_id ? "true" : "false"} key={revision.revision_id}>
-              <span><strong>r{revision.revision} · {revision.label}</strong><small>{new Date(revision.approved_at).toLocaleString()}</small></span>
-              <code>{revision.content_hash.slice(0, 12)}</code>
-            </article>
-          ))}
-          {!revisions.length ? <div className="configuration-empty-history">No runtime revision has been approved. Replay remains correctly blocked.</div> : null}
-        </div>
+        <header><span>Immutable history</span><strong>{revisions.length} approved release{revisions.length === 1 ? "" : "s"}</strong></header>
+        <div>{revisions.map((revision) => <article data-current={revision.revision_id === approved?.revision_id ? "true" : "false"} key={revision.revision_id}><span><strong>r{revision.revision} · {revision.label}</strong><small>{new Date(revision.approved_at).toLocaleString()}</small></span><code>{revision.content_hash.slice(0, 12)}</code></article>)}{!revisions.length ? <div className="configuration-empty-history">No release has been approved. Replay remains correctly blocked.</div> : null}</div>
       </section>
+      {draft ? <JsonInspector label="Complete generated release JSON" value={draft} /> : null}
     </div>
   );
+}
+
+function releaseReadiness(draft: Draft) {
+  const profileIds = new Set(draft.strategy.profiles.map((row) => row.profile_id));
+  const omsIds = new Set(draft.oms.profiles.map((row) => row.profile_id));
+  const accountKeys = new Set(draft.accounts.bindings.map((row) => row.account_key));
+  const deployments = draft.assignments.deployments;
+  const deploymentsReady = deployments.length > 0 && deployments.every((deployment) => (
+    profileIds.has(deployment.profile_id)
+    && omsIds.has(deployment.oms_profile_id)
+    && draft.portfolio.mandates.some((mandate) => mandate.enabled && mandate.deployment_id === deployment.deployment_id)
+  ));
+  const mandatesReady = draft.portfolio.mandates.length > 0 && draft.portfolio.mandates.every((mandate) => (
+    deployments.some((deployment) => deployment.deployment_id === mandate.deployment_id)
+    && accountKeys.has(mandate.account_key)
+  ));
+  const replayReady = deployments.some((deployment) => deployment.enabled && deployment.modes.includes("replay"));
+  return [
+    { detail: String(draft.strategy.profiles.length), label: "Strategy Profiles", ready: draft.strategy.profiles.length > 0 },
+    { detail: deploymentsReady ? `${deployments.length} ready` : "needs mandate or profile", label: "Deployments", ready: deploymentsReady },
+    { detail: String(draft.portfolio.mandates.length), label: "Account mandates", ready: mandatesReady },
+    { detail: String(draft.oms.profiles.length), label: "OMS profiles", ready: draft.oms.profiles.length > 0 },
+    { detail: String(draft.accounts.bindings.length), label: "Accounts", ready: draft.accounts.bindings.length > 0 },
+    { detail: replayReady ? "enabled" : "required", label: "Replay mode", ready: replayReady },
+  ];
+}
+
+function ConfigGroup({ action, children, summary, title }: { action?: ReactNode; children: ReactNode; summary: string; title: string }) {
+  return <section className="configuration-group"><header><div><strong>{title}</strong><p>{summary}</p></div>{action}</header><div className="configuration-group-body">{children}</div></section>;
+}
+
+function GuideCallout({ children, icon, title }: { children: ReactNode; icon: ReactNode; title: string }) {
+  return <aside className="configuration-guide">{icon}<div><strong>{title}</strong><p>{children}</p></div></aside>;
+}
+
+function FieldHelp({ text }: { text: string }) {
+  return (
+    <details className="configuration-help">
+      <summary aria-label={`Help: ${text}`}><CircleHelp size={14} /></summary>
+      <span role="tooltip">{text}</span>
+    </details>
+  );
+}
+
+type FieldDefinition = {
+  choices?: readonly string[];
+  help: string;
+  kind: "boolean" | "choice" | "number" | "text";
+  label: string;
+  path: string;
+  step?: number;
+  unit?: string;
+};
+
+function ParameterField({ definition, onChange, value }: { definition: FieldDefinition; onChange: (value: Primitive) => void; value: Primitive }) {
+  if (definition.kind === "boolean") return <BooleanField help={definition.help} label={definition.label} onChange={onChange} value={Boolean(value)} />;
+  if (definition.kind === "choice") return <SelectField help={definition.help} label={definition.label} onChange={onChange} options={(definition.choices ?? []).map((item) => ({ label: readableLabel(item), value: item }))} value={String(value)} />;
+  if (definition.kind === "number") return <NumberField help={definition.help} label={definition.label} onChange={onChange} step={definition.step ?? 0.01} unit={definition.unit} value={Number(value)} />;
+  return <TextField help={definition.help} label={definition.label} onChange={onChange} value={String(value)} />;
+}
+
+function CapabilityField({ definition, onChange, value }: { definition: CapabilityParameter; onChange: (value: Primitive) => void; value: Primitive }) {
+  if (definition.type === "boolean") return <BooleanField help={definition.help} label={definition.label} onChange={onChange} value={Boolean(value)} />;
+  if (definition.type === "choice") return <SelectField help={definition.help} label={definition.label} onChange={onChange} options={(definition.options ?? []).map((item) => ({ label: readableLabel(item), value: item }))} value={String(value)} />;
+  return <NumberField help={definition.help} label={definition.label} maximum={definition.maximum} minimum={definition.minimum} onChange={onChange} step={definition.step ?? 0.01} unit={definition.display === "fraction" ? "fraction" : definition.unit} value={Number(value)} />;
+}
+
+function TextField({ help, label, onChange, value }: { help: string; label: string; onChange: (value: string) => void; value: string }) {
+  return <label className="configuration-field"><span>{label}<FieldHelp text={help} /></span><input onChange={(event) => onChange(event.target.value)} value={value} /></label>;
+}
+
+function NumberField({ help, label, maximum, minimum, onChange, step, unit, value }: { help: string; label: string; maximum?: number; minimum?: number; onChange: (value: number) => void; step: number; unit?: string; value: number }) {
+  const fraction = unit === "fraction";
+  return <label className="configuration-field"><span>{label}<FieldHelp text={help} /></span><div className="configuration-number"><input max={fraction ? 100 : maximum} min={fraction ? 0 : minimum} onChange={(event) => onChange(fraction ? Number(event.target.value) / 100 : Number(event.target.value))} step={fraction ? step * 100 : step} type="number" value={fraction ? round(value * 100) : value} />{unit ? <em>{fraction ? "%" : unit}</em> : null}</div></label>;
+}
+
+function SelectField({ help, label, onChange, options, value }: { help: string; label: string; onChange: (value: string) => void; options: Array<{ label: string; value: string }>; value: string }) {
+  return <label className="configuration-field"><span>{label}<FieldHelp text={help} /></span><select onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
+}
+
+function BooleanField({ help, label, onChange, value }: { help: string; label: string; onChange: (value: boolean) => void; value: boolean }) {
+  return <label className="configuration-field configuration-boolean"><span>{label}<FieldHelp text={help} /></span><input checked={value} onChange={(event) => onChange(event.target.checked)} type="checkbox" /></label>;
+}
+
+function ModeSelector({ modes, onChange }: { modes: RuntimeMode[]; onChange: (value: RuntimeMode[]) => void }) {
+  const options: Array<{ label: string; value: RuntimeMode }> = [
+    { label: "Replay", value: "replay" }, { label: "Backtest", value: "backtest" },
+    { label: "Backtest Debug", value: "backtest_debug" }, { label: "Paper", value: "paper" }, { label: "Live", value: "live" },
+  ];
+  return <div className="configuration-mode-selector">{options.map((option) => <label key={option.value}><input checked={modes.includes(option.value)} onChange={(event) => onChange(event.target.checked ? [...modes, option.value] : modes.filter((item) => item !== option.value))} type="checkbox" /><span>{option.label}</span></label>)}</div>;
+}
+
+function JsonInspector({ label, value }: { label: string; value: unknown }) {
+  const content = JSON.stringify(value, null, 2);
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    await navigator.clipboard.writeText(content);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1_500);
+  }
+  return <details className="configuration-json-inspector"><summary><span><strong>Advanced · Generated JSON</strong><small>Inspect the canonical payload without using JSON as the primary editor</small></span><ChevronRight size={15} /></summary><header><span>{label}</span><button onClick={() => void copy()} type="button"><Clipboard size={13} /> {copied ? "Copied" : "Copy"}</button></header><pre>{content}</pre></details>;
+}
+
+function EmptyState({ detail, title }: { detail: string; title: string }) {
+  return <div className="configuration-empty"><strong>{title}</strong><span>{detail}</span></div>;
+}
+
+function ConfigurationLoading() {
+  return <div className="configuration-empty"><strong>Loading configuration</strong><span>Reading the current draft and approved release…</span></div>;
+}
+
+function updateCapability(profile: StrategyProfile, id: string, binding: CapabilityBinding): StrategyProfile {
+  return { ...profile, capabilities: profile.capabilities.map((row) => row.capability_id === id ? binding : row) };
+}
+
+function field(path: string, label: string, help: string, kind: FieldDefinition["kind"], choices?: readonly string[], unit?: string, step?: number): FieldDefinition {
+  return { path, label, help, kind, choices, unit, step };
+}
+
+function flattenPrimitives(value: ParameterMap, prefix = ""): Array<{ path: string; value: Primitive }> {
+  return Object.entries(value).flatMap(([key, item]) => {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (item && typeof item === "object" && !Array.isArray(item)) return flattenPrimitives(item as ParameterMap, path);
+    if (["boolean", "number", "string"].includes(typeof item)) return [{ path, value: item as Primitive }];
+    return [];
+  });
+}
+
+function getPath(source: ParameterMap, path: string): unknown {
+  return path.split(".").reduce<unknown>((current, key) => current && typeof current === "object" ? (current as ParameterMap)[key] : undefined, source);
+}
+
+function setPath(source: ParameterMap, path: string, value: Primitive): ParameterMap {
+  const result = deepClone(source);
+  const parts = path.split(".");
+  let cursor = result;
+  parts.slice(0, -1).forEach((part) => {
+    cursor[part] = cursor[part] && typeof cursor[part] === "object" ? cursor[part] : {};
+    cursor = cursor[part] as ParameterMap;
+  });
+  cursor[parts.at(-1) ?? path] = value;
+  return result;
+}
+
+function deepClone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function controlFor(value: Primitive): FieldDefinition["kind"] {
+  return typeof value === "boolean" ? "boolean" : typeof value === "number" ? "number" : "text";
+}
+
+function choicesFor(path: string): readonly string[] | undefined {
+  if (path.endsWith(".method")) return ["structure", "volatility", "hybrid"];
+  if (path.endsWith(".trigger")) return ["acceleration_slowdown", "favorable_move_pct", "volatility_multiple"];
+  if (path.endsWith(".entry_urgency")) return ["patient", "regular", "urgent", "very_urgent"];
+  if (path.endsWith(".exit_urgency")) return ["urgent", "very_urgent"];
+  if (path.endsWith(".time_in_force")) return ["DAY", "GTC", "IOC", "OPG"];
+  return undefined;
+}
+
+function unitFor(path: string) {
+  if (path.endsWith("_bps")) return "bps";
+  if (path.endsWith("_pct")) return "%";
+  if (path.endsWith("_ms")) return "ms";
+  if (path.includes("quantity")) return "shares";
+  if (path.endsWith("_fraction")) return "fraction";
+  return undefined;
+}
+
+function stepFor(value: Primitive) { return typeof value === "number" && Number.isInteger(value) ? 1 : 0.01; }
+function helpForPath(path: string) { return `Advanced ${readableLabel(path)} setting. Changes are validated by the registered strategy implementation before publication.`; }
+function readableLabel(value: string) { return value.replaceAll(".", " · ").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+function uniqueId(base: string, existing: string[]) { let value = base; let index = 2; while (existing.includes(value)) value = `${base}-${index++}`; return value; }
+function round(value: number) { return Math.round(value * 10_000) / 10_000; }
+function percent(value: number) { return `${round(value * 100)}%`; }
+function accountName(section: AccountSection, id: string) { return section.bindings.find((row) => row.account_key === id)?.name ?? id; }
+function deploymentName(section: AssignmentSection, id: string) { return section.deployments.find((row) => row.deployment_id === id)?.name ?? id; }
+function urgencyOptions() { return ["patient", "regular", "urgent", "very_urgent"].map((value) => ({ label: readableLabel(value), value })); }
+function pageForSection(section: TradingConfigurationSection) {
+  if (section === "strategy") return "strategy-configuration";
+  if (section === "assignments") return "assignment-configuration";
+  if (section === "portfolio") return "portfolio-configuration";
+  if (section === "oms") return "oms-configuration";
+  if (section === "accounts") return "account-configuration";
+  return "revision-configuration";
 }
 
 function canvasApprovalSnapshot() {
@@ -312,21 +1018,11 @@ function canvasApprovalSnapshot() {
     hash ^= serialized.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return {
-    containerCount,
-    profile,
-    ready: containerCount > 0,
-    revision: `canvas-${(hash >>> 0).toString(16).padStart(8, "0")}`,
-  };
+  return { containerCount, profile, ready: containerCount > 0, revision: `canvas-${(hash >>> 0).toString(16).padStart(8, "0")}` };
 }
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
-      .join(",")}}`;
-  }
+  if (value && typeof value === "object") return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`;
   return JSON.stringify(value);
 }

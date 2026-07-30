@@ -11,6 +11,7 @@ from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.order_management import OrderGroupSnapshot, OrderManagementState
 from src.trading_runtime.portfolio import (
     PortfolioAccountProfile,
+    PortfolioAllocationLot,
     PortfolioControlMode,
     PortfolioDecisionStatus,
     PortfolioGroupPolicy,
@@ -21,7 +22,7 @@ from src.trading_runtime.portfolio_config import (
     configured_portfolio_profiles,
     configured_portfolio_profiles_for_runtime,
 )
-from src.trading_runtime.signals import StrategyIntent
+from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 
 
 NOW = datetime.now(timezone.utc)
@@ -279,6 +280,112 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.status, PortfolioDecisionStatus.REJECTED)
         self.assertIn("entries_paused", decision.reasons)
         self.assertIsNone(approved)
+
+    async def test_relative_capital_request_is_resolved_inside_account_mandate(self) -> None:
+        policy = PortfolioPolicy(
+            policy_id="relative",
+            maximum_position_fraction=1,
+            maximum_ticker_fraction=1,
+            maximum_planned_risk_fraction=1,
+            maximum_open_risk_fraction=1,
+        )
+        profile = PortfolioAccountProfile(
+            "primary",
+            "C1",
+            "replay",
+            "simulated",
+            policy,
+            strategy_allocations={"strategy-a": 0.3},
+        )
+        engine = self.engine([profile])
+        engine.synchronize_snapshot(
+            "C1",
+            summary=summary("C1", available=100_000),
+            ledger=ledger("C1", cash=100_000),
+            positions=[],
+        )
+        request = intent("relative", quantity=1)
+        request = StrategyIntent(
+            **{
+                **request.payload(),
+                "capital_request": CapitalRequest(mode="all_available"),
+            }
+        )
+
+        decision, approved = await engine.approve(request, account_id="C1")
+
+        self.assertEqual(decision.status, PortfolioDecisionStatus.RESIZED)
+        self.assertIsNotNone(approved)
+        self.assertEqual(approved.quantity, 300)
+
+    async def test_capacity_rejection_can_create_explicit_rebalance_proposal(self) -> None:
+        policy = PortfolioPolicy(
+            policy_id="replacement",
+            maximum_position_fraction=1,
+            maximum_ticker_fraction=1,
+            maximum_planned_risk_fraction=1,
+            maximum_open_risk_fraction=1,
+            maximum_open_positions=1,
+        )
+        profile = PortfolioAccountProfile(
+            "primary",
+            "C1",
+            "replay",
+            "simulated",
+            policy,
+            strategy_allocations={"strategy-a": 1.0},
+            strategy_mandates={
+                "strategy-a": {
+                    "allow_replacement": True,
+                    "minimum_replacement_improvement_pct": 20,
+                    "autonomy": "confirm",
+                }
+            },
+        )
+        engine = self.engine([profile])
+        engine.synchronize_snapshot(
+            "C1",
+            summary=summary("C1"),
+            ledger=ledger("C1"),
+            positions=[position("C1", "MSFT", 10)],
+        )
+        engine.allocations["C1:strategy-a:MSFT"] = PortfolioAllocationLot(
+            allocation_id="C1:strategy-a:MSFT",
+            account_key="primary",
+            account_id="C1",
+            strategy_id="strategy-a",
+            strategy_revision=2,
+            assignment_id="assignment-MSFT",
+            ticker="MSFT",
+            quantity=10,
+            average_price=100,
+            planned_risk=20,
+            realized_pnl=0,
+            source="test",
+            updated_at=NOW,
+        )
+        request = intent("replace", quantity=100)
+        request = StrategyIntent(
+            **{
+                **request.payload(),
+                "capital_request": CapitalRequest(
+                    mode="fixed_quantity",
+                    value=100,
+                    allow_replacement=True,
+                ),
+                "metadata": {
+                    **request.metadata,
+                    "opportunity_score": 0.5,
+                },
+            }
+        )
+
+        decision, approved = await engine.approve(request, account_id="C1")
+
+        self.assertEqual(decision.status, PortfolioDecisionStatus.REJECTED)
+        self.assertIsNone(approved)
+        self.assertIn("rebalance_proposed", decision.reasons)
+        self.assertEqual(engine.rebalance_proposals[-1].candidate_ticker, "MSFT")
 
 
 class PortfolioConfigurationTests(unittest.TestCase):

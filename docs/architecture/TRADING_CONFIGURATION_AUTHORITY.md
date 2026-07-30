@@ -3,75 +3,140 @@
 ## Invariant
 
 Configuration pages define and publish versioned application behavior.
-Replay, Backtest, Backtest Debug, Live, and Paper consume approved revisions
+Replay, Backtest, Backtest Debug, Live, and Paper consume approved releases
 and must never contain copied configuration or mode-specific implementations
 of the same rules.
 
-This is an application architecture rule, not a Replay convenience. A feature
-is incomplete if a strategy, account policy, portfolio limit, OMS behavior,
-protection rule, Canvas layout, container setting, or presentation choice must
-be changed separately in a run page.
+A feature is incomplete if a strategy, capability, account mandate, portfolio
+limit, OMS behavior, protection rule, Canvas layout, container setting, or
+presentation choice must be changed separately in a run page.
 
-## Ownership
+## Domain vocabulary
 
-| Configuration page | Owns |
+The product deliberately separates concepts that were previously grouped under
+`strategy` or `assignment`.
+
+| Concept | Authority and lifecycle |
+|---|---|
+| Strategy Definition | Code-owned implementation, schema, defaults, compatibility, and factory identity |
+| Strategy Profile | User-configured or system-predefined instance of a Strategy Definition; mutable as a draft and immutable when published |
+| Capability Definition | Code-owned function contract, defaults, validation, help, UI schema, runtime handler, and compatible autonomy |
+| Capability Binding | System/user configuration of one capability on one Strategy Profile |
+| OMS Profile | Reusable versioned execution and protection behavior |
+| Account | Stable application identity mapped to broker or simulated sessions |
+| Portfolio Policy | Reusable account safety, exposure, capital, and loss envelope |
+| Strategy-account mandate | Many-to-many rule governing how one deployment may use one account |
+| Strategy Deployment | Usable unit combining a Strategy Profile, capability bindings, OMS profile, runtime modes, and account mandates |
+| Runtime assignment | Operational binding of a published deployment to a ticker inside a run; never a configuration definition |
+| Approved Release | Immutable application snapshot consumed by new runs |
+
+System code may ship predefined Strategy Profiles and Capability defaults.
+These are starting configurations, not locked secrets: the user can modify or
+clone them, and the resulting draft is validated and published like any other
+profile. Capability behavior remains implemented in registered code; the UI
+configures only declared parameters and authority levels.
+
+## Authority flow
+
+```text
+Strategy Definition + Capability Definitions
+    -> configured Strategy Profile
+    -> Strategy Deployment + Strategy-account mandates + OMS Profile
+    -> approved application release
+    -> Replay / Backtest / Live runtime assignment
+    -> strategy semantic request
+    -> Portfolio account resolution, sizing, arbitration, and reservation
+    -> OMS execution, broker lifecycle, and protection
+    -> broker or simulated broker
+```
+
+Strategy may express sizing relatively through a `CapitalRequest`:
+
+- fixed quantity;
+- fraction of available mandate capacity;
+- fraction of account risk;
+- all capacity available under the mandate.
+
+Portfolio translates the request into a final account quantity. A strategy
+cannot exceed account policy or mandate limits. When an explicitly permitted
+request lacks capacity, Portfolio may create an auditable rebalance proposal.
+The proposal names the candidate position, evidence, improvement threshold,
+and autonomy requirement. It does not silently release capital or bypass OMS.
+
+## Configuration pages
+
+| Page | Owns |
 |---|---|
 | Canvas | Canvases, layouts, groups, containers, link contexts, and presentation settings |
-| Strategies | Immutable executable strategy identity, revision, and parameters |
-| Assignments | Strategy-to-account-key and instrument bindings |
-| Portfolio & Risk | Allocation, exposure, capability, loss, drawdown, freshness, and emergency limits |
-| OMS & Protection | Execution urgency, limit protection, timing, stop construction, and trailing behavior |
-| Accounts & Sessions | Stable application account keys and mode-specific broker/simulated session bindings |
-| Approved Revisions | Whole-profile validation, immutable publication, revision history, and current runtime authority |
+| Strategy Studio | Strategy Profiles and configurable Capability Bindings |
+| Strategy Deployments | Profile-to-OMS-to-mode composition and deployment readiness |
+| Portfolio & Risk | Account policies and Strategy-account mandates |
+| OMS & Protection | Reusable named execution and protection profiles |
+| Accounts & Sessions | Stable application accounts and mode-specific session bindings |
+| Approved Releases | Whole-model validation, Canvas capture, immutable publication, and current runtime authority |
 
-Run pages own only scenario and transport inputs. Replay owns the historical
-date, entry clock, playback speed, pause, step, fast-forward, stop, and
-simulation funding. Backtest owns its historical window and execution pace.
-Live owns session startup and operational commands. None of them owns a second
-strategy, portfolio, OMS, account, or Canvas configuration.
+Run pages own scenario and transport inputs only. Replay owns historical date,
+entry clock, playback controls, and simulated funding. Backtest owns its window
+and execution pace. Live owns session startup and operational controls.
+
+## UX contract
+
+Raw JSON is never the primary configuration interface.
+
+- Every page starts with a concise summary of its responsibility and authority.
+- Strategy Studio presents frequently tuned entry, sizing, profit-taking, and
+  re-entry controls first.
+- Less frequently changed model, signal, and fixed technical parameters remain
+  available under Advanced.
+- Every parameter has a readable label, contextual help, units, appropriate
+  control, and immediate range/choice constraints.
+- The Strategy Profile -> Deployment -> Capital mandate -> Publication journey
+  remains visible across configuration pages.
+- Generated JSON is available on demand through a read-only advanced inspector.
+- System profiles and capabilities identify their origin while remaining
+  cloneable and configurable.
 
 ## Publication contract
 
-Draft sections are mutable and non-executable. Publication:
+Draft entities are mutable and non-executable. Publication:
 
-1. validates every section with the same domain constructors used at runtime;
-2. captures the complete current Canvas registry;
-3. serializes the complete profile canonically;
-4. records a SHA-256 content hash and immutable revision in the trading
-   journal; and
-5. makes the newest approved revision the authority for new runs.
+1. validates profiles against registered strategy implementations;
+2. validates capability settings against code-owned schemas;
+3. validates deployment references and runtime-mode readiness;
+4. validates account policies and Strategy-account mandates;
+5. validates OMS/protection profiles;
+6. captures the complete configured Canvas registry;
+7. serializes the complete model canonically;
+8. records a SHA-256 content hash and immutable journal revision; and
+9. makes the newest approved release authoritative for new runs.
 
-An active run pins the revision id, number, content hash, approval timestamp,
-and complete payload. A later draft edit or publication cannot mutate it.
-Unsupported or missing configuration blocks run creation explicitly.
+An active run pins the release identity, hash, approval timestamp, selected
+deployment, full configuration model, and deterministic runtime projection.
+Later draft edits or publications cannot mutate it.
 
-## Runtime consumption
+## Runtime compatibility boundary
 
-Replay uses the approved strategy identity and parameters to build the shared
-strategy implementation. Approved assignments are cloned into explicit
-simulated account boundaries. Account bindings and approved portfolio policies
-construct the shared `PortfolioManagementEngine`; OMS and protection settings
-are merged into the strategy-to-OMS contract and shared order planner. The
-approved Canvas profile is rendered by `CanvasWorkspaceSurface`.
+The v2 model is authoritative. `resolve_runtime_configuration()` selects one
+approved deployment for a runtime mode and projects it into the existing shared
+strategy, Portfolio, OMS, account, and assignment contracts. This resolver is a
+single migration boundary, not a duplicated configuration store.
+
+Replay records both the complete approved model and its selected deployment.
+Capability bindings are merged into the registered strategy parameters only at
+this boundary. OMS remains a separate profile authority; the projection supplies
+the existing runtime planner until it accepts profile references directly.
 
 `initial_cash` configures `SimulatedBrokerAdapter` funding only. It is not a
-portfolio policy and cannot bypass allocation, exposure, planned-risk, loss,
-drawdown, account capability, execution, or protection controls.
-
-Run-local assignment actions are operational state. They may arm, pause,
-disable, or add an assignment for an already approved strategy/account
-boundary and approved historical stream. They may not define a new strategy
-revision or replace the pinned portfolio/OMS configuration.
+Portfolio policy and cannot bypass allocation, exposure, risk, capability,
+execution, or protection controls.
 
 ## Completion gate for another mode
 
 Live or Backtest Debug is not migrated until it:
 
-- loads one approved configuration revision through the shared configuration
-  service;
-- uses `TradingRuntime`, `PortfolioManagementEngine`, and
-  `OrderManagementEngine` rather than mode-local copies;
+- loads one approved release through the shared configuration service;
+- selects a valid Strategy Deployment;
+- uses the shared Strategy, Portfolio, and OMS contracts;
 - renders the approved Canvas profile with `CanvasWorkspaceSurface`;
-- records the pinned revision identity and content hash in its run/session
-  evidence; and
-- proves that configuration changes require publication in one place only.
+- records the pinned release and deployment identities; and
+- proves configuration changes require publication in one place only.

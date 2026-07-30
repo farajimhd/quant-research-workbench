@@ -412,6 +412,10 @@ class ReplayRunController:
             "strategy_id": strategy_configuration["strategy_id"],
             "name": strategy_configuration["name"],
             "revision": strategy_configuration["revision"],
+            "profile_id": strategy_configuration.get("profile_id"),
+            "profile_revision": strategy_configuration.get("profile_revision"),
+            "deployment": deepcopy(configuration.get("deployment") or {}),
+            "capabilities": deepcopy(strategy_configuration.get("capabilities") or []),
             "automatic": True,
             "state": ticker_assignments[0]["status"] if ticker_assignments else "not_assigned",
             "definition": definition,
@@ -604,6 +608,16 @@ class ReplayRunController:
                 strategy_allocations={
                     str(strategy_configuration["strategy_id"]): float(
                         binding.get("strategy_allocation", 1.0)
+                    )
+                },
+                strategy_mandates={
+                    str(strategy_configuration["strategy_id"]): next(
+                        (
+                            dict(row)
+                            for row in configuration["portfolio"].get("mandates") or []
+                            if str(row.get("account_key")) == str(binding["account_key"])
+                        ),
+                        {},
                     )
                 },
             )

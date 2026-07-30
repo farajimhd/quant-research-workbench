@@ -28,7 +28,7 @@ from src.trading_runtime.ibkr_normalizer import normalize_execution, normalize_o
 from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES, LiveOrder, OrderRequest, OrderStatus
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.risk import RiskAuthority
-from src.trading_runtime.signals import StrategyIntent
+from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 from src.trading_runtime.strategy_orders import StrategyOrderPlan
 
 
@@ -2289,6 +2289,7 @@ def _adaptive_price(
 def _intent_from_payload(payload: dict[str, Any]) -> StrategyIntent:
     execution_raw = payload.get("execution_policy")
     protection_raw = payload.get("protection_profile")
+    capital_raw = payload.get("capital_request")
     return StrategyIntent(
         intent_id=str(payload["intent_id"]),
         ticker=str(payload["ticker"]),
@@ -2296,6 +2297,7 @@ def _intent_from_payload(payload: dict[str, Any]) -> StrategyIntent:
         action=str(payload["action"]),  # type: ignore[arg-type]
         quantity=float(payload["quantity"]),
         reference_price=float(payload["reference_price"]),
+        capital_request=(CapitalRequest(**dict(capital_raw)) if capital_raw else None),
         invalidation_price=(
             float(payload["invalidation_price"])
             if payload.get("invalidation_price") is not None

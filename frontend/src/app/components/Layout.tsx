@@ -32,11 +32,11 @@ const navGroups = [
     items: [
       { key: "canvas-configuration" as PageKey, label: "Canvas", icon: PanelsTopLeft },
       { key: "strategy-configuration" as PageKey, label: "Strategies", icon: GitBranch },
-      { key: "assignment-configuration" as PageKey, label: "Assignments", icon: Network },
+      { key: "assignment-configuration" as PageKey, label: "Deployments", icon: Network },
       { key: "portfolio-configuration" as PageKey, label: "Portfolio & Risk", icon: BriefcaseBusiness },
       { key: "oms-configuration" as PageKey, label: "OMS & Protection", icon: ShieldCheck },
       { key: "account-configuration" as PageKey, label: "Accounts & Sessions", icon: UsersRound },
-      { key: "revision-configuration" as PageKey, label: "Approved Revisions", icon: BadgeCheck }
+      { key: "revision-configuration" as PageKey, label: "Approved Releases", icon: BadgeCheck }
     ]
   },
   {

@@ -227,6 +227,10 @@ type CanvasPreview = {
     state: string;
     strategy_id: string;
     name?: string;
+    profile_id?: string;
+    profile_revision?: number;
+    deployment?: PreviewRow;
+    capabilities?: Array<{ capability_id: string; enabled?: boolean; settings?: PreviewRow }>;
     assignment?: PreviewRow | null;
     assignments?: PreviewRow[];
     definition?: { config?: { direction?: string; parameters?: Record<string, unknown>; parameter_space?: Record<string, unknown> }; name?: string };
@@ -3721,6 +3725,7 @@ function StrategyOrderEntry({ strategy, symbol, trading }: { strategy?: CanvasPr
   const [reenter, setReenter] = useState(Boolean((initialAssignment?.permissions as PreviewRow | undefined)?.reenter));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const configuredCapabilities = (strategy?.capabilities ?? []).filter((capability) => capability.enabled !== false);
 
   useEffect(() => {
     setAssignment(strategy?.assignment ?? null);
@@ -3790,6 +3795,10 @@ function StrategyOrderEntry({ strategy, symbol, trading }: { strategy?: CanvasPr
   const status = String(assignment?.status || "not assigned");
   return <section className="strategy-order-entry">
     <header><span><strong>Order entry</strong><small>{strategy?.name || "Long Momentum Campaign"}</small></span><em data-state={status}>{status.replaceAll("_", " ")}</em></header>
+    {configuredCapabilities.length ? <div className="strategy-order-capabilities">
+      <span>Included management</span>
+      {configuredCapabilities.map((capability) => <div key={capability.capability_id}><strong>{labelFor(capability.capability_id)}</strong><small>{String(capability.settings?.mode || "automatic").replaceAll("_", " ")}</small></div>)}
+    </div> : null}
     {!assignment ? <>
       <label><span>Account</span><input onChange={(event) => setAccountId(event.target.value)} placeholder="IBKR account" value={accountId} /></label>
       <label><span>Conid</span><input inputMode="numeric" onChange={(event) => setConid(event.target.value.replace(/\D/g, ""))} placeholder="Contract ID" value={conid} /></label>

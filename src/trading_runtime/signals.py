@@ -215,6 +215,26 @@ class StrategySignal:
 
 
 @dataclass(frozen=True, slots=True)
+class CapitalRequest:
+    """Relative strategy sizing request resolved by Portfolio for one account."""
+
+    mode: Literal["fixed_quantity", "mandate_fraction", "risk_fraction", "all_available"]
+    value: float = 1.0
+    minimum_quantity: float = 0.0
+    maximum_quantity: float | None = None
+    priority: int = 50
+    allow_replacement: bool = False
+
+    def __post_init__(self) -> None:
+        if self.value < 0 or self.minimum_quantity < 0:
+            raise ValueError("Capital request values cannot be negative")
+        if self.maximum_quantity is not None and self.maximum_quantity <= 0:
+            raise ValueError("Capital request maximum quantity must be positive")
+        if not 0 <= self.priority <= 100:
+            raise ValueError("Capital request priority must be between zero and one hundred")
+
+
+@dataclass(frozen=True, slots=True)
 class StrategyIntent:
     """Broker-neutral desired position change emitted by strategy logic."""
 
@@ -224,6 +244,7 @@ class StrategyIntent:
     action: StrategyAction
     quantity: float
     reference_price: float
+    capital_request: CapitalRequest | None = None
     invalidation_price: float | None = None
     profit_target_price: float | None = None
     trailing_amount: float | None = None
@@ -287,7 +308,7 @@ class StrategyIntent:
             "add_short",
             "reduce_short",
             "cover",
-        } and self.quantity <= 0:
+        } and self.quantity <= 0 and self.capital_request is None:
             raise ValueError(f"{self.action} requires a positive quantity")
 
     def payload(self) -> dict[str, Any]:

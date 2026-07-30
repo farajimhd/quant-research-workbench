@@ -152,6 +152,7 @@ class PortfolioAccountProfile:
     enabled: bool = True
     base_currency: str = "USD"
     strategy_allocations: Mapping[str, float] = field(default_factory=dict)
+    strategy_mandates: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.account_key or not self.account_id:
@@ -250,6 +251,26 @@ class PortfolioDecision:
         return payload
 
 
+@dataclass(frozen=True, slots=True)
+class PortfolioRebalanceProposal:
+    proposal_id: str
+    request_id: str
+    account_key: str
+    requested_ticker: str
+    candidate_ticker: str
+    candidate_quantity: float
+    candidate_unrealized_return_pct: float
+    opportunity_score: float
+    minimum_improvement_pct: float
+    autonomy: str
+    status: str
+    reasons: tuple[str, ...]
+    proposed_at: datetime
+
+    def payload(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass(slots=True)
 class PortfolioAccountState:
     profile: PortfolioAccountProfile
@@ -345,6 +366,7 @@ class PortfolioManagementEngine:
             raise ValueError(f"Portfolio groups reference unknown account keys: {', '.join(sorted(unknown))}")
         self.reservations: dict[str, PortfolioReservation] = {}
         self.allocations: dict[str, PortfolioAllocationLot] = {}
+        self.rebalance_proposals: list[PortfolioRebalanceProposal] = []
         self.differences: dict[tuple[str, str], PortfolioReconciliationDifference] = {}
         self.decisions: list[PortfolioDecision] = []
         self._account_locks = {account_id: asyncio.Lock() for account_id in self.states}
@@ -778,6 +800,9 @@ class PortfolioManagementEngine:
             "accounts": [self.account_payload(account_id) for account_id in self.states],
             "groups": [asdict(group) for group in self.groups.values()],
             "recent_decisions": [decision.payload() for decision in self.decisions[-100:]],
+            "recent_rebalance_proposals": [
+                proposal.payload() for proposal in self.rebalance_proposals[-100:]
+            ],
         }
 
     def _approve_locked(
@@ -791,6 +816,8 @@ class PortfolioManagementEngine:
         reasons: list[str] = []
         entry = intent.action in ENTRY_ACTIONS
         reduction = intent.action in REDUCTION_ACTIONS
+        if entry and intent.capital_request is not None:
+            requested = self._capital_request_quantity(intent, state)
         if not state.profile.enabled or state.control_mode == PortfolioControlMode.DISABLED:
             reasons.append("account_disabled")
         if entry and state.control_mode in {PortfolioControlMode.ENTRIES_PAUSED, PortfolioControlMode.REDUCE_ONLY}:
@@ -910,6 +937,9 @@ class PortfolioManagementEngine:
             approved, capacity_reasons = self._entry_capacity(intent, state, requested, base_price)
             reasons.extend(capacity_reasons)
         if approved <= 0:
+            proposal = self._propose_rebalance(intent, state, requested, now)
+            if proposal is not None:
+                reasons.append("rebalance_proposed")
             decision = self._decision(
                 intent,
                 state,
@@ -994,6 +1024,109 @@ class PortfolioManagementEngine:
         )
         self._persist_state(state)
         return decision, approved_intent
+
+    def _capital_request_quantity(
+        self,
+        intent: StrategyIntent,
+        state: PortfolioAccountState,
+    ) -> float:
+        request = intent.capital_request
+        if request is None or request.mode == "fixed_quantity":
+            requested = request.value if request is not None else float(intent.quantity)
+        else:
+            summary = state.summary
+            price = _worst_entry_price(intent)
+            if summary is None or price <= 0:
+                return 0.0
+            if request.mode == "mandate_fraction":
+                requested = float(summary.availablefunds) * request.value / price
+            elif request.mode == "risk_fraction":
+                risk_per_share = _risk_per_share(intent, max(float(intent.quantity), 1.0))
+                requested = (
+                    float(summary.netliquidation) * request.value / risk_per_share
+                    if risk_per_share > 0
+                    else 0.0
+                )
+            else:
+                requested = float(summary.availablefunds) / price
+        if request.maximum_quantity is not None:
+            requested = min(requested, request.maximum_quantity)
+        return max(request.minimum_quantity, requested)
+
+    def _propose_rebalance(
+        self,
+        intent: StrategyIntent,
+        state: PortfolioAccountState,
+        requested: float,
+        now: datetime,
+    ) -> PortfolioRebalanceProposal | None:
+        request = intent.capital_request
+        mandate = dict(state.profile.strategy_mandates.get(self.strategy_id) or {})
+        if (
+            request is None
+            or not request.allow_replacement
+            or not bool(mandate.get("allow_replacement", False))
+        ):
+            return None
+        opportunity_score = float(intent.metadata.get("opportunity_score") or 0)
+        minimum_improvement = float(
+            mandate.get("minimum_replacement_improvement_pct") or 0
+        )
+        candidates = [
+            (ticker, position)
+            for ticker, position in state.positions.items()
+            if ticker != intent.ticker.upper()
+            and abs(float(position.position)) > 0
+            and any(
+                allocation.account_id == state.profile.account_id
+                and allocation.ticker == ticker
+                for allocation in self.allocations.values()
+            )
+        ]
+        if not candidates:
+            return None
+        candidate_ticker, candidate = min(
+            candidates,
+            key=lambda item: (
+                float(item[1].unrealizedPnl)
+                / max(abs(float(item[1].mktValue)), 1.0)
+            ),
+        )
+        candidate_return_pct = (
+            float(candidate.unrealizedPnl)
+            / max(abs(float(candidate.mktValue)), 1.0)
+            * 100
+        )
+        improvement_pct = (opportunity_score * 100) - candidate_return_pct
+        if improvement_pct < minimum_improvement:
+            return None
+        proposal = PortfolioRebalanceProposal(
+            proposal_id=str(uuid4()),
+            request_id=intent.intent_id,
+            account_key=state.profile.account_key,
+            requested_ticker=intent.ticker.upper(),
+            candidate_ticker=candidate_ticker,
+            candidate_quantity=abs(float(candidate.position)),
+            candidate_unrealized_return_pct=candidate_return_pct,
+            opportunity_score=opportunity_score,
+            minimum_improvement_pct=minimum_improvement,
+            autonomy=str(mandate.get("autonomy") or "confirm"),
+            status="proposed",
+            reasons=(
+                "insufficient_capacity",
+                "explicit_replacement_permission",
+                "minimum_improvement_satisfied",
+            ),
+            proposed_at=now,
+        )
+        self.rebalance_proposals.append(proposal)
+        self._record(
+            "portfolio_rebalance",
+            proposal.proposal_id,
+            state.profile.account_id,
+            {"event": "rebalance_proposed", "requested_quantity": requested, **proposal.payload()},
+        )
+        return proposal
 
     def _entry_capacity(
         self,
