@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from "rea
 import { api, query } from "../../api/client";
 import { NEWS_READER_CANVAS_ID, ensureNewsReaderCanvas, focusCanvasUrl } from "../canvasWorkspace";
 import { MarketTime } from "./MarketTime";
-import { SemanticDirectionMetric } from "./SemanticDirectionMetric";
+import { normalizeSemanticDirection, SemanticDirectionMetric } from "./SemanticDirectionMetric";
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations, type TickerPresentation } from "./TickerIdentity";
 
 type NewsRow = {
@@ -178,28 +178,30 @@ export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settin
     <header><div><TickerIdentityWithChange asOf={effectiveAsOf} className="ticker-news-symbol" inputAriaLabel="Ticker news symbol" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={effectiveAsOf} /></small></header>
     <NewsStatus state={state} compact />
     <div className="ticker-news-feed">
-      <TickerNewsSection asOf={effectiveAsOf} asOfMs={asOfMs} emptyLabel="No actionable events in this window." label="Actionable events" rows={eventRows} showTeaser={settings.showTeaser} />
-      <TickerNewsSection asOf={effectiveAsOf} asOfMs={asOfMs} emptyLabel="No analysis or issuer context." label="Analysis & issuer context" rows={contextRows} showTeaser={settings.showTeaser} />
-      <TickerNewsSection asOf={effectiveAsOf} asOfMs={asOfMs} emptyLabel="No follow-ups or market summaries." label="Follow-ups & market summaries" rows={followupRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No actionable events in this window." label="Actionable events" rows={eventRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No analysis or issuer context." label="Analysis & issuer context" rows={contextRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No follow-ups or market summaries." label="Follow-ups & market summaries" rows={followupRows} showTeaser={settings.showTeaser} />
       {!state.loading && !state.rows.length ? <NewsEmpty label={`No ${symbol} news in the last ${settings.lookbackHours} hours.`} /> : null}
     </div>
   </section>;
 }
 
-function TickerNewsSection({ asOf, asOfMs, emptyLabel, label, rows, showTeaser }: { asOf: string; asOfMs: number; emptyLabel: string; label: string; rows: NewsRow[]; showTeaser: boolean }) {
+function TickerNewsSection({ asOfMs, emptyLabel, label, rows, showTeaser }: { asOfMs: number; emptyLabel: string; label: string; rows: NewsRow[]; showTeaser: boolean }) {
   return <section className="ticker-news-section" aria-label={label}>
     <header><strong>{label}</strong><span>{rows.length}</span></header>
-    {rows.map((row) => <TickerNewsStory asOf={asOf} asOfMs={asOfMs} key={row.canonical_news_id} row={row} showTeaser={showTeaser} />)}
+    {rows.map((row) => <TickerNewsStory asOfMs={asOfMs} key={row.canonical_news_id} row={row} showTeaser={showTeaser} />)}
     {!rows.length ? <small className="ticker-news-section-empty">{emptyLabel}</small> : null}
   </section>;
 }
 
-function TickerNewsStory({ asOf, asOfMs, row, showTeaser }: { asOf: string; asOfMs: number; row: NewsRow; showTeaser: boolean }) {
+function TickerNewsStory({ asOfMs, row, showTeaser }: { asOfMs: number; row: NewsRow; showTeaser: boolean }) {
   const tone = newsTemperature(row.published_at_utc, asOfMs);
   const TemperatureIcon = newsTemperaturePresentation(tone).Icon;
-  return <article data-tone={tone}>
+  const direction = normalizeSemanticDirection(row.scoped_summary?.semantic_direction);
+  return <article data-direction={direction} data-tone={tone}>
     <div aria-label={`${tone} news`} className="ticker-news-marker" title={`${tone} news`}><TemperatureIcon size={14} /></div>
-    <div><div className="ticker-news-meta"><MarketTime dateStyle="short" includeDate={!sameExchangeDate(row.published_at_utc, asOf)} value={row.published_at_utc} /><em data-tone={tone}>{tone}</em><ScopedDirection summary={row.scoped_summary} salient /><ScopedClass summary={row.scoped_summary} /><ScopedConcepts concepts={row.scoped_summary?.event_concepts} compact /></div><button className="ticker-news-open" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title}</strong>{showTeaser && newsTeaser(row) ? <p>{newsTeaser(row)}</p> : null}</button></div>
+    <div className="ticker-event-time"><MarketTime dateStyle="short" includeDate value={row.published_at_utc} /><em data-tone={tone}>{tone}</em></div>
+    <div className="ticker-event-content"><div className="ticker-news-meta"><ScopedDirection summary={row.scoped_summary} salient /><ScopedClass summary={row.scoped_summary} /><ScopedConcepts concepts={row.scoped_summary?.event_concepts} compact /></div><button className="ticker-news-open" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title}</strong>{showTeaser && newsTeaser(row) ? <p>{newsTeaser(row)}</p> : null}</button></div>
   </article>;
 }
 
@@ -361,8 +363,6 @@ function shortConcept(value: string) { const leaf = value.split(".").at(-1) ?? v
 const MARKET_NUMBER_PATTERN = /(?:[+\-−]\s*)?(?:[$€£¥]\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|[KMBT]))?|(?:USD|CAD|EUR|GBP|JPY|CNY|HKD|AUD)\s*\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|[KMBT]))?|\d[\d,]*(?:\.\d+)?\s*(?:USD|CAD|EUR|GBP|JPY|CNY|HKD|AUD)|\d[\d,]*(?:\.\d+)?\s*(?:%|percent(?:age points?)?|basis points?|bps))/gi;
 function articleParagraphs(value: string) { const explicit = value.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean); if (explicit.length > 1) return explicit; const sentences = value.split(/(?<=[.!?])\s+(?=["“‘']?[A-Z0-9])/).map((item) => item.trim()).filter(Boolean); const paragraphs: string[] = []; for (let index = 0; index < sentences.length; index += 4) paragraphs.push(sentences.slice(index, index + 4).join(" ")); return paragraphs.length ? paragraphs : [value]; }
 function stringList(value: unknown): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : []; }
-function sameExchangeDate(left: string, right: string) { return exchangeDateKey(left) === exchangeDateKey(right); }
-function exchangeDateKey(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("en-CA", { day: "2-digit", month: "2-digit", timeZone: "America/New_York", year: "numeric" }).format(date); }
 function compareNewsRecency(left: NewsRow, right: NewsRow) { return Date.parse(right.published_at_utc) - Date.parse(left.published_at_utc); }
 function newsTeaser(row: NewsRow) { const value = (row.text_preview ?? "").replace(/\s+/g, " ").trim(); if (!value) return ""; const titlePrefix = `Title: ${row.title}`; const withoutTitle = value.toLowerCase().startsWith(titlePrefix.toLowerCase()) ? value.slice(titlePrefix.length).trim() : value; return withoutTitle.replace(/^Teaser:\s*/i, "").replace(/^Body:\s*/i, "").trim(); }
 function selectionKey(canvasId: string) { return `quant-research-workbench.canvas.news-selection.${canvasId}`; }
