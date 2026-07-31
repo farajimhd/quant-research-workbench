@@ -62,7 +62,23 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("LIMIT 2", sql)
         self.assertEqual(query_mock.call_args_list[0].kwargs["timeout_seconds"], 12.0)
         self.assertIn("scoped_text_labels_v5", query_mock.call_args_list[1].args[0])
+        self.assertIn("PREWHERE corpus='news'", query_mock.call_args_list[1].args[0])
+        self.assertTrue(payload["query_id"])
         self.assertEqual(query_mock.call_args_list[1].kwargs["timeout_seconds"], 1.5)
+
+    @patch("src.backend.app.clickhouse_status_query", return_value="")
+    def test_custom_date_range_is_bounded_by_market_dates(self, query_mock) -> None:
+        payload = trading_news_rows(
+            as_of="2026-07-10T15:00:00Z",
+            start_date="2026-07-08",
+            end_date="2026-07-10",
+            limit=25,
+        )
+        sql = query_mock.call_args_list[0].args[0]
+        self.assertIn("PREWHERE published_date >= toDate('2026-07-08')", sql)
+        self.assertIn("published_at_utc <= toDateTime64('2026-07-10 15:00:00.000000'", sql)
+        self.assertEqual(payload["limit"], 25)
+        self.assertEqual(payload["window_start"], "2026-07-08T04:00:00Z")
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_cursor_keeps_same_timestamp_rows_ordered(self, query_mock) -> None:
@@ -148,8 +164,10 @@ class TradingNewsTests(unittest.TestCase):
         query_mock.side_effect = [
             json.dumps({
                 "canonical_news_id": "b2185e66008f39d6875a8f4449f82b7f",
+                "provider_article_id": "12345",
+                "published_date": "2026-07-14",
+                "source_revision_key": "revision-1",
                 "title": "Insights Into Apple's Performance",
-                "text": "Readable article body.",
                 "article_url": "https://example.test/article",
                 "url_domain": "example.test",
                 "author": "Benzinga Insights",
@@ -160,6 +178,7 @@ class TradingNewsTests(unittest.TestCase):
                 "downloaded_at_utc": "2026-07-14T09:58:50.653569Z",
                 "raw_artifact_path": "C:/private/raw.json",
             }),
+            json.dumps({"text": "Readable article body.", "render_status": "rendered"}),
             json.dumps({"ticker": "AAPL", "canonical_news_id": "b2185e66008f39d6875a8f4449f82b7f"}),
             "",
         ]
@@ -170,6 +189,11 @@ class TradingNewsTests(unittest.TestCase):
         self.assertEqual(payload["article"]["classification"]["origin"], "automated")
         self.assertEqual(payload["article"]["text"], "Readable article body.")
         self.assertEqual(payload["tickers"], ["AAPL"])
+        event_sql, render_sql, ticker_sql = [call.args[0] for call in query_mock.call_args_list[:3]]
+        self.assertNotIn("benzinga_news_rendered_v2", event_sql)
+        self.assertIn("PREWHERE published_date = toDate('2026-07-14')", render_sql)
+        self.assertIn("PREWHERE t.published_date = toDate('2026-07-14')", ticker_sql)
+        self.assertNotIn("benzinga_news_event_v2", ticker_sql)
         serialized = json.dumps(payload)
         for forbidden in ("database", "normalized_table", "ticker_table", "raw_artifact_path", "downloaded_at_utc", "C:/private"):
             self.assertNotIn(forbidden, serialized)

@@ -42,6 +42,7 @@ type NewsPayload = {
   has_more: boolean;
   next_before: string;
   next_before_id: string;
+  query_id: string;
   rows: NewsRow[];
   window_start: string;
 };
@@ -116,7 +117,8 @@ type ScopedNewsSummary = {
   classified?: boolean;
 };
 type NewsTemperature = "cold" | "hot" | "old";
-type AllNewsSettings = { content: string; kind: string; lookbackHours: number; ticker: string };
+type AllNewsSettings = { content: string; endDate: string; kind: string; limit: number; lookbackHours: number; rangeMode: "custom" | "preset"; startDate: string; ticker: string };
+type NewsSelection = { newsId: string; publishedAt: string; queryId: string };
 
 // Product-wide contract: hot is neon red (<= 4h), cold is neon blue (<= 24h),
 // and old is neutral gray. Never substitute success/danger/info semantic colors.
@@ -128,14 +130,17 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
   const [committedSearch, setCommittedSearch] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [role, setRole] = useState(""); const [origin, setOrigin] = useState(""); const [direction, setDirection] = useState(""); const [eligibility, setEligibility] = useState(""); const [labelState, setLabelState] = useState("");
-  const state = useNewsQuery({ asOf, content: settings.content, direction, eligibility, hours: settings.lookbackHours, kind: settings.kind, labelState, live, origin, refreshKey, role, search: committedSearch, ticker: settings.ticker });
+  const customReady = settings.rangeMode === "custom" && settings.startDate && settings.endDate;
+  const state = useNewsQuery({ asOf, content: settings.content, direction, eligibility, endDate: customReady ? settings.endDate : "", hours: settings.lookbackHours, kind: settings.kind, labelState, limit: settings.limit, live, origin, refreshKey, role, search: committedSearch, startDate: customReady ? settings.startDate : "", ticker: settings.ticker });
   const presentations = useTickerPresentations(state.rows.flatMap((row) => row.ticker_link_sample ?? []));
 
   return <section className="news-all" aria-label="All news">
     <form className="news-query-bar" onSubmit={(event) => { event.preventDefault(); setCommittedSearch(search.trim()); }}>
       <label className="news-search"><Search size={13} /><input aria-label="Search all news" onChange={(event) => setSearch(event.target.value)} placeholder="Search headlines, text, author or source" value={search} /></label>
       <button className="button secondary compact news-search-submit" type="submit">Search</button>
-      <label><span>Window</span><select aria-label="News time window" onChange={(event) => onSettingsChange({ lookbackHours: Number(event.target.value) })} value={settings.lookbackHours}><option value={1}>1 hour</option><option value={6}>6 hours</option><option value={24}>24 hours</option><option value={168}>7 days</option><option value={720}>30 days</option></select></label>
+      <label><span>Window</span><select aria-label="News time window" onChange={(event) => event.target.value === "custom" ? onSettingsChange({ rangeMode: "custom" }) : onSettingsChange({ lookbackHours: Number(event.target.value), rangeMode: "preset" })} value={settings.rangeMode === "custom" ? "custom" : settings.lookbackHours}><option value={1}>1 hour</option><option value={6}>6 hours</option><option value={24}>24 hours</option><option value={168}>7 days</option><option value={720}>30 days</option><option value={8760}>1 year</option><option value={43800}>5 years</option><option value="custom">Custom dates</option></select></label>
+      {settings.rangeMode === "custom" ? <><label><span>From</span><input aria-label="News range start date" onChange={(event) => onSettingsChange({ startDate: event.target.value })} type="date" value={settings.startDate} /></label><label><span>Through</span><input aria-label="News range end date" onChange={(event) => onSettingsChange({ endDate: event.target.value })} type="date" value={settings.endDate} /></label></> : null}
+      <label><span>Top</span><select aria-label="News result limit" onChange={(event) => onSettingsChange({ limit: Number(event.target.value) })} value={settings.limit}><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option><option value={250}>250</option></select></label>
       <label><span>Ticker</span><input aria-label="Filter by ticker" maxLength={16} onChange={(event) => onSettingsChange({ ticker: event.target.value.toUpperCase() })} placeholder="Any" value={settings.ticker} /></label>
       <label><span>Role</span><select aria-label="News content role" onChange={(event) => setRole(event.target.value)} value={role}><option value="">All roles</option><option value="primary_event">Primary event</option><option value="analyst_event">Analyst event</option><option value="regulatory_event">Regulatory event</option><option value="editorial_analysis">Editorial analysis</option><option value="market_roundup">Market roundup</option><option value="mover_recap">Mover recap</option><option value="why_moving_followup">Why-moving follow-up</option><option value="automated_market_statistics">Automated summary</option></select></label>
       <label><span>Direction</span><select aria-label="Semantic direction" onChange={(event) => setDirection(event.target.value)} value={direction}><option value="">Any direction</option><option value="positive">Positive</option><option value="negative">Negative</option><option value="neutral">Neutral</option><option value="mixed">Mixed</option></select></label>
@@ -148,14 +153,15 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
     </form>
     <NewsStatus state={state} />
     <div className="news-table-wrap">
-      <table className="news-table news-intelligence-table"><thead><tr><th>Time</th><th>Tickers</th><th>Role</th><th>Direction</th><th>Event</th><th>Headline</th><th>Eligibility</th><th>Text</th></tr></thead><tbody>
+      <table className="news-table news-intelligence-table"><thead><tr><th>Time</th><th>Tickers</th><th>Role</th><th>Origin</th><th>Direction</th><th>Event</th><th>Headline</th><th>Eligibility</th><th>Text</th></tr></thead><tbody>
         {state.rows.map((row) => <tr key={row.canonical_news_id} tabIndex={0}>
           <td><MarketTime className="news-row-time" dateStyle="short" includeDate value={row.published_at_utc} /></td>
           <td><TickerList presentations={presentations} tickers={row.ticker_link_sample} /></td>
           <td><ScopedClass summary={row.scoped_summary} /></td>
+          <td><span className="news-origin">{readableLabel(row.scoped_summary?.source_origin || row.news_origin || "Unknown")}</span></td>
           <td><ScopedDirection summary={row.scoped_summary} salient /></td>
           <td><ScopedConcepts concepts={row.scoped_summary?.event_concepts} compact /></td>
-          <td><button className="news-headline-button" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title || "Untitled story"}</strong>{newsTeaser(row) ? <small>{newsTeaser(row)}</small> : null}<span className="news-headline-source">{row.url_domain || "News"}</span></button></td>
+          <td><button className="news-headline-button" onClick={() => openNewsPage(row, state.queryId)} type="button"><strong>{row.title || "Untitled story"}</strong>{newsTeaser(row) ? <small>{newsTeaser(row)}</small> : null}<span className="news-headline-source">{row.url_domain || "News"}</span></button></td>
           <td><EligibilityMarks summary={row.scoped_summary} /></td><td><NewsTextState row={row} /></td>
         </tr>)}
       </tbody></table>
@@ -166,7 +172,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
 }
 
 export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settings, symbol }: { asOf: string; live?: boolean; onSymbolChange?: (symbol: string) => void; settings: { lookbackHours: number; showTeaser: boolean }; symbol: string }) {
-  const state = useNewsQuery({ asOf, content: "all", direction: "", eligibility: "", hours: settings.lookbackHours, kind: "all", labelState: "", live, origin: "", refreshKey: 0, role: "", search: "", ticker: symbol });
+  const state = useNewsQuery({ asOf, content: "all", direction: "", eligibility: "", endDate: "", hours: settings.lookbackHours, kind: "all", labelState: "", limit: 100, live, origin: "", refreshKey: 0, role: "", search: "", startDate: "", ticker: symbol });
   const presentations = useTickerPresentations([symbol]);
   const effectiveAsOf = state.asOf || asOf;
   const asOfMs = Date.parse(effectiveAsOf);
@@ -178,46 +184,47 @@ export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settin
     <header><div><TickerIdentityWithChange asOf={effectiveAsOf} className="ticker-news-symbol" inputAriaLabel="Ticker news symbol" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={effectiveAsOf} /></small></header>
     <NewsStatus state={state} compact />
     <div className="ticker-news-feed">
-      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No actionable events in this window." label="Actionable events" rows={eventRows} showTeaser={settings.showTeaser} />
-      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No analysis or issuer context." label="Analysis & issuer context" rows={contextRows} showTeaser={settings.showTeaser} />
-      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No follow-ups or market summaries." label="Follow-ups & market summaries" rows={followupRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No actionable events in this window." label="Actionable events" queryId={state.queryId} rows={eventRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No analysis or issuer context." label="Analysis & issuer context" queryId={state.queryId} rows={contextRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No follow-ups or market summaries." label="Follow-ups & market summaries" queryId={state.queryId} rows={followupRows} showTeaser={settings.showTeaser} />
       {!state.loading && !state.rows.length ? <NewsEmpty label={`No ${symbol} news in the last ${settings.lookbackHours} hours.`} /> : null}
     </div>
   </section>;
 }
 
-function TickerNewsSection({ asOfMs, emptyLabel, label, rows, showTeaser }: { asOfMs: number; emptyLabel: string; label: string; rows: NewsRow[]; showTeaser: boolean }) {
+function TickerNewsSection({ asOfMs, emptyLabel, label, queryId, rows, showTeaser }: { asOfMs: number; emptyLabel: string; label: string; queryId: string; rows: NewsRow[]; showTeaser: boolean }) {
   return <section className="ticker-news-section" aria-label={label}>
     <header><strong>{label}</strong><span>{rows.length}</span></header>
-    {rows.map((row) => <TickerNewsStory asOfMs={asOfMs} key={row.canonical_news_id} row={row} showTeaser={showTeaser} />)}
+    {rows.map((row) => <TickerNewsStory asOfMs={asOfMs} key={row.canonical_news_id} queryId={queryId} row={row} showTeaser={showTeaser} />)}
     {!rows.length ? <small className="ticker-news-section-empty">{emptyLabel}</small> : null}
   </section>;
 }
 
-function TickerNewsStory({ asOfMs, row, showTeaser }: { asOfMs: number; row: NewsRow; showTeaser: boolean }) {
+function TickerNewsStory({ asOfMs, queryId, row, showTeaser }: { asOfMs: number; queryId: string; row: NewsRow; showTeaser: boolean }) {
   const tone = newsTemperature(row.published_at_utc, asOfMs);
   const TemperatureIcon = newsTemperaturePresentation(tone).Icon;
   const direction = normalizeSemanticDirection(row.scoped_summary?.semantic_direction);
   return <article data-direction={direction} data-tone={tone}>
     <div aria-label={`${tone} news`} className="ticker-news-marker" title={`${tone} news`}><TemperatureIcon size={14} /></div>
     <div className="ticker-event-time"><MarketTime dateStyle="short" includeDate value={row.published_at_utc} /><em data-tone={tone}>{tone}</em></div>
-    <div className="ticker-event-content"><div className="ticker-news-meta"><ScopedDirection summary={row.scoped_summary} salient /><ScopedClass summary={row.scoped_summary} /><ScopedConcepts concepts={row.scoped_summary?.event_concepts} compact /></div><button className="ticker-news-open" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title}</strong>{showTeaser && newsTeaser(row) ? <p>{newsTeaser(row)}</p> : null}</button></div>
+    <div className="ticker-event-content"><div className="ticker-news-meta"><ScopedDirection summary={row.scoped_summary} salient /><ScopedClass summary={row.scoped_summary} /><ScopedConcepts concepts={row.scoped_summary?.event_concepts} compact /></div><button className="ticker-news-open" onClick={() => openNewsPage(row, queryId)} type="button"><strong>{row.title}</strong>{showTeaser && newsTeaser(row) ? <p>{newsTeaser(row)}</p> : null}</button></div>
   </article>;
 }
 
 export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf: string; canvasId: string; requestedNewsId?: string }) {
-  const [newsId, setNewsId] = useState(() => requestedNewsId || readSelectedNews(canvasId));
+  const [selection, setSelection] = useState<NewsSelection>(() => { const stored = readSelectedNews(canvasId); return requestedNewsId ? stored.newsId === requestedNewsId ? stored : { newsId: requestedNewsId, publishedAt: "", queryId: "" } : stored; });
+  const newsId = selection.newsId;
   const [detail, setDetail] = useState<NewsDetailPayload | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   useEffect(() => {
     const onSelection = (event: Event) => {
-      const selected = (event as CustomEvent<{ canvasId: string; newsId: string }>).detail;
-      if (selected.canvasId === canvasId) setNewsId(selected.newsId);
+      const selected = (event as CustomEvent<NewsSelection & { canvasId: string }>).detail;
+      if (selected.canvasId === canvasId) setSelection({ newsId: selected.newsId, publishedAt: selected.publishedAt, queryId: selected.queryId });
     };
     window.addEventListener(NEWS_SELECTION_EVENT, onSelection);
     const onStorage = (event: StorageEvent) => {
-      if (event.key === selectionKey(canvasId) && event.newValue) setNewsId(event.newValue);
+      if (event.key === selectionKey(canvasId) && event.newValue) setSelection(parseNewsSelection(event.newValue));
     };
     window.addEventListener("storage", onStorage);
     return () => {
@@ -228,11 +235,11 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
   useEffect(() => {
     if (!newsId) { setDetail(null); return; }
     const controller = new AbortController(); setLoading(true); setError("");
-    api<NewsDetailPayload>(`/api/trading/news/detail/${encodeURIComponent(newsId)}`, { signal: controller.signal, timeoutMs: 30000 })
+    api<NewsDetailPayload>(`/api/trading/news/detail/${encodeURIComponent(newsId)}${query({ published_at: selection.publishedAt || undefined, query_id: selection.queryId || undefined })}`, { signal: controller.signal, timeoutMs: 30000 })
       .then(setDetail).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [newsId]);
+  }, [newsId, selection.publishedAt, selection.queryId]);
   const detailTickers = detail?.tickers ?? [];
   const presentations = useTickerPresentations(detailTickers);
   if (!newsId) return <NewsEmpty label="Choose a headline in All News or Ticker News to read it here." />;
@@ -264,18 +271,20 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
   </article>;
 }
 
-function useNewsQuery({ asOf, content, direction, eligibility, hours, kind, labelState, live, origin, refreshKey, role, search, ticker }: { asOf: string; content: string; direction: string; eligibility: string; hours: number; kind: string; labelState: string; live: boolean; origin: string; refreshKey: number; role: string; search: string; ticker: string }) {
+function useNewsQuery({ asOf, content, direction, eligibility, endDate, hours, kind, labelState, limit, live, origin, refreshKey, role, search, startDate, ticker }: { asOf: string; content: string; direction: string; eligibility: string; endDate: string; hours: number; kind: string; labelState: string; limit: number; live: boolean; origin: string; refreshKey: number; role: string; search: string; startDate: string; ticker: string }) {
   const [rows, setRows] = useState<NewsRow[]>([]); const [payload, setPayload] = useState<NewsPayload | null>(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const [loadingMore, setLoadingMore] = useState(false);
+  const queryIdRef = useRef("");
   const [liveConnected, setLiveConnected] = useState(false);
   const [liveError, setLiveError] = useState("");
   const latestRevision = useRef<number | null>(null);
   const load = useCallback(async (before = "", beforeId = "", signal?: AbortSignal, pageAsOf = "") => {
     const queryAsOf = pageAsOf || (live ? new Date().toISOString() : asOf);
-    const next = await api<NewsPayload>(`/api/trading/news${query({ as_of: queryAsOf, before: before || undefined, before_id: beforeId || undefined, content, direction: direction || undefined, eligibility: eligibility || undefined, kind: kind === "all" ? undefined : kind, label_state: labelState || undefined, limit: 100, lookback_hours: hours, origin: origin || undefined, role: role || undefined, search: search || undefined, ticker: ticker || undefined })}`, { signal, timeoutMs: 30000 });
+    const next = await api<NewsPayload>(`/api/trading/news${query({ as_of: queryAsOf, before: before || undefined, before_id: beforeId || undefined, content, direction: direction || undefined, eligibility: eligibility || undefined, end_date: endDate || undefined, kind: kind === "all" ? undefined : kind, label_state: labelState || undefined, limit, lookback_hours: hours, origin: origin || undefined, query_id: before ? queryIdRef.current : undefined, role: role || undefined, search: search || undefined, start_date: startDate || undefined, ticker: ticker || undefined })}`, { signal, timeoutMs: 30000 });
     if (signal?.aborted) return;
+    queryIdRef.current = next.query_id;
     setError("");
     setPayload(next); setRows((current) => before ? [...current, ...next.rows.filter((row) => !current.some((item) => item.canonical_news_id === row.canonical_news_id))] : next.rows);
-  }, [asOf, content, direction, eligibility, hours, kind, labelState, live, origin, role, search, ticker]);
+  }, [asOf, content, direction, eligibility, endDate, hours, kind, labelState, limit, live, origin, role, search, startDate, ticker]);
   useEffect(() => { const controller = new AbortController(); setLoading(true); setError(""); load("", "", controller.signal).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); return () => controller.abort(); }, [load, refreshKey]);
   useEffect(() => {
     if (!live) { setLiveConnected(false); latestRevision.current = null; return; }
@@ -315,7 +324,7 @@ function useNewsQuery({ asOf, content, direction, eligibility, hours, kind, labe
     return () => { closed = true; window.clearTimeout(retryTimer); refreshController?.abort(); socket?.close(); };
   }, [live, load, ticker]);
   const loadMore = useCallback(() => { if (!payload?.next_before) return; setLoadingMore(true); load(payload.next_before, payload.next_before_id, undefined, payload.as_of).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoadingMore(false)); }, [load, payload]);
-  return { asOf: payload?.as_of, error, hasMore: Boolean(payload?.has_more), live, liveConnected, liveError, loadMore, loading, loadingMore, rows, windowStart: payload?.window_start };
+  return { asOf: payload?.as_of, error, hasMore: Boolean(payload?.has_more), live, liveConnected, liveError, loadMore, loading, loadingMore, queryId: payload?.query_id ?? "", rows, windowStart: payload?.window_start };
 }
 
 // Product UI reports user-relevant freshness only. Never render database/table
@@ -366,8 +375,9 @@ function stringList(value: unknown): string[] { return Array.isArray(value) ? va
 function compareNewsRecency(left: NewsRow, right: NewsRow) { return Date.parse(right.published_at_utc) - Date.parse(left.published_at_utc); }
 function newsTeaser(row: NewsRow) { const value = (row.text_preview ?? "").replace(/\s+/g, " ").trim(); if (!value) return ""; const titlePrefix = `Title: ${row.title}`; const withoutTitle = value.toLowerCase().startsWith(titlePrefix.toLowerCase()) ? value.slice(titlePrefix.length).trim() : value; return withoutTitle.replace(/^Teaser:\s*/i, "").replace(/^Body:\s*/i, "").trim(); }
 function selectionKey(canvasId: string) { return `quant-research-workbench.canvas.news-selection.${canvasId}`; }
-function readSelectedNews(canvasId: string) { return window.localStorage.getItem(selectionKey(canvasId)) || ""; }
-function selectNews(canvasId: string, newsId: string) { window.localStorage.setItem(selectionKey(canvasId), newsId); window.dispatchEvent(new CustomEvent(NEWS_SELECTION_EVENT, { detail: { canvasId, newsId } })); }
-function prepareNewsReader(newsId: string) { ensureNewsReaderCanvas(); selectNews(NEWS_READER_CANVAS_ID, newsId); }
-function newsPageUrl(newsId: string) { const url = new URL(focusCanvasUrl(NEWS_READER_CANVAS_ID, "news_detail")); url.searchParams.set("news", newsId); return url.toString(); }
-function openNewsPage(newsId: string) { prepareNewsReader(newsId); window.open(newsPageUrl(newsId), "quant-news-reader"); }
+function parseNewsSelection(value: string): NewsSelection { try { const parsed = JSON.parse(value) as Partial<NewsSelection>; if (parsed.newsId) return { newsId: parsed.newsId, publishedAt: parsed.publishedAt ?? "", queryId: parsed.queryId ?? "" }; } catch { if (value) return { newsId: value, publishedAt: "", queryId: "" }; } return { newsId: "", publishedAt: "", queryId: "" }; }
+function readSelectedNews(canvasId: string) { return parseNewsSelection(window.localStorage.getItem(selectionKey(canvasId)) || ""); }
+function selectNews(canvasId: string, selection: NewsSelection) { window.localStorage.setItem(selectionKey(canvasId), JSON.stringify(selection)); window.dispatchEvent(new CustomEvent(NEWS_SELECTION_EVENT, { detail: { canvasId, ...selection } })); }
+function prepareNewsReader(selection: NewsSelection) { ensureNewsReaderCanvas(); selectNews(NEWS_READER_CANVAS_ID, selection); }
+function newsPageUrl(selection: NewsSelection) { const url = new URL(focusCanvasUrl(NEWS_READER_CANVAS_ID, "news_detail")); url.searchParams.set("news", selection.newsId); return url.toString(); }
+function openNewsPage(row: NewsRow, queryId: string) { const selection = { newsId: row.canonical_news_id, publishedAt: row.published_at_utc, queryId }; prepareNewsReader(selection); window.open(newsPageUrl(selection), "quant-news-reader"); }

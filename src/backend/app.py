@@ -72,6 +72,10 @@ from src.backend.sec_canvas_service import (
     sec_filing_facts_payload,
     sec_filings_payload,
 )
+from src.backend.text_query_contract import (
+    TEXT_QUERY_SESSIONS,
+    resolve_text_query_window,
+)
 from src.backend.progress_model import build_progress_model
 from src.backend.qmd_gateway_client import (
     ENRICHED_QMD_TIMEFRAMES,
@@ -1378,23 +1382,27 @@ def service_news_detail(canonical_news_id: str) -> dict[str, Any]:
     }
 
 
-def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
+def trading_news_detail(canonical_news_id: str, *, published_at: str = "", query_id: str = "") -> dict[str, Any]:
     news_id = canonical_news_id.strip()
     if not news_id:
         raise HTTPException(status_code=400, detail="canonical_news_id is required")
     news_id_sql = sql_string(news_id)
+    hint = TEXT_QUERY_SESSIONS.hint(query_id, "news", news_id)
+    published_hint = published_at.strip() or hint.get("published_at_utc", "")
+    date_prewhere = ""
+    if published_hint:
+        try:
+            published_date = datetime.fromisoformat(published_hint.replace("Z", "+00:00")).date().isoformat()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="published_at must be an ISO-8601 timestamp") from exc
+        date_prewhere = f"PREWHERE n.published_date = toDate({sql_string(published_date)})"
     row_query = f"""
         SELECT
+            n.published_date, n.provider_article_id, n.source_revision_key,
             n.title, n.article_url, n.url_domain, n.author, n.channels, n.provider_tags, n.links,
-            formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
-            ifNull(r.rendered_text, '') AS text,
-            if(empty(ifNull(r.source_revision_key, '')), 'unrendered',
-               if(r.source_count = 0, 'title_only', 'rendered')) AS render_status
+            formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc
         FROM q_live.benzinga_news_event_v2 AS n FINAL
-        LEFT JOIN q_live.benzinga_news_rendered_v2 AS r FINAL
-            ON r.published_date=n.published_date
-            AND r.provider_article_id=n.provider_article_id
-            AND r.source_revision_key=n.source_revision_key
+        {date_prewhere}
         WHERE n.canonical_news_id = {news_id_sql}
         LIMIT 1
         FORMAT JSONEachRow
@@ -1402,25 +1410,41 @@ def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
     rows = [json.loads(line) for line in clickhouse_status_query(row_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
     if not rows:
         raise HTTPException(status_code=404, detail="News row not found")
+    source_row = rows[0]
+    source_date = str(source_row.get("published_date") or "")
+    render_query = f"""
+        SELECT rendered_text AS text,
+               if(source_count = 0, 'title_only', 'rendered') AS render_status
+        FROM q_live.benzinga_news_rendered_v2 FINAL
+        PREWHERE published_date = toDate({sql_string(source_date)})
+        WHERE provider_article_id = {sql_string(str(source_row.get('provider_article_id') or ''))}
+          AND source_revision_key = {sql_string(str(source_row.get('source_revision_key') or ''))}
+        LIMIT 1
+        FORMAT JSONEachRow
+    """
+    rendered_rows = [json.loads(line) for line in clickhouse_status_query(render_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
+    if rendered_rows:
+        source_row.update(rendered_rows[0])
+    else:
+        source_row.update({"render_status": "unrendered", "text": ""})
+    ticker_prewhere = f"PREWHERE t.published_date = toDate({sql_string(source_date)})" if source_date else ""
     ticker_query = f"""
         SELECT ticker
         FROM q_live.benzinga_news_ticker_v2 AS t FINAL
-        INNER JOIN q_live.benzinga_news_event_v2 AS n FINAL
-            ON n.published_date=t.published_date
-            AND n.provider_article_id=t.provider_article_id
-            AND n.source_revision_key=t.source_revision_key
+        {ticker_prewhere}
         WHERE t.canonical_news_id = {news_id_sql}
         ORDER BY t.ticker ASC
         FORMAT JSONEachRow
     """
     ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
-    source_row = rows[0]
     classification = classify_news(source_row, len(ticker_rows))
     try:
         scoped_by_source = load_scoped_news_labels(
             [news_id],
             query_rows=clickhouse_json_each_row,
             quote=sql_string,
+            source_end=str(source_row.get("published_at_utc") or ""),
+            source_start=str(source_row.get("published_at_utc") or ""),
         )
         intelligence_status = "ready"
     except Exception:
@@ -1466,15 +1490,24 @@ def trading_news_rows(
     direction: str = "",
     eligibility: str = "",
     label_state: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    query_id: str = "",
 ) -> dict[str, Any]:
     """Return a bounded point-in-time news page for Canvas news containers."""
     safe_limit = max(1, min(limit, 250))
-    safe_hours = max(1, min(lookback_hours, 24 * 365 * 5))
     try:
-        cutoff = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of.strip() else datetime.now(UTC)
-        cutoff = cutoff.replace(tzinfo=UTC) if cutoff.tzinfo is None else cutoff.astimezone(UTC)
+        window = resolve_text_query_window(
+            as_of=as_of,
+            lookback_hours=lookback_hours,
+            start_date=start_date,
+            end_date=end_date,
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="as_of must be an ISO-8601 timestamp") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    cutoff = window.end
+    window_start = window.start
+    safe_hours = max(1, int(((cutoff - window_start).total_seconds() + 3599) // 3600))
     try:
         cursor = datetime.fromisoformat(before.replace("Z", "+00:00")) if before.strip() else cutoff
         cursor = cursor.replace(tzinfo=UTC) if cursor.tzinfo is None else cursor.astimezone(UTC)
@@ -1511,7 +1544,6 @@ def trading_news_rows(
     normalized_table = "benzinga_news_event_v2"
     rendered_table = "benzinga_news_rendered_v2"
     ticker_table = "benzinga_news_ticker_v2"
-    window_start = cutoff - timedelta(hours=safe_hours)
     start_sql = f"toDateTime64({sql_string(window_start.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     end_sql = f"toDateTime64({sql_string(cutoff.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     start_date_sql = sql_string(window_start.date().isoformat())
@@ -1530,8 +1562,14 @@ def trading_news_rows(
     ]
     if safe_ticker:
         filters.append(f"has(n.tickers, {sql_string(safe_ticker)})")
-    label_conditions = [
+    label_prewhere = [
         "l.corpus = 'news'",
+        "l.source_timestamp >= window_start",
+        "l.source_timestamp <= window_end",
+    ]
+    if safe_ticker:
+        label_prewhere.append(f"l.ticker = {sql_string(safe_ticker)}")
+    label_conditions = [
         "l.labeling_version = 'scoped_text_labeling_v5'",
     ]
     if safe_role:
@@ -1552,7 +1590,16 @@ def trading_news_rows(
     label_exists = (
         "n.canonical_news_id IN (SELECT source_id "
         "FROM q_live.scoped_text_labels_v5 AS l FINAL "
+        f"PREWHERE {' AND '.join(label_prewhere)} "
         f"WHERE {' AND '.join(label_conditions)})"
+    )
+    quality_label_exists = (
+        "n.canonical_news_id IN (SELECT source_id "
+        "FROM q_live.scoped_text_labels_v5 AS l FINAL "
+        f"PREWHERE {' AND '.join(label_prewhere)} "
+        f"WHERE {' AND '.join(label_conditions)} "
+        "AND position(l.classification_json, 'quality_flags') > 0 "
+        "AND position(l.classification_json, '[]') = 0)"
     )
     if safe_role or safe_origin or safe_direction or safe_eligibility:
         filters.append(label_exists)
@@ -1561,13 +1608,7 @@ def trading_news_rows(
     elif safe_label_state == "pending":
         filters.append(f"NOT ({label_exists})")
     elif safe_label_state == "quality":
-        filters.append(
-            "n.canonical_news_id IN (SELECT source_id "
-            "FROM q_live.scoped_text_labels_v5 AS l FINAL "
-            f"WHERE {' AND '.join(label_conditions)} "
-            "AND position(l.classification_json, 'quality_flags') > 0 "
-            "AND position(l.classification_json, '[]') = 0)"
-        )
+        filters.append(quality_label_exists)
     search_term = search.strip()
     if search_term:
         escaped = sql_string(search_term)
@@ -1599,16 +1640,18 @@ def trading_news_rows(
     source_ticker_filter = (
         f"AND has(tickers, {sql_string(safe_ticker)})" if safe_ticker else ""
     )
+    source_label_filter = label_exists.replace("n.canonical_news_id", "canonical_news_id")
+    if safe_role or safe_origin or safe_direction or safe_eligibility or safe_label_state == "classified":
+        source_ticker_filter += f"\n              AND {source_label_filter}"
+    elif safe_label_state == "pending":
+        source_ticker_filter += f"\n              AND NOT ({source_label_filter})"
+    elif safe_label_state == "quality":
+        source_ticker_filter += f"\n              AND {quality_label_exists.replace('n.canonical_news_id', 'canonical_news_id')}"
     can_limit_event_source = not any(
         (
             search_term,
             safe_content != "all",
             safe_kind != "all",
-            safe_role,
-            safe_origin,
-            safe_direction,
-            safe_eligibility,
-            safe_label_state,
         )
     )
     source_limit_sql = (
@@ -1616,6 +1659,29 @@ def trading_news_rows(
         if can_limit_event_source
         else ""
     )
+    query_params = {
+        "content": safe_content,
+        "direction": safe_direction,
+        "eligibility": safe_eligibility,
+        "end": cutoff.isoformat(),
+        "kind": safe_kind,
+        "label_state": safe_label_state,
+        "limit": safe_limit,
+        "origin": safe_origin,
+        "role": safe_role,
+        "search": search_term,
+        "start": window_start.isoformat(),
+        "ticker": safe_ticker,
+    }
+    if query_id.strip():
+        existing_session = TEXT_QUERY_SESSIONS.get(query_id, "news")
+        if existing_session is None:
+            raise HTTPException(status_code=410, detail="This News query expired; run it again.")
+        if existing_session.params != query_params:
+            raise HTTPException(status_code=409, detail="This News page does not match its retained query.")
+        effective_query_id = query_id
+    else:
+        effective_query_id = TEXT_QUERY_SESSIONS.create("news", query_params)
     query = f"""
         WITH
             {start_sql} AS window_start,
@@ -1681,6 +1747,17 @@ def trading_news_rows(
         raise HTTPException(status_code=503, detail="News is temporarily unavailable") from exc
     has_more = len(rows) > safe_limit
     rows = rows[:safe_limit]
+    TEXT_QUERY_SESSIONS.remember(
+        effective_query_id,
+        "news",
+        {
+            str(row.get("canonical_news_id") or ""): {
+                "published_at_utc": str(row.get("published_at_utc") or "")
+            }
+            for row in rows
+            if row.get("canonical_news_id")
+        },
+    )
     try:
         scoped_by_source = load_scoped_news_labels(
             [str(row.get("canonical_news_id") or "") for row in rows],
@@ -1709,6 +1786,7 @@ def trading_news_rows(
         "has_more": has_more,
         "limit": safe_limit,
         "lookback_hours": safe_hours,
+        "query_id": effective_query_id,
         "next_before": str(rows[-1].get("published_at_utc") or "") if has_more and rows else "",
         "next_before_id": str(rows[-1].get("canonical_news_id") or "") if has_more and rows else "",
         "rows": rows,
@@ -2976,10 +3054,14 @@ def trading_news(
     label_state: str = "",
     before: str = "",
     before_id: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    query_id: str = "",
 ) -> dict[str, Any]:
     return trading_news_rows(
         as_of, lookback_hours, limit, search, ticker, content, kind, before,
         before_id, role, origin, direction, eligibility, label_state,
+        start_date, end_date, query_id,
     )
 
 
@@ -3036,8 +3118,8 @@ def trading_ticker_fact_history(symbol: str, metric: str, as_of: str | None = No
 
 
 @app.get("/api/trading/news/detail/{canonical_news_id}")
-def trading_news_detail_route(canonical_news_id: str) -> dict[str, Any]:
-    return trading_news_detail(canonical_news_id)
+def trading_news_detail_route(canonical_news_id: str, published_at: str = "", query_id: str = "") -> dict[str, Any]:
+    return trading_news_detail(canonical_news_id, published_at=published_at, query_id=query_id)
 
 
 @app.get("/api/trading/sec")
@@ -3051,9 +3133,12 @@ def trading_sec_filings(
     lookback_hours: int = 168,
     search: str = "",
     ticker: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    query_id: str = "",
 ) -> dict[str, Any]:
     try:
-        return sec_filings_payload(as_of=as_of, before=before, before_accession=before_accession, content=content, label=label, limit=limit, lookback_hours=lookback_hours, search=search, ticker=ticker)
+        return sec_filings_payload(as_of=as_of, before=before, before_accession=before_accession, content=content, label=label, limit=limit, lookback_hours=lookback_hours, search=search, ticker=ticker, start_date=start_date, end_date=end_date, query_id=query_id)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
@@ -3061,9 +3146,9 @@ def trading_sec_filings(
 
 
 @app.get("/api/trading/sec/detail/{cik}/{accession_number}")
-def trading_sec_filing_detail(cik: str, accession_number: str, as_of: str | None = None) -> dict[str, Any]:
+def trading_sec_filing_detail(cik: str, accession_number: str, as_of: str | None = None, accepted_at: str = "", query_id: str = "") -> dict[str, Any]:
     try:
-        payload = sec_filing_detail_payload(cik, accession_number, as_of=as_of)
+        payload = sec_filing_detail_payload(cik, accession_number, as_of=as_of, accepted_at=accepted_at, query_id=query_id)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:

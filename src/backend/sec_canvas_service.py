@@ -19,6 +19,7 @@ from src.backend.scoped_text_labels import (
     load_scoped_sec_labels,
     scoped_news_summary,
 )
+from src.backend.text_query_contract import TEXT_QUERY_SESSIONS, resolve_text_query_window
 
 
 CIK_PATTERN = re.compile(r"^\d{1,10}$")
@@ -55,11 +56,21 @@ def sec_filings_payload(
     lookback_hours: int = 168,
     search: str = "",
     ticker: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    query_id: str = "",
 ) -> dict[str, Any]:
-    cutoff = parse_as_of(as_of)
+    window = resolve_text_query_window(
+        as_of=as_of,
+        lookback_hours=lookback_hours,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    cutoff = window.end
+    window_start = window.start
     safe_database = validate_database(database)
     safe_limit = max(1, min(int(limit), 200))
-    safe_hours = max(1, min(int(lookback_hours), 24 * 366))
+    safe_hours = max(1, int(((cutoff - window_start).total_seconds() + 3599) // 3600))
     safe_label = label.strip().lower()
     if safe_label and not LABEL_PATTERN.fullmatch(safe_label):
         raise ValueError("SEC filing label is invalid.")
@@ -68,6 +79,24 @@ def sec_filings_payload(
         raise ValueError("SEC content must be all, readable, or xbrl.")
     safe_ticker = normalize_ticker(ticker) if ticker.strip() else ""
     before_time = parse_optional_as_of(before)
+    query_params = {
+        "content": safe_content,
+        "end": cutoff.isoformat(),
+        "label": safe_label,
+        "limit": safe_limit,
+        "search": search.strip(),
+        "start": window_start.isoformat(),
+        "ticker": safe_ticker,
+    }
+    if query_id.strip():
+        existing_session = TEXT_QUERY_SESSIONS.get(query_id, "sec")
+        if existing_session is None:
+            raise ValueError("This SEC query expired; run it again.")
+        if existing_session.params != query_params:
+            raise ValueError("This SEC page does not match its retained query.")
+        effective_query_id = query_id
+    else:
+        effective_query_id = TEXT_QUERY_SESSIONS.create("sec", query_params)
     client = clickhouse_client(timeout_seconds=SEC_QUERY_TIMEOUT_SECONDS)
     rows = clickhouse_rows(
         client,
@@ -82,6 +111,7 @@ def sec_filings_payload(
             before=before_time,
             before_accession=before_accession,
             content=safe_content,
+            window_start=window_start,
         ),
     )
     has_more = len(rows) > safe_limit
@@ -103,25 +133,45 @@ def sec_filings_payload(
     except Exception:
         labels = [{"id": key, "label": value} for key, value in SEC_LABELS.items()]
     last = rows[-1] if rows else {}
+    TEXT_QUERY_SESSIONS.remember(
+        effective_query_id,
+        "sec",
+        {
+            f"{row.get('cik') or ''}/{row.get('accession_number') or ''}": {
+                "accepted_at_utc": str(row.get("accepted_at_utc") or "")
+            }
+            for row in rows
+            if row.get("cik") and row.get("accession_number")
+        },
+    )
     return {
         "as_of": cutoff.isoformat(),
         "has_more": has_more,
         "labels": labels,
         "next_before": str(last.get("accepted_at_utc") or ""),
         "next_before_accession": str(last.get("accession_number") or ""),
+        "query_id": effective_query_id,
         "rows": rows,
         "intelligence_status": intelligence_status,
-        "window_start": (cutoff - timedelta(hours=safe_hours)).isoformat(),
+        "window_start": window_start.isoformat(),
     }
 
 
-def sec_filing_detail_payload(cik: str, accession_number: str, *, as_of: str | None = None, database: str = "q_live") -> dict[str, Any]:
+def sec_filing_detail_payload(cik: str, accession_number: str, *, as_of: str | None = None, database: str = "q_live", accepted_at: str = "", query_id: str = "") -> dict[str, Any]:
     cutoff = parse_as_of(as_of)
     safe_database = validate_database(database)
     normalized_cik = normalize_cik(cik)
     accession = normalize_accession(accession_number)
+    hint = TEXT_QUERY_SESSIONS.hint(query_id, "sec", f"{normalized_cik}/{accession}")
+    accepted_hint = accepted_at.strip() or hint.get("accepted_at_utc", "")
+    accepted_date = ""
+    if accepted_hint:
+        try:
+            accepted_date = datetime.fromisoformat(accepted_hint.replace("Z", "+00:00")).date().isoformat()
+        except ValueError as exc:
+            raise ValueError("accepted_at must be an ISO-8601 timestamp.") from exc
     client = clickhouse_client()
-    filing_rows = clickhouse_rows(client, filing_detail_sql(normalized_cik, accession, cutoff, safe_database))
+    filing_rows = clickhouse_rows(client, filing_detail_sql(normalized_cik, accession, cutoff, safe_database, accepted_date=accepted_date))
     if not filing_rows:
         return {"as_of": cutoff.isoformat(), "status": "not_found", "cik": normalized_cik, "accession_number": accession}
     filing = filing_rows[0]
@@ -394,10 +444,10 @@ def taxonomy_labels_sql(database: str) -> str:
     """
 
 
-def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, lookback_hours: int, search: str, ticker: str, before: datetime | None, before_accession: str, content: str = "all") -> str:
+def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, lookback_hours: int, search: str, ticker: str, before: datetime | None, before_accession: str, content: str = "all", window_start: datetime | None = None) -> str:
     db = quote_ident(database)
     instant = sql_string(clickhouse_timestamp(cutoff))
-    start = sql_string(clickhouse_timestamp(cutoff - timedelta(hours=lookback_hours)))
+    start = sql_string(clickhouse_timestamp(window_start or (cutoff - timedelta(hours=lookback_hours))))
     ticker_bridge = ""
     ticker_source_filter = ""
     ticker_join = ""
@@ -649,9 +699,10 @@ def identity_sql(ciks: list[str], cutoff: datetime, database: str) -> str:
     """
 
 
-def filing_detail_sql(cik: str, accession: str, cutoff: datetime, database: str) -> str:
+def filing_detail_sql(cik: str, accession: str, cutoff: datetime, database: str, *, accepted_date: str = "") -> str:
     db = quote_ident(database)
     instant = sql_string(clickhouse_timestamp(cutoff))
+    accepted_prewhere = f"PREWHERE toDate(f.accepted_at_utc) = toDate({sql_string(accepted_date)})" if accepted_date else ""
     return f"""
         WITH {taxonomy_cte_sql(database)}
         SELECT f.filing_id, f.accession_number, f.accession_number_compact, toString(f.cik) AS cik, f.company_name,
@@ -663,6 +714,7 @@ def filing_detail_sql(cik: str, accession: str, cutoff: datetime, database: str)
                t.affected_security_scope, t.impact_rationale, t.taxonomy_version
         FROM {db}.sec_filing_v3 AS f FINAL
         LEFT JOIN approved_form_taxonomy AS t ON t.form_key = upper(f.form_type)
+        {accepted_prewhere}
         WHERE toString(f.cik) = {sql_string(cik)} AND f.accession_number = {sql_string(accession)}
           AND f.accepted_at_utc <= parseDateTime64BestEffort({instant})
         LIMIT 1 FORMAT JSONEachRow

@@ -337,7 +337,7 @@ type CanvasLiveChartState = {
 
 type CanvasChartSettings = { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
 type ContainerSettings = {
-  version: 22;
+  version: 23;
   chart: CanvasChartSettings;
   charts_quotes: {
     daily: CanvasChartSettings;
@@ -351,7 +351,7 @@ type ContainerSettings = {
   closed_trades: { limit: number; showFees: boolean };
   activity: { limit: number };
   performance_journal: { limit: number; showRiskMultiple: boolean };
-  news: { content: string; kind: string; lookbackHours: number; ticker: string };
+  news: { content: string; endDate: string; kind: string; limit: number; lookbackHours: number; rangeMode: "custom" | "preset"; startDate: string; ticker: string };
   ticker_news: { lookbackHours: number; showTeaser: boolean };
   news_detail: Record<string, never>;
   orders: { limit: number; showOrderIds: boolean };
@@ -359,7 +359,7 @@ type ContainerSettings = {
   scanner: MarketScannerSettings;
   signal_stream: SignalStreamSettings;
   watchlist: WatchlistSettings;
-  sec: { content: string; label: string; lookbackHours: number; ticker: string };
+  sec: { content: string; endDate: string; label: string; limit: number; lookbackHours: number; rangeMode: "custom" | "preset"; startDate: string; ticker: string };
   ticker_sec: { lookbackHours: number };
   sec_detail: Record<string, never>;
   strategy: { showSignals: boolean };
@@ -372,7 +372,7 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 22,
+  version: 23,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite", "strategy.presentation"] },
   charts_quotes: {
     main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd", "strategy.presentation"] },
@@ -386,7 +386,7 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   closed_trades: { limit: 20, showFees: true },
   activity: { limit: 30 },
   performance_journal: { limit: 100, showRiskMultiple: true },
-  news: { content: "all", kind: "all", lookbackHours: 6, ticker: "" },
+  news: { content: "all", endDate: "", kind: "all", limit: 100, lookbackHours: 6, rangeMode: "preset", startDate: "", ticker: "" },
   ticker_news: { lookbackHours: 72, showTeaser: true },
   news_detail: {},
   orders: { limit: 6, showOrderIds: true },
@@ -394,7 +394,7 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   scanner: { columns: [], customColumns: [], limit: 250, preset: "Overview" },
   signal_stream: { columns: [], customColumns: [], limit: 250, preset: "All" },
   watchlist: { columns: [], customColumns: [], limit: 50, ownerKind: "user", ownerName: "My watchlist", symbols: ["AAPL", "MSFT", "NVDA"] },
-  sec: { content: "all", label: "", lookbackHours: 168, ticker: "" },
+  sec: { content: "all", endDate: "", label: "", limit: 100, lookbackHours: 168, rangeMode: "preset", startDate: "", ticker: "" },
   ticker_sec: { lookbackHours: 720 },
   sec_detail: {},
   strategy: { showSignals: true },

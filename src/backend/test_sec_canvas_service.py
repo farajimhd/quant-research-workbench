@@ -12,6 +12,7 @@ from src.backend.sec_canvas_service import (
     detail_text_metadata_sql,
     detail_text_page_sql,
     filing_list_sql,
+    filing_detail_sql,
     filing_document_ids_sql,
     normalize_accession,
     normalize_cik,
@@ -62,6 +63,14 @@ class SecCanvasServiceTests(unittest.TestCase):
         self.assertIn("argMax(source_text_char_count", original_metadata)
         self.assertIn("substringUTF8(argMax(source_text", original_page)
         self.assertIn(", 32001, 16000)", original_page)
+
+    def test_custom_list_and_detail_dates_bound_the_filing_source(self) -> None:
+        cutoff = datetime(2026, 7, 18, 14, 0, tzinfo=UTC)
+        start = datetime(2024, 1, 2, 5, 0, tzinfo=UTC)
+        listing = filing_list_sql(cutoff=cutoff, database="q_live", label="", limit=26, lookback_hours=24, search="", ticker="", before=None, before_accession="", window_start=start)
+        detail = filing_detail_sql("0000320193", "0000320193-25-000079", cutoff, "q_live", accepted_date="2025-07-10")
+        self.assertIn("accepted_at_utc >= parseDateTime64BestEffort('2024-01-02T05:00:00.000+00:00')", listing)
+        self.assertIn("PREWHERE toDate(f.accepted_at_utc) = toDate('2025-07-10')", detail)
 
     def test_detail_entities_include_all_filing_roles(self) -> None:
         cutoff = datetime(2026, 7, 18, 14, 0, tzinfo=UTC)
