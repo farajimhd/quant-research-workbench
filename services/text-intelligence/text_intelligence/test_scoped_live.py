@@ -4,7 +4,7 @@ import unittest
 import asyncio
 from unittest import mock
 
-from .scoped_live import ScopedTextRuntime, TextDocumentNotice
+from .scoped_live import LoadedSource, ScopedTextRuntime, TextDocumentNotice
 
 
 class ScopedTextRuntimeTests(unittest.TestCase):
@@ -115,7 +115,7 @@ class ScopedTextRuntimeTests(unittest.TestCase):
                     corpus="sec", source_id="0000000001-26-000001"
                 )
             )
-        runtime._load_sec(
+        loaded = runtime._load_sec(
             TextDocumentNotice(
                 corpus="sec",
                 source_id="0000000001-26-000001",
@@ -126,6 +126,73 @@ class ScopedTextRuntimeTests(unittest.TestCase):
         self.assertIn("PREWHERE cik='0000000001'", client.sql)
         self.assertIn("accession_number='0000000001-26-000001'", client.sql)
         self.assertIn("max_execution_time=25", client.sql)
+        self.assertEqual(loaded.disposition, "not_ready")
+
+    def test_sec_non_narrative_document_is_durably_ineligible(self) -> None:
+        class Client:
+            calls = 0
+
+            def iter_json_each_row(self, _sql):
+                self.calls += 1
+                if self.calls == 1:
+                    return iter(
+                        (
+                            {
+                                "filing_id": "filing-1",
+                                "cik": "0001217286",
+                                "accession_number": "0002071691-26-017010",
+                                "document_partition": 12,
+                                "source_timestamp": "2026-07-28 14:09:56",
+                                "company_name": "Example Fund",
+                                "form_type": "NPORT-P",
+                                "filing_items": "",
+                                "filing_date": "2026-07-28",
+                                "report_date": "2026-06-30",
+                                "accepted_at_source": "live",
+                                "source_content_sha256": "abc123",
+                            },
+                        )
+                    )
+                return iter(
+                    (
+                        {
+                            "document_id": "primary",
+                            "cik": "0001217286",
+                            "accession_number": "0002071691-26-017010",
+                            "sequence_number": "1",
+                            "document_type": "NPORT-P",
+                            "document_role": "primary_document",
+                            "description": "",
+                            "document_name": "primary_doc.xml",
+                        },
+                    )
+                )
+
+        runtime = ScopedTextRuntime(
+            client=Client(), database="q_live", live_news=mock.Mock()
+        )
+        notice = TextDocumentNotice(
+            corpus="sec",
+            source_id="0002071691-26-017010",
+            source_cik="0001217286",
+        )
+
+        loaded = runtime._load_sec(notice)
+
+        self.assertEqual(loaded.disposition, "ineligible")
+        self.assertEqual(len(loaded.source_hash), 64)
+        with (
+            mock.patch.object(runtime, "_load_source", return_value=loaded),
+            mock.patch.object(runtime, "_status_is_current", return_value=False),
+            mock.patch.object(runtime, "_write_status") as write_status,
+        ):
+            outcome = runtime._process_notice(notice)
+        self.assertEqual(outcome, "skipped_ineligible")
+        self.assertEqual(runtime.metrics["deterministic_ineligible"], 1)
+        self.assertEqual(runtime.metrics["deterministic_completed"], 1)
+        write_status.assert_called_once_with(
+            notice, loaded.source_hash, "complete", 0, 0, ""
+        )
 
     def test_active_failures_clear_only_when_same_source_recovers(self) -> None:
         runtime = ScopedTextRuntime(

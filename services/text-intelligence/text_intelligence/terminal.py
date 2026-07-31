@@ -173,6 +173,8 @@ def counters_panel(metrics: dict[str, Any]) -> Panel:
         fmt(metrics.get("deterministic_completed")),
         (
             f"already current {fmt(metrics.get('deterministic_skipped_current'))}; "
+            f"ineligible {fmt(metrics.get('deterministic_ineligible'))}; "
+            f"not ready {fmt(metrics.get('deterministic_deferred_not_ready'))}; "
             f"failed {fmt(metrics.get('deterministic_failed'))}; "
             f"active failures {fmt(metrics.get('deterministic_active_failure_count'))}"
         ),

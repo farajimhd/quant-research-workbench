@@ -19,6 +19,9 @@ from research.mlops.clickhouse import (
     insert_json_each_row,
     sql_string,
 )
+from research.text_intelligence.candidate_inventory_v1.config import (
+    CandidateInventoryConfig,
+)
 from research.text_intelligence.scoped_labeling_v1.news_identity import (
     NewsIssuerResolver,
     load_news_issuer_resolver,
@@ -41,6 +44,9 @@ from research.text_intelligence.scoped_labeling_v1.pipeline import (
 from research.text_intelligence.scoped_labeling_v1.schema import (
     SCOPED_LABELING_VERSION,
     ScopedLabel,
+)
+from research.text_intelligence.scoped_labeling_v1.sec_extractor import (
+    sec_document_labeling_eligible,
 )
 
 from .live import LiveCandidate, LiveNewsRuntime, PreparedNewsCandidate
@@ -65,6 +71,7 @@ class LoadedSource:
     notice: TextDocumentNotice
     rows: tuple[dict[str, Any], ...]
     source_hash: str
+    disposition: str = "ready"
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +111,8 @@ class ScopedTextRuntime:
             "deterministic_queued": 0,
             "deterministic_completed": 0,
             "deterministic_skipped_current": 0,
+            "deterministic_ineligible": 0,
+            "deterministic_deferred_not_ready": 0,
             "deterministic_failed": 0,
             "deterministic_news_labels": 0,
             "deterministic_sec_labels": 0,
@@ -203,7 +212,16 @@ class ScopedTextRuntime:
                 self.metrics["deterministic_last_success_at_utc"] = now
                 self.metrics["deterministic_last_error_status"] = "resolved"
                 self._resolve_failure(item.notice)
-                self._record_recent(item.notice, str(result), "complete", "")
+                self._record_recent(
+                    item.notice,
+                    str(result),
+                    "waiting" if result == "deferred_not_ready" else "complete",
+                    (
+                        "Canonical rendered text is not ready; reconciliation will retry."
+                        if result == "deferred_not_ready"
+                        else ""
+                    ),
+                )
             except Exception as exc:  # noqa: BLE001
                 self.metrics["deterministic_failed"] = int(
                     self.metrics["deterministic_failed"]
@@ -255,12 +273,32 @@ class ScopedTextRuntime:
     ) -> str:
         self._set_worker_stage(worker_index, "loading_source")
         loaded = self._load_source(notice)
+        if loaded.disposition == "not_ready":
+            self.metrics["deterministic_deferred_not_ready"] = int(
+                self.metrics["deterministic_deferred_not_ready"]
+            ) + 1
+            return "deferred_not_ready"
+        self._set_worker_stage(worker_index, "checking_status")
+        source_is_current = self._status_is_current(notice, loaded.source_hash)
+        if loaded.disposition == "ineligible":
+            if source_is_current:
+                self.metrics["deterministic_skipped_current"] = int(
+                    self.metrics["deterministic_skipped_current"]
+                ) + 1
+                return "skipped_current"
+            self._set_worker_stage(worker_index, "writing_status")
+            self._write_status(notice, loaded.source_hash, "complete", 0, 0, "")
+            self.metrics["deterministic_ineligible"] = int(
+                self.metrics["deterministic_ineligible"]
+            ) + 1
+            self.metrics["deterministic_completed"] = int(
+                self.metrics["deterministic_completed"]
+            ) + 1
+            return "skipped_ineligible"
         if not loaded.rows:
             raise RuntimeError(
                 f"canonical {notice.corpus} source is not ready: {notice.source_id}"
             )
-        self._set_worker_stage(worker_index, "checking_status")
-        source_is_current = self._status_is_current(notice, loaded.source_hash)
         if source_is_current and not forward_current:
             self.metrics["deterministic_skipped_current"] = int(
                 self.metrics["deterministic_skipped_current"]
@@ -500,7 +538,8 @@ SELECT filing_id,cik,accession_number,
        toString(accepted_at_utc) source_timestamp,
        ifNull(company_name,'') company_name,ifNull(form_type,'') form_type,
        ifNull(items,'') filing_items,ifNull(toString(filing_date),'') filing_date,
-       ifNull(toString(report_date),'') report_date,accepted_at_source
+       ifNull(toString(report_date),'') report_date,accepted_at_source,
+       source_content_sha256
 FROM `{self.database}`.`sec_filing_v3` FINAL
 PREWHERE cik={sql_string(cik)}
 WHERE accession_number={sql_string(notice.source_id)}
@@ -509,9 +548,41 @@ SETTINGS max_execution_time=25
 FORMAT JSONEachRow
 """))
         if not filings:
-            return LoadedSource(notice, (), "")
+            return LoadedSource(notice, (), "", "not_ready")
         filing = filings[0]
         cik = str(filing["cik"])
+        partition = int(filing["document_partition"])
+        config = CandidateInventoryConfig()
+        metadata = list(self.client.iter_json_each_row(f"""
+SELECT document_id,cik,accession_number,sequence_number,
+       document_type,document_role,description,document_name
+FROM
+(
+ SELECT document_id,cik,accession_number,sequence_number,
+        document_type,document_role,description,document_name
+ FROM `{self.database}`.`{config.sec_document_table}`
+ PREWHERE cityHash64(cik) % 64 = {partition}
+   AND cik={sql_string(cik)}
+   AND accession_number={sql_string(notice.source_id)}
+ ORDER BY inserted_at DESC
+ LIMIT 1 BY cik,accession_number,sequence_number,document_id
+)
+ORDER BY sequence_number,document_id
+SETTINGS max_execution_time=25
+FORMAT JSONEachRow
+"""))
+        if not metadata:
+            return LoadedSource(notice, (), "", "not_ready")
+        eligible_metadata = [
+            row for row in metadata if sec_document_labeling_eligible(row)
+        ]
+        if not eligible_metadata:
+            return LoadedSource(
+                notice,
+                (),
+                _ineligible_sec_hash(filing, metadata),
+                "ineligible",
+            )
         with self.sec_mapping_lock:
             if cik not in self.sec_mappings:
                 extend_sec_ticker_mappings(
@@ -523,9 +594,11 @@ FORMAT JSONEachRow
                 self.client,
                 self.database,
                 ((cik, str(filing["accession_number"])),),
-                partition=int(filing["document_partition"]),
+                partition=partition,
             )
         )
+        if not documents:
+            return LoadedSource(notice, (), "", "not_ready")
         for row in documents:
             row.update(
                 {
@@ -831,6 +904,25 @@ def _sec_document_set_hash(documents: list[dict[str, Any]]) -> str:
     material = "|".join(
         f"{row['source_id']}:{row.get('text_sha256') or ''}"
         for row in sorted(documents, key=lambda item: str(item["source_id"]))
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
+def _ineligible_sec_hash(
+    filing: dict[str, Any], metadata: list[dict[str, Any]]
+) -> str:
+    documents = "|".join(
+        f"{row.get('document_id') or ''}:{row.get('document_type') or ''}"
+        for row in sorted(metadata, key=lambda item: str(item.get("document_id") or ""))
+    )
+    material = "|".join(
+        (
+            "ineligible",
+            str(filing.get("cik") or ""),
+            str(filing.get("accession_number") or ""),
+            str(filing.get("source_content_sha256") or ""),
+            documents,
+        )
     )
     return hashlib.sha256(material.encode()).hexdigest()
 

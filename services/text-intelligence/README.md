@@ -18,6 +18,10 @@ source hash. Reconciliation therefore repairs missed notices and reprocesses
 new News or SEC revisions without repeating current work. Deterministic labels
 run regardless of trading state. Only the optional live News model path
 requires an active Live session and point-in-time QMD price eligibility.
+SEC filings whose canonical document taxonomy is intentionally non-narrative
+are durably completed with zero labels and a revision-sensitive ineligibility
+hash. Eligible filings whose rendered text is not ready are deferred for the
+next reconciliation cycle rather than misreported as processing failures.
 
 ## Responsibilities
 
