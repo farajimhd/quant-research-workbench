@@ -152,19 +152,23 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
       <button aria-label="Refresh news" className="toolbar-button compact" onClick={() => setRefreshKey((value) => value + 1)} title="Refresh" type="button"><RefreshCw size={13} /></button>
     </form>
     <NewsStatus state={state} />
-    <div className="news-table-wrap">
-      <table className="news-table news-intelligence-table"><thead><tr><th>Time</th><th>Tickers</th><th>Role</th><th>Origin</th><th>Direction</th><th>Event</th><th>Headline</th><th>Eligibility</th><th>Text</th></tr></thead><tbody>
-        {state.rows.map((row) => <tr key={row.canonical_news_id} tabIndex={0}>
-          <td><MarketTime className="news-row-time" dateStyle="short" includeDate value={row.published_at_utc} /></td>
-          <td><TickerList presentations={presentations} tickers={row.ticker_link_sample} /></td>
-          <td><ScopedClass summary={row.scoped_summary} /></td>
-          <td><span className="news-origin">{readableLabel(row.scoped_summary?.source_origin || row.news_origin || "Unknown")}</span></td>
-          <td><ScopedDirection summary={row.scoped_summary} salient /></td>
-          <td><ScopedConcepts concepts={row.scoped_summary?.event_concepts} compact /></td>
-          <td><button className="news-headline-button" onClick={() => openNewsPage(row, state.queryId)} type="button"><strong>{row.title || "Untitled story"}</strong>{newsTeaser(row) ? <small>{newsTeaser(row)}</small> : null}<span className="news-headline-source">{row.url_domain || "News"}</span></button></td>
-          <td><EligibilityMarks summary={row.scoped_summary} /></td><td><NewsTextState row={row} /></td>
-        </tr>)}
-      </tbody></table>
+    <div className="news-table-wrap intelligence-feed-scroll">
+      <div className="intelligence-feed news-intelligence-feed" role="list">
+        {state.rows.map((row) => {
+          const tone = newsTemperature(row.published_at_utc, Date.parse(state.asOf || asOf));
+          const directionValue = normalizeSemanticDirection(row.scoped_summary?.semantic_direction);
+          return <article className="intelligence-feed-row" data-direction={directionValue} key={row.canonical_news_id} role="listitem">
+            <div className="intelligence-time-block"><NewsTemperatureTag tone={tone} /><MarketTime className="news-row-time" dateStyle="short" includeDate value={row.published_at_utc} /></div>
+            <div className="intelligence-identity-block"><span className="intelligence-eyebrow">Affected</span><TickerList presentations={presentations} tickers={row.ticker_link_sample} /></div>
+            <div className="intelligence-main-block">
+              <div className="intelligence-meta-line"><ScopedClass summary={row.scoped_summary} /><span className="news-origin">{readableLabel(row.scoped_summary?.source_origin || row.news_origin || "Unknown")}</span><ScopedConcepts concepts={row.scoped_summary?.event_concepts} /></div>
+              <button className="news-headline-button" onClick={() => openNewsPage(row, state.queryId)} type="button"><strong>{row.title || "Untitled story"}</strong>{newsTeaser(row) ? <small>{newsTeaser(row)}</small> : null}</button>
+              <div className="intelligence-support-line"><span>{row.url_domain || "News"}</span><NewsTextState row={row} /></div>
+            </div>
+            <div className="intelligence-signal-block"><span className="intelligence-eyebrow">Text direction</span><ScopedDirection summary={row.scoped_summary} salient /><div className="intelligence-eligibility-line"><span>Use</span><EligibilityMarks summary={row.scoped_summary} /></div></div>
+          </article>;
+        })}
+      </div>
       {!state.loading && !state.rows.length ? <NewsEmpty label="No news matches this query." /> : null}
     </div>
     {state.hasMore ? <button className="news-load-more" disabled={state.loadingMore} onClick={state.loadMore} type="button">{state.loadingMore ? "Loading…" : "Load older news"}</button> : null}
