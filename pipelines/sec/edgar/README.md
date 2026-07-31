@@ -97,9 +97,15 @@ mismatched archive members, inserts and verifies the complete subject-company
 filing/document/source/rendered lineage, invalidates stale v3 model rows, and
 synchronously deletes stale entity, archive-accession, and filing-parent keys
 only after the corrected lineage is complete. The exact live-ingest manifest
-identity is reconciled at the same verified boundary. This makes the repair
-restart-safe while retaining the reporting-person relationship in
-`sec_filing_entity_v3`.
+identity is reconciled at the same verified boundary. If a prior repair stopped
+after corrected products were committed or stale children were removed, the
+next run discovers the exact manifest/inventory source-version mismatch,
+revalidates the completed replacement, batches stale-key cleanup, and appends a
+corrected manifest version without repeating extraction. The integrity audit
+accepts a live-source relationship only when its completed manifest, current
+accession inventory, revision identity, primary CIK, and filing content hash
+agree. This makes the repair restart-safe while retaining the reporting-person
+relationship in `sec_filing_entity_v3`.
 
 The acceptance repair measures the number of corrected monthly target partitions
 before writing. Its default maintenance bound is 1,000 partitions, which permits

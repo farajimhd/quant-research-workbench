@@ -17,6 +17,7 @@ from pipelines.market_sip.events import clickhouse_build_text_tokens as tokens
 from pipelines.sec.edgar import sec_acceptance_raw_metadata_repair as acceptance_repair
 from pipelines.sec.edgar import sec_archive_identity_audit as archive_identity
 from pipelines.sec.edgar import sec_archive_identity_repair as identity_repair
+from pipelines.sec.edgar import sec_integrity_audit as integrity_audit
 from pipelines.sec.edgar import sec_acceptance_fragment_fill as acceptance_fragment
 from pipelines.sec.edgar import sec_acceptance_backfill_build as acceptance_build
 from pipelines.sec.edgar import sec_bulk_clickhouse_ingest as bulk_ingest
@@ -486,6 +487,18 @@ ISSUER:
             identity_repair.identity_predicate("0001765569", "0000320335-26-000210", cik_column="primary_cik"),
             "primary_cik='0001765569' AND accession_number='0000320335-26-000210'",
         )
+        self.assertEqual(
+            identity_repair.identity_keys_predicate(
+                [
+                    ("0001765569", "0000320335-26-000210"),
+                    ("0002084264", "0002084264-26-000006"),
+                ],
+                cik_column="primary_cik",
+            ),
+            "(primary_cik,accession_number) IN "
+            "(('0001765569','0000320335-26-000210'),"
+            "('0002084264','0002084264-26-000006'))",
+        )
 
     def test_identity_repair_preserves_live_source_revision_in_worker_payload(self) -> None:
         args = SimpleNamespace(
@@ -546,8 +559,102 @@ ISSUER:
         )
 
         self.assertEqual(result, {"candidates": 1, "updated_rows": 1})
-        self.assertIn("UPDATE primary_cik='0000320335'", statements[2])
-        self.assertIn("SETTINGS mutations_sync=2", statements[2])
+        self.assertIn("INSERT INTO `q_live`.`sec_filing_live_ingest_manifest_v3`", statements[2])
+        self.assertIn("c.new_primary_cik", statements[2])
+        self.assertNotIn("ALTER TABLE", statements[2])
+
+    def test_integrity_audit_accepts_only_exact_completed_live_lineage(self) -> None:
+        details = {
+            "filing_rows": "17",
+            "accession_prefix_differs_from_cik": "12",
+            "confirmed_exact_relationships": "0",
+            "accession_known_under_other_cik_only": "0",
+            "accession_absent_from_submissions": "17",
+            "separately_source_backed_relationships": "17",
+            "live_manifest_backed_relationships": "16",
+            "unsupported_relationships": "0",
+        }
+        with (
+            mock.patch.object(
+                integrity_audit,
+                "table_exists",
+                side_effect=[True, True, True, True],
+            ),
+            mock.patch.object(integrity_audit, "query_one", return_value=details) as query,
+        ):
+            result = integrity_audit.check_submissions_relationships(
+                object(),
+                "q_live",
+                "sec_core",
+                "sec_bulk_mirror_filing_v3",
+                "sec_submissions_filing_overlay_v3",
+            )[0]
+
+        sql = query.call_args.args[1]
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("m.status = 'complete'", sql)
+        self.assertIn("m.source_version_key = i.source_version_key", sql)
+        self.assertIn("m.primary_cik = i.primary_cik", sql)
+        self.assertIn("m.source_revision_at = i.source_revision_at", sql)
+        self.assertIn("q.source_content_sha256 = la.source_content_sha256", sql)
+        self.assertIn("i.source_kind = 'live_accession_text'", sql)
+        self.assertIn("live_manifest_backed_relationships", sql)
+
+    def test_identity_repair_discovers_verified_interrupted_manifest_cleanup(self) -> None:
+        statements: list[str] = []
+        payload = {
+            "stored_cik": "0002084264",
+            "stored_accession": "0002084264-26-000006",
+            "sgml_cik": "0002086716",
+            "sgml_accession": "0002084264-26-000006",
+            "source_archive_date": "2026-07-30",
+            "member": "0002084264-26-000006.txt",
+            "archive_path": "D:/live/0002084264-26-000006.txt",
+            "expected_document_count": 2,
+            "source_version_key": "revision",
+            "source_revision_at": "2026-07-30 01:33:00.000",
+            "source_revision_rank": 1,
+            "source_revision_kind": "live_feed_occurrence",
+            "pac_event_id": "",
+            "recovery_kind": "verified_manifest_identity_drift",
+        }
+
+        class FakeClient:
+            def execute(self, sql: str) -> str:
+                statements.append(sql)
+                return json.dumps(payload) + "\n"
+
+        with mock.patch.object(identity_repair.identity_audit, "table_exists", return_value=True):
+            rows = identity_repair.discover_interrupted_cleanup_candidates(
+                FakeClient(),
+                SimpleNamespace(database="q_live"),
+            )
+
+        self.assertEqual(rows, [payload])
+        self.assertIn("m.primary_cik != i.primary_cik", statements[0])
+        self.assertIn("m.source_version_key = i.source_version_key", statements[0])
+        self.assertIn("i.source_revision_kind = 'live_feed_occurrence'", statements[0])
+
+    def test_identity_repair_revalidates_recovery_before_cleanup(self) -> None:
+        client = mock.Mock()
+        client.execute.return_value = json.dumps(
+            {"filings": 1, "entities": 2, "documents": 3, "rendered": 2, "skips": 1}
+        )
+        candidate = {
+            "sgml_cik": "0002086716",
+            "sgml_accession": "0002084264-26-000006",
+            "source_version_key": "revision",
+            "expected_document_count": 3,
+        }
+
+        result = identity_repair.verify_existing_replacements(client, "q_live", [candidate])
+
+        self.assertEqual(
+            result,
+            {"filings": 1, "entities": 2, "documents": 3, "rendered": 2, "skips": 1},
+        )
+        sql = client.execute.call_args.args[0]
+        self.assertIn("source_version_key='revision'", sql)
 
     def test_archive_identity_table_probe_uses_string_literals(self) -> None:
         statements: list[str] = []

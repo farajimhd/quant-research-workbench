@@ -86,9 +86,26 @@ def main() -> int:
     validate_args(args)
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     ensure_sec_write_database(client, read_database=args.database, write_database=args.database)
-    candidates, discovery = discover_mismatches(client, args)
+    extraction_candidates, discovery = discover_mismatches(client, args)
+    recovery_candidates = discover_interrupted_cleanup_candidates(client, args)
+    extraction_keys = {
+        (str(row["stored_cik"]), str(row["stored_accession"]), str(row["source_version_key"]))
+        for row in extraction_candidates
+    }
+    recovery_candidates = [
+        row
+        for row in recovery_candidates
+        if (str(row["stored_cik"]), str(row["stored_accession"]), str(row["source_version_key"]))
+        not in extraction_keys
+    ]
+    candidates = [*extraction_candidates, *recovery_candidates]
+    discovery["interrupted_cleanup_candidates"] = len(recovery_candidates)
     print("identity_discovery=" + json.dumps(discovery, sort_keys=True), flush=True)
-    print(f"repairable_identity_mismatches={len(candidates):,} execute={args.execute}", flush=True)
+    print(
+        f"repairable_identity_mismatches={len(extraction_candidates):,} "
+        f"interrupted_cleanup_candidates={len(recovery_candidates):,} execute={args.execute}",
+        flush=True,
+    )
     if not candidates:
         return 0
     if not args.execute:
@@ -114,8 +131,11 @@ def main() -> int:
     ingest_args.target_table_uuids = file_ingest.load_target_table_uuids(client, args.database)
 
     try:
-        extraction = extract_and_insert(client, args, candidates, run_id, parts_root, ingest_args)
-        verification = verify_replacements(client, args.database, candidates, run_id)
+        extraction = extract_and_insert(client, args, extraction_candidates, run_id, parts_root, ingest_args)
+        verification = verify_replacements(client, args.database, extraction_candidates, run_id)
+        recovered_verification = verify_existing_replacements(
+            client, args.database, recovery_candidates
+        )
         cleanup = delete_stale_identities(client, args, candidates)
         live_manifest = reconcile_live_ingest_manifest(client, args, candidates)
     except Exception as exc:
@@ -128,6 +148,7 @@ def main() -> int:
         "status": "ok",
         "extraction": extraction,
         "verification": verification,
+        "recovered_verification": recovered_verification,
         "cleanup": cleanup,
         "live_manifest": live_manifest,
     })
@@ -176,6 +197,141 @@ def discover_mismatches(client: ClickHouseHttpClient, args: argparse.Namespace) 
     return candidates, totals
 
 
+def discover_interrupted_cleanup_candidates(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+) -> list[dict[str, Any]]:
+    """Find verified replacements whose completed live manifest still names a stale CIK.
+
+    This includes interrupted repair cleanup as well as older live ingests that
+    committed correct products while retaining the feed/source CIK in the
+    manifest. Discovery is anchored to the exact live source-version identity,
+    so a newer filing revision cannot be mistaken for recoverable manifest drift.
+    """
+    if not identity_audit.table_exists(client, args.database, LIVE_INGEST_MANIFEST_TABLE):
+        return []
+    db = quote_ident(args.database)
+    text = client.execute(
+        f"""
+WITH
+recovery AS
+(
+    SELECT
+        m.primary_cik AS stored_cik,
+        m.accession_number AS accession_number,
+        i.primary_cik AS primary_cik,
+        i.source_archive_date AS source_archive_date,
+        i.source_archive_member AS source_archive_member,
+        i.source_archive_path AS source_archive_path,
+        i.document_count AS document_count,
+        i.source_content_sha256 AS source_content_sha256,
+        i.source_version_key AS source_version_key,
+        i.source_revision_at AS source_revision_at,
+        i.source_revision_rank AS source_revision_rank,
+        i.source_revision_kind AS source_revision_kind,
+        i.pac_event_id AS pac_event_id
+    FROM {db}.{quote_ident(LIVE_INGEST_MANIFEST_TABLE)} AS m FINAL
+    INNER JOIN {db}.sec_filing_archive_accession_current_v3 AS i
+        ON m.accession_number = i.accession_number
+       AND m.source_version_key = i.source_version_key
+    WHERE m.status = 'complete'
+      AND m.error = ''
+      AND m.primary_cik != ''
+      AND m.primary_cik != i.primary_cik
+      AND i.source_kind = 'live_accession_text'
+      AND i.source_revision_kind = 'live_feed_occurrence'
+),
+filings AS
+(
+    SELECT f.cik, f.accession_number, count() AS row_count
+    FROM {db}.sec_filing_v3 AS f FINAL
+    INNER JOIN recovery AS r
+        ON f.cik = r.primary_cik
+       AND f.accession_number = r.accession_number
+       AND f.source_content_sha256 = r.source_content_sha256
+    GROUP BY f.cik, f.accession_number
+),
+entities AS
+(
+    SELECT e.primary_cik, e.accession_number, count() AS row_count
+    FROM {db}.sec_filing_entity_v3 AS e FINAL
+    INNER JOIN recovery AS r
+        ON e.primary_cik = r.primary_cik
+       AND e.accession_number = r.accession_number
+    GROUP BY e.primary_cik, e.accession_number
+),
+documents AS
+(
+    SELECT d.cik, d.accession_number, d.source_version_key, count() AS row_count
+    FROM {db}.sec_filing_document_v3 AS d FINAL
+    INNER JOIN recovery AS r
+        ON d.cik = r.primary_cik
+       AND d.accession_number = r.accession_number
+       AND d.source_version_key = r.source_version_key
+    GROUP BY d.cik, d.accession_number, d.source_version_key
+),
+rendered AS
+(
+    SELECT t.cik, t.accession_number, t.source_version_key, count() AS row_count
+    FROM {db}.sec_filing_text_rendered_v3 AS t FINAL
+    INNER JOIN recovery AS r
+        ON t.cik = r.primary_cik
+       AND t.accession_number = r.accession_number
+       AND t.source_version_key = r.source_version_key
+    GROUP BY t.cik, t.accession_number, t.source_version_key
+),
+skips AS
+(
+    SELECT s.cik, s.accession_number, s.source_version_key, count() AS row_count
+    FROM {db}.sec_filing_document_skip_v3 AS s FINAL
+    INNER JOIN recovery AS r
+        ON s.cik = r.primary_cik
+       AND s.accession_number = r.accession_number
+       AND s.source_version_key = r.source_version_key
+    GROUP BY s.cik, s.accession_number, s.source_version_key
+)
+SELECT
+    r.stored_cik AS stored_cik,
+    r.accession_number AS stored_accession,
+    r.primary_cik AS sgml_cik,
+    r.accession_number AS sgml_accession,
+    r.source_archive_date AS source_archive_date,
+    r.source_archive_member AS member,
+    assumeNotNull(r.source_archive_path) AS archive_path,
+    r.document_count AS expected_document_count,
+    r.source_version_key AS source_version_key,
+    toString(r.source_revision_at) AS source_revision_at,
+    r.source_revision_rank AS source_revision_rank,
+    r.source_revision_kind AS source_revision_kind,
+    assumeNotNull(r.pac_event_id) AS pac_event_id,
+    'verified_manifest_identity_drift' AS recovery_kind
+FROM recovery AS r
+INNER JOIN filings AS f
+    ON f.cik = r.primary_cik AND f.accession_number = r.accession_number
+INNER JOIN entities AS e
+    ON e.primary_cik = r.primary_cik AND e.accession_number = r.accession_number
+INNER JOIN documents AS d
+    ON d.cik = r.primary_cik
+   AND d.accession_number = r.accession_number
+   AND d.source_version_key = r.source_version_key
+LEFT JOIN rendered AS t
+    ON t.cik = r.primary_cik
+   AND t.accession_number = r.accession_number
+   AND t.source_version_key = r.source_version_key
+LEFT JOIN skips AS s
+    ON s.cik = r.primary_cik
+   AND s.accession_number = r.accession_number
+   AND s.source_version_key = r.source_version_key
+WHERE f.row_count = 1
+  AND e.row_count >= 1
+  AND d.row_count = r.document_count
+  AND ifNull(t.row_count, 0) + ifNull(s.row_count, 0) = r.document_count
+FORMAT JSONEachRow
+"""
+    )
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
 def extract_and_insert(
     client: ClickHouseHttpClient,
     args: argparse.Namespace,
@@ -188,6 +344,8 @@ def extract_and_insert(
     for row in candidates:
         grouped[str(row["archive_path"])].append(row)
     totals = {"archives": 0, "filings": 0, "document_rows": 0, "text_source_rows": 0, "text_rows": 0, "skip_rows": 0}
+    if not candidates:
+        return totals
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:
         futures = {
             pool.submit(extractor.process_archive_worker, worker_payload(args, run_id, parts_root, index, path, rows)): path
@@ -339,30 +497,73 @@ FORMAT JSONEachRow
     return totals
 
 
+def verify_existing_replacements(
+    client: ClickHouseHttpClient,
+    database: str,
+    candidates: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Revalidate recovery-only replacements immediately before stale cleanup."""
+    db = quote_ident(database)
+    totals = {"filings": 0, "entities": 0, "documents": 0, "rendered": 0, "skips": 0}
+    for row in candidates:
+        cik = sql_string(str(row["sgml_cik"]))
+        accession = sql_string(str(row["sgml_accession"]))
+        version = sql_string(str(row["source_version_key"]))
+        result = json.loads(
+            client.execute(
+                f"""
+SELECT
+    (SELECT count() FROM {db}.sec_filing_v3 FINAL
+     WHERE cik={cik} AND accession_number={accession}) AS filings,
+    (SELECT count() FROM {db}.sec_filing_entity_v3 FINAL
+     WHERE primary_cik={cik} AND accession_number={accession}) AS entities,
+    (SELECT count() FROM {db}.sec_filing_document_v3 FINAL
+     WHERE cik={cik} AND accession_number={accession} AND source_version_key={version}) AS documents,
+    (SELECT count() FROM {db}.sec_filing_text_rendered_v3 FINAL
+     WHERE cik={cik} AND accession_number={accession} AND source_version_key={version}) AS rendered,
+    (SELECT count() FROM {db}.sec_filing_document_skip_v3 FINAL
+     WHERE cik={cik} AND accession_number={accession} AND source_version_key={version}) AS skips
+FORMAT JSONEachRow
+"""
+            ).strip()
+        )
+        expected = int(row["expected_document_count"])
+        if int(result["filings"]) != 1 or int(result["entities"]) < 1:
+            raise RuntimeError(f"recovered replacement parent lineage incomplete: {row} result={result}")
+        if int(result["documents"]) != expected:
+            raise RuntimeError(f"recovered replacement document lineage incomplete: {row} result={result}")
+        if int(result["rendered"]) + int(result["skips"]) != expected:
+            raise RuntimeError(f"recovered replacement text/skip lineage incomplete: {row} result={result}")
+        for key in totals:
+            totals[key] += int(result[key])
+    return totals
+
+
 def delete_stale_identities(
     client: ClickHouseHttpClient, args: argparse.Namespace, candidates: list[dict[str, Any]]
 ) -> dict[str, int]:
     totals: dict[str, int] = defaultdict(int)
-    for row in candidates:
-        predicate = identity_predicate(str(row["stored_cik"]), str(row["stored_accession"]))
-        for table in MODEL_TABLES:
-            if identity_audit.table_exists(client, args.model_database, table):
-                totals[f"{args.model_database}.{table}"] += delete_and_verify(
-                    client, args.model_database, table, predicate, args.mutations_sync
-                )
-        for table in DOCUMENT_TABLES_CHILD_FIRST:
-            totals[f"{args.database}.{table}"] += delete_and_verify(
-                client, args.database, table, predicate, args.mutations_sync
+    keys = sorted({
+        (str(row["stored_cik"]), str(row["stored_accession"]))
+        for row in candidates
+    })
+    if not keys:
+        return {}
+    predicate = identity_keys_predicate(keys)
+    for table in MODEL_TABLES:
+        if identity_audit.table_exists(client, args.model_database, table):
+            totals[f"{args.model_database}.{table}"] += delete_and_verify(
+                client, args.model_database, table, predicate, args.mutations_sync
             )
-        for table, cik_column in CANONICAL_TABLES_CHILD_FIRST:
-            canonical_predicate = identity_predicate(
-                str(row["stored_cik"]),
-                str(row["stored_accession"]),
-                cik_column=cik_column,
-            )
-            totals[f"{args.database}.{table}"] += delete_and_verify(
-                client, args.database, table, canonical_predicate, args.mutations_sync
-            )
+    for table in DOCUMENT_TABLES_CHILD_FIRST:
+        totals[f"{args.database}.{table}"] += delete_and_verify(
+            client, args.database, table, predicate, args.mutations_sync
+        )
+    for table, cik_column in CANONICAL_TABLES_CHILD_FIRST:
+        canonical_predicate = identity_keys_predicate(keys, cik_column=cik_column)
+        totals[f"{args.database}.{table}"] += delete_and_verify(
+            client, args.database, table, canonical_predicate, args.mutations_sync
+        )
     return dict(totals)
 
 
@@ -374,49 +575,130 @@ def reconcile_live_ingest_manifest(
     if not identity_audit.table_exists(client, args.database, LIVE_INGEST_MANIFEST_TABLE):
         return {"candidates": 0, "updated_rows": 0}
     target = f"{quote_ident(args.database)}.{quote_ident(LIVE_INGEST_MANIFEST_TABLE)}"
-    updated_rows = 0
     live_candidates = [
         row
         for row in candidates
         if str(row.get("source_revision_kind") or "") == "live_feed_occurrence"
     ]
-    for row in live_candidates:
-        accession = sql_string(str(row["sgml_accession"]))
-        version = sql_string(str(row["source_version_key"]))
-        old_cik = sql_string(str(row["stored_cik"]))
-        new_cik = sql_string(str(row["sgml_cik"]))
-        predicate = (
-            f"accession_number={accession} AND source_version_key={version} "
-            f"AND primary_cik={old_cik}"
+    corrections = sorted({
+        (
+            str(row["sgml_accession"]),
+            str(row["source_version_key"]),
+            str(row["stored_cik"]),
+            str(row["sgml_cik"]),
         )
-        before = int(client.execute(f"SELECT count() FROM {target} FINAL WHERE {predicate} FORMAT TSV").strip() or "0")
-        if before:
-            client.execute(
-                f"ALTER TABLE {target} UPDATE primary_cik={new_cik} "
-                f"WHERE accession_number={accession} AND source_version_key={version} "
-                f"SETTINGS mutations_sync={int(args.mutations_sync)}"
-            )
-        remaining = int(client.execute(f"SELECT count() FROM {target} FINAL WHERE {predicate} FORMAT TSV").strip() or "0")
-        corrected = int(
-            client.execute(
-                f"SELECT count() FROM {target} FINAL "
-                f"WHERE accession_number={accession} AND source_version_key={version} AND primary_cik={new_cik} FORMAT TSV"
-            ).strip()
-            or "0"
+        for row in live_candidates
+    })
+    if not corrections:
+        return {"candidates": 0, "updated_rows": 0}
+    values_sql = ",".join(
+        "(" + ",".join(sql_string(value) for value in correction) + ")"
+        for correction in corrections
+    )
+    values_table = (
+        "values("
+        "'accession_number String, source_version_key String, "
+        "old_primary_cik String, new_primary_cik String',"
+        f"{values_sql})"
+    )
+    before = int(
+        client.execute(
+            f"""
+SELECT count()
+FROM {target} AS m FINAL
+INNER JOIN {values_table} AS c
+    ON m.accession_number=c.accession_number
+   AND m.source_version_key=c.source_version_key
+   AND m.primary_cik=c.old_primary_cik
+FORMAT TSV
+"""
+        ).strip()
+        or "0"
+    )
+    if before:
+        client.execute(
+            f"""
+INSERT INTO {target}
+(
+    accession_number, source_cik, primary_cik, source_version_key,
+    source_revision_at, source_revision_rank, renderer_version,
+    expected_document_rows, expected_text_source_rows,
+    expected_rendered_text_rows, expected_skip_rows,
+    expected_xbrl_company_fact_rows, expected_xbrl_frame_observation_rows,
+    metadata_status, xbrl_status, status, error, retry_after_utc,
+    source_run_id, updated_at_utc
+)
+SELECT
+    m.accession_number, m.source_cik, c.new_primary_cik, m.source_version_key,
+    m.source_revision_at, m.source_revision_rank, m.renderer_version,
+    m.expected_document_rows, m.expected_text_source_rows,
+    m.expected_rendered_text_rows, m.expected_skip_rows,
+    m.expected_xbrl_company_fact_rows, m.expected_xbrl_frame_observation_rows,
+    m.metadata_status, m.xbrl_status, m.status, m.error, m.retry_after_utc,
+    m.source_run_id, now64(9, 'UTC')
+FROM {target} AS m FINAL
+INNER JOIN {values_table} AS c
+    ON m.accession_number=c.accession_number
+   AND m.source_version_key=c.source_version_key
+   AND m.primary_cik=c.old_primary_cik
+"""
         )
-        if remaining or (before and corrected != 1):
-            raise RuntimeError(
-                "live ingest manifest identity reconciliation failed "
-                f"accession={row['sgml_accession']} remaining={remaining} corrected={corrected}"
-            )
-        updated_rows += before
-    return {"candidates": len(live_candidates), "updated_rows": updated_rows}
+    remaining = int(
+        client.execute(
+            f"""
+SELECT count()
+FROM {target} AS m FINAL
+INNER JOIN {values_table} AS c
+    ON m.accession_number=c.accession_number
+   AND m.source_version_key=c.source_version_key
+   AND m.primary_cik=c.old_primary_cik
+FORMAT TSV
+"""
+        ).strip()
+        or "0"
+    )
+    corrected = int(
+        client.execute(
+            f"""
+SELECT count()
+FROM {target} AS m FINAL
+INNER JOIN {values_table} AS c
+    ON m.accession_number=c.accession_number
+   AND m.source_version_key=c.source_version_key
+   AND m.primary_cik=c.new_primary_cik
+FORMAT TSV
+"""
+        ).strip()
+        or "0"
+    )
+    if remaining or (before and corrected != len(corrections)):
+        raise RuntimeError(
+            "live ingest manifest identity reconciliation failed "
+            f"remaining={remaining} corrected={corrected} expected={len(corrections)}"
+        )
+    return {"candidates": len(corrections), "updated_rows": before}
 
 
 def identity_predicate(cik: str, accession_number: str, *, cik_column: str = "cik") -> str:
     if cik_column not in {"cik", "primary_cik"}:
         raise ValueError(f"unsupported CIK column: {cik_column}")
     return f"{cik_column}={sql_string(cik)} AND accession_number={sql_string(accession_number)}"
+
+
+def identity_keys_predicate(
+    keys: list[tuple[str, str]],
+    *,
+    cik_column: str = "cik",
+) -> str:
+    if cik_column not in {"cik", "primary_cik"}:
+        raise ValueError(f"unsupported CIK column: {cik_column}")
+    if not keys:
+        raise ValueError("identity keys cannot be empty")
+    values = ",".join(
+        f"({sql_string(cik)},{sql_string(accession)})"
+        for cik, accession in keys
+    )
+    return f"({cik_column},accession_number) IN ({values})"
 
 
 def delete_and_verify(

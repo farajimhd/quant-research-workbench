@@ -104,10 +104,17 @@ post-rebuild reconciliation without reprocessing the entire text corpus:
 6. Repair document/text rows stored under a non-primary SGML entity CIK. The
    identity reader accepts both daily gzip archives and retained direct
    live-accession submissions, and parses both tagged and plain SEC SGML entity
-   sections through one shared authority.
+   sections through one shared authority. It also resumes verified
+   manifest/primary-CIK reconciliation after interruption without re-extracting
+   already complete replacement products.
 7. Audit archive identity.
 8. Rebuild the SEC bridge and XBRL context.
 9. Run the fail-fast integrity audit.
+
+The submissions relationship check treats completed live ingestion as a
+separate explicit authority. It requires exact agreement among the live
+manifest, current accession inventory, source version and revision, primary
+CIK, and filing content hash; a status string by itself is never sufficient.
 
 Write permission is an explicit per-stage contract. A stage that mutates data
 must receive `--execute`; filenames are not used to infer whether a stage is

@@ -422,6 +422,30 @@ def check_submissions_relationships(
         FROM {qi(submissions_database)}.{qi(overlay_table)} FINAL
         WHERE cik != '' AND accession_number != ''
         """
+    live_authority_union = ""
+    live_manifest_present = table_exists(client, target_database, "sec_filing_live_ingest_manifest_v3")
+    live_inventory_present = table_exists(client, target_database, "sec_filing_archive_accession_current_v3")
+    if live_manifest_present and live_inventory_present:
+        live_authority_union = f"""
+        SELECT
+            m.primary_cik AS cik,
+            m.accession_number AS accession_number,
+            i.source_content_sha256 AS source_content_sha256
+        FROM {qi(target_database)}.sec_filing_live_ingest_manifest_v3 AS m FINAL
+        INNER JOIN {qi(target_database)}.sec_filing_archive_accession_current_v3 AS i
+            ON m.accession_number = i.accession_number
+           AND m.source_version_key = i.source_version_key
+           AND m.primary_cik = i.primary_cik
+           AND m.source_revision_at = i.source_revision_at
+           AND m.source_revision_rank = i.source_revision_rank
+        WHERE m.status = 'complete'
+          AND m.error = ''
+          AND i.source_kind = 'live_accession_text'
+          AND i.source_revision_kind = 'live_feed_occurrence'
+          AND m.primary_cik != ''
+          AND m.accession_number != ''
+        GROUP BY m.primary_cik, m.accession_number, i.source_content_sha256
+        """
     details = query_one(
         client,
         f"""
@@ -441,6 +465,10 @@ def check_submissions_relationships(
         authoritative_accessions AS
         (
             SELECT accession_number FROM authoritative GROUP BY accession_number
+        ),
+        live_authority AS
+        (
+            {live_authority_union if live_authority_union else "SELECT '' AS cik, '' AS accession_number, '' AS source_content_sha256 WHERE 0"}
         )
         SELECT
             count() AS filing_rows,
@@ -450,17 +478,26 @@ def check_submissions_relationships(
             countIf(aa.accession_number = '') AS accession_absent_from_submissions,
             countIf(
                 a.cik = ''
-                AND q.text_status IN ('archive_text_extracted', 'xbrl_parent_only')
+                AND (
+                    q.text_status IN ('archive_text_extracted', 'xbrl_parent_only')
+                    OR la.cik != ''
+                )
             ) AS separately_source_backed_relationships,
+            countIf(a.cik = '' AND la.cik != '') AS live_manifest_backed_relationships,
             countIf(
                 a.cik = ''
                 AND q.text_status NOT IN ('archive_text_extracted', 'xbrl_parent_only')
+                AND la.cik = ''
             ) AS unsupported_relationships
         FROM {qi(target_database)}.sec_filing_v3 AS q FINAL
         LEFT JOIN authoritative AS a
             ON q.cik = a.cik AND q.accession_number = a.accession_number
         LEFT JOIN authoritative_accessions AS aa
             ON q.accession_number = aa.accession_number
+        LEFT JOIN live_authority AS la
+            ON q.cik = la.cik
+           AND q.accession_number = la.accession_number
+           AND q.source_content_sha256 = la.source_content_sha256
         FORMAT TSVWithNames
         """,
     )
@@ -469,6 +506,8 @@ def check_submissions_relationships(
     details["submissions_table"] = f"{submissions_database}.{submissions_table}"
     details["overlay_table"] = f"{submissions_database}.{overlay_table}"
     details["overlay_present"] = overlay_present
+    details["live_manifest_present"] = live_manifest_present
+    details["live_inventory_present"] = live_inventory_present
     return [
         check(
             "sec_filing_submissions_relationship_coverage",
