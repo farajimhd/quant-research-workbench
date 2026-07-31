@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, Circle, CircleDashed } from "lucide-react";
+import { ArrowUpDown, CircleDashed, Minus, TrendingDown, TrendingUp } from "lucide-react";
 
 export type SemanticDirection = "mixed" | "negative" | "neutral" | "pending" | "positive";
 
@@ -24,20 +24,20 @@ export function SemanticDirectionMetric({
   const direction = normalizeSemanticDirection(rawDirection);
   const hasScore = typeof score === "number" && Number.isFinite(score);
   const Icon = direction === "positive"
-    ? ArrowUp
+    ? TrendingUp
     : direction === "negative"
-      ? ArrowDown
+      ? TrendingDown
       : direction === "mixed"
         ? ArrowUpDown
         : direction === "neutral"
-          ? Circle
+          ? Minus
           : CircleDashed;
   const label = direction === "pending"
-    ? "Direction pending"
-    : direction === "mixed"
-      ? "Mixed direction"
-      : direction[0].toUpperCase() + direction.slice(1);
-  const scoreText = hasScore ? `${score > 0 ? "+" : ""}${score.toFixed(2)} score` : "";
+    ? "Pending"
+    : direction[0].toUpperCase() + direction.slice(1);
+  const scoreText = hasScore
+    ? `${direction === "mixed" ? "±" : score > 0 ? "+" : ""}${direction === "mixed" ? Math.abs(score).toFixed(2) : score.toFixed(2)} score`
+    : "";
   const description = scoreText
     ? `Deterministic text direction: ${scoreText}`
     : "Deterministic text direction";

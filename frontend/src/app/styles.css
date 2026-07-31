@@ -24893,9 +24893,9 @@ button {
   grid-template-columns: 30px 94px minmax(0, 1fr);
   min-height: 84px;
 }
-.ticker-news-section article[data-direction="positive"] { --ticker-event-direction: var(--success); }
-.ticker-news-section article[data-direction="negative"] { --ticker-event-direction: var(--danger); }
-.ticker-news-section article[data-direction="mixed"] { --ticker-event-direction: var(--canvas-link-orange); }
+.ticker-news-section article[data-direction="positive"] { --ticker-event-direction: var(--semantic-positive); }
+.ticker-news-section article[data-direction="negative"] { --ticker-event-direction: var(--semantic-negative); }
+.ticker-news-section article[data-direction="mixed"] { --ticker-event-direction: var(--semantic-mixed); }
 .ticker-news-section article[data-direction="neutral"], .ticker-news-section article[data-direction="pending"] { --ticker-event-direction: var(--muted-foreground); }
 .ticker-news-section-empty { color: var(--muted-foreground); display: block; font-size: 10px; padding: 9px; }
 .ticker-news-marker { display: grid; place-items: start center; padding-top: 14px; color: var(--muted-foreground); }
@@ -24927,16 +24927,20 @@ button {
 .semantic-direction-metric[data-prominent="true"] > svg { height: 22px; stroke-width: 2.35; width: 22px; }
 .semantic-direction-metric[data-prominent="true"] strong { font-size: 14px; }
 .semantic-direction-metric[data-prominent="true"] small { font-size: 10.5px; margin-top: 2px; }
-.semantic-direction-metric[data-direction="positive"] { color: var(--success); }
-.semantic-direction-metric[data-direction="negative"] { color: var(--danger); }
-.semantic-direction-metric[data-direction="mixed"] { color: var(--info); }
-.semantic-direction-metric[data-direction="neutral"], .semantic-direction-metric[data-direction="pending"] { color: var(--muted-foreground); }
+.semantic-direction-metric[data-direction="positive"] { color: var(--semantic-positive); }
+.semantic-direction-metric[data-direction="negative"] { color: var(--semantic-negative); }
+.semantic-direction-metric[data-direction="mixed"] { color: var(--semantic-mixed); }
+.semantic-direction-metric[data-direction="neutral"], .semantic-direction-metric[data-direction="pending"] { color: var(--semantic-neutral); }
 .ticker-event-content .ticker-news-meta .semantic-direction-metric[data-prominent="true"] { background: color-mix(in oklab, currentColor 8%, var(--surface)); border: 0; border-radius: 999px; display: inline-flex; gap: 4px; min-height: 0; padding: 3px 8px; }
 .ticker-event-content .ticker-news-meta .semantic-direction-metric[data-prominent="true"] > svg { height: 13px; stroke-width: 2.4; width: 13px; }
 .ticker-event-content .ticker-news-meta .semantic-direction-metric[data-prominent="true"] > span { align-items: baseline; display: flex; gap: 5px; }
 .ticker-event-content .ticker-news-meta .semantic-direction-metric[data-prominent="true"] strong { display: inline; font-size: 10px; font-weight: 760; line-height: 1; }
 .ticker-event-content .ticker-news-meta .semantic-direction-metric[data-prominent="true"] small { font-size: 8.5px; line-height: 1; margin: 0; }
-.ticker-event-content .ticker-news-meta .semantic-direction-metric[data-direction="mixed"] { color: var(--canvas-link-orange); }
+.ticker-event-content .ticker-news-meta .semantic-direction-metric[data-direction="positive"] { background: var(--semantic-positive-bg); }
+.ticker-event-content .ticker-news-meta .semantic-direction-metric[data-direction="negative"] { background: var(--semantic-negative-bg); }
+.ticker-event-content .ticker-news-meta .semantic-direction-metric[data-direction="mixed"] { background: var(--semantic-mixed-bg); color: var(--semantic-mixed); }
+.ticker-event-content .ticker-news-meta .semantic-direction-metric[data-direction="neutral"],
+.ticker-event-content .ticker-news-meta .semantic-direction-metric[data-direction="pending"] { background: var(--semantic-neutral-bg); }
 .news-eligibility { align-items: center; display: inline-flex; gap: 3px; }
 .news-eligibility b { border: 1px solid var(--border); color: var(--muted-foreground); display: grid; font-size: 8px; font-weight: 700; height: 17px; place-items: center; width: 17px; }
 .news-eligibility b[data-active="true"] { border-color: var(--foreground); color: var(--foreground); }

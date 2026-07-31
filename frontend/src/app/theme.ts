@@ -55,6 +55,14 @@ type AppThemeTokenMap = {
   newsCold: string;
   newsHot: string;
   newsOld: string;
+  semanticMixed: string;
+  semanticMixedBackground: string;
+  semanticNegative: string;
+  semanticNegativeBackground: string;
+  semanticNeutral: string;
+  semanticNeutralBackground: string;
+  semanticPositive: string;
+  semanticPositiveBackground: string;
   popover: string;
   primary: string;
   primaryForeground: string;
@@ -332,6 +340,14 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--news-cold": tokens.newsCold,
     "--news-hot": tokens.newsHot,
     "--news-old": tokens.newsOld,
+    "--semantic-mixed": tokens.semanticMixed,
+    "--semantic-mixed-bg": tokens.semanticMixedBackground,
+    "--semantic-negative": tokens.semanticNegative,
+    "--semantic-negative-bg": tokens.semanticNegativeBackground,
+    "--semantic-neutral": tokens.semanticNeutral,
+    "--semantic-neutral-bg": tokens.semanticNeutralBackground,
+    "--semantic-positive": tokens.semanticPositive,
+    "--semantic-positive-bg": tokens.semanticPositiveBackground,
     "--page-bg": tokens.background,
     "--popover": tokens.popover,
     "--popover-foreground": tokens.foreground,
@@ -464,6 +480,14 @@ function buildTheme({
       newsCold: tone === "light" ? "#007dff" : "#00c8ff",
       newsHot: tone === "light" ? "#ff1744" : "#ff3b5c",
       newsOld: palette.mutedForeground,
+      semanticMixed: tone === "light" ? "#a85a12" : "#e0a45b",
+      semanticMixedBackground: tone === "light" ? "#fffbeb" : "#34250f",
+      semanticNegative: tone === "light" ? "#e0003a" : "#ff5b82",
+      semanticNegativeBackground: tone === "light" ? "#fff0f4" : "#3b1020",
+      semanticNeutral: tone === "light" ? "#6b7280" : "#a9b0bd",
+      semanticNeutralBackground: tone === "light" ? "#f3f4f6" : "#252932",
+      semanticPositive: tone === "light" ? "#00c864" : "#39ff88",
+      semanticPositiveBackground: tone === "light" ? "#edfff6" : "#073c27",
       popover: palette.card,
       primary: palette.primary,
       primaryForeground: "#ffffff",

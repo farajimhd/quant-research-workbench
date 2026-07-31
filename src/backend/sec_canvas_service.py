@@ -398,15 +398,29 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
     db = quote_ident(database)
     instant = sql_string(clickhouse_timestamp(cutoff))
     start = sql_string(clickhouse_timestamp(cutoff - timedelta(hours=lookback_hours)))
+    ticker_bridge = ""
+    ticker_source_filter = ""
+    ticker_join = ""
+    if ticker:
+        ticker_sql = sql_string(ticker)
+        ticker_bridge = f"""(
+            SELECT cik, valid_from_date, valid_to_date_exclusive
+            FROM {db}.id_sec_market_bridge_v3 FINAL
+            WHERE upper(ifNull(ticker, '')) = {ticker_sql}
+        )"""
+        ticker_source_filter = f"""
+          AND cik IN (SELECT cik FROM {ticker_bridge})"""
+        ticker_join = f"""
+            INNER JOIN {ticker_bridge} AS b ON b.cik = f.cik"""
     bounded_filings = f"""(
         SELECT *
         FROM {db}.sec_filing_v3 FINAL
         PREWHERE accepted_at_utc >= parseDateTime64BestEffort({start})
           AND accepted_at_utc <= parseDateTime64BestEffort({instant})
+          {ticker_source_filter}
         WHERE accepted_at_utc >= parseDateTime64BestEffort({start})
           AND accepted_at_utc <= parseDateTime64BestEffort({instant})
     )"""
-    bounded_accessions = f"SELECT accession_number FROM {bounded_filings}"
     conditions = [
         f"f.accepted_at_utc >= parseDateTime64BestEffort({start})",
         f"f.accepted_at_utc <= parseDateTime64BestEffort({instant})",
@@ -415,33 +429,11 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
         value = sql_string(search.strip())
         conditions.append(f"(positionCaseInsensitiveUTF8(ifNull(f.company_name, ''), {value}) > 0 OR positionCaseInsensitiveUTF8(f.form_type, {value}) > 0 OR positionCaseInsensitiveUTF8(f.accession_number, {value}) > 0 OR positionCaseInsensitiveUTF8(ifNull(f.items, ''), {value}) > 0)")
     if ticker:
-        ticker_sql = sql_string(ticker)
-        bridge_validity = "(b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f2.accepted_at_utc)) AND (b.valid_to_date_exclusive IS NULL OR toDate(f2.accepted_at_utc) < b.valid_to_date_exclusive)"
-        conditions.append(f"""f.accession_number IN
-            (
-                SELECT DISTINCT f2.accession_number
-                FROM {bounded_filings} AS f2
-                LEFT JOIN
-                (
-                    SELECT accession_number, entity_cik, entity_role
-                    FROM
-                    (
-                        SELECT accession_number, relationship_id,
-                               argMax(entity_cik, tuple(source_revision_rank, inserted_at)) AS entity_cik,
-                               argMax(entity_role, tuple(source_revision_rank, inserted_at)) AS entity_role
-                        FROM {db}.sec_filing_entity_v3
-                        PREWHERE accession_number IN ({bounded_accessions})
-                        WHERE source_revision_at <= parseDateTime64BestEffort({instant})
-                        GROUP BY accession_number, relationship_id
-                    )
-                    WHERE entity_role IN ('issuer', 'subject_company')
-                ) AS e ON e.accession_number = f2.accession_number
-                INNER JOIN {db}.id_sec_market_bridge_v3 AS b FINAL
-                    ON b.cik = if(empty(e.entity_cik), f2.cik, e.entity_cik)
-                WHERE f2.accepted_at_utc >= parseDateTime64BestEffort({start})
-                  AND f2.accepted_at_utc <= parseDateTime64BestEffort({instant})
-                  AND upper(ifNull(b.ticker, '')) = {ticker_sql} AND {bridge_validity}
-            )""")
+        conditions.append(
+            "(b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc)) "
+            "AND (b.valid_to_date_exclusive IS NULL OR "
+            "toDate(f.accepted_at_utc) < b.valid_to_date_exclusive)"
+        )
     if content == "readable":
         conditions.append(f"f.accession_number IN (SELECT accession_number FROM {db}.sec_filing_text_rendered_v3 WHERE source_archive_date BETWEEN toDate({start}) AND toDate({instant}) AND source_revision_at <= parseDateTime64BestEffort({instant}) GROUP BY accession_number HAVING count() > 0)")
     elif content == "xbrl":
@@ -463,6 +455,7 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
                    t.canonical_title AS disclosure_title, t.impact_label, t.impact_score,
                    t.affected_security_scope, t.impact_rationale, t.taxonomy_version
             FROM {bounded_filings} AS f
+            {ticker_join}
             LEFT JOIN approved_form_taxonomy AS t ON t.form_key = upper(f.form_type)
             WHERE {' AND '.join(conditions)}
         )
