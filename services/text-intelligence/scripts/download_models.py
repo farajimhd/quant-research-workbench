@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Download open-source news intelligence models.")
+    parser = argparse.ArgumentParser(description="Download open-source text-intelligence models.")
     parser.add_argument("--manifest", default=Path(__file__).resolve().parents[1] / "models" / "opensource_models.json")
     parser.add_argument("--root", default=None, help="Target artifact root. Defaults to manifest artifact_root.")
     parser.add_argument("--include-large", action="store_true", help="Include large LLM/offline research models.")
@@ -65,4 +65,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

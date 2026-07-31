@@ -1043,7 +1043,7 @@ class NewsGateway:
                         **self._background_enrichment_log_context([live_item]),
                     )
             write_summary = await self._publish_processed(final_items, poll_id=batch.poll_id, coverage_mode="live_background")
-            await self._dispatch_news_intelligence(final_items, poll_id=batch.poll_id)
+            await self._dispatch_text_intelligence(final_items, poll_id=batch.poll_id)
             await self.state.upsert_rows([item.result.normalized_row for item in final_items])
             await self._refresh_memory_metrics()
             self.metrics.written_rows += write_summary.normalized_rows_inserted
@@ -1094,7 +1094,7 @@ class NewsGateway:
             if not self._stop_event.is_set() and self.metrics.background_active_batches == 0 and self._background_queue.qsize() == 0:
                 self._set_phase("polling", "Background processing is idle; waiting for the next scheduled poll.")
 
-    async def _dispatch_news_intelligence(
+    async def _dispatch_text_intelligence(
         self, items: list[ProcessedNewsItem], *, poll_id: str
     ) -> None:
         """Notify the derived-intelligence service only after canonical publish.
@@ -1124,13 +1124,13 @@ class NewsGateway:
                 self.config.intelligence_timeout_seconds,
             )
             self._log_event(
-                "news_intelligence_dispatched",
+                "text_intelligence_dispatched",
                 poll_id=poll_id,
                 candidate_count=len(documents),
             )
         except Exception as exc:  # noqa: BLE001
             self._log_event(
-                "news_intelligence_dispatch_deferred",
+                "text_intelligence_dispatch_deferred",
                 poll_id=poll_id,
                 candidate_count=len(documents),
                 error=f"{type(exc).__name__}: {exc}",

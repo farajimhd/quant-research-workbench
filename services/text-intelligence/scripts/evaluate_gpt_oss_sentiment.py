@@ -16,8 +16,8 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from news_intelligence.config import IntelligenceConfig
-from news_intelligence.historical import article_key, load_articles_jsonl, write_jsonl
+from text_intelligence.config import IntelligenceConfig
+from text_intelligence.historical import article_key, load_articles_jsonl, write_jsonl
 
 
 DEFAULT_CANDIDATES = [
@@ -33,8 +33,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--supervision-root", default=PACKAGE_ROOT / "codex_suppervision")
     parser.add_argument("--output-root", default=PACKAGE_ROOT / "pipeline_evaluation_runs" / "gpt_oss_sentiment")
     parser.add_argument("--article-limit", type=int, default=500)
-    parser.add_argument("--model", default="", help="Override NEWS_INTELLIGENCE_LLM_MODEL.")
-    parser.add_argument("--base-url", default="", help="Override NEWS_INTELLIGENCE_LLM_BASE_URL.")
+    parser.add_argument("--model", default="", help="Override TEXT_INTELLIGENCE_LLM_MODEL.")
+    parser.add_argument("--base-url", default="", help="Override TEXT_INTELLIGENCE_LLM_BASE_URL.")
     parser.add_argument("--reasoning-effort", default="low")
     parser.add_argument("--response-format", default="json_object")
     parser.add_argument("--timeout-ms", type=int, default=0)

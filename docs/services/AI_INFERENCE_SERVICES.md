@@ -6,12 +6,14 @@ The live AI path uses three independent service authorities:
    It owns provider profiles, fallback, timeouts, concurrency, idempotency,
    route budgets, usage, cost, and metadata-only audit state. It has no news or
    trading policy.
-2. **News Intelligence (`:8804`)** owns news eligibility and semantic meaning.
-   It accepts candidates only after News Gateway has durably published the
-   canonical V2 rendered article. It operates only while the explicit live
-   trading session gate is active, applies deterministic kind/scope filters,
-   freezes the QMD ticker snapshot, validates the current
-   `gpt_oss_news_semantics_v1` output, and persists it.
+2. **Text Intelligence (`:8804`)** owns deterministic News/SEC semantics and
+   optional live News eligibility routing. Its deterministic classifier and
+   reconciliation loop run independently of trading state after News Gateway
+   or SEC Gateway durably publishes canonical rendered text. Its optional News
+   model route operates only while the explicit live-trading session gate is
+   active, applies deterministic kind/scope filters, freezes the QMD ticker
+   snapshot, validates the current `gpt_oss_news_semantics_v1` output, and
+   persists it.
 3. **Market AI (`:8803`)** owns deeper contextual hypotheses. It freezes the
    semantic label and point-in-time QMD, market, SEC, and fundamental context;
    invokes `news.trade_hypothesis.v2`; validates fixed-horizon probability
@@ -26,7 +28,7 @@ only decision/risk authorities; none of these three services can place orders.
 
 ```text
 News Gateway canonical V2 publish
-  -> News Intelligence bounded queue
+  -> Text Intelligence bounded queue
      -> deterministic scope/kind + active-session + QMD price gate
      -> Model Gateway: news.semantic_fast.v1
      -> q_live.news_semantic_label_v1
@@ -47,12 +49,12 @@ state belongs under `D:\TradingML\runtimes`, never inside the repository.
 ```powershell
 .\scripts\run_model_gateway.ps1
 .\scripts\run_market_ai.ps1
-.\scripts\run_news_intelligence.ps1
+.\scripts\run_text_intelligence.ps1
 .\scripts\run_news_gateway.ps1
 ```
 
-Starting and stopping the backend live market gateway updates the explicit News
-Intelligence session gate immediately. News Intelligence also polls the
+Starting and stopping the backend live market gateway updates the explicit Text
+Intelligence session gate immediately. Text Intelligence also polls the
 backend market-gateway status, so it restores the gate after a service restart
 and fails closed when that authority is unavailable. Verify
 `GET http://127.0.0.1:8804/live-session` before expecting paid or local live

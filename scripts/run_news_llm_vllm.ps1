@@ -11,7 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $Manifest.Trim()) {
-    $Manifest = Join-Path $repoRoot "services\news-intelligence\models\opensource_models.json"
+    $Manifest = Join-Path $repoRoot "services\text-intelligence\models\opensource_models.json"
 }
 
 $manifestJson = Get-Content -Raw -LiteralPath $Manifest | ConvertFrom-Json

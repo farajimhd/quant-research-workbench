@@ -17,7 +17,7 @@ Text Embed, IBKR Supervisor, Market AI, and future data services in this repo.
   - [Reference Gateway](#reference-gateway)
   - [Text Embed Gateway](#text-embed-gateway)
   - [IBKR Gateway Supervisor](#ibkr-gateway-supervisor)
-  - [News Intelligence Service](#news-intelligence-service)
+  - [Text Intelligence Service](#text-intelligence-service)
   - [Market AI Service](#market-ai-service)
   - [No Standalone Maintenance Runner](#no-standalone-maintenance-runner)
   - [Cross-Service Dependency Rules](#cross-service-dependency-rules)
@@ -223,7 +223,7 @@ their implementation spreads into separate conventions.
 | Reference Gateway | Python low-frequency reference reconciler | Massive reference endpoints, q_live identity tables, IBKR Client Portal, FINRA/SEC/Massive publications | identity graph, source mappings, issues, tradable/scanner publications, market reference publications, reference alerts | daemon cycles and after-hours maintenance | Keep market reference identity, conid/routing evidence, tradability publications, and slow reference publications coherent. |
 | Text Embed Gateway | Python GPU/model reconciliation gateway | normalized news, SEC filing text, SEC market bridge, historical-compatible context tables | token tables, embedding tables, embedding coverage | market-aware polling and historical reconciliation | Keep news and SEC text tokenized and embedded with historical-compatible contracts. |
 | IBKR Gateway Supervisor | Python broker-session supervisor | local IBKR Client Portal Gateway process and CPAPI auth endpoints | JSONL events, optional compact ClickHouse supervisor event table, Rich telemetry | fixed keepalive/status cadence | Keep one IBKR Client Portal session authenticated and observable. |
-| News Intelligence Service | TBD model-serving service boundary | normalized article request payloads, local model artifacts, optional local LLM endpoint | synchronous classification response | request-driven | TBD until the final news-label model stack and serving contract are selected. It must not poll providers or write canonical news rows. |
+| Text Intelligence Service | shared deterministic text authority plus optional model boundary | canonical rendered News/SEC identities, local model artifacts, optional local LLM endpoint | persisted scoped labels and request classification responses | notice-driven plus reconciliation | Runs deterministic V5 labeling independently of optional models. It must not poll providers or write canonical News/SEC rows. |
 | Market AI Service | TBD model-dependent service boundary | QMD compact event stream or replay iterator, Text Embed Gateway outputs, final trained model artifacts | model-specific multimodal cache, prediction stream/API, future prediction tables when defined | TBD after model selection | Not implemented at this stage. Once the final ML model is chosen, manage the multimodal data cache required by that model and serve predictions. |
 
 ### QMD Gateway
@@ -429,7 +429,7 @@ background workers, writes canonical rows, and serves recent news to the app.
 
 **Out of scope:**
 
-- Model labels and sentiment inference. Those belong to News Intelligence or a
+- Model labels and sentiment inference. Those belong to Text Intelligence or a
   downstream inference service.
 - SEC filing ingestion.
 - Reference identity correction.
@@ -712,15 +712,16 @@ and does not own trading orders.
 - Reference identity resolution.
 - Market-data ingestion.
 
-### News Intelligence Service
+### Text Intelligence Service
 
-**Current code path:** `services/news-intelligence`.
+**Current code path:** `services/text-intelligence`.
 
 **Status:** TBD. Keep this boundary documented, but do not treat the current
 experimental scripts as a production gateway until the final model stack,
 taxonomy, prompt contract, and serving contract are selected.
 
-**Role:** News Intelligence is a request-driven model service. It receives one
+**Role:** Text Intelligence is the shared deterministic News/SEC semantic
+service and an optional request-driven model boundary. It receives one
 normalized article, runs configured fast models and optional local LLM stages,
 and returns labels with model/taxonomy/prompt versions.
 
@@ -837,7 +838,7 @@ requirements:
 | Producer | Consumer | Consumer action |
 | --- | --- | --- |
 | QMD compact events and canonical intraday bars | Market AI, trading app, QMD-owned maintenance | Consume snapshots/streams for inference and trading context; QMD uses q_live coverage for recent repair checks and `market_sip_compact.events_<year>` for historical event history. |
-| News normalized rows | Text Embed, trading app, News Intelligence caller | Reconcile missing tokens/embeddings or classify rows without requiring news gateway to emit a durable event. |
+| News normalized rows | Text Embed, trading app, Text Intelligence caller | Reconcile missing tokens/embeddings or classify rows without requiring news gateway to emit a durable event. |
 | SEC filing/text/XBRL rows | Reference, Text Embed, trading app | Rebuild SEC-market bridge, build SEC context, tokenize/embed text, and expose filing/XBRL context. |
 | Reference identity/tradable publications | Trading app, scanner setup, QMD-adjacent consumers | Treat `is_tradable=0` as a hard reference block; live market-state blocks are separate runtime context. |
 | Reference SEC bridge | Text Embed | Embed only SEC text rows with valid market bridge; retry blocked rows after bridge updates. |
@@ -920,7 +921,7 @@ Massive market holidays/upcoming endpoint
 The local New York extended-hours clock is only a fallback when Massive status
 is temporarily unavailable. It must not become a separate source of truth for
 one service while other services use Massive. The goal is that QMD, News, SEC,
-Reference, Text Embed, IBKR Supervisor, Market AI, and News Intelligence all
+Reference, Text Embed, IBKR Supervisor, Market AI, and Text Intelligence all
 agree on whether the system is in active collection, closed-market, holiday,
 early-close, or maintenance mode.
 

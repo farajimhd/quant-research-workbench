@@ -21,7 +21,7 @@ def get_market_gateway() -> MarketGateway:
 
 async def market_gateway_start() -> dict[str, Any]:
     status = await get_market_gateway().start()
-    await _notify_news_intelligence(
+    await _notify_text_intelligence(
         active=True,
         session_id=str(status.get("trading_session_id") or ""),
         started_at_utc=str(status.get("started_at_utc") or ""),
@@ -33,11 +33,11 @@ async def market_gateway_stop() -> dict[str, Any]:
     gateway = get_market_gateway()
     session_id = gateway.trading_session_id
     status = await gateway.stop()
-    await _notify_news_intelligence(active=False, session_id=session_id, started_at_utc="")
+    await _notify_text_intelligence(active=False, session_id=session_id, started_at_utc="")
     return status
 
 
-async def _notify_news_intelligence(
+async def _notify_text_intelligence(
     *, active: bool, session_id: str, started_at_utc: str
 ) -> None:
     """Synchronize the explicit live-trading gate without coupling startup.
@@ -46,7 +46,10 @@ async def _notify_news_intelligence(
     from starting or stopping; the service exposes its session state for an
     operator to verify and can be updated idempotently.
     """
-    url = os.environ.get("NEWS_INTELLIGENCE_URL", "http://127.0.0.1:8804").rstrip("/")
+    url = os.environ.get(
+        "TEXT_INTELLIGENCE_URL",
+        os.environ.get("NEWS_INTELLIGENCE_URL", "http://127.0.0.1:8804"),
+    ).rstrip("/")
     payload = {
         "active": active,
         "session_id": session_id,

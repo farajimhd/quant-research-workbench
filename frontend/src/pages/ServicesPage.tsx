@@ -10,7 +10,7 @@ import { displayName, formatCell, formatCompactNumber, formatDuration } from "..
 import "./ServicesOverview.css";
 
 export type ServicePageMode = "dashboard" | ServiceId;
-export type ServiceId = "ibkr" | "market-ai" | "model-gateway" | "news" | "news-intelligence" | "qmd" | "qmd-history" | "reference" | "sec" | "text-embed";
+export type ServiceId = "ibkr" | "market-ai" | "model-gateway" | "news" | "qmd" | "qmd-history" | "reference" | "sec" | "text-embed" | "text-intelligence";
 
 type ServiceRegistry = {
   base_url: string;
@@ -90,7 +90,7 @@ type ServiceRuntimeLogRow = {
   ts_utc?: string;
 };
 
-const SERVICE_IDS: ServiceId[] = ["qmd", "qmd-history", "news", "news-intelligence", "model-gateway", "market-ai", "sec", "text-embed", "reference", "ibkr"];
+const SERVICE_IDS: ServiceId[] = ["qmd", "qmd-history", "news", "text-intelligence", "model-gateway", "market-ai", "sec", "text-embed", "reference", "ibkr"];
 const EXCHANGE_TIME_ZONE = "America/New_York";
 const VANCOUVER_TIME_ZONE = "America/Vancouver";
 
@@ -4567,7 +4567,7 @@ function secLiveFeedRow(row: Record<string, unknown>): SecLiveFeedRow | null {
 function serviceActivitySpec(service: ServiceStatusPayload): ServiceActivitySpec {
   const metrics = serviceMetricsRecord(service);
   const status = stringMetric(metrics, ["activity_status", "run_status", "status"]) || service.status || "unknown";
-  if (service.registry.id === "news-intelligence") {
+  if (service.registry.id === "text-intelligence") {
     return {
       description: "Live semantic eligibility, validation, canonical reconciliation, and label persistence.",
       status,
@@ -4959,7 +4959,7 @@ const SERVICE_PRIMARY_DATABASE_ROLES: Record<ServiceId, string[]> = {
   "qmd-history": [],
   "market-ai": ["contextual hypotheses"],
   "model-gateway": [],
-  "news-intelligence": ["semantic labels"],
+  "text-intelligence": ["semantic labels"],
   reference: ["tradable universe"],
   sec: ["filings"],
   "text-embed": ["news embeddings", "sec embeddings"],
@@ -4977,7 +4977,7 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
   };
   const detail = (text: string, fallback: string) => text.trim() || fallback;
 
-  if (service.registry.id === "news-intelligence") {
+  if (service.registry.id === "text-intelligence") {
     return [
       { label: "Processed", value: compact(number(["processed"])), detail: "validated semantic labels" },
       { label: "Queued", value: compact(number(["queued", "queue_size"])), detail: "bounded live work" },
@@ -6532,7 +6532,7 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
   } satisfies Record<string, ServiceResponsibilitySpec>;
 
   const specs: Record<ServiceId, ServiceResponsibilitySpec[]> = {
-    "news-intelligence": [
+    "text-intelligence": [
       {
         description: "Live-session gating, ticker and price eligibility, canonical-news deduplication, and bounded semantic work queues.",
         id: "routing",

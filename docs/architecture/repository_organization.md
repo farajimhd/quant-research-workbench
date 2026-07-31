@@ -9,7 +9,7 @@ services/
   qmd-gateway/              # live Massive trades/quotes, bars, indicators, scanner stream
   news_gateway/             # Python live Benzinga polling, normalization, DB write, websocket feed
   sec_gateway/              # Python live SEC feed polling and filing capture
-  news-intelligence/        # model serving and news labeling APIs
+  text-intelligence/        # shared News/SEC labeling and optional model APIs
 
 pipelines/
   market_sip/               # historical quotes/trades ingest, compacting, historical bars

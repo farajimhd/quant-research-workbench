@@ -659,9 +659,12 @@ deferred and never rolls back canonical news. Source-hash reconciliation
 repairs missed notices and revised renders, so notification loss does not lose
 deterministic classification.
 
-- `NEWS_INTELLIGENCE_DISPATCH_ENABLED`, default `true`
-- `NEWS_INTELLIGENCE_URL`, default `http://127.0.0.1:8804`
-- `NEWS_INTELLIGENCE_DISPATCH_TIMEOUT_SECONDS`, default `2`
+- `TEXT_INTELLIGENCE_DISPATCH_ENABLED`, default `true`
+- `TEXT_INTELLIGENCE_URL`, default `http://127.0.0.1:8804`
+- `TEXT_INTELLIGENCE_DISPATCH_TIMEOUT_SECONDS`, default `2`
+
+The former `NEWS_INTELLIGENCE_*` names remain accepted as transitional aliases;
+the `TEXT_INTELLIGENCE_*` values are authoritative when both are present.
 
 News Gateway does not own text classification, prompts, model providers,
 hypotheses, or trading decisions.

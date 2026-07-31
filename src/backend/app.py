@@ -281,7 +281,7 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     "ibkr": [
         {"database": "q_live", "table": "ibkr_gateway_supervisor_event_v1", "role": "supervisor events"},
     ],
-    "news-intelligence": [
+    "text-intelligence": [
         {"database": "q_live", "table": "news_semantic_label_v2", "role": "issuer-scoped semantic labels"},
         {"database": "q_live", "table": "scoped_text_labels_v5", "role": "deterministic scoped labels"},
         {"database": "q_live", "table": "scoped_content_relations_v3", "role": "News and SEC content relationships"},
@@ -373,13 +373,13 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
         "description": "Point-in-time news, market, SEC, and fundamental context synthesis into expiring hypotheses.",
         "recent_path": "/health",
     },
-    "news-intelligence": {
-        "id": "news-intelligence",
-        "label": "News Intelligence",
-        "kind": "news semantics",
-        "bind_env": "NEWS_INTELLIGENCE_BIND",
+    "text-intelligence": {
+        "id": "text-intelligence",
+        "label": "Text Intelligence",
+        "kind": "News and SEC semantics",
+        "bind_env": "TEXT_INTELLIGENCE_BIND",
         "default_bind": "127.0.0.1:8804",
-        "description": "Live eligibility routing, current semantic taxonomy, QMD price gating, and label persistence.",
+        "description": "Deterministic News and SEC semantic labeling, reconciliation, relationships, and optional live News inference routing.",
         "recent_path": "/live-session",
     },
 }

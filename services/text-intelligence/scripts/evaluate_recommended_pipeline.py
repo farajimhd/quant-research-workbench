@@ -16,9 +16,9 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from news_intelligence.config import IntelligenceConfig
-from news_intelligence.historical import article_key, load_articles_jsonl, write_jsonl
-from news_intelligence.recommended_pipeline import RecommendedNewsPipeline
+from text_intelligence.config import IntelligenceConfig
+from text_intelligence.historical import article_key, load_articles_jsonl, write_jsonl
+from text_intelligence.recommended_pipeline import RecommendedNewsPipeline
 
 
 DEFAULT_SENTIMENT_MODELS = [
@@ -46,7 +46,7 @@ NUMERIC_FIELDS = [
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate the recommended news-intelligence pipeline against Codex supervision.")
+    parser = argparse.ArgumentParser(description="Evaluate the recommended Text Intelligence news pipeline against Codex supervision.")
     parser.add_argument("--supervision-run", default="", help="Path to a codex_suppervision run directory. Defaults to latest.")
     parser.add_argument("--supervision-root", default=PACKAGE_ROOT / "codex_suppervision")
     parser.add_argument("--output-root", default=PACKAGE_ROOT / "pipeline_evaluation_runs")
@@ -54,12 +54,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--article-limit", type=int, default=0, help="Optional limit from the supervision set. 0 means all.")
     parser.add_argument("--enable-llm", action="store_true", help="Call the configured OpenAI-compatible local LLM endpoint.")
     parser.add_argument("--disable-models", action="store_true", help="Disable transformer sentiment models and use deterministic fallback.")
-    parser.add_argument("--llm-max-tokens", type=int, default=0, help="Override NEWS_INTELLIGENCE_LLM_MAX_TOKENS for this run.")
-    parser.add_argument("--llm-reasoning-effort", default="", help="Override NEWS_INTELLIGENCE_LLM_REASONING_EFFORT for this run.")
-    parser.add_argument("--llm-response-format", default="", help="Override NEWS_INTELLIGENCE_LLM_RESPONSE_FORMAT for this run.")
-    parser.add_argument("--llm-merge-mode", default="", help="Override NEWS_INTELLIGENCE_LLM_MERGE_MODE: summary_only or override.")
-    parser.add_argument("--llm-min-materiality", type=float, default=None, help="Override NEWS_INTELLIGENCE_LLM_MIN_MATERIALITY.")
-    parser.add_argument("--llm-min-text-chars", type=int, default=None, help="Override NEWS_INTELLIGENCE_LLM_MIN_TEXT_CHARS.")
+    parser.add_argument("--llm-max-tokens", type=int, default=0, help="Override TEXT_INTELLIGENCE_LLM_MAX_TOKENS for this run.")
+    parser.add_argument("--llm-reasoning-effort", default="", help="Override TEXT_INTELLIGENCE_LLM_REASONING_EFFORT for this run.")
+    parser.add_argument("--llm-response-format", default="", help="Override TEXT_INTELLIGENCE_LLM_RESPONSE_FORMAT for this run.")
+    parser.add_argument("--llm-merge-mode", default="", help="Override TEXT_INTELLIGENCE_LLM_MERGE_MODE: summary_only or override.")
+    parser.add_argument("--llm-min-materiality", type=float, default=None, help="Override TEXT_INTELLIGENCE_LLM_MIN_MATERIALITY.")
+    parser.add_argument("--llm-min-text-chars", type=int, default=None, help="Override TEXT_INTELLIGENCE_LLM_MIN_TEXT_CHARS.")
     return parser.parse_args()
 
 
@@ -132,17 +132,17 @@ def main() -> int:
 
 def apply_config_overrides(args: argparse.Namespace) -> None:
     if args.llm_max_tokens:
-        os.environ["NEWS_INTELLIGENCE_LLM_MAX_TOKENS"] = str(args.llm_max_tokens)
+        os.environ["TEXT_INTELLIGENCE_LLM_MAX_TOKENS"] = str(args.llm_max_tokens)
     if args.llm_reasoning_effort:
-        os.environ["NEWS_INTELLIGENCE_LLM_REASONING_EFFORT"] = args.llm_reasoning_effort
+        os.environ["TEXT_INTELLIGENCE_LLM_REASONING_EFFORT"] = args.llm_reasoning_effort
     if args.llm_response_format:
-        os.environ["NEWS_INTELLIGENCE_LLM_RESPONSE_FORMAT"] = args.llm_response_format
+        os.environ["TEXT_INTELLIGENCE_LLM_RESPONSE_FORMAT"] = args.llm_response_format
     if args.llm_merge_mode:
-        os.environ["NEWS_INTELLIGENCE_LLM_MERGE_MODE"] = args.llm_merge_mode
+        os.environ["TEXT_INTELLIGENCE_LLM_MERGE_MODE"] = args.llm_merge_mode
     if args.llm_min_materiality is not None:
-        os.environ["NEWS_INTELLIGENCE_LLM_MIN_MATERIALITY"] = str(args.llm_min_materiality)
+        os.environ["TEXT_INTELLIGENCE_LLM_MIN_MATERIALITY"] = str(args.llm_min_materiality)
     if args.llm_min_text_chars is not None:
-        os.environ["NEWS_INTELLIGENCE_LLM_MIN_TEXT_CHARS"] = str(args.llm_min_text_chars)
+        os.environ["TEXT_INTELLIGENCE_LLM_MIN_TEXT_CHARS"] = str(args.llm_min_text_chars)
 
 
 def latest_run(root: Path) -> Path:

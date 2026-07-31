@@ -21,8 +21,8 @@ from pydantic import BaseModel, Field
 
 from services.gateway_core.uvicorn_logging import quiet_uvicorn_log_config, suppress_uvicorn_access_logger
 
-from news_intelligence.config import IntelligenceConfig
-from news_intelligence.model_registry import ModelRegistry
+from text_intelligence.config import IntelligenceConfig
+from text_intelligence.model_registry import ModelRegistry
 
 
 class ChatMessage(BaseModel):

@@ -52,13 +52,13 @@ async def lifespan(_app: FastAPI):
         scoped_runtime.client.close()
 
 
-app = FastAPI(title="News Intelligence Service", lifespan=lifespan)
+app = FastAPI(title="Text Intelligence Service", lifespan=lifespan)
 
 
 @app.get("/health")
 def health() -> dict[str, object]:
     return build_health_payload(
-        service_name="news_intelligence",
+        service_name="text_intelligence",
         config=config,
         metrics=_snapshot_metrics(),
     )
@@ -67,7 +67,7 @@ def health() -> dict[str, object]:
 @app.get("/snapshot/status")
 def status_snapshot() -> dict[str, object]:
     return build_dashboard_snapshot(
-        service_name="news_intelligence",
+        service_name="text_intelligence",
         config=config,
         metrics=_snapshot_metrics(),
         service_specific={"model_registry": engine.registry.snapshot()},
@@ -105,7 +105,7 @@ def enqueue_candidate(candidate: LiveCandidate) -> dict[str, object]:
             )
         )
     except asyncio.QueueFull as exc:
-        raise HTTPException(status_code=503, detail="news intelligence queue is full") from exc
+        raise HTTPException(status_code=503, detail="text intelligence queue is full") from exc
     return {"status": "queued", "canonical_news_id": candidate.canonical_news_id}
 
 
@@ -121,7 +121,7 @@ def enqueue_candidates(batch: LiveCandidateBatch) -> dict[str, object]:
                 )
             )
     except asyncio.QueueFull as exc:
-        raise HTTPException(status_code=503, detail="news intelligence queue is full") from exc
+        raise HTTPException(status_code=503, detail="text intelligence queue is full") from exc
     return {"status": "queued", "count": len(batch.candidates)}
 
 

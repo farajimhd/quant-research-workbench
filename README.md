@@ -129,7 +129,7 @@ paper or live accounts.
 | Text embeddings | `services/text_embed_gateway` | Tokenizes and embeds news and SEC text, persists model-ready outputs, and reconciles coverage. |
 | Reference and tradability data | `services/reference_gateway`, `pipelines/reference_data` | Point-in-time issuer/security/listing identity, symbol mapping, tradable universe, borrow, and market-publication context. This service was omitted from the initial app description but is required by live scanner and order safety paths. |
 | Broker access | `services/ibkr_gateway_supervisor` | Supervises IBKR Client Portal Gateway login/session state and supplies account checks used by real-live trading. |
-| Text intelligence | `services/news-intelligence` | Shared post-persistence `scoped_text_labeling_v4` authority for News and SEC, plus optional gated live News model inference. It does not own acquisition or canonical storage. |
+| Text intelligence | `services/text-intelligence` | Shared post-persistence `scoped_text_labeling_v5` authority for News and SEC, plus optional gated live News model inference. It does not own acquisition or canonical storage. |
 | Active model research | `research/packed_market_model` | Current causal packed-event model family and trainer. |
 | Shared data/ML infrastructure | `research/mlops` | Environment, ClickHouse, manifests, checkpoints, metrics, packed loaders, and other shared utilities. It is also imported by operational services and pipelines, so it cannot be archived with old models. |
 | Forecast serving | `services/market-ai` | Reserved production boundary for the final causal model. It is intentionally disabled today; code below `src/market_ai` is exploratory. |
@@ -311,7 +311,7 @@ until IBKR reports both `gateway_status=ready` and
 `-IbkrSupervisorHealthUrl` when its bind is non-default.
 
 Model Gateway becomes required only when
-`NEWS_INTELLIGENCE_ENABLE_LIVE_AI=true`, because eligible live News is then
+`TEXT_INTELLIGENCE_ENABLE_LIVE_AI=true`, because eligible live News is then
 sent to the configured fast semantic route. Market AI is the optional deeper
 hypothesis consumer on that path. Start those AI services separately when
 enabling Live AI; they are intentionally excluded from the standard
@@ -441,7 +441,7 @@ decision.
 - `pipelines/*` remain necessary for historical completeness, repair, and the
   live/historical data contract even though operators interact mainly through
   services and the UI.
-- `services/news-intelligence` is the shared deterministic News and SEC text
+- `services/text-intelligence` is the shared deterministic News and SEC text
   authority. Its optional local/remote model routes remain independently gated
   and do not define canonical classification.
 

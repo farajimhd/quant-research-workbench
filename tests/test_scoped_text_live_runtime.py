@@ -7,17 +7,17 @@ from pathlib import Path
 
 
 SERVICE_ROOT = (
-    Path(__file__).resolve().parents[1] / "services" / "news-intelligence"
+    Path(__file__).resolve().parents[1] / "services" / "text-intelligence"
 )
 if str(SERVICE_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_ROOT))
 
-from news_intelligence.live import (  # noqa: E402
+from text_intelligence.live import (  # noqa: E402
     LiveCandidate,
     LiveNewsRuntime,
     PreparedNewsCandidate,
 )
-from news_intelligence.scoped_live import (  # noqa: E402
+from text_intelligence.scoped_live import (  # noqa: E402
     _parse_utc,
     _sec_document_set_hash,
 )

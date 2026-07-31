@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$serviceDir = Join-Path $repoRoot "services\news-intelligence"
+$serviceDir = Join-Path $repoRoot "services\text-intelligence"
 $env:PYTHONPATH = if ($env:PYTHONPATH) { "$repoRoot;$env:PYTHONPATH" } else { $repoRoot }
 
 function Resolve-PythonExecutable {
@@ -54,17 +54,17 @@ function Resolve-PythonExecutable {
 $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe -EnvironmentName $CondaEnv
 
 if ($Bind.Trim()) {
-    $env:NEWS_INTELLIGENCE_BIND = $Bind.Trim()
+    $env:TEXT_INTELLIGENCE_BIND = $Bind.Trim()
 }
 
 if ($CheckOnly) {
-    & $resolvedPython -c "import ast,pathlib; root=pathlib.Path(r'$serviceDir'); files=list((root/'news_intelligence').glob('*.py'))+list((root/'scripts').glob('*.py')); [ast.parse(p.read_text(encoding='utf-8')) for p in files]; print(f'AST OK {len(files)} files')"
+    & $resolvedPython -c "import ast,pathlib; root=pathlib.Path(r'$serviceDir'); files=list((root/'text_intelligence').glob('*.py'))+list((root/'scripts').glob('*.py')); [ast.parse(p.read_text(encoding='utf-8')) for p in files]; print(f'AST OK {len(files)} files')"
     exit $LASTEXITCODE
 }
 
 Push-Location $serviceDir
 try {
-    & $resolvedPython -m news_intelligence.main
+    & $resolvedPython -m text_intelligence.main
 }
 finally {
     Pop-Location

@@ -198,12 +198,17 @@ class NewsGatewayConfig:
             run_log_enabled=env_bool("NEWS_GATEWAY_RUN_LOG_ENABLED", True),
             run_log_queue_size=env_int("NEWS_GATEWAY_RUN_LOG_QUEUE_SIZE", 10_000),
             run_log_skip_sample_size=env_int("NEWS_GATEWAY_RUN_LOG_SKIP_SAMPLE_SIZE", 100),
-            intelligence_enabled=env_bool("NEWS_INTELLIGENCE_DISPATCH_ENABLED", True),
+            intelligence_enabled=env_bool(
+                "TEXT_INTELLIGENCE_DISPATCH_ENABLED",
+                env_bool("NEWS_INTELLIGENCE_DISPATCH_ENABLED", True),
+            ),
             intelligence_url=env_string(
-                "NEWS_INTELLIGENCE_URL", "http://127.0.0.1:8804"
+                "TEXT_INTELLIGENCE_URL",
+                env_string("NEWS_INTELLIGENCE_URL", "http://127.0.0.1:8804"),
             ).rstrip("/"),
             intelligence_timeout_seconds=env_float(
-                "NEWS_INTELLIGENCE_DISPATCH_TIMEOUT_SECONDS", 2.0
+                "TEXT_INTELLIGENCE_DISPATCH_TIMEOUT_SECONDS",
+                env_float("NEWS_INTELLIGENCE_DISPATCH_TIMEOUT_SECONDS", 2.0),
             ),
         )
 

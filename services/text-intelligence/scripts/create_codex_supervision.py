@@ -12,8 +12,8 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from news_intelligence.historical import article_key, load_articles_jsonl, load_historical_articles, sample_articles, write_jsonl
-from news_intelligence.supervision import CodexSilverSupervisor, SUPERVISOR_VERSION, response_to_jsonable
+from text_intelligence.historical import article_key, load_articles_jsonl, load_historical_articles, sample_articles, write_jsonl
+from text_intelligence.supervision import CodexSilverSupervisor, SUPERVISOR_VERSION, response_to_jsonable
 
 
 def parse_args() -> argparse.Namespace:

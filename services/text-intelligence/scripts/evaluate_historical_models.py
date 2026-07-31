@@ -124,7 +124,7 @@ class ModelEval:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate local news-intelligence models on historical news.")
+    parser = argparse.ArgumentParser(description="Evaluate local Text Intelligence models on historical news.")
     parser.add_argument("--raw-root", default=r"D:\TradingData\stock-news-analysis\news_discovery_v5\raw")
     parser.add_argument("--model-root", default=r"D:\models_artifacts\opensource")
     parser.add_argument("--manifest", default=Path(__file__).resolve().parents[1] / "models" / "opensource_models.json")

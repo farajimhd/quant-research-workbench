@@ -40,32 +40,32 @@ requires an active Live session and point-in-time QMD price eligibility.
 
 ## Environment Variables
 
-- `NEWS_INTELLIGENCE_BIND`, default `127.0.0.1:8804`
-- `NEWS_INTELLIGENCE_MODEL_ROOT`, default `D:\models_artifacts\opensource`
-- `NEWS_INTELLIGENCE_MODEL_MANIFEST`, default `models\opensource_models.json`
-- `NEWS_INTELLIGENCE_MODEL_DEVICE`, default `auto`; use `cuda` or `cpu` to force model device.
-- `NEWS_INTELLIGENCE_STACK_VERSION`, default `news-intelligence-v1`
-- `NEWS_INTELLIGENCE_TAXONOMY_VERSION`, default `news-taxonomy-v1`
-- `NEWS_INTELLIGENCE_PROMPT_VERSION`, default `news-llm-prompt-v1`
-- `NEWS_INTELLIGENCE_ENABLE_MODELS`, default `false`; set `true` explicitly to
+- `TEXT_INTELLIGENCE_BIND`, default `127.0.0.1:8804`
+- `TEXT_INTELLIGENCE_MODEL_ROOT`, default `D:\models_artifacts\opensource`
+- `TEXT_INTELLIGENCE_MODEL_MANIFEST`, default `models\opensource_models.json`
+- `TEXT_INTELLIGENCE_MODEL_DEVICE`, default `auto`; use `cuda` or `cpu` to force model device.
+- `TEXT_INTELLIGENCE_STACK_VERSION`, default `text-intelligence-v1`
+- `TEXT_INTELLIGENCE_TAXONOMY_VERSION`, default `news-taxonomy-v1`
+- `TEXT_INTELLIGENCE_PROMPT_VERSION`, default `news-llm-prompt-v1`
+- `TEXT_INTELLIGENCE_ENABLE_MODELS`, default `false`; set `true` explicitly to
   load the configured optional local sentiment/NER models.
-- `NEWS_INTELLIGENCE_ENABLE_LLM`, default `false`
-- `NEWS_INTELLIGENCE_ENABLE_LIVE_AI`, default `false`; when `true`, eligible
+- `TEXT_INTELLIGENCE_ENABLE_LLM`, default `false`
+- `TEXT_INTELLIGENCE_ENABLE_LIVE_AI`, default `false`; when `true`, eligible
   News during an explicitly active Live session is routed through Model
   Gateway and then optionally to Market AI. This setting does not affect the
   required deterministic News/SEC classifier.
-- `NEWS_INTELLIGENCE_LLM_BASE_URL`, default `http://127.0.0.1:8000/v1`
-- `NEWS_INTELLIGENCE_LLM_MODEL`, default `Qwen/Qwen3-1.7B`
-- `NEWS_INTELLIGENCE_LLM_MAX_TOKENS`, default `512`
-- `NEWS_INTELLIGENCE_LLM_MERGE_MODE`, default `summary_only`; use `override` only when you want the LLM to replace structured scanner labels.
-- `NEWS_INTELLIGENCE_LLM_REASONING_EFFORT`, default `low` for `gpt-oss`, otherwise empty.
-- `NEWS_INTELLIGENCE_LLM_RESPONSE_FORMAT`, default `json_object` for `gpt-oss`, otherwise empty.
-- `NEWS_INTELLIGENCE_ACTIVE_SENTIMENT_MODEL`, default `distilroberta-financial-news`
-- `NEWS_INTELLIGENCE_ACTIVE_NER_MODEL`, default `quantbridge-energy-intelligence`
-- `NEWS_INTELLIGENCE_MAX_TEXT_CHARS`, default `6000`
-- `NEWS_INTELLIGENCE_LLM_MIN_MATERIALITY`, default `0.65`
-- `NEWS_INTELLIGENCE_LLM_MIN_TEXT_CHARS`, default `80`
-- `NEWS_INTELLIGENCE_LLM_TIMEOUT_MS`, default `3500`
+- `TEXT_INTELLIGENCE_LLM_BASE_URL`, default `http://127.0.0.1:8000/v1`
+- `TEXT_INTELLIGENCE_LLM_MODEL`, default `Qwen/Qwen3-1.7B`
+- `TEXT_INTELLIGENCE_LLM_MAX_TOKENS`, default `512`
+- `TEXT_INTELLIGENCE_LLM_MERGE_MODE`, default `summary_only`; use `override` only when you want the LLM to replace structured scanner labels.
+- `TEXT_INTELLIGENCE_LLM_REASONING_EFFORT`, default `low` for `gpt-oss`, otherwise empty.
+- `TEXT_INTELLIGENCE_LLM_RESPONSE_FORMAT`, default `json_object` for `gpt-oss`, otherwise empty.
+- `TEXT_INTELLIGENCE_ACTIVE_SENTIMENT_MODEL`, default `distilroberta-financial-news`
+- `TEXT_INTELLIGENCE_ACTIVE_NER_MODEL`, default `quantbridge-energy-intelligence`
+- `TEXT_INTELLIGENCE_MAX_TEXT_CHARS`, default `6000`
+- `TEXT_INTELLIGENCE_LLM_MIN_MATERIALITY`, default `0.65`
+- `TEXT_INTELLIGENCE_LLM_MIN_TEXT_CHARS`, default `80`
+- `TEXT_INTELLIGENCE_LLM_TIMEOUT_MS`, default `3500`
 - `NEWS_INTELLIGENCE_MODEL_GATEWAY_URL`, default `http://127.0.0.1:8802`
 - `NEWS_INTELLIGENCE_MARKET_AI_URL`, default `http://127.0.0.1:8803`
 - `NEWS_INTELLIGENCE_BACKEND_URL`, default `http://127.0.0.1:8000`; this is
@@ -81,23 +81,28 @@ requires an active Live session and point-in-time QMD price eligibility.
 - `TEXT_INTELLIGENCE_RECONCILE_SECONDS`, default `30`
 - `TEXT_INTELLIGENCE_RECONCILE_HOURS`, default `72`
 
+Common service settings formerly named `NEWS_INTELLIGENCE_*` remain accepted
+as transitional aliases. `TEXT_INTELLIGENCE_*` always takes precedence. The
+remaining `NEWS_INTELLIGENCE_*` settings above configure the optional News-only
+live inference route inside this shared service; they do not name the service.
+
 ## Run
 
 Install dependencies in the Python environment that will host the models:
 
 ```powershell
-pip install -r services\news-intelligence\requirements.txt
+pip install -r services\text-intelligence\requirements.txt
 ```
 
 ```powershell
-cd services\news-intelligence
-python -m news_intelligence.main
+cd services\text-intelligence
+python -m text_intelligence.main
 ```
 
 or:
 
 ```powershell
-.\scripts\run_news_intelligence.ps1
+.\scripts\run_text_intelligence.ps1
 ```
 
 The bare launcher runs the required deterministic News/SEC V5 classifier and
@@ -108,15 +113,15 @@ explicit operator choice:
 
 ```powershell
 # Optional local sentiment/NER models.
-$env:NEWS_INTELLIGENCE_ENABLE_MODELS = "true"
+$env:TEXT_INTELLIGENCE_ENABLE_MODELS = "true"
 
 # Optional OpenAI-compatible LLM route.
-$env:NEWS_INTELLIGENCE_ENABLE_LLM = "true"
+$env:TEXT_INTELLIGENCE_ENABLE_LLM = "true"
 
 # Optional live-trading AI route. Model Gateway must be running; Market AI is
 # the separate deeper-hypothesis consumer.
-$env:NEWS_INTELLIGENCE_ENABLE_LIVE_AI = "true"
-.\scripts\run_news_intelligence.ps1
+$env:TEXT_INTELLIGENCE_ENABLE_LIVE_AI = "true"
+.\scripts\run_text_intelligence.ps1
 ```
 
 Unset the optional variables, or set them to `false`, to return to deterministic-only
@@ -140,27 +145,27 @@ reconciliation window require an explicit range-scoped V5 rebuild.
 ## Download Models
 
 ```powershell
-python services\news-intelligence\scripts\download_models.py
+python services\text-intelligence\scripts\download_models.py
 ```
 
 The default target is `D:\models_artifacts\opensource`. Large and gated models
 are listed in the manifest but are skipped unless explicitly enabled.
 
 ```powershell
-python services\news-intelligence\scripts\download_models.py --include-large
-python services\news-intelligence\scripts\download_models.py --include-gated
+python services\text-intelligence\scripts\download_models.py --include-large
+python services\text-intelligence\scripts\download_models.py --include-gated
 ```
 
 To download only OpenAI `gpt-oss-20b` for offline/vLLM testing:
 
 ```powershell
-python services\news-intelligence\scripts\download_models.py --only openai-gpt-oss-20b --include-large
+python services\text-intelligence\scripts\download_models.py --only openai-gpt-oss-20b --include-large
 ```
 
 ## Serving Local LLMs
 
 The intelligence service expects an OpenAI-compatible local LLM endpoint when
-`NEWS_INTELLIGENCE_ENABLE_LLM=true`. For `gpt-oss-20b`, the recommended path is
+`TEXT_INTELLIGENCE_ENABLE_LLM=true`. For `gpt-oss-20b`, the recommended path is
 vLLM on compatible GPU hardware:
 
 ```powershell
@@ -170,9 +175,9 @@ vLLM on compatible GPU hardware:
 Then point the intelligence service at it:
 
 ```powershell
-$env:NEWS_INTELLIGENCE_ENABLE_LLM = "true"
-$env:NEWS_INTELLIGENCE_LLM_BASE_URL = "http://127.0.0.1:8000/v1"
-$env:NEWS_INTELLIGENCE_LLM_MODEL = "openai/gpt-oss-20b"
+$env:TEXT_INTELLIGENCE_ENABLE_LLM = "true"
+$env:TEXT_INTELLIGENCE_LLM_BASE_URL = "http://127.0.0.1:8000/v1"
+$env:TEXT_INTELLIGENCE_LLM_MODEL = "openai/gpt-oss-20b"
 ```
 
 `gpt-oss-20b` is intended for self-managed serving. It is not available through

@@ -230,9 +230,9 @@ research/chronos2/reports/
 # Local model evaluation outputs
 tmp
 .tmp
-services/news-intelligence/evaluation_runs/
-services/news-intelligence/codex_suppervision/
-services/news-intelligence/pipeline_evaluation_runs/
+services/text-intelligence/evaluation_runs/
+services/text-intelligence/codex_suppervision/
+services/text-intelligence/pipeline_evaluation_runs/
 prepared/
 .codex
 .agents

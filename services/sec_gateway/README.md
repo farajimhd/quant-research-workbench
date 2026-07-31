@@ -356,10 +356,14 @@ filing authority, persists `scoped_text_labeling_v4` labels and relationships,
 and reconciles missed notices or changed rendered-document hashes.
 
 ```text
-SEC_TEXT_INTELLIGENCE_DISPATCH_ENABLED=true
-SEC_TEXT_INTELLIGENCE_URL=http://127.0.0.1:8804
-SEC_TEXT_INTELLIGENCE_DISPATCH_TIMEOUT_SECONDS=2
+TEXT_INTELLIGENCE_DISPATCH_ENABLED=true
+TEXT_INTELLIGENCE_URL=http://127.0.0.1:8804
+TEXT_INTELLIGENCE_DISPATCH_TIMEOUT_SECONDS=2
 ```
+
+The former `SEC_TEXT_INTELLIGENCE_*` names remain accepted as transitional
+aliases; the shared `TEXT_INTELLIGENCE_*` values are authoritative when both
+are present.
 
 The submissions and companyfacts SEC API responses are cached by CIK. If a
 cached payload does not contain the newly discovered accession, the gateway

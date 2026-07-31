@@ -91,7 +91,11 @@ function Test-LiveGatewayProcess {
         ($commandLine.Contains("bin\run.bat") -and $commandLine.Contains("root\conf.yaml"))) {
         return $true
     }
-    if ($commandLine.Contains("run_news_intelligence.ps1") -or
+    if ($commandLine.Contains("run_text_intelligence.ps1") -or
+        $commandLine.Contains("-m text_intelligence.main") -or
+        # Transitional matching lets the renamed stop authority terminate an
+        # already-running pre-rename service cleanly during workstation cutover.
+        $commandLine.Contains("run_news_intelligence.ps1") -or
         $commandLine.Contains("-m news_intelligence.main")) {
         return $true
     }

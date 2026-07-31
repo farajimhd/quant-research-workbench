@@ -35,10 +35,10 @@ class ScopedTextRuntimeTests(unittest.TestCase):
         )
         with (
             mock.patch(
-                "news_intelligence.scoped_live.extend_sec_ticker_mappings"
+                "text_intelligence.scoped_live.extend_sec_ticker_mappings"
             ),
             mock.patch(
-                "news_intelligence.scoped_live."
+                "text_intelligence.scoped_live."
                 "iter_sec_documents_for_filings",
                 return_value=iter(()),
             ) as documents,

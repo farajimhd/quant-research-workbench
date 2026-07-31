@@ -26,7 +26,7 @@ SEC evidence without replacing or duplicating canonical rendered text.
    dry-run-by-default resumable full-corpus launcher.
 7. **Related-content relationships** persists normalized source, unit, event,
    issuer, and concept edges. It does not copy publication or filing text.
-8. **Live and downstream consumption** makes News Intelligence use this same
+8. **Live and downstream consumption** makes Text Intelligence use this same
    issuer-scoping authority for live notifications and historical
    reconciliation. Market AI and prior-news context read the resulting V5
    semantic stream.

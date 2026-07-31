@@ -22,7 +22,7 @@ $newsLauncher = Join-Path $PSScriptRoot "run_news_gateway.ps1"
 $secLauncher = Join-Path $PSScriptRoot "run_sec_gateway.ps1"
 $referenceLauncher = Join-Path $PSScriptRoot "run_reference_gateway.ps1"
 $ibkrLauncher = Join-Path $PSScriptRoot "run_ibkr_gateway_supervisor.ps1"
-$textIntelligenceLauncher = Join-Path $PSScriptRoot "run_news_intelligence.ps1"
+$textIntelligenceLauncher = Join-Path $PSScriptRoot "run_text_intelligence.ps1"
 $serviceTabHost = Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1"
 $terminalWindowTargetHelper = Join-Path $PSScriptRoot "windows_terminal_window_target.ps1"
 
