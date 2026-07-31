@@ -39,10 +39,13 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("benzinga_news_rendered_v2", sql)
         self.assertIn("r.source_revision_key=n.source_revision_key", sql)
         self.assertIn("n.published_date >= toDate(window_start)", sql)
+        self.assertIn("PREWHERE published_date >= toDate('2026-07-09')", sql)
+        self.assertEqual(sql.count("FROM `q_live`.`benzinga_news_event_v2` FINAL"), 1)
+        self.assertEqual(sql.count("FROM `q_live`.`benzinga_news_rendered_v2` FINAL"), 1)
         self.assertIn("arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers)", sql)
         self.assertNotIn("ticker_counts AS", sql)
         self.assertIn("positionCaseInsensitiveUTF8", sql)
-        self.assertIn("r.source_count > 0", sql)
+        self.assertIn("ifNull(r.source_count, 0) > 0", sql)
         self.assertIn("n.published_at_utc <= window_end", sql)
         self.assertIn("AS news_kind", sql)
         self.assertIn("AS news_scope", sql)
@@ -59,6 +62,7 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("LIMIT 2", sql)
         self.assertEqual(query_mock.call_args_list[0].kwargs["timeout_seconds"], 12.0)
         self.assertIn("scoped_text_labels_v5", query_mock.call_args_list[1].args[0])
+        self.assertEqual(query_mock.call_args_list[1].kwargs["timeout_seconds"], 1.5)
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_cursor_keeps_same_timestamp_rows_ordered(self, query_mock) -> None:
@@ -70,6 +74,22 @@ class TradingNewsTests(unittest.TestCase):
         sql = query_mock.call_args_list[0].args[0]
         self.assertIn("n.published_at_utc = page_before", sql)
         self.assertIn("n.canonical_news_id < 'news-002'", sql)
+        self.assertIn("published_at_utc = page_before", sql)
+        self.assertIn("canonical_news_id < 'news-002'", sql)
+
+    @patch("src.backend.app.clickhouse_status_query", return_value="")
+    def test_unfiltered_ticker_query_limits_events_before_rendered_join(self, query_mock) -> None:
+        trading_news_rows(
+            as_of="2026-07-10T13:45:00Z",
+            lookback_hours=72,
+            limit=100,
+            ticker="AAPL",
+        )
+        sql = query_mock.call_args_list[0].args[0]
+        event_source, rendered_join = sql.split("LEFT JOIN", 1)
+        self.assertIn("AND has(tickers, 'AAPL')", event_source)
+        self.assertIn("ORDER BY published_at_utc DESC, canonical_news_id DESC LIMIT 101", event_source)
+        self.assertNotIn("LIMIT 101", rendered_join.split("ORDER BY n.published_at_utc", 1)[0])
 
     def test_query_rejects_invalid_filters(self) -> None:
         with self.assertRaises(HTTPException):

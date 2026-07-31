@@ -46,6 +46,9 @@ class ScopedTextLabelPresentationTests(unittest.TestCase):
             ["article-1", "article-1"],
             query_rows=query_rows,
             quote=lambda value: f"'{value}'",
+            source_end="2026-07-31T16:00:00+00:00",
+            source_start="2026-07-28T16:00:00+00:00",
+            ticker="aaa",
         )
 
         self.assertEqual(list(grouped), ["article-1"])
@@ -53,6 +56,11 @@ class ScopedTextLabelPresentationTests(unittest.TestCase):
         self.assertEqual(grouped["article-1"][0]["modality"], "confirmed")
         self.assertIn("scoped_text_labels_v5", queries[0])
         self.assertIn(SCOPED_LABELING_VERSION, queries[0])
+        self.assertIn("PREWHERE corpus='news' AND ticker='AAA'", queries[0])
+        self.assertIn("source_timestamp >= parseDateTime64BestEffort", queries[0])
+        self.assertIn("source_timestamp <= parseDateTime64BestEffort", queries[0])
+        self.assertIn("LIMIT 1 BY corpus,ticker,source_timestamp,source_id,unit_id,labeling_version", queries[0])
+        self.assertNotIn("scoped_text_labels_v5 FINAL", queries[0])
 
     def test_summary_selects_requested_ticker_and_preserves_all_eligibility(self) -> None:
         labels = [

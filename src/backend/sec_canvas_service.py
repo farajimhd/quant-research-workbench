@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -35,6 +36,8 @@ DEFAULT_TEXT_PAGE_CHARS = 32_000
 MAX_TEXT_PAGE_CHARS = 100_000
 DEFAULT_FACT_PAGE_ROWS = 100
 MAX_FACT_PAGE_ROWS = 200
+SEC_QUERY_TIMEOUT_SECONDS = 6.0
+SEC_INTELLIGENCE_TIMEOUT_SECONDS = 1.5
 SEC_LABELS = {
     "other_disclosure": "Other disclosure",
 }
@@ -65,7 +68,7 @@ def sec_filings_payload(
         raise ValueError("SEC content must be all, readable, or xbrl.")
     safe_ticker = normalize_ticker(ticker) if ticker.strip() else ""
     before_time = parse_optional_as_of(before)
-    client = clickhouse_client()
+    client = clickhouse_client(timeout_seconds=SEC_QUERY_TIMEOUT_SECONDS)
     rows = clickhouse_rows(
         client,
         filing_list_sql(
@@ -86,10 +89,17 @@ def sec_filings_payload(
     if rows:
         enrich_filing_rows(client, rows, cutoff=cutoff, database=safe_database)
     intelligence_status = enrich_sec_intelligence(
-        client, rows, cutoff=cutoff, database=safe_database
+        clickhouse_client(timeout_seconds=SEC_INTELLIGENCE_TIMEOUT_SECONDS),
+        rows,
+        cutoff=cutoff,
+        database=safe_database,
+        ticker=safe_ticker,
     )
     try:
-        labels = clickhouse_rows(client, taxonomy_labels_sql(safe_database))
+        labels = clickhouse_rows(
+            clickhouse_client(timeout_seconds=SEC_INTELLIGENCE_TIMEOUT_SECONDS),
+            taxonomy_labels_sql(safe_database),
+        )
     except Exception:
         labels = [{"id": key, "label": value} for key, value in SEC_LABELS.items()]
     last = rows[-1] if rows else {}
@@ -181,6 +191,7 @@ def enrich_sec_intelligence(
     *,
     cutoff: datetime,
     database: str,
+    ticker: str = "",
 ) -> str:
     """Attach V5 document labels while preserving canonical filing availability."""
     if not rows:
@@ -200,6 +211,12 @@ def enrich_sec_intelligence(
             source_ids,
             query_rows=lambda sql: clickhouse_rows(client, sql),
             quote=sql_string,
+            source_end=cutoff.isoformat(),
+            source_start=min(
+                (str(row.get("accepted_at_utc") or "") for row in rows),
+                default="",
+            ),
+            ticker=ticker,
         )
     except Exception:
         for row in rows:
@@ -381,6 +398,15 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
     db = quote_ident(database)
     instant = sql_string(clickhouse_timestamp(cutoff))
     start = sql_string(clickhouse_timestamp(cutoff - timedelta(hours=lookback_hours)))
+    bounded_filings = f"""(
+        SELECT *
+        FROM {db}.sec_filing_v3 FINAL
+        PREWHERE accepted_at_utc >= parseDateTime64BestEffort({start})
+          AND accepted_at_utc <= parseDateTime64BestEffort({instant})
+        WHERE accepted_at_utc >= parseDateTime64BestEffort({start})
+          AND accepted_at_utc <= parseDateTime64BestEffort({instant})
+    )"""
+    bounded_accessions = f"SELECT accession_number FROM {bounded_filings}"
     conditions = [
         f"f.accepted_at_utc >= parseDateTime64BestEffort({start})",
         f"f.accepted_at_utc <= parseDateTime64BestEffort({instant})",
@@ -394,7 +420,7 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
         conditions.append(f"""f.accession_number IN
             (
                 SELECT DISTINCT f2.accession_number
-                FROM {db}.sec_filing_v3 AS f2 FINAL
+                FROM {bounded_filings} AS f2
                 LEFT JOIN
                 (
                     SELECT accession_number, entity_cik, entity_role
@@ -404,6 +430,7 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
                                argMax(entity_cik, tuple(source_revision_rank, inserted_at)) AS entity_cik,
                                argMax(entity_role, tuple(source_revision_rank, inserted_at)) AS entity_role
                         FROM {db}.sec_filing_entity_v3
+                        PREWHERE accession_number IN ({bounded_accessions})
                         WHERE source_revision_at <= parseDateTime64BestEffort({instant})
                         GROUP BY accession_number, relationship_id
                     )
@@ -435,7 +462,7 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
                    if(empty(t.category), {filing_label_sql('f.form_type')}, t.category) AS filing_label,
                    t.canonical_title AS disclosure_title, t.impact_label, t.impact_score,
                    t.affected_security_scope, t.impact_rationale, t.taxonomy_version
-            FROM {db}.sec_filing_v3 AS f FINAL
+            FROM {bounded_filings} AS f
             LEFT JOIN approved_form_taxonomy AS t ON t.form_key = upper(f.form_type)
             WHERE {' AND '.join(conditions)}
         )
@@ -781,12 +808,25 @@ def summarize_identity(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def clickhouse_client() -> ClickHouseHttpClient:
-    return ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+def clickhouse_client(
+    *, timeout_seconds: float | None = None
+) -> ClickHouseHttpClient:
+    query_params = (
+        {"max_execution_time": max(0.1, timeout_seconds - 0.5)}
+        if timeout_seconds is not None
+        else None
+    )
+    return ClickHouseHttpClient(
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+        timeout_seconds=timeout_seconds,
+        default_query_params=query_params,
+    )
 
 
 def clickhouse_rows(client: ClickHouseHttpClient, query: str) -> list[dict[str, Any]]:
-    payload = client.execute(query)
+    payload = client.execute(query, query_id=f"canvas-sec-{uuid.uuid4()}")
     return [json.loads(line) for line in payload.splitlines() if line.strip()]
 
 

@@ -6,7 +6,9 @@ import re
 import shutil
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
@@ -164,6 +166,7 @@ EXCHANGE_TIME_ZONE = "America/New_York"
 BACKTEST_ARTIFACT_ROOT = PROJECT_ROOT / "data" / "backtests"
 SERVICE_STATUS_TIMEOUT_SECONDS = 1.8
 NEWS_QUERY_TIMEOUT_SECONDS = 12.0
+NEWS_INTELLIGENCE_TIMEOUT_SECONDS = 1.5
 SERVICE_LOG_TAIL_LIMIT = 160
 SERVICE_DASHBOARD_LOG_LIMIT = 360
 
@@ -1511,6 +1514,8 @@ def trading_news_rows(
     window_start = cutoff - timedelta(hours=safe_hours)
     start_sql = f"toDateTime64({sql_string(window_start.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     end_sql = f"toDateTime64({sql_string(cutoff.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
+    start_date_sql = sql_string(window_start.date().isoformat())
+    end_date_sql = sql_string(cutoff.date().isoformat())
     cursor_sql = f"toDateTime64({sql_string(min(cursor, cutoff).strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     cursor_id = before_id.strip()
     cursor_filter = "n.published_at_utc < page_before"
@@ -1585,6 +1590,32 @@ def trading_news_rows(
     if safe_kind != "all":
         filters.append(f"({news_kind_sql}) = {sql_string(safe_kind)}")
         where_sql = " AND ".join(filters)
+    source_cursor_filter = "published_at_utc < page_before"
+    if before.strip() and cursor_id:
+        source_cursor_filter = (
+            "(published_at_utc < page_before OR "
+            f"(published_at_utc = page_before AND canonical_news_id < {sql_string(cursor_id)}))"
+        )
+    source_ticker_filter = (
+        f"AND has(tickers, {sql_string(safe_ticker)})" if safe_ticker else ""
+    )
+    can_limit_event_source = not any(
+        (
+            search_term,
+            safe_content != "all",
+            safe_kind != "all",
+            safe_role,
+            safe_origin,
+            safe_direction,
+            safe_eligibility,
+            safe_label_state,
+        )
+    )
+    source_limit_sql = (
+        f"ORDER BY published_at_utc DESC, canonical_news_id DESC LIMIT {safe_limit + 1}"
+        if can_limit_event_source
+        else ""
+    )
     query = f"""
         WITH
             {start_sql} AS window_start,
@@ -1611,8 +1642,27 @@ def trading_news_rows(
                if(r.source_count = 0, 'title_only', 'rendered')) AS render_status,
             lengthUTF8(ifNull(r.rendered_text, '')) AS full_text_chars,
             substring(ifNull(r.rendered_text, ''), 1, 320) AS text_preview
-        FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-        LEFT JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
+        FROM
+        (
+            SELECT *
+            FROM {quote_ident(database)}.{quote_ident(normalized_table)} FINAL
+            PREWHERE published_date >= toDate({start_date_sql})
+              AND published_date <= toDate({end_date_sql})
+            WHERE published_at_utc >= {start_sql}
+              AND published_at_utc <= {end_sql}
+              AND {source_cursor_filter}
+              {source_ticker_filter}
+            {source_limit_sql}
+        ) AS n
+        LEFT JOIN
+        (
+            SELECT *
+            FROM {quote_ident(database)}.{quote_ident(rendered_table)} FINAL
+            PREWHERE published_date >= toDate({start_date_sql})
+              AND published_date <= toDate({end_date_sql})
+            WHERE published_at_utc >= {start_sql}
+              AND published_at_utc <= {end_sql}
+        ) AS r
             ON r.published_date=n.published_date
             AND r.provider_article_id=n.provider_article_id
             AND r.source_revision_key=n.source_revision_key
@@ -1634,8 +1684,13 @@ def trading_news_rows(
     try:
         scoped_by_source = load_scoped_news_labels(
             [str(row.get("canonical_news_id") or "") for row in rows],
-            query_rows=clickhouse_json_each_row,
+            query_rows=lambda sql: clickhouse_json_each_row(
+                sql, timeout_seconds=NEWS_INTELLIGENCE_TIMEOUT_SECONDS
+            ),
             quote=sql_string,
+            source_end=cutoff.isoformat(),
+            source_start=window_start.isoformat(),
+            ticker=safe_ticker,
         )
         intelligence_status = "ready"
     except Exception:
@@ -1662,10 +1717,12 @@ def trading_news_rows(
     }
 
 
-def clickhouse_json_each_row(query: str) -> list[dict[str, Any]]:
+def clickhouse_json_each_row(
+    query: str, *, timeout_seconds: float = NEWS_QUERY_TIMEOUT_SECONDS
+) -> list[dict[str, Any]]:
     return [
         json.loads(line)
-        for line in clickhouse_status_query(query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines()
+        for line in clickhouse_status_query(query, timeout_seconds=timeout_seconds).splitlines()
         if line.strip()
     ]
 
@@ -2681,7 +2738,18 @@ def service_table_state_years() -> list[int]:
 
 
 def clickhouse_status_query(sql: str, *, timeout_seconds: float = SERVICE_STATUS_TIMEOUT_SECONDS) -> str:
-    req = urllib.request.Request(default_clickhouse_url().rstrip("/") + "/", data=sql.encode("utf-8"), method="POST")
+    server_timeout = max(0.1, float(timeout_seconds) - 0.5)
+    params = urllib.parse.urlencode(
+        {
+            "query_id": f"canvas-{uuid.uuid4()}",
+            "max_execution_time": server_timeout,
+        }
+    )
+    req = urllib.request.Request(
+        default_clickhouse_url().rstrip("/") + "/?" + params,
+        data=sql.encode("utf-8"),
+        method="POST",
+    )
     user = default_clickhouse_user()
     password = default_clickhouse_password()
     if user:

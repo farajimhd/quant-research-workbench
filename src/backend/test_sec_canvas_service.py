@@ -36,6 +36,8 @@ class SecCanvasServiceTests(unittest.TestCase):
         self.assertIn("accepted_at_utc <=", sql)
         self.assertNotIn("f.inserted_at <=", sql)
         self.assertIn("sec_filing_entity_v3", sql)
+        self.assertIn("FROM `q_live`.sec_filing_v3 FINAL\n        PREWHERE accepted_at_utc >=", sql)
+        self.assertIn("PREWHERE accession_number IN (SELECT accession_number FROM", sql)
         self.assertIn("entity_role IN ('issuer', 'subject_company')", sql)
         self.assertIn("valid_from_date", sql)
         self.assertIn("sec_disclosure_taxonomy_v3", sql)
