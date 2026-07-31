@@ -1,6 +1,7 @@
-import { ArrowUpDown, CircleDashed, Minus, TrendingDown, TrendingUp } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronsUpDown, CircleDashed, Minus, TrendingDown, TrendingUp } from "lucide-react";
 
 export type SemanticDirection = "mixed" | "negative" | "neutral" | "pending" | "positive";
+export type SentimentSortOrder = "ascending" | "descending" | "none";
 
 export function normalizeSemanticDirection(value?: string | null): SemanticDirection {
   if (!value) return "pending";
@@ -52,4 +53,27 @@ export function SemanticDirectionMetric({
     <Icon aria-hidden="true" />
     <span><strong>{label}</strong>{scoreText ? <small>{scoreText}</small> : null}</span>
   </span>;
+}
+
+export function SentimentSortButton({ onChange, order }: { onChange: (order: SentimentSortOrder) => void; order: SentimentSortOrder }) {
+  const Icon = order === "ascending" ? ArrowUp : order === "descending" ? ArrowDown : ChevronsUpDown;
+  const next = order === "none" ? "descending" : order === "descending" ? "ascending" : "none";
+  const state = order === "none" ? "not sorted" : `${order} by score`;
+  return <button aria-label={`Sentiment, ${state}. Activate to sort ${next === "none" ? "by default order" : next}`} className="sentiment-sort-button" onClick={() => onChange(next)} type="button"><span>Sentiment</span><Icon aria-hidden="true" /></button>;
+}
+
+export function sortRowsBySentimentScore<T>(rows: readonly T[], scoreOf: (row: T) => number | null | undefined, order: SentimentSortOrder): T[] {
+  if (order === "none") return [...rows];
+  return rows.map((row, index) => ({ index, row, score: scoreOf(row) }))
+    .sort((left, right) => {
+      const leftValid = typeof left.score === "number" && Number.isFinite(left.score);
+      const rightValid = typeof right.score === "number" && Number.isFinite(right.score);
+      if (leftValid !== rightValid) return leftValid ? -1 : 1;
+      if (!leftValid || !rightValid) return left.index - right.index;
+      const leftScore = left.score as number;
+      const rightScore = right.score as number;
+      if (leftScore === rightScore) return left.index - right.index;
+      return order === "ascending" ? leftScore - rightScore : rightScore - leftScore;
+    })
+    .map(({ row }) => row);
 }

@@ -1,10 +1,10 @@
 import { Bot, Building2, CircleDot, Clock3, ExternalLink, FileCheck2, Flame, Globe2, History, Layers3, Lightbulb, Megaphone, Newspaper, RefreshCw, Search, Snowflake, TrendingUp } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import { api, query } from "../../api/client";
 import { NEWS_READER_CANVAS_ID, ensureNewsReaderCanvas, focusCanvasUrl } from "../canvasWorkspace";
 import { MarketTime } from "./MarketTime";
-import { normalizeSemanticDirection, SemanticDirectionMetric } from "./SemanticDirectionMetric";
+import { normalizeSemanticDirection, SemanticDirectionMetric, SentimentSortButton, sortRowsBySentimentScore, type SentimentSortOrder } from "./SemanticDirectionMetric";
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations, type TickerPresentation } from "./TickerIdentity";
 
 type NewsRow = {
@@ -129,10 +129,12 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
   const [search, setSearch] = useState("");
   const [committedSearch, setCommittedSearch] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [sentimentSort, setSentimentSort] = useState<SentimentSortOrder>("none");
   const [role, setRole] = useState(""); const [origin, setOrigin] = useState(""); const [direction, setDirection] = useState(""); const [eligibility, setEligibility] = useState(""); const [labelState, setLabelState] = useState("");
   const customReady = settings.rangeMode === "custom" && settings.startDate && settings.endDate;
   const state = useNewsQuery({ asOf, content: settings.content, direction, eligibility, endDate: customReady ? settings.endDate : "", hours: settings.lookbackHours, kind: settings.kind, labelState, limit: settings.limit, live, origin, refreshKey, role, search: committedSearch, startDate: customReady ? settings.startDate : "", ticker: settings.ticker });
   const presentations = useTickerPresentations(state.rows.flatMap((row) => row.ticker_link_sample ?? []));
+  const displayRows = useMemo(() => sortRowsBySentimentScore(state.rows, (row) => row.scoped_summary?.semantic_score, sentimentSort), [sentimentSort, state.rows]);
 
   return <section className="news-all" aria-label="All news">
     <form className="news-query-bar" onSubmit={(event) => { event.preventDefault(); setCommittedSearch(search.trim()); }}>
@@ -154,18 +156,20 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
     <NewsStatus state={state} />
     <div className="news-table-wrap intelligence-feed-scroll">
       <div className="intelligence-feed news-intelligence-feed" role="list">
-        {state.rows.map((row) => {
+        <div className="intelligence-feed-header news-intelligence-grid" role="row"><span>Time</span><span>Ticker</span><span>Headline &amp; context</span><SentimentSortButton onChange={setSentimentSort} order={sentimentSort} /><span>Use &amp; text</span></div>
+        {displayRows.map((row) => {
           const tone = newsTemperature(row.published_at_utc, Date.parse(state.asOf || asOf));
           const directionValue = normalizeSemanticDirection(row.scoped_summary?.semantic_direction);
-          return <article className="intelligence-feed-row" data-direction={directionValue} key={row.canonical_news_id} role="listitem">
+          return <article className="intelligence-feed-row news-intelligence-grid" data-direction={directionValue} key={row.canonical_news_id} role="listitem">
             <div className="intelligence-time-block"><NewsTemperatureTag tone={tone} /><MarketTime className="news-row-time" dateStyle="short" includeDate value={row.published_at_utc} /></div>
-            <div className="intelligence-identity-block"><span className="intelligence-eyebrow">Affected</span><TickerList presentations={presentations} tickers={row.ticker_link_sample} /></div>
+            <div className="intelligence-identity-block"><TickerList presentations={presentations} tickers={row.ticker_link_sample} /></div>
             <div className="intelligence-main-block">
               <div className="intelligence-meta-line"><ScopedClass summary={row.scoped_summary} /><span className="news-origin">{readableLabel(row.scoped_summary?.source_origin || row.news_origin || "Unknown")}</span><ScopedConcepts concepts={row.scoped_summary?.event_concepts} /></div>
               <button className="news-headline-button" onClick={() => openNewsPage(row, state.queryId)} type="button"><strong>{row.title || "Untitled story"}</strong>{newsTeaser(row) ? <small>{newsTeaser(row)}</small> : null}</button>
-              <div className="intelligence-support-line"><span>{row.url_domain || "News"}</span><NewsTextState row={row} /></div>
+              <div className="intelligence-support-line"><span>{row.url_domain || "News"}</span></div>
             </div>
-            <div className="intelligence-signal-block"><span className="intelligence-eyebrow">Text direction</span><ScopedDirection summary={row.scoped_summary} salient /><div className="intelligence-eligibility-line"><span>Use</span><EligibilityMarks summary={row.scoped_summary} /></div></div>
+            <div className="intelligence-sentiment-cell"><ScopedDirection summary={row.scoped_summary} /></div>
+            <div className="intelligence-utility-cell"><EligibilityMarks summary={row.scoped_summary} /><NewsTextState row={row} /></div>
           </article>;
         })}
       </div>

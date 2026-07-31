@@ -5,7 +5,7 @@ import { api, query } from "../../api/client";
 import { SEC_READER_CANVAS_ID, ensureSecReaderCanvas, focusCanvasUrl } from "../canvasWorkspace";
 import { MarketTime } from "./MarketTime";
 import { Modal } from "./Modal";
-import { normalizeSemanticDirection, SemanticDirectionMetric } from "./SemanticDirectionMetric";
+import { normalizeSemanticDirection, SemanticDirectionMetric, SentimentSortButton, sortRowsBySentimentScore, type SentimentSortOrder } from "./SemanticDirectionMetric";
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations, type TickerPresentation } from "./TickerIdentity";
 
 export type SecSettings = { content: string; endDate: string; label: string; limit: number; lookbackHours: number; rangeMode: "custom" | "preset"; startDate: string; ticker: string };
@@ -34,9 +34,11 @@ const INITIAL_LABELS: SecLabel[] = [
 
 export function AllSecContainer({ asOf, onSettingsChange, settings }: { asOf: string; onSettingsChange: (patch: Partial<SecSettings>) => void; settings: SecSettings }) {
   const [search, setSearch] = useState(""); const [committed, setCommitted] = useState(""); const [refreshKey, setRefreshKey] = useState(0);
+  const [sentimentSort, setSentimentSort] = useState<SentimentSortOrder>("none");
   const state = useSecQuery({ asOf, refreshKey, search: committed, settings });
   const presentations = useTickerPresentations(state.rows.flatMap((row) => row.tickers ?? []));
   const labels = state.labels.length ? state.labels : INITIAL_LABELS;
+  const displayRows = useMemo(() => sortRowsBySentimentScore(state.rows, (row) => row.scoped_summary?.semantic_score, sentimentSort), [sentimentSort, state.rows]);
   return <section className="news-all sec-all" aria-label="All SEC filings">
     <form className="news-query-bar" onSubmit={(event) => { event.preventDefault(); setCommitted(search.trim()); }}>
       <label className="news-search"><Search size={13} /><input aria-label="Search all SEC filings" onChange={(event) => setSearch(event.target.value)} placeholder="Search company, form, accession or filing item" value={search} /></label>
@@ -51,17 +53,20 @@ export function AllSecContainer({ asOf, onSettingsChange, settings }: { asOf: st
       <button aria-label="Refresh SEC filings" className="toolbar-button compact" onClick={() => setRefreshKey((value) => value + 1)} title="Refresh" type="button"><RefreshCw size={13} /></button>
     </form>
     <SecStatus state={state} />
-    <div className="news-table-wrap intelligence-feed-scroll"><div className="intelligence-feed sec-intelligence-feed" role="list">{state.rows.map((row) => {
+    <div className="news-table-wrap intelligence-feed-scroll"><div className="intelligence-feed sec-intelligence-feed" role="list"><div className="intelligence-feed-header sec-intelligence-grid" role="row"><span>Accepted</span><span>Ticker</span><span>Filing / disclosure</span><span>Category</span><span>Impact</span><span>Security scope</span><SentimentSortButton onChange={setSentimentSort} order={sentimentSort} /><span>Use &amp; content</span></div>{displayRows.map((row) => {
       const directionValue = normalizeSemanticDirection(row.scoped_summary?.semantic_direction);
-      return <article className="intelligence-feed-row" data-direction={directionValue} key={`${row.cik}-${row.accession_number}`} role="listitem">
+      return <article className="intelligence-feed-row sec-intelligence-grid" data-direction={directionValue} key={`${row.cik}-${row.accession_number}`} role="listitem">
         <div className="intelligence-time-block"><TemperatureTag tone={temperature(row, Date.parse(state.asOf || asOf))} /><SecFilingTime row={row} /></div>
-        <div className="intelligence-identity-block"><span className="intelligence-eyebrow">Issuer / subject</span><TickerList presentations={presentations} tickers={row.tickers} /><small>{row.tickers.length ? row.company_name : `CIK ${row.cik}`}</small></div>
+        <div className="intelligence-identity-block"><TickerList presentations={presentations} tickers={row.tickers} /><small>{row.tickers.length ? row.company_name : `CIK ${row.cik}`}</small></div>
         <div className="intelligence-main-block">
-          <div className="intelligence-meta-line"><SecDeterministicClass row={row} />{row.impact_score ? <ImpactBadge label={row.impact_label} score={row.impact_score} /> : null}{row.affected_security_scope ? <span className="sec-scope-tag">{humanize(row.affected_security_scope)}</span> : null}</div>
           <button className="news-headline-button" onClick={() => openSecPage(row, state.queryId)} type="button"><strong>{row.disclosure_title || `${row.form_type} filing`}</strong><small>{row.form_type} · {row.company_name}</small></button>
-          <div className="intelligence-support-line"><span>{row.items.length ? `Items ${row.items.join(" · ")}` : row.accession_number}</span><ContentState row={row} /></div>
+          <div className="intelligence-support-line"><span>{row.items.length ? `Items ${row.items.join(" · ")}` : row.accession_number}</span></div>
         </div>
-        <div className="intelligence-signal-block"><span className="intelligence-eyebrow">V5 text direction</span><SecDirection summary={row.scoped_summary} salient />{row.scoped_summary ? <div className="sec-v5-context"><SecScopedRole summary={row.scoped_summary} fallback={row.filing_label_text} /><SecConcepts concepts={row.scoped_summary.event_concepts} /></div> : <small className="sec-v5-pending">Awaiting eligible narrative text</small>}<div className="intelligence-eligibility-line"><span>Use</span><SecEligibility summary={row.scoped_summary} /></div></div>
+        <div className="sec-category-cell"><SecDeterministicClass row={row} /></div>
+        <div className="sec-impact-cell">{row.impact_score ? <><strong>{row.impact_score}/5</strong><span>{row.impact_label || "Classified impact"}</span></> : <span>Not classified</span>}</div>
+        <div className="sec-scope-cell">{humanize(row.affected_security_scope || "Not specified")}</div>
+        <div className="intelligence-sentiment-cell"><SecDirection summary={row.scoped_summary} /></div>
+        <div className="intelligence-utility-cell"><SecEligibility summary={row.scoped_summary} /><ContentState row={row} /></div>
       </article>;
     })}</div>{!state.loading && !state.rows.length ? <SecEmpty label="No SEC filings match this query." /> : null}</div>
     {state.hasMore ? <button className="news-load-more" disabled={state.loadingMore} onClick={state.loadMore} type="button">{state.loadingMore ? "Loading…" : "Load older filings"}</button> : null}
@@ -154,7 +159,7 @@ function SecEligibility({ summary }: { summary?: SecScopedSummary | null }) { if
 function SecStatus({ compact, state }: { compact?: boolean; state: ReturnType<typeof useSecQuery> }) { return <div className="news-status" data-compact={compact ? "true" : "false"}>{state.loading ? <span>Querying filings…</span> : state.error ? <strong>{state.error}</strong> : <><span>{state.rows.length} returned</span>{!compact && state.windowStart ? <span className="news-window-start"><span>Since</span><MarketTime dateStyle="short" includeDate layout="inline" value={state.windowStart} /></span> : null}<span className="news-source-label">Point-in-time</span></>}</div>; }
 function SecEmpty({ label }: { label: string }) { return <div className="news-empty"><BookOpen size={18} /><span>{label}</span></div>; }
 function SecLabel({ label }: { label: string }) { return <span className="sec-label"><FileCheck2 size={11} />{label}</span>; }
-function SecDeterministicClass({ row }: { row: SecRow }) { return <span className="sec-deterministic-class" title={row.taxonomy_version ? `Approved taxonomy ${row.taxonomy_version}` : "Approved SEC form taxonomy"}><FileCheck2 size={11} /><span><small>Deterministic</small><strong>{row.filing_label_text || "Other disclosure"}</strong></span></span>; }
+function SecDeterministicClass({ row }: { row: SecRow }) { return <span className="sec-deterministic-class" title={row.taxonomy_version ? `Approved taxonomy ${row.taxonomy_version}` : "Approved SEC form taxonomy"}><FileCheck2 size={13} /><strong>{row.filing_label_text || "Other disclosure"}</strong></span>; }
 function ImpactBadge({ label, score }: { label?: string; score: number }) { const tone = score >= 4 ? "high" : score >= 2 ? "medium" : "low"; return <span className="sec-impact-badge" data-impact={tone}>Impact {score}/5{label ? ` · ${label}` : ""}</span>; }
 function SecFilingTime({ row }: { row: SecRow }) { if (row.event_time_quality === "date_only") return <span className="sec-date-only" title="The SEC source published a filing date but no acceptance time."><strong>{formatDateOnly(row.accepted_at_utc)}</strong><small>Time unresolved</small></span>; return <MarketTime className="news-row-time" dateStyle="short" includeDate value={row.accepted_at_utc} />; }
 function ContentState({ row }: { row: SecRow }) { return <span className="sec-content-state"><b>{row.text_rows ? "Text" : "Metadata"}</b>{row.xbrl_rows ? <b>XBRL</b> : null}<small>{row.document_rows ?? 0} docs</small></span>; }
