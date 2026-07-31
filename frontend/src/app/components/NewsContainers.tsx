@@ -75,7 +75,9 @@ type NewsFormat = "ai_generated" | "analyst_action" | "company_announcement" | "
 type NewsClassification = { confidence: number; evidence: string[]; format: NewsFormat; is_company_news: boolean; kind: NewsKindValue; origin: NewsOrigin; scope: NewsScope; topics: string[]; version: string };
 type ScopedNewsLabel = {
   content_role: string;
+  event_id: string;
   event_concepts: string[];
+  event_tickers: string[];
   evidence_scope: string;
   forecast_trigger_eligible: boolean;
   issuer_history_context_eligible: boolean;
@@ -90,7 +92,7 @@ type ScopedNewsLabel = {
   scope: string;
   prior_primary_context_eligible: boolean;
   episode_followup_eligible: boolean;
-  semantic_direction_basis: string;
+  semantic_direction_basis: string[];
   reaction_evaluation_eligible: boolean;
   semantic_direction: string;
   semantic_evidence_text: string;
@@ -271,6 +273,7 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
       {scopedSummary
         ? <NewsDetailOverview summary={scopedSummary} />
         : <div className="news-label-pending">{row.intelligence_status === "unavailable" ? "Deterministic labels temporarily unavailable" : "Deterministic classification pending"}</div>}
+      <NewsClassificationPanel classification={classification} summary={scopedSummary} />
       {tags.length ? <div className="news-reader-tags" aria-label="Source tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
     </header>
     {scopedLabels.length ? <section className="news-reader-intelligence" aria-label="Issuer-specific interpretation"><header><div><strong>Issuer interpretations</strong><small>Direction and evidence are evaluated for each affected issuer.</small></div><span>{scopedLabels.length} {scopedLabels.length === 1 ? "issuer view" : "issuer views"}</span></header>{scopedLabels.map((label) => <ScopedLabelPanel key={`${label.unit_id}-${label.ticker}`} label={label} presentations={presentations} />)}</section> : null}
@@ -356,18 +359,42 @@ function NewsDetailOverview({ summary }: { summary: ScopedNewsSummary }) {
   </section>;
 }
 function DetailDatum({ label, value }: { label: string; value: string }) { return <span className="detail-intelligence-datum"><small>{label}</small><strong>{value}</strong></span>; }
+function NewsClassificationPanel({ classification, summary }: { classification: NewsClassification; summary: ScopedNewsSummary | null }) {
+  return <details className="news-detail-contract" open>
+    <summary><span><strong>Loaded classification</strong><small>Article rules and issuer-label summary</small></span><em>{classification.version}</em></summary>
+    <div className="news-detail-contract-body">
+      <section aria-label="Article classification fields">
+        <header>Article class</header>
+        <div className="news-detail-contract-grid"><DetailDatum label="Kind" value={readableLabel(classification.kind)} /><DetailDatum label="Format" value={readableLabel(classification.format)} /><DetailDatum label="Origin" value={readableLabel(classification.origin)} /><DetailDatum label="Scope" value={readableLabel(classification.scope)} /><DetailDatum label="Company news" value={yesNo(classification.is_company_news)} /><DetailDatum label="Confidence" value={percentConfidence(classification.confidence)} /><DetailDatum label="Rule version" value={classification.version || "Not reported"} /></div>
+        <DetailList label="Topics" values={classification.topics} />
+        <DetailList label="Classification evidence" values={classification.evidence} />
+      </section>
+      {summary ? <section aria-label="Issuer label summary fields">
+        <header>Issuer-label summary</header>
+        <div className="news-detail-contract-grid"><DetailDatum label="Classified" value={yesNo(summary.classified !== false)} /><DetailDatum label="Labels" value={String(summary.label_count)} /><DetailDatum label="Issuers" value={String(summary.issuer_count)} /><DetailDatum label="Label version" value={summary.labeling_version || "Not reported"} /><DetailDatum label="Forecast trigger" value={eligibilityValue(summary.forecast_trigger_eligible)} /><DetailDatum label="Reaction study" value={eligibilityValue(summary.reaction_evaluation_eligible)} /><DetailDatum label="Issuer history" value={eligibilityValue(summary.issuer_history_context_eligible)} /></div>
+        <DetailList label="Event concepts" values={summary.event_concepts.map(shortConcept)} />
+        <DetailList label="Quality flags" values={(summary.quality_flags ?? []).map(readableStructuredLabel)} emptyLabel="None" />
+      </section> : null}
+    </div>
+  </details>;
+}
 function ScopedLabelPanel({ label, presentations }: { label: ScopedNewsLabel; presentations: Record<string, TickerPresentation> }) {
   const summary: ScopedNewsSummary = { content_role: label.content_role, event_concepts: label.event_concepts, forecast_trigger_eligible: label.forecast_trigger_eligible, issuer_count: label.ticker ? 1 : 0, issuer_history_context_eligible: label.issuer_history_context_eligible, label_count: 1, labeling_version: label.labeling_version, reaction_evaluation_eligible: label.reaction_evaluation_eligible, semantic_direction: label.semantic_direction, semantic_score: label.semantic_score, source_origin: label.source_origin };
   const confidence = Number.isFinite(label.confidence) ? `${Math.round(label.confidence * 100)}%` : "Not reported";
   return <article className="news-scoped-label">
     <header><div className="news-scoped-label-identity">{label.ticker ? <TickerIdentity logoUrl={presentations[label.ticker]?.logo_url} ticker={label.ticker} /> : <strong>Document-wide</strong>}<ScopedClass summary={summary} /></div><ScopedDirection prominent summary={summary} /></header>
-    <div className="news-scoped-label-facts"><DetailDatum label="Issuer role" value={readableLabel(label.issuer_role || "not specified")} /><DetailDatum label="Evidence scope" value={readableLabel(label.evidence_scope || "document")} /><DetailDatum label="Origin" value={readableLabel(label.source_origin || "unknown")} /><DetailDatum label="Timing" value={readableLabel(label.time_orientation || "not specified")} /><DetailDatum label="Modality" value={readableLabel(label.modality || "not specified")} /><DetailDatum label="Scope" value={readableLabel(label.scope || "not specified")} /><DetailDatum label="Confidence" value={confidence} /><DetailDatum label="Direction basis" value={readableLabel(label.semantic_direction_basis || "text evidence")} /></div>
-    {label.event_concepts.length ? <div className="detail-concept-row"><small>Event concepts</small><ScopedConcepts concepts={label.event_concepts} /></div> : null}
-    {label.semantic_evidence_text ? <details><summary>Read direction evidence</summary><p><MarketNumberText text={label.semantic_evidence_text} /></p></details> : null}
-    {label.quality_flags.length ? <div className="detail-quality-flags" aria-label="Quality flags">{label.quality_flags.map((flag) => <span key={flag}>{readableLabel(flag)}</span>)}</div> : null}
-    <footer><span data-active={label.forecast_trigger_eligible}>Forecast trigger</span><span data-active={label.reaction_evaluation_eligible}>Reaction study</span><span data-active={label.issuer_history_context_eligible}>Issuer history</span></footer>
+    <div className="news-scoped-label-facts"><DetailDatum label="Content role" value={readableLabel(label.content_role || "not specified")} /><DetailDatum label="Unit role" value={readableLabel(label.unit_role || "not specified")} /><DetailDatum label="Issuer role" value={readableLabel(label.issuer_role || "not specified")} /><DetailDatum label="Issuer relationship" value={readableLabel(label.issuer_relationship || "not specified")} /><DetailDatum label="Evidence scope" value={readableLabel(label.evidence_scope || "document")} /><DetailDatum label="Origin" value={readableLabel(label.source_origin || "unknown")} /><DetailDatum label="Source type" value={readableLabel(label.source_type || "not specified")} /><DetailDatum label="Source subtype" value={readableLabel(label.source_subtype || "not specified")} /><DetailDatum label="Timing" value={readableLabel(label.time_orientation || "not specified")} /><DetailDatum label="Modality" value={readableLabel(label.modality || "not specified")} /><DetailDatum label="Scope" value={readableLabel(label.scope || "not specified")} /><DetailDatum label="Confidence" value={confidence} /></div>
+    <DetailList label="Event concepts" values={label.event_concepts.map(shortConcept)} emptyLabel="None" />
+    <DetailList label="Direction basis" values={label.semantic_direction_basis.map(readableStructuredLabel)} emptyLabel="Text evidence" />
+    <DetailList label="Event tickers" values={label.event_tickers} emptyLabel="None" />
+    <div className="news-label-identifiers"><DetailDatum label="Unit ID" value={label.unit_id || "Not reported"} /><DetailDatum label="Event ID" value={label.event_id || "Not reported"} /><DetailDatum label="Label version" value={label.labeling_version || "Not reported"} /></div>
+    <details><summary>Read direction evidence</summary><p>{label.semantic_evidence_text ? <MarketNumberText text={label.semantic_evidence_text} /> : "Not reported"}</p></details>
+    <DetailList label="Quality flags" values={label.quality_flags.map(readableStructuredLabel)} emptyLabel="None" />
+    <footer><EligibilityState active={label.forecast_trigger_eligible} label="Forecast trigger" /><EligibilityState active={label.reaction_evaluation_eligible} label="Reaction study" /><EligibilityState active={label.issuer_history_context_eligible} label="Issuer history" /><EligibilityState active={label.prior_primary_context_eligible} label="Prior primary context" /><EligibilityState active={label.episode_followup_eligible} label="Episode follow-up" /></footer>
   </article>;
 }
+function DetailList({ emptyLabel = "Not reported", label, values }: { emptyLabel?: string; label: string; values: string[] }) { const visible = values.filter(Boolean); return <div className="detail-list-row"><small>{label}</small><span>{visible.length ? visible.map((value) => <b key={value}>{value}</b>) : <em>{emptyLabel}</em>}</span></div>; }
+function EligibilityState({ active, label }: { active: boolean; label: string }) { return <span data-active={active} title={`${label}: ${active ? "eligible" : "not eligible"}`}>{label}: {active ? "Eligible" : "Not eligible"}</span>; }
 function eligibilityText(summary: Pick<ScopedNewsSummary, "forecast_trigger_eligible" | "issuer_history_context_eligible" | "reaction_evaluation_eligible">): string { const uses = [summary.forecast_trigger_eligible ? "Forecast" : "", summary.reaction_evaluation_eligible ? "Reaction study" : "", summary.issuer_history_context_eligible ? "Issuer history" : ""].filter(Boolean); return uses.length ? uses.join(" · ") : "Context only"; }
 function MarketNumberText({ text }: { text: string }) { const matches = Array.from(text.matchAll(MARKET_NUMBER_PATTERN)); if (!matches.length) return text; const parts: Array<string | ReactElement> = []; let cursor = 0; matches.forEach((match, index) => { const start = match.index; if (start > cursor) parts.push(text.slice(cursor, start)); const value = match[0]; const kind = /%|percent|basis|bps/i.test(value) ? "rate" : "price"; parts.push(<span className="market-number" data-market-number={kind} key={`${start}-${index}`}>{value}</span>); cursor = start + value.length; }); if (cursor < text.length) parts.push(text.slice(cursor)); return <>{parts}</>; }
 function NewsTemperatureTag({ tone }: { tone: NewsTemperature }) { const value = newsTemperaturePresentation(tone); return <span className="news-temperature" data-tone={tone}><value.Icon size={12} /><em>{value.label}</em></span>; }
@@ -376,8 +403,12 @@ function newsTemperaturePresentation(tone: NewsTemperature) { return tone === "h
 function isNewsKind(value: unknown): value is NewsKindValue { return ["ai", "analyst", "company", "editorial", "insights", "market", "multi", "regulatory", "why_moving"].includes(String(value)); }
 function classificationFromRow(row: NewsRow): NewsClassification { if (row.classification) return row.classification; const kind = isNewsKind(row.news_kind) ? row.news_kind : "market"; return { confidence: row.classification_confidence ?? 0.65, evidence: row.classification_evidence ?? [], format: row.news_format ?? "general", is_company_news: row.is_company_news ?? (kind === "company" || kind === "regulatory"), kind, origin: row.news_origin ?? "unknown", scope: row.news_scope ?? ((row.ticker_link_sample?.length ?? 0) === 1 ? "single_ticker" : (row.ticker_link_sample?.length ?? 0) > 1 ? "multi_ticker" : "market_wide"), topics: row.news_topics ?? [], version: "news_rules_v1" }; }
 function readableLabel(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+function readableStructuredLabel(value: string) { return readableLabel(value.replace(/[.:]+/g, " ")); }
+function percentConfidence(value: number) { return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "Not reported"; }
+function yesNo(value: boolean) { return value ? "Yes" : "No"; }
+function eligibilityValue(value: boolean) { return value ? "Eligible" : "Not eligible"; }
 function shortConcept(value: string) { const leaf = value.split(".").at(-1) ?? value; return readableLabel(leaf); }
-const MARKET_NUMBER_PATTERN = /(?:[+\-−]\s*)?(?:[$€£¥]\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|[KMBT]))?|(?:USD|CAD|EUR|GBP|JPY|CNY|HKD|AUD)\s*\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|[KMBT]))?|\d[\d,]*(?:\.\d+)?\s*(?:USD|CAD|EUR|GBP|JPY|CNY|HKD|AUD)|\d[\d,]*(?:\.\d+)?\s*(?:%|percent(?:age points?)?|basis points?|bps))/gi;
+const MARKET_NUMBER_PATTERN = /(?:[+\-−]\s*)?(?:[$€£¥]\s*\d[\d,]*(?:\.\d+)?(?:\s+(?:thousand|million|billion|trillion)\b|[KMBT]\b)?|(?:USD|CAD|EUR|GBP|JPY|CNY|HKD|AUD)\s*\$?\s*\d[\d,]*(?:\.\d+)?(?:\s+(?:thousand|million|billion|trillion)\b|[KMBT]\b)?|\d[\d,]*(?:\.\d+)?\s*(?:USD|CAD|EUR|GBP|JPY|CNY|HKD|AUD)\b|\d[\d,]*(?:\.\d+)?\s*(?:%|percent(?:age points?)?|basis points?|bps)\b)/gi;
 function articleParagraphs(value: string) { const explicit = value.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean); if (explicit.length > 1) return explicit; const sentences = value.split(/(?<=[.!?])\s+(?=["“‘']?[A-Z0-9])/).map((item) => item.trim()).filter(Boolean); const paragraphs: string[] = []; for (let index = 0; index < sentences.length; index += 4) paragraphs.push(sentences.slice(index, index + 4).join(" ")); return paragraphs.length ? paragraphs : [value]; }
 function stringList(value: unknown): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : []; }
 function compareNewsRecency(left: NewsRow, right: NewsRow) { return Date.parse(right.published_at_utc) - Date.parse(left.published_at_utc); }

@@ -184,8 +184,8 @@ def label_payload(row: dict[str, Any]) -> dict[str, Any]:
         "episode_followup_eligible": bool(
             classification.get("episode_followup_eligible")
         ),
-        "semantic_direction_basis": str(
-            classification.get("semantic_direction_basis") or ""
+        "semantic_direction_basis": _string_list(
+            classification.get("semantic_direction_basis")
         ),
         "labeling_version": str(
             row.get("labeling_version") or SCOPED_LABELING_VERSION
@@ -264,3 +264,10 @@ def _json_object(value: Any) -> dict[str, Any]:
 
 def _strings(value: Any) -> list[str]:
     return [str(item) for item in value] if isinstance(value, (list, tuple)) else []
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if str(item).strip()]
+    scalar = str(value or "").strip()
+    return [scalar] if scalar else []

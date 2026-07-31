@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from src.backend.scoped_text_labels import (
@@ -34,10 +35,19 @@ class ScopedTextLabelPresentationTests(unittest.TestCase):
                     "forecast_trigger_eligible": 1,
                     "reaction_evaluation_eligible": 1,
                     "issuer_history_context_eligible": 1,
-                    "classification_json": (
-                        '{"modality":"confirmed","time_orientation":"current",'
-                        '"quality_flags":[]}'
-                    ),
+                    "classification_json": json.dumps({
+                        "confidence": 0.93,
+                        "episode_followup_eligible": False,
+                        "issuer_relationship": "transaction_party",
+                        "modality": "confirmed",
+                        "prior_primary_context_eligible": True,
+                        "quality_flags": ["issuer_context_direction_v4"],
+                        "scope": "single_ticker",
+                        "semantic_direction_basis": ["Transaction.Acquisition:Positive"],
+                        "source_subtype": "reported_transaction",
+                        "source_type": "news",
+                        "time_orientation": "current",
+                    }),
                     "labeling_version": SCOPED_LABELING_VERSION,
                 }
             ]
@@ -52,8 +62,32 @@ class ScopedTextLabelPresentationTests(unittest.TestCase):
         )
 
         self.assertEqual(list(grouped), ["article-1"])
-        self.assertEqual(grouped["article-1"][0]["ticker"], "AAA")
-        self.assertEqual(grouped["article-1"][0]["modality"], "confirmed")
+        label = grouped["article-1"][0]
+        self.assertEqual(set(label), {
+            "confidence", "content_role", "episode_followup_eligible",
+            "event_concepts", "event_id", "event_tickers", "evidence_scope",
+            "forecast_trigger_eligible", "issuer_history_context_eligible",
+            "issuer_relationship", "issuer_role", "labeling_version", "modality",
+            "prior_primary_context_eligible", "quality_flags",
+            "reaction_evaluation_eligible", "scope", "semantic_direction",
+            "semantic_direction_basis", "semantic_evidence_text", "semantic_score",
+            "source_origin", "source_subtype", "source_type", "ticker",
+            "time_orientation", "unit_id", "unit_role",
+        })
+        self.assertEqual(label["ticker"], "AAA")
+        self.assertEqual(label["modality"], "confirmed")
+        self.assertEqual(
+            label["semantic_direction_basis"],
+            ["Transaction.Acquisition:Positive"],
+        )
+        self.assertEqual(label["source_type"], "news")
+        self.assertEqual(
+            label["source_subtype"], "reported_transaction"
+        )
+        self.assertEqual(
+            label["issuer_relationship"], "transaction_party"
+        )
+        self.assertTrue(label["prior_primary_context_eligible"])
         self.assertIn("scoped_text_labels_v5", queries[0])
         self.assertIn(SCOPED_LABELING_VERSION, queries[0])
         self.assertIn("PREWHERE corpus='news' AND ticker='AAA'", queries[0])
