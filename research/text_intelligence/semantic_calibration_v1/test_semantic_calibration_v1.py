@@ -5,13 +5,19 @@ import unittest
 from pathlib import Path
 
 from .annotation_template import annotation_template
-from .review_round import is_analyst_related_unit, upgrade_v1_annotation
+from .review_round import (
+    is_analyst_related_unit,
+    normalize_maintained_rating_endpoints,
+    upgrade_v1_annotation,
+)
 from .sampling import distribute_quota, select_candidates
 from .schema import ANNOTATION_VERSION, ANNOTATION_VERSION_V1, validate_annotation
 from .storage import (
     annotation_directory,
     assert_runtime_root,
     materialize_evidence_spans,
+    read_json,
+    write_json_atomic,
 )
 
 
@@ -100,7 +106,7 @@ class SemanticCalibrationSchemaTests(unittest.TestCase):
                         "employment_valid_from": None,
                         "employment_valid_to": None,
                         "rating_action": "maintained",
-                        "rating_from": None,
+                        "rating_from": "Overweight",
                         "rating_to": "Overweight",
                         "price_target_action": "raised",
                         "price_target_from": 360,
@@ -133,6 +139,20 @@ class SemanticCalibrationSchemaTests(unittest.TestCase):
         value["reviewer_confidence"] = 4
         result = validate_annotation(value, expected_item=item)
         self.assertTrue(result.valid, result.errors)
+
+        value["issuer_units"][0]["analyst_opinions"][0]["rating_from"] = None
+        result = validate_annotation(value, expected_item=item)
+        self.assertIn(
+            "issuer_units[0].analyst_opinions[0].rating_maintained_requires_from_and_to",
+            result.errors,
+        )
+
+        value["issuer_units"][0]["analyst_opinions"][0]["rating_from"] = "Neutral"
+        result = validate_annotation(value, expected_item=item)
+        self.assertIn(
+            "issuer_units[0].analyst_opinions[0].rating_maintained_requires_equal_endpoints",
+            result.errors,
+        )
 
     def test_v2_analyst_context_cannot_be_primary_reaction_trigger(self) -> None:
         item = {
@@ -198,6 +218,96 @@ class SemanticCalibrationSchemaTests(unittest.TestCase):
         root = Path("D:/TradingML/runtimes/test")
         self.assertEqual(annotation_directory(root, ANNOTATION_VERSION_V1), root / "annotations")
         self.assertEqual(annotation_directory(root, ANNOTATION_VERSION), root / "annotations_v2")
+
+    def test_rating_endpoint_normalizer_records_traceable_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtimes" / "semantic_calibration"
+            item = {
+                "sample_id": "N0001",
+                "source_id": "source",
+                "source_timestamp": "2026-01-01 12:00:00.000000000",
+                "source_text_sha256": "a" * 64,
+            }
+            (root / "blinded_articles").mkdir(parents=True)
+            write_json_atomic(root / "blinded_articles" / "N0001.json", item)
+            write_json_atomic(
+                root / "sample_manifest.json",
+                {
+                    "sample_version": "test",
+                    "sample_manifest_sha256": "b" * 64,
+                    "items": [{"sample_id": "N0001"}],
+                },
+            )
+            value = annotation_template(item)
+            value["content_role"] = "analyst_event"
+            value["source_origin"] = "analyst_research"
+            value["reviewer_confidence"] = 4
+            value["issuer_units"][0].update(
+                {
+                    "ticker": "AAPL",
+                    "issuer_role": "analyst_subject",
+                    "modality": "opinion",
+                    "event_concepts": ["analyst.rating_maintained"],
+                    "evidence_quotes": ["maintains Overweight"],
+                    "evidence_spans": [
+                        {
+                            "source_field": "title",
+                            "start": 0,
+                            "end": 20,
+                            "quote": "maintains Overweight",
+                        }
+                    ],
+                    "semantic_rationale": "The analyst maintained the stated rating.",
+                    "analyst_context_eligible": True,
+                    "analyst_evaluation_eligible": True,
+                    "issuer_history_context_eligible": True,
+                    "eligibility_reason": "Analyst context only.",
+                    "annotation_confidence": 4,
+                    "analyst_opinions": [
+                        {
+                            "opinion_kind": "firm",
+                            "analyst_name": None,
+                            "analyst_aliases": [],
+                            "firm_name": "Example Research",
+                            "firm_aliases": [],
+                            "employment_valid_from": None,
+                            "employment_valid_to": None,
+                            "rating_action": "maintained",
+                            "rating_from": None,
+                            "rating_to": "Overweight",
+                            "price_target_action": "not_stated",
+                            "price_target_from": None,
+                            "price_target_to": None,
+                            "price_target_currency": None,
+                            "forecast_horizon_text": None,
+                            "reasoning_not_provided": True,
+                            "reasoning_quotes": [],
+                            "evidence_quotes": ["maintains Overweight"],
+                            "evidence_spans": [
+                                {
+                                    "source_field": "title",
+                                    "start": 0,
+                                    "end": 20,
+                                    "quote": "maintains Overweight",
+                                }
+                            ],
+                            "annotation_confidence": 4,
+                            "ambiguity_notes": "",
+                        }
+                    ],
+                }
+            )
+            value["annotation_sha256"] = "old"
+            write_json_atomic(root / "annotations_v2" / "N0001.json", value)
+
+            manifest = normalize_maintained_rating_endpoints(root)
+            revised = read_json(root / "annotations_v2" / "N0001.json")
+            self.assertEqual(
+                revised["issuer_units"][0]["analyst_opinions"][0]["rating_from"],
+                "Overweight",
+            )
+            self.assertEqual(manifest["changed_records"], 1)
+            self.assertEqual(manifest["changes"][0]["old_annotation_sha256"], "old")
 
     def test_analyst_related_detection_covers_embedded_concepts(self) -> None:
         self.assertTrue(

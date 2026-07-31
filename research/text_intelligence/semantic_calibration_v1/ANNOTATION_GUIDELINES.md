@@ -77,7 +77,8 @@ Each distinct analyst opinion records:
 - ambiguity and annotation confidence.
 
 A maintained Overweight rating with a target raised from 360 to 364 is encoded
-as `rating_action=maintained`, `rating_to=Overweight`,
+as `rating_action=maintained`, `rating_from=Overweight`,
+`rating_to=Overweight`,
 `price_target_action=raised`, `price_target_from=360`, and
 `price_target_to=364`. A price target is an analyst forecast, not the stock's
 current market price.

@@ -291,8 +291,17 @@ def _validate_v2_unit(
             errors.append(f"{opinion_prefix}.rating_change_requires_from_and_to")
         if rating_action in {"initiated", "stated"} and not rating_to:
             errors.append(f"{opinion_prefix}.rating_initiated_requires_to")
-        if rating_action in {"maintained", "reiterated", "resumed"} and not rating_to:
-            errors.append(f"{opinion_prefix}.rating_affirmation_requires_to")
+        if rating_action in {"maintained", "reiterated"}:
+            if not (rating_from and rating_to):
+                errors.append(
+                    f"{opinion_prefix}.rating_maintained_requires_from_and_to"
+                )
+            elif rating_from.casefold() != rating_to.casefold():
+                errors.append(
+                    f"{opinion_prefix}.rating_maintained_requires_equal_endpoints"
+                )
+        if rating_action == "resumed" and not rating_to:
+            errors.append(f"{opinion_prefix}.rating_resumed_requires_to")
         if rating_action == "suspended" and not rating_from:
             errors.append(f"{opinion_prefix}.rating_suspended_requires_from")
         if rating_action == "not_stated" and (rating_from or rating_to):

@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import copy
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from .annotation_template import annotation_template
-from .schema import ANNOTATION_VERSION, ANNOTATION_VERSION_V1
-from .storage import annotation_directory, append_annotation, read_json, write_json_atomic
+from .schema import (
+    ANNOTATION_VERSION,
+    ANNOTATION_VERSION_V1,
+    stable_json_hash,
+    validate_annotation,
+)
+from .storage import (
+    annotation_directory,
+    append_annotation,
+    read_json,
+    refresh_annotation_state,
+    write_json_atomic,
+)
 
 
 ANALYST_CONCEPT_MARKERS = {"analyst", "rating"}
@@ -123,3 +135,82 @@ def prepare_remaining_review_templates(root: Path) -> dict[str, int]:
         write_json_atomic(target, annotation_template(item))
         prepared += 1
     return {"prepared": prepared, "existing": existing}
+
+
+def normalize_maintained_rating_endpoints(root: Path) -> dict[str, Any]:
+    """Traceably normalize V2 maintained ratings to explicit equal endpoints.
+
+    This is a contract normalization, not semantic inference: it only copies an
+    explicitly recorded destination rating into a missing source rating for
+    `maintained` or `reiterated` opinions. Conflicting or incomplete records
+    fail rather than being guessed.
+    """
+    changes: list[dict[str, Any]] = []
+    directory = annotation_directory(root, ANNOTATION_VERSION)
+    for path in sorted(directory.glob("*.json")):
+        record = read_json(path)
+        old_hash = str(record.pop("annotation_sha256", ""))
+        record_changed = False
+        opinion_changes: list[dict[str, Any]] = []
+        for unit_index, unit in enumerate(record.get("issuer_units") or ()):
+            for opinion_index, opinion in enumerate(unit.get("analyst_opinions") or ()):
+                if opinion.get("rating_action") not in {"maintained", "reiterated"}:
+                    continue
+                rating_from = str(opinion.get("rating_from") or "").strip()
+                rating_to = str(opinion.get("rating_to") or "").strip()
+                if rating_from and rating_to:
+                    if rating_from.casefold() != rating_to.casefold():
+                        raise ValueError(
+                            f"conflicting maintained rating endpoints in {path.name}: "
+                            f"{rating_from!r} -> {rating_to!r}"
+                        )
+                    continue
+                if not rating_to:
+                    raise ValueError(
+                        f"maintained rating is missing its stated value in {path.name}"
+                    )
+                opinion["rating_from"] = rating_to
+                record_changed = True
+                opinion_changes.append(
+                    {
+                        "issuer_unit_index": unit_index,
+                        "opinion_index": opinion_index,
+                        "ticker": unit.get("ticker"),
+                        "rating_action": opinion.get("rating_action"),
+                        "rating_value": rating_to,
+                    }
+                )
+        if not record_changed:
+            continue
+        item = read_json(root / "blinded_articles" / f"{record['sample_id']}.json")
+        validation = validate_annotation(record, expected_item=item)
+        if not validation.valid:
+            raise ValueError(
+                f"normalized annotation is invalid for {path.name}: "
+                + ", ".join(validation.errors)
+            )
+        record["annotation_sha256"] = stable_json_hash(record)
+        write_json_atomic(path, record)
+        changes.append(
+            {
+                "sample_id": record["sample_id"],
+                "old_annotation_sha256": old_hash,
+                "new_annotation_sha256": record["annotation_sha256"],
+                "opinions": opinion_changes,
+            }
+        )
+    completed_at = datetime.now(timezone.utc)
+    manifest = {
+        "operation": "normalize_maintained_rating_endpoints",
+        "annotation_version": ANNOTATION_VERSION,
+        "completed_at_utc": completed_at.isoformat(),
+        "changed_records": len(changes),
+        "changes": changes,
+    }
+    manifest_name = (
+        "v2_rating_endpoint_normalization_"
+        f"{completed_at.strftime('%Y%m%dT%H%M%S%fZ')}.json"
+    )
+    write_json_atomic(root / manifest_name, manifest)
+    refresh_annotation_state(root, annotation_version=ANNOTATION_VERSION)
+    return manifest

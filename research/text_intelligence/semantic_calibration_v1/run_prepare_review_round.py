@@ -8,6 +8,7 @@ from research.mlops.paths import MLOpsPathConfig
 
 from .review_round import (
     carry_forward_non_analyst_pilot,
+    normalize_maintained_rating_endpoints,
     prepare_pilot_review_round,
     prepare_remaining_review_templates,
 )
@@ -35,6 +36,14 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Create V2 first-pass templates for the remaining 900 blinded items.",
     )
+    parser.add_argument(
+        "--normalize-maintained-rating-endpoints",
+        action="store_true",
+        help=(
+            "Traceably copy an explicit maintained/reiterated rating into both "
+            "rating_from and rating_to for existing V2 records."
+        ),
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -61,6 +70,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(
             "REMAINING REVIEW V2 | "
             f"prepared={remaining['prepared']} existing={remaining['existing']}",
+            flush=True,
+        )
+    if args.normalize_maintained_rating_endpoints:
+        normalized = normalize_maintained_rating_endpoints(args.runtime_root)
+        print(
+            "RATING ENDPOINT NORMALIZATION | "
+            f"changed={normalized['changed_records']}",
             flush=True,
         )
     return 0
