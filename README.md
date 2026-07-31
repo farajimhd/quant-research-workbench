@@ -290,14 +290,17 @@ It opens independent PowerShell tabs in this exact order:
 2. SEC Gateway
 3. Reference Gateway
 4. IBKR Gateway Supervisor
+5. Text Intelligence
 
 It uses the same caller-window behavior as the Workspace starter. Outside
 Windows Terminal its distinct fallback window is
 `quant-research-workbench-gateways`, so the Workspace and Gateway groups cannot
-capture each other's tabs. The four-tab request is atomic.
+capture each other's tabs. The five-tab request is atomic.
 
-Each tab delegates to the corresponding existing `run_*_gateway.ps1`
-launcher. The IBKR tab defaults to the `paper` account key; pass
+Each tab delegates to the corresponding existing service launcher. Text
+Intelligence runs the continuous deterministic V5 News/SEC classifier and
+recent-gap reconciler on port 8804. It does not require Model Gateway or Market
+AI in its default mode. The IBKR tab defaults to the `paper` account key; pass
 `-IbkrAccount <configured-key>` when another configured session is intended.
 The Reference tab is created third to preserve the visible order, but it does
 not invoke its launcher immediately. It first waits for the IBKR Supervisor
@@ -306,6 +309,13 @@ until IBKR reports both `gateway_status=ready` and
 `auth_status=authenticated`. Override only the minimum delay with
 `-ReferenceDelaySeconds`; override the supervisor endpoint with
 `-IbkrSupervisorHealthUrl` when its bind is non-default.
+
+Model Gateway becomes required only when
+`NEWS_INTELLIGENCE_ENABLE_LIVE_AI=true`, because eligible live News is then
+sent to the configured fast semantic route. Market AI is the optional deeper
+hypothesis consumer on that path. Start those AI services separately when
+enabling Live AI; they are intentionally excluded from the standard
+deterministic gateway stack.
 Because this launcher always creates interactive Windows Terminal tabs, it
 explicitly enables each gateway's Rich and alternate-screen settings. This
 prevents an inherited `auto` or disabled terminal setting from silently
@@ -320,15 +330,15 @@ Stop this group with:
 .\scripts\stop_live_gateway_services.ps1
 ```
 
-The stop script matches the four service identities at any port plus exact
-owners of the configured HTTP ports 8796, 8797, 8799, and 8800. It also
+The stop script matches all five service identities at any port plus exact
+owners of the configured HTTP ports 8796, 8797, 8799, 8800, and 8804. It also
 includes identified Client Portal child processes without treating every
 unrelated process on port 5000 as IBKR. One Ctrl+C is sent per service console.
 The default 330-second grace window respects the News and SEC gateways' own
 300-second drain contracts before surviving processes are force-stopped.
 Reference child cycles and the IBKR Client Portal process remain owned by
 their respective parent services during graceful shutdown. Successful
-stop-triggered exits also close the four service tabs while unrelated launcher
+stop-triggered exits also close the five service tabs while unrelated launcher
 failures remain visible.
 
 For a production-style local build:

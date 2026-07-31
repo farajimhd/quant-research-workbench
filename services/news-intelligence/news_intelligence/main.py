@@ -27,7 +27,7 @@ from .scoped_live import (
 
 config = IntelligenceConfig.from_env()
 engine = IntelligenceEngine(config)
-live_runtime = LiveNewsRuntime()
+live_runtime = LiveNewsRuntime(enabled=config.enable_live_ai)
 scoped_runtime = ScopedTextRuntime(
     client=ClickHouseHttpClient(
         default_clickhouse_url(),
@@ -159,6 +159,7 @@ def _snapshot_metrics() -> dict[str, object]:
         "model_root": str(config.model_root),
         "enable_models": config.enable_models,
         "enable_llm": config.enable_llm,
+        "enable_live_ai": config.enable_live_ai,
         "stack_version": config.stack_version,
         "taxonomy_version": config.taxonomy_version,
         "models_loaded": loaded,

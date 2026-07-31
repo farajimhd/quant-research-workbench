@@ -44,7 +44,7 @@ class ScopedTextLiveRuntimeTests(unittest.TestCase):
 
     def test_threadsafe_forward_reports_queue_acceptance(self) -> None:
         async def exercise() -> None:
-            runtime = LiveNewsRuntime()
+            runtime = LiveNewsRuntime(enabled=True)
             runtime.loop = asyncio.get_running_loop()
             candidate = LiveCandidate(
                 canonical_news_id="article-1",
@@ -62,6 +62,34 @@ class ScopedTextLiveRuntimeTests(unittest.TestCase):
                 self.assertIn("article-1", runtime.pending_ids)
             finally:
                 runtime.client.close()
+
+        asyncio.run(exercise())
+
+    def test_disabled_live_ai_rejects_model_work(self) -> None:
+        runtime = LiveNewsRuntime()
+        candidate = LiveCandidate(
+            canonical_news_id="article-disabled",
+            published_at_utc="2026-07-28T14:30:00Z",
+            title="Example",
+            rendered_text="Example body",
+        )
+        item = PreparedNewsCandidate(candidate=candidate, scoped_labels=())
+        try:
+            self.assertFalse(runtime.enqueue_prepared(item))
+            self.assertEqual(runtime.queue.qsize(), 0)
+            self.assertEqual(runtime.metrics["enabled"], 0)
+        finally:
+            runtime.client.close()
+
+    def test_disabled_live_ai_starts_without_optional_workers(self) -> None:
+        async def exercise() -> None:
+            runtime = LiveNewsRuntime()
+            await runtime.start()
+            try:
+                self.assertEqual(runtime.workers, [])
+                self.assertIsNone(runtime.session_sync_task)
+            finally:
+                await runtime.stop()
 
         asyncio.run(exercise())
 

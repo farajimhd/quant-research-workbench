@@ -72,7 +72,8 @@ class LiveSession:
 class LiveNewsRuntime:
     """Durable live semantic routing; raw/canonical news remains News Gateway-owned."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, enabled: bool = False) -> None:
+        self.enabled = enabled
         self.model_gateway_url = os.environ.get(
             "NEWS_INTELLIGENCE_MODEL_GATEWAY_URL", "http://127.0.0.1:8802"
         ).rstrip("/")
@@ -93,7 +94,7 @@ class LiveNewsRuntime:
         self.session = LiveSession()
         self.metrics = {
             "queued": 0, "processed": 0, "filtered": 0, "failed": 0,
-            "session_sync_failures": 0,
+            "session_sync_failures": 0, "enabled": int(enabled),
         }
         self.client = ClickHouseHttpClient(
             default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=15
@@ -105,6 +106,8 @@ class LiveNewsRuntime:
 
     async def start(self) -> None:
         self.loop = asyncio.get_running_loop()
+        if not self.enabled:
+            return
         await asyncio.to_thread(self._ensure_table)
         count = max(1, int(os.environ.get("NEWS_INTELLIGENCE_WORKERS", "4")))
         self.workers = [asyncio.create_task(self._worker(i)) for i in range(count)]
@@ -155,10 +158,12 @@ class LiveNewsRuntime:
                 self.metrics["session_sync_failures"] += 1
             await asyncio.sleep(interval)
 
-    def enqueue_prepared(self, item: PreparedNewsCandidate) -> None:
+    def enqueue_prepared(self, item: PreparedNewsCandidate) -> bool:
+        if not self.enabled:
+            return False
         candidate = item.candidate
         if candidate.canonical_news_id in self.pending_ids:
-            return
+            return False
         self.pending_ids.add(candidate.canonical_news_id)
         try:
             self.queue.put_nowait(item)
@@ -166,6 +171,7 @@ class LiveNewsRuntime:
             self.pending_ids.discard(candidate.canonical_news_id)
             raise
         self.metrics["queued"] += 1
+        return True
 
     def enqueue_prepared_threadsafe(self, item: PreparedNewsCandidate) -> bool:
         if self.loop is None:
@@ -174,11 +180,11 @@ class LiveNewsRuntime:
 
         def enqueue_on_loop() -> None:
             try:
-                self.enqueue_prepared(item)
+                accepted = self.enqueue_prepared(item)
             except Exception as exc:  # noqa: BLE001
                 result.set_exception(exc)
             else:
-                result.set_result(True)
+                result.set_result(accepted)
 
         self.loop.call_soon_threadsafe(enqueue_on_loop)
         return result.result(timeout=2.0)
@@ -199,6 +205,9 @@ class LiveNewsRuntime:
 
     async def _process(self, item: PreparedNewsCandidate) -> None:
         candidate = item.candidate
+        if not self.enabled:
+            self.metrics["filtered"] += 1
+            return
         market_clock = await asyncio.to_thread(self.market_hours.snapshot, datetime.now(UTC))
         if not self.session.active or not market_clock.active_collection_window:
             self.metrics["filtered"] += 1

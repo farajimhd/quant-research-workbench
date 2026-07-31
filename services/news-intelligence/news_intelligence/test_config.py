@@ -19,6 +19,7 @@ class IntelligenceConfigTests(unittest.TestCase):
 
         self.assertFalse(config.enable_models)
         self.assertFalse(config.enable_llm)
+        self.assertFalse(config.enable_live_ai)
 
     def test_optional_inference_requires_explicit_opt_in(self) -> None:
         with (
@@ -30,6 +31,7 @@ class IntelligenceConfigTests(unittest.TestCase):
                 {
                     "NEWS_INTELLIGENCE_ENABLE_MODELS": "true",
                     "NEWS_INTELLIGENCE_ENABLE_LLM": "true",
+                    "NEWS_INTELLIGENCE_ENABLE_LIVE_AI": "true",
                 },
                 clear=True,
             ),
@@ -38,6 +40,7 @@ class IntelligenceConfigTests(unittest.TestCase):
 
         self.assertTrue(config.enable_models)
         self.assertTrue(config.enable_llm)
+        self.assertTrue(config.enable_live_ai)
 
 
 if __name__ == "__main__":

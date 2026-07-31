@@ -22,6 +22,7 @@ $newsLauncher = Join-Path $PSScriptRoot "run_news_gateway.ps1"
 $secLauncher = Join-Path $PSScriptRoot "run_sec_gateway.ps1"
 $referenceLauncher = Join-Path $PSScriptRoot "run_reference_gateway.ps1"
 $ibkrLauncher = Join-Path $PSScriptRoot "run_ibkr_gateway_supervisor.ps1"
+$textIntelligenceLauncher = Join-Path $PSScriptRoot "run_news_intelligence.ps1"
 $serviceTabHost = Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1"
 $terminalWindowTargetHelper = Join-Path $PSScriptRoot "windows_terminal_window_target.ps1"
 
@@ -168,6 +169,7 @@ Assert-Launcher -Path $newsLauncher
 Assert-Launcher -Path $secLauncher
 Assert-Launcher -Path $referenceLauncher
 Assert-Launcher -Path $ibkrLauncher
+Assert-Launcher -Path $textIntelligenceLauncher
 Assert-Launcher -Path $serviceTabHost
 
 $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe -EnvironmentName $CondaEnv
@@ -261,6 +263,14 @@ $serviceTabs = @(
                 " -PythonExe $pythonLiteral" +
                 " -Account " + (ConvertTo-PowerShellLiteral -Value $IbkrAccount)
             )
+    },
+    [pscustomobject]@{
+        Title = "Text Intelligence"
+        Command = (
+            "& " + (ConvertTo-PowerShellLiteral -Value $textIntelligenceLauncher) +
+            " -CondaEnv " + (ConvertTo-PowerShellLiteral -Value $CondaEnv) +
+            " -PythonExe $pythonLiteral"
+        )
     }
 )
 
@@ -330,11 +340,12 @@ if ($WhatIfPreference) {
 }
 
 Write-Host ""
-Write-Host "Opened four independent PowerShell tabs in $($usedTerminalWindowTarget.Description), in this order:"
+Write-Host "Opened five independent PowerShell tabs in $($usedTerminalWindowTarget.Description), in this order:"
 for ($index = 0; $index -lt $serviceTabs.Count; $index++) {
     Write-Host ("  {0}. {1}" -f ($index + 1), $serviceTabs[$index].Title)
 }
-Write-Host "This starter now exits instead of supervising the four launcher processes."
+Write-Host "This starter now exits instead of supervising the five launcher processes."
 Write-Host "A successful graceful stop exits each tab host cleanly so Windows Terminal closes the service tabs."
 Write-Host "Reference waits for IBKR Supervisor health, then at least $ReferenceDelaySeconds seconds, then ready/authenticated state."
+Write-Host "Text Intelligence runs deterministic News/SEC V5 labeling only unless Live AI is explicitly enabled."
 Write-Host "Stop all matching instances with scripts\stop_live_gateway_services.ps1."

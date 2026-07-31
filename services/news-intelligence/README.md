@@ -50,6 +50,10 @@ requires an active Live session and point-in-time QMD price eligibility.
 - `NEWS_INTELLIGENCE_ENABLE_MODELS`, default `false`; set `true` explicitly to
   load the configured optional local sentiment/NER models.
 - `NEWS_INTELLIGENCE_ENABLE_LLM`, default `false`
+- `NEWS_INTELLIGENCE_ENABLE_LIVE_AI`, default `false`; when `true`, eligible
+  News during an explicitly active Live session is routed through Model
+  Gateway and then optionally to Market AI. This setting does not affect the
+  required deterministic News/SEC classifier.
 - `NEWS_INTELLIGENCE_LLM_BASE_URL`, default `http://127.0.0.1:8000/v1`
 - `NEWS_INTELLIGENCE_LLM_MODEL`, default `Qwen/Qwen3-1.7B`
 - `NEWS_INTELLIGENCE_LLM_MAX_TOKENS`, default `512`
@@ -98,7 +102,9 @@ or:
 
 The bare launcher runs the required deterministic News/SEC V5 classifier and
 reconciler only. It does not load local language models and does not call an
-LLM. Optional inference is an explicit operator choice:
+LLM, Model Gateway, or Market AI. The standard live-gateway launcher also
+starts this deterministic service as its fifth tab. Optional inference is an
+explicit operator choice:
 
 ```powershell
 # Optional local sentiment/NER models.
@@ -106,10 +112,14 @@ $env:NEWS_INTELLIGENCE_ENABLE_MODELS = "true"
 
 # Optional OpenAI-compatible LLM route.
 $env:NEWS_INTELLIGENCE_ENABLE_LLM = "true"
+
+# Optional live-trading AI route. Model Gateway must be running; Market AI is
+# the separate deeper-hypothesis consumer.
+$env:NEWS_INTELLIGENCE_ENABLE_LIVE_AI = "true"
 .\scripts\run_news_intelligence.ps1
 ```
 
-Unset either variable, or set it to `false`, to return to deterministic-only
+Unset the optional variables, or set them to `false`, to return to deterministic-only
 operation.
 
 ### Starting after a historical backfill

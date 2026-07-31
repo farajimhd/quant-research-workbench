@@ -214,7 +214,7 @@ class ScopedTextRuntime:
             )
             for label in labels:
                 relation_rows.extend(relationship_rows(document, label, run_id))
-            if notice.corpus == "news":
+            if notice.corpus == "news" and self.live_news.enabled:
                 prepared_news.append(
                     PreparedNewsCandidate(
                         candidate=_live_candidate(source_row),
@@ -256,17 +256,18 @@ class ScopedTextRuntime:
                 self.metrics["deterministic_completed"]
             ) + 1
         # Optional market inference is downstream of durable deterministic state.
-        for item in prepared_news:
+        for item in (prepared_news if self.live_news.enabled else ()):
             try:
-                self.live_news.enqueue_prepared_threadsafe(item)
+                accepted = self.live_news.enqueue_prepared_threadsafe(item)
             except Exception:  # noqa: BLE001
                 self.metrics["deterministic_live_forward_failed"] = int(
                     self.metrics["deterministic_live_forward_failed"]
                 ) + 1
             else:
-                self.metrics["deterministic_live_forwarded"] = int(
-                    self.metrics["deterministic_live_forwarded"]
-                ) + 1
+                if accepted:
+                    self.metrics["deterministic_live_forwarded"] = int(
+                        self.metrics["deterministic_live_forwarded"]
+                    ) + 1
 
     def _load_source(self, notice: TextDocumentNotice) -> LoadedSource:
         return (
@@ -408,7 +409,7 @@ WHERE corpus={sql_string(notice.corpus)}
                         self.enqueue(notice, reconciled=True)
                     except asyncio.QueueFull:
                         break
-                if self.live_news.session.active:
+                if self.live_news.enabled and self.live_news.session.active:
                     live_notices = await asyncio.to_thread(
                         self._unmodeled_live_news_notices
                     )

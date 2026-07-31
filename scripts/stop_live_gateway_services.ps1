@@ -8,6 +8,8 @@ param(
     [int]$ReferencePort = 8799,
     [ValidateRange(1, 65535)]
     [int]$IbkrSupervisorPort = 8800,
+    [ValidateRange(1, 65535)]
+    [int]$TextIntelligencePort = 8804,
     [ValidateRange(1, 900)]
     [int]$GracefulTimeoutSeconds = 330,
     [string]$PythonExe = "",
@@ -87,6 +89,10 @@ function Test-LiveGatewayProcess {
         $commandLine.Contains("-m services.ibkr_gateway_supervisor.main") -or
         $commandLine.Contains("clientportal.gw") -or
         ($commandLine.Contains("bin\run.bat") -and $commandLine.Contains("root\conf.yaml"))) {
+        return $true
+    }
+    if ($commandLine.Contains("run_news_intelligence.ps1") -or
+        $commandLine.Contains("-m news_intelligence.main")) {
         return $true
     }
     return $false
@@ -236,13 +242,14 @@ $ports = @(
     $NewsPort,
     $SecPort,
     $ReferencePort,
-    $IbkrSupervisorPort
+    $IbkrSupervisorPort,
+    $TextIntelligencePort
 ) | Select-Object -Unique
 $snapshot = Get-ProcessSnapshot
 $targetIds = Get-TargetProcessIds -Snapshot $snapshot -Ports $ports
 
 if ($targetIds.Count -eq 0) {
-    Write-Host "No News, SEC, Reference, IBKR Supervisor, Client Portal, or configured-port processes are running."
+    Write-Host "No News, SEC, Reference, IBKR Supervisor, Text Intelligence, Client Portal, or configured-port processes are running."
     return
 }
 
@@ -313,4 +320,4 @@ if ($busyPorts.Count -gt 0 -or $remainingMatches.Count -gt 0) {
     throw "Shutdown verification failed. Busy ports: $($busyPorts -join ', '); remaining matching PIDs: $(($remainingMatches | Sort-Object) -join ', ')."
 }
 
-Write-Host "Stopped all matching live gateway service trees; configured ports are free."
+Write-Host "Stopped all matching live gateway and Text Intelligence service trees; configured ports are free."
