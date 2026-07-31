@@ -365,6 +365,23 @@ class SemanticCalibrationSchemaTests(unittest.TestCase):
             self.assertTrue((root / "annotations_v2" / "N0001.json").exists())
             self.assertFalse((root / "annotation_staging_v2" / "N0001").exists())
 
+    def test_raw_stdin_payload_uses_the_same_staging_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = Namespace(
+                runtime_root=root,
+                stage_sample="N0001",
+                stage_index=0,
+                stage_total=1,
+                stage_base64=None,
+            )
+            self.assertEqual(stage_chunk(args, payload=b'{"sample_id":"N0001"}'), 0)
+            chunk = read_json(root / "annotation_staging_v2" / "N0001" / "00000.json")
+            self.assertEqual(
+                chunk["payload_base64"],
+                b64encode(b'{"sample_id":"N0001"}').decode("ascii"),
+            )
+
     def test_analyst_related_detection_covers_embedded_concepts(self) -> None:
         self.assertTrue(
             is_analyst_related_unit(

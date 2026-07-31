@@ -31,6 +31,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stage-index", type=int)
     parser.add_argument("--stage-total", type=int)
     parser.add_argument("--stage-base64")
+    parser.add_argument(
+        "--stage-stdin",
+        action="store_true",
+        help="Read one raw staged chunk from stdin instead of a base64 argument.",
+    )
     parser.add_argument("--finalize-staged")
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -39,7 +44,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     assert_runtime_root(args.runtime_root)
     if args.stage_sample:
-        return stage_chunk(args)
+        payload = sys.stdin.buffer.read() if args.stage_stdin else None
+        return stage_chunk(args, payload=payload)
     if args.finalize_staged:
         return finalize_staged(args.runtime_root, args.finalize_staged)
     if not args.annotation:
@@ -54,24 +60,32 @@ def main(argv: Iterable[str] | None = None) -> int:
     return 0
 
 
-def stage_chunk(args: argparse.Namespace) -> int:
-    if args.stage_index is None or args.stage_total is None or args.stage_base64 is None:
+def stage_chunk(args: argparse.Namespace, *, payload: bytes | None = None) -> int:
+    encoded = getattr(args, "stage_base64", None)
+    if args.stage_index is None or args.stage_total is None or (
+        payload is None and encoded is None
+    ):
         raise SystemExit(
-            "--stage-sample requires --stage-index, --stage-total, and --stage-base64"
+            "--stage-sample requires --stage-index, --stage-total, and either "
+            "--stage-base64 or --stage-stdin"
         )
     if args.stage_index < 0 or args.stage_total <= 0 or args.stage_index >= args.stage_total:
         raise SystemExit("invalid staged chunk index/total")
-    try:
-        payload = base64.b64decode(args.stage_base64, validate=True)
-    except (ValueError, TypeError) as exc:
-        raise SystemExit(f"invalid base64 annotation chunk: {exc}") from exc
+    if payload is not None and encoded is not None:
+        raise SystemExit("staged chunk cannot use both stdin and base64 payloads")
+    if payload is None:
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise SystemExit(f"invalid base64 annotation chunk: {exc}") from exc
+    encoded = base64.b64encode(payload).decode("ascii")
     stage = args.runtime_root / "annotation_staging_v2" / args.stage_sample
     chunk = {
         "sample_id": args.stage_sample,
         "index": args.stage_index,
         "total": args.stage_total,
         "payload_sha256": hashlib.sha256(payload).hexdigest(),
-        "payload_base64": args.stage_base64,
+        "payload_base64": encoded,
     }
     target = stage / f"{args.stage_index:05d}.json"
     if target.exists():
