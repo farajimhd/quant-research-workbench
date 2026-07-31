@@ -34,6 +34,14 @@ Reviewers select verbatim evidence quotes. The persistence authority resolves
 each quote to a unique exact field/character span and rejects absent or
 ambiguous evidence; it does not infer or choose semantic evidence.
 
+Large manual records may be passed through `run_record_annotation` as bounded
+base64 chunks with `--stage-sample`, `--stage-index`, `--stage-total`, and
+`--stage-base64`, then committed with `--finalize-staged SAMPLE_ID`. Chunk
+staging lives under the runtime root, is hash-checked and resumable, and is
+deleted only after the assembled annotation passes the normal schema, source,
+evidence-span, and immutable persistence checks. This changes transport only;
+it does not infer or automate semantic judgments.
+
 ## Evidence levels
 
 - `0`: none

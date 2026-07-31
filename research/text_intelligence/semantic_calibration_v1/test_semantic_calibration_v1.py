@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
+from argparse import Namespace
+from base64 import b64encode
 from pathlib import Path
 
 from .annotation_template import annotation_template
@@ -10,6 +13,7 @@ from .review_round import (
     normalize_maintained_rating_endpoints,
     upgrade_v1_annotation,
 )
+from .run_record_annotation import finalize_staged, stage_chunk
 from .sampling import distribute_quota, select_candidates
 from .schema import ANNOTATION_VERSION, ANNOTATION_VERSION_V1, validate_annotation
 from .storage import (
@@ -308,6 +312,58 @@ class SemanticCalibrationSchemaTests(unittest.TestCase):
             )
             self.assertEqual(manifest["changed_records"], 1)
             self.assertEqual(manifest["changes"][0]["old_annotation_sha256"], "old")
+
+    def test_chunked_manual_annotation_transport_is_resumable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtimes" / "semantic_calibration"
+            item = {
+                "sample_id": "N0001",
+                "source_id": "source",
+                "source_timestamp": "2026-01-01 12:00:00.000000000",
+                "source_text_sha256": "a" * 64,
+                "publication": {"title": "Issuer raised guidance", "teaser": ""},
+                "rendered_product": {"text": ""},
+                "source_lanes": [],
+            }
+            write_json_atomic(root / "blinded_articles" / "N0001.json", item)
+            write_json_atomic(
+                root / "sample_manifest.json",
+                {
+                    "sample_version": "test",
+                    "sample_manifest_sha256": "b" * 64,
+                    "items": [{"sample_id": "N0001"}],
+                },
+            )
+            value = annotation_template(item)
+            value["reviewer_confidence"] = 4
+            value["issuer_units"][0].update(
+                {
+                    "ticker": "TEST",
+                    "event_concepts": ["guidance.raise"],
+                    "evidence_quotes": ["raised guidance"],
+                    "semantic_direction": "positive",
+                    "positive_evidence_level": 3,
+                    "forecast_trigger_eligible": True,
+                    "reaction_evaluation_eligible": True,
+                    "annotation_confidence": 4,
+                    "semantic_rationale": "Raised guidance is positive.",
+                }
+            )
+            payload = json.dumps(value).encode("utf-8")
+            split = len(payload) // 2
+            for index, part in enumerate((payload[:split], payload[split:])):
+                args = Namespace(
+                    runtime_root=root,
+                    stage_sample="N0001",
+                    stage_index=index,
+                    stage_total=2,
+                    stage_base64=b64encode(part).decode("ascii"),
+                )
+                self.assertEqual(stage_chunk(args), 0)
+                self.assertEqual(stage_chunk(args), 0)
+            self.assertEqual(finalize_staged(root, "N0001"), 0)
+            self.assertTrue((root / "annotations_v2" / "N0001.json").exists())
+            self.assertFalse((root / "annotation_staging_v2" / "N0001").exists())
 
     def test_analyst_related_detection_covers_embedded_concepts(self) -> None:
         self.assertTrue(
