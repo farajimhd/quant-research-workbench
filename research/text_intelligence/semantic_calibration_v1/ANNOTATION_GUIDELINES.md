@@ -1,4 +1,4 @@
-# News Semantic Ground Truth Guidelines V1
+# News Semantic Ground Truth Guidelines V2
 
 These guidelines govern the blinded human review used to calibrate the News
 semantic authority. The publication text is the only sentiment evidence. Do
@@ -54,9 +54,49 @@ levels. Evidence must describe text available at publication time.
 
 Eligibility is independent of sentiment direction and must include a reason.
 
+## Analyst opinion contract
+
+Analyst research is textual issuer context, not a primary issuer event. Any
+issuer unit containing analyst opinion must set `forecast_trigger_eligible` and
+`reaction_evaluation_eligible` to false. It remains eligible for issuer history
+and may be eligible for the separate analyst-evaluation product.
+
+Extract only facts stated in the publication. Do not join prices, later market
+reaction, target attainment, or analyst accuracy during labeling. Those are
+separate downstream evaluations.
+
+Each distinct analyst opinion records:
+
+- whether it is an individual, firm-level, or consensus-aggregate opinion;
+- analyst and research-firm names plus stated aliases;
+- rating action and separate `rating_from` and `rating_to` fields;
+- price-target action and separate numeric `price_target_from` and
+  `price_target_to` fields with currency;
+- explicit forecast horizon, when stated;
+- verbatim reasoning and opinion evidence with exact source spans; and
+- ambiguity and annotation confidence.
+
+A maintained Overweight rating with a target raised from 360 to 364 is encoded
+as `rating_action=maintained`, `rating_to=Overweight`,
+`price_target_action=raised`, `price_target_from=360`, and
+`price_target_to=364`. A price target is an analyst forecast, not the stock's
+current market price.
+
+When an article provides an action but no reasoning, set
+`reasoning_not_provided=true`; never invent rationale. Employment validity and
+aliases may remain null/empty unless supported by source evidence or a separate
+certified entity glossary.
+
+For aggregate statements such as "five analysts downgraded the issuer," use a
+`consensus_aggregate` opinion. Preserve the stated upgrade/downgrade action but
+leave unavailable from/to values null and explain the missing endpoints in
+`ambiguity_notes`; do not manufacture ratings.
+
 ## Pilot and taxonomy
 
-The first 100 articles are a taxonomy pilot. Record unsupported but recurring
+The first 100 articles are a taxonomy pilot. V1 remains immutable. Contract
+corrections are persisted as V2 review round 2 under a separate annotation
+directory. Record unsupported but recurring
 concepts in `taxonomy_proposals`; do not silently coerce them into an existing
 concept. Record identity, passage, rendering, and scope uncertainty in
 `ambiguity_notes` and lower confidence accordingly. Freeze revised guidelines

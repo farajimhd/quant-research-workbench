@@ -24,6 +24,12 @@ direction, three eligibility decisions, reviewer confidence, ambiguity, and
 taxonomy proposals. Review output is retained for future taxonomy revisions
 and V6 evaluation.
 
+V2 adds a dedicated textual analyst-opinion contract. Ratings and targets are
+stored in separate from/to fields. No market reaction, target attainment, or
+analyst correctness is joined during labeling. The immutable V1 pilot remains
+under `annotations`; the explicit second review is stored under
+`annotations_v2`, with drafts in `annotation_templates_v2`.
+
 Reviewers select verbatim evidence quotes. The persistence authority resolves
 each quote to a unique exact field/character span and rejects absent or
 ambiguous evidence; it does not infer or choose semantic evidence.
@@ -69,3 +75,47 @@ coverage without exposing sealed comparison values:
 ```powershell
 python -m research.text_intelligence.semantic_calibration_v1.run_audit_sample
 ```
+
+Prepare the existing immutable pilot for the V2 review round:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_prepare_review_round
+```
+
+This migration does not infer analyst fields. It marks analyst-related units
+for manual re-review and carries all other semantic judgments forward without
+consulting V5 or market reaction.
+
+After inspecting the review manifest, mechanically persist only records with
+no analyst evidence:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_prepare_review_round --carry-non-analyst
+```
+
+Analyst-related drafts are never carried by this option; they remain blocked on
+manual source-text review and structured opinion extraction.
+
+After the V2 pilot audit passes, prepare the remaining blinded first-pass
+templates without exposing sealed data:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_prepare_review_round --prepare-remaining
+```
+
+Audit every persisted V2 record, its immutable hash, schema, pilot coverage,
+and exact unit/opinion evidence spans:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_audit_annotations
+```
+
+Build the text-only analyst/entity glossary from completed V2 reviews:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_build_analyst_glossary
+```
+
+The glossary records article-observed names, aliases, firms and attributions.
+It does not join reaction data and does not treat first/last observation as a
+certified employment interval.

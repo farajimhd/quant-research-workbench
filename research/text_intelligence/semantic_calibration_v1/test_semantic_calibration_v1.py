@@ -5,9 +5,14 @@ import unittest
 from pathlib import Path
 
 from .annotation_template import annotation_template
+from .review_round import is_analyst_related_unit, upgrade_v1_annotation
 from .sampling import distribute_quota, select_candidates
-from .schema import ANNOTATION_VERSION, validate_annotation
-from .storage import assert_runtime_root, materialize_evidence_spans
+from .schema import ANNOTATION_VERSION, ANNOTATION_VERSION_V1, validate_annotation
+from .storage import (
+    annotation_directory,
+    assert_runtime_root,
+    materialize_evidence_spans,
+)
 
 
 class SemanticCalibrationSchemaTests(unittest.TestCase):
@@ -56,6 +61,164 @@ class SemanticCalibrationSchemaTests(unittest.TestCase):
         result = validate_annotation(value, expected_item=item)
         self.assertIn("reviewer_confidence_must_be_0_to_4", result.errors)
 
+    def test_v2_analyst_opinion_uses_separate_rating_and_target_fields(self) -> None:
+        item = {
+            "sample_id": "N0001",
+            "source_id": "source",
+            "source_timestamp": "2026-01-01 12:00:00.000000000",
+            "source_text_sha256": "a" * 64,
+        }
+        value = annotation_template(item)
+        unit = value["issuer_units"][0]
+        unit.update(
+            {
+                "ticker": "AAPL",
+                "issuer_role": "analyst_subject",
+                "modality": "opinion",
+                "event_concepts": ["analyst.price_target_raise"],
+                "evidence_quotes": ["maintains Overweight and raises the price target from $360 to $364"],
+                "evidence_spans": [
+                    {
+                        "source_field": "rendered_text",
+                        "start": 0,
+                        "end": 67,
+                        "quote": "maintains Overweight and raises the price target from $360 to $364",
+                    }
+                ],
+                "positive_evidence_level": 1,
+                "semantic_direction": "positive",
+                "semantic_rationale": "The stated target increased while the rating was maintained.",
+                "analyst_context_eligible": True,
+                "analyst_evaluation_eligible": True,
+                "analyst_opinions": [
+                    {
+                        "opinion_kind": "individual",
+                        "analyst_name": "Erik Woodring",
+                        "analyst_aliases": [],
+                        "firm_name": "Morgan Stanley",
+                        "firm_aliases": [],
+                        "employment_valid_from": None,
+                        "employment_valid_to": None,
+                        "rating_action": "maintained",
+                        "rating_from": None,
+                        "rating_to": "Overweight",
+                        "price_target_action": "raised",
+                        "price_target_from": 360,
+                        "price_target_to": 364,
+                        "price_target_currency": "USD",
+                        "forecast_horizon_text": None,
+                        "reasoning_not_provided": True,
+                        "reasoning_quotes": [],
+                        "evidence_quotes": [
+                            "maintains Overweight and raises the price target from $360 to $364"
+                        ],
+                        "evidence_spans": [
+                            {
+                                "source_field": "rendered_text",
+                                "start": 0,
+                                "end": 67,
+                                "quote": "maintains Overweight and raises the price target from $360 to $364",
+                            }
+                        ],
+                        "annotation_confidence": 4,
+                        "ambiguity_notes": "",
+                    }
+                ],
+                "eligibility_reason": "Analyst context only.",
+                "annotation_confidence": 4,
+            }
+        )
+        value["content_role"] = "analyst_event"
+        value["source_origin"] = "analyst_research"
+        value["reviewer_confidence"] = 4
+        result = validate_annotation(value, expected_item=item)
+        self.assertTrue(result.valid, result.errors)
+
+    def test_v2_analyst_context_cannot_be_primary_reaction_trigger(self) -> None:
+        item = {
+            "sample_id": "N0001",
+            "source_id": "source",
+            "source_timestamp": "2026-01-01 12:00:00.000000000",
+            "source_text_sha256": "a" * 64,
+        }
+        value = annotation_template(item)
+        unit = value["issuer_units"][0]
+        unit.update(
+            {
+                "ticker": "AAPL",
+                "event_concepts": ["analyst.rating_maintained"],
+                "evidence_quotes": ["maintains Overweight"],
+                "evidence_spans": [
+                    {
+                        "source_field": "title",
+                        "start": 0,
+                        "end": 20,
+                        "quote": "maintains Overweight",
+                    }
+                ],
+                "semantic_rationale": "Analyst rating statement.",
+                "analyst_context_eligible": True,
+                "forecast_trigger_eligible": True,
+            }
+        )
+        result = validate_annotation(value, expected_item=item)
+        self.assertIn(
+            "issuer_units[0].analyst_context_cannot_be_forecast_trigger",
+            result.errors,
+        )
+
+    def test_round_two_upgrade_preserves_v1_and_marks_analyst_review(self) -> None:
+        annotation = {
+            "annotation_version": ANNOTATION_VERSION_V1,
+            "annotation_sha256": "immutable-v1",
+            "review_round": 1,
+            "content_role": "analyst_event",
+            "issuer_units": [
+                {
+                    "ticker": "AAPL",
+                    "issuer_role": "analyst_subject",
+                    "event_concepts": ["analyst.price_target_raise"],
+                    "forecast_trigger_eligible": True,
+                    "reaction_evaluation_eligible": True,
+                    "eligibility_reason": "Old pilot decision.",
+                }
+            ],
+        }
+        upgraded, review_required = upgrade_v1_annotation(annotation)
+        self.assertTrue(review_required)
+        self.assertEqual(upgraded["annotation_version"], ANNOTATION_VERSION)
+        self.assertEqual(upgraded["review_round"], 2)
+        self.assertNotIn("annotation_sha256", upgraded)
+        self.assertFalse(upgraded["issuer_units"][0]["forecast_trigger_eligible"])
+        self.assertFalse(upgraded["issuer_units"][0]["reaction_evaluation_eligible"])
+        self.assertTrue(upgraded["issuer_units"][0]["analyst_context_eligible"])
+        self.assertEqual(annotation["annotation_sha256"], "immutable-v1")
+
+    def test_versioned_annotation_directories_are_separate(self) -> None:
+        root = Path("D:/TradingML/runtimes/test")
+        self.assertEqual(annotation_directory(root, ANNOTATION_VERSION_V1), root / "annotations")
+        self.assertEqual(annotation_directory(root, ANNOTATION_VERSION), root / "annotations_v2")
+
+    def test_analyst_related_detection_covers_embedded_concepts(self) -> None:
+        self.assertTrue(
+            is_analyst_related_unit(
+                {
+                    "issuer_role": "primary_subject",
+                    "event_concepts": ["analyst.price_target_raise"],
+                },
+                "editorial_analysis",
+            )
+        )
+        self.assertFalse(
+            is_analyst_related_unit(
+                {
+                    "issuer_role": "primary_subject",
+                    "event_concepts": ["guidance.operating_income_growth"],
+                },
+                "market_roundup",
+            )
+        )
+
     def test_runtime_root_rejects_repository(self) -> None:
         repository = Path(__file__).resolve().parents[3]
         with self.assertRaises(ValueError):
@@ -87,6 +250,46 @@ class SemanticCalibrationSchemaTests(unittest.TestCase):
                     "quote": "raised guidance",
                 }
             ],
+        )
+
+    def test_analyst_spans_materialize_when_unit_spans_already_exist(self) -> None:
+        annotation = {
+            "issuer_units": [
+                {
+                    "ticker": "AAPL",
+                    "evidence_quotes": ["maintains Overweight"],
+                    "evidence_spans": [
+                        {
+                            "source_field": "title",
+                            "start": 7,
+                            "end": 27,
+                            "quote": "maintains Overweight",
+                        }
+                    ],
+                    "analyst_opinions": [
+                        {
+                            "evidence_quotes": ["raises the target"],
+                            "reasoning_quotes": [],
+                            "evidence_spans": [],
+                        }
+                    ],
+                }
+            ]
+        }
+        item = {
+            "publication": {
+                "title": "Issuer maintains Overweight and raises the target",
+                "teaser": "",
+            },
+            "rendered_product": {"text": ""},
+            "source_lanes": [],
+        }
+        result = materialize_evidence_spans(annotation, item)
+        self.assertEqual(
+            result["issuer_units"][0]["analyst_opinions"][0]["evidence_spans"][0][
+                "quote"
+            ],
+            "raises the target",
         )
 
     def test_era_balancing_is_exact(self) -> None:

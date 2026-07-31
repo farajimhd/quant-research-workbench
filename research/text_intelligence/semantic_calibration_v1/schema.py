@@ -7,7 +7,9 @@ from typing import Any, Mapping, Sequence
 
 
 SAMPLE_VERSION = "news_semantic_ground_truth_sample_v1"
-ANNOTATION_VERSION = "news_semantic_ground_truth_annotation_v1"
+ANNOTATION_VERSION_V1 = "news_semantic_ground_truth_annotation_v1"
+ANNOTATION_VERSION = "news_semantic_ground_truth_annotation_v2"
+ANNOTATION_VERSIONS = {ANNOTATION_VERSION_V1, ANNOTATION_VERSION}
 
 EXTRACTION_DECISIONS = {
     "labeled",
@@ -50,6 +52,38 @@ EVIDENCE_SCOPES = {"ticker_specific", "shared_event", "document_context"}
 MODALITIES = {"confirmed", "planned", "expected", "opinion", "rumored", "mixed"}
 TIME_ORIENTATIONS = {"historical", "current", "forward", "mixed"}
 DIRECTIONS = {"positive", "negative", "neutral", "mixed"}
+RATING_ACTIONS = {
+    "not_stated",
+    "stated",
+    "initiated",
+    "maintained",
+    "reiterated",
+    "upgraded",
+    "downgraded",
+    "resumed",
+    "suspended",
+}
+PRICE_TARGET_ACTIONS = {
+    "not_stated",
+    "stated",
+    "set",
+    "maintained",
+    "raised",
+    "lowered",
+    "removed",
+}
+ANALYST_OPINION_KINDS = {"individual", "firm", "consensus_aggregate"}
+NULLABLE_ANALYST_TEXT_FIELDS = {
+    "analyst_name",
+    "firm_name",
+    "employment_valid_from",
+    "employment_valid_to",
+    "rating_from",
+    "rating_to",
+    "price_target_currency",
+    "forecast_horizon_text",
+    "ambiguity_notes",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +115,8 @@ def validate_annotation(
     _choice(errors, annotation, "content_role", CONTENT_ROLES)
     _choice(errors, annotation, "source_origin", SOURCE_ORIGINS)
     _bounded_int(errors, annotation, "reviewer_confidence", 0, 4)
-    if annotation.get("annotation_version") != ANNOTATION_VERSION:
+    annotation_version = annotation.get("annotation_version")
+    if annotation_version not in ANNOTATION_VERSIONS:
         errors.append("annotation_version_mismatch")
     if expected_item is not None:
         for field in ("sample_id", "source_id", "source_timestamp", "source_text_sha256"):
@@ -156,12 +191,139 @@ def validate_annotation(
         ):
             if not isinstance(raw.get(flag), bool):
                 errors.append(f"{prefix}.{flag}_must_be_boolean")
+        if annotation_version == ANNOTATION_VERSION:
+            _validate_v2_unit(errors, raw, prefix)
         key = (ticker, str(raw.get("issuer_role") or ""))
         if key in seen:
             errors.append(f"{prefix}.duplicate_ticker_role")
         seen.add(key)
         _validate_direction_levels(errors, raw, prefix)
     return AnnotationValidation(tuple(errors))
+
+
+def _validate_v2_unit(
+    errors: list[str],
+    value: Mapping[str, Any],
+    prefix: str,
+) -> None:
+    for flag in (
+        "analyst_context_eligible",
+        "analyst_evaluation_eligible",
+    ):
+        if not isinstance(value.get(flag), bool):
+            errors.append(f"{prefix}.{flag}_must_be_boolean")
+    opinions = value.get("analyst_opinions")
+    if not isinstance(opinions, list):
+        errors.append(f"{prefix}.analyst_opinions_must_be_list")
+        opinions = []
+    if opinions and not value.get("analyst_context_eligible"):
+        errors.append(f"{prefix}.analyst_opinions_require_context_eligibility")
+    if value.get("analyst_evaluation_eligible") and not opinions:
+        errors.append(f"{prefix}.analyst_evaluation_requires_opinion")
+    for index, opinion in enumerate(opinions):
+        opinion_prefix = f"{prefix}.analyst_opinions[{index}]"
+        if not isinstance(opinion, Mapping):
+            errors.append(f"{opinion_prefix}_must_be_object")
+            continue
+        _choice(
+            errors,
+            opinion,
+            "opinion_kind",
+            ANALYST_OPINION_KINDS,
+            opinion_prefix,
+        )
+        if opinion.get("opinion_kind") != "consensus_aggregate" and not (
+            str(opinion.get("analyst_name") or "").strip()
+            or str(opinion.get("firm_name") or "").strip()
+        ):
+            errors.append(f"{opinion_prefix}.analyst_or_firm_required")
+        for field in NULLABLE_ANALYST_TEXT_FIELDS:
+            raw_text = opinion.get(field)
+            if raw_text is not None and not isinstance(raw_text, str):
+                errors.append(f"{opinion_prefix}.{field}_must_be_string_or_null")
+        for field in ("analyst_aliases", "firm_aliases"):
+            aliases = opinion.get(field)
+            if not isinstance(aliases, list) or any(
+                not isinstance(alias, str) or not alias.strip() for alias in aliases
+            ):
+                errors.append(f"{opinion_prefix}.{field}_must_be_string_list")
+        _choice(errors, opinion, "rating_action", RATING_ACTIONS, opinion_prefix)
+        _choice(
+            errors,
+            opinion,
+            "price_target_action",
+            PRICE_TARGET_ACTIONS,
+            opinion_prefix,
+        )
+        for field in ("price_target_from", "price_target_to"):
+            raw = opinion.get(field)
+            if raw is not None and (
+                not isinstance(raw, (int, float))
+                or isinstance(raw, bool)
+                or raw < 0
+            ):
+                errors.append(f"{opinion_prefix}.{field}_must_be_nonnegative_number_or_null")
+        if (
+            opinion.get("price_target_from") is not None
+            or opinion.get("price_target_to") is not None
+        ) and not str(opinion.get("price_target_currency") or "").strip():
+            errors.append(f"{opinion_prefix}.price_target_currency_required")
+        target_action = opinion.get("price_target_action")
+        if target_action in {"raised", "lowered"} and (
+            opinion.get("price_target_from") is None
+            or opinion.get("price_target_to") is None
+        ):
+            errors.append(f"{opinion_prefix}.target_change_requires_from_and_to")
+        if target_action in {"set", "stated"} and opinion.get("price_target_to") is None:
+            errors.append(f"{opinion_prefix}.target_set_requires_to")
+        if target_action == "maintained" and opinion.get("price_target_to") is None:
+            errors.append(f"{opinion_prefix}.target_maintained_requires_to")
+        if target_action == "removed" and opinion.get("price_target_from") is None:
+            errors.append(f"{opinion_prefix}.target_removed_requires_from")
+        rating_action = opinion.get("rating_action")
+        rating_from = str(opinion.get("rating_from") or "").strip()
+        rating_to = str(opinion.get("rating_to") or "").strip()
+        if (
+            rating_action in {"upgraded", "downgraded"}
+            and opinion.get("opinion_kind") != "consensus_aggregate"
+            and not (rating_from and rating_to)
+        ):
+            errors.append(f"{opinion_prefix}.rating_change_requires_from_and_to")
+        if rating_action in {"initiated", "stated"} and not rating_to:
+            errors.append(f"{opinion_prefix}.rating_initiated_requires_to")
+        if rating_action in {"maintained", "reiterated", "resumed"} and not rating_to:
+            errors.append(f"{opinion_prefix}.rating_affirmation_requires_to")
+        if rating_action == "suspended" and not rating_from:
+            errors.append(f"{opinion_prefix}.rating_suspended_requires_from")
+        if rating_action == "not_stated" and (rating_from or rating_to):
+            errors.append(f"{opinion_prefix}.rating_not_stated_conflicts_with_values")
+        if target_action == "not_stated" and (
+            opinion.get("price_target_from") is not None
+            or opinion.get("price_target_to") is not None
+        ):
+            errors.append(f"{opinion_prefix}.target_not_stated_conflicts_with_values")
+        if not isinstance(opinion.get("reasoning_not_provided"), bool):
+            errors.append(f"{opinion_prefix}.reasoning_not_provided_must_be_boolean")
+        reasoning = opinion.get("reasoning_quotes")
+        if not isinstance(reasoning, list):
+            errors.append(f"{opinion_prefix}.reasoning_quotes_must_be_list")
+            reasoning = []
+        if opinion.get("reasoning_not_provided") and reasoning:
+            errors.append(f"{opinion_prefix}.reasoning_not_provided_conflicts_with_quotes")
+        if not opinion.get("reasoning_not_provided") and not reasoning:
+            errors.append(f"{opinion_prefix}.reasoning_quotes_required")
+        evidence = opinion.get("evidence_quotes")
+        if not isinstance(evidence, list) or not evidence:
+            errors.append(f"{opinion_prefix}.evidence_quotes_required")
+        spans = opinion.get("evidence_spans")
+        if not isinstance(spans, list) or not spans:
+            errors.append(f"{opinion_prefix}.evidence_spans_required")
+        _bounded_int(errors, opinion, "annotation_confidence", 0, 4, opinion_prefix)
+    if value.get("analyst_context_eligible"):
+        if value.get("forecast_trigger_eligible"):
+            errors.append(f"{prefix}.analyst_context_cannot_be_forecast_trigger")
+        if value.get("reaction_evaluation_eligible"):
+            errors.append(f"{prefix}.analyst_context_cannot_be_reaction_trigger")
 
 
 def _validate_direction_levels(
