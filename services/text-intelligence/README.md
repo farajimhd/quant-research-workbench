@@ -4,8 +4,9 @@ Shared domain service for deterministic News and SEC text labels, with an
 optional live News model path.
 
 News Gateway and SEC Gateway own acquisition and canonical persistence. After a
-canonical publish, they send only a corpus, source identity, and timestamp to
-this service. Bounded workers reload the canonical rendered authority, apply
+canonical publish, they send only a corpus, source identity, timestamp, and
+the SEC CIK needed for an exact filing read to this service. Bounded workers
+reload the canonical rendered authority, apply
 the shared `scoped_text_labeling_v5` issuer/event classifier, and persist
 compact versioned rows to `q_live.scoped_text_labels_v5` and
 `q_live.scoped_content_relations_v3`. Canonical rendered text is referenced by
@@ -80,6 +81,11 @@ requires an active Live session and point-in-time QMD price eligibility.
 - `TEXT_INTELLIGENCE_QUEUE_MAX`, default `8192`
 - `TEXT_INTELLIGENCE_RECONCILE_SECONDS`, default `30`
 - `TEXT_INTELLIGENCE_RECONCILE_HOURS`, default `72`
+- `TEXT_INTELLIGENCE_TERMINAL_RICH_ENABLED`, default `auto` from interactive
+  stdout. The live-gateway starter sets it to `true` for the Text Intelligence
+  tab.
+- `TEXT_INTELLIGENCE_TERMINAL_SCREEN_ENABLED`, default `true`
+- `TEXT_INTELLIGENCE_TERMINAL_REFRESH_SECONDS`, default `1.0`
 
 Common service settings formerly named `NEWS_INTELLIGENCE_*` remain accepted
 as transitional aliases. `TEXT_INTELLIGENCE_*` always takes precedence. The
@@ -108,8 +114,11 @@ or:
 The bare launcher runs the required deterministic News/SEC V5 classifier and
 reconciler only. It does not load local language models and does not call an
 LLM, Model Gateway, or Market AI. The standard live-gateway launcher also
-starts this deterministic service as its fifth tab. Optional inference is an
-explicit operator choice:
+starts this deterministic service as its fifth tab with the shared Rich
+operational terminal. That terminal keeps current reconciliation, worker
+focus, queue depth, durable completion counts, and active failures visible;
+redirected/non-interactive starts remain cursor-control free. Optional
+inference is an explicit operator choice:
 
 ```powershell
 # Optional local sentiment/NER models.

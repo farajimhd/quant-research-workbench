@@ -5,7 +5,9 @@ import hashlib
 import json
 import os
 import threading
+import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -51,6 +53,7 @@ class TextDocumentNotice(BaseModel):
     corpus: Literal["news", "sec"]
     source_id: str = Field(min_length=1, max_length=256)
     source_timestamp: str = ""
+    source_cik: str = Field(default="", max_length=32)
 
 
 class TextDocumentNoticeBatch(BaseModel):
@@ -92,6 +95,11 @@ class ScopedTextRuntime:
         self.issuer_resolver: NewsIssuerResolver | None = None
         self.sec_mappings: dict[str, list[dict[str, Any]]] = {}
         self.sec_mapping_lock = threading.Lock()
+        self.state_lock = threading.Lock()
+        self.worker_states: dict[int, dict[str, Any]] = {}
+        self.recent_work: deque[dict[str, Any]] = deque(maxlen=50)
+        self.active_failures: dict[tuple[str, str], dict[str, str]] = {}
+        self.started_at_utc = datetime.now(UTC).isoformat()
         self.metrics: dict[str, int | str] = {
             "deterministic_queued": 0,
             "deterministic_completed": 0,
@@ -103,6 +111,19 @@ class ScopedTextRuntime:
             "deterministic_live_forwarded": 0,
             "deterministic_live_forward_failed": 0,
             "deterministic_last_error": "",
+            "deterministic_last_error_status": "",
+            "deterministic_last_error_at_utc": "",
+            "deterministic_worker_last_error": "",
+            "deterministic_worker_error_status": "",
+            "deterministic_last_success_at_utc": "",
+            "deterministic_reconcile_runs": 0,
+            "deterministic_reconcile_notices": 0,
+            "deterministic_reconcile_seconds": 0,
+            "deterministic_reconcile_last_at_utc": "",
+            "deterministic_reconcile_last_error": "",
+            "deterministic_reconcile_error_status": "",
+            "deterministic_shutdown_deferred": 0,
+            "deterministic_runtime_status": "starting",
         }
 
     async def start(self) -> None:
@@ -112,6 +133,10 @@ class ScopedTextRuntime:
             load_news_issuer_resolver, self.client, self.database
         )
         count = max(1, min(16, int(os.environ.get("TEXT_INTELLIGENCE_WORKERS", "4"))))
+        with self.state_lock:
+            self.worker_states = {
+                index: self._idle_worker_state(index) for index in range(count)
+            }
         self.workers = [
             asyncio.create_task(self._worker(index), name=f"text-intelligence-{index}")
             for index in range(count)
@@ -119,15 +144,29 @@ class ScopedTextRuntime:
         self.reconcile_task = asyncio.create_task(
             self._reconcile_loop(), name="text-intelligence-reconcile"
         )
+        self.metrics["deterministic_runtime_status"] = "running"
 
     async def stop(self) -> None:
+        self.metrics["deterministic_runtime_status"] = "stopping"
         if self.reconcile_task:
             self.reconcile_task.cancel()
             await asyncio.gather(self.reconcile_task, return_exceptions=True)
+        deferred = 0
+        while True:
+            try:
+                item = self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if item is not None:
+                self.pending.discard((item.notice.corpus, item.notice.source_id))
+                deferred += 1
+            self.queue.task_done()
+        self.metrics["deterministic_shutdown_deferred"] = deferred
         for _ in self.workers:
             await self.queue.put(None)
         await self.queue.join()
         await asyncio.gather(*self.workers, return_exceptions=True)
+        self.metrics["deterministic_runtime_status"] = "stopped"
 
     def enqueue(self, notice: TextDocumentNotice, *, reconciled: bool = False) -> None:
         identity = (notice.corpus, notice.source_id)
@@ -147,17 +186,24 @@ class ScopedTextRuntime:
                 self.metrics["deterministic_reconciled"]
             ) + 1
 
-    async def _worker(self, _index: int) -> None:
+    async def _worker(self, index: int) -> None:
         while True:
             item = await self.queue.get()
             try:
                 if item is None:
                     return
-                await asyncio.to_thread(
+                self._set_worker_state(index, item.notice, "loading_source")
+                result = await asyncio.to_thread(
                     self._process_notice,
                     item.notice,
                     item.forward_current,
+                    index,
                 )
+                now = datetime.now(UTC).isoformat()
+                self.metrics["deterministic_last_success_at_utc"] = now
+                self.metrics["deterministic_last_error_status"] = "resolved"
+                self._resolve_failure(item.notice)
+                self._record_recent(item.notice, str(result), "complete", "")
             except Exception as exc:  # noqa: BLE001
                 self.metrics["deterministic_failed"] = int(
                     self.metrics["deterministic_failed"]
@@ -165,7 +211,25 @@ class ScopedTextRuntime:
                 self.metrics["deterministic_last_error"] = (
                     f"{type(exc).__name__}: {exc}"
                 )[:500]
+                self.metrics["deterministic_last_error_status"] = "active"
+                self.metrics["deterministic_worker_last_error"] = self.metrics[
+                    "deterministic_last_error"
+                ]
+                self.metrics["deterministic_worker_error_status"] = "active"
+                self.metrics["deterministic_last_error_at_utc"] = datetime.now(
+                    UTC
+                ).isoformat()
                 if item is not None:
+                    self._record_failure(
+                        item.notice,
+                        str(self.metrics["deterministic_last_error"]),
+                    )
+                    self._record_recent(
+                        item.notice,
+                        "failed",
+                        "failed",
+                        str(self.metrics["deterministic_last_error"]),
+                    )
                     await asyncio.to_thread(
                         self._write_status,
                         item.notice,
@@ -176,6 +240,7 @@ class ScopedTextRuntime:
                         self.metrics["deterministic_last_error"],
                     )
             finally:
+                self._set_worker_idle(index)
                 if item is not None:
                     self.pending.discard(
                         (item.notice.corpus, item.notice.source_id)
@@ -183,23 +248,29 @@ class ScopedTextRuntime:
                 self.queue.task_done()
 
     def _process_notice(
-        self, notice: TextDocumentNotice, forward_current: bool = False
-    ) -> None:
+        self,
+        notice: TextDocumentNotice,
+        forward_current: bool = False,
+        worker_index: int | None = None,
+    ) -> str:
+        self._set_worker_stage(worker_index, "loading_source")
         loaded = self._load_source(notice)
         if not loaded.rows:
             raise RuntimeError(
                 f"canonical {notice.corpus} source is not ready: {notice.source_id}"
             )
+        self._set_worker_stage(worker_index, "checking_status")
         source_is_current = self._status_is_current(notice, loaded.source_hash)
         if source_is_current and not forward_current:
             self.metrics["deterministic_skipped_current"] = int(
                 self.metrics["deterministic_skipped_current"]
             ) + 1
-            return
+            return "skipped_current"
         run_id = f"live-{uuid.uuid4().hex}"
         label_rows: list[dict[str, Any]] = []
         relation_rows: list[dict[str, Any]] = []
         prepared_news: list[PreparedNewsCandidate] = []
+        self._set_worker_stage(worker_index, "classifying")
         for source_row in loaded.rows:
             document = row_to_document(source_row, notice.corpus)
             labels = (
@@ -222,6 +293,7 @@ class ScopedTextRuntime:
                     )
                 )
         if label_rows and not source_is_current:
+            self._set_worker_stage(worker_index, "writing_labels")
             insert_json_each_row(
                 self.client,
                 self.database,
@@ -230,6 +302,7 @@ class ScopedTextRuntime:
                 label_rows,
             )
         if relation_rows and not source_is_current:
+            self._set_worker_stage(worker_index, "writing_relations")
             insert_json_each_row(
                 self.client,
                 self.database,
@@ -238,6 +311,7 @@ class ScopedTextRuntime:
                 relation_rows,
             )
         if not source_is_current:
+            self._set_worker_stage(worker_index, "writing_status")
             self._write_status(
                 notice,
                 loaded.source_hash,
@@ -257,6 +331,7 @@ class ScopedTextRuntime:
             ) + 1
         # Optional market inference is downstream of durable deterministic state.
         for item in (prepared_news if self.live_news.enabled else ()):
+            self._set_worker_stage(worker_index, "forwarding_live")
             try:
                 accepted = self.live_news.enqueue_prepared_threadsafe(item)
             except Exception:  # noqa: BLE001
@@ -268,6 +343,7 @@ class ScopedTextRuntime:
                     self.metrics["deterministic_live_forwarded"] = int(
                         self.metrics["deterministic_live_forwarded"]
                     ) + 1
+        return "complete" if not source_is_current else "forwarded_current"
 
     def _load_source(self, notice: TextDocumentNotice) -> LoadedSource:
         return (
@@ -276,7 +352,110 @@ class ScopedTextRuntime:
             else self._load_sec(notice)
         )
 
+    def snapshot_metrics(self) -> dict[str, Any]:
+        with self.state_lock:
+            workers = [dict(row) for _, row in sorted(self.worker_states.items())]
+            recent = [dict(row) for row in reversed(self.recent_work)]
+            active_failures = [
+                dict(row) for row in reversed(list(self.active_failures.values()))
+            ]
+        return {
+            **self.metrics,
+            "deterministic_queue_size": self.queue.qsize(),
+            "deterministic_pending": len(self.pending),
+            "deterministic_active_workers": sum(
+                1 for row in workers if row.get("status") == "processing"
+            ),
+            "deterministic_workers": workers,
+            "deterministic_recent_work": recent,
+            "deterministic_active_failure_count": len(active_failures),
+            "deterministic_active_failures": active_failures,
+            "deterministic_worker_error_status": (
+                "active" if active_failures else "resolved"
+            ),
+            "deterministic_worker_last_error": (
+                str(active_failures[0].get("error") or "")
+                if active_failures
+                else str(self.metrics.get("deterministic_worker_last_error") or "")
+            ),
+            "deterministic_started_at_utc": self.started_at_utc,
+        }
+
+    @staticmethod
+    def _idle_worker_state(index: int) -> dict[str, Any]:
+        return {
+            "worker": index + 1,
+            "status": "waiting",
+            "corpus": "",
+            "source_id": "",
+            "stage": "waiting_for_notice",
+            "started_at_utc": "",
+        }
+
+    def _set_worker_state(
+        self, index: int, notice: TextDocumentNotice, stage: str
+    ) -> None:
+        with self.state_lock:
+            self.worker_states[index] = {
+                "worker": index + 1,
+                "status": "processing",
+                "corpus": notice.corpus,
+                "source_id": notice.source_id,
+                "stage": stage,
+                "started_at_utc": datetime.now(UTC).isoformat(),
+            }
+
+    def _set_worker_stage(self, index: int | None, stage: str) -> None:
+        if index is None:
+            return
+        with self.state_lock:
+            state = self.worker_states.get(index)
+            if state is not None:
+                state["stage"] = stage
+
+    def _set_worker_idle(self, index: int) -> None:
+        with self.state_lock:
+            self.worker_states[index] = self._idle_worker_state(index)
+
+    def _record_recent(
+        self,
+        notice: TextDocumentNotice,
+        stage: str,
+        status: str,
+        detail: str,
+    ) -> None:
+        with self.state_lock:
+            self.recent_work.append(
+                {
+                    "updated_at_utc": datetime.now(UTC).isoformat(),
+                    "source_id": notice.source_id,
+                    "corpus": notice.corpus,
+                    "stage": stage,
+                    "status": status,
+                    "detail": detail[:300],
+                }
+            )
+
+    def _record_failure(self, notice: TextDocumentNotice, error: str) -> None:
+        with self.state_lock:
+            self.active_failures[(notice.corpus, notice.source_id)] = {
+                "corpus": notice.corpus,
+                "source_id": notice.source_id,
+                "error": error[:300],
+                "updated_at_utc": datetime.now(UTC).isoformat(),
+            }
+
+    def _resolve_failure(self, notice: TextDocumentNotice) -> None:
+        with self.state_lock:
+            self.active_failures.pop((notice.corpus, notice.source_id), None)
+
     def _load_news(self, notice: TextDocumentNotice) -> LoadedSource:
+        source_time = _parse_utc(notice.source_timestamp)
+        if source_time is None:
+            raise ValueError(
+                "news notice requires source_timestamp for a bounded canonical read"
+            )
+        source_date = source_time.date().isoformat()
         rows = list(self.client.iter_json_each_row(f"""
 SELECT
  e.canonical_news_id AS source_id,
@@ -285,20 +464,36 @@ SELECT
  e.channels, e.provider_tags, e.links, e.author, e.url_domain, e.article_url,
  e.content_quality_flags, r.renderer_version, r.text_contract,
  r.quality_flags, r.rendered_text_hash
-FROM `{self.database}`.`benzinga_news_event_v2` AS e FINAL
-INNER JOIN `{self.database}`.`benzinga_news_rendered_v2` AS r FINAL
+FROM
+(
+ SELECT *
+ FROM `{self.database}`.`benzinga_news_event_v2` FINAL
+ PREWHERE published_date=toDate({sql_string(source_date)})
+ WHERE canonical_news_id={sql_string(notice.source_id)}
+) AS e
+INNER JOIN
+(
+ SELECT *
+ FROM `{self.database}`.`benzinga_news_rendered_v2` FINAL
+ PREWHERE published_date=toDate({sql_string(source_date)})
+ WHERE notEmpty(rendered_text)
+) AS r
  ON r.published_date=e.published_date
  AND r.provider_article_id=e.provider_article_id
  AND r.source_revision_key=e.source_revision_key
-WHERE e.canonical_news_id={sql_string(notice.source_id)}
-  AND notEmpty(r.rendered_text)
 LIMIT 1
+SETTINGS max_execution_time=25
 FORMAT JSONEachRow
 """))
         source_hash = str(rows[0].get("rendered_text_hash") or "") if rows else ""
         return LoadedSource(notice, tuple(rows), source_hash)
 
     def _load_sec(self, notice: TextDocumentNotice) -> LoadedSource:
+        cik = notice.source_cik.strip()
+        if not cik:
+            raise ValueError(
+                "SEC notice requires source_cik for an exact canonical read"
+            )
         filings = list(self.client.iter_json_each_row(f"""
 SELECT filing_id,cik,accession_number,
        cityHash64(cik) % 64 AS document_partition,
@@ -307,8 +502,10 @@ SELECT filing_id,cik,accession_number,
        ifNull(items,'') filing_items,ifNull(toString(filing_date),'') filing_date,
        ifNull(toString(report_date),'') report_date,accepted_at_source
 FROM `{self.database}`.`sec_filing_v3` FINAL
+PREWHERE cik={sql_string(cik)}
 WHERE accession_number={sql_string(notice.source_id)}
 LIMIT 1
+SETTINGS max_execution_time=25
 FORMAT JSONEachRow
 """))
         if not filings:
@@ -402,8 +599,18 @@ WHERE corpus={sql_string(notice.corpus)}
         )
         await asyncio.sleep(1.0)
         while True:
+            reconcile_started = time.perf_counter()
             try:
                 notices = await asyncio.to_thread(self._recent_notices)
+                self.metrics["deterministic_reconcile_runs"] = int(
+                    self.metrics["deterministic_reconcile_runs"]
+                ) + 1
+                self.metrics["deterministic_reconcile_notices"] = len(notices)
+                self.metrics["deterministic_reconcile_last_at_utc"] = datetime.now(
+                    UTC
+                ).isoformat()
+                self.metrics["deterministic_reconcile_last_error"] = ""
+                self.metrics["deterministic_reconcile_error_status"] = "resolved"
                 for notice in notices:
                     try:
                         self.enqueue(notice, reconciled=True)
@@ -425,6 +632,18 @@ WHERE corpus={sql_string(notice.corpus)}
                 self.metrics["deterministic_last_error"] = (
                     f"{type(exc).__name__}: {exc}"
                 )[:500]
+                self.metrics["deterministic_last_error_status"] = "active"
+                self.metrics["deterministic_last_error_at_utc"] = datetime.now(
+                    UTC
+                ).isoformat()
+                self.metrics["deterministic_reconcile_last_error"] = self.metrics[
+                    "deterministic_last_error"
+                ]
+                self.metrics["deterministic_reconcile_error_status"] = "active"
+            finally:
+                self.metrics["deterministic_reconcile_seconds"] = round(
+                    time.perf_counter() - reconcile_started, 3
+                )
             await asyncio.sleep(interval)
 
     def _recent_notices(self) -> list[TextDocumentNotice]:
@@ -433,11 +652,13 @@ WHERE corpus={sql_string(notice.corpus)}
         )
         start = datetime.now(UTC) - timedelta(hours=hours)
         start_sql = start.strftime("%Y-%m-%d %H:%M:%S.%f")
+        start_date_sql = start.date().isoformat()
+        start_partition = start.strftime("%Y%m")
         rows = list(self.client.iter_json_each_row(f"""
 WITH
  complete_status AS
  (
-  SELECT corpus,source_id,source_hash
+  SELECT corpus,source_id,source_hash,updated_at_utc
   FROM `{self.database}`.`{STATUS_TABLE}` FINAL
   WHERE labeling_version={sql_string(SCOPED_LABELING_VERSION)}
     AND status='complete'
@@ -445,44 +666,36 @@ WITH
  recent_sec AS
  (
   SELECT
-   f.accession_number source_id,
-   f.accepted_at_utc source_timestamp,
-   lower(hex(SHA256(arrayStringConcat(
-    arrayMap(
-     item -> concat(item.1, ':', item.2),
-     arraySort(groupArray((r.document_id,r.text_sha256)))
-    ),
-    '|'
-   )))) source_hash
-  FROM
-  (
-   SELECT accession_number,accepted_at_utc
-   FROM `{self.database}`.`sec_filing_v3` FINAL
-   WHERE accepted_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
-  ) f
-  INNER JOIN
-  (
-   SELECT accession_number,document_id,text_sha256
-   FROM `{self.database}`.`sec_filing_text_rendered_v3` FINAL
-   WHERE notEmpty(text)
-  ) r ON r.accession_number=f.accession_number
-  GROUP BY f.accession_number,f.accepted_at_utc
+   accession_number source_id,
+   cik source_cik,
+   accepted_at_utc source_timestamp,
+   inserted_at source_updated_at_utc
+  FROM `{self.database}`.`sec_filing_v3` FINAL
+  PREWHERE _partition_id >= {sql_string(start_partition)}
+  WHERE accepted_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
  )
+SELECT corpus,source_id,source_timestamp,source_cik
+FROM
+(
 SELECT 'news' corpus,e.canonical_news_id source_id,
-       toString(e.published_at_utc) source_timestamp
+       toString(e.published_at_utc) source_timestamp,
+       '' source_cik
 FROM
 (
  SELECT canonical_news_id,published_date,provider_article_id,
-        source_revision_key,published_at_utc
+        source_revision_key,published_at_utc,updated_at_utc
  FROM `{self.database}`.`benzinga_news_event_v2` FINAL
+ PREWHERE published_date >= toDate({sql_string(start_date_sql)})
  WHERE published_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
 ) e
 INNER JOIN
 (
  SELECT published_date,provider_article_id,source_revision_key,
-        rendered_text_hash
+        rendered_text_hash,updated_at_utc
  FROM `{self.database}`.`benzinga_news_rendered_v2` FINAL
- WHERE notEmpty(rendered_text)
+ PREWHERE published_date >= toDate({sql_string(start_date_sql)})
+ WHERE published_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
+   AND notEmpty(rendered_text)
 ) r
  ON r.published_date=e.published_date
  AND r.provider_article_id=e.provider_article_id
@@ -491,15 +704,20 @@ LEFT JOIN complete_status s
  ON s.corpus='news' AND s.source_id=e.canonical_news_id
  AND s.source_hash=r.rendered_text_hash
 WHERE empty(s.source_id)
+   OR s.source_hash != r.rendered_text_hash
+   OR greatest(e.updated_at_utc,r.updated_at_utc) > s.updated_at_utc
 UNION ALL
-SELECT 'sec' corpus,f.source_id,toString(f.source_timestamp) source_timestamp
+SELECT 'sec' corpus,f.source_id,toString(f.source_timestamp) source_timestamp,
+       f.source_cik
 FROM recent_sec f
 LEFT JOIN complete_status s
  ON s.corpus='sec' AND s.source_id=f.source_id
- AND s.source_hash=f.source_hash
 WHERE empty(s.source_id)
+   OR f.source_updated_at_utc > s.updated_at_utc
+)
 ORDER BY source_timestamp
 LIMIT 5000
+SETTINGS max_execution_time=25
 FORMAT JSONEachRow
 """))
         return [TextDocumentNotice.model_validate(row) for row in rows]

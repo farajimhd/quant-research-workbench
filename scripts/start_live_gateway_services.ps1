@@ -266,11 +266,14 @@ $serviceTabs = @(
     },
     [pscustomobject]@{
         Title = "Text Intelligence"
-        Command = (
-            "& " + (ConvertTo-PowerShellLiteral -Value $textIntelligenceLauncher) +
-            " -CondaEnv " + (ConvertTo-PowerShellLiteral -Value $CondaEnv) +
-            " -PythonExe $pythonLiteral"
-        )
+        Command = New-InteractiveGatewayCommand `
+            -RichEnabledVariable "TEXT_INTELLIGENCE_TERMINAL_RICH_ENABLED" `
+            -ScreenEnabledVariable "TEXT_INTELLIGENCE_TERMINAL_SCREEN_ENABLED" `
+            -Command (
+                "& " + (ConvertTo-PowerShellLiteral -Value $textIntelligenceLauncher) +
+                " -CondaEnv " + (ConvertTo-PowerShellLiteral -Value $CondaEnv) +
+                " -PythonExe $pythonLiteral"
+            )
     }
 )
 

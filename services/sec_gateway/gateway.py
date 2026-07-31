@@ -408,6 +408,7 @@ class SecGateway:
                 {
                     "corpus": "sec",
                     "source_id": item.accession_number,
+                    "source_cik": item.cik,
                     "source_timestamp": (
                         item.updated_at_utc.isoformat()
                         if item.updated_at_utc

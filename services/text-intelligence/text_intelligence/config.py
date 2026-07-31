@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,9 @@ class IntelligenceConfig:
     active_sentiment_model: str
     stack_version: str
     taxonomy_version: str
+    terminal_rich_enabled: bool
+    terminal_screen_enabled: bool
+    terminal_refresh_seconds: float
 
     @classmethod
     def from_env(cls) -> "IntelligenceConfig":
@@ -157,6 +161,24 @@ class IntelligenceConfig:
                 "news-taxonomy-v1",
                 "NEWS_INTELLIGENCE_TAXONOMY_VERSION",
             ),
+            terminal_rich_enabled=env_bool_auto(
+                "TEXT_INTELLIGENCE_TERMINAL_RICH_ENABLED",
+                sys.stdout.isatty(),
+                "NEWS_INTELLIGENCE_TERMINAL_RICH_ENABLED",
+            ),
+            terminal_screen_enabled=env_bool(
+                "TEXT_INTELLIGENCE_TERMINAL_SCREEN_ENABLED",
+                True,
+                "NEWS_INTELLIGENCE_TERMINAL_SCREEN_ENABLED",
+            ),
+            terminal_refresh_seconds=max(
+                0.25,
+                env_float(
+                    "TEXT_INTELLIGENCE_TERMINAL_REFRESH_SECONDS",
+                    1.0,
+                    "NEWS_INTELLIGENCE_TERMINAL_REFRESH_SECONDS",
+                ),
+            ),
         )
 
 
@@ -200,6 +222,17 @@ def env_string(name: str, default: str, *legacy_names: str) -> str:
 
 def env_bool(name: str, default: bool, *legacy_names: str) -> bool:
     value = env_string(name, "", *legacy_names).lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def env_bool_auto(name: str, default: bool, *legacy_names: str) -> bool:
+    value = env_string(name, "", *legacy_names).lower()
+    if value in {"auto", ""}:
+        return default
     if value in {"1", "true", "yes", "on"}:
         return True
     if value in {"0", "false", "no", "off"}:

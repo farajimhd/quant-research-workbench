@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 pydantic
+rich
 huggingface_hub
 transformers
 torch

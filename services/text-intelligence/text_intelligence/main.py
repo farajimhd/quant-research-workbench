@@ -42,13 +42,31 @@ scoped_runtime = ScopedTextRuntime(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    await live_runtime.start()
-    await scoped_runtime.start()
+    terminal_stop = asyncio.Event()
+    terminal_task: asyncio.Task[None] | None = None
+    if config.terminal_rich_enabled:
+        from .terminal import run_terminal_dashboard
+
+        terminal_task = asyncio.create_task(
+            run_terminal_dashboard(config, _snapshot_metrics, terminal_stop),
+            name="text-intelligence-terminal",
+        )
+    live_started = False
+    scoped_started = False
     try:
+        await live_runtime.start()
+        live_started = True
+        await scoped_runtime.start()
+        scoped_started = True
         yield
     finally:
-        await scoped_runtime.stop()
-        await live_runtime.stop()
+        terminal_stop.set()
+        if terminal_task is not None:
+            await asyncio.gather(terminal_task, return_exceptions=True)
+        if scoped_started:
+            await scoped_runtime.stop()
+        if live_started:
+            await live_runtime.stop()
         scoped_runtime.client.close()
 
 
@@ -148,12 +166,55 @@ def _snapshot_metrics() -> dict[str, object]:
         if payload.get("error") or payload.get("load_error"):
             failed += 1
     live_metrics = {**live_runtime.metrics, "queue_size": live_runtime.queue.qsize()}
-    deterministic_metrics = {
-        **scoped_runtime.metrics,
-        "deterministic_queue_size": scoped_runtime.queue.qsize(),
-    }
+    deterministic_metrics = scoped_runtime.snapshot_metrics()
+    worker_error_active = (
+        deterministic_metrics.get("deterministic_worker_error_status") == "active"
+    )
+    reconcile_error_active = (
+        deterministic_metrics.get("deterministic_reconcile_error_status") == "active"
+    )
+    active_error = bool(worker_error_active or reconcile_error_active or failed)
+    queue_size = int(deterministic_metrics.get("deterministic_queue_size") or 0)
+    active_workers = int(
+        deterministic_metrics.get("deterministic_active_workers") or 0
+    )
+    runtime_status = str(
+        deterministic_metrics.get("deterministic_runtime_status") or "starting"
+    )
+    current_phase = (
+        "degraded"
+        if active_error
+        else runtime_status
+        if runtime_status != "running"
+        else "processing"
+        if queue_size or active_workers
+        else "idle"
+    )
+    last_error = str(
+        deterministic_metrics.get("deterministic_reconcile_last_error")
+        if reconcile_error_active
+        else deterministic_metrics.get("deterministic_worker_last_error")
+        if worker_error_active
+        else deterministic_metrics.get("deterministic_last_error")
+        or ""
+    )
     return {
-        "status": "running" if failed == 0 else "degraded",
+        "status": "degraded" if active_error else "running",
+        "current_phase": current_phase,
+        "current_phase_message": (
+            last_error
+            if active_error
+            else f"Deterministic runtime is {runtime_status}."
+            if runtime_status != "running"
+            else f"{active_workers} workers active; {queue_size} notices queued."
+            if queue_size or active_workers
+            else "Waiting for canonical News or SEC notices; reconciliation remains active."
+        ),
+        "started_at_utc": deterministic_metrics.get(
+            "deterministic_started_at_utc", ""
+        ),
+        "last_error": last_error,
+        "last_error_status": "active" if active_error else "resolved",
         "bind": config.bind,
         "mode": "execute",
         "model_root": str(config.model_root),
@@ -164,8 +225,19 @@ def _snapshot_metrics() -> dict[str, object]:
         "taxonomy_version": config.taxonomy_version,
         "models_loaded": loaded,
         "models_failed": failed,
-        "errors": failed,
+        "errors": int(active_error),
+        "failed_rows": deterministic_metrics.get("deterministic_failed", 0),
         "source_statuses": [
+            {
+                "name": "canonical_text",
+                "status": "degraded" if active_error else "ok",
+                "rows": deterministic_metrics.get("deterministic_completed", 0),
+                "detail": (
+                    last_error
+                    if active_error
+                    else "Bounded News and SEC reconciliation is available."
+                ),
+            },
             {
                 "name": "model_registry",
                 "status": "ok" if failed == 0 else "degraded",
@@ -175,15 +247,26 @@ def _snapshot_metrics() -> dict[str, object]:
         ],
         "tasks": [
             {
-                "name": "serve_models",
-                "status": "running",
-                "rows": len(model_rows),
-                "message": "OpenAI-compatible model serving helper is ready.",
-            }
+                "name": "reconcile_canonical_text",
+                "status": (
+                    "failed" if reconcile_error_active else "running"
+                ),
+                "rows": deterministic_metrics.get(
+                    "deterministic_reconcile_notices", 0
+                ),
+                "message": "Find new or revised canonical News and SEC sources.",
+            },
+            {
+                "name": "persist_scoped_labels_v5",
+                "status": "failed" if worker_error_active else current_phase,
+                "rows": deterministic_metrics.get("deterministic_completed", 0),
+                "message": "Classify and durably persist issuer-scoped labels.",
+            },
         ],
         "live_session": vars(live_runtime.session),
         "live_metrics": live_metrics,
         "deterministic_metrics": deterministic_metrics,
+        "enable_live_ai": config.enable_live_ai,
         **live_metrics,
         **deterministic_metrics,
     }

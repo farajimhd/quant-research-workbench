@@ -20,6 +20,8 @@ class IntelligenceConfigTests(unittest.TestCase):
         self.assertFalse(config.enable_models)
         self.assertFalse(config.enable_llm)
         self.assertFalse(config.enable_live_ai)
+        self.assertFalse(config.terminal_rich_enabled)
+        self.assertTrue(config.terminal_screen_enabled)
 
     def test_optional_inference_requires_explicit_opt_in(self) -> None:
         with (
@@ -41,6 +43,25 @@ class IntelligenceConfigTests(unittest.TestCase):
         self.assertTrue(config.enable_models)
         self.assertTrue(config.enable_llm)
         self.assertTrue(config.enable_live_ai)
+
+    def test_terminal_can_be_explicitly_enabled_by_launcher(self) -> None:
+        with (
+            mock.patch("text_intelligence.config.load_repo_dotenv"),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "TEXT_INTELLIGENCE_TERMINAL_RICH_ENABLED": "true",
+                    "TEXT_INTELLIGENCE_TERMINAL_SCREEN_ENABLED": "false",
+                    "TEXT_INTELLIGENCE_TERMINAL_REFRESH_SECONDS": "0.5",
+                },
+                clear=True,
+            ),
+        ):
+            config = IntelligenceConfig.from_env()
+
+        self.assertTrue(config.terminal_rich_enabled)
+        self.assertFalse(config.terminal_screen_enabled)
+        self.assertEqual(config.terminal_refresh_seconds, 0.5)
 
     def test_legacy_news_service_names_remain_transitional_aliases(self) -> None:
         with (
