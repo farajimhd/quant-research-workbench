@@ -50,6 +50,264 @@ V6 was fit on 588 articles and calibrated on 194 articles. Its official comparis
 
 The ordinary `Extraction F1` is also shown, but is not added separately to Quality because the multiclass extraction-decision score is the contract metric. Concept scoring uses the documented canonical-family projection; it does not rewrite the human labels.
 
+## How to read every comparison column
+
+All scores range from `0` to `1`; higher is better. The columns evaluate different parts of one structured News label rather than different names for one generic accuracy score.
+
+### Worked article example
+
+Suppose an article says:
+
+> AAPL raises full-year revenue guidance after reporting stronger-than-expected sales.
+
+Its human ground truth could be:
+
+```text
+extraction_decision: labeled
+ticker: AAPL
+content_role: primary_event
+source_origin: issuer_direct
+semantic_direction: positive
+event_concepts:
+  - earnings.revenue_beat
+  - guidance.raised
+forecast_trigger_eligible: true
+reaction_evaluation_eligible: true
+issuer_history_context_eligible: true
+```
+
+Each comparison column evaluates one part of this structure independently.
+
+### Precision, recall, and F1
+
+For any one label:
+
+```text
+precision = correct predictions / all predictions
+recall    = correct predictions / all ground-truth examples
+F1        = 2 * precision * recall / (precision + recall)
+```
+
+For example, suppose 20 issuer units should be forecast eligible. A model predicts 15 as eligible and 12 predictions are correct:
+
+```text
+precision = 12 / 15 = 0.80
+recall    = 12 / 20 = 0.60
+F1        = 0.686
+```
+
+F1 penalizes both false positives and missed labels. Macro F1 first calculates a separate F1 for every class and then averages the classes equally, preventing a common class from hiding failure on rare classes.
+
+### System
+
+The implementation or model being evaluated, such as V5 deterministic rules, GPT-OSS, Qwen, Mistral, or an OpenAI model.
+
+### Contract
+
+The prompt and output contract that produced the predictions:
+
+- `Exact prompt V3` uses the current typed schema and issuer-candidate contract.
+- `Prompt V1 revalidation` uses stored older model requests whose outputs were migrated and revalidated against the corrected candidate key.
+
+The prompt cohorts are informative but not a perfectly controlled head-to-head comparison.
+
+### Valid
+
+The number of articles that produced a complete, parseable structured result. `99/100` means one article failed because of context overflow, truncation, invalid structured output, or another contract failure. Missing outputs remain failures on the full denominator; they are not silently dropped.
+
+### Quality
+
+The unweighted mean of Decision F1, Ticker F1, Concept F1, Role F1, Origin F1, Direction F1, Forecast F1, Reaction F1, and History F1. Extraction F1 is not added separately because Decision F1 already evaluates extraction at the more precise multiclass level.
+
+Quality is a broad summary, not a substitute for inspecting the individual responsibilities. Two systems with similar Quality can have materially different strengths and failure modes.
+
+### Extraction F1
+
+The binary question is:
+
+> Did the system produce at least one issuer-scoped semantic label when the article was actually labelable?
+
+The positive class is `labeled`; every detailed non-labeling reason is collapsed to not labelable.
+
+| Ground truth | Prediction | Binary result |
+|---|---|---|
+| `labeled`, with an AAPL unit | AAPL unit produced | True positive |
+| `labeled`, with an AAPL unit | No labels produced | False negative |
+| `no_supported_event` | AAPL unit produced | False positive |
+| `no_supported_event` | No labels produced | True negative |
+
+Extraction F1 can be high even when a system does not understand why a document must be rejected. Decision F1 measures that missing distinction.
+
+### Decision F1
+
+The exact extraction decision is a multiclass label:
+
+```text
+labeled
+no_supported_event
+non_issuer_market_content
+identity_not_found
+issuer_ambiguous
+passage_ambiguous
+empty_semantic_text
+unsupported_instrument
+```
+
+Examples:
+
+- a market-wide economic article without an issuer event is `non_issuer_market_content`;
+- a relevant issuer that cannot be resolved safely is `identity_not_found`;
+- evidence that cannot be assigned to the correct issuer passage is `passage_ambiguous`;
+- a cryptocurrency or unsupported security is `unsupported_instrument`;
+- a valid issuer article without a supported semantic event is `no_supported_event`.
+
+Decision F1 is macro F1 across the decision classes. A system can therefore have Extraction F1 `0.95` but Decision F1 `0.19`: it emits labels for most labelable documents but fails to recognize the different abstention reasons.
+
+### Ticker F1
+
+Ticker scope is evaluated as an exact set of `(article ID, ticker)` identities.
+
+Example:
+
+```text
+Ground truth for article N100: AAPL, MSFT
+Predicted for article N100:    AAPL, NVDA
+
+AAPL = true positive
+NVDA = false positive
+MSFT = false negative
+```
+
+Ticker F1 asks whether the system assigned semantic labels to precisely the issuers for which the article contains relevant evidence. It does not assess the direction or event concept assigned to those issuers.
+
+### Concept F1
+
+Concepts are evaluated as exact `(article ID, ticker, canonical concept family)` identities. Detailed evidence-grounded concepts are projected into these 20 stable families for comparison:
+
+```text
+accounting_audit          analyst_action
+capital_return            capital_structure
+clinical                  contract_order
+credit_solvency           earnings
+financing                 guidance
+legal                     listing_market_structure
+ma_transaction            management_governance
+market_reaction           operations
+ownership                 product_commercial
+regulatory                strategy_valuation
+```
+
+Examples of the projection include:
+
+```text
+earnings.revenue_beat      -> earnings
+earnings.eps_miss          -> earnings
+guidance.raised            -> guidance
+financing.public_offering  -> financing
+clinical.fda_approval      -> clinical
+```
+
+If the AAPL truth contains `earnings` and `guidance`, while the prediction contains `earnings` and `analyst_action`, then earnings is a true positive, analyst action is a false positive, and guidance is a false negative. Concept F1 measures broad family coverage; it does not certify the detailed sub-concept, extracted numeric value, or evidence span.
+
+### Role F1
+
+Content role is one article-level multiclass label:
+
+```text
+primary_event
+regulatory_event
+analyst_event
+editorial_analysis
+automated_summary
+market_roundup
+mover_recap
+why_moving_followup
+preview
+```
+
+Examples include a company announcing trial results as `primary_event`, an article reporting a filing as `regulatory_event`, an analyst rating change as `analyst_event`, “30 stocks moving in premarket” as `mover_recap`, a post-move explanation as `why_moving_followup`, and an earnings preview as `preview`. Role F1 is macro F1 across all roles.
+
+### Origin F1
+
+Source origin is one article-level multiclass label describing where the information originated:
+
+```text
+issuer_direct
+regulatory_primary
+analyst_research
+editorial_original
+editorial_aggregation
+automated_summary
+```
+
+Examples include a company release as `issuer_direct`, an SEC filing as `regulatory_primary`, named sell-side research as `analyst_research`, and a mechanically generated article as `automated_summary`.
+
+Role and origin are separate dimensions. An article can have `content_role: analyst_event` and `source_origin: editorial_original` when a journalist reports and interprets an analyst action.
+
+### Direction F1
+
+Semantic direction is evaluated for each issuer, not once for the entire article:
+
+```text
+positive
+negative
+neutral
+mixed
+```
+
+Examples:
+
+```text
+Raises guidance              -> positive
+Cuts guidance                -> negative
+Schedules annual meeting     -> neutral
+EPS beats but revenue misses -> mixed
+```
+
+This is sentiment inherent in the text, not the subsequent market reaction. In a multi-issuer acquisition, the target can be positive while the acquirer is mixed or negative. Direction F1 is macro F1 across the four classes.
+
+### Forecast F1
+
+Forecast F1 evaluates the issuer-level boolean `forecast_trigger_eligible`:
+
+> Is this a newly published, causally timed event that can legitimately trigger a forward-looking prediction?
+
+New company announcements, earnings, financings, regulatory events, and in-scope analyst actions can be eligible. Market roundups, mover recaps, why-moving follow-ups, repeated summaries, and documents without an issuer-specific event are normally ineligible. False positives are especially harmful because they introduce noncausal or duplicate training examples.
+
+### Reaction F1
+
+Reaction F1 evaluates the issuer-level boolean `reaction_evaluation_eligible`:
+
+> Can subsequent market movement legitimately be evaluated as a reaction to this publication?
+
+For example, an 08:00 company announcement may be reaction eligible. A 09:45 article explaining why the stock already rose should not claim the preceding movement as its own reaction. Forecast and Reaction are distinct contracts even when a particular model happens to produce identical scores for both.
+
+### History F1
+
+History F1 evaluates the issuer-level boolean `issuer_history_context_eligible`:
+
+> Is this information useful later when reconstructing the issuer's historical behavior?
+
+History eligibility is deliberately broader than causal trigger eligibility. An analyst event, mover recap, or why-moving follow-up can be useful background even when it must not trigger a new forecast or own the observed reaction. A valid combination is therefore:
+
+```text
+forecast_trigger_eligible: false
+reaction_evaluation_eligible: false
+issuer_history_context_eligible: true
+```
+
+### Evaluation granularity
+
+The columns operate at three different levels:
+
+| Level | Metrics |
+|---|---|
+| Article | Extraction, Decision, Role, Origin |
+| Article and issuer | Ticker, Direction, Forecast, Reaction, History |
+| Article, issuer, and concept | Concept F1 |
+
+A model can correctly call an article an `analyst_event` while attaching it to the wrong ticker, assigning the wrong direction, extracting the wrong concept, or incorrectly marking it forecast eligible. Role F1 would be correct while the other metrics expose those separate errors.
+
 ## Frozen 100: complete top-level comparison
 
 | System | Contract | Valid | Quality | Extraction F1 | Decision F1 | Ticker F1 | Concept F1 | Role F1 | Origin F1 | Direction F1 | Forecast F1 | Reaction F1 | History F1 |
