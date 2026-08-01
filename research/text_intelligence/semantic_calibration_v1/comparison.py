@@ -18,7 +18,13 @@ from research.text_intelligence.semantic_label_authority_v1.schema import (
 )
 
 from .schema import stable_json_hash
-from .storage import assert_runtime_root, read_json, write_json_atomic
+from .schema import ANNOTATION_VERSION
+from .storage import (
+    annotation_directory,
+    assert_runtime_root,
+    read_json,
+    write_json_atomic,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +35,11 @@ class CollectionItem:
     truth: dict[str, Any]
 
 
-def load_collection(root: Path) -> tuple[CollectionItem, ...]:
+def load_collection(
+    root: Path,
+    *,
+    annotation_version: str = ANNOTATION_VERSION,
+) -> tuple[CollectionItem, ...]:
     manifest = read_json(root / "sample_manifest.json")
     sealed = read_json(root / "sealed" / "v5_comparison_and_splits.json")
     split_by_id = {
@@ -44,7 +54,9 @@ def load_collection(root: Path) -> tuple[CollectionItem, ...]:
                 sample_id=sample_id,
                 split=split_by_id[sample_id],
                 blinded=read_json(root / "blinded_articles" / f"{sample_id}.json"),
-                truth=read_json(root / "annotations_v2" / f"{sample_id}.json"),
+                truth=read_json(
+                    annotation_directory(root, annotation_version) / f"{sample_id}.json"
+                ),
             )
         )
     return tuple(output)

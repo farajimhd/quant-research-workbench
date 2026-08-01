@@ -9,6 +9,8 @@ from typing import Any, Iterable, Mapping
 from .schema import (
     ANNOTATION_VERSION,
     ANNOTATION_VERSION_V1,
+    ANNOTATION_VERSION_V2,
+    ANNOTATION_VERSION_V3,
     stable_json_hash,
     validate_annotation,
 )
@@ -152,6 +154,29 @@ def materialize_evidence_spans(
                     span["source_ordinal"] = source_ordinal
                 opinion_spans.append(span)
             opinion["evidence_spans"] = opinion_spans
+    for disposition in annotation.get("ticker_dispositions") or ():
+        if disposition.get("evidence_spans"):
+            continue
+        spans: list[dict[str, Any]] = []
+        for raw_quote in disposition.get("evidence_quotes") or ():
+            quote = str(raw_quote)
+            match = unique_preferred_match(quote, sources)
+            if match is None:
+                raise ValueError(
+                    "coverage evidence quote is absent or ambiguous for "
+                    f"{disposition.get('ticker')}: {quote!r}"
+                )
+            field, source_ordinal, start = match
+            span = {
+                "source_field": field,
+                "start": start,
+                "end": start + len(quote),
+                "quote": quote,
+            }
+            if source_ordinal is not None:
+                span["source_ordinal"] = source_ordinal
+            spans.append(span)
+        disposition["evidence_spans"] = spans
     return annotation
 
 
@@ -174,8 +199,10 @@ def unique_preferred_match(
 def annotation_directory(root: Path, annotation_version: str) -> Path:
     if annotation_version == ANNOTATION_VERSION_V1:
         return root / "annotations"
-    if annotation_version == ANNOTATION_VERSION:
+    if annotation_version == ANNOTATION_VERSION_V2:
         return root / "annotations_v2"
+    if annotation_version == ANNOTATION_VERSION_V3:
+        return root / "annotations_v3"
     raise ValueError(f"unsupported annotation version: {annotation_version}")
 
 
@@ -199,10 +226,10 @@ def refresh_annotation_state(
         "remaining": len(set(expected) - set(completed)),
         "unexpected": unexpected,
     }
-    state_name = (
-        "annotation_state.json"
-        if annotation_version == ANNOTATION_VERSION_V1
-        else "annotation_state_v2.json"
-    )
+    state_name = {
+        ANNOTATION_VERSION_V1: "annotation_state.json",
+        ANNOTATION_VERSION_V2: "annotation_state_v2.json",
+        ANNOTATION_VERSION_V3: "annotation_state_v3.json",
+    }[annotation_version]
     write_json_atomic(root / state_name, state)
     return state

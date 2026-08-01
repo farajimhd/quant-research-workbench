@@ -8,8 +8,10 @@ from typing import Any, Mapping, Sequence
 
 SAMPLE_VERSION = "news_semantic_ground_truth_sample_v1"
 ANNOTATION_VERSION_V1 = "news_semantic_ground_truth_annotation_v1"
-ANNOTATION_VERSION = "news_semantic_ground_truth_annotation_v2"
-ANNOTATION_VERSIONS = {ANNOTATION_VERSION_V1, ANNOTATION_VERSION}
+ANNOTATION_VERSION_V2 = "news_semantic_ground_truth_annotation_v2"
+ANNOTATION_VERSION = ANNOTATION_VERSION_V2
+ANNOTATION_VERSION_V3 = "news_semantic_ground_truth_annotation_v3"
+ANNOTATION_VERSIONS = {ANNOTATION_VERSION_V1, ANNOTATION_VERSION_V2, ANNOTATION_VERSION_V3}
 
 EXTRACTION_DECISIONS = {
     "labeled",
@@ -83,6 +85,17 @@ NULLABLE_ANALYST_TEXT_FIELDS = {
     "price_target_currency",
     "forecast_horizon_text",
     "ambiguity_notes",
+}
+COVERAGE_STATES = {"exhaustive", "partial"}
+TICKER_DISPOSITIONS = {
+    "labeled_issuer_unit",
+    "analyst_context",
+    "observed_price_only",
+    "incidental_context",
+    "duplicate_or_followup",
+    "metadata_only",
+    "identity_error",
+    "unsupported_instrument",
 }
 
 
@@ -191,14 +204,109 @@ def validate_annotation(
         ):
             if not isinstance(raw.get(flag), bool):
                 errors.append(f"{prefix}.{flag}_must_be_boolean")
-        if annotation_version == ANNOTATION_VERSION:
+        if annotation_version in {ANNOTATION_VERSION_V2, ANNOTATION_VERSION_V3}:
             _validate_v2_unit(errors, raw, prefix)
         key = (ticker, str(raw.get("issuer_role") or ""))
         if key in seen:
             errors.append(f"{prefix}.duplicate_ticker_role")
         seen.add(key)
         _validate_direction_levels(errors, raw, prefix)
+    if annotation_version == ANNOTATION_VERSION_V3:
+        _validate_v3_coverage(errors, annotation, units)
     return AnnotationValidation(tuple(errors))
+
+
+def _validate_v3_coverage(
+    errors: list[str],
+    annotation: Mapping[str, Any],
+    units: Sequence[Mapping[str, Any]],
+) -> None:
+    _choice(errors, annotation, "issuer_unit_coverage", COVERAGE_STATES)
+    candidates = annotation.get("candidate_tickers")
+    if not isinstance(candidates, list) or any(not str(value).strip() for value in candidates):
+        errors.append("candidate_tickers_must_be_string_list")
+        candidates = []
+    normalized = [str(value).strip().upper() for value in candidates]
+    if len(normalized) != len(set(normalized)) or normalized != sorted(normalized):
+        errors.append("candidate_tickers_must_be_unique_sorted")
+    dispositions = annotation.get("ticker_dispositions")
+    if not isinstance(dispositions, list):
+        errors.append("ticker_dispositions_must_be_list")
+        dispositions = []
+    seen: set[str] = set()
+    labeled = {
+        str(unit.get("ticker") or "").upper()
+        for unit in units
+        if isinstance(unit, Mapping)
+    }
+    for index, value in enumerate(dispositions):
+        prefix = f"ticker_dispositions[{index}]"
+        if not isinstance(value, Mapping):
+            errors.append(f"{prefix}_must_be_object")
+            continue
+        ticker = str(value.get("ticker") or "").strip().upper()
+        if not ticker:
+            errors.append(f"{prefix}.ticker_required")
+        if ticker in seen:
+            errors.append(f"{prefix}.duplicate_ticker")
+        seen.add(ticker)
+        _choice(errors, value, "disposition", TICKER_DISPOSITIONS, prefix)
+        _bounded_int(errors, value, "annotation_confidence", 0, 4, prefix)
+        if not str(value.get("rationale") or "").strip():
+            errors.append(f"{prefix}.rationale_required")
+        evidence = value.get("evidence_quotes")
+        if not isinstance(evidence, list):
+            errors.append(f"{prefix}.evidence_quotes_must_be_list")
+        spans = value.get("evidence_spans")
+        if not isinstance(spans, list):
+            errors.append(f"{prefix}.evidence_spans_must_be_list")
+            spans = []
+        for span_index, span in enumerate(spans):
+            _validate_evidence_span(
+                errors,
+                span,
+                f"{prefix}.evidence_spans[{span_index}]",
+            )
+        if value.get("disposition") == "labeled_issuer_unit" and ticker not in labeled:
+            errors.append(f"{prefix}.labeled_disposition_requires_unit")
+        if ticker in labeled and value.get("disposition") != "labeled_issuer_unit":
+            errors.append(f"{prefix}.issuer_unit_requires_labeled_disposition")
+    if set(normalized) != seen:
+        errors.append("candidate_tickers_and_dispositions_mismatch")
+    if annotation.get("issuer_unit_coverage") == "exhaustive" and set(normalized) != seen:
+        errors.append("exhaustive_coverage_requires_all_dispositions")
+    if not str(annotation.get("coverage_reviewed_by") or "").strip():
+        errors.append("coverage_reviewed_by_required")
+
+
+def _validate_evidence_span(
+    errors: list[str],
+    span: Any,
+    prefix: str,
+) -> None:
+    if not isinstance(span, Mapping):
+        errors.append(f"{prefix}_must_be_object")
+        return
+    if span.get("source_field") not in {
+        "title",
+        "teaser",
+        "rendered_text",
+        "source_lane",
+    }:
+        errors.append(f"{prefix}.source_field_invalid")
+    if not str(span.get("quote") or "").strip():
+        errors.append(f"{prefix}.quote_required")
+    start = span.get("start")
+    end = span.get("end")
+    if (
+        not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+        or start < 0
+        or end <= start
+    ):
+        errors.append(f"{prefix}.range_invalid")
 
 
 def _validate_v2_unit(

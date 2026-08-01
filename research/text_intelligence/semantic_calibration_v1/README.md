@@ -99,6 +99,40 @@ weights. Reviewers must not invent per-article rule weights.
 6. Lock ground truth before fitting weights or selecting thresholds.
 7. Evaluate once on the sealed holdout.
 
+## Exhaustive coverage correction (V3)
+
+V3 is the certified successor to the partial V2 review. It preserves every V2
+judgment unless an explicit, rationale-bearing correction replaces or removes
+that exact source unit. Corrections are bound to the immutable V2 unit hash, so
+a stale correction cannot be applied after source drift. Every candidate ticker
+must receive a reviewed disposition, and every retained issuer unit must have a
+matching `labeled_issuer_unit` disposition.
+
+The workflow is intentionally resumable and keeps all generated review queues,
+decisions, annotations, audits, and evaluation reports below the configured
+`TradingML/runtimes` collection root:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_prepare_coverage_review_v3
+python -m research.text_intelligence.semantic_calibration_v1.run_inspect_coverage_review_v3
+python -m research.text_intelligence.semantic_calibration_v1.run_record_coverage_review_v3 --help
+python -m research.text_intelligence.semantic_calibration_v1.run_finalize_coverage_review_v3
+python -m research.text_intelligence.semantic_calibration_v1.run_evaluate_coverage_v3
+```
+
+`run_amend_coverage_review_v3` provides a source-hash-bound repair path for a
+reviewed disposition or issuer-unit correction. Its evidence-repair option may
+restore only exact evidence already present in the immutable review queue; it
+does not manufacture or infer semantic evidence.
+
+The completed laptop authority contains 1,000 exhaustive V3 annotations, 7,826
+explicit ticker dispositions, 734 analyst opinions across 254 articles, zero
+audit errors, and result hash
+`05b8eb30b99b65d962a762633daf77f3599022107882618bd42c21653a07fa42`.
+The immutable V6 and V7 prediction products were re-evaluated against V3 truth
+without overwriting their original V2 reports. The corrected evaluation is at
+`coverage_review_v3/deterministic_evaluation.json` under the runtime collection.
+
 ## Prepare the immutable sample
 
 ```powershell
