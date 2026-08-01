@@ -44,19 +44,19 @@ the policy is absent or unknown.
 Safe preview with no writes:
 
 ```powershell
-python -m research.bar_gpt.v1.run_build_1s --start-date 2026-07-24 --end-date 2026-07-25 --tickers AAPL
+python -B -m research.bar_gpt.v1.run_build_1s --start-date 2026-07-24 --end-date 2026-07-25 --tickers AAPL
 ```
 
 Execute that bounded build:
 
 ```powershell
-python -m research.bar_gpt.v1.run_build_1s --execute --start-date 2026-07-24 --end-date 2026-07-25 --tickers AAPL
+python -B -m research.bar_gpt.v1.run_build_1s --execute --start-date 2026-07-24 --end-date 2026-07-25 --tickers AAPL
 ```
 
 Execute all coverage advertised by `events_ticker_day_index`:
 
 ```powershell
-python -m research.bar_gpt.v1.run_build_1s --execute
+python -B -m research.bar_gpt.v1.run_build_1s --execute
 ```
 
 The all-coverage command is intentionally explicit because it is a large job.
@@ -83,6 +83,9 @@ D:\TradingML\runtimes\bar_gpt\v1\build_1s
 ```
 
 No runtime output is written into the repository.
+The canonical launcher commands use Python's `-B` mode, and the launcher
+propagates bytecode suppression to its child process, so workstation execution
+does not create `__pycache__` under the synchronized code tree.
 
 Training reads use incremental `ArrowStream` record batches through
 `loader.py`; the response is not materialized with `read_all()`. A worker owns

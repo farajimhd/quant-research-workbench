@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+
+sys.dont_write_bytecode = True
+os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
 
 DEFAULTS = {
@@ -35,6 +40,7 @@ def main() -> int:
     args, extra = parse_args()
     command = [
         sys.executable,
+        "-B",
         "-m",
         "research.bar_gpt.v1.build_1s",
         "--start-date",
