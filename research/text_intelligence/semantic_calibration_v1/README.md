@@ -391,11 +391,15 @@ canonical News articles with these contracts:
 - immutable item, selection, exclusion, and manifest hashes under the machine
   runtime root.
 
-Prepare the corpus on the workstation after its code copy is synchronized:
+Prepare the corpus on the machine whose runtime already contains the certified
+`news_1000/sample_manifest.json` authority. Runtime products are machine-local;
+do not copy the laptop corpus into a workstation code directory. The currently
+certified 10,000-item build is on the laptop, so this preparation command is
+shown for the laptop source repository:
 
 ```powershell
 conda activate ml4t
-cd D:\TradingML\codes\quant-research-workbench
+cd D:\TradingCodes\quant-research-workbench
 python -m research.text_intelligence.semantic_calibration_v1.run_prepare_sol_teacher_corpus
 ```
 
