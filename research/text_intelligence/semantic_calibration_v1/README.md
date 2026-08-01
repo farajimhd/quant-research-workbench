@@ -184,3 +184,55 @@ and `COMPARISON.md` are written under
 All 100 articles remain in the scoring denominator; malformed or contract-invalid
 responses are scored as missing predictions. Batch elapsed time includes queue
 time and must not be interpreted as synchronous production latency.
+
+## Add workstation GPT-OSS 20B and 120B
+
+The local comparison reuses the exact OpenAI V4 population, prompt, output
+schema, validator, dynamic multi-issuer output allowance, and all-100 scoring
+denominator. Prepare its immutable runtime bundle on the laptop once:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_prepare_oss_gold_benchmark
+```
+
+The prepared `shared` directory must be synchronized to the workstation under
+`D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\oss_gold_100_v1`.
+It contains only the frozen 100-article benchmark package and the exact OpenAI
+V4 comparison used for the final combined table.
+
+Serve one model at a time through vLLM with the exact public name and at least
+a 65,536-token context. The long-context requirement is real: one untruncated
+gold article is approximately 59,200 `o200k_harmony` input tokens. For example:
+
+```powershell
+python -m research.news_labeling.gpt_oss_v1.run_server_wsl `
+  --profile 20b --max-model-len 65536
+```
+
+Wait for `/v1/models` to expose `openai/gpt-oss-20b`, then run:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_oss_gold_benchmark `
+  --profile 20b --execute
+```
+
+Stop the 20B server, start 120B with the same context and served-name contract,
+then run:
+
+```powershell
+python -m research.news_labeling.gpt_oss_v1.run_server_wsl `
+  --profile 120b --max-model-len 65536
+
+python -m research.text_intelligence.semantic_calibration_v1.run_oss_gold_benchmark `
+  --profile 120b --execute
+```
+
+The inference launcher is resumable per article and refuses a mismatched model,
+sample, rendered-text hash, annotation hash, or response contract. Each run
+writes responses, predictions, failures, usage, local wall time, request time,
+and completion-token throughput beneath its workstation runtime root. Once
+either OSS run completes, `COMPARISON_WITH_OPENAI.md` is refreshed; after both
+complete it contains all nine models. OpenAI Batch time and local vLLM wall
+time remain separately identified because they are not latency-equivalent.
+Local API cost is zero, but the report does not misrepresent unmetered GPU,
+electricity, depreciation, or operator time as zero compute cost.
