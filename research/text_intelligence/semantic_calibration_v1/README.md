@@ -516,3 +516,60 @@ F1 from 0.693 to 0.697, role macro F1 from 0.531 to 0.573, origin macro F1 from
 was unchanged at 0.415, history eligibility was unchanged at 0.876, and forecast
 eligibility declined from 0.426 to 0.415. V7 is therefore a better structural
 candidate, not a certified global replacement for V6's trigger authority.
+
+## Deterministic News V8 candidate and Sol teacher audit
+
+V8 uses the disjoint Sol teacher corpus only to discover recurring structural
+and phrase-level gaps. The teacher run produced 9,997 validated labels and
+three durable request failures from the immutable 10,000-article selection.
+Sol output is not acceptance truth: candidate rules were selected using the
+900 human-reviewed development articles, and the sealed 100 human-reviewed
+articles were evaluated exactly once after V8 was locked. The mixed frozen
+result below is why this remains a candidate rather than a production cutover.
+
+The rule-only repair adds:
+
+- high-precision provider-tag and channel evidence for mover, market-update,
+  preview, automated, and analyst publication types;
+- issuer-resolved context retention only when the passage contains a semantic
+  event, excluding price-only and schedule-only symbol lists;
+- explicit financial-language rules for direct beats and misses, guidance,
+  regulatory progress and setbacks, clinical results, demand, dilution,
+  filing delays, material weaknesses, and transaction accretion/dilution;
+- trigger eligibility derived from the scoped event and publication role,
+  without inheriting V5's stale document-level eligibility gate; and
+- a bounded 16-process teacher comparison runner whose output remains under the
+  machine runtime root.
+
+Run human development evaluation:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_deterministic_news_v8 --phase development
+```
+
+Run the Sol error-discovery comparison:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_compare_sol_teacher --authority v8 --workers 16
+```
+
+The resulting comparisons are:
+
+| Metric | Human dev V7 | Human dev V8 | Frozen V7 | Frozen V8 | Sol V7 | Sol V8 |
+|---|---:|---:|---:|---:|---:|---:|
+| Extraction F1 | 0.915 | 0.921 | 0.911 | 0.918 | — | — |
+| Ticker-scope F1 | 0.552 | 0.558 | 0.697 | 0.703 | 0.807 | 0.811 |
+| Content-role macro F1 | 0.715 | 0.730 | 0.573 | 0.582 | 0.486 | 0.504 |
+| Source-origin macro F1 | 0.605 | 0.604 | 0.450 | 0.425 | 0.478 | 0.487 |
+| Direction macro F1 | 0.403 | 0.428 | 0.415 | 0.414 | 0.398 | 0.421 |
+| Concept-family F1 | 0.428 | 0.453 | 0.370 | 0.390 | 0.259 | 0.300 |
+| Forecast eligibility F1 | 0.632 | 0.685 | 0.415 | 0.429 | 0.682 | 0.756 |
+| Issuer-history eligibility F1 | 0.888 | 0.899 | 0.876 | 0.882 | 0.949 | 0.949 |
+
+The frozen result confirms better extraction, ticker scope, role, concepts,
+forecast eligibility, and history eligibility. It does not confirm a direction
+improvement, and source-origin macro F1 regressed. V8 is therefore a materially
+better candidate for structural classification and eligibility, but it is not
+a certified wholesale production replacement for the existing sentiment and
+source-origin authorities. The frozen weaknesses must inform a separately
+versioned future authority; they must not be tuned back into V8.
