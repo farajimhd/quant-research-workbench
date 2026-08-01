@@ -19,21 +19,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--selection-path",
         type=Path,
-        default=DEFAULT_BASE / "openai_gold_100_v4" / "selection.json",
+        default=DEFAULT_BASE / "openai_gold_100_v5" / "selection.json",
     )
     parser.add_argument(
         "--openai-comparison-path",
         type=Path,
-        default=DEFAULT_BASE / "openai_gold_100_v4" / "comparison.json",
+        default=DEFAULT_BASE / "openai_gold_100_v5" / "comparison.json",
     )
     parser.add_argument(
-        "--shared-root", type=Path, default=DEFAULT_BASE / "oss_gold_100_v1" / "shared"
+        "--shared-root", type=Path, default=DEFAULT_BASE / "oss_gold_100_v2" / "shared"
     )
     args = parser.parse_args(argv)
     manifest = prepare_bundle(
         collection_root=args.collection_root,
         selection_path=args.selection_path,
-        openai_comparison_path=args.openai_comparison_path,
+        openai_comparison_path=(
+            args.openai_comparison_path if args.openai_comparison_path.exists() else None
+        ),
         shared_root=args.shared_root,
     )
     print(

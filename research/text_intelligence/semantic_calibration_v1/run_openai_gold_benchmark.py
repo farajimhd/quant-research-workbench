@@ -20,7 +20,7 @@ DEFAULT_COLLECTION = Path(
     r"D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\news_1000"
 )
 DEFAULT_RUNTIME = Path(
-    r"D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\openai_gold_100_v4"
+    r"D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\openai_gold_100_v5"
 )
 
 

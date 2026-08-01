@@ -13,7 +13,9 @@ from urllib import error, request
 import tiktoken
 
 from .comparison import CollectionItem, evaluate_predictions, load_collection
+from .candidate_contract import CANDIDATE_CONTRACT_VERSION, repair_item_candidates
 from .openai_gold_benchmark import (
+    PROMPT_VERSION,
     build_messages,
     output_token_budget,
     quality_score,
@@ -24,8 +26,8 @@ from .openai_gold_benchmark import (
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
 
-OSS_BENCHMARK_VERSION = "news_gold_oss_benchmark_v1"
-OPENAI_BASELINE_VERSION = "news_gold_openai_benchmark_v4"
+OSS_BENCHMARK_VERSION = "news_gold_oss_benchmark_v2"
+OPENAI_BASELINE_VERSION = "news_gold_openai_benchmark_v5"
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,14 +77,14 @@ class OssBenchmarkConfig:
 
     @property
     def openai_baseline_path(self) -> Path:
-        return self.shared_root / "openai_comparison_v4.json"
+        return self.shared_root / "openai_comparison_v5.json"
 
 
 def prepare_bundle(
     *,
     collection_root: Path,
     selection_path: Path,
-    openai_comparison_path: Path,
+    openai_comparison_path: Path | None,
     shared_root: Path,
 ) -> dict[str, Any]:
     assert_runtime_root(shared_root)
@@ -100,7 +102,9 @@ def prepare_bundle(
     missing = sorted(set(sample_ids) - set(by_id))
     if missing:
         raise RuntimeError(f"Gold collection is missing frozen samples: {missing[:10]}")
-    selected = tuple(by_id[sample_id] for sample_id in sample_ids)
+    selected = tuple(
+        repair_item_candidates(by_id[sample_id]) for sample_id in sample_ids
+    )
     rows = [
         {
             "sample_id": item.sample_id,
@@ -112,24 +116,28 @@ def prepare_bundle(
     ]
     bundle_path = shared_root / "gold_sample.jsonl"
     _write_or_validate_jsonl(bundle_path, rows)
-    baseline = read_json(openai_comparison_path)
-    if baseline.get("benchmark_version") != OPENAI_BASELINE_VERSION:
-        raise RuntimeError("OpenAI comparison is not the certified V4 baseline.")
-    if baseline.get("selection", {}).get("selection_sha256") != selection.get(
-        "selection_sha256"
-    ):
-        raise RuntimeError("OpenAI comparison and frozen selection identities differ.")
-    write_json_atomic(shared_root / "openai_comparison_v4.json", baseline)
+    baseline_hash = ""
+    if openai_comparison_path is not None and openai_comparison_path.exists():
+        baseline = read_json(openai_comparison_path)
+        if baseline.get("benchmark_version") != OPENAI_BASELINE_VERSION:
+            raise RuntimeError("OpenAI comparison is not the certified V5 baseline.")
+        if baseline.get("selection", {}).get("selection_sha256") != selection.get(
+            "selection_sha256"
+        ):
+            raise RuntimeError("OpenAI comparison and frozen selection identities differ.")
+        baseline_target = shared_root / "openai_comparison_v5.json"
+        write_json_atomic(baseline_target, baseline)
+        baseline_hash = _file_hash(baseline_target)
     manifest = {
         "benchmark_version": OSS_BENCHMARK_VERSION,
         "openai_baseline_version": OPENAI_BASELINE_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "candidate_contract_version": CANDIDATE_CONTRACT_VERSION,
         "sample_rows": len(rows),
         "sample_ids": sample_ids,
         "selection_sha256": selection["selection_sha256"],
         "bundle_sha256": _file_hash(bundle_path),
-        "openai_comparison_sha256": _file_hash(
-            shared_root / "openai_comparison_v4.json"
-        ),
+        "openai_comparison_sha256": baseline_hash,
         "generated_at_utc": _utc_now(),
     }
     manifest_path = shared_root / "bundle_manifest.json"
@@ -138,6 +146,8 @@ def prepare_bundle(
         for key in (
             "benchmark_version",
             "openai_baseline_version",
+            "prompt_version",
+            "candidate_contract_version",
             "sample_rows",
             "sample_ids",
             "selection_sha256",
@@ -158,10 +168,12 @@ def load_bundle(config: OssBenchmarkConfig) -> tuple[CollectionItem, ...]:
         raise RuntimeError("OSS benchmark bundle version mismatch.")
     if _file_hash(config.bundle_path) != manifest.get("bundle_sha256"):
         raise RuntimeError("OSS benchmark bundle hash mismatch.")
-    if _file_hash(config.openai_baseline_path) != manifest.get(
-        "openai_comparison_sha256"
-    ):
-        raise RuntimeError("OpenAI baseline hash mismatch in OSS benchmark bundle.")
+    baseline_hash = str(manifest.get("openai_comparison_sha256") or "")
+    if baseline_hash:
+        if not config.openai_baseline_path.exists():
+            raise RuntimeError("OSS benchmark manifest requires a missing OpenAI baseline.")
+        if _file_hash(config.openai_baseline_path) != baseline_hash:
+            raise RuntimeError("OpenAI baseline hash mismatch in OSS benchmark bundle.")
     rows = _read_jsonl(config.bundle_path)
     items = tuple(
         CollectionItem(
@@ -227,6 +239,8 @@ def run_profile(config: OssBenchmarkConfig, *, execute: bool) -> int:
                 "sample_id": identifier,
                 "profile": profile.name,
                 "model": profile.model,
+                "prompt_version": PROMPT_VERSION,
+                "candidate_contract_version": CANDIDATE_CONTRACT_VERSION,
                 "source_text_sha256": item.truth["source_text_sha256"],
                 "annotation_sha256": item.truth["annotation_sha256"],
                 "bundle_sha256": _file_hash(config.bundle_path),
@@ -298,7 +312,10 @@ def run_profile(config: OssBenchmarkConfig, *, execute: bool) -> int:
     }
     _append_jsonl(config.model_root / "segments.jsonl", segment)
     manifest = write_profile_outputs(config, items, served_models)
-    write_combined_comparison(config.runtime_root, config.openai_baseline_path)
+    write_combined_comparison(
+        config.runtime_root,
+        config.openai_baseline_path if config.openai_baseline_path.exists() else None,
+    )
     print(
         f"DONE | valid={manifest['completed_rows']}/100 "
         f"quality={manifest['quality_score']:.4f} "
@@ -362,6 +379,8 @@ def infer_one(
                 "sample_id": item.sample_id,
                 "profile": profile.name,
                 "model": profile.model,
+                "prompt_version": PROMPT_VERSION,
+                "candidate_contract_version": CANDIDATE_CONTRACT_VERSION,
                 "source_text_sha256": item.truth["source_text_sha256"],
                 "annotation_sha256": item.truth["annotation_sha256"],
                 "bundle_sha256": _file_hash(config.bundle_path),
@@ -471,27 +490,30 @@ def write_profile_outputs(
     return manifest
 
 
-def write_combined_comparison(runtime_root: Path, baseline_path: Path) -> Path:
-    baseline = read_json(baseline_path)
+def write_combined_comparison(
+    runtime_root: Path, baseline_path: Path | None
+) -> Path:
     rows: list[dict[str, Any]] = []
-    for name, result in baseline["models"].items():
-        manifest = result["manifest"]
-        rows.append(
-            {
-                "model": name,
-                "mode": "OpenAI Batch",
-                "valid": int(manifest["completed_rows"]),
-                "quality": float(result["quality_score"]),
-                "direction_f1": float(result["metrics"]["semantic_direction"]["macro_f1"]),
-                "forecast_f1": float(
-                    result["metrics"]["eligibility"]["forecast_trigger_eligible"]["f1"]
-                ),
-                "api_cost_usd": float(manifest["actual_batch_cost_usd"]),
-                "elapsed_seconds": float(manifest["batch_elapsed_seconds"]),
-                "articles_per_minute": float(manifest["articles_per_minute"]),
-                "completion_tokens_per_second": None,
-            }
-        )
+    if baseline_path is not None:
+        baseline = read_json(baseline_path)
+        for name, result in baseline["models"].items():
+            manifest = result["manifest"]
+            rows.append(
+                {
+                    "model": name,
+                    "mode": "OpenAI Batch",
+                    "valid": int(manifest["completed_rows"]),
+                    "quality": float(result["quality_score"]),
+                    "direction_f1": float(result["metrics"]["semantic_direction"]["macro_f1"]),
+                    "forecast_f1": float(
+                        result["metrics"]["eligibility"]["forecast_trigger_eligible"]["f1"]
+                    ),
+                    "api_cost_usd": float(manifest["actual_batch_cost_usd"]),
+                    "elapsed_seconds": float(manifest["batch_elapsed_seconds"]),
+                    "articles_per_minute": float(manifest["articles_per_minute"]),
+                    "completion_tokens_per_second": None,
+                }
+            )
     for profile in OSS_PROFILES:
         model_root = runtime_root / "models" / profile
         manifest_path = model_root / "manifest.json"
@@ -530,7 +552,12 @@ def write_combined_comparison(runtime_root: Path, baseline_path: Path) -> Path:
     lines = [
         "# OpenAI and local GPT-OSS gold-label comparison",
         "",
-        "All rows use the same frozen 100 articles, structured contract, validator, and all-100 scoring denominator.",
+        "All rows use the same frozen 100 articles, prompt V2, structured contract, validator, and all-100 scoring denominator.",
+        (
+            "The exact OpenAI V5 baseline is included."
+            if baseline_path is not None
+            else "The exact OpenAI V5 baseline is pending; only completed local V2 rows are shown."
+        ),
         "OpenAI Batch elapsed time includes remote queueing. Local vLLM elapsed time is workstation wall time; the two are not latency-equivalent.",
         "Local API cost is zero, but GPU depreciation, electricity, and operator time were not metered and are not represented as zero compute cost.",
         "",

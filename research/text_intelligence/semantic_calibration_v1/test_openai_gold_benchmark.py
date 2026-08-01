@@ -114,6 +114,12 @@ class OpenAIGoldBenchmarkTests(unittest.TestCase):
         }
         self.assertIn("ticker_outside_candidates:WRONG", validate_response(value, item))
 
+    def test_prompt_explicitly_matches_ticker_validator(self) -> None:
+        from .openai_gold_benchmark import SYSTEM_PROMPT
+
+        self.assertIn("Provider tickers or Point-in-time issuer candidates", SYSTEM_PROMPT)
+        self.assertIn("identity_not_found", SYSTEM_PROMPT)
+
     def test_quality_score_uses_nine_equal_components(self) -> None:
         metrics = {
             "extraction_decision": {"macro_f1": 0.9},

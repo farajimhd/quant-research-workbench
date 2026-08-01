@@ -563,6 +563,17 @@ def build_blinded_item(
         "source_lanes": source_lanes,
     }
     source_hash = stable_json_hash(source_contract)
+    from .candidate_contract import enrich_candidate_rows
+
+    candidate_rows = enrich_candidate_rows(
+        (
+            {"ticker": match.ticker, "identity_evidence": match.evidence}
+            for match in identity_matches
+        ),
+        title=str(event.get("title") or ""),
+        teaser=str(event.get("teaser") or ""),
+        rendered_text=rendered_text,
+    )
     return {
         "sample_version": SAMPLE_VERSION,
         "sample_id": sample_id,
@@ -583,10 +594,8 @@ def build_blinded_item(
             "provider_tags": tuple(event.get("provider_tags") or ()),
             "content_quality_flags": tuple(event.get("content_quality_flags") or ()),
         },
-        "point_in_time_issuer_candidates": [
-            {"ticker": match.ticker, "identity_evidence": match.evidence}
-            for match in identity_matches
-        ],
+        "point_in_time_issuer_candidates": candidate_rows,
+        "issuer_candidate_contract_version": "news_issuer_candidate_contract_v2",
         "source_lanes": source_lanes,
         "rendered_product": {
             "text": rendered_text,

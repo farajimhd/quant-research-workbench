@@ -18,14 +18,15 @@ from .comparison import (
     evaluate_predictions,
     load_collection,
 )
+from .candidate_contract import candidate_tickers, repair_item_candidates
 from .schema import CONTENT_ROLES, DIRECTIONS, EXTRACTION_DECISIONS, SOURCE_ORIGINS
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
 
-BENCHMARK_VERSION = "news_gold_openai_benchmark_v4"
+BENCHMARK_VERSION = "news_gold_openai_benchmark_v5"
 # Preserve the exact V2 sample while request and scoring contracts evolve.
 SELECTION_VERSION = "news_gold_openai_benchmark_v2"
-PROMPT_VERSION = "news_gold_teacher_prompt_v1"
+PROMPT_VERSION = "news_gold_teacher_prompt_v2"
 HARD_MAX_COST_USD = Decimal("20.00")
 TERMINAL_BATCH_STATUSES = {"completed", "failed", "expired", "cancelled"}
 
@@ -172,7 +173,9 @@ def prepare_selection(
             raise RuntimeError("Frozen benchmark selection has invalid size or duplicates.")
         if any(identifier not in by_id for identifier in identifiers):
             raise RuntimeError("Frozen benchmark selection references an unknown article.")
-        selected = tuple(by_id[identifier] for identifier in identifiers)
+        selected = tuple(
+            repair_item_candidates(by_id[identifier]) for identifier in identifiers
+        )
         if payload.get("selection_sha256") != _selection_hash(selected):
             raise RuntimeError("Frozen benchmark selection drifted from gold annotations.")
         return selected
@@ -201,7 +204,7 @@ def prepare_selection(
         raise RuntimeError(
             f"Could select only {len(selected)} of {config.sample_size} requested articles."
         )
-    selected_tuple = tuple(selected)
+    selected_tuple = tuple(repair_item_candidates(item) for item in selected)
     payload = {
         "benchmark_version": BENCHMARK_VERSION,
         "method": "deterministic_round_robin_over_gold_semantic_strata_v1",
@@ -370,7 +373,8 @@ Article fields:
 - source_origin identifies who originated the information, not the website that republished it.
 
 Issuer units:
-- Return only bare ticker symbols genuinely supported by issuer-specific evidence. A ticker list, comparison, incidental mention, or chart illustration is not enough.
+- Return only bare ticker symbols present in Provider tickers or Point-in-time issuer candidates. A ticker list, comparison, incidental mention, or chart illustration is not enough.
+- When an article concerns an issuer but no supplied ticker is valid, return extraction_decision=identity_not_found and an empty issuer_units array. Do not emit foreign exchange identifiers or infer an unsupplied symbol.
 - semantic_direction describes the text's issuer-specific financial implication: positive, negative, neutral, or mixed. It is not subsequent price direction.
 - event_families use only the supplied closed family names.
 - forecast_trigger_eligible is true only for timely issuer-specific information that could reasonably initiate a new forecast. Analyst opinions, recaps, roundups, previews, and why-moving follow-ups are normally false.
@@ -439,14 +443,7 @@ def validate_response(value: Mapping[str, Any], item: CollectionItem) -> list[st
         errors.append("labeled_without_units")
     if value.get("extraction_decision") != "labeled" and units:
         errors.append("abstention_with_units")
-    allowed = {
-        str(candidate.get("ticker") or "").upper()
-        for candidate in item.blinded.get("point_in_time_issuer_candidates") or ()
-    }
-    allowed.update(
-        str(ticker).upper()
-        for ticker in item.blinded["publication"].get("provider_tickers") or ()
-    )
+    allowed = set(candidate_tickers(item))
     seen: set[str] = set()
     for unit in units:
         if not isinstance(unit, Mapping):
