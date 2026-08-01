@@ -25580,6 +25580,8 @@ button {
   overflow: hidden;
 }
 .news-reader {
+  --detail-reader-content-width: 1600px;
+  --detail-reader-prose-width: 1120px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -25587,7 +25589,7 @@ button {
   box-sizing: border-box;
   height: calc(100% - 24px);
   margin: 12px auto;
-  max-width: 672px;
+  max-width: 1680px;
   padding: 0 0 24px;
   width: calc(100% - 24px);
 }
@@ -25642,7 +25644,7 @@ button {
 .news-reader-intelligence, .news-detail-contract, .sec-document-inventory, .sec-reader-body, .sec-detail-information, .sec-facts, .sec-classification-evidence {
   margin-left: auto !important;
   margin-right: auto !important;
-  max-width: 632px;
+  max-width: var(--detail-reader-content-width);
   width: calc(100% - 40px);
 }
 .news-reader-evidence-grid {
@@ -25651,7 +25653,7 @@ button {
   gap: 12px;
   grid-template-columns: minmax(0, 1fr);
   margin: 0 auto;
-  max-width: 632px;
+  max-width: var(--detail-reader-content-width);
   width: calc(100% - 40px);
 }
 .news-reader-evidence-grid > .news-reader-intelligence,
@@ -25686,8 +25688,8 @@ button {
 .news-detail-contract-body { grid-template-columns: minmax(0, 1fr); }
 .news-detail-contract-body > section + section { border-left: 0; border-top: 1px solid var(--border); }
 .news-detail-contract-body > section { padding: 13px 15px 15px; }
-.news-reader-body { border-top: 1px solid var(--border); font-size: 13.5px; line-height: 1.65; margin: 22px auto 0; max-width: 632px; padding-top: 20px; width: calc(100% - 40px); }
-.news-reader > footer { max-width: 632px; width: calc(100% - 40px); }
+.news-reader-body { border-top: 1px solid var(--border); font-size: 13.5px; line-height: 1.65; margin: 22px auto 0; max-width: var(--detail-reader-prose-width); padding-top: 20px; width: calc(100% - 40px); }
+.news-reader > footer { max-width: var(--detail-reader-prose-width); width: calc(100% - 40px); }
 .sec-reader-company { font-size: 13px; margin: 8px 0 0; }
 .sec-classification-evidence { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .sec-classification-evidence > summary { align-items: center; background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface)); cursor: pointer; display: flex; padding: 10px 13px; }
@@ -25701,7 +25703,7 @@ button {
 .sec-reader-section-title strong { font-size: 12px; }
 .sec-document-inventory > div:last-child { background: color-mix(in oklab, var(--border) 75%, transparent); }
 .sec-document-choice { background: var(--surface); }
-.sec-reader-body { border: 1px solid var(--border); border-radius: 12px; margin-top: 14px; max-width: 632px; padding: 0 16px 18px; }
+.sec-reader-body { border: 1px solid var(--border); border-radius: 12px; margin-top: 14px; max-width: var(--detail-reader-content-width); padding: 0 16px 18px; }
 .sec-detail-information { border: 1px solid var(--border); border-radius: 12px; margin-top: 14px; overflow: hidden; }
 .sec-facts { margin-bottom: 0; }
 
