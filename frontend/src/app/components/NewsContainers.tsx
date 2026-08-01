@@ -286,8 +286,10 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
         : <div className="news-label-pending">{row.intelligence_status === "unavailable" ? "Deterministic labels temporarily unavailable" : "Deterministic classification pending"}</div>}
       {tags.length ? <div className="news-reader-tags" aria-label="Source tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
     </header>
-    {scopedLabels.length ? <section className="news-reader-intelligence" aria-label="Issuer-specific interpretation"><header><div><strong>Issuer interpretations</strong><small>Direction and evidence are evaluated for each affected issuer.</small></div><span>{scopedLabels.length} {scopedLabels.length === 1 ? "issuer view" : "issuer views"}</span></header>{scopedLabels.map((label) => <ScopedLabelPanel key={`${label.unit_id}-${label.ticker}`} label={label} presentations={presentations} />)}</section> : null}
-    <NewsClassificationPanel classification={classification} summary={scopedSummary} />
+    <div className="news-reader-evidence-grid">
+      {scopedLabels.length ? <section className="news-reader-intelligence" aria-label="Issuer-specific interpretation"><header><div><strong>Issuer interpretations</strong><small>Direction and evidence are evaluated for each affected issuer.</small></div><span>{scopedLabels.length} {scopedLabels.length === 1 ? "issuer view" : "issuer views"}</span></header>{scopedLabels.map((label) => <ScopedLabelPanel key={`${label.unit_id}-${label.ticker}`} label={label} presentations={presentations} />)}</section> : null}
+      <NewsClassificationPanel classification={classification} summary={scopedSummary} />
+    </div>
     {body ? <div className="news-reader-body">{articleParagraphs(body).map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 20)}`}><MarketNumberText text={paragraph} /></p>)}</div> : <NewsEmpty label="This record contains title metadata but no readable article text." />}
     <footer>{row.article_url ? <a href={row.article_url} rel="noreferrer" target="_blank">Open original source <ExternalLink size={12} /></a> : null}</footer>
   </article>;
