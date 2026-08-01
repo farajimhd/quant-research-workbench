@@ -66,10 +66,10 @@ function chunkTickers(tickers: string[], size: number) {
   return chunks;
 }
 
-export function TickerIdentity({ className = "", logoUrl = "", ticker }: { className?: string; logoUrl?: string; ticker: string }) {
+export function TickerIdentity({ className = "", logoUrl = "", showLogoPlaceholder = false, ticker }: { className?: string; logoUrl?: string; showLogoPlaceholder?: boolean; ticker: string }) {
   const normalized = ticker.trim().toUpperCase();
   return <span className={`ticker-identity${className ? ` ${className}` : ""}`}>
-    <TickerLogoImage logoUrl={logoUrl} />
+    <TickerLogoImage fallbackText={showLogoPlaceholder ? normalized.slice(0, 2) : ""} logoUrl={logoUrl} title={normalized} />
     <span>{normalized || "—"}</span>
   </span>;
 }
@@ -115,7 +115,7 @@ export function TickerLogo({ logoUrl, ticker }: { logoUrl?: string; ticker: stri
   return <TickerLogoImage className="ticker-logo" logoUrl={logoUrl} title={ticker} />;
 }
 
-function TickerLogoImage({ className, logoUrl, title }: { className?: string; logoUrl?: string; title?: string }) {
+function TickerLogoImage({ className, fallbackText = "", logoUrl, title }: { className?: string; fallbackText?: string; logoUrl?: string; title?: string }) {
   const [loadedUrl, setLoadedUrl] = useState("");
   useEffect(() => {
     let active = true;
@@ -127,7 +127,7 @@ function TickerLogoImage({ className, logoUrl, title }: { className?: string; lo
     probe.src = logoUrl;
     return () => { active = false; };
   }, [logoUrl]);
-  if (!logoUrl || loadedUrl !== logoUrl) return null;
+  if (!logoUrl || loadedUrl !== logoUrl) return fallbackText ? <span aria-hidden="true" className={`${className ? `${className} ` : ""}ticker-logo-fallback`} title={title}>{fallbackText}</span> : null;
   return <img alt="" aria-hidden="true" className={className} src={logoUrl} title={title} />;
 }
 

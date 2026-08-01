@@ -54,6 +54,7 @@ type AppThemeTokenMap = {
   mutedForeground: string;
   newsCold: string;
   newsHot: string;
+  newsHotFill: string;
   newsOld: string;
   semanticMixed: string;
   semanticMixedBackground: string;
@@ -341,6 +342,7 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     // and old is neutral. News UI must use these tokens, never success/danger/info.
     "--news-cold": tokens.newsCold,
     "--news-hot": tokens.newsHot,
+    "--news-hot-fill": tokens.newsHotFill,
     "--news-old": tokens.newsOld,
     "--semantic-mixed": tokens.semanticMixed,
     "--semantic-mixed-bg": tokens.semanticMixedBackground,
@@ -481,6 +483,7 @@ function buildTheme({
       mutedForeground: palette.mutedForeground,
       newsCold: tone === "light" ? "#007dff" : "#00c8ff",
       newsHot: tone === "light" ? "#ff1744" : "#ff3b5c",
+      newsHotFill: tone === "light" ? "#fb923c" : "#ff9a46",
       newsOld: palette.mutedForeground,
       semanticMixed: tone === "light" ? "#a85a12" : "#e0a45b",
       semanticMixedBackground: tone === "light" ? "#fffbeb" : "#34250f",

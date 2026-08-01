@@ -9,7 +9,7 @@ export function MarketTime({ className = "", dateStyle = "full", includeDate = f
   const exchangeDate = includeDate ? formatDate(date, EXCHANGE_TIME_ZONE, dateStyle) : "";
   const label = `${exchangeDate ? `${exchangeDate}, ` : ""}${exchangeTime} ET; ${vancouverTime} Vancouver`;
   return <time aria-label={label} className={`market-time market-time-${layout}${className ? ` ${className}` : ""}`} dateTime={date.toISOString()}>
-    <span className="market-time-primary">{exchangeDate ? <b className="market-time-date">{exchangeDate}</b> : null}<strong>{exchangeTime} ET</strong></span>
+    <span className="market-time-primary">{exchangeDate ? <b className="market-time-date">{exchangeDate}</b> : null}<strong>{exchangeTime} <span className="market-time-zone">ET</span></strong></span>
     <small className="market-time-secondary">VAN {vancouverTime}</small>
   </time>;
 }

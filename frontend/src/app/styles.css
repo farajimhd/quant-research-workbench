@@ -24988,19 +24988,26 @@ button {
 .intelligence-feed-row[data-direction="mixed"] { --intelligence-direction: var(--semantic-mixed); }
 .intelligence-feed-row:hover { background: color-mix(in oklab, var(--primary) 2.5%, var(--surface)); }
 .intelligence-time-block, .intelligence-identity-block, .intelligence-main-block, .intelligence-sentiment-cell, .intelligence-utility-cell, .sec-category-cell, .sec-impact-cell, .sec-scope-cell { min-width: 0; padding: calc(10px * var(--news-readable-scale)) calc(12px * var(--news-readable-scale)); }
-.intelligence-time-block { align-items: center; display: grid; gap: calc(6px * var(--news-readable-scale)); grid-template-columns: calc(16px * var(--news-readable-scale)) minmax(0, 1fr); padding-left: calc(10px * var(--news-readable-scale)); }
+.intelligence-time-block { align-content: start; align-items: center; display: grid; gap: calc(6px * var(--news-readable-scale)); grid-template-columns: calc(16px * var(--news-readable-scale)) minmax(0, 1fr); padding-left: calc(10px * var(--news-readable-scale)); }
 .intelligence-time-block > .news-temperature { background: transparent !important; border-radius: 0; font-size: 8px; justify-self: center; letter-spacing: .07em; padding: 0; }
 .intelligence-time-block > .news-temperature em { display: none; }
-.intelligence-time-block > .news-temperature svg { height: calc(14px * var(--news-readable-scale)); width: calc(14px * var(--news-readable-scale)); }
-.intelligence-time-block .news-row-time { align-content: center; display: grid; gap: 1px; }
-.intelligence-time-block .news-row-time .market-time-date { font-size: calc(9px * var(--news-readable-scale)); }
-.intelligence-time-block .news-row-time strong { font-family: var(--font-mono); font-size: calc(12px * var(--news-readable-scale)); font-weight: 720; }
-.intelligence-time-block .news-row-time .market-time-secondary { font-family: var(--font-mono); font-size: calc(8px * var(--news-readable-scale)); }
-.intelligence-identity-block { align-content: center; border-left: 0; display: grid; gap: calc(3px * var(--news-readable-scale)); padding: calc(8px * var(--news-readable-scale)) calc(10px * var(--news-readable-scale)); }
+.intelligence-time-block > .news-temperature svg { height: auto; width: calc(15px * var(--news-readable-scale)); }
+.intelligence-time-block > .news-temperature[data-tone="hot"] svg { color: var(--news-hot); fill: var(--news-hot-fill); width: calc(16px * var(--news-readable-scale)); }
+.intelligence-time-block > .news-temperature[data-tone="cold"] svg { color: var(--news-cold); fill: none; }
+.intelligence-time-block > .news-temperature[data-tone="old"] svg, .intelligence-time-block > .news-temperature[data-tone="dated"] svg { color: var(--news-old); fill: none; }
+.intelligence-time-block .news-row-time { align-content: start; display: grid; gap: 0; }
+.intelligence-time-block .news-row-time .market-time-primary { align-items: start; display: grid; gap: 0; }
+.intelligence-time-block .news-row-time .market-time-date { color: var(--muted-foreground); font-family: var(--font-body); font-size: calc(10px * var(--news-readable-scale)); font-weight: 500; line-height: 1.25; }
+.intelligence-time-block .news-row-time strong { align-items: baseline; color: color-mix(in oklab, var(--foreground) 84%, var(--muted-foreground)); display: inline-flex; font-family: var(--font-mono); font-size: calc(11.5px * var(--news-readable-scale)); font-weight: 700; gap: calc(3px * var(--news-readable-scale)); line-height: 1.2; }
+.intelligence-time-block .news-row-time .market-time-zone { color: var(--muted-foreground); font-size: calc(9px * var(--news-readable-scale)); font-weight: 400; }
+.intelligence-time-block .news-row-time .market-time-secondary { color: color-mix(in oklab, var(--muted-foreground) 58%, transparent); font-family: var(--font-mono); font-size: calc(9px * var(--news-readable-scale)); font-weight: 400; line-height: 1.25; }
+.intelligence-identity-block { align-content: start; border-left: 0; display: grid; gap: calc(4px * var(--news-readable-scale)); padding: calc(10px * var(--news-readable-scale)) calc(12px * var(--news-readable-scale)); }
 .intelligence-identity-block > small { color: var(--muted-foreground); font-size: 9px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.intelligence-identity-block .ticker-identity img { height: calc(20px * var(--news-readable-scale)); width: calc(20px * var(--news-readable-scale)); }
-.intelligence-identity-block .news-tickers { gap: calc(3px * var(--news-readable-scale)); }
-.intelligence-identity-block .news-tickers b { align-items: center; border: 0; display: inline-flex; font-size: calc(11.5px * var(--news-readable-scale)); min-height: calc(20px * var(--news-readable-scale)); padding: 0; }
+.intelligence-identity-block .news-tickers { align-items: flex-start; flex-direction: column; flex-wrap: nowrap; gap: calc(4px * var(--news-readable-scale)); }
+.intelligence-identity-block .news-tickers b { align-items: center; border: 0; color: color-mix(in oklab, var(--foreground) 84%, var(--muted-foreground)); display: inline-flex; font-family: var(--font-mono); font-size: calc(11.5px * var(--news-readable-scale)); font-weight: 700; min-height: calc(20px * var(--news-readable-scale)); padding: 0; }
+.intelligence-identity-block .ticker-identity { gap: calc(6px * var(--news-readable-scale)); }
+.intelligence-identity-block .ticker-identity img, .intelligence-identity-block .ticker-logo-fallback { height: calc(20px * var(--news-readable-scale)); width: calc(20px * var(--news-readable-scale)); }
+.intelligence-identity-block .ticker-logo-fallback { align-items: center; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 50%; color: var(--muted-foreground); display: inline-flex; flex: 0 0 auto; font-family: var(--font-mono); font-size: calc(7px * var(--news-readable-scale)); font-weight: 700; justify-content: center; }
 .intelligence-main-block { align-content: center; display: grid; gap: 4px; padding-inline: 12px 18px; }
 .intelligence-main-block .news-headline-button { max-width: 100%; }
 .intelligence-main-block .news-headline-button strong { font-size: calc(13px * var(--news-readable-scale)); font-weight: 640; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
