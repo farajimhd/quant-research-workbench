@@ -14,10 +14,12 @@ export function normalizeSemanticDirection(value?: string | null): SemanticDirec
 }
 
 export function SemanticDirectionMetric({
+  compact = false,
   direction: rawDirection,
   prominent = false,
   score,
 }: {
+  compact?: boolean;
   direction?: string | null;
   prominent?: boolean;
   score?: number | null;
@@ -37,7 +39,7 @@ export function SemanticDirectionMetric({
     ? "Pending"
     : direction[0].toUpperCase() + direction.slice(1);
   const scoreText = hasScore
-    ? `${direction === "mixed" ? "±" : score > 0 ? "+" : ""}${direction === "mixed" ? Math.abs(score).toFixed(2) : score.toFixed(2)} score`
+    ? `${direction === "mixed" ? "±" : score > 0 ? "+" : ""}${direction === "mixed" ? Math.abs(score).toFixed(2) : score.toFixed(2)}${compact ? "" : " score"}`
     : "";
   const description = scoreText
     ? `Deterministic text direction: ${scoreText}`
@@ -46,6 +48,7 @@ export function SemanticDirectionMetric({
   return <span
     aria-label={scoreText ? `${label}, ${scoreText}` : label}
     className="semantic-direction-metric"
+    data-compact={compact ? "true" : "false"}
     data-direction={direction}
     data-prominent={prominent ? "true" : "false"}
     title={description}
