@@ -127,3 +127,31 @@ python -m research.text_intelligence.semantic_calibration_v1.run_build_analyst_g
 The glossary records article-observed names, aliases, firms and attributions.
 It does not join reaction data and does not treat first/last observation as a
 certified employment interval.
+
+## Compare the current News V5 authority
+
+After all V2 annotations pass their audit and the collection is locked, rerun
+the actual current News V5 authority against the immutable rendered products:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_compare_v5
+```
+
+This writes resumable predictions and split-specific field-level reports below
+the runtime collection. It does not query price reactions, modify annotations,
+or evaluate SEC documents.
+
+## Fit and evaluate the News V6 research candidate
+
+After the V5 comparison is present, run:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_fit_news_v6
+```
+
+The candidate uses sparse deterministic text features and linear classifiers.
+It fits on the sealed fit split, selects thresholds only on calibration, and
+writes the locked-holdout comparison and serialized research artifact beneath
+the runtime collection. It is not a production authority and must not be used
+for live classification or a historical backfill until its scope recall and
+external validation are certified.
