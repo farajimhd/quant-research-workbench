@@ -1,18 +1,28 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import subprocess
 
 from .oss_gold_benchmark import OSS_PROFILES, OssProfile
 
 
 DEFAULT_DOWNLOAD_DIR = "/mnt/d/models_artifacts/opensource/huggingface"
+DEFAULT_VENV_ACTIVATE = "~/.venvs/vllm/bin/activate"
+
+
+def _source_command(activate_path: str) -> str:
+    """Return a bash-safe source command while preserving home expansion."""
+    if activate_path.startswith("~/"):
+        return f'source "$HOME"/{shlex.quote(activate_path[2:])}'
+    return f"source {shlex.quote(activate_path)}"
 
 
 def build_server_command(
     *,
     profile: OssProfile,
     distro: str = "",
+    venv_activate: str = DEFAULT_VENV_ACTIVATE,
     vllm_bin: str = "vllm",
     model_path: str | None = None,
     served_model_name: str | None = None,
@@ -43,7 +53,12 @@ def build_server_command(
     command = ["wsl.exe"]
     if distro:
         command.extend(("-d", distro))
-    command.extend(("--", "env", "VLLM_USE_FLASHINFER_SAMPLER=0", *serve))
+    shell_command = (
+        f"{_source_command(venv_activate)} && "
+        "exec env VLLM_USE_FLASHINFER_SAMPLER=0 "
+        f"{shlex.join(serve)}"
+    )
+    command.extend(("--", "bash", "-lc", shell_command))
     return command
 
 
@@ -56,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--profile", choices=sorted(OSS_PROFILES), required=True)
     parser.add_argument("--distro", default="")
+    parser.add_argument("--venv-activate", default=DEFAULT_VENV_ACTIVATE)
     parser.add_argument("--vllm-bin", default="vllm")
     parser.add_argument("--model-path")
     parser.add_argument("--served-model-name")
@@ -72,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     command = build_server_command(
         profile=OSS_PROFILES[args.profile],
         distro=args.distro,
+        venv_activate=args.venv_activate,
         vllm_bin=args.vllm_bin,
         model_path=args.model_path,
         served_model_name=args.served_model_name,

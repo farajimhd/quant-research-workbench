@@ -227,6 +227,9 @@ a 65,536-token context. The long-context requirement is real: one untruncated
 gold article is approximately 59,200 `o200k_harmony` input tokens. The generic
 launcher applies the required model-family flags and lets vLLM download missing
 Hugging Face artifacts into `/mnt/d/models_artifacts/opensource/huggingface`.
+Before invoking `vllm`, the launcher starts Bash and sources
+`~/.venvs/vllm/bin/activate`; if that environment is missing, serving stops
+immediately instead of falling back to an unrelated system installation.
 For the existing GPT-OSS comparison:
 
 ```powershell

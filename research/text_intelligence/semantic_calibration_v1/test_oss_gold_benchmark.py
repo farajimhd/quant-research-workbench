@@ -242,11 +242,27 @@ class OssGoldBenchmarkTests(unittest.TestCase):
         mistral = build_server_command(
             profile=OSS_PROFILES["mistral-small-3.1-24b"]
         )
-        self.assertIn("--language-model-only", qwen)
-        self.assertIn("--reasoning-parser", qwen)
-        self.assertIn("--tokenizer-mode", mistral)
-        self.assertIn("--config-format", mistral)
-        self.assertNotIn("--safetensors-load-strategy", mistral)
+        qwen_shell = qwen[-1]
+        mistral_shell = mistral[-1]
+        self.assertEqual(qwen[-3:-1], ["bash", "-lc"])
+        self.assertIn('source "$HOME"/.venvs/vllm/bin/activate', qwen_shell)
+        self.assertIn(
+            "exec env VLLM_USE_FLASHINFER_SAMPLER=0 vllm serve", qwen_shell
+        )
+        self.assertIn("--language-model-only", qwen_shell)
+        self.assertIn("--reasoning-parser", qwen_shell)
+        self.assertIn("--tokenizer-mode", mistral_shell)
+        self.assertIn("--config-format", mistral_shell)
+        self.assertNotIn("--safetensors-load-strategy", mistral_shell)
+
+    def test_server_command_quotes_paths_after_activating_wsl_venv(self) -> None:
+        command = build_server_command(
+            profile=OSS_PROFILES["20b"],
+            model_path="/mnt/d/models with spaces/openai-gpt-oss-20b",
+        )
+        self.assertIn(
+            "'/mnt/d/models with spaces/openai-gpt-oss-20b'", command[-1]
+        )
 
     def test_combined_report_adds_local_row_without_equating_speed_modes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
