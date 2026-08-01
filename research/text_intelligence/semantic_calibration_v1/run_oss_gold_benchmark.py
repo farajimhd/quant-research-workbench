@@ -14,7 +14,7 @@ DEFAULT_ROOT = Path(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run one local GPT-OSS model on the frozen 100-article gold benchmark."
+        description="Run one local vLLM model on the frozen 100-article gold benchmark."
     )
     parser.add_argument("--profile", choices=sorted(OSS_PROFILES), required=True)
     parser.add_argument("--execute", action="store_true")

@@ -206,7 +206,7 @@ an exact prompt-V3 comparison. Since both the system prompt and structured
 response field changed, every exact V6 request must be rerun; no paid request
 is submitted without explicit cost authorization.
 
-## Add workstation GPT-OSS 20B and 120B
+## Compare local instruction models through vLLM
 
 The local V3 comparison reuses the exact OpenAI V6 population, prompt, output
 schema, validator, dynamic multi-issuer output allowance, and all-100 scoring
@@ -224,10 +224,13 @@ the local report states that the matching remote baseline is pending.
 
 Serve one model at a time through vLLM with the exact public name and at least
 a 65,536-token context. The long-context requirement is real: one untruncated
-gold article is approximately 59,200 `o200k_harmony` input tokens. For example:
+gold article is approximately 59,200 `o200k_harmony` input tokens. The generic
+launcher applies the required model-family flags and lets vLLM download missing
+Hugging Face artifacts into `/mnt/d/models_artifacts/opensource/huggingface`.
+For the existing GPT-OSS comparison:
 
 ```powershell
-python -m research.news_labeling.gpt_oss_v1.run_server_wsl `
+python -m research.text_intelligence.semantic_calibration_v1.run_vllm_benchmark_server_wsl `
   --profile 20b --max-model-len 65536
 ```
 
@@ -242,19 +245,67 @@ Stop the 20B server, start 120B with the same context and served-name contract,
 then run:
 
 ```powershell
-python -m research.news_labeling.gpt_oss_v1.run_server_wsl `
+python -m research.text_intelligence.semantic_calibration_v1.run_vllm_benchmark_server_wsl `
   --profile 120b --max-model-len 65536
 
 python -m research.text_intelligence.semantic_calibration_v1.run_oss_gold_benchmark `
   --profile 120b --execute
 ```
 
+The two additional, deliberately different instruction-following candidates
+are:
+
+- `qwen35-a3b`: `Qwen/Qwen3.5-35B-A3B`, a 35B-total/3B-active MoE. The server
+  uses language-model-only mode and the benchmark disables thinking so the
+  response is the requested JSON rather than a hidden reasoning stream.
+- `mistral-small-3.1-24b`:
+  `mistralai/Mistral-Small-3.1-24B-Instruct-2503`, selected for its explicit
+  structured-JSON and instruction-following capability and independent model
+  family. Its official Mistral tokenizer/config/load modes are applied.
+
+Run Qwen in terminal 1; the first start downloads it automatically:
+
+```powershell
+conda activate ml4t
+cd D:\TradingML\codes\quant-research-workbench
+python -m research.text_intelligence.semantic_calibration_v1.run_vllm_benchmark_server_wsl `
+  --profile qwen35-a3b --max-model-len 65536
+```
+
+After the server reports startup complete, use terminal 2:
+
+```powershell
+conda activate ml4t
+cd D:\TradingML\codes\quant-research-workbench
+python -m research.text_intelligence.semantic_calibration_v1.run_oss_gold_benchmark `
+  --profile qwen35-a3b --execute
+```
+
+Stop the Qwen server after completion, then repeat for Mistral:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_vllm_benchmark_server_wsl `
+  --profile mistral-small-3.1-24b --max-model-len 65536
+
+python -m research.text_intelligence.semantic_calibration_v1.run_oss_gold_benchmark `
+  --profile mistral-small-3.1-24b --execute
+```
+
+Do not run the two servers concurrently on one 96 GB GPU. Do not pre-download
+the full Mistral repository with a blind snapshot command: that repository can
+contain alternate weight layouts. Letting vLLM resolve the files required by
+its Mistral loader avoids redundant downloads. If Qwen reports an unsupported
+architecture, the installed vLLM build is too old for Qwen3.5; upgrade that WSL
+environment before changing model or quantization settings.
+
 The inference launcher is resumable per article and refuses a mismatched model,
 sample, rendered-text hash, annotation hash, or response contract. Each run
 writes responses, predictions, failures, usage, local wall time, request time,
 and completion-token throughput beneath its workstation runtime root. Once
-either OSS run completes, `COMPARISON_WITH_OPENAI.md` is refreshed; after both
-complete it contains all nine models. OpenAI Batch time and local vLLM wall
-time remain separately identified because they are not latency-equivalent.
+any local run completes, `COMPARISON_WITH_OPENAI.md` is refreshed. OpenAI Batch
+time and local vLLM wall time remain separately identified because they are not
+latency-equivalent. Truncated generations retry with a larger bounded output
+budget, while invalid structured responses retry with a concise contract repair
+instruction; successful articles are never repeated.
 Local API cost is zero, but the report does not misrepresent unmetered GPU,
 electricity, depreciation, or operator time as zero compute cost.

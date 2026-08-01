@@ -11,10 +11,12 @@ from .oss_gold_benchmark import (
     OssBenchmarkConfig,
     OSS_PROFILES,
     VllmHttpError,
+    _build_payload,
     _validate_request_capacity,
     infer_one,
     write_combined_comparison,
 )
+from .run_vllm_benchmark_server_wsl import build_server_command
 
 
 def _item(index: int = 1, *, candidates: int = 1) -> CollectionItem:
@@ -126,7 +128,7 @@ class OssGoldBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["completion_tokens"], 50)
         self.assertEqual(len(result["bundle_sha256"]), 64)
 
-    def test_only_transient_transport_failures_are_retried(self) -> None:
+    def test_transport_and_invalid_structured_outputs_are_retried(self) -> None:
         item = _item()
         good_response = {
             "choices": [
@@ -171,7 +173,80 @@ class OssGoldBenchmarkTests(unittest.TestCase):
             ) as post:
                 with self.assertRaisesRegex(RuntimeError, "inference_failed"):
                     infer_one(item, config, OSS_PROFILES["20b"])
-            self.assertEqual(post.call_count, 1)
+            self.assertEqual(post.call_count, 3)
+
+    def test_truncated_output_retries_with_a_larger_budget(self) -> None:
+        item = _item()
+        good_response = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "extraction_decision": "labeled",
+                                "content_role": "primary_event",
+                                "source_origin": "issuer_direct",
+                                "issuer_units": [
+                                    {
+                                        "canonical_instrument_id": "T001",
+                                        "semantic_direction": "positive",
+                                        "event_families": ["guidance"],
+                                        "forecast_trigger_eligible": True,
+                                        "reaction_evaluation_eligible": True,
+                                        "issuer_history_context_eligible": True,
+                                    }
+                                ],
+                            }
+                        )
+                    },
+                }
+            ],
+            "usage": {},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "gold_sample.jsonl").write_text("{}\n", encoding="utf-8")
+            config = OssBenchmarkConfig(root, root, "20b", attempts=3)
+            with patch(
+                "research.text_intelligence.semantic_calibration_v1.oss_gold_benchmark._post_json",
+                side_effect=[
+                    {"choices": [{"finish_reason": "length", "message": {"content": ""}}]},
+                    good_response,
+                ],
+            ) as post:
+                result = infer_one(item, config, OSS_PROFILES["20b"])
+        self.assertEqual(post.call_count, 2)
+        self.assertGreater(
+            post.call_args_list[1].args[1]["max_tokens"],
+            post.call_args_list[0].args[1]["max_tokens"],
+        )
+        self.assertEqual(result["attempt"], 2)
+
+    def test_model_profiles_emit_only_supported_request_options(self) -> None:
+        messages = [{"role": "user", "content": "label this"}]
+        qwen = _build_payload(OSS_PROFILES["qwen35-a3b"], messages, 2048)
+        mistral = _build_payload(
+            OSS_PROFILES["mistral-small-3.1-24b"], messages, 2048
+        )
+        gpt_oss = _build_payload(OSS_PROFILES["20b"], messages, 2048)
+        self.assertEqual(qwen["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(qwen["top_k"], 20)
+        self.assertNotIn("reasoning_effort", qwen)
+        self.assertEqual(mistral["temperature"], 0.15)
+        self.assertNotIn("chat_template_kwargs", mistral)
+        self.assertEqual(gpt_oss["reasoning_effort"], "low")
+
+    def test_server_profiles_use_family_specific_vllm_arguments(self) -> None:
+        qwen = build_server_command(profile=OSS_PROFILES["qwen35-a3b"])
+        mistral = build_server_command(
+            profile=OSS_PROFILES["mistral-small-3.1-24b"]
+        )
+        self.assertIn("--language-model-only", qwen)
+        self.assertIn("--reasoning-parser", qwen)
+        self.assertIn("--tokenizer-mode", mistral)
+        self.assertIn("--config-format", mistral)
+        self.assertNotIn("--safetensors-load-strategy", mistral)
 
     def test_combined_report_adds_local_row_without_equating_speed_modes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

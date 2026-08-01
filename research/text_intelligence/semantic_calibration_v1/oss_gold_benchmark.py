@@ -33,13 +33,73 @@ OPENAI_BASELINE_VERSION = "news_gold_openai_benchmark_v6"
 @dataclass(frozen=True, slots=True)
 class OssProfile:
     name: str
+    report_name: str
     model: str
     workers: int
+    temperature: float
+    top_p: float | None = None
+    top_k: int | None = None
+    presence_penalty: float | None = None
+    seed: int | None = None
+    reasoning_effort: str | None = None
+    chat_template_kwargs: tuple[tuple[str, bool], ...] = ()
+    server_args: tuple[str, ...] = ()
 
 
 OSS_PROFILES: dict[str, OssProfile] = {
-    "20b": OssProfile("20b", "openai/gpt-oss-20b", 4),
-    "120b": OssProfile("120b", "openai/gpt-oss-120b", 4),
+    "20b": OssProfile(
+        "20b",
+        "gpt-oss-20b",
+        "openai/gpt-oss-20b",
+        4,
+        0.0,
+        reasoning_effort="low",
+        server_args=("--safetensors-load-strategy", "prefetch"),
+    ),
+    "120b": OssProfile(
+        "120b",
+        "gpt-oss-120b",
+        "openai/gpt-oss-120b",
+        4,
+        0.0,
+        reasoning_effort="low",
+        server_args=("--safetensors-load-strategy", "prefetch"),
+    ),
+    "qwen35-a3b": OssProfile(
+        "qwen35-a3b",
+        "qwen3.5-35b-a3b",
+        "Qwen/Qwen3.5-35B-A3B",
+        4,
+        0.7,
+        top_p=0.8,
+        top_k=20,
+        presence_penalty=1.5,
+        seed=42,
+        chat_template_kwargs=(("enable_thinking", False),),
+        server_args=(
+            "--reasoning-parser",
+            "qwen3",
+            "--language-model-only",
+            "--safetensors-load-strategy",
+            "prefetch",
+        ),
+    ),
+    "mistral-small-3.1-24b": OssProfile(
+        "mistral-small-3.1-24b",
+        "mistral-small-3.1-24b",
+        "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+        4,
+        0.15,
+        seed=42,
+        server_args=(
+            "--tokenizer-mode",
+            "mistral",
+            "--config-format",
+            "mistral",
+            "--load-format",
+            "mistral",
+        ),
+    ),
 }
 
 
@@ -335,31 +395,26 @@ def infer_one(
         minimum=config.min_output_tokens,
         maximum=config.max_output_tokens,
     )
-    payload = {
-        "model": profile.model,
-        "messages": build_messages(item),
-        "temperature": 0,
-        "max_tokens": output_budget,
-        "reasoning_effort": "low",
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "news_gold_semantic_label",
-                "strict": True,
-                "schema": response_schema(),
-            },
-        },
-    }
+    base_messages = list(build_messages(item))
+    messages = list(base_messages)
+    maximum_retry_budget = _maximum_retry_output_budget(
+        config, base_messages, output_budget
+    )
     started = time.perf_counter()
     last_error: Exception | None = None
     attempts_used = 0
     for attempt in range(1, config.attempts + 1):
         attempts_used = attempt
+        payload = _build_payload(profile, messages, output_budget)
         try:
             response = _post_json(config.endpoint, payload, config.timeout_seconds)
             choice = response["choices"][0]
             if str(choice.get("finish_reason") or "") == "length":
-                raise RuntimeError("response_truncated_at_output_budget")
+                last_error = RuntimeError("response_truncated_at_output_budget")
+                if attempt < config.attempts and output_budget < maximum_retry_budget:
+                    output_budget = min(maximum_retry_budget, output_budget * 2)
+                    continue
+                break
             content = choice["message"]["content"]
             if isinstance(content, list):
                 content = "".join(
@@ -367,10 +422,27 @@ def infer_one(
                     for value in content
                     if isinstance(value, Mapping)
                 )
-            value = json.loads(str(content))
+            try:
+                value = json.loads(str(content))
+            except (TypeError, ValueError) as exc:
+                last_error = exc
+                if attempt < config.attempts:
+                    messages = _corrective_messages(
+                        base_messages, "Return one complete JSON object matching the schema."
+                    )
+                    continue
+                break
             validation_errors = validate_response(value, item)
             if validation_errors:
-                raise RuntimeError(";".join(validation_errors))
+                last_error = RuntimeError(";".join(validation_errors))
+                if attempt < config.attempts:
+                    messages = _corrective_messages(
+                        base_messages,
+                        "Correct these contract violations: "
+                        + "; ".join(validation_errors[:8]),
+                    )
+                    continue
+                break
             elapsed = time.perf_counter() - started
             usage = response.get("usage") or {}
             completion_tokens = int(usage.get("completion_tokens") or 0)
@@ -393,10 +465,10 @@ def infer_one(
                 ),
                 "output_token_budget": output_budget,
                 "structured_output": value,
-                "prediction": to_prediction(item, value, f"gpt-oss-{profile.name}"),
+                "prediction": to_prediction(item, value, profile.report_name),
                 "completed_at_utc": _utc_now(),
             }
-        except (KeyError, IndexError, TypeError, ValueError, RuntimeError, OSError) as exc:
+        except (KeyError, IndexError, TypeError, VllmHttpError, OSError) as exc:
             last_error = exc
             if not isinstance(exc, OSError) and not (
                 isinstance(exc, VllmHttpError) and exc.retryable
@@ -407,6 +479,63 @@ def infer_one(
     raise RuntimeError(
         f"inference_failed_after_{attempts_used}_attempts:{last_error}"
     ) from last_error
+
+
+def _build_payload(
+    profile: OssProfile,
+    messages: list[dict[str, Any]],
+    output_budget: int,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": profile.model,
+        "messages": messages,
+        "temperature": profile.temperature,
+        "max_tokens": output_budget,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "news_gold_semantic_label",
+                "strict": True,
+                "schema": response_schema(),
+            },
+        },
+    }
+    optional = {
+        "top_p": profile.top_p,
+        "top_k": profile.top_k,
+        "presence_penalty": profile.presence_penalty,
+        "seed": profile.seed,
+        "reasoning_effort": profile.reasoning_effort,
+    }
+    payload.update({key: value for key, value in optional.items() if value is not None})
+    if profile.chat_template_kwargs:
+        payload["chat_template_kwargs"] = dict(profile.chat_template_kwargs)
+    return payload
+
+
+def _maximum_retry_output_budget(
+    config: OssBenchmarkConfig,
+    messages: list[dict[str, Any]],
+    initial_budget: int,
+) -> int:
+    available = config.max_model_len - _harmony_prompt_tokens(messages) - 1_024
+    return max(initial_budget, min(config.max_output_tokens, available))
+
+
+def _corrective_messages(
+    base_messages: list[dict[str, Any]], error_summary: str
+) -> list[dict[str, Any]]:
+    return [
+        *base_messages,
+        {
+            "role": "user",
+            "content": (
+                "The previous response was rejected. "
+                f"{error_summary} Regenerate the full answer, use only exact candidate "
+                "canonical_instrument_id values, and include each candidate exactly once."
+            ),
+        },
+    ]
 
 
 def check_server(endpoint: str, *, expected_model: str) -> list[str]:
@@ -514,8 +643,8 @@ def write_combined_comparison(
                     "completion_tokens_per_second": None,
                 }
             )
-    for profile in OSS_PROFILES:
-        model_root = runtime_root / "models" / profile
+    for profile_name, profile in OSS_PROFILES.items():
+        model_root = runtime_root / "models" / profile_name
         manifest_path = model_root / "manifest.json"
         metrics_path = model_root / "metrics.json"
         if not manifest_path.exists() or not metrics_path.exists():
@@ -524,7 +653,7 @@ def write_combined_comparison(
         metrics = read_json(metrics_path)
         rows.append(
             {
-                "model": f"gpt-oss-{profile}",
+                "model": profile.report_name,
                 "mode": "local vLLM",
                 "valid": int(manifest["completed_rows"]),
                 "quality": float(manifest["quality_score"]),
@@ -550,7 +679,7 @@ def write_combined_comparison(
     write_json_atomic(runtime_root / "comparison_with_openai.json", payload)
     report_path = runtime_root / "COMPARISON_WITH_OPENAI.md"
     lines = [
-        "# OpenAI and local GPT-OSS gold-label comparison",
+        "# OpenAI and local vLLM gold-label comparison",
         "",
         "All rows use the same frozen 100 articles, prompt V3, typed canonical-instrument contract, validator, and all-100 scoring denominator.",
         (
