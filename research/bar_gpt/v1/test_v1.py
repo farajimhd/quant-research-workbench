@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import torch
 from rich.console import Console
 
-from research.bar_gpt.v1.build_1s import BuildReporter, create_target_table_sql, insert_one_second_sql
+from research.bar_gpt.v1.build_1s import BuildReporter, _query_tsv, _show_create_raw, create_target_table_sql, insert_one_second_sql
 from research.bar_gpt.v1.config import BarGPTConfig
 from research.bar_gpt.v1.data import BarView, causal_asof_indices, densify_one_second_view, horizon_target_indices, rollup_intraday_view
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
@@ -32,6 +32,32 @@ def builder_args() -> argparse.Namespace:
 
 
 class BuilderSqlTest(unittest.TestCase):
+    def test_metadata_queries_use_unescaped_tsv(self) -> None:
+        class FakeClient:
+            query = ""
+
+            def execute(self, query: str) -> str:
+                self.query = query
+                return "built_at\tDateTime64(3, 'UTC')\n"
+
+        client = FakeClient()
+        rows = _query_tsv(client, "SELECT name, type FROM system.columns")  # type: ignore[arg-type]
+        self.assertTrue(client.query.endswith("FORMAT TSVRaw"))
+        self.assertEqual(rows, [["built_at", "DateTime64(3, 'UTC')"]])
+
+    def test_show_create_uses_unescaped_raw_format(self) -> None:
+        class FakeClient:
+            query = ""
+
+            def execute(self, query: str, *, query_id: str | None = None) -> str:
+                self.query = query
+                return "SETTINGS storage_policy = 'live_market_ssd'\n"
+
+        client = FakeClient()
+        ddl = _show_create_raw(client, "market_sip_compact", "bar_gpt_1s_bars_v1")  # type: ignore[arg-type]
+        self.assertTrue(client.query.endswith("FORMAT TSVRaw"))
+        self.assertIn("storage_policy = 'live_market_ssd'", ddl)
+
     def test_table_contract_uses_requested_policy_and_key(self) -> None:
         sql = create_target_table_sql(builder_args())
         self.assertIn("storage_policy = 'ssd_policy'", sql)

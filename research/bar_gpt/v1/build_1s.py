@@ -431,8 +431,19 @@ def explain_insert_select(client: ClickHouseHttpClient, insert_sql: str) -> str:
 
 
 def _query_tsv(client: ClickHouseHttpClient, sql: str) -> list[list[str]]:
-    query = sql.strip().rstrip(";") + "\nFORMAT TSV"
+    # The values consumed here are bounded identifiers and numeric/metadata
+    # fields. TSVRaw avoids ClickHouse's backslash escaping of schema strings
+    # such as DateTime64(3, 'UTC'), which must compare byte-for-byte with the
+    # declared model schema.
+    query = sql.strip().rstrip(";") + "\nFORMAT TSVRaw"
     return [line.split("\t") for line in client.execute(query).splitlines() if line.strip()]
+
+
+def _show_create_raw(client: ClickHouseHttpClient, database: str, table: str) -> str:
+    return _execute(
+        client,
+        f"SHOW CREATE TABLE {quote_ident(database)}.{quote_ident(table)} FORMAT TSVRaw",
+    )
 
 
 def resolve_date_range(client: ClickHouseHttpClient, args: argparse.Namespace) -> tuple[dt.date, dt.date]:
@@ -661,10 +672,14 @@ WHERE database = {sql_string(args.database)}
 """,
     )
     actual = {name: column_type for name, column_type, *_ in rows}
-    missing = {name: column_type for name, column_type in expected.items() if actual.get(name) != column_type}
-    if missing:
-        raise RuntimeError(f"{args.database}.{args.target_table} schema mismatch: {missing}")
-    create_sql = _execute(client, f"SHOW CREATE TABLE {quote_ident(args.database)}.{quote_ident(args.target_table)}")
+    mismatches = {
+        name: {"expected": column_type, "actual": actual.get(name)}
+        for name, column_type in expected.items()
+        if actual.get(name) != column_type
+    }
+    if mismatches:
+        raise RuntimeError(f"{args.database}.{args.target_table} schema mismatch: {mismatches}")
+    create_sql = _show_create_raw(client, args.database, args.target_table)
     required = (
         "ReplacingMergeTree(built_at)",
         "PARTITION BY toYYYYMM(local_date)",
@@ -675,7 +690,7 @@ WHERE database = {sql_string(args.database)}
         raise RuntimeError(f"{args.database}.{args.target_table} physical contract mismatch: missing {absent}")
     if args.storage_policy and f"storage_policy = {sql_string(args.storage_policy)}" not in create_sql:
         raise RuntimeError(f"{args.database}.{args.target_table} is not on requested storage policy {args.storage_policy!r}")
-    manifest_sql = _execute(client, f"SHOW CREATE TABLE {quote_ident(args.database)}.{quote_ident(args.manifest_table)}")
+    manifest_sql = _show_create_raw(client, args.database, args.manifest_table)
     if args.storage_policy and f"storage_policy = {sql_string(args.storage_policy)}" not in manifest_sql:
         raise RuntimeError(f"{args.database}.{args.manifest_table} is not on requested storage policy {args.storage_policy!r}")
 
