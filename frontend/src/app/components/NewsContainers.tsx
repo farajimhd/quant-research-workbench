@@ -276,7 +276,7 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
   const scopedSummary = row.scoped_summary ?? null;
   return <article className="news-reader">
     <header className="news-reader-hero">
-      <div className="news-reader-kicker"><NewsTemperatureTag tone={tone} /><MarketTime includeDate value={row.published_at_utc} /><NewsKind classification={{ ...classification, kind }} /><span>{row.url_domain || "News"}</span>{row.render_status === "unrendered" ? <span className="news-text-state" data-state="unrendered">Unrendered</span> : null}</div>
+      <div className="news-reader-kicker"><NewsTemperatureTag tone={tone} /><MarketTime includeDate value={row.published_at_utc} /><NewsKind classification={{ ...classification, kind }} /><span className="news-reader-source">{row.url_domain || "News"}</span>{row.render_status === "unrendered" ? <span className="news-text-state" data-state="unrendered">Unrendered</span> : null}</div>
       <div className="news-reader-title-row"><h1><MarketNumberText text={title} /></h1>{scopedSummary ? <div className="news-reader-primary-direction"><ScopedDirection prominent summary={scopedSummary} /></div> : null}</div>
       <div className="news-reader-byline"><span>{row.author || "Unknown author"}</span>{detailTickers.length === 1 ? <TickerIdentityWithChange asOf={asOf} logoUrl={presentations[detailTickers[0]]?.logo_url} ticker={detailTickers[0]} /> : <TickerList presentations={presentations} tickers={detailTickers} />}</div>
       {scopedSummary

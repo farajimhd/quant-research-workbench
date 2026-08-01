@@ -92,6 +92,7 @@ export type AppThemeDefinition = {
 
 const BODY_FONT_STACK = "\"Inter\", \"Segoe UI Variable Text\", \"Segoe UI\", sans-serif";
 const DISPLAY_FONT_STACK = "\"Inter\", \"Segoe UI Variable Display\", \"Segoe UI\", sans-serif";
+const MONO_FONT_STACK = "\"JetBrains Mono\", \"Cascadia Mono\", \"SFMono-Regular\", Consolas, monospace";
 
 const paletteDefinitions: Array<{
   description: string;
@@ -326,6 +327,7 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--focus-ring": tokens.focusRing,
     "--font-body": BODY_FONT_STACK,
     "--font-display": DISPLAY_FONT_STACK,
+    "--font-mono": MONO_FONT_STACK,
     "--foreground": tokens.foreground,
     "--input": theme.tone === "light" ? "transparent" : tokens.muted,
     "--input-background": tokens.controlBackground,
