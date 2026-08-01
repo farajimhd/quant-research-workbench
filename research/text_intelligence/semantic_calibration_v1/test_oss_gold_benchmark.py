@@ -242,44 +242,47 @@ class OssGoldBenchmarkTests(unittest.TestCase):
         mistral = build_server_command(
             profile=OSS_PROFILES["mistral-small-3.1-24b"]
         )
-        qwen_shell = qwen[-1]
-        mistral_shell = mistral[-1]
-        self.assertEqual(qwen[-3:-1], ["bash", "-lc"])
-        self.assertIn('source "$HOME"/.venvs/vllm/bin/activate', qwen_shell)
-        self.assertIn(
-            "exec env VLLM_USE_FLASHINFER_SAMPLER=0 vllm serve", qwen_shell
+        qwen_serve = qwen[qwen.index("--", 2) + 1 :]
+        mistral_serve = mistral[mistral.index("--", 2) + 1 :]
+        self.assertEqual(qwen[:3], ["wsl.exe", "--", "bash"])
+        self.assertTrue(qwen[3].endswith("run_vllm_benchmark_server_wsl.sh"))
+        self.assertEqual(
+            qwen[qwen.index("--venv-activate") + 1],
+            "~/.venvs/vllm/bin/activate",
         )
-        self.assertIn(
-            'native_cache="$HOME"/.cache/quant-research-workbench/vllm-models',
-            qwen_shell,
+        self.assertEqual(
+            qwen[qwen.index("--native-download-dir") + 1],
+            "~/.cache/quant-research-workbench/vllm-models",
         )
-        self.assertIn("rsync -a --partial --delete --info=progress2", qwen_shell)
-        self.assertIn('--download-dir "$native_cache"', qwen_shell)
-        self.assertIn("--language-model-only", qwen_shell)
-        self.assertIn("--reasoning-parser", qwen_shell)
-        self.assertIn("--max-num-seqs 64", qwen_shell)
-        self.assertNotIn("--safetensors-load-strategy", qwen_shell)
-        self.assertIn("--tokenizer-mode", mistral_shell)
-        self.assertIn("--config-format", mistral_shell)
-        self.assertNotIn("--max-num-seqs", mistral_shell)
-        self.assertNotIn("--safetensors-load-strategy", mistral_shell)
+        self.assertIn("--language-model-only", qwen_serve)
+        self.assertIn("--reasoning-parser", qwen_serve)
+        self.assertEqual(qwen_serve[qwen_serve.index("--max-num-seqs") + 1], "64")
+        self.assertNotIn("--safetensors-load-strategy", qwen_serve)
+        self.assertIn("--tokenizer-mode", mistral_serve)
+        self.assertIn("--config-format", mistral_serve)
+        self.assertNotIn("--max-num-seqs", mistral_serve)
+        self.assertNotIn("--safetensors-load-strategy", mistral_serve)
+
+        launcher = Path(__file__).with_name("run_vllm_benchmark_server_wsl.sh")
+        launcher_text = launcher.read_text(encoding="utf-8")
+        self.assertIn("rsync -a --partial --delete --info=progress2", launcher_text)
+        self.assertIn('--download-dir "$native_cache"', launcher_text)
 
     def test_server_max_num_seqs_override_replaces_profile_default(self) -> None:
         command = build_server_command(
             profile=OSS_PROFILES["qwen35-a3b"], max_num_seqs=32
         )
-        self.assertIn("--max-num-seqs 32", command[-1])
-        self.assertNotIn("--max-num-seqs 64", command[-1])
+        serve = command[command.index("--", 2) + 1 :]
+        self.assertEqual(serve[serve.index("--max-num-seqs") + 1], "32")
+        self.assertNotIn("64", serve)
 
     def test_server_command_quotes_paths_after_activating_wsl_venv(self) -> None:
         command = build_server_command(
             profile=OSS_PROFILES["20b"],
             model_path="/mnt/d/models with spaces/openai-gpt-oss-20b",
         )
-        self.assertIn(
-            "'/mnt/d/models with spaces/openai-gpt-oss-20b'", command[-1]
-        )
-        self.assertNotIn("rsync -a", command[-1])
+        self.assertIn("/mnt/d/models with spaces/openai-gpt-oss-20b", command)
+        self.assertIn("--skip-stage", command)
 
     def test_combined_report_adds_local_row_without_equating_speed_modes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

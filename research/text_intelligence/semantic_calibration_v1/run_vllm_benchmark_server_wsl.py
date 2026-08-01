@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import shlex
 import subprocess
+from pathlib import Path
 
 from .oss_gold_benchmark import OSS_PROFILES, OssProfile
 
@@ -10,19 +10,7 @@ from .oss_gold_benchmark import OSS_PROFILES, OssProfile
 DEFAULT_DOWNLOAD_DIR = "/mnt/d/models_artifacts/opensource/huggingface"
 DEFAULT_NATIVE_DOWNLOAD_DIR = "~/.cache/quant-research-workbench/vllm-models"
 DEFAULT_VENV_ACTIVATE = "~/.venvs/vllm/bin/activate"
-
-
-def _source_command(activate_path: str) -> str:
-    """Return a bash-safe source command while preserving home expansion."""
-    if activate_path.startswith("~/"):
-        return f'source "$HOME"/{shlex.quote(activate_path[2:])}'
-    return f"source {shlex.quote(activate_path)}"
-
-
-def _bash_path_expression(path: str) -> str:
-    if path.startswith("~/"):
-        return f'"$HOME"/{shlex.quote(path[2:])}'
-    return shlex.quote(path)
+DEFAULT_LAUNCHER = Path(__file__).with_suffix(".sh")
 
 
 def _cache_repo_name(model: str) -> str:
@@ -32,81 +20,13 @@ def _cache_repo_name(model: str) -> str:
     return "models--" + "--".join(parts)
 
 
-def _native_stage_script(
-    *, profile: OssProfile, durable_download_dir: str, native_download_dir: str
-) -> str:
-    repo_name = _cache_repo_name(profile.model)
-    return "\n".join(
-        (
-            f"durable_cache={_bash_path_expression(durable_download_dir)}",
-            f"native_cache={_bash_path_expression(native_download_dir)}",
-            'mkdir -p "$native_cache"',
-            'cache_fs=$(stat -f -c %T "$native_cache")',
-            'case "$cache_fs" in 9p|drvfs) echo "ERROR: native vLLM cache is '
-            'on $cache_fs; choose a WSL-native ext4 path with '
-            '--native-download-dir." >&2; exit 2;; esac',
-            f"repo_name={shlex.quote(repo_name)}",
-            'source_repo="$durable_cache/$repo_name"',
-            'native_repo="$native_cache/$repo_name"',
-            'if [[ -f "$source_repo/refs/main" ]]; then',
-            '  source_revision=$(tr -d "\\r\\n" < "$source_repo/refs/main")',
-            '  [[ "$source_revision" =~ ^[0-9a-f]{40,64}$ ]] || '
-            '{ echo "ERROR: invalid durable model revision." >&2; exit 3; }',
-            '  source_blob_count=$(find "$source_repo/blobs" -maxdepth 1 '
-            '-type f | wc -l | tr -d " ")',
-            '  source_blob_bytes=$(find "$source_repo/blobs" -maxdepth 1 '
-            '-type f -printf "%s\\n" | awk \'{total += $1} END '
-            "{printf \"%.0f\", total}\')",
-            '  expected="$source_revision|$source_blob_count|$source_blob_bytes"',
-            '  [[ -d "$source_repo/snapshots/$source_revision" && '
-            '"$source_blob_count" -gt 0 ]] || { echo "ERROR: durable model '
-            'snapshot is incomplete." >&2; exit 4; }',
-            '  marker="$native_repo/.qwrb-stage-complete"',
-            '  actual=$(cat "$marker" 2>/dev/null || true)',
-            '  if [[ "$actual" != "$expected" || ! -d '
-            '"$native_repo/snapshots/$source_revision" ]]; then',
-            '    command -v rsync >/dev/null 2>&1 || { echo "ERROR: rsync is '
-            'required for resumable native model staging. Install it in WSL '
-            'with: sudo apt-get install rsync" >&2; exit 5; }',
-            '    broken_source=$(find -L '
-            '"$source_repo/snapshots/$source_revision" -xtype l -print -quit)',
-            '    [[ -z "$broken_source" ]] || { echo "ERROR: durable model '
-            'snapshot contains incomplete blob links." >&2; exit 6; }',
-            '    mkdir -p "$native_repo"',
-            '    remaining_bytes=$(LC_ALL=C rsync -a --dry-run --stats '
-            '"$source_repo/" "$native_repo/" | awk -F: '
-            "'/Total transferred file size/ {value=$2; gsub(/[^0-9]/, \"\", "
-            "value); print value}')",
-            '    [[ "$remaining_bytes" =~ ^[0-9]+$ ]] || { echo "ERROR: '
-            'could not calculate remaining native staging bytes." >&2; exit 7; }',
-            '    available_bytes=$(df -PB1 "$native_cache" | awk '
-            "'NR == 2 {print $4}')",
-            '    (( available_bytes >= remaining_bytes + 1073741824 )) || '
-            '{ echo "ERROR: insufficient WSL-native disk space for model '
-            'staging; need the remaining model bytes plus 1 GiB." >&2; exit 8; }',
-            '    echo "STAGING $repo_name revision $source_revision from '
-            '$durable_cache to WSL-native cache $native_cache"',
-            '    rsync -a --partial --delete --info=progress2 '
-            '"$source_repo/" "$native_repo/"',
-            '    native_blob_count=$(find "$native_repo/blobs" -maxdepth 1 '
-            '-type f | wc -l | tr -d " ")',
-            '    native_blob_bytes=$(find "$native_repo/blobs" -maxdepth 1 '
-            '-type f -printf "%s\\n" | awk \'{total += $1} END '
-            "{printf \"%.0f\", total}\')",
-            '    [[ "$native_blob_count" == "$source_blob_count" && '
-            '"$native_blob_bytes" == "$source_blob_bytes" && -d '
-            '"$native_repo/snapshots/$source_revision" ]] || { echo '
-            '"ERROR: native model staging audit failed." >&2; exit 9; }',
-            '    printf "%s" "$expected" > "$marker"',
-            '  else',
-            '    echo "USING validated WSL-native model cache $native_repo"',
-            '  fi',
-            'else',
-            '  echo "Durable model cache is absent; vLLM will download once '
-            'into WSL-native cache $native_cache"',
-            'fi',
-        )
-    )
+def _windows_to_wsl_path(path: Path) -> str:
+    resolved = path.resolve()
+    drive = resolved.drive.rstrip(":").lower()
+    if len(drive) != 1 or not drive.isalpha():
+        raise ValueError(f"WSL launcher must be on a Windows drive: {resolved}")
+    relative = resolved.as_posix().split(":", 1)[1].lstrip("/")
+    return f"/mnt/{drive}/{relative}"
 
 
 def build_server_command(
@@ -123,6 +43,7 @@ def build_server_command(
     gpu_memory_utilization: float = 0.88,
     max_model_len: int = 65_536,
     max_num_seqs: int | None = None,
+    launcher_path: Path = DEFAULT_LAUNCHER,
 ) -> list[str]:
     serve = [
         vllm_bin,
@@ -138,8 +59,6 @@ def build_server_command(
         str(gpu_memory_utilization),
         "--max-model-len",
         str(max_model_len),
-        "--download-dir",
-        "__NATIVE_CACHE__",
         "--enable-prefix-caching",
     ]
     resolved_max_num_seqs = (
@@ -148,43 +67,36 @@ def build_server_command(
     if resolved_max_num_seqs is not None:
         serve.extend(("--max-num-seqs", str(resolved_max_num_seqs)))
     serve.extend(profile.server_args)
+
     command = ["wsl.exe"]
     if distro:
         command.extend(("-d", distro))
-    serve_command = " ".join(
-        '"$native_cache"' if token == "__NATIVE_CACHE__" else shlex.quote(token)
-        for token in serve
-    )
-    shell_command = "\n".join(
+    command.extend(
         (
-            "set -euo pipefail",
-            _source_command(venv_activate),
-            (
-                _native_stage_script(
-                    profile=profile,
-                    durable_download_dir=download_dir,
-                    native_download_dir=native_download_dir,
-                )
-                if model_path is None
-                else "\n".join(
-                    (
-                        f"native_cache={_bash_path_expression(native_download_dir)}",
-                        'mkdir -p "$native_cache"',
-                    )
-                )
-            ),
-            "exec env VLLM_USE_FLASHINFER_SAMPLER=0 " + serve_command,
+            "--",
+            "bash",
+            _windows_to_wsl_path(launcher_path),
+            "--venv-activate",
+            venv_activate,
+            "--durable-download-dir",
+            download_dir,
+            "--native-download-dir",
+            native_download_dir,
+            "--repo-name",
+            _cache_repo_name(profile.model),
         )
     )
-    command.extend(("--", "bash", "-lc", shell_command))
+    if model_path is not None:
+        command.append("--skip-stage")
+    command.extend(("--", *serve))
     return command
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Download when absent and serve one calibrated local benchmark model "
-            "through vLLM in WSL."
+            "Stage and serve one calibrated local benchmark model through vLLM "
+            "in WSL."
         )
     )
     parser.add_argument("--profile", choices=sorted(OSS_PROFILES), required=True)

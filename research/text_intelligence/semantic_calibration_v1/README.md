@@ -237,7 +237,10 @@ Qwen checkpoint needs approximately 67 GiB plus working headroom. Install
 `rsync` in WSL if it is absent.
 Before invoking `vllm`, the launcher starts Bash and sources
 `~/.venvs/vllm/bin/activate`; if that environment is missing, serving stops
-immediately instead of falling back to an unrelated system installation.
+immediately instead of falling back to an unrelated system installation. The
+Python entry point invokes the adjacent Bash launcher as a file and passes each
+value as a separate process argument; it does not embed a multiline `bash -lc`
+command that Windows or `wsl.exe` can reinterpret.
 For the existing GPT-OSS comparison:
 
 ```powershell
