@@ -238,6 +238,12 @@ def scoped_news_summary(
         "issuer_history_context_eligible": any(
             bool(row.get("issuer_history_context_eligible")) for row in relevant
         ),
+        "prior_primary_context_eligible": any(
+            bool(row.get("prior_primary_context_eligible")) for row in relevant
+        ),
+        "episode_followup_eligible": any(
+            bool(row.get("episode_followup_eligible")) for row in relevant
+        ),
         "issuer_count": len(
             {str(row.get("ticker") or "") for row in relevant if row.get("ticker")}
         ),

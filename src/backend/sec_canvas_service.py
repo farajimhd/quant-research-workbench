@@ -59,6 +59,17 @@ def sec_filings_payload(
     start_date: str = "",
     end_date: str = "",
     query_id: str = "",
+    role: str = "",
+    origin: str = "",
+    direction: str = "",
+    label_state: str = "",
+    impact: str = "",
+    security_scope: str = "",
+    forecast_eligible: str = "",
+    reaction_eligible: str = "",
+    history_eligible: str = "",
+    prior_context_eligible: str = "",
+    followup_eligible: str = "",
 ) -> dict[str, Any]:
     window = resolve_text_query_window(
         as_of=as_of,
@@ -78,6 +89,34 @@ def sec_filings_payload(
     if safe_content not in {"all", "readable", "xbrl"}:
         raise ValueError("SEC content must be all, readable, or xbrl.")
     safe_ticker = normalize_ticker(ticker) if ticker.strip() else ""
+    token_pattern = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+    label_filters = {
+        "role": role.strip().lower(),
+        "origin": origin.strip().lower(),
+        "direction": direction.strip().lower(),
+    }
+    for name, value in label_filters.items():
+        if value and not token_pattern.fullmatch(value):
+            raise ValueError(f"SEC {name} filter is invalid.")
+    safe_security_scope = " ".join(security_scope.strip().lower().split())
+    if safe_security_scope and not re.fullmatch(r"[a-z0-9][a-z0-9 ,/&()\-]{0,127}", safe_security_scope):
+        raise ValueError("SEC security_scope filter is invalid.")
+    safe_label_state = label_state.strip().lower()
+    if safe_label_state not in {"", "classified", "pending", "quality"}:
+        raise ValueError("SEC label_state filter is invalid.")
+    safe_impact = impact.strip()
+    if safe_impact and safe_impact not in {"1", "2", "3", "4", "5"}:
+        raise ValueError("SEC impact filter is invalid.")
+    eligibility_filters = {
+        "forecast_eligible": forecast_eligible.strip().lower(),
+        "reaction_eligible": reaction_eligible.strip().lower(),
+        "history_eligible": history_eligible.strip().lower(),
+        "prior_context_eligible": prior_context_eligible.strip().lower(),
+        "followup_eligible": followup_eligible.strip().lower(),
+    }
+    for name, value in eligibility_filters.items():
+        if value not in {"", "eligible", "ineligible"}:
+            raise ValueError(f"SEC {name} filter is invalid.")
     before_time = parse_optional_as_of(before)
     query_params = {
         "content": safe_content,
@@ -87,6 +126,11 @@ def sec_filings_payload(
         "search": search.strip(),
         "start": window_start.isoformat(),
         "ticker": safe_ticker,
+        "impact": safe_impact,
+        "label_state": safe_label_state,
+        **label_filters,
+        "security_scope": safe_security_scope,
+        **eligibility_filters,
     }
     if query_id.strip():
         existing_session = TEXT_QUERY_SESSIONS.get(query_id, "sec")
@@ -112,6 +156,14 @@ def sec_filings_payload(
             before_accession=before_accession,
             content=safe_content,
             window_start=window_start,
+            impact=safe_impact,
+            label_state=safe_label_state,
+            role=label_filters["role"],
+            origin=label_filters["origin"],
+            direction=label_filters["direction"],
+            security_scope=safe_security_scope,
+            ticker_label=safe_ticker,
+            eligibility_filters=eligibility_filters,
         ),
     )
     has_more = len(rows) > safe_limit
@@ -444,7 +496,7 @@ def taxonomy_labels_sql(database: str) -> str:
     """
 
 
-def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, lookback_hours: int, search: str, ticker: str, before: datetime | None, before_accession: str, content: str = "all", window_start: datetime | None = None) -> str:
+def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, lookback_hours: int, search: str, ticker: str, before: datetime | None, before_accession: str, content: str = "all", window_start: datetime | None = None, impact: str = "", label_state: str = "", role: str = "", origin: str = "", direction: str = "", security_scope: str = "", ticker_label: str = "", eligibility_filters: dict[str, str] | None = None) -> str:
     db = quote_ident(database)
     instant = sql_string(clickhouse_timestamp(cutoff))
     start = sql_string(clickhouse_timestamp(window_start or (cutoff - timedelta(hours=lookback_hours))))
@@ -492,7 +544,24 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
         before_sql = sql_string(clickhouse_timestamp(before))
         accession_sql = sql_string(before_accession)
         conditions.append(f"(f.accepted_at_utc < parseDateTime64BestEffort({before_sql}) OR (f.accepted_at_utc = parseDateTime64BestEffort({before_sql}) AND f.accession_number < {accession_sql}))")
-    outer = f"WHERE filing_label = {sql_string(label)}" if label else ""
+    active_eligibility = eligibility_filters or {}
+    has_intelligence_filter = bool(role or origin or direction or any(active_eligibility.values()))
+    if has_intelligence_filter or label_state in {"classified", "quality"}:
+        conditions.append(
+            f"f.accession_number IN ({sec_label_accessions_sql(cutoff=cutoff, database=database, direction=direction, eligibility_filters=active_eligibility, origin=origin, role=role, start=window_start or (cutoff - timedelta(hours=lookback_hours)), ticker=ticker_label, quality_only=label_state == 'quality')})"
+        )
+    elif label_state == "pending":
+        conditions.append(
+            f"f.accession_number NOT IN ({sec_label_accessions_sql(cutoff=cutoff, database=database, direction='', eligibility_filters={}, origin='', role='', start=window_start or (cutoff - timedelta(hours=lookback_hours)), ticker=ticker_label, quality_only=False)})"
+        )
+    outer_conditions: list[str] = []
+    if label:
+        outer_conditions.append(f"filing_label = {sql_string(label)}")
+    if impact:
+        outer_conditions.append(f"impact_score = {int(impact)}")
+    if security_scope:
+        outer_conditions.append(f"lowerUTF8(affected_security_scope) = {sql_string(security_scope)}")
+    outer = f"WHERE {' AND '.join(outer_conditions)}" if outer_conditions else ""
     return f"""
         WITH {taxonomy_cte_sql(database)}
         SELECT *
@@ -513,6 +582,59 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
         ORDER BY accepted_at_utc DESC, accession_number DESC
         LIMIT {int(limit)}
         FORMAT JSONEachRow
+    """
+
+
+def sec_label_accessions_sql(*, cutoff: datetime, database: str, direction: str, eligibility_filters: dict[str, str], origin: str, role: str, start: datetime, ticker: str, quality_only: bool) -> str:
+    """Return filing accessions whose aggregate V5 document labels match the query."""
+    db = quote_ident(database)
+    instant = sql_string(clickhouse_timestamp(cutoff))
+    start_sql = sql_string(clickhouse_timestamp(start))
+    where = [
+        "l.corpus = 'sec'",
+        "l.labeling_version = 'scoped_text_labeling_v5'",
+        f"l.source_timestamp >= parseDateTime64BestEffort({start_sql})",
+        f"l.source_timestamp <= parseDateTime64BestEffort({instant})",
+    ]
+    if ticker:
+        where.append(f"l.ticker = {sql_string(ticker)}")
+    having: list[str] = []
+    if role:
+        having.append(f"countIf(l.content_role = {sql_string(role)}) > 0")
+    if origin:
+        having.append(f"countIf(l.source_origin = {sql_string(origin)}) > 0")
+    if direction == "mixed":
+        having.append("uniqExact(l.semantic_direction) > 1 OR countIf(l.semantic_direction = 'mixed') > 0")
+    elif direction:
+        having.append(f"uniqExact(l.semantic_direction) = 1 AND any(l.semantic_direction) = {sql_string(direction)}")
+    expressions = {
+        "forecast_eligible": "l.forecast_trigger_eligible",
+        "reaction_eligible": "l.reaction_evaluation_eligible",
+        "history_eligible": "l.issuer_history_context_eligible",
+        "prior_context_eligible": "JSONExtractBool(l.classification_json, 'prior_primary_context_eligible')",
+        "followup_eligible": "JSONExtractBool(l.classification_json, 'episode_followup_eligible')",
+    }
+    for name, value in eligibility_filters.items():
+        if value:
+            having.append(f"max({expressions[name]}) = {1 if value == 'eligible' else 0}")
+    if quality_only:
+        having.append("countIf(position(l.classification_json, 'quality_flags') > 0 AND position(l.classification_json, '[]') = 0) > 0")
+    having_sql = f" HAVING {' AND '.join(f'({item})' for item in having)}" if having else ""
+    return f"""
+        SELECT d.accession_number
+        FROM
+        (
+            SELECT accession_number, document_id
+            FROM {db}.sec_filing_document_v3
+            PREWHERE source_archive_date >= toDate(parseDateTime64BestEffort({start_sql}))
+              AND source_archive_date <= toDate(parseDateTime64BestEffort({instant}))
+            WHERE source_revision_at <= parseDateTime64BestEffort({instant})
+            ORDER BY source_revision_rank DESC, inserted_at DESC
+            LIMIT 1 BY cik, accession_number, document_id
+        ) AS d
+        INNER JOIN {db}.scoped_text_labels_v5 AS l FINAL ON l.source_id = d.document_id
+        WHERE {' AND '.join(where)}
+        GROUP BY d.accession_number{having_sql}
     """
 
 

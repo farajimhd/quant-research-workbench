@@ -94,6 +94,23 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("canonical_news_id < 'news-002'", sql)
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
+    def test_each_eligibility_filter_queries_aggregate_label_state_before_limit(self, query_mock) -> None:
+        trading_news_rows(
+            as_of="2026-07-10T13:45:00Z",
+            forecast_eligible="eligible",
+            reaction_eligible="ineligible",
+            prior_context_eligible="eligible",
+            followup_eligible="ineligible",
+        )
+        sql = query_mock.call_args_list[0].args[0]
+        self.assertIn("max(l.forecast_trigger_eligible) = 1", sql)
+        self.assertIn("max(l.reaction_evaluation_eligible) = 0", sql)
+        self.assertIn("JSONExtractBool(l.classification_json, 'prior_primary_context_eligible')", sql)
+        self.assertIn("JSONExtractBool(l.classification_json, 'episode_followup_eligible')", sql)
+        self.assertIn("GROUP BY l.source_id HAVING", sql)
+        self.assertLess(sql.index("scoped_text_labels_v5"), sql.index("LIMIT 101"))
+
+    @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_unfiltered_ticker_query_limits_events_before_rendered_join(self, query_mock) -> None:
         trading_news_rows(
             as_of="2026-07-10T13:45:00Z",
@@ -116,6 +133,8 @@ class TradingNewsTests(unittest.TestCase):
             trading_news_rows(content="summary")
         with self.assertRaises(HTTPException):
             trading_news_rows(kind="urgent")
+        with self.assertRaises(HTTPException):
+            trading_news_rows(forecast_eligible="maybe")
 
     def test_news_kind_classification_is_shared_with_detail_rows(self) -> None:
         self.assertEqual(classify_news_kind({"provider_tags": ["BenzAI"]}, 1), "ai")

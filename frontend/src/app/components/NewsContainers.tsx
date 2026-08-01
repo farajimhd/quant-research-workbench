@@ -109,6 +109,8 @@ type ScopedNewsSummary = {
   forecast_trigger_eligible: boolean;
   issuer_count: number;
   issuer_history_context_eligible: boolean;
+  prior_primary_context_eligible: boolean;
+  episode_followup_eligible: boolean;
   label_count: number;
   labeling_version: string;
   reaction_evaluation_eligible: boolean;
@@ -120,6 +122,8 @@ type ScopedNewsSummary = {
 };
 type NewsTemperature = "cold" | "hot" | "old";
 type AllNewsSettings = { content: string; endDate: string; kind: string; limit: number; lookbackHours: number; rangeMode: "custom" | "preset"; startDate: string; ticker: string };
+type EligibilityQuery = { forecast: string; reaction: string; history: string; prior: string; followup: string };
+const EMPTY_ELIGIBILITY_QUERY: EligibilityQuery = { forecast: "", reaction: "", history: "", prior: "", followup: "" };
 type NewsSelection = { newsId: string; publishedAt: string; queryId: string };
 
 // Product-wide contract: hot is neon red (<= 4h), cold is neon blue (<= 24h),
@@ -132,9 +136,9 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
   const [committedSearch, setCommittedSearch] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [sentimentSort, setSentimentSort] = useState<SentimentSortOrder>("none");
-  const [role, setRole] = useState(""); const [origin, setOrigin] = useState(""); const [direction, setDirection] = useState(""); const [eligibility, setEligibility] = useState(""); const [labelState, setLabelState] = useState("");
+  const [role, setRole] = useState(""); const [origin, setOrigin] = useState(""); const [direction, setDirection] = useState(""); const [eligibilityFilters, setEligibilityFilters] = useState<EligibilityQuery>(EMPTY_ELIGIBILITY_QUERY); const [labelState, setLabelState] = useState("");
   const customReady = settings.rangeMode === "custom" && settings.startDate && settings.endDate;
-  const state = useNewsQuery({ asOf, content: settings.content, direction, eligibility, endDate: customReady ? settings.endDate : "", hours: settings.lookbackHours, kind: settings.kind, labelState, limit: settings.limit, live, origin, refreshKey, role, search: committedSearch, startDate: customReady ? settings.startDate : "", ticker: settings.ticker });
+  const state = useNewsQuery({ asOf, content: settings.content, direction, eligibilityFilters, endDate: customReady ? settings.endDate : "", hours: settings.lookbackHours, kind: settings.kind, labelState, limit: settings.limit, live, origin, refreshKey, role, search: committedSearch, startDate: customReady ? settings.startDate : "", ticker: settings.ticker });
   const presentations = useTickerPresentations(state.rows.flatMap((row) => row.ticker_link_sample ?? []));
   const displayRows = useMemo(() => sortRowsBySentimentScore(state.rows, (row) => row.scoped_summary?.semantic_score, sentimentSort), [sentimentSort, state.rows]);
 
@@ -149,7 +153,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
       <label><span>Role</span><select aria-label="News content role" onChange={(event) => setRole(event.target.value)} value={role}><option value="">All roles</option><option value="primary_event">Primary event</option><option value="analyst_event">Analyst event</option><option value="regulatory_event">Regulatory event</option><option value="editorial_analysis">Editorial analysis</option><option value="market_roundup">Market roundup</option><option value="mover_recap">Mover recap</option><option value="why_moving_followup">Why-moving follow-up</option><option value="automated_market_statistics">Automated summary</option></select></label>
       <label><span>Direction</span><select aria-label="Semantic direction" onChange={(event) => setDirection(event.target.value)} value={direction}><option value="">Any direction</option><option value="positive">Positive</option><option value="negative">Negative</option><option value="neutral">Neutral</option><option value="mixed">Mixed</option></select></label>
       <label><span>Origin</span><select aria-label="Source origin" onChange={(event) => setOrigin(event.target.value)} value={origin}><option value="">Any origin</option><option value="issuer">Issuer</option><option value="analyst">Analyst</option><option value="regulatory">Regulatory</option><option value="editorial">Editorial</option><option value="automated">Automated</option></select></label>
-      <label><span>Use</span><select aria-label="News eligibility" onChange={(event) => setEligibility(event.target.value)} value={eligibility}><option value="">Any use</option><option value="forecast">Forecast</option><option value="reaction">Reaction study</option><option value="history">Issuer history</option></select></label>
+      <EligibilityFilters filters={eligibilityFilters} onChange={setEligibilityFilters} prefix="News" />
       <label><span>Labels</span><select aria-label="Label state" onChange={(event) => setLabelState(event.target.value)} value={labelState}><option value="">Any state</option><option value="classified">Classified</option><option value="pending">Pending</option><option value="quality">Quality issue</option></select></label>
       <label><span>Source format</span><select aria-label="Legacy source format" onChange={(event) => onSettingsChange({ kind: event.target.value })} value={settings.kind}><option value="all">All formats</option><option value="company">Company feed</option><option value="regulatory">Regulatory feed</option><option value="analyst">Analyst feed</option><option value="editorial">Editorial feed</option><option value="multi">Multi-company</option><option value="ai">Automated</option></select></label>
       <label><span>Text</span><select aria-label="News text coverage" onChange={(event) => onSettingsChange({ content: event.target.value })} value={settings.content}><option value="all">All</option><option value="full">Full text</option><option value="title">Title only</option></select></label>
@@ -158,7 +162,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
     <NewsStatus state={state} />
     <div className="news-table-wrap intelligence-feed-scroll">
       <div className="intelligence-feed news-intelligence-feed" role="list">
-        <div className="intelligence-feed-header news-intelligence-grid" role="row"><span>Time</span><span>Ticker</span><span>Headline &amp; context</span><SentimentSortButton onChange={setSentimentSort} order={sentimentSort} /><span>Use &amp; text</span></div>
+        <div className="intelligence-feed-header news-intelligence-grid" role="row"><span>Time</span><span>Ticker</span><span>Headline &amp; context</span><span>Role</span><span>Origin</span><SentimentSortButton onChange={setSentimentSort} order={sentimentSort} /><span>Forecast</span><span>Reaction</span><span>History</span><span>Prior context</span><span>Follow-up</span><span>Text</span></div>
         {displayRows.map((row) => {
           const tone = newsTemperature(row.published_at_utc, Date.parse(state.asOf || asOf));
           const directionValue = normalizeSemanticDirection(row.scoped_summary?.semantic_direction);
@@ -166,12 +170,19 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
             <div className="intelligence-time-block"><NewsTemperatureTag tone={tone} /><MarketTime className="news-row-time" dateStyle="short" includeDate value={row.published_at_utc} /></div>
             <div className="intelligence-identity-block"><TickerList presentations={presentations} tickers={row.ticker_link_sample} /></div>
             <div className="intelligence-main-block">
-              <div className="intelligence-meta-line"><ScopedClass summary={row.scoped_summary} /><span className="news-origin">{readableLabel(row.scoped_summary?.source_origin || row.news_origin || "Unknown")}</span><ScopedConcepts concepts={row.scoped_summary?.event_concepts} /></div>
+              <div className="intelligence-meta-line"><ScopedConcepts concepts={row.scoped_summary?.event_concepts} /></div>
               <button className="news-headline-button" onClick={() => openNewsPage(row, state.queryId)} type="button"><strong>{row.title || "Untitled story"}</strong>{newsTeaser(row) ? <small>{newsTeaser(row)}</small> : null}</button>
               <div className="intelligence-support-line"><span>{row.url_domain || "News"}</span></div>
             </div>
+            <div className="news-label-value"><ScopedClass summary={row.scoped_summary} /></div>
+            <div className="news-label-value">{readableLabel(row.scoped_summary?.source_origin || row.news_origin || "Unknown")}</div>
             <div className="intelligence-sentiment-cell"><ScopedDirection summary={row.scoped_summary} /></div>
-            <div className="intelligence-utility-cell"><EligibilityMarks summary={row.scoped_summary} /><NewsTextState row={row} /></div>
+            <EligibilityCell active={row.scoped_summary?.forecast_trigger_eligible} />
+            <EligibilityCell active={row.scoped_summary?.reaction_evaluation_eligible} />
+            <EligibilityCell active={row.scoped_summary?.issuer_history_context_eligible} />
+            <EligibilityCell active={row.scoped_summary?.prior_primary_context_eligible} />
+            <EligibilityCell active={row.scoped_summary?.episode_followup_eligible} />
+            <div className="intelligence-utility-cell"><NewsTextState row={row} /></div>
           </article>;
         })}
       </div>
@@ -182,7 +193,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
 }
 
 export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settings, symbol }: { asOf: string; live?: boolean; onSymbolChange?: (symbol: string) => void; settings: { lookbackHours: number; showTeaser: boolean }; symbol: string }) {
-  const state = useNewsQuery({ asOf, content: "all", direction: "", eligibility: "", endDate: "", hours: settings.lookbackHours, kind: "all", labelState: "", limit: 100, live, origin: "", refreshKey: 0, role: "", search: "", startDate: "", ticker: symbol });
+  const state = useNewsQuery({ asOf, content: "all", direction: "", eligibilityFilters: EMPTY_ELIGIBILITY_QUERY, endDate: "", hours: settings.lookbackHours, kind: "all", labelState: "", limit: 100, live, origin: "", refreshKey: 0, role: "", search: "", startDate: "", ticker: symbol });
   const presentations = useTickerPresentations([symbol]);
   const effectiveAsOf = state.asOf || asOf;
   const asOfMs = Date.parse(effectiveAsOf);
@@ -282,7 +293,7 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
   </article>;
 }
 
-function useNewsQuery({ asOf, content, direction, eligibility, endDate, hours, kind, labelState, limit, live, origin, refreshKey, role, search, startDate, ticker }: { asOf: string; content: string; direction: string; eligibility: string; endDate: string; hours: number; kind: string; labelState: string; limit: number; live: boolean; origin: string; refreshKey: number; role: string; search: string; startDate: string; ticker: string }) {
+function useNewsQuery({ asOf, content, direction, eligibilityFilters, endDate, hours, kind, labelState, limit, live, origin, refreshKey, role, search, startDate, ticker }: { asOf: string; content: string; direction: string; eligibilityFilters: EligibilityQuery; endDate: string; hours: number; kind: string; labelState: string; limit: number; live: boolean; origin: string; refreshKey: number; role: string; search: string; startDate: string; ticker: string }) {
   const [rows, setRows] = useState<NewsRow[]>([]); const [payload, setPayload] = useState<NewsPayload | null>(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const [loadingMore, setLoadingMore] = useState(false);
   const queryIdRef = useRef("");
   const [liveConnected, setLiveConnected] = useState(false);
@@ -290,12 +301,12 @@ function useNewsQuery({ asOf, content, direction, eligibility, endDate, hours, k
   const latestRevision = useRef<number | null>(null);
   const load = useCallback(async (before = "", beforeId = "", signal?: AbortSignal, pageAsOf = "") => {
     const queryAsOf = pageAsOf || (live ? new Date().toISOString() : asOf);
-    const next = await api<NewsPayload>(`/api/trading/news${query({ as_of: queryAsOf, before: before || undefined, before_id: beforeId || undefined, content, direction: direction || undefined, eligibility: eligibility || undefined, end_date: endDate || undefined, kind: kind === "all" ? undefined : kind, label_state: labelState || undefined, limit, lookback_hours: hours, origin: origin || undefined, query_id: before ? queryIdRef.current : undefined, role: role || undefined, search: search || undefined, start_date: startDate || undefined, ticker: ticker || undefined })}`, { signal, timeoutMs: 30000 });
+    const next = await api<NewsPayload>(`/api/trading/news${query({ as_of: queryAsOf, before: before || undefined, before_id: beforeId || undefined, content, direction: direction || undefined, end_date: endDate || undefined, followup_eligible: eligibilityFilters.followup || undefined, forecast_eligible: eligibilityFilters.forecast || undefined, history_eligible: eligibilityFilters.history || undefined, kind: kind === "all" ? undefined : kind, label_state: labelState || undefined, limit, lookback_hours: hours, origin: origin || undefined, prior_context_eligible: eligibilityFilters.prior || undefined, query_id: before ? queryIdRef.current : undefined, reaction_eligible: eligibilityFilters.reaction || undefined, role: role || undefined, search: search || undefined, start_date: startDate || undefined, ticker: ticker || undefined })}`, { signal, timeoutMs: 30000 });
     if (signal?.aborted) return;
     queryIdRef.current = next.query_id;
     setError("");
     setPayload(next); setRows((current) => before ? [...current, ...next.rows.filter((row) => !current.some((item) => item.canonical_news_id === row.canonical_news_id))] : next.rows);
-  }, [asOf, content, direction, eligibility, endDate, hours, kind, labelState, limit, live, origin, role, search, startDate, ticker]);
+  }, [asOf, content, direction, eligibilityFilters.followup, eligibilityFilters.forecast, eligibilityFilters.history, eligibilityFilters.prior, eligibilityFilters.reaction, endDate, hours, kind, labelState, limit, live, origin, role, search, startDate, ticker]);
   useEffect(() => { const controller = new AbortController(); setLoading(true); setError(""); load("", "", controller.signal).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); return () => controller.abort(); }, [load, refreshKey]);
   useEffect(() => {
     if (!live) { setLiveConnected(false); latestRevision.current = null; return; }
@@ -346,7 +357,8 @@ function TickerList({ presentations, tickers = [] }: { presentations: Record<str
 function NewsTextState({ row }: { row: NewsRow }) { const state = row.render_status === "unrendered" ? "unrendered" : row.is_title_only ? "title" : "full"; return <span className="news-text-state" data-state={state}>{state === "unrendered" ? "Unrendered" : row.is_title_only ? "Title" : row.has_pdf ? "PDF" : row.has_external_text ? "Full" : "Body"}</span>; }
 function NewsKind({ classification }: { classification: NewsClassification }) { const values = { ai: { Icon: Bot, label: "AI" }, analyst: { Icon: TrendingUp, label: "Analyst" }, company: { Icon: Building2, label: classification.format === "earnings_flash" ? "Company earnings" : "Company" }, editorial: { Icon: Newspaper, label: "Editorial" }, insights: { Icon: Lightbulb, label: "Insights" }, market: { Icon: Globe2, label: classification.format === "trading_halt" ? "Trading halt" : "Market" }, multi: { Icon: Layers3, label: "Multi-company" }, regulatory: { Icon: FileCheck2, label: "Regulatory" }, why_moving: { Icon: Megaphone, label: "Why moving" } }; const value = values[classification.kind]; return <span className="news-kind" data-kind={classification.kind} title={`${Math.round(classification.confidence * 100)}% classification confidence`}><value.Icon size={11} />{value.label}</span>; }
 function ScopedDirection({ prominent = false, salient = false, summary }: { prominent?: boolean; salient?: boolean; summary?: ScopedNewsSummary | null }) { return <SemanticDirectionMetric direction={summary?.semantic_direction} prominent={prominent || salient} score={summary?.semantic_score} />; }
-function EligibilityMarks({ summary }: { summary?: ScopedNewsSummary | null }) { if (!summary) return <span className="news-eligibility" data-state="pending">Pending</span>; return <span className="news-eligibility"><b data-active={summary.forecast_trigger_eligible} title="Forecast trigger">F</b><b data-active={summary.reaction_evaluation_eligible} title="Reaction study">R</b><b data-active={summary.issuer_history_context_eligible} title="Issuer history">H</b></span>; }
+function EligibilityCell({ active }: { active?: boolean }) { return <span className="eligibility-column-value" data-active={active ? "true" : "false"}>{active ? "Eligible" : "—"}</span>; }
+function EligibilityFilters({ filters, onChange, prefix }: { filters: EligibilityQuery; onChange: (next: EligibilityQuery) => void; prefix: string }) { const fields: { key: keyof EligibilityQuery; label: string }[] = [{ key: "forecast", label: "Forecast" }, { key: "reaction", label: "Reaction" }, { key: "history", label: "History" }, { key: "prior", label: "Prior context" }, { key: "followup", label: "Follow-up" }]; return <>{fields.map(({ key, label }) => <label key={key}><span>{label}</span><select aria-label={`${prefix} ${label} eligibility`} onChange={(event) => onChange({ ...filters, [key]: event.target.value })} value={filters[key]}><option value="">Any</option><option value="eligible">Eligible</option><option value="ineligible">Not eligible</option></select></label>)}</>; }
 function ScopedClass({ summary }: { summary?: ScopedNewsSummary | null }) { if (!summary) return <span className="news-scoped-class" data-state="pending">Unclassified</span>; return <span className="news-scoped-class" data-state={summary.forecast_trigger_eligible ? "event" : "context"} title={summary.forecast_trigger_eligible ? "Eligible primary event evidence" : "Supporting context or follow-up"}>{summary.forecast_trigger_eligible ? <CircleDot size={10} /> : <History size={10} />}{readableLabel(summary.content_role || summary.source_origin || "context")}</span>; }
 function ScopedConcepts({ compact = false, concepts = [] }: { compact?: boolean; concepts?: string[] }) { const readable = concepts.map(shortConcept).filter(Boolean); const visible = readable.slice(0, compact ? 1 : 3); if (!visible.length) return null; return <span className="news-scoped-concepts">{visible.map((concept) => <span key={concept}>{concept}</span>)}{readable.length > visible.length ? <span>+{readable.length - visible.length}</span> : null}</span>; }
 function NewsDetailOverview({ summary }: { summary: ScopedNewsSummary }) {
@@ -379,7 +391,7 @@ function NewsClassificationPanel({ classification, summary }: { classification: 
   </details>;
 }
 function ScopedLabelPanel({ label, presentations }: { label: ScopedNewsLabel; presentations: Record<string, TickerPresentation> }) {
-  const summary: ScopedNewsSummary = { content_role: label.content_role, event_concepts: label.event_concepts, forecast_trigger_eligible: label.forecast_trigger_eligible, issuer_count: label.ticker ? 1 : 0, issuer_history_context_eligible: label.issuer_history_context_eligible, label_count: 1, labeling_version: label.labeling_version, reaction_evaluation_eligible: label.reaction_evaluation_eligible, semantic_direction: label.semantic_direction, semantic_score: label.semantic_score, source_origin: label.source_origin };
+  const summary: ScopedNewsSummary = { content_role: label.content_role, episode_followup_eligible: label.episode_followup_eligible, event_concepts: label.event_concepts, forecast_trigger_eligible: label.forecast_trigger_eligible, issuer_count: label.ticker ? 1 : 0, issuer_history_context_eligible: label.issuer_history_context_eligible, label_count: 1, labeling_version: label.labeling_version, prior_primary_context_eligible: label.prior_primary_context_eligible, reaction_evaluation_eligible: label.reaction_evaluation_eligible, semantic_direction: label.semantic_direction, semantic_score: label.semantic_score, source_origin: label.source_origin };
   const confidence = Number.isFinite(label.confidence) ? `${Math.round(label.confidence * 100)}%` : "Not reported";
   return <article className="news-scoped-label">
     <header><div className="news-scoped-label-identity">{label.ticker ? <TickerIdentity logoUrl={presentations[label.ticker]?.logo_url} ticker={label.ticker} /> : <strong>Document-wide</strong>}<ScopedClass summary={summary} /></div><ScopedDirection prominent summary={summary} /></header>

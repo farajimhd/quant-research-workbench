@@ -1493,6 +1493,11 @@ def trading_news_rows(
     start_date: str = "",
     end_date: str = "",
     query_id: str = "",
+    forecast_eligible: str = "",
+    reaction_eligible: str = "",
+    history_eligible: str = "",
+    prior_context_eligible: str = "",
+    followup_eligible: str = "",
 ) -> dict[str, Any]:
     """Return a bounded point-in-time news page for Canvas news containers."""
     safe_limit = max(1, min(limit, 250))
@@ -1527,6 +1532,13 @@ def trading_news_rows(
     safe_direction = direction.strip().lower()
     safe_eligibility = eligibility.strip().lower()
     safe_label_state = label_state.strip().lower()
+    eligibility_filters = {
+        "forecast_eligible": forecast_eligible.strip().lower(),
+        "reaction_eligible": reaction_eligible.strip().lower(),
+        "history_eligible": history_eligible.strip().lower(),
+        "prior_context_eligible": prior_context_eligible.strip().lower(),
+        "followup_eligible": followup_eligible.strip().lower(),
+    }
     token_pattern = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
     for name, value in {
         "role": safe_role,
@@ -1537,6 +1549,9 @@ def trading_news_rows(
             raise HTTPException(status_code=400, detail=f"{name} is invalid")
     if safe_eligibility not in {"", "forecast", "reaction", "history"}:
         raise HTTPException(status_code=400, detail="eligibility is invalid")
+    for name, value in eligibility_filters.items():
+        if value not in {"", "eligible", "ineligible"}:
+            raise HTTPException(status_code=400, detail=f"{name} is invalid")
     if safe_label_state not in {"", "classified", "pending", "quality"}:
         raise HTTPException(status_code=400, detail="label_state is invalid")
 
@@ -1572,26 +1587,39 @@ def trading_news_rows(
     label_conditions = [
         "l.labeling_version = 'scoped_text_labeling_v5'",
     ]
+    label_having: list[str] = []
     if safe_role:
-        label_conditions.append(f"l.content_role = {sql_string(safe_role)}")
+        label_having.append(f"countIf(l.content_role = {sql_string(safe_role)}) > 0")
     if safe_origin:
-        label_conditions.append(f"l.source_origin = {sql_string(safe_origin)}")
+        label_having.append(f"countIf(l.source_origin = {sql_string(safe_origin)}) > 0")
     if safe_direction:
-        label_conditions.append(
-            f"l.semantic_direction = {sql_string(safe_direction)}"
-        )
+        if safe_direction == "mixed":
+            label_having.append("uniqExact(l.semantic_direction) > 1 OR countIf(l.semantic_direction = 'mixed') > 0")
+        else:
+            label_having.append(f"uniqExact(l.semantic_direction) = 1 AND any(l.semantic_direction) = {sql_string(safe_direction)}")
     if safe_eligibility:
         eligibility_column = {
             "forecast": "forecast_trigger_eligible",
             "reaction": "reaction_evaluation_eligible",
             "history": "issuer_history_context_eligible",
         }[safe_eligibility]
-        label_conditions.append(f"l.{eligibility_column} = 1")
+        label_having.append(f"max(l.{eligibility_column}) = 1")
+    eligibility_expressions = {
+        "forecast_eligible": "l.forecast_trigger_eligible",
+        "reaction_eligible": "l.reaction_evaluation_eligible",
+        "history_eligible": "l.issuer_history_context_eligible",
+        "prior_context_eligible": "JSONExtractBool(l.classification_json, 'prior_primary_context_eligible')",
+        "followup_eligible": "JSONExtractBool(l.classification_json, 'episode_followup_eligible')",
+    }
+    for name, value in eligibility_filters.items():
+        if value:
+            label_having.append(f"max({eligibility_expressions[name]}) = {1 if value == 'eligible' else 0}")
+    label_group_having = f" GROUP BY l.source_id HAVING {' AND '.join(f'({item})' for item in label_having)}" if label_having else " GROUP BY l.source_id"
     label_exists = (
         "n.canonical_news_id IN (SELECT source_id "
         "FROM q_live.scoped_text_labels_v5 AS l FINAL "
         f"PREWHERE {' AND '.join(label_prewhere)} "
-        f"WHERE {' AND '.join(label_conditions)})"
+        f"WHERE {' AND '.join(label_conditions)}{label_group_having})"
     )
     quality_label_exists = (
         "n.canonical_news_id IN (SELECT source_id "
@@ -1601,7 +1629,8 @@ def trading_news_rows(
         "AND position(l.classification_json, 'quality_flags') > 0 "
         "AND position(l.classification_json, '[]') = 0)"
     )
-    if safe_role or safe_origin or safe_direction or safe_eligibility:
+    has_label_filters = bool(safe_role or safe_origin or safe_direction or safe_eligibility or any(eligibility_filters.values()))
+    if has_label_filters:
         filters.append(label_exists)
     if safe_label_state == "classified":
         filters.append(label_exists)
@@ -1641,7 +1670,7 @@ def trading_news_rows(
         f"AND has(tickers, {sql_string(safe_ticker)})" if safe_ticker else ""
     )
     source_label_filter = label_exists.replace("n.canonical_news_id", "canonical_news_id")
-    if safe_role or safe_origin or safe_direction or safe_eligibility or safe_label_state == "classified":
+    if has_label_filters or safe_label_state == "classified":
         source_ticker_filter += f"\n              AND {source_label_filter}"
     elif safe_label_state == "pending":
         source_ticker_filter += f"\n              AND NOT ({source_label_filter})"
@@ -1663,6 +1692,7 @@ def trading_news_rows(
         "content": safe_content,
         "direction": safe_direction,
         "eligibility": safe_eligibility,
+        **eligibility_filters,
         "end": cutoff.isoformat(),
         "kind": safe_kind,
         "label_state": safe_label_state,
@@ -3057,11 +3087,21 @@ def trading_news(
     start_date: str = "",
     end_date: str = "",
     query_id: str = "",
+    forecast_eligible: str = "",
+    reaction_eligible: str = "",
+    history_eligible: str = "",
+    prior_context_eligible: str = "",
+    followup_eligible: str = "",
 ) -> dict[str, Any]:
     return trading_news_rows(
-        as_of, lookback_hours, limit, search, ticker, content, kind, before,
-        before_id, role, origin, direction, eligibility, label_state,
-        start_date, end_date, query_id,
+        as_of=as_of, lookback_hours=lookback_hours, limit=limit, search=search,
+        ticker=ticker, content=content, kind=kind, before=before,
+        before_id=before_id, role=role, origin=origin, direction=direction,
+        eligibility=eligibility, label_state=label_state, start_date=start_date,
+        end_date=end_date, query_id=query_id, forecast_eligible=forecast_eligible,
+        reaction_eligible=reaction_eligible, history_eligible=history_eligible,
+        prior_context_eligible=prior_context_eligible,
+        followup_eligible=followup_eligible,
     )
 
 
@@ -3136,9 +3176,20 @@ def trading_sec_filings(
     start_date: str = "",
     end_date: str = "",
     query_id: str = "",
+    role: str = "",
+    origin: str = "",
+    direction: str = "",
+    label_state: str = "",
+    impact: str = "",
+    security_scope: str = "",
+    forecast_eligible: str = "",
+    reaction_eligible: str = "",
+    history_eligible: str = "",
+    prior_context_eligible: str = "",
+    followup_eligible: str = "",
 ) -> dict[str, Any]:
     try:
-        return sec_filings_payload(as_of=as_of, before=before, before_accession=before_accession, content=content, label=label, limit=limit, lookback_hours=lookback_hours, search=search, ticker=ticker, start_date=start_date, end_date=end_date, query_id=query_id)
+        return sec_filings_payload(as_of=as_of, before=before, before_accession=before_accession, content=content, label=label, limit=limit, lookback_hours=lookback_hours, search=search, ticker=ticker, start_date=start_date, end_date=end_date, query_id=query_id, role=role, origin=origin, direction=direction, label_state=label_state, impact=impact, security_scope=security_scope, forecast_eligible=forecast_eligible, reaction_eligible=reaction_eligible, history_eligible=history_eligible, prior_context_eligible=prior_context_eligible, followup_eligible=followup_eligible)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:

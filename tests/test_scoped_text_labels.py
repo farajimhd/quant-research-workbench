@@ -108,6 +108,8 @@ class ScopedTextLabelPresentationTests(unittest.TestCase):
                 "forecast_trigger_eligible": True,
                 "reaction_evaluation_eligible": True,
                 "issuer_history_context_eligible": True,
+                "prior_primary_context_eligible": True,
+                "episode_followup_eligible": False,
             },
             {
                 "ticker": "BBB",
@@ -129,6 +131,8 @@ class ScopedTextLabelPresentationTests(unittest.TestCase):
         self.assertEqual(summary["semantic_direction"], "negative")
         self.assertEqual(summary["event_concepts"], ["margin_pressure"])
         self.assertEqual(summary["issuer_count"], 1)
+        self.assertTrue(summary["prior_primary_context_eligible"])
+        self.assertFalse(summary["episode_followup_eligible"])
 
 
 if __name__ == "__main__":
