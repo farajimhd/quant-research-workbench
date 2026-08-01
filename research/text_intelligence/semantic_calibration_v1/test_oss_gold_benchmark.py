@@ -254,6 +254,7 @@ class OssGoldBenchmarkTests(unittest.TestCase):
             qwen[qwen.index("--native-download-dir") + 1],
             "~/.cache/quant-research-workbench/vllm-models",
         )
+        self.assertEqual(qwen[qwen.index("--wsl-pin-memory") + 1], "1")
         self.assertIn("--language-model-only", qwen_serve)
         self.assertIn("--reasoning-parser", qwen_serve)
         self.assertEqual(qwen_serve[qwen_serve.index("--max-num-seqs") + 1], "64")
@@ -267,6 +268,16 @@ class OssGoldBenchmarkTests(unittest.TestCase):
         launcher_text = launcher.read_text(encoding="utf-8")
         self.assertIn("rsync -a --partial --delete --info=progress2", launcher_text)
         self.assertIn('--download-dir "$native_cache"', launcher_text)
+        self.assertIn(
+            'VLLM_WSL2_ENABLE_PIN_MEMORY="$wsl_pin_memory"', launcher_text
+        )
+
+    def test_server_command_can_explicitly_disable_wsl_pin_memory(self) -> None:
+        command = build_server_command(
+            profile=OSS_PROFILES["mistral-small-3.1-24b"],
+            wsl_pin_memory=False,
+        )
+        self.assertEqual(command[command.index("--wsl-pin-memory") + 1], "0")
 
     def test_server_max_num_seqs_override_replaces_profile_default(self) -> None:
         command = build_server_command(

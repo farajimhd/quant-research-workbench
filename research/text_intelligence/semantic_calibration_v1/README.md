@@ -241,6 +241,12 @@ immediately instead of falling back to an unrelated system installation. The
 Python entry point invokes the adjacent Bash launcher as a file and passes each
 value as a separate process argument; it does not embed a multiline `bash -lc`
 command that Windows or `wsl.exe` can reinterpret.
+The launcher also enables WSL2 pinned memory explicitly. vLLM disables it by
+default under WSL, but the V2 model runner selected for dense models such as
+Mistral requires pinned host memory for CUDA Unified Virtual Addressing. Leave
+this default enabled. `--disable-wsl-pin-memory` exists only for diagnosing an
+older WSL/kernel installation and may require separately forcing a compatible
+legacy model runner.
 For the existing GPT-OSS comparison:
 
 ```powershell

@@ -6,6 +6,7 @@ durable_cache=""
 native_cache=""
 repo_name=""
 skip_stage=false
+wsl_pin_memory=""
 
 while (($#)); do
   case "$1" in
@@ -25,6 +26,10 @@ while (($#)); do
       repo_name=${2:?missing --repo-name value}
       shift 2
       ;;
+    --wsl-pin-memory)
+      wsl_pin_memory=${2:?missing --wsl-pin-memory value}
+      shift 2
+      ;;
     --skip-stage)
       skip_stage=true
       shift
@@ -40,10 +45,18 @@ while (($#)); do
   esac
 done
 
-if [[ -z "$venv_activate" || -z "$durable_cache" || -z "$native_cache" || -z "$repo_name" || $# -eq 0 ]]; then
+if [[ -z "$venv_activate" || -z "$durable_cache" || -z "$native_cache" || -z "$repo_name" || -z "$wsl_pin_memory" || $# -eq 0 ]]; then
   echo "ERROR: incomplete vLLM launcher contract." >&2
   exit 2
 fi
+
+case "$wsl_pin_memory" in
+  0|1) ;;
+  *)
+    echo "ERROR: --wsl-pin-memory must be 0 or 1." >&2
+    exit 2
+    ;;
+esac
 
 expand_home() {
   case "$1" in
@@ -123,4 +136,7 @@ elif [[ "$skip_stage" == false ]]; then
   echo "Durable model cache is absent; vLLM will download once into WSL-native cache $native_cache"
 fi
 
-exec env VLLM_USE_FLASHINFER_SAMPLER=0 "$@" --download-dir "$native_cache"
+exec env \
+  VLLM_USE_FLASHINFER_SAMPLER=0 \
+  VLLM_WSL2_ENABLE_PIN_MEMORY="$wsl_pin_memory" \
+  "$@" --download-dir "$native_cache"

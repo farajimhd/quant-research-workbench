@@ -11,6 +11,7 @@ DEFAULT_DOWNLOAD_DIR = "/mnt/d/models_artifacts/opensource/huggingface"
 DEFAULT_NATIVE_DOWNLOAD_DIR = "~/.cache/quant-research-workbench/vllm-models"
 DEFAULT_VENV_ACTIVATE = "~/.venvs/vllm/bin/activate"
 DEFAULT_LAUNCHER = Path(__file__).with_suffix(".sh")
+DEFAULT_WSL_PIN_MEMORY = True
 
 
 def _cache_repo_name(model: str) -> str:
@@ -43,6 +44,7 @@ def build_server_command(
     gpu_memory_utilization: float = 0.88,
     max_model_len: int = 65_536,
     max_num_seqs: int | None = None,
+    wsl_pin_memory: bool = DEFAULT_WSL_PIN_MEMORY,
     launcher_path: Path = DEFAULT_LAUNCHER,
 ) -> list[str]:
     serve = [
@@ -84,6 +86,8 @@ def build_server_command(
             native_download_dir,
             "--repo-name",
             _cache_repo_name(profile.model),
+            "--wsl-pin-memory",
+            "1" if wsl_pin_memory else "0",
         )
     )
     if model_path is not None:
@@ -119,6 +123,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.88)
     parser.add_argument("--max-model-len", type=int, default=65_536)
     parser.add_argument("--max-num-seqs", type=int)
+    parser.add_argument(
+        "--disable-wsl-pin-memory",
+        action="store_true",
+        help=(
+            "Disable WSL2 pinned memory. The default is enabled because vLLM's "
+            "V2 model runner requires pinned memory for CUDA UVA under WSL."
+        ),
+    )
     parser.add_argument("--print-only", action="store_true")
     args = parser.parse_args(argv)
     if not 0.1 <= args.gpu_memory_utilization <= 0.99:
@@ -140,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         gpu_memory_utilization=args.gpu_memory_utilization,
         max_model_len=args.max_model_len,
         max_num_seqs=args.max_num_seqs,
+        wsl_pin_memory=not args.disable_wsl_pin_memory,
     )
     print("COMMAND " + subprocess.list2cmdline(command), flush=True)
     if args.print_only:
