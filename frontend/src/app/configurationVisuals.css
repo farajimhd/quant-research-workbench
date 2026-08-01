@@ -338,16 +338,22 @@
 .guided-empty p { color: var(--muted-foreground); font-size: 10px; line-height: 1.55; margin: 0 0 8px; max-width: 620px; }
 
 /* Guided setup is intentionally a one-decision-at-a-time experience. */
-.trading-configuration-page:has(.guided-question-surface) .configuration-page-header {
+.trading-configuration-page:has(.guided-question-surface) .configuration-page-header,
+.trading-configuration-page:has(.guided-strategy-wizard) .configuration-page-header {
   gap: 12px;
   min-height: 58px;
   padding: 8px 18px;
 }
-.trading-configuration-page:has(.guided-question-surface) .configuration-page-header::before { bottom: 10px; top: 10px; }
-.trading-configuration-page:has(.guided-question-surface) .configuration-page-icon { height: 36px; width: 36px; }
-.trading-configuration-page:has(.guided-question-surface) .configuration-page-header h1 { font-size: 20px; }
+.trading-configuration-page:has(.guided-question-surface) .configuration-page-header::before,
+.trading-configuration-page:has(.guided-strategy-wizard) .configuration-page-header::before { bottom: 10px; top: 10px; }
+.trading-configuration-page:has(.guided-question-surface) .configuration-page-icon,
+.trading-configuration-page:has(.guided-strategy-wizard) .configuration-page-icon { height: 36px; width: 36px; }
+.trading-configuration-page:has(.guided-question-surface) .configuration-page-header h1,
+.trading-configuration-page:has(.guided-strategy-wizard) .configuration-page-header h1 { font-size: 20px; }
 .trading-configuration-page:has(.guided-question-surface) .configuration-page-header p,
-.trading-configuration-page:has(.guided-question-surface) .configuration-revision-badge { display: none; }
+.trading-configuration-page:has(.guided-question-surface) .configuration-revision-badge,
+.trading-configuration-page:has(.guided-strategy-wizard) .configuration-page-header p,
+.trading-configuration-page:has(.guided-strategy-wizard) .configuration-revision-badge { display: none; }
 .configuration-experience-bar {
   min-height: 48px;
   padding: 6px 10px 6px 14px;
@@ -437,6 +443,63 @@
 .guided-navigation > span { align-self: center; color: var(--muted-foreground); font-size: 12px; justify-self: center; text-align: center; }
 .guided-navigation .button { min-height: 40px; }
 
+/* The strategy wizard is a reading-first configuration document, not a dashboard. */
+.guided-strategy-wizard { display: grid; gap: 0; width: 100%; }
+.guided-strategy-section-nav { align-items: stretch; background: var(--surface); border: 1px solid var(--border); border-bottom: 0; border-radius: 12px 12px 0 0; display: flex; min-width: 0; overflow-x: auto; padding: 0 16px; }
+.guided-strategy-section-nav button { align-items: center; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted-foreground); cursor: pointer; display: inline-flex; flex: 0 0 auto; font: inherit; font-size: 12px; font-weight: 540; gap: 7px; min-height: 45px; padding: 0 12px; }
+.guided-strategy-section-nav button:hover { color: var(--foreground); }
+.guided-strategy-section-nav button[aria-current="step"] { border-bottom-color: var(--configuration-accent); color: var(--foreground); }
+.guided-strategy-section-nav button small { align-items: center; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 999px; color: var(--muted-foreground); display: inline-flex; font-size: 10px; font-weight: 560; height: 19px; justify-content: center; min-width: 19px; padding: 0 5px; }
+.guided-strategy-question { background: var(--surface); border: 1px solid var(--border); border-radius: 0 0 12px 12px; overflow: hidden; }
+.guided-strategy-question > header { align-items: center; display: flex; justify-content: space-between; padding: 14px 28px 8px; }
+.guided-strategy-question > header span,
+.guided-strategy-question > header small { color: var(--muted-foreground); font-size: 11px; font-weight: 550; }
+.guided-strategy-question > .guided-question-progress { margin: 0 28px; }
+.guided-strategy-prompt { display: grid; gap: 7px; padding: 22px 34px 16px; }
+.guided-strategy-prompt h2 { font-size: 20px; font-weight: 610; letter-spacing: -.012em; line-height: 1.35; margin: 0; }
+.guided-strategy-prompt > p { color: var(--muted-foreground); font-size: 14px; line-height: 1.6; margin: 0; max-width: 920px; }
+.guided-strategy-prompt aside { align-items: flex-start; background: color-mix(in oklab, var(--configuration-accent) 5%, var(--surface)); border-left: 2px solid color-mix(in oklab, var(--configuration-accent) 55%, var(--border)); color: var(--muted-foreground); display: flex; font-size: 12px; gap: 9px; line-height: 1.55; margin-top: 7px; max-width: 940px; padding: 9px 11px; }
+.guided-strategy-prompt aside svg { color: var(--configuration-accent); flex: 0 0 auto; margin-top: 1px; }
+.guided-strategy-prompt aside span { display: grid; gap: 2px; }
+.guided-strategy-prompt aside strong { color: var(--foreground); font-size: 11px; font-weight: 620; letter-spacing: .025em; text-transform: uppercase; }
+.guided-strategy-controls { min-height: 210px; padding: 6px 34px 30px; }
+.guided-strategy-controls > p { color: var(--muted-foreground); font-size: 13px; }
+.guided-strategy-wizard .guided-decision-options { gap: 8px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.guided-strategy-wizard .guided-decision-options > label > span { border-radius: 7px; gap: 4px; min-height: 67px; padding: 10px 12px; }
+.guided-strategy-wizard .guided-decision-options strong { font-size: 14px; font-weight: 590; line-height: 1.35; }
+.guided-strategy-wizard .guided-decision-options small { font-size: 11.5px; line-height: 1.45; }
+.guided-strategy-wizard .guided-decision-options em { font-size: 8px; font-weight: 600; padding: 2px 5px; }
+.guided-strategy-wizard .guided-mode-choices { gap: 8px; }
+.guided-strategy-wizard .guided-mode-choices span { border-radius: 7px; font-size: 13px; min-height: 40px; padding: 8px 12px; }
+.guided-form-grid { align-items: start; display: grid; gap: 14px 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.guided-form-grid .configuration-field > span { font-size: 12px; font-weight: 580; }
+.guided-form-grid .configuration-field > small { font-size: 11px; line-height: 1.45; }
+.guided-readonly-value { align-content: center; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 7px; display: grid; gap: 5px; min-height: 64px; padding: 9px 11px; }
+.guided-readonly-value span { color: var(--muted-foreground); font-size: 11px; }
+.guided-readonly-value strong { font-size: 13px; font-weight: 570; }
+.guided-inline-note { align-items: center; color: var(--muted-foreground); display: flex; font-size: 11.5px; gap: 7px; line-height: 1.5; margin: 14px 0 0; }
+.guided-inline-note svg { color: var(--configuration-accent); flex: 0 0 auto; }
+.guided-action-list { display: grid; gap: 9px; }
+.guided-action-list > .button { justify-self: start; }
+.guided-action-list article { align-items: end; border-top: 1px solid var(--border); display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr) auto auto; padding: 14px 0 3px; }
+.guided-action-list article > div { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.guided-composite-form { display: grid; gap: 18px; }
+.guided-composite-form > * + * { border-top: 1px solid var(--border); padding-top: 18px; }
+.guided-capability-fields { display: grid; gap: 16px; }
+.guided-capability-fields > p { color: var(--muted-foreground); font-size: 12px; margin: 0; }
+.guided-strategy-wizard .strategy-rule-stage { border-radius: 7px; }
+.guided-strategy-wizard .strategy-rule-stage > summary { min-height: 58px; padding: 10px 13px; }
+.guided-strategy-wizard .strategy-rule-stage > summary strong { font-size: 14px; font-weight: 590; }
+.guided-strategy-wizard .strategy-rule-stage > summary p { font-size: 11.5px; line-height: 1.45; }
+.guided-strategy-wizard .strategy-rule-stage-body { padding: 12px; }
+.guided-strategy-wizard .guided-running-summary { background: var(--surface-alt); }
+.guided-strategy-navigation { align-items: center; border-top: 1px solid var(--border); display: grid; gap: 16px; grid-template-columns: auto minmax(0, 1fr) auto; padding: 14px 20px; }
+.guided-strategy-navigation > div { justify-self: center; }
+.guided-strategy-navigation > div button { background: transparent; border: 0; color: var(--muted-foreground); cursor: pointer; font: inherit; font-size: 11.5px; text-decoration: underline; text-decoration-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent); text-underline-offset: 3px; }
+.guided-strategy-navigation > div button:hover { color: var(--foreground); }
+.guided-strategy-navigation > div span { color: var(--muted-foreground); font-size: 11.5px; }
+.guided-strategy-navigation .button { min-height: 39px; }
+
 .guided-review { gap: 18px; }
 .guided-review > header { padding: 24px 28px; }
 .guided-review-layout { gap: 18px; grid-template-columns: minmax(0, 1.25fr) minmax(340px, .75fr); }
@@ -470,6 +533,8 @@
   .guided-review-layout > .guided-review-matrix { grid-column: auto; }
   .guided-review-layout > aside .configuration-publish-card { max-width: none; }
   .guided-limit-fields { grid-template-columns: 1fr; }
+  .guided-strategy-section-nav { padding-inline: 8px; }
+  .guided-strategy-section-nav button { padding-inline: 9px; }
 }
 
 @media (max-width: 760px) {
@@ -507,6 +572,18 @@
   .guided-question { min-height: 0; padding: 26px 18px 30px; }
   .guided-question > header > div > span { font-size: 20px; }
   .guided-decision-options { grid-template-columns: 1fr; }
+  .guided-strategy-question > header { padding-inline: 16px; }
+  .guided-strategy-question > .guided-question-progress { margin-inline: 16px; }
+  .guided-strategy-prompt,
+  .guided-strategy-controls { padding-inline: 18px; }
+  .guided-form-grid,
+  .guided-action-list article,
+  .guided-action-list article > div { grid-template-columns: 1fr; }
+  .guided-action-list article { align-items: stretch; }
+  .guided-action-list article > .button { justify-self: start; }
+  .guided-strategy-navigation { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .guided-strategy-navigation > div { grid-column: 1 / -1; grid-row: 2; text-align: center; }
+  .guided-strategy-navigation > .button { justify-content: center; }
   .guided-review-matrix > header { display: none; }
   .guided-review-matrix article { align-items: start; grid-template-columns: minmax(0, 1fr) auto; }
   .guided-review-matrix article > span:nth-child(2) { grid-column: 1 / -1; }

@@ -168,10 +168,15 @@ every operator into the full field inventory:
   system OMS starting points. It previews the affected references and preserves
   account-specific mandates, risk limits, and broker bindings for explicit
   review.
-- **Guided setup** asks a bounded set of consequential questions in authority
-  order: Strategy, Deployment, Portfolio, Execution, Protection, Accounts, and
-  Review. Previous and next navigation preserves the same mutable draft, and
-  each Continue action validates and saves the current canonical section.
+- **Guided setup** asks one question at a time in authority order: Strategy,
+  Deployment, Portfolio, Execution, Protection, Accounts, and Review. Strategy
+  coverage is generated from the complete selected profile: trading behavior,
+  initial-entry capital/order/rules, every position add, reentry, every
+  strategic exit, registered capabilities, and published advanced parameters.
+  Section counts make that coverage visible, while **Keep remaining values**
+  lets an operator explicitly approve a section's current defaults. Previous
+  and next navigation preserves the same mutable draft, and each Continue
+  action validates and saves the current canonical section.
 - **Clone approved release** previews the immutable source release and replaces
   the complete mutable draft atomically. The approved release and active runs
   remain unchanged.

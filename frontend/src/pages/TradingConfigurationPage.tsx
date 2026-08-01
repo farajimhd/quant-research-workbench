@@ -809,9 +809,6 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   useEffect(() => setQuestionIndex(0), [step]);
   const questionCount = step === "assignments" || step === "protection" ? 2 : step === "accounts" && !account?.modes.some((mode) => mode === "paper" || mode === "live") ? 2 : 3;
 
-  function replaceProfile(nextProfile: StrategyProfile) {
-    onChange("strategy", { ...draft.strategy, profiles: draft.strategy.profiles.map((row) => row.profile_id === profile.profile_id ? nextProfile : row) });
-  }
   function replaceDeployment(nextDeployment: Deployment) {
     onChange("assignments", { ...draft.assignments, deployments: draft.assignments.deployments.map((row) => row.deployment_id === deployment.deployment_id ? nextDeployment : row) });
   }
@@ -833,22 +830,12 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
 
   if (section === "revisions") return <GuidedReview approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={onPublish} onReturn={() => navigateGuidedStep("accounts", onOmsStageChange)} publishing={publishing} revisions={revisions} />;
   if (!profile || !deployment || !mandate || !omsProfile || !executionPolicy || !protectionProfile || !account) return <GuidedEmpty onSwitchToExpert={onSwitchToExpert} />;
+  if (step === "strategy") return <GuidedStrategyConfiguration draft={draft} onChange={onChange} onContinue={() => onContinue("assignments")} profile={profile} />;
 
   return <div className="guided-configuration-shell" data-guided-step={step}>
     <main className="guided-question-surface">
       <header><span>{guidedStepTitle(step)} · question {questionIndex + 1} of {questionCount}</span><h2>{guidedStepDescription(step)}</h2><div className="guided-question-progress"><span style={{ width: `${((questionIndex + 1) / questionCount) * 100}%` }} /></div></header>
       <div className="guided-question-list" data-question-index={questionIndex}>
-        {step === "strategy" ? <>
-          <GuidedQuestion description="This plan supplies the entry, exit, and sizing rules. The protected plan is the safest starting point; you can still customize it later." label="Which trading plan do you want to use?" status={profile.protected ? "Using recommended" : "Customized"}>
-            <DecisionOptions onChange={(profile_id) => onChange("strategy", { ...draft.strategy, default_profile_id: profile_id })} options={draft.strategy.profiles.map((row) => ({ detail: `${row.origin} · v${row.revision}`, label: row.name, recommended: row.protected, value: row.profile_id }))} value={profile.profile_id} />
-          </GuidedQuestion>
-          <GuidedQuestion description="Long buys first and sells later. Short sells borrowed shares first and buys them back later. This choice does not reverse any rule automatically." label="Should it trade long or short?" status="Needs review">
-            <DecisionOptions onChange={(side) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, side: side as "long" | "short" } } })} options={[{ detail: "Buy to enter, sell to exit", label: "Long", recommended: true, value: "long" }, { detail: "Short-sell to enter, buy to cover", label: "Short", value: "short" }]} value={profile.lifecycle.trading_behavior.side} />
-          </GuidedQuestion>
-          <GuidedQuestion description="These sessions control only when a new position may open. Existing positions can still be protected and closed outside the selected entry sessions." label="When may it open a new position?" status={profile.lifecycle.trading_behavior.eligible_sessions.length ? "Configured" : "Needs decision"}>
-            <ModeChoices onChange={(eligible_sessions) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, eligible_sessions } } })} options={["premarket", "regular", "after_hours"]} values={profile.lifecycle.trading_behavior.eligible_sessions} />
-          </GuidedQuestion>
-        </> : null}
         {step === "assignments" ? <>
           <GuidedQuestion description="A deployment is the runnable composition: behavior, universe, execution profile, account mandates, and runtime modes." label="What should this deployment run?" status={deployment.enabled ? "Configured" : "Needs review"}>
             <div className="configuration-field-grid"><SelectField help="Behavior evaluated by this deployment." label="Strategy Profile" onChange={(profile_id) => replaceDeployment({ ...deployment, profile_id })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.profile_id} /><SelectField help="Reusable execution and protection behavior." label="OMS profile" onChange={(oms_profile_id) => replaceDeployment({ ...deployment, oms_profile_id })} options={draft.oms.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.oms_profile_id} /><SelectField help="Eligible symbol authority." label="Watch Universe" onChange={(universe_id) => replaceDeployment({ ...deployment, universe_id })} options={draft.assignments.universes.map((row) => ({ label: row.name, value: row.universe_id }))} value={deployment.universe_id} /></div>
@@ -880,6 +867,233 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
       <GuidedFooter isFirst={questionIndex === 0} isLast={questionIndex === questionCount - 1} next={next} onNext={() => questionIndex < questionCount - 1 ? setQuestionIndex(questionIndex + 1) : next && onContinue(next)} onPrevious={() => questionIndex > 0 ? setQuestionIndex(questionIndex - 1) : previous && navigateGuidedStep(previous, onOmsStageChange)} previous={previous} />
     </main>
   </div>;
+}
+
+type GuidedStrategyQuestionDefinition = {
+  content: ReactNode;
+  description: string;
+  guide: string;
+  id: string;
+  section: string;
+  title: string;
+};
+
+function GuidedStrategyConfiguration({ draft, onChange, onContinue, profile }: {
+  draft: Draft;
+  onChange: <K extends keyof Draft>(key: K, value: Draft[K]) => void;
+  onContinue: () => void;
+  profile: StrategyProfile;
+}) {
+  const [questionIndex, setQuestionIndex] = useState(0);
+  const definition = draft.strategy.definitions.find((row) => row.strategy_id === profile.definition_id);
+  const supportedSides = definition?.supported_sides?.length ? definition.supported_sides : ["long" as const];
+  const initial = profile.lifecycle.initial_entry;
+  const reentry = profile.lifecycle.reentry;
+  const advanced = flattenPrimitives(profile.parameters).filter((row) => !LEGACY_ENTRY_LOGIC_PATHS.has(row.path));
+
+  function replaceProfile(nextProfile: StrategyProfile) {
+    onChange("strategy", {
+      ...draft.strategy,
+      profiles: draft.strategy.profiles.map((row) => row.profile_id === profile.profile_id ? nextProfile : row),
+    });
+  }
+  function replaceInitial(nextInitial: StrategyLifecycle["initial_entry"]) {
+    replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: nextInitial } });
+  }
+  function replaceReentry(nextReentry: StrategyLifecycle["reentry"]) {
+    replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, reentry: nextReentry } });
+  }
+  function replaceAddStep(stepId: string, nextStep: AddStep) {
+    replaceInitial({ ...initial, add_steps: initial.add_steps.map((row) => row.step_id === stepId ? nextStep : row) });
+  }
+  function addAddStep() {
+    const source = draft.strategy.input_catalog[0];
+    if (!source) return;
+    const stepId = uniqueId("position-add", initial.add_steps.map((row) => row.step_id));
+    replaceInitial({ ...initial, add_steps: [{
+      capital_request: { allow_replacement: false, mode: "mandate_fraction", priority: 50, value: 0.1 },
+      enabled: true,
+      maximum_uses: 1,
+      name: "New position add",
+      order_intent: { deadline_ms: 750, execution_policy: "adaptive_regular", partial_fill_policy: "complete_remainder", protection_profile: draft.oms.protection_profiles[0]?.profile_id ?? "" },
+      rules: { groups: [{ conditions: [{ comparator: source.value_type === "boolean" ? "is_true" : "greater_or_equal", condition_id: `${stepId}-condition`, enabled: true, left_source_id: source.source_id, left_timeframe: source.timeframes[0], right_source_id: "", right_timeframe: "", value: source.value_type === "boolean" ? null : 0 }], enabled: true, group_id: `${stepId}-rule`, label: "Add trigger", operator: "all", required_score: 1 }], operator: "any" },
+      step_id: stepId,
+    }, ...initial.add_steps] });
+  }
+  function replaceExit(ruleSetId: string, nextRuleSet: ExitRuleSet) {
+    replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, exit: { rule_sets: profile.lifecycle.exit.rule_sets.map((row) => row.rule_set_id === ruleSetId ? nextRuleSet : row) } } });
+  }
+  function addExit() {
+    const source = draft.strategy.input_catalog[0];
+    if (!source) return;
+    const ruleSetId = uniqueId("new-exit-rule", profile.lifecycle.exit.rule_sets.map((row) => row.rule_set_id));
+    const next: ExitRuleSet = {
+      action: "close", enabled: true, name: "New strategic exit", position_fraction: 1,
+      order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", partial_fill_policy: "complete_remainder", protection_profile: draft.oms.protection_profiles[0]?.profile_id ?? "" },
+      rules: { groups: [{ conditions: [{ comparator: source.value_type === "boolean" ? "is_true" : "greater_or_equal", condition_id: `${ruleSetId}-condition`, enabled: true, left_source_id: source.source_id, left_timeframe: source.timeframes[0], right_source_id: "", right_timeframe: "", value: source.value_type === "boolean" ? null : 0 }], enabled: true, group_id: `${ruleSetId}-group`, label: "Exit evidence", operator: "all", required_score: 1 }], operator: "all" },
+      rule_set_id: ruleSetId, summary: "Describe when this exit becomes valid.", timing: { active_after_ms: 0, expires_after_ms: 0 },
+    };
+    replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, exit: { rule_sets: [next, ...profile.lifecycle.exit.rule_sets] } } });
+  }
+
+  const questions: GuidedStrategyQuestionDefinition[] = [
+    {
+      id: "profile", section: "Behavior", title: "Which trading plan are you configuring?",
+      description: "Choose the reusable plan whose complete lifecycle you want to review.",
+      guide: "The protected profile is a safe starting point. Selecting a profile changes the draft default; it does not publish or start trading.",
+      content: <DecisionOptions onChange={(profile_id) => onChange("strategy", { ...draft.strategy, default_profile_id: profile_id })} options={draft.strategy.profiles.map((row) => ({ detail: row.description || `${readableLabel(row.origin)} profile`, label: row.name, recommended: row.protected, value: row.profile_id }))} value={profile.profile_id} />,
+    },
+    {
+      id: "identity", section: "Behavior", title: "How should this plan be identified?",
+      description: "Give the configured profile a clear operator-facing name and description, and decide whether it remains available for deployments.",
+      guide: "This label appears in deployments, reviews, journals, and runtime evidence. Disabling it preserves the configuration but prevents new use.",
+      content: <div className="guided-form-grid"><TextField help="Operator-facing profile name." label="Plan name" onChange={(name) => replaceProfile({ ...profile, name })} value={profile.name} /><TextField help="A short explanation of the behavior and intended use." label="Plan description" onChange={(description) => replaceProfile({ ...profile, description })} value={profile.description} /><BooleanField help="Allow deployments to select this configured plan." label="Available for use" onChange={(enabled) => replaceProfile({ ...profile, enabled })} value={profile.enabled} /></div>,
+    },
+    {
+      id: "side", section: "Behavior", title: "Should this plan trade long or short?",
+      description: "Direction determines how a campaign opens, adds, reduces, and closes exposure.",
+      guide: "Long buys first and sells later. Short sells borrowed shares first and buys them back; current broker shortability is still required.",
+      content: <DecisionOptions onChange={(side) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, side: side as "long" | "short" } } })} options={supportedSides.map((side) => ({ detail: side === "long" ? "Buy to open; sell to reduce or close." : "Short-sell to open; buy to cover.", label: readableLabel(side), recommended: side === "long", value: side }))} value={profile.lifecycle.trading_behavior.side} />,
+    },
+    {
+      id: "evaluation", section: "Behavior", title: "What should wake the strategy for a new evaluation?",
+      description: "Choose the causal event that makes the engine re-check active ticker campaigns.",
+      guide: "This is an evaluation clock, not an entry signal. Entry still requires its opportunity, confirmation, and blocker logic to pass.",
+      content: <DecisionOptions onChange={(evaluation_trigger) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, evaluation_trigger } } })} options={[{ label: "Indicator update", detail: "Re-evaluate when a configured indicator publishes a new value.", recommended: true, value: "indicator_update" }, { label: "Signal event", detail: "Re-evaluate when a scored signal changes lifecycle state.", value: "signal_event" }, { label: "Bar close", detail: "Re-evaluate only when the selected calculation bar closes.", value: "bar_close" }]} value={profile.lifecycle.trading_behavior.evaluation_trigger} />,
+    },
+    {
+      id: "manual-adoption", section: "Behavior", title: "May this plan take over a manually opened position?",
+      description: "A managed campaign can adopt an existing position and apply the configured exit and protection behavior.",
+      guide: "Adoption does not create a new entry order. Account, side, ticker ownership, and reconciliation must all match before management begins.",
+      content: <DecisionOptions onChange={(value) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, adopt_manual_positions: value === "yes" } } })} options={[{ label: "Allow adoption", detail: "Manage a compatible manual position with this lifecycle.", recommended: true, value: "yes" }, { label: "Do not adopt", detail: "Manage only positions opened by this strategy campaign.", value: "no" }]} value={profile.lifecycle.trading_behavior.adopt_manual_positions ? "yes" : "no"} />,
+    },
+    {
+      id: "sessions", section: "Behavior", title: "When may a new entry be evaluated?",
+      description: "Select every market session in which initial entries, adds, and reentries may become eligible.",
+      guide: "Protective exits remain active whenever exposure exists. OMS derives compatible broker session instructions from this choice.",
+      content: <ModeChoices onChange={(eligible_sessions) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, eligible_sessions } } })} options={["premarket", "regular", "after_hours"]} values={profile.lifecycle.trading_behavior.eligible_sessions} />,
+    },
+    {
+      id: "initial-capital", section: "Initial entry", title: "How much capital should the first entry request?",
+      description: "Describe the strategy's relative request; Portfolio calculates the safe account-specific quantity.",
+      guide: "This is a request, not an entitlement. Portfolio may reduce or reject it after checking mandates, cash, buying power, positions, and planned loss.",
+      content: <GuidedCapitalRequestFields onChange={(capital_request) => replaceInitial({ ...initial, capital_request })} value={initial.capital_request} />,
+    },
+    {
+      id: "initial-order", section: "Initial entry", title: "How should the approved first entry be executed and protected?",
+      description: "Choose the semantic execution, partial-fill, deadline, and broker-held protection intent.",
+      guide: "Strategy selects the policy. OMS reads the allowed quote source, manages repricing and partial fills, and cannot exceed Portfolio's approved quantity.",
+      content: <GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceInitial({ ...initial, order_intent })} value={initial.order_intent} />,
+    },
+    ...(["opportunity", "confirmation", "blockers"] as const).map((stage) => ({
+      id: `initial-${stage}`, section: "Initial entry", title: stage === "opportunity" ? "What identifies a possible first entry?" : stage === "confirmation" ? "What must confirm the first entry?" : "What must prevent the first entry?",
+      description: stage === "opportunity" ? "Opportunity groups find a candidate setup." : stage === "confirmation" ? "Confirmation groups must validate that the opportunity is actionable." : "A passing blocker prevents entry even when opportunity and confirmation pass.",
+      guide: "The complete sentence is: enter when Opportunity passes, Confirmation passes, and Blockers do not pass. Configure each group's ALL/ANY logic explicitly.",
+      content: <RuleStageEditor catalog={draft.strategy.input_catalog} label={`Initial entry ${readableLabel(stage)}`} onChange={(value) => replaceInitial({ ...initial, [stage]: value })} stage={initial[stage]} />,
+    })),
+    {
+      id: "adds-overview", section: "Position adds", title: "Which position-add actions are available?",
+      description: "Each action may request more capital only while a position is already open.",
+      guide: "Disabled actions remain saved. Maximum uses is a fill count; a rejected or unfilled request must not consume a use.",
+      content: <div className="guided-action-list"><button className="button compact" onClick={addAddStep} type="button"><Plus size={14} /> Add another action</button>{initial.add_steps.map((step) => <article key={step.step_id}><div><TextField help="Operator-facing action name." label="Action name" onChange={(name) => replaceAddStep(step.step_id, { ...step, name })} value={step.name} /><NumberField help="Maximum confirmed fills during one campaign." label="Maximum uses" minimum={1} onChange={(maximum_uses) => replaceAddStep(step.step_id, { ...step, maximum_uses })} step={1} unit="fills" value={step.maximum_uses} /></div><BooleanField help="Allow this action to request an add." label="Enabled" onChange={(enabled) => replaceAddStep(step.step_id, { ...step, enabled })} value={step.enabled} /><button className="button compact danger" onClick={() => replaceInitial({ ...initial, add_steps: initial.add_steps.filter((row) => row.step_id !== step.step_id) })} type="button"><Trash2 size={14} /> Remove</button></article>)}</div>,
+    },
+    ...initial.add_steps.map((step) => ({
+      id: `add-${step.step_id}`, section: "Position adds", title: `How should “${step.name}” work?`,
+      description: "Configure its causal trigger, relative capital request, and execution/protection intent.",
+      guide: "An add is not a reentry: it increases an open position. Portfolio re-sizes against current account risk, and OMS applies the selected protection add policy.",
+      content: <div className="guided-composite-form"><RuleStageEditor catalog={draft.strategy.input_catalog} label={`${step.name} trigger`} onChange={(rules) => replaceAddStep(step.step_id, { ...step, rules })} stage={step.rules} /><GuidedCapitalRequestFields onChange={(capital_request) => replaceAddStep(step.step_id, { ...step, capital_request })} value={step.capital_request} /><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceAddStep(step.step_id, { ...step, order_intent })} value={step.order_intent} /></div>,
+    })),
+    {
+      id: "reentry-policy", section: "Reentry", title: "May the campaign enter again after a complete exit?",
+      description: "Reentry is a new flat-to-open transition while the same ticker campaign retains ownership.",
+      guide: "It is separate from adding to an open position. Require fresh confirmation to prevent the previous entry evidence from being reused.",
+      content: <div className="guided-form-grid"><BooleanField help="Permit another flat-to-open transition." label="Enable reentry" onChange={(enabled) => replaceReentry({ ...reentry, enabled })} value={reentry.enabled} /><BooleanField help="Require evidence newer than the previous entry." label="Require fresh confirmation" onChange={(require_new_confirmation) => replaceReentry({ ...reentry, require_new_confirmation })} value={reentry.require_new_confirmation} /><NumberField help="Minimum time after a confirmed full exit." label="Cooldown" minimum={0} onChange={(cooldown_ms) => replaceReentry({ ...reentry, cooldown_ms })} step={100} unit="ms" value={reentry.cooldown_ms} /><NumberField help="Maximum reentries in one ticker campaign." label="Maximum attempts" minimum={0} onChange={(maximum_attempts) => replaceReentry({ ...reentry, maximum_attempts })} step={1} unit="entries" value={reentry.maximum_attempts} /></div>,
+    },
+    ...(reentry.enabled ? [{
+      id: "reentry-capital", section: "Reentry", title: "How much capital should a reentry request?", description: "Reentry owns an independent capital request.", guide: "Portfolio recalculates capacity from the current synchronized account; the previous position size is not reused automatically.", content: <GuidedCapitalRequestFields onChange={(capital_request) => replaceReentry({ ...reentry, capital_request })} value={reentry.capital_request} />,
+    }, {
+      id: "reentry-order", section: "Reentry", title: "How should an approved reentry be executed and protected?", description: "Choose the reentry-specific execution and protection intent.", guide: "This may differ from the first entry when a second opportunity is more urgent or requires different protection.", content: <GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceReentry({ ...reentry, order_intent })} value={reentry.order_intent} />,
+    }, ...(["opportunity", "confirmation", "blockers"] as const).map((stage) => ({
+      id: `reentry-${stage}`, section: "Reentry", title: stage === "opportunity" ? "What identifies a possible reentry?" : stage === "confirmation" ? "What must confirm a reentry?" : "What must prevent a reentry?", description: "Reentry owns independent decision rules; it does not silently reuse the first-entry rule set.", guide: "Importing or copying initial rules creates editable copies. Fresh-evidence and cooldown gates still apply before evaluation.", content: <RuleStageEditor catalog={draft.strategy.input_catalog} label={`Reentry ${readableLabel(stage)}`} onChange={(value) => replaceReentry({ ...reentry, rules: { ...reentry.rules, [stage]: value } })} stage={reentry.rules[stage]} />,
+    }))] : []),
+    {
+      id: "exit-overview", section: "Strategic exits", title: "Which strategic exit routes are available?", description: "Enable, name, or add the rule sets that can reduce or close a position.", guide: "Broker-held protection is independent and remains active even when every strategic exit is disabled or delayed.", content: <div className="guided-action-list"><button className="button compact" onClick={addExit} type="button"><Plus size={14} /> Add exit route</button>{profile.lifecycle.exit.rule_sets.map((ruleSet) => <article key={ruleSet.rule_set_id}><div><TextField help="Operator-facing route name." label="Exit name" onChange={(name) => replaceExit(ruleSet.rule_set_id, { ...ruleSet, name })} value={ruleSet.name} /><TextField help="Short explanation of this exit thesis." label="Purpose" onChange={(summary) => replaceExit(ruleSet.rule_set_id, { ...ruleSet, summary })} value={ruleSet.summary} /></div><BooleanField help="Evaluate this route while a position is open." label="Enabled" onChange={(enabled) => replaceExit(ruleSet.rule_set_id, { ...ruleSet, enabled })} value={ruleSet.enabled} /><button className="button compact danger" disabled={profile.lifecycle.exit.rule_sets.length <= 1} onClick={() => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, exit: { rule_sets: profile.lifecycle.exit.rule_sets.filter((row) => row.rule_set_id !== ruleSet.rule_set_id) } } })} type="button"><Trash2 size={14} /> Remove</button></article>)}</div>,
+    },
+    ...profile.lifecycle.exit.rule_sets.map((ruleSet) => ({
+      id: `exit-${ruleSet.rule_set_id}`, section: "Strategic exits", title: `When should “${ruleSet.name}” act?`, description: "Configure its evidence, validity window, position action, and OMS execution intent.", guide: "Rule sets are evaluated in configured order. Reduce releases a fraction; Close requests the full current position. Protective stops remain separate.", content: <GuidedExitRuleFields catalog={draft.strategy.input_catalog} draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(next) => replaceExit(ruleSet.rule_set_id, next)} value={ruleSet} />,
+    })),
+    ...draft.strategy.capability_catalog.map((capability) => {
+      const binding = profile.capabilities.find((row) => row.capability_id === capability.capability_id);
+      return {
+        id: `capability-${capability.capability_id}`, section: "Capabilities", title: `Should “${capability.name}” be available?`, description: capability.summary, guide: capability.order_entry_action ? "This capability also appears as a deliberate Order Entry action. Strategy still emits semantic intent; Portfolio and OMS retain authority." : "Capabilities extend the lifecycle without replacing initial entry, reentry, exit, Portfolio, or OMS authority.", content: binding ? <GuidedCapabilityFields binding={binding} definition={capability} onChange={(next) => replaceProfile(updateCapability(profile, binding.capability_id, next))} /> : <p>This profile does not contain the registered capability binding.</p>,
+      };
+    }),
+  ];
+
+  const advancedGroups = new Map<string, typeof advanced>();
+  advanced.forEach((item) => {
+    const parts = item.path.split(".");
+    const group = parts[0] === "protection" ? parts.slice(0, 2).join(".") : parts[0];
+    advancedGroups.set(group, [...(advancedGroups.get(group) ?? []), item]);
+  });
+  advancedGroups.forEach((items, group) => questions.push({
+    id: `advanced-${group}`, section: "Advanced", title: `Review ${readableLabel(group)} tuning`,
+    description: "These implementation-level values remain part of the published strategy profile.",
+    guide: "Keep the current values when you do not have evidence to retune them. They are shown here so Guided mode never silently skips published strategy parameters.",
+    content: <div className="guided-form-grid">{items.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path.split(".").slice(-1)[0]), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} onChange={(value) => replaceProfile({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} value={item.value} />)}</div>,
+  }));
+
+  const safeIndex = Math.min(questionIndex, Math.max(questions.length - 1, 0));
+  const current = questions[safeIndex];
+  const sections = [...new Set(questions.map((question) => question.section))];
+  const sectionQuestions = questions.filter((question) => question.section === current.section);
+  const sectionPosition = sectionQuestions.findIndex((question) => question.id === current.id) + 1;
+  const nextSectionIndex = questions.findIndex((question, index) => index > safeIndex && question.section !== current.section);
+  const recap = strategySetupRows(profile);
+  useEffect(() => {
+    if (questionIndex >= questions.length) setQuestionIndex(Math.max(questions.length - 1, 0));
+  }, [questionIndex, questions.length]);
+
+  return <main className="guided-strategy-wizard">
+    <nav aria-label="Strategy setup sections" className="guided-strategy-section-nav">{sections.map((section) => { const firstIndex = questions.findIndex((question) => question.section === section); return <button aria-current={section === current.section ? "step" : undefined} key={section} onClick={() => setQuestionIndex(firstIndex)} type="button"><span>{section}</span><small>{questions.filter((question) => question.section === section).length}</small></button>; })}</nav>
+    <section className="guided-strategy-question">
+      <header><span>{current.section} · {sectionPosition} of {sectionQuestions.length}</span><small>Question {safeIndex + 1} of {questions.length}</small></header>
+      <div className="guided-question-progress"><span style={{ width: `${((safeIndex + 1) / Math.max(questions.length, 1)) * 100}%` }} /></div>
+      <div className="guided-strategy-prompt"><h2>{current.title}</h2><p>{current.description}</p><aside><CircleHelp size={17} /><span><strong>Why this matters</strong>{current.guide}</span></aside></div>
+      <div className="guided-strategy-controls">{current.content}</div>
+      <details className="guided-running-summary"><summary>Your setup so far <ChevronRight size={15} /></summary><div>{recap.map((row) => <span key={row.label}><small>{row.label}</small><strong>{row.value}</strong></span>)}</div></details>
+      <footer className="guided-strategy-navigation"><button className="button" disabled={safeIndex === 0} onClick={() => setQuestionIndex(safeIndex - 1)} type="button"><ArrowLeft size={15} /> Previous</button><div>{nextSectionIndex > 0 ? <button onClick={() => setQuestionIndex(nextSectionIndex)} type="button">Keep remaining {current.section} values</button> : <span>Review each published strategy decision</span>}</div><button className="button primary" onClick={() => safeIndex < questions.length - 1 ? setQuestionIndex(safeIndex + 1) : onContinue()} type="button">{safeIndex < questions.length - 1 ? "Next question" : "Save strategy and continue"} <ArrowRight size={15} /></button></footer>
+    </section>
+  </main>;
+}
+
+function GuidedCapitalRequestFields({ onChange, value }: { onChange: (value: CapitalRequestConfig) => void; value: CapitalRequestConfig }) {
+  const request = { fixed_quantity: { label: "Shares requested", maximum: undefined, minimum: 1, step: 1, unit: "shares" }, mandate_fraction: { label: "Mandate capacity", maximum: 1, minimum: .01, step: .05, unit: "fraction" }, risk_fraction: { label: "Risk budget", maximum: 1, minimum: .01, step: .05, unit: "fraction" }, all_available: { label: "", maximum: undefined, minimum: 0, step: 1, unit: "" } }[value.mode];
+  return <div className="guided-form-grid"><SelectField help="How the strategy expresses its request before Portfolio sizing." label="Request method" onChange={(mode) => onChange({ ...value, mode: mode as CapitalRequestConfig["mode"], value: mode === "fixed_quantity" ? 100 : mode === "all_available" ? 1 : .2 })} options={[{ label: "Fixed shares", value: "fixed_quantity" }, { label: "Fraction of mandate cash", value: "mandate_fraction" }, { label: "Fraction of risk budget", value: "risk_fraction" }, { label: "All remaining mandate capacity", value: "all_available" }]} value={value.mode} />{value.mode !== "all_available" ? <NumberField help="The requested amount before Portfolio approval." label={request.label} maximum={request.maximum} minimum={request.minimum} onChange={(requestValue) => onChange({ ...value, value: requestValue })} step={request.step} unit={request.unit} value={value.value} /> : <div className="guided-readonly-value"><span>Request amount</span><strong>All capacity still allowed by the mandate</strong></div>}<NumberField help="Higher-priority requests are evaluated first when capital is constrained; risk limits still win." label="Request priority" maximum={100} minimum={0} onChange={(priority) => onChange({ ...value, priority })} step={1} unit="0–100" value={value.priority} /><BooleanField help="Allow Portfolio to propose replacing a weaker position when policy permits it." label="Allow replacement proposal" onChange={(allow_replacement) => onChange({ ...value, allow_replacement })} value={value.allow_replacement} /></div>;
+}
+
+function GuidedOrderIntentFields({ draft, eligibleSessions, onChange, value }: { draft: Draft; eligibleSessions: string[]; onChange: (value: OrderIntentConfig) => void; value: OrderIntentConfig }) {
+  return <><div className="guided-form-grid"><SelectField help="Broker-neutral execution behavior selected by Strategy and implemented by OMS." label="Execution policy" onChange={(execution_policy) => onChange({ ...value, execution_policy })} options={draft.oms.execution_policies.map((row) => ({ label: `${readableLabel(row.name)} · v${row.revision}`, value: row.policy_id }))} value={value.execution_policy} /><SelectField help="Independent broker-held stop, target, and trailing plan applied after a fill." label="Protection profile" onChange={(protection_profile) => onChange({ ...value, protection_profile })} options={draft.oms.protection_profiles.map((row) => ({ label: `${row.name} · v${row.revision}`, value: row.profile_id }))} value={value.protection_profile} /><SelectField help="What OMS does after the broker fills only part of the approved quantity." label="Partial fill" onChange={(partial_fill_policy) => onChange({ ...value, partial_fill_policy: partial_fill_policy as OrderIntentConfig["partial_fill_policy"] })} options={[{ label: "Finish the approved remainder", value: "complete_remainder" }, { label: "Accept the partial position", value: "accept_partial" }, { label: "Cancel the remainder", value: "cancel_remainder" }]} value={value.partial_fill_policy} /><NumberField help="Maximum time OMS may work this policy before its terminal behavior." label="Execution deadline" minimum={0} onChange={(deadline_ms) => onChange({ ...value, deadline_ms })} step={50} unit="ms" value={value.deadline_ms} /></div><p className="guided-inline-note"><ShieldCheck size={15} /> Eligible sessions: {eligibleSessions.map(readableLabel).join(", ") || "none"}. OMS derives compatible broker routing automatically.</p></>;
+}
+
+function GuidedExitRuleFields({ catalog, draft, eligibleSessions, onChange, value }: { catalog: StrategyInput[]; draft: Draft; eligibleSessions: string[]; onChange: (value: ExitRuleSet) => void; value: ExitRuleSet }) {
+  return <div className="guided-composite-form"><div className="guided-form-grid"><NumberField help="Delay after confirmed entry before this exit may act." label="Active after" minimum={0} onChange={(active_after_ms) => onChange({ ...value, timing: { ...value.timing, active_after_ms } })} step={1000} unit="ms" value={value.timing.active_after_ms} /><NumberField help="Zero keeps the thesis active while the position remains open." label="Expires after" minimum={0} onChange={(expires_after_ms) => onChange({ ...value, timing: { ...value.timing, expires_after_ms } })} step={1000} unit="ms" value={value.timing.expires_after_ms} /><SelectField help="Close requests the full position; Reduce requests only the configured fraction." label="Position action" onChange={(action) => onChange({ ...value, action: action as ExitRuleSet["action"] })} options={[{ label: "Close the position", value: "close" }, { label: "Reduce the position", value: "reduce" }]} value={value.action} />{value.action === "reduce" ? <NumberField help="Fraction of the current position to release." label="Reduction fraction" maximum={1} minimum={.01} onChange={(position_fraction) => onChange({ ...value, position_fraction })} step={.05} unit="fraction" value={value.position_fraction} /> : null}</div><RuleStageEditor catalog={catalog} label={`${value.name} evidence`} onChange={(rules) => onChange({ ...value, rules })} stage={value.rules} /><GuidedOrderIntentFields draft={draft} eligibleSessions={eligibleSessions} onChange={(order_intent) => onChange({ ...value, order_intent })} value={value.order_intent} /></div>;
+}
+
+function GuidedCapabilityFields({ binding, definition, onChange }: { binding: CapabilityBinding; definition: CapabilityDefinition; onChange: (value: CapabilityBinding) => void }) {
+  return <div className="guided-capability-fields"><BooleanField help="Disabled capabilities stay configured but cannot act." label="Enabled" onChange={(enabled) => onChange({ ...binding, enabled })} value={binding.enabled} />{binding.enabled ? <div className="guided-form-grid">{definition.parameters.map((parameter) => <CapabilityField definition={parameter} key={parameter.key} onChange={(value) => onChange({ ...binding, settings: { ...binding.settings, [parameter.key]: value } })} value={binding.settings[parameter.key]} />)}</div> : <p>The capability is retained with its current values but will not participate in the strategy lifecycle.</p>}</div>;
+}
+
+function strategySetupRows(profile: StrategyProfile) {
+  return [
+    { label: "Trading plan", value: profile.name },
+    { label: "Behavior", value: `${readableLabel(profile.lifecycle.trading_behavior.side)} · ${profile.lifecycle.trading_behavior.eligible_sessions.map(readableLabel).join(", ")}` },
+    { label: "Initial entry", value: `${readableLabel(profile.lifecycle.initial_entry.capital_request.mode)} · ${profile.lifecycle.initial_entry.opportunity.groups.length}/${profile.lifecycle.initial_entry.confirmation.groups.length}/${profile.lifecycle.initial_entry.blockers.groups.length} rule groups` },
+    { label: "Position adds", value: `${profile.lifecycle.initial_entry.add_steps.filter((row) => row.enabled).length} enabled` },
+    { label: "Reentry", value: profile.lifecycle.reentry.enabled ? `${profile.lifecycle.reentry.maximum_attempts} attempts · ${profile.lifecycle.reentry.cooldown_ms} ms` : "Disabled" },
+    { label: "Strategic exits", value: `${profile.lifecycle.exit.rule_sets.filter((row) => row.enabled).length} enabled` },
+    { label: "Capabilities", value: `${profile.capabilities.filter((row) => row.enabled).length} enabled` },
+  ];
 }
 
 function GuidedQuestion({ children, description, label, status }: { children: ReactNode; description: string; label: string; status: string }) {
