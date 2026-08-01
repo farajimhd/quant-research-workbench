@@ -13,7 +13,7 @@ DEFAULT_BASE = Path(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Revalidate stored V4/V1 outputs under corrected candidate contract V2."
+        description="Revalidate stored V4/V1 outputs under typed canonical-instrument contract V3."
     )
     parser.add_argument("--collection-root", type=Path, default=DEFAULT_BASE / "news_1000")
     parser.add_argument(
@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=DEFAULT_BASE / "gold_candidate_revalidation_v1",
+        default=DEFAULT_BASE / "gold_candidate_revalidation_v2",
     )
     args = parser.parse_args(argv)
     report = run_revalidation(

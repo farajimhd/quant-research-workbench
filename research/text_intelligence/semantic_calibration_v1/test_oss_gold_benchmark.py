@@ -97,7 +97,7 @@ class OssGoldBenchmarkTests(unittest.TestCase):
                                 "source_origin": "issuer_direct",
                                 "issuer_units": [
                                     {
-                                        "ticker": "T001",
+                                        "canonical_instrument_id": "T001",
                                         "semantic_direction": "positive",
                                         "event_families": ["guidance"],
                                         "forecast_trigger_eligible": True,
@@ -140,7 +140,7 @@ class OssGoldBenchmarkTests(unittest.TestCase):
                                 "source_origin": "issuer_direct",
                                 "issuer_units": [
                                     {
-                                        "ticker": "T001",
+                                        "canonical_instrument_id": "T001",
                                         "semantic_direction": "positive",
                                         "event_families": ["guidance"],
                                         "forecast_trigger_eligible": True,

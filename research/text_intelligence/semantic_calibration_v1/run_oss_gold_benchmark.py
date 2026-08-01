@@ -8,7 +8,7 @@ from .oss_gold_benchmark import OSS_PROFILES, OssBenchmarkConfig, run_profile
 
 
 DEFAULT_ROOT = Path(
-    r"D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\oss_gold_100_v2"
+    r"D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\oss_gold_100_v3"
 )
 
 

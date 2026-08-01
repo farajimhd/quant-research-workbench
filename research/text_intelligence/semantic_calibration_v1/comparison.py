@@ -56,7 +56,9 @@ def current_v5_prediction(item: CollectionItem) -> dict[str, Any]:
     rendered = source["rendered_product"]
     identities: list[IssuerIdentity] = []
     for candidate in source.get("point_in_time_issuer_candidates") or ():
-        ticker = str(candidate.get("ticker") or "").upper()
+        ticker = str(
+            candidate.get("canonical_instrument_id") or candidate.get("ticker") or ""
+        ).upper()
         aliases = tuple(
             evidence.split(":", 1)[1]
             for evidence in candidate.get("identity_evidence") or ()

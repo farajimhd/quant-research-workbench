@@ -563,7 +563,7 @@ def build_blinded_item(
         "source_lanes": source_lanes,
     }
     source_hash = stable_json_hash(source_contract)
-    from .candidate_contract import enrich_candidate_rows
+    from .candidate_contract import CANDIDATE_CONTRACT_VERSION, enrich_candidate_rows
 
     candidate_rows = enrich_candidate_rows(
         (
@@ -573,6 +573,7 @@ def build_blinded_item(
         title=str(event.get("title") or ""),
         teaser=str(event.get("teaser") or ""),
         rendered_text=rendered_text,
+        authoritative_identifiers=linked_tickers,
     )
     return {
         "sample_version": SAMPLE_VERSION,
@@ -595,7 +596,7 @@ def build_blinded_item(
             "content_quality_flags": tuple(event.get("content_quality_flags") or ()),
         },
         "point_in_time_issuer_candidates": candidate_rows,
-        "issuer_candidate_contract_version": "news_issuer_candidate_contract_v2",
+        "issuer_candidate_contract_version": CANDIDATE_CONTRACT_VERSION,
         "source_lanes": source_lanes,
         "rendered_product": {
             "text": rendered_text,

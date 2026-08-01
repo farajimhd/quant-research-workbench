@@ -176,18 +176,20 @@ python -m research.text_intelligence.semantic_calibration_v1.run_openai_gold_ben
   --execute --authorize-cost-usd <PROTECTED_TOTAL>
 ```
 
-The current exact benchmark is V5 with prompt V2 and issuer-candidate contract
-V2. Prompt V2 tells the model that output tickers must come from provider
-tickers or point-in-time candidates, and candidate V2 recognizes explicit
-announced U.S. listing symbols such as "will trade on the New York Stock
-Exchange under the ticker PRI" without treating foreign exchange identifiers
-or arbitrary capitalized tokens as U.S. candidates.
+The current exact benchmark is V6 with prompt V3 and typed instrument-candidate
+contract V3. Every allowed candidate carries `canonical_instrument_id`,
+`display_symbol`, and `instrument_type`; the model must return the exact
+canonical ID. This removes the former contradiction between a bare-ticker
+instruction and authoritative identifiers such as `X:UNIUSD`. Candidate V3
+also recognizes explicit announced U.S. listing symbols such as "will trade on
+the New York Stock Exchange under the ticker PRI" without treating foreign
+exchange identifiers or arbitrary capitalized tokens as U.S. candidates.
 
 The job is resumable: rerunning the same command reconciles existing remote
 Batch jobs and never resubmits a completed model. Requests, raw responses,
 validated predictions, failures, exact token usage, actual Batch cost, metrics,
 and `COMPARISON.md` are written under
-`D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\openai_gold_100_v5`.
+`D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\openai_gold_100_v6`.
 All 100 articles remain in the scoring denominator; malformed or contract-invalid
 responses are scored as missing predictions. Batch elapsed time includes queue
 time and must not be interpreted as synchronous production latency.
@@ -199,15 +201,14 @@ candidate repair:
 python -m research.text_intelligence.semantic_calibration_v1.run_revalidate_gold_benchmark
 ```
 
-That report is explicitly post-hoc. It shows which candidate inputs changed
-and which stored outputs remain valid, but it is not mislabeled as an exact
-prompt-V2 comparison. Since the shared system prompt changed, every exact V5
-request must be rerun; no paid request is submitted without explicit cost
-authorization.
+That report is explicitly a historical prompt-V1/candidate-V2 audit. It is not
+an exact prompt-V3 comparison. Since both the system prompt and structured
+response field changed, every exact V6 request must be rerun; no paid request
+is submitted without explicit cost authorization.
 
 ## Add workstation GPT-OSS 20B and 120B
 
-The local V2 comparison reuses the exact OpenAI V5 population, prompt, output
+The local V3 comparison reuses the exact OpenAI V6 population, prompt, output
 schema, validator, dynamic multi-issuer output allowance, and all-100 scoring
 denominator. Prepare its immutable runtime bundle on the laptop once:
 
@@ -216,8 +217,8 @@ python -m research.text_intelligence.semantic_calibration_v1.run_prepare_oss_gol
 ```
 
 The prepared `shared` directory must be synchronized to the workstation under
-`D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\oss_gold_100_v2`.
-It contains the frozen 100-article prompt-V2 package. The exact OpenAI V5
+`D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\oss_gold_100_v3`.
+It contains the frozen 100-article prompt-V3 package. The exact OpenAI V6
 comparison is attached only after that paid benchmark completes; until then,
 the local report states that the matching remote baseline is pending.
 

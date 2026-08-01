@@ -16,7 +16,9 @@ class CandidateContractTests(unittest.TestCase):
                 "trade on the New York Stock Exchange under the ticker PRI."
             ),
         )
-        self.assertEqual([row["ticker"] for row in rows], ["C", "PRI"])
+        self.assertEqual(
+            [row["canonical_instrument_id"] for row in rows], ["C", "PRI"]
+        )
         self.assertTrue(
             any("announced_us_listing" in value for value in rows[1]["identity_evidence"])
         )
@@ -40,7 +42,7 @@ class CandidateContractTests(unittest.TestCase):
             teaser="NASDAQ: AAPL",
             rendered_text="Apple Inc. (NASDAQ: AAPL) provided an update.",
         )
-        self.assertEqual([row["ticker"] for row in rows], ["AAPL"])
+        self.assertEqual([row["canonical_instrument_id"] for row in rows], ["AAPL"])
         self.assertGreaterEqual(len(rows[0]["identity_evidence"]), 2)
 
     def test_authoritative_non_equity_instrument_is_preserved(self) -> None:
@@ -50,7 +52,28 @@ class CandidateContractTests(unittest.TestCase):
             teaser="",
             rendered_text="",
         )
-        self.assertEqual([row["ticker"] for row in rows], ["X:UNIUSD"])
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "canonical_instrument_id": "X:UNIUSD",
+                    "display_symbol": "UNI/USD",
+                    "instrument_type": "crypto_pair",
+                    "identity_evidence": ["provider_link"],
+                }
+            ],
+        )
+
+    def test_provider_identifier_is_merged_into_typed_roster(self) -> None:
+        rows = enrich_candidate_rows(
+            [],
+            title="Uniswap declines",
+            teaser="Uniswap (CRYPTO: UNI) declined.",
+            rendered_text="",
+            authoritative_identifiers=["X:UNIUSD"],
+        )
+        self.assertEqual(rows[0]["canonical_instrument_id"], "X:UNIUSD")
+        self.assertEqual(rows[0]["display_symbol"], "UNI/USD")
 
 
 if __name__ == "__main__":

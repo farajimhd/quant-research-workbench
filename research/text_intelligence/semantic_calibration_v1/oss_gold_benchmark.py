@@ -26,8 +26,8 @@ from .openai_gold_benchmark import (
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
 
-OSS_BENCHMARK_VERSION = "news_gold_oss_benchmark_v2"
-OPENAI_BASELINE_VERSION = "news_gold_openai_benchmark_v5"
+OSS_BENCHMARK_VERSION = "news_gold_oss_benchmark_v3"
+OPENAI_BASELINE_VERSION = "news_gold_openai_benchmark_v6"
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +77,7 @@ class OssBenchmarkConfig:
 
     @property
     def openai_baseline_path(self) -> Path:
-        return self.shared_root / "openai_comparison_v5.json"
+        return self.shared_root / "openai_comparison_v6.json"
 
 
 def prepare_bundle(
@@ -120,12 +120,12 @@ def prepare_bundle(
     if openai_comparison_path is not None and openai_comparison_path.exists():
         baseline = read_json(openai_comparison_path)
         if baseline.get("benchmark_version") != OPENAI_BASELINE_VERSION:
-            raise RuntimeError("OpenAI comparison is not the certified V5 baseline.")
+            raise RuntimeError("OpenAI comparison is not the certified V6 baseline.")
         if baseline.get("selection", {}).get("selection_sha256") != selection.get(
             "selection_sha256"
         ):
             raise RuntimeError("OpenAI comparison and frozen selection identities differ.")
-        baseline_target = shared_root / "openai_comparison_v5.json"
+        baseline_target = shared_root / "openai_comparison_v6.json"
         write_json_atomic(baseline_target, baseline)
         baseline_hash = _file_hash(baseline_target)
     manifest = {
@@ -552,11 +552,11 @@ def write_combined_comparison(
     lines = [
         "# OpenAI and local GPT-OSS gold-label comparison",
         "",
-        "All rows use the same frozen 100 articles, prompt V2, structured contract, validator, and all-100 scoring denominator.",
+        "All rows use the same frozen 100 articles, prompt V3, typed canonical-instrument contract, validator, and all-100 scoring denominator.",
         (
-            "The exact OpenAI V5 baseline is included."
+            "The exact OpenAI V6 baseline is included."
             if baseline_path is not None
-            else "The exact OpenAI V5 baseline is pending; only completed local V2 rows are shown."
+            else "The exact OpenAI V6 baseline is pending; only completed local V3 rows are shown."
         ),
         "OpenAI Batch elapsed time includes remote queueing. Local vLLM elapsed time is workstation wall time; the two are not latency-equivalent.",
         "Local API cost is zero, but GPU depreciation, electricity, and operator time were not metered and are not represented as zero compute cost.",

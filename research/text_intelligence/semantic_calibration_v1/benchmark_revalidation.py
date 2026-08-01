@@ -11,7 +11,7 @@ from .openai_gold_benchmark import quality_score, to_prediction, validate_respon
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
 
-REVALIDATION_VERSION = "news_gold_candidate_revalidation_v1"
+REVALIDATION_VERSION = "news_gold_candidate_revalidation_v2"
 SOURCE_OPENAI_VERSION = "news_gold_openai_benchmark_v4"
 SOURCE_OSS_VERSION = "news_gold_oss_benchmark_v1"
 
@@ -35,10 +35,10 @@ def run_revalidation(
     changed_ids = tuple(
         source.sample_id
         for source, repaired in zip(source_items, items, strict=True)
-        if candidate_tickers(source) != candidate_tickers(repaired)
+        if _raw_candidate_ids(source) != candidate_tickers(repaired)
     )
-    impossible_before = _truth_outside_contract(source_items)
-    impossible_after = _truth_outside_contract(items)
+    impossible_before = _truth_outside_contract(source_items, repaired=False)
+    impossible_after = _truth_outside_contract(items, repaired=True)
     audit = {
         "revalidation_version": REVALIDATION_VERSION,
         "sample_rows": len(items),
@@ -46,8 +46,8 @@ def run_revalidation(
         "candidate_input_changed_rows": len(changed_ids),
         "truth_outside_contract_before": impossible_before,
         "truth_outside_contract_after": impossible_after,
-        "prompt_v2_changes_all_request_inputs": True,
-        "prompt_v2_full_rerun_rows": len(items),
+        "prompt_v3_changes_all_request_inputs": True,
+        "prompt_v3_full_rerun_rows": len(items),
         "generated_at_utc": _utc_now(),
     }
     if impossible_after:
@@ -83,8 +83,8 @@ def run_revalidation(
         "revalidation_version": REVALIDATION_VERSION,
         "source_openai_version": SOURCE_OPENAI_VERSION,
         "source_oss_version": SOURCE_OSS_VERSION,
-        "contract": "candidate_v2_with_original_prompt_outputs",
-        "not_exact_prompt_v2": True,
+        "contract": "canonical_instrument_candidate_v3_with_original_prompt_outputs",
+        "not_exact_prompt_v3": True,
         "audit": audit,
         "models": rows,
         "generated_at_utc": _utc_now(),
@@ -158,11 +158,12 @@ def _score_values(
         if value is None:
             failures.append({"sample_id": item.sample_id, "error": "raw_output_unavailable"})
             continue
-        errors = validate_response(value, item)
+        migrated = _migrate_legacy_response(value)
+        errors = validate_response(migrated, item)
         if errors:
             failures.append({"sample_id": item.sample_id, "error": ";".join(errors)})
             continue
-        prediction = to_prediction(by_id[item.sample_id], value, model)
+        prediction = to_prediction(by_id[item.sample_id], migrated, model)
         prediction["benchmark_version"] = REVALIDATION_VERSION
         prediction["prompt_version"] = str(source_manifest.get("prompt_version") or "prompt_v1")
         write_json_atomic(prediction_dir / f"{item.sample_id}.json", prediction)
@@ -200,10 +201,12 @@ def _score_values(
     }
 
 
-def _truth_outside_contract(items: Iterable[CollectionItem]) -> list[dict[str, Any]]:
+def _truth_outside_contract(
+    items: Iterable[CollectionItem], *, repaired: bool
+) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
     for item in items:
-        allowed = set(candidate_tickers(item))
+        allowed = set(candidate_tickers(item) if repaired else _raw_candidate_ids(item))
         missing = sorted(
             str(unit.get("ticker") or "").upper()
             for unit in item.truth.get("issuer_units") or ()
@@ -220,17 +223,47 @@ def _truth_outside_contract(items: Iterable[CollectionItem]) -> list[dict[str, A
     return failures
 
 
+def _raw_candidate_ids(item: CollectionItem) -> tuple[str, ...]:
+    identifiers = {
+        str(candidate.get("canonical_instrument_id") or candidate.get("ticker") or "")
+        .strip()
+        .upper()
+        for candidate in item.blinded.get("point_in_time_issuer_candidates") or ()
+    }
+    identifiers.update(
+        str(value).strip().upper()
+        for value in (item.blinded.get("publication") or {}).get("provider_tickers") or ()
+    )
+    return tuple(sorted(value for value in identifiers if value))
+
+
+def _migrate_legacy_response(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Rename the old response key without aliasing or changing its value."""
+    migrated = dict(value)
+    migrated["issuer_units"] = [
+        {
+            **dict(unit),
+            "canonical_instrument_id": str(unit.get("ticker") or "").upper(),
+        }
+        for unit in value.get("issuer_units") or ()
+        if isinstance(unit, Mapping)
+    ]
+    for unit in migrated["issuer_units"]:
+        unit.pop("ticker", None)
+    return migrated
+
+
 def _report(payload: Mapping[str, Any]) -> str:
     audit = payload["audit"]
     lines = [
         "# Gold benchmark candidate-contract revalidation",
         "",
-        "This is a post-hoc revalidation of stored prompt-V1 outputs. It is not an exact prompt-V2 comparison.",
+        "This is a post-hoc key migration and revalidation of stored prompt-V1 outputs. It is not an exact prompt-V3 comparison.",
         "",
         f"- Candidate-input changes: {audit['candidate_input_changed_rows']} ({', '.join(audit['candidate_input_changed_ids']) or 'none'})",
         f"- Impossible gold rows before repair: {len(audit['truth_outside_contract_before'])}",
         f"- Impossible gold rows after repair: {len(audit['truth_outside_contract_after'])}",
-        f"- Exact prompt-V2 requests requiring rerun: {audit['prompt_v2_full_rerun_rows']}",
+        f"- Exact prompt-V3 requests requiring rerun: {audit['prompt_v3_full_rerun_rows']}",
         "",
         "| Rank | Model | Source mode | Valid | Quality | Direction F1 | Forecast F1 |",
         "|---:|---|---|---:|---:|---:|---:|",

@@ -18,15 +18,19 @@ from .comparison import (
     evaluate_predictions,
     load_collection,
 )
-from .candidate_contract import candidate_tickers, repair_item_candidates
+from .candidate_contract import (
+    candidate_instrument_ids,
+    instrument_candidates,
+    repair_item_candidates,
+)
 from .schema import CONTENT_ROLES, DIRECTIONS, EXTRACTION_DECISIONS, SOURCE_ORIGINS
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
 
-BENCHMARK_VERSION = "news_gold_openai_benchmark_v5"
+BENCHMARK_VERSION = "news_gold_openai_benchmark_v6"
 # Preserve the exact V2 sample while request and scoring contracts evolve.
 SELECTION_VERSION = "news_gold_openai_benchmark_v2"
-PROMPT_VERSION = "news_gold_teacher_prompt_v2"
+PROMPT_VERSION = "news_gold_teacher_prompt_v3"
 HARD_MAX_COST_USD = Decimal("20.00")
 TERMINAL_BATCH_STATUSES = {"completed", "failed", "expired", "cancelled"}
 
@@ -332,7 +336,7 @@ def batch_request(
 
 def build_messages(item: CollectionItem) -> list[dict[str, str]]:
     publication = item.blinded["publication"]
-    candidates = item.blinded.get("point_in_time_issuer_candidates") or []
+    candidates = instrument_candidates(item)
     candidate_lines = []
     for candidate in candidates:
         aliases = [
@@ -341,7 +345,11 @@ def build_messages(item: CollectionItem) -> list[dict[str, str]]:
             if str(value).startswith("issuer_alias:")
         ]
         candidate_lines.append(
-            f"- {candidate.get('ticker')}: aliases={', '.join(aliases) or 'none'}"
+            "- canonical_instrument_id="
+            f"{candidate['canonical_instrument_id']}; "
+            f"display_symbol={candidate['display_symbol']}; "
+            f"instrument_type={candidate['instrument_type']}; "
+            f"aliases={', '.join(aliases) or 'none'}"
         )
     user = "\n".join(
         (
@@ -373,15 +381,16 @@ Article fields:
 - source_origin identifies who originated the information, not the website that republished it.
 
 Issuer units:
-- Return only bare ticker symbols present in Provider tickers or Point-in-time issuer candidates. A ticker list, comparison, incidental mention, or chart illustration is not enough.
-- When an article concerns an issuer but no supplied ticker is valid, return extraction_decision=identity_not_found and an empty issuer_units array. Do not emit foreign exchange identifiers or infer an unsupplied symbol.
+- Every allowed candidate has canonical_instrument_id, display_symbol, and instrument_type. Return canonical_instrument_id exactly as supplied; never return display_symbol in its place. Canonical IDs may contain prefixes or quote-currency suffixes, for example X:UNIUSD.
+- A ticker list, comparison, incidental mention, or chart illustration is not enough issuer-specific evidence.
+- When an article concerns an issuer but no supplied canonical_instrument_id is valid, return extraction_decision=identity_not_found and an empty issuer_units array. Do not infer an unsupplied identifier.
 - semantic_direction describes the text's issuer-specific financial implication: positive, negative, neutral, or mixed. It is not subsequent price direction.
 - event_families use only the supplied closed family names.
 - forecast_trigger_eligible is true only for timely issuer-specific information that could reasonably initiate a new forecast. Analyst opinions, recaps, roundups, previews, and why-moving follow-ups are normally false.
 - reaction_evaluation_eligible is true only when a subsequent market reaction can be causally evaluated against this new event.
 - issuer_history_context_eligible is true when the item is useful causal issuer history even if it should not trigger a new forecast.
 
-If extraction_decision is not labeled, issuer_units must be empty. If it is labeled, issuer_units must be non-empty. Do not invent tickers or facts."""
+If extraction_decision is not labeled, issuer_units must be empty. If it is labeled, issuer_units must be non-empty. Do not invent instrument identifiers or facts."""
 
 
 def response_schema() -> dict[str, Any]:
@@ -404,7 +413,7 @@ def response_schema() -> dict[str, Any]:
                     "type": "object",
                     "additionalProperties": False,
                     "required": [
-                        "ticker",
+                        "canonical_instrument_id",
                         "semantic_direction",
                         "event_families",
                         "forecast_trigger_eligible",
@@ -412,7 +421,7 @@ def response_schema() -> dict[str, Any]:
                         "issuer_history_context_eligible",
                     ],
                     "properties": {
-                        "ticker": {"type": "string"},
+                        "canonical_instrument_id": {"type": "string"},
                         "semantic_direction": {"type": "string", "enum": sorted(DIRECTIONS)},
                         "event_families": {
                             "type": "array",
@@ -443,39 +452,40 @@ def validate_response(value: Mapping[str, Any], item: CollectionItem) -> list[st
         errors.append("labeled_without_units")
     if value.get("extraction_decision") != "labeled" and units:
         errors.append("abstention_with_units")
-    allowed = set(candidate_tickers(item))
+    allowed = set(candidate_instrument_ids(item))
     seen: set[str] = set()
     for unit in units:
         if not isinstance(unit, Mapping):
             errors.append("unit_not_object")
             continue
-        ticker = str(unit.get("ticker") or "").upper()
-        if not ticker or ticker in seen:
-            errors.append("invalid_or_duplicate_ticker")
-        seen.add(ticker)
-        if ticker not in allowed:
-            errors.append(f"ticker_outside_candidates:{ticker}")
+        instrument_id = str(unit.get("canonical_instrument_id") or "").upper()
+        if not instrument_id or instrument_id in seen:
+            errors.append("invalid_or_duplicate_instrument_id")
+        seen.add(instrument_id)
+        if instrument_id not in allowed:
+            errors.append(f"instrument_id_outside_candidates:{instrument_id}")
         if unit.get("semantic_direction") not in DIRECTIONS:
-            errors.append(f"invalid_direction:{ticker}")
+            errors.append(f"invalid_direction:{instrument_id}")
         families = unit.get("event_families")
         if not isinstance(families, list) or any(
             family not in CANONICAL_CONCEPT_FAMILIES for family in families
         ):
-            errors.append(f"invalid_event_families:{ticker}")
+            errors.append(f"invalid_event_families:{instrument_id}")
         for field in (
             "forecast_trigger_eligible",
             "reaction_evaluation_eligible",
             "issuer_history_context_eligible",
         ):
             if not isinstance(unit.get(field), bool):
-                errors.append(f"invalid_{field}:{ticker}")
+                errors.append(f"invalid_{field}:{instrument_id}")
     return errors
 
 
 def to_prediction(item: CollectionItem, value: Mapping[str, Any], profile: str) -> dict[str, Any]:
     labels = [
         {
-            "ticker": str(unit["ticker"]).upper(),
+            "ticker": str(unit["canonical_instrument_id"]).upper(),
+            "canonical_instrument_id": str(unit["canonical_instrument_id"]).upper(),
             "classification": {
                 "content_role": value["content_role"],
                 "source_origin": value["source_origin"],
@@ -850,10 +860,7 @@ def output_token_budget(
     maximum: int,
 ) -> int:
     """Reserve enough strict-JSON capacity for broad multi-issuer articles."""
-    publication = item.blinded.get("publication") or {}
-    candidates = item.blinded.get("point_in_time_issuer_candidates") or ()
-    provider_tickers = publication.get("provider_tickers") or ()
-    issuer_capacity = max(len(candidates), len(provider_tickers))
+    issuer_capacity = len(instrument_candidates(item))
     required = 768 + issuer_capacity * 128
     return min(maximum, max(minimum, required))
 

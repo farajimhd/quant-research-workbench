@@ -81,7 +81,7 @@ class OpenAIGoldBenchmarkTests(unittest.TestCase):
             "source_origin": "issuer_direct",
             "issuer_units": [
                 {
-                    "ticker": "T001",
+                    "canonical_instrument_id": "T001",
                     "semantic_direction": "positive",
                     "event_families": ["guidance"],
                     "forecast_trigger_eligible": True,
@@ -95,7 +95,7 @@ class OpenAIGoldBenchmarkTests(unittest.TestCase):
         self.assertEqual(prediction["content_role"], "primary_event")
         self.assertEqual(prediction["labels"][0]["ticker"], "T001")
 
-    def test_outside_ticker_is_rejected(self) -> None:
+    def test_outside_instrument_id_is_rejected(self) -> None:
         item = _item(1)
         value = {
             "extraction_decision": "labeled",
@@ -103,7 +103,7 @@ class OpenAIGoldBenchmarkTests(unittest.TestCase):
             "source_origin": "issuer_direct",
             "issuer_units": [
                 {
-                    "ticker": "WRONG",
+                    "canonical_instrument_id": "WRONG",
                     "semantic_direction": "neutral",
                     "event_families": [],
                     "forecast_trigger_eligible": False,
@@ -112,13 +112,42 @@ class OpenAIGoldBenchmarkTests(unittest.TestCase):
                 }
             ],
         }
-        self.assertIn("ticker_outside_candidates:WRONG", validate_response(value, item))
+        self.assertIn(
+            "instrument_id_outside_candidates:WRONG", validate_response(value, item)
+        )
 
     def test_prompt_explicitly_matches_ticker_validator(self) -> None:
         from .openai_gold_benchmark import SYSTEM_PROMPT
 
-        self.assertIn("Provider tickers or Point-in-time issuer candidates", SYSTEM_PROMPT)
+        self.assertIn("Return canonical_instrument_id exactly as supplied", SYSTEM_PROMPT)
+        self.assertIn("X:UNIUSD", SYSTEM_PROMPT)
         self.assertIn("identity_not_found", SYSTEM_PROMPT)
+
+    def test_crypto_canonical_id_is_valid_and_projected_without_alias_loss(self) -> None:
+        item = _item(1)
+        item.blinded["publication"]["provider_tickers"] = ["X:UNIUSD"]
+        item.blinded["point_in_time_issuer_candidates"] = []
+        value = {
+            "extraction_decision": "labeled",
+            "content_role": "automated_summary",
+            "source_origin": "automated_summary",
+            "issuer_units": [
+                {
+                    "canonical_instrument_id": "X:UNIUSD",
+                    "semantic_direction": "neutral",
+                    "event_families": [],
+                    "forecast_trigger_eligible": False,
+                    "reaction_evaluation_eligible": False,
+                    "issuer_history_context_eligible": True,
+                }
+            ],
+        }
+        self.assertEqual(validate_response(value, item), [])
+        prediction = to_prediction(item, value, "gpt-oss-120b")
+        self.assertEqual(prediction["labels"][0]["ticker"], "X:UNIUSD")
+        self.assertEqual(
+            prediction["labels"][0]["canonical_instrument_id"], "X:UNIUSD"
+        )
 
     def test_quality_score_uses_nine_equal_components(self) -> None:
         metrics = {
@@ -152,7 +181,7 @@ class OpenAIGoldBenchmarkTests(unittest.TestCase):
         ]
         self.assertEqual(
             output_token_budget(item, minimum=2_048, maximum=16_384),
-            10_624,
+            10_752,
         )
 
     def test_missing_prediction_is_scored_as_failure_when_requested(self) -> None:

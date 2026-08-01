@@ -8,7 +8,7 @@ from typing import Any, Iterable, Mapping
 from .comparison import CollectionItem
 
 
-CANDIDATE_CONTRACT_VERSION = "news_issuer_candidate_contract_v2"
+CANDIDATE_CONTRACT_VERSION = "news_instrument_candidate_contract_v3"
 
 _TICKER = r"[A-Z][A-Z0-9]{0,5}(?:[.-][A-Z])?"
 _EXCHANGE = (
@@ -40,12 +40,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 def explicit_us_ticker_evidence(*texts: str) -> dict[str, tuple[str, ...]]:
-    """Return strongly evidenced U.S. symbols without guessing from bare capitals.
-
-    Exchange-qualified and explicit listing language is accepted. Foreign
-    exchange identifiers and generic parenthetical capitals are intentionally
-    excluded because they do not establish an in-scope U.S. instrument.
-    """
+    """Return strongly evidenced U.S. symbols without guessing bare capitals."""
     evidence: dict[str, list[str]] = {}
     for source_index, text in enumerate(texts):
         value = str(text or "")
@@ -67,32 +62,52 @@ def enrich_candidate_rows(
     title: str,
     teaser: str,
     rendered_text: str,
+    authoritative_identifiers: Iterable[Any] = (),
 ) -> list[dict[str, Any]]:
-    merged: dict[str, list[str]] = {}
+    """Build one typed candidate roster keyed by exact canonical instrument ID."""
+    merged: dict[str, dict[str, Any]] = {}
     order: list[str] = []
+
+    def ensure(identifier: Any) -> dict[str, Any] | None:
+        canonical = _canonical_authoritative_identifier(identifier)
+        if not canonical:
+            return None
+        if canonical not in merged:
+            merged[canonical] = {
+                "canonical_instrument_id": canonical,
+                "display_symbol": display_symbol(canonical),
+                "instrument_type": instrument_type(canonical),
+                "identity_evidence": [],
+            }
+            order.append(canonical)
+        return merged[canonical]
+
     for candidate in candidates:
-        ticker = _canonical_authoritative_identifier(candidate.get("ticker"))
-        if not ticker:
+        row = ensure(
+            candidate.get("canonical_instrument_id") or candidate.get("ticker")
+        )
+        if row is None:
             continue
-        if ticker not in merged:
-            merged[ticker] = []
-            order.append(ticker)
         for item in candidate.get("identity_evidence") or ():
             token = str(item)
-            if token and token not in merged[ticker]:
-                merged[ticker].append(token)
-    explicit = explicit_us_ticker_evidence(title, teaser, rendered_text)
-    for ticker, values in explicit.items():
-        if ticker not in merged:
-            merged[ticker] = []
-            order.append(ticker)
+            if token and token not in row["identity_evidence"]:
+                row["identity_evidence"].append(token)
+    for identifier in authoritative_identifiers:
+        row = ensure(identifier)
+        if row is not None:
+            token = f"provider_instrument:{row['canonical_instrument_id']}"
+            if token not in row["identity_evidence"]:
+                row["identity_evidence"].append(token)
+    for identifier, values in explicit_us_ticker_evidence(
+        title, teaser, rendered_text
+    ).items():
+        row = ensure(identifier)
+        if row is None:
+            continue
         for token in values:
-            if token not in merged[ticker]:
-                merged[ticker].append(token)
-    return [
-        {"ticker": ticker, "identity_evidence": merged[ticker]}
-        for ticker in order
-    ]
+            if token not in row["identity_evidence"]:
+                row["identity_evidence"].append(token)
+    return [merged[identifier] for identifier in order]
 
 
 def repair_item_candidates(item: CollectionItem) -> CollectionItem:
@@ -104,21 +119,51 @@ def repair_item_candidates(item: CollectionItem) -> CollectionItem:
         title=str(publication.get("title") or ""),
         teaser=str(publication.get("teaser") or ""),
         rendered_text=str(rendered.get("text") or ""),
+        authoritative_identifiers=publication.get("provider_tickers") or (),
     )
     blinded["issuer_candidate_contract_version"] = CANDIDATE_CONTRACT_VERSION
     return replace(item, blinded=blinded)
 
 
-def candidate_tickers(item: CollectionItem) -> tuple[str, ...]:
-    values = {
-        _canonical_authoritative_identifier(candidate.get("ticker"))
-        for candidate in item.blinded.get("point_in_time_issuer_candidates") or ()
-    }
-    values.update(
-        _canonical_authoritative_identifier(ticker)
-        for ticker in (item.blinded.get("publication") or {}).get("provider_tickers") or ()
+def instrument_candidates(item: CollectionItem) -> tuple[dict[str, Any], ...]:
+    repaired = repair_item_candidates(item)
+    return tuple(
+        dict(candidate)
+        for candidate in repaired.blinded.get("point_in_time_issuer_candidates") or ()
     )
-    return tuple(sorted(value for value in values if value))
+
+
+def candidate_instrument_ids(item: CollectionItem) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            str(candidate["canonical_instrument_id"]).upper()
+            for candidate in instrument_candidates(item)
+        )
+    )
+
+
+def candidate_tickers(item: CollectionItem) -> tuple[str, ...]:
+    """Compatibility name for historical audits; values are canonical IDs."""
+    return candidate_instrument_ids(item)
+
+
+def instrument_type(identifier: Any) -> str:
+    canonical = _canonical_authoritative_identifier(identifier)
+    if canonical.startswith("X:") and canonical.endswith("USD"):
+        return "crypto_pair"
+    if re.fullmatch(_TICKER, canonical):
+        return "us_equity_or_fund"
+    if re.search(r"\.(?:HK|SH|SZ|L|TO|V)$", canonical):
+        return "foreign_listed_security"
+    return "other_security"
+
+
+def display_symbol(identifier: Any) -> str:
+    canonical = _canonical_authoritative_identifier(identifier)
+    if canonical.startswith("X:") and canonical.endswith("USD"):
+        base = canonical[2:-3]
+        return f"{base}/USD" if base else canonical
+    return canonical
 
 
 def _normalize_ticker(value: Any) -> str:
@@ -127,5 +172,4 @@ def _normalize_ticker(value: Any) -> str:
 
 
 def _canonical_authoritative_identifier(value: Any) -> str:
-    """Preserve source-authoritative instruments; syntax gates only inference."""
     return str(value or "").strip().upper()
