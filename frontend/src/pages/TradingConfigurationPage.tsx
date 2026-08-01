@@ -19,8 +19,10 @@ import {
   Send,
   ShieldCheck,
   Sparkles,
+  Target,
   Trash2,
   TriangleAlert,
+  WalletCards,
   X,
 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
@@ -551,7 +553,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   }
 
   return (
-    <div className="trading-configuration-page">
+    <div className="trading-configuration-page" data-configuration-section={section}>
       <header className="configuration-page-header">
         <div className="configuration-page-icon"><Icon size={20} /></div>
         <div>
@@ -612,7 +614,7 @@ function ConfigurationJourney({ active, draft }: { active: TradingConfigurationS
   return (
     <nav aria-label="Configuration journey" className="configuration-journey">
       {steps.map((step, index) => (
-        <a aria-current={active === step.key ? "step" : undefined} data-ready={step.ready ? "true" : "false"} href={`#${pageForSection(step.key as TradingConfigurationSection)}`} key={step.key}>
+        <a aria-current={active === step.key ? "step" : undefined} data-ready={step.ready ? "true" : "false"} data-step={step.key} href={`#${pageForSection(step.key as TradingConfigurationSection)}`} key={step.key}>
           <span>{step.ready ? <Check size={13} /> : index + 1}</span>
           <strong>{step.label}</strong>
           {index < steps.length - 1 ? <ChevronRight size={14} /> : null}
@@ -2275,7 +2277,22 @@ function EffectiveConfigurationPreview({ updatedAt }: { updatedAt: string }) {
 }
 
 function ConfigGroup({ action, children, summary, title }: { action?: ReactNode; children: ReactNode; summary: string; title: string }) {
-  return <section className="configuration-group"><header><div><strong>{title}</strong><p>{summary}</p></div>{action}</header><div className="configuration-group-body">{children}</div></section>;
+  const visual = configGroupVisual(title);
+  const Icon = visual.icon;
+  return <section className="configuration-group" data-group-tone={visual.tone}><header><div className="configuration-group-heading"><span className="configuration-group-icon"><Icon size={15} /></span><div><strong>{title}</strong><p>{summary}</p></div></div>{action}</header><div className="configuration-group-body">{children}</div></section>;
+}
+
+function configGroupVisual(title: string) {
+  const normalized = title.toLowerCase();
+  if (normalized.includes("watch universe")) return { icon: Target, tone: "strategy" } as const;
+  if (normalized.includes("account safety")) return { icon: ShieldCheck, tone: "portfolio" } as const;
+  if (normalized.includes("protection")) return { icon: ShieldCheck, tone: "protection" } as const;
+  if (normalized.includes("account mandate") || normalized.includes("configured account")) return { icon: WalletCards, tone: "portfolio" } as const;
+  if (normalized.includes("risk group")) return { icon: Network, tone: "portfolio" } as const;
+  if (normalized.includes("execution") || normalized.includes("runtime mode")) return { icon: Send, tone: "oms" } as const;
+  if (normalized.includes("readiness") || normalized.includes("effective configuration")) return { icon: BadgeCheck, tone: "ready" } as const;
+  if (normalized.includes("campaign lifecycle")) return { icon: GitBranch, tone: "strategy" } as const;
+  return { icon: Sparkles, tone: "section" } as const;
 }
 
 function GuideCallout({ children, icon, title }: { children: ReactNode; icon: ReactNode; title: string }) {

@@ -156,6 +156,7 @@ export function Layout({
                       <a
                         aria-current={page === item.key ? "page" : undefined}
                         className={buildMenuItemButtonClassName(page === item.key)}
+                        data-config-tone={configurationToneForPage(item.key)}
                         href={`#${item.key}`}
                         key={item.key}
                         onClick={(event) => {
@@ -180,6 +181,17 @@ export function Layout({
       </div>
     </div>
   );
+}
+
+function configurationToneForPage(page: PageKey) {
+  if (page === "canvas-configuration") return "canvas";
+  if (page === "strategy-configuration") return "strategy";
+  if (page === "assignment-configuration") return "assignments";
+  if (page === "portfolio-configuration") return "portfolio";
+  if (page === "oms-configuration") return "oms";
+  if (page === "account-configuration") return "accounts";
+  if (page === "revision-configuration") return "revisions";
+  return undefined;
 }
 
 function readStoredUiScale() {

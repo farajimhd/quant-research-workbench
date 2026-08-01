@@ -162,6 +162,14 @@ and execution pace. Live owns session startup and operational controls.
 Raw JSON is never the primary configuration interface.
 
 - Every page starts with a concise summary of its responsibility and authority.
+- Configuration navigation, page headers, journey state, and section headers
+  use icon-backed domain accents resolved from the registered application
+  theme. Strategy and OMS use blue/cyan orientation cues, Portfolio uses green,
+  and deployment, account, and publication pages retain their own accents;
+  semantic success, warning, and danger colors remain reserved for state.
+- The visual hierarchy remains usable at every supported application scale and
+  compact viewport. Color supplements icons, labels, borders, and structure; it
+  is never the only distinction between configuration authorities.
 - Strategy Studio presents Trading Behavior, Initial Entry, Reentry, Exit, and
   Capabilities as collapsible containers with descriptive headers and
   at-a-glance configured summaries.
