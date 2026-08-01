@@ -9,14 +9,29 @@ from unittest.mock import Mock
 import torch
 from rich.console import Console
 
-from research.bar_gpt.v1.build_1s import BuildReporter, _query_tsv, _show_create_raw, create_target_table_sql, insert_one_second_sql
-from research.bar_gpt.v1.config import BarGPTConfig
+from research.bar_gpt.v1.build_1s import (
+    BuildReporter,
+    _query_tsv,
+    _show_create_raw,
+    create_target_table_sql,
+    insert_one_second_sql,
+    ticker_fingerprint,
+)
+from research.bar_gpt.v1.cohort import (
+    BAR_GPT_COHORT_2TB,
+    BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
+    BAR_GPT_COHORT_2TB_SHA256,
+    BAR_GPT_COHORT_2TB_TABLE,
+)
+from research.bar_gpt.v1.config import BarGPTConfig, DataConfig
 from research.bar_gpt.v1.data import BarView, causal_asof_indices, densify_one_second_view, horizon_target_indices, rollup_intraday_view
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.loader import ClickHouseBarStreamConfig, daily_range_query, ticker_range_query
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES, build_physical_horizon_targets
+from research.bar_gpt.v1.run_build_1s import main as launcher_main
+from research.bar_gpt.v1.run_build_1s import parse_args as parse_launcher_args
 
 
 def builder_args() -> argparse.Namespace:
@@ -32,6 +47,26 @@ def builder_args() -> argparse.Namespace:
 
 
 class BuilderSqlTest(unittest.TestCase):
+    def test_canonical_two_tb_cohort_is_unique_and_fingerprinted(self) -> None:
+        self.assertEqual(len(BAR_GPT_COHORT_2TB), 100)
+        self.assertEqual(len(set(BAR_GPT_COHORT_2TB)), 100)
+        self.assertEqual(BAR_GPT_COHORT_2TB_SHA256, "bb04a7c59d341d62d2fbf7758efa8ac175ae5ff4ba8400972f2517cd3896432c")
+        self.assertEqual(ticker_fingerprint(tuple(sorted(BAR_GPT_COHORT_2TB))), BAR_GPT_COHORT_2TB_SHA256)
+        for representative in ("SPY", "AAPL", "UVXY", "COIN", "XBIO", "ATOS"):
+            self.assertIn(representative, BAR_GPT_COHORT_2TB)
+
+    def test_launcher_and_training_data_default_to_canonical_cohort(self) -> None:
+        args, extra = parse_launcher_args([])
+        self.assertFalse(extra)
+        self.assertEqual(tuple(args.tickers.split(",")), BAR_GPT_COHORT_2TB)
+        self.assertEqual(args.target_table, BAR_GPT_COHORT_2TB_TABLE)
+        self.assertEqual(args.manifest_table, BAR_GPT_COHORT_2TB_MANIFEST_TABLE)
+        self.assertEqual(DataConfig().one_second_table, BAR_GPT_COHORT_2TB_TABLE)
+
+    def test_custom_tickers_cannot_contaminate_canonical_tables(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "Custom --tickers require custom"):
+            launcher_main(["--tickers", "AAPL"])
+
     def test_metadata_queries_use_unescaped_tsv(self) -> None:
         class FakeClient:
             query = ""

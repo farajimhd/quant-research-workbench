@@ -468,6 +468,10 @@ def _requested_tickers(args: argparse.Namespace) -> tuple[str, ...]:
     return tuple(sorted({item.strip().upper() for item in str(args.tickers).split(",") if item.strip()}))
 
 
+def ticker_fingerprint(tickers: tuple[str, ...]) -> str:
+    return hashlib.sha256("\n".join(sorted(tickers)).encode("utf-8")).hexdigest() if tickers else "all_tickers"
+
+
 def plan_ticker_batches(client: ClickHouseHttpClient, args: argparse.Namespace, day: dt.date) -> list[TickerBatch]:
     restriction = ""
     requested = _requested_tickers(args)
@@ -717,10 +721,16 @@ def main(argv: list[str] | None = None) -> int:
     report_path = run_dir / "build.jsonl"
     interactive = args.progress_layout == "rich" or (args.progress_layout == "auto" and sys.stdout.isatty())
     with BuildReporter(report_path=report_path, total_days=len(days), interactive=interactive) as reporter:
+        requested_tickers = _requested_tickers(args)
+        cohort_sha256 = ticker_fingerprint(requested_tickers)
         reporter.event(
             "preflight",
             message=f"range=[{start},{end}) execute={args.execute} storage_policy_present={bool(args.storage_policy)} loaded_env_files={len(loaded_env)}",
             secret_status=secret_status(["CLICKHOUSE_LIVE_STORAGE_POLICY", "CLICKHOUSE_WORKSTATION_PASSWORD", "CLICKHOUSE_PASSWORD"]),
+            requested_ticker_count=len(requested_tickers),
+            requested_ticker_sha256=cohort_sha256,
+            target_table=args.target_table,
+            manifest_table=args.manifest_table,
         )
         if not args.execute:
             sample_day = days[0]

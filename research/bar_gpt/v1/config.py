@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from research.bar_gpt.v1.cohort import BAR_GPT_COHORT_2TB_TABLE
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES
 
@@ -26,7 +27,6 @@ DEFAULT_HORIZONS_US: tuple[int, ...] = (
     900_000_000,
     3_600_000_000,
 )
-
 
 @dataclass(slots=True)
 class BarGPTConfig:
@@ -58,7 +58,7 @@ class BarGPTConfig:
 @dataclass(slots=True)
 class DataConfig:
     database: str = "market_sip_compact"
-    one_second_table: str = "bar_gpt_1s_bars_v1"
+    one_second_table: str = BAR_GPT_COHORT_2TB_TABLE
     daily_table: str = "macro_bars_by_time_symbol"
     base_timeframe_us: int = 1_000_000
     intraday_timeframes_us: tuple[int, ...] = INTRADAY_TIMEFRAMES_US

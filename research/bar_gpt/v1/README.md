@@ -8,7 +8,7 @@ predictions, and direct physical-horizon quantiles.
 ## Data authority
 
 The intraday storage authority is one rich row per completed, active 1-second
-bucket in `market_sip_compact.bar_gpt_1s_bars_v1`. The table is built directly
+bucket in `market_sip_compact.bar_gpt_1s_bars_v1_cohort_2tb`. The table is built directly
 inside ClickHouse from the ordered `events_YYYY` tables. It preserves:
 
 - independent trade, quote-bid, and quote-ask price and size geometry;
@@ -44,22 +44,32 @@ the policy is absent or unknown.
 Safe preview with no writes:
 
 ```powershell
-python -B -m research.bar_gpt.v1.run_build_1s --start-date 2026-07-24 --end-date 2026-07-25 --tickers AAPL
+python -B -m research.bar_gpt.v1.run_build_1s --start-date 2026-07-24 --end-date 2026-07-25
 ```
 
 Execute that bounded build:
 
 ```powershell
-python -B -m research.bar_gpt.v1.run_build_1s --execute --start-date 2026-07-24 --end-date 2026-07-25 --tickers AAPL
+python -B -m research.bar_gpt.v1.run_build_1s --execute --start-date 2026-07-24 --end-date 2026-07-25
 ```
 
-Execute all coverage advertised by `events_ticker_day_index`:
+Execute all available coverage for the canonical cohort:
 
 ```powershell
 python -B -m research.bar_gpt.v1.run_build_1s --execute
 ```
 
-The all-coverage command is intentionally explicit because it is a large job.
+`BAR_GPT_COHORT_2TB` in `config.py` is the versioned 100-symbol authority. It
+contains macro and sector instruments, liquid equities, extreme regimes,
+lifecycle names, and persistently illiquid equities. The canonical launcher
+uses that cohort and the dedicated `bar_gpt_1s_bars_v1_cohort_2tb` and
+`bar_gpt_1s_build_manifest_v1_cohort_2tb` tables by default. `DataConfig` reads
+the same target. Runtime preflight evidence records the resolved ticker count
+and SHA-256 fingerprint. A custom `--tickers` list must also provide custom
+`--target-table` and `--manifest-table` names so a different population cannot
+silently contaminate the canonical cohort.
+
+The full-coverage command is intentionally explicit because it is a large job.
 The builder partitions work by market date and bounded ticker/event batches,
 records completion only after each insert and manifest write, collapses safe
 retry duplicates with `ReplacingMergeTree`, audits exact key uniqueness and
