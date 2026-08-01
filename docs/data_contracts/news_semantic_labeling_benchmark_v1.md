@@ -13,7 +13,8 @@ No evaluated system is best at every part of the label contract.
 - **Qwen3.5-35B-A3B is the strongest exact prompt-V3 local model**: quality `0.493`, direction macro F1 `0.544`, forecast eligibility F1 `0.600`, and 99 valid outputs. It is the best current local teacher candidate, not a certified production authority.
 - **Mistral Small 3.1 24B does not justify its cost in this run**: its quality (`0.479`) is effectively tied with GPT-OSS 120B (`0.479`), but it produced only 90 valid outputs and ran at 3.15 articles/minute.
 - **The production V5 deterministic rules are fast but not accurate enough as the sole semantic authority**: quality `0.391`, event-concept F1 `0.321`, direction macro F1 `0.400`, and forecast/reaction eligibility F1 `0.193`. They over-predict eligible issuer units and collapse many positive and negative units to neutral.
-- **The V6 calibrated sparse classifier materially improves V5 on its sealed 218-article holdout**: quality `0.634` versus `0.473`, role macro F1 `0.675` versus `0.501`, direction macro F1 `0.523` versus `0.436`, and forecast eligibility F1 `0.830` versus `0.394`. It remains a research candidate because ticker recall and issuer-history recall regress, rare extraction decisions remain unresolved, and no independent external holdout has certified it.
+- **The rule-only deterministic V6 improves the frozen-100 quality score to `0.484` from V5's `0.391`**. It improves ticker-scope F1 (`0.693` vs `0.657`), role (`0.531` vs `0.348`), origin (`0.441` vs `0.253`), direction (`0.415` vs `0.400`), concept families (`0.369` vs `0.321`), and forecast eligibility (`0.426` vs `0.193`). It also exposes real trade-offs: extraction F1 falls to `0.901` and issuer-history F1 to `0.876`.
+- **The older TF-IDF/logistic artifact called V6 is not the deterministic V6 and is not a clean inference benchmark**. Its candidate generator included human-truth tickers while fitting and evaluating issuer units. Its sealed-218 table is retained below as historical learned-candidate evidence, but it must not be used as a production acceptance result or compared as if candidates were generated independently.
 
 The recommended architecture remains layered: deterministic structure and identity invariants, a calibrated classifier for inexpensive first-pass semantics after external validation, and an LLM path for high-value or ambiguous documents. The benchmark does not support replacing every layer with one model.
 
@@ -30,9 +31,9 @@ Two prompt cohorts exist:
 
 The V5 row is recomputed with the current production rule authority on the exact frozen population. V5 is deterministic: identical source text, metadata, identities, and code produce identical labels.
 
-### V6 sealed classifier holdout
+### Legacy learned-V6 sealed classifier holdout
 
-V6 was fit on 588 articles and calibrated on 194 articles. Its official comparison uses the untouched 218-article holdout. The frozen 100 intersects the training collection, so an all-100 V6 score would be contaminated and is intentionally excluded from the model ranking.
+The learned candidate was fit on 588 articles and calibrated on 194 articles. Its model labels were held out at article level, but its issuer-candidate construction used the human truth ticker set. Therefore its 218-article result is not an uncontaminated inference benchmark. The frozen 100 also intersects that candidate's training collection, so no learned-candidate all-100 score is reported.
 
 ### Metric meaning
 
@@ -429,9 +430,45 @@ High binary extraction F1 hides this failure: nearly every system learns to labe
 
 Eligibility must not be inferred from role or direction alone. Qwen's forecast gate is useful, but its reaction-evaluation precision is only `0.086`. V5's forecast/reaction precision is `0.130`, which means most units it marks eligible are false positives under the human contract.
 
-## Deterministic V5 versus calibrated V6 classifier
+## Deterministic V5 versus rule-only deterministic V6
 
-This is the fair classifier comparison on the sealed 218-article holdout.
+This is the one-shot comparison on the exact frozen 100. The deterministic V6
+rules were designed and exercised against the other 900 reviewed articles. The
+launcher verified the frozen identity set and refused overwrite after this
+acceptance run. Neither inference nor candidate generation reads human labels.
+
+| Metric | V5 rules | Deterministic V6 | Change |
+|---|---:|---:|---:|
+| Quality | 0.391 | 0.484 | +0.093 |
+| Extraction F1 | 0.920 | 0.901 | -0.020 |
+| Extraction-decision macro F1 | 0.184 | 0.180 | -0.004 |
+| Ticker-scope precision | 0.499 | 0.615 | +0.116 |
+| Ticker-scope recall | 0.964 | 0.794 | -0.170 |
+| Ticker-scope F1 | 0.657 | 0.693 | +0.036 |
+| Canonical concept F1 | 0.321 | 0.369 | +0.048 |
+| Content-role macro F1 | 0.348 | 0.531 | +0.184 |
+| Source-origin macro F1 | 0.253 | 0.441 | +0.189 |
+| Direction macro F1 | 0.400 | 0.415 | +0.015 |
+| Forecast eligibility F1 | 0.193 | 0.426 | +0.234 |
+| Reaction eligibility F1 | 0.193 | 0.426 | +0.234 |
+| Issuer-history eligibility F1 | 0.974 | 0.876 | -0.098 |
+
+The largest clean gains come from article structure, source origin, and the
+trigger gate. Explicit weighted evidence also expands concept and direction
+coverage, but not enough to call textual sentiment solved. The issuer-evidence
+gate improves precision by rejecting bare calendar, watch-list, 52-week-list,
+and enrichment mentions; the same gate removes some valid weak context and is
+the cause of the extraction, ticker-recall, and history regressions. A
+production cutover therefore still requires a two-lane scope contract: strict
+event scope for trigger/reaction decisions and broader separately typed context
+scope for issuer history.
+
+## Legacy calibrated sparse-classifier candidate
+
+This historical table uses the 218-article holdout, but is not a clean inference
+comparison because the candidate builder unioned V5 candidates with human-truth
+tickers. It is retained to document the experiment, not to certify the learned
+artifact.
 
 | Metric | V5 rules | V6 classifier | Change |
 |---|---:|---:|---:|
@@ -468,7 +505,8 @@ This is the fair classifier comparison on the sealed 218-article holdout.
 | V5 rules | 0.277 | 0.684 | 0.394 | 0.991 | 0.989 | 0.990 |
 | V6 classifier | 0.825 | 0.835 | 0.830 | 1.000 | 0.711 | 0.831 |
 
-V6's gains are real on the sealed holdout, but its trade-offs are not optional details:
+The reported learned-candidate gains are conditional on the contaminated
+candidate contract, and its trade-offs are not optional details:
 
 - ticker recall falls from `0.988` to `0.703` even while precision rises;
 - neutral-direction F1 falls from `0.526` to `0.263`;
@@ -476,7 +514,9 @@ V6's gains are real on the sealed holdout, but its trade-offs are not optional d
 - extraction-decision macro F1 does not improve because rare abstention reasons remain effectively unlearned;
 - regulatory-primary origin F1 is `0.000` on the holdout.
 
-V6 should therefore not replace V5 globally. Its forecast gate and semantic predictions are promising, while structural identity, abstention, and history retention still require explicit authority and external validation.
+The learned candidate must not replace V5. Any future learned semantic model
+must receive candidates generated without truth and be evaluated from raw
+article inputs end to end.
 
 ## Reliability, speed, and monetary cost
 
@@ -523,8 +563,10 @@ Durable code:
 
 - Production rule rerun: `research/text_intelligence/semantic_calibration_v1/run_compare_v5.py`
 - V5/V6 evaluation: `research/text_intelligence/semantic_calibration_v1/comparison.py`
-- V6 classifier: `research/text_intelligence/semantic_calibration_v1/news_v6.py`
-- V6 fit/evaluation launcher: `research/text_intelligence/semantic_calibration_v1/run_fit_news_v6.py`
+- Deterministic V6 authority: `research/text_intelligence/semantic_calibration_v1/deterministic_v6.py`
+- Deterministic V6 readable rules: `research/text_intelligence/semantic_calibration_v1/deterministic_v6_config.py`
+- Deterministic V6 launcher: `research/text_intelligence/semantic_calibration_v1/run_deterministic_news_v6.py`
+- Legacy learned candidate: `research/text_intelligence/semantic_calibration_v1/news_v6.py`
 - OpenAI benchmark and quality-score authority: `research/text_intelligence/semantic_calibration_v1/openai_gold_benchmark.py`
 - Local vLLM benchmark: `research/text_intelligence/semantic_calibration_v1/oss_gold_benchmark.py`
 

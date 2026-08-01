@@ -1,5 +1,40 @@
 # News Semantic Calibration V1
 
+## Rule-only deterministic News V6
+
+`deterministic_v6.py` is the production-compatible, rule-only successor to the
+V5 News authority. It does not use TF-IDF, a statistical classifier, human
+labels at inference, price reactions, or a serialized model artifact.
+
+The durable configuration is readable Python data in
+`deterministic_v6_config.py`: ordered article-structure patterns, source
+metadata rules, meaningful issuer-evidence gates, explicit positive and
+negative evidence weights, fixed direction thresholds, and explicit
+eligibility rules. Analyst opinions, previews, editorials, roundups, mover
+recaps, follow-ups, and automated summaries remain issuer-history context but
+are not forecast triggers.
+
+The 100 articles in `oss_gold_100_v3/shared/gold_sample.jsonl` are a frozen
+acceptance set. Development excludes their exact sample IDs and requires the
+other 900 articles:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_deterministic_news_v6 --phase development
+```
+
+Once the rules are locked, acceptance may run once. The launcher refuses to
+overwrite an existing frozen result; another attempt requires a new authority
+version:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_deterministic_news_v6 --phase frozen-acceptance
+```
+
+Generated predictions and metrics are written under the executing machine's
+`TradingML/runtimes` root. The older `news_v6.py` remains only as the
+historical learned TF-IDF/logistic research candidate. It is not this
+deterministic V6 authority.
+
 This package creates and validates a persistent human-reviewed semantic ground
 truth collection for the deterministic News authority. It does not use market
 reaction as a sentiment label and does not automate semantic annotation.
