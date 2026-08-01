@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import io
 import unittest
+from pathlib import Path
+from unittest.mock import Mock
 
 import torch
+from rich.console import Console
 
-from research.bar_gpt.v1.build_1s import create_target_table_sql, insert_one_second_sql
+from research.bar_gpt.v1.build_1s import BuildReporter, create_target_table_sql, insert_one_second_sql
 from research.bar_gpt.v1.config import BarGPTConfig
 from research.bar_gpt.v1.data import BarView, causal_asof_indices, densify_one_second_view, horizon_target_indices, rollup_intraday_view
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
@@ -64,6 +68,57 @@ class BuilderSqlTest(unittest.TestCase):
         )
         self.assertIn("PREWHERE timeframe = '1d'", daily_sql)
         self.assertNotIn("timeframe = '1w'", daily_sql)
+
+
+class BuildReporterTest(unittest.TestCase):
+    @staticmethod
+    def reporter() -> BuildReporter:
+        reporter = BuildReporter(
+            report_path=Path(r"D:\TradingML\runtimes\bar_gpt\v1\build_1s\test\build.jsonl"),
+            total_days=2_922,
+            interactive=True,
+        )
+        reporter.event = Mock()  # type: ignore[method-assign]
+        return reporter
+
+    def test_compact_render_preserves_operational_state_and_throughput(self) -> None:
+        reporter = self.reporter()
+        reporter.update(stage="building", day="2024-08-01", unit="batch_00127_abcdef012345")
+        reporter.completed_days = 1_500
+        reporter.skipped_units = 314
+        reporter.record_unit_complete(output_rows=1_250_000, source_events=39_875_221, seconds=8.0)
+        output = io.StringIO()
+        console = Console(file=output, width=60, force_terminal=False, color_system=None)
+        reporter._console = console
+        console.print(reporter._render())
+        rendered = output.getvalue()
+        compact_text = " ".join(rendered.split())
+        self.assertIn("building", compact_text)
+        self.assertIn("batch_00127_abcdef012345", compact_text)
+        self.assertIn("1,250,000 rows in 8.0s", compact_text)
+        self.assertIn("source events 39,875,221", compact_text)
+        self.assertIn("51%", compact_text)
+
+    def test_interruption_and_failure_remain_visible(self) -> None:
+        reporter = self.reporter()
+        reporter.mark_interrupted("Cancellation requested")
+        self.assertTrue(reporter.was_interrupted)
+        self.assertEqual(reporter.stage, "interrupted")
+        self.assertEqual(reporter.last_message, "Cancellation requested")
+        reporter.event.assert_called_with("interrupted", message="Cancellation requested")
+
+        failure = self.reporter()
+        suppress = failure.__exit__(RuntimeError, RuntimeError("ClickHouse unavailable"), None)
+        self.assertFalse(suppress)
+        self.assertEqual(failure.stage, "failed")
+        self.assertEqual(failure.last_message, "ClickHouse unavailable")
+
+    def test_keyboard_interrupt_is_suppressed_for_exit_code_translation(self) -> None:
+        reporter = self.reporter()
+        suppress = reporter.__exit__(KeyboardInterrupt, KeyboardInterrupt(), None)
+        self.assertTrue(suppress)
+        self.assertTrue(reporter.was_interrupted)
+        self.assertEqual(reporter.stage, "interrupted")
 
 
 class TemporalContractTest(unittest.TestCase):

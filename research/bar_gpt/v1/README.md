@@ -65,6 +65,17 @@ records completion only after each insert and manifest write, collapses safe
 retry duplicates with `ReplacingMergeTree`, audits exact key uniqueness and
 availability at monthly certification, and cancels the active query on Ctrl+C.
 
+In an interactive terminal, the launcher retains a Rich dashboard showing the
+current stage, market date and batch, durable day/unit/row/source-event counts,
+skipped restart units, last-unit throughput, elapsed time, latest actionable
+message, runtime evidence path, and a day-level progress bar. Completed,
+failed, and interrupted states remain visible after the live display stops.
+Narrow terminals use the same stacked hierarchy without truncating the current
+batch. Redirected output uses stable timestamped JSONL evidence plus concise
+plain-text lifecycle events and emits no cursor-control sequences. Ctrl+C marks
+the run interrupted and returns exit code 130; during an active insert it also
+submits the ClickHouse query cancellation before returning.
+
 Runtime reports are written under:
 
 ```text

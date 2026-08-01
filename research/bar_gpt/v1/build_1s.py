@@ -78,6 +78,11 @@ class BuildReporter:
         self.completed_units = 0
         self.skipped_units = 0
         self.rows = 0
+        self.source_events = 0
+        self.last_unit_rows = 0
+        self.last_unit_source_events = 0
+        self.last_unit_seconds = 0.0
+        self.was_interrupted = False
         self.last_message = "Starting"
         self._live = None
         self._console = None
@@ -96,40 +101,66 @@ class BuildReporter:
         self.event("start", message="BarGPT one-second build started")
         return self
 
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        if exc is not None:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        suppress = False
+        if isinstance(exc, KeyboardInterrupt):
+            self.mark_interrupted("Interrupted outside an active materialization query")
+            suppress = True
+        elif exc is not None:
             self.stage = "failed"
             self.last_message = str(exc)
             self.event("failed", message=str(exc))
         if self._live is not None:
             self._live.update(self._render(), refresh=True)
             self._live.stop()
+        return suppress
 
     def _render(self):
+        from rich.console import Group
+        from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
         from rich.table import Table
 
         width = self._console.width if self._console is not None else shutil.get_terminal_size((100, 24)).columns
-        if width < 80:
-            table = Table(title="BarGPT 1s materialization", expand=True)
-            table.add_column("Status", no_wrap=True, width=10)
-            table.add_column("Value", overflow="fold")
-            table.add_row(self.stage, f"days {self.completed_days}/{self.total_days}  units {self.completed_units}  skipped {self.skipped_units}")
-            table.add_row("current", f"{self.day}  {self.unit}")
-            table.add_row("rows", f"{self.rows:,}  elapsed {time.perf_counter() - self.started:,.1f}s")
-            table.add_row("latest", self.last_message)
-            return table
         table = Table(title="BarGPT 1s materialization", expand=True)
-        table.add_column("State", no_wrap=True)
-        table.add_column("Current", overflow="fold")
-        table.add_column("Durable progress", no_wrap=True)
+        table.add_column("Status", no_wrap=True, width=11)
+        table.add_column("Value", overflow="fold", ratio=1)
+        state_style = {
+            "complete": "bold green",
+            "failed": "bold red",
+            "interrupted": "bold yellow",
+        }.get(self.stage, "bold cyan")
+        table.add_row("state", self.stage, style=state_style)
+        table.add_row("current", f"{self.day}  {self.unit}")
         table.add_row(
-            self.stage,
-            f"{self.day}  {self.unit}",
-            f"days {self.completed_days}/{self.total_days}  units {self.completed_units}  skipped {self.skipped_units}",
+            "durable",
+            f"days {self.completed_days}/{self.total_days}  units {self.completed_units}  skipped {self.skipped_units}  "
+            f"rows {self.rows:,}  source events {self.source_events:,}",
         )
-        table.add_row("rows", f"{self.rows:,}", f"elapsed {time.perf_counter() - self.started:,.1f}s")
-        table.add_row("latest", self.last_message, str(self.report_path))
-        return table
+        if self.last_unit_seconds > 0:
+            rows_per_second = self.last_unit_rows / self.last_unit_seconds
+            events_per_second = self.last_unit_source_events / self.last_unit_seconds
+            table.add_row(
+                "last unit",
+                f"{self.last_unit_rows:,} rows in {self.last_unit_seconds:,.1f}s  "
+                f"({rows_per_second:,.0f} rows/s; {events_per_second:,.0f} source events/s)",
+            )
+        table.add_row("elapsed", f"{time.perf_counter() - self.started:,.1f}s")
+        table.add_row("latest", self.last_message)
+        if width >= 80:
+            table.add_row("evidence", str(self.report_path))
+
+        progress = Progress(
+            TextColumn("days"),
+            BarColumn(bar_width=None),
+            TaskProgressColumn(),
+            expand=True,
+        )
+        progress.add_task(
+            "materialization",
+            total=max(self.total_days, 1),
+            completed=min(self.completed_days, max(self.total_days, 1)),
+        )
+        return Group(table, progress)
 
     def update(self, *, stage: str | None = None, day: str | None = None, unit: str | None = None, message: str | None = None) -> None:
         if stage is not None:
@@ -155,6 +186,22 @@ class BuildReporter:
         if not self.interactive:
             detail = str(payload.get("message") or payload.get("unit_id") or "")
             print(f"[{kind}] day={self.day} unit={self.unit} {detail}".rstrip(), flush=True)
+
+    def record_unit_complete(self, *, output_rows: int, source_events: int, seconds: float) -> None:
+        self.completed_units += 1
+        self.rows += int(output_rows)
+        self.source_events += int(source_events)
+        self.last_unit_rows = int(output_rows)
+        self.last_unit_source_events = int(source_events)
+        self.last_unit_seconds = max(float(seconds), 1e-9)
+        self.update(
+            message=f"Completed {output_rows:,} rows from {source_events:,} source events in {seconds:,.1f}s"
+        )
+
+    def mark_interrupted(self, message: str, **payload: object) -> None:
+        self.was_interrupted = True
+        self.update(stage="interrupted", message=message)
+        self.event("interrupted", message=message, **payload)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -707,7 +754,12 @@ def main(argv: list[str] | None = None) -> int:
                     try:
                         _execute(client, f"KILL QUERY WHERE query_id = {sql_string(query_id)} ASYNC")
                     finally:
-                        reporter.event("interrupted", day=day_text, unit_id=batch.unit_id, query_id=query_id)
+                        reporter.mark_interrupted(
+                            "Cancellation requested; active ClickHouse query kill submitted",
+                            day=day_text,
+                            unit_id=batch.unit_id,
+                            query_id=query_id,
+                        )
                     return 130
                 output_rows, aggregated_source_events = query_unit_stats(client, args, day, batch.tickers)
                 insert_manifest(
@@ -720,8 +772,12 @@ def main(argv: list[str] | None = None) -> int:
                     source_events=aggregated_source_events,
                     output_rows=output_rows,
                 )
-                reporter.completed_units += 1
-                reporter.rows += output_rows
+                unit_seconds = time.perf_counter() - started
+                reporter.record_unit_complete(
+                    output_rows=output_rows,
+                    source_events=aggregated_source_events,
+                    seconds=unit_seconds,
+                )
                 reporter.event(
                     "unit_complete",
                     day=day_text,
@@ -729,7 +785,7 @@ def main(argv: list[str] | None = None) -> int:
                     source_events=aggregated_source_events,
                     planned_index_events=batch.event_count,
                     output_rows=output_rows,
-                    seconds=time.perf_counter() - started,
+                    seconds=unit_seconds,
                 )
             reporter.completed_days += 1
             reporter.event("day_complete", day=day_text, units=len(batches))
@@ -745,7 +801,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         reporter.update(stage="complete", day=end.isoformat(), unit="-", message=f"Certified {len(months_touched)} monthly partitions")
         reporter.event("complete", months=len(months_touched), rows=reporter.rows)
-    return 0
+    return 130 if reporter.was_interrupted else 0
 
 
 if __name__ == "__main__":
