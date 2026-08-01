@@ -23,7 +23,7 @@ from src.trading_runtime.strategy_engine import long_momentum_strategy_definitio
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
-    def test_schema_v7_migration_removes_legacy_session_overrides(self) -> None:
+    def test_schema_v8_migration_removes_legacy_session_overrides_and_adds_policy_catalogs(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
@@ -45,7 +45,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 7)
+        self.assertEqual(migrated["schema_version"], 8)
         migrated_intent = migrated["strategy"]["profiles"][0]["lifecycle"][
             "initial_entry"
         ]["order_intent"]
@@ -55,6 +55,12 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(migrated_oms["session_routing"], "smart")
         self.assertNotIn("time_in_force", migrated_oms)
         self.assertNotIn("outside_rth", migrated_oms)
+        self.assertTrue(migrated["oms"]["execution_policies"])
+        self.assertTrue(migrated["oms"]["protection_profiles"])
+        self.assertEqual(
+            migrated_intent["protection_profile"],
+            migrated_oms["protection_profile_id"],
+        )
 
     def test_system_profiles_and_capabilities_are_user_configurable(self) -> None:
         with patch(
@@ -66,7 +72,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 7)
+        self.assertEqual(draft["schema_version"], 8)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 2)
         self.assertTrue(all(profile["editable"] for profile in draft["strategy"]["profiles"]))
@@ -109,6 +115,12 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertNotIn("time_in_force", draft["oms"]["profiles"][0]["settings"])
         self.assertNotIn("outside_rth", draft["oms"]["profiles"][0]["settings"])
+        self.assertEqual(len(draft["oms"]["execution_policies"]), 9)
+        self.assertTrue(draft["oms"]["protection_profiles"])
+        self.assertEqual(
+            lifecycle["initial_entry"]["order_intent"]["protection_profile"],
+            "hybrid-single",
+        )
         self.assertTrue(lifecycle["reentry"]["rules"]["opportunity"]["groups"])
         self.assertTrue(lifecycle["exit"]["rule_sets"][1]["rules"]["groups"])
         self.assertTrue(
@@ -181,6 +193,22 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
     def test_runtime_projection_uses_account_mandate_and_capability_settings(self) -> None:
         draft = self._draft()
+        draft["assignments"]["deployments"][0]["runtime_assignments"] = [{
+            "assignment_id": "configured-aapl",
+            "account_key": "replay",
+            "ticker": "AAPL",
+            "conid": 265598,
+            "status": "watching",
+            "permissions": {},
+            "parameters": {},
+        }]
+        draft["assignments"]["universes"][0]["symbols"] = ["AAPL"]
+        cloned_execution = deepcopy(next(
+            row for row in draft["oms"]["execution_policies"]
+            if row["policy_id"] == "adaptive_urgent"
+        ))
+        cloned_execution.update({"policy_id": "urgent-copy", "revision": 2})
+        draft["oms"]["execution_policies"].append(cloned_execution)
         draft["portfolio"]["mandates"][0]["maximum_cash_fraction"] = 0.3
         profile = draft["strategy"]["profiles"][0]
         pocket = next(
@@ -198,6 +226,41 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(runtime["accounts"]["bindings"][0]["strategy_allocation"], 0.3)
         self.assertEqual(runtime["strategy"]["parameters"]["profit_pocket"]["quantity_fraction"], 0.4)
         self.assertEqual(runtime["deployment"]["deployment_id"], "balanced-replay")
+        resolved = runtime["assignments"][0]["resolved_parameters"]
+        self.assertEqual(
+            resolved["execution_policy_catalog"]["adaptive_urgent"]["policy_id"],
+            "adaptive_urgent",
+        )
+        self.assertEqual(
+            resolved["execution_policy_catalog"]["urgent-copy"]["policy_id"],
+            "urgent-copy",
+        )
+        self.assertEqual(
+            resolved["protection_profile_catalog"]["hybrid-single"]["revision"],
+            1,
+        )
+
+    def test_paper_release_requires_exact_broker_binding_and_mode_deployment(self) -> None:
+        draft = self._draft()
+        binding = draft["accounts"]["bindings"][0]
+        binding["modes"] = ["paper"]
+        binding["account_class"] = "margin"
+        binding["source_account_id"] = ""
+        deployment = draft["assignments"]["deployments"][0]
+        deployment["modes"] = ["paper"]
+
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), self.assertRaisesRegex(ValueError, "exact broker account id"):
+            _validate_draft(draft)
+
+        binding["source_account_id"] = "DU1234567"
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ):
+            _validate_draft(draft)
 
     def test_runtime_resolves_every_eligible_deployment_by_selection_priority(self) -> None:
         draft = self._draft()

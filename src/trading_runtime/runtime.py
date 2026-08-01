@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Mapping, Protocol
 from uuid import uuid4
 
 from src.market_engine.events import MarketEvent, QuoteEvent
@@ -93,6 +93,7 @@ class TradingRuntime:
         risk: RiskAuthority | None = None,
         intent_planner: RuntimeIntentPlanner | None = None,
         portfolio: PortfolioManagementEngine | None = None,
+        portfolio_configuration: Mapping[str, Any] | None = None,
     ) -> None:
         if config.strategy_id != strategy.strategy_id or config.strategy_revision != strategy.revision:
             raise ValueError("Run strategy identity does not match loaded strategy revision")
@@ -109,6 +110,7 @@ class TradingRuntime:
             profiles, groups = configured_portfolio_profiles_for_runtime(
                 config.account_ids,
                 mode=config.mode.value,
+                configuration=portfolio_configuration,
             )
             portfolio = PortfolioManagementEngine(
                 profiles,

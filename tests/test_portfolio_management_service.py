@@ -111,6 +111,58 @@ class PortfolioManagementServiceTests(unittest.TestCase):
         self.assertEqual(payload["groups"][0]["gross_exposure"], 15000)
         self.assertEqual(payload["groups"][0]["sync_state"], "synchronized")
 
+    def test_approved_release_replaces_legacy_portfolio_environment_authority(self) -> None:
+        approved_payload = {
+            "portfolio": {
+                "policies": [{
+                    "policy_id": "approved-cash",
+                    "revision": 4,
+                    "maximum_gross_exposure": 12345,
+                }],
+                "mandates": [{
+                    "mandate_id": "approved-cash-mandate",
+                    "deployment_id": "approved-live",
+                    "account_key": "cash",
+                    "enabled": True,
+                    "maximum_cash_fraction": 0.25,
+                }],
+                "groups": [],
+            },
+            "accounts": {"bindings": [{
+                "account_key": "cash",
+                "source_account_id": "CASH1",
+                "account_class": "cash",
+                "portfolio_policy_id": "approved-cash",
+                "session_key": "live-primary",
+                "enabled": True,
+                "modes": ["live"],
+            }]},
+            "assignments": {"deployments": [{
+                "deployment_id": "approved-live",
+                "profile_id": "approved-strategy-profile",
+                "enabled": True,
+                "modes": ["live"],
+            }]},
+            "strategy": {"profiles": [{
+                "profile_id": "approved-strategy-profile",
+                "definition_id": "approved-strategy",
+            }]},
+        }
+        with patch(
+            "src.backend.portfolio_management_service.approved_configuration",
+            return_value={"revision_id": "revision-4", "revision": 4, "payload": approved_payload},
+        ):
+            payload = portfolio_management_snapshot(canonical_state())
+
+        self.assertEqual(payload["configuration_authority"]["source"], "approved_release")
+        self.assertEqual(payload["configuration_authority"]["revision_id"], "revision-4")
+        self.assertEqual(len(payload["accounts"]), 1)
+        self.assertEqual(payload["accounts"][0]["policy"]["identity"], "approved-cash@4")
+        self.assertEqual(
+            payload["accounts"][0]["strategy_allocations"],
+            {"approved-strategy": 0.25},
+        )
+
     def test_control_command_is_durable_and_visible_in_snapshot(self) -> None:
         result = portfolio_management_command("margin", "reduce_only", reason="operator")
         payload = portfolio_management_snapshot(canonical_state())

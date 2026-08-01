@@ -20,6 +20,13 @@ latency, broker warnings, borrow, exchange fills, or reconnection behavior.
 
 ## Preflight
 
+Before starting the harness, publish an Approved Release that contains the
+exact `DU...` account id, Paper mode on that account binding, an enabled Paper
+deployment, the intended Portfolio policy revision, and the selected OMS,
+execution-policy, and protection-profile revisions. The application Paper/Live
+preflight blocks when the release is missing, the broker discovery id differs,
+or no enabled deployment covers the selected mode.
+
 With the Client Portal gateway authenticated:
 
 ```powershell

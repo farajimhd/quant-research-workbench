@@ -17,6 +17,10 @@ from src.trading_runtime.portfolio import (
     PortfolioPolicy,
     portfolio_policy_from_payload,
 )
+from src.trading_runtime.execution_policies import (
+    execution_policy_from_payload,
+    protection_profile_from_payload,
+)
 from src.trading_runtime.strategy_engine import (
     STRATEGY_ID,
     STRATEGY_REVISION,
@@ -28,7 +32,7 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 7
+CONFIGURATION_SCHEMA_VERSION = 8
 CONFIGURATION_SECTIONS = {"strategy", "assignments", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
@@ -189,15 +193,21 @@ def publish_configuration(
 
 
 def replay_configuration_snapshot() -> dict[str, Any]:
+    return approved_runtime_configuration_snapshot("replay")
+
+
+def approved_runtime_configuration_snapshot(mode: str) -> dict[str, Any]:
+    if mode not in SUPPORTED_MODES:
+        raise ValueError(f"Unsupported trading configuration mode: {mode}")
     approved = approved_configuration(required=True)
     assert approved is not None
     model = _migrate_draft(deepcopy(approved["payload"]))
     _validate_draft(model)
     if not model.get("canvas", {}).get("profile"):
         raise ValueError("The approved trading configuration does not contain a Canvas profile")
-    runtimes = resolve_runtime_configurations(model, mode="replay")
+    runtimes = resolve_runtime_configurations(model, mode=mode)
     if not runtimes:
-        raise ValueError("No enabled strategy deployment supports replay")
+        raise ValueError(f"No enabled strategy deployment supports {mode}")
     runtime_payload = deepcopy(runtimes[0])
     runtime_payload["deployments"] = [
         deepcopy(runtime["deployment"]) for runtime in runtimes
@@ -229,9 +239,58 @@ def replay_configuration_snapshot() -> dict[str, Any]:
         "content_hash": approved["content_hash"],
         "approved_at": approved["approved_at"],
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
+        "mode": mode,
         "deployment_id": runtime_payload["deployment"]["deployment_id"],
         "configuration_model": model,
         "payload": runtime_payload,
+    }
+
+
+def effective_configuration_snapshot(
+    *,
+    mode: str,
+    use_approved: bool = False,
+) -> dict[str, Any]:
+    if mode not in SUPPORTED_MODES:
+        raise ValueError(f"Unsupported trading configuration mode: {mode}")
+    revision = approved_configuration(required=True) if use_approved else None
+    model = (
+        deepcopy(dict(revision.get("payload") or {}))
+        if revision
+        else configuration_draft()
+    )
+    model = _migrate_draft(model)
+    _validate_draft(model, require_runtime_ready=False)
+    runtimes = resolve_runtime_configurations(model, mode=mode)
+    policies = {
+        str(row.get("policy_id") or ""): portfolio_policy_from_payload(dict(row))
+        for row in dict(model["portfolio"]).get("policies") or []
+    }
+    accounts = []
+    for binding in dict(model["accounts"]).get("bindings") or []:
+        if mode not in set(binding.get("modes") or []):
+            continue
+        policy = policies.get(str(binding.get("portfolio_policy_id") or ""))
+        accounts.append({
+            **deepcopy(binding),
+            "policy_identity": policy.identity if policy else "",
+            "deployment_ids": [
+                str(runtime["deployment"]["deployment_id"])
+                for runtime in runtimes
+                if any(
+                    str(row.get("account_key")) == str(binding.get("account_key"))
+                    for row in runtime["accounts"]["bindings"]
+                )
+            ],
+        })
+    return {
+        "schema_version": CONFIGURATION_SCHEMA_VERSION,
+        "mode": mode,
+        "source": "approved_release" if revision else "draft",
+        "revision_id": str(revision.get("revision_id") or "") if revision else "",
+        "runtime_count": len(runtimes),
+        "accounts": accounts,
+        "runtimes": runtimes,
     }
 
 
@@ -348,7 +407,15 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deploymen
         assignment["resolved_parameters"] = merged_assignment_parameters(
             {
                 "strategy": {"parameters": _parameters_with_capabilities(profile)},
-                "oms": deepcopy(dict(oms.get("settings") or {})),
+                "oms": {
+                    "settings": deepcopy(dict(oms.get("settings") or {})),
+                    "execution_policies": deepcopy(
+                        dict(model["oms"]).get("execution_policies") or []
+                    ),
+                    "protection_profiles": deepcopy(
+                        dict(model["oms"]).get("protection_profiles") or []
+                    ),
+                },
                 "campaign_policy": deepcopy(policy),
             },
             assignment,
@@ -376,7 +443,17 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deploymen
             "groups": deepcopy(dict(model["portfolio"]).get("groups") or []),
             "mandates": deepcopy(mandates),
         },
-        "oms": deepcopy(dict(oms.get("settings") or {})),
+        "oms": {
+            **deepcopy(dict(oms.get("settings") or {})),
+            "profile_id": str(oms.get("profile_id") or ""),
+            "profile_revision": int(oms.get("revision") or 1),
+            "execution_policies": deepcopy(
+                dict(model["oms"]).get("execution_policies") or []
+            ),
+            "protection_profiles": deepcopy(
+                dict(model["oms"]).get("protection_profiles") or []
+            ),
+        },
         "accounts": {"bindings": bindings},
     }
 
@@ -451,6 +528,7 @@ def _default_capital_request(mode: str, value: float) -> dict[str, Any]:
 def _default_order_intent(policy: str) -> dict[str, Any]:
     return {
         "execution_policy": policy,
+        "protection_profile": "hybrid-single",
         "partial_fill_policy": "complete_remainder",
         "deadline_ms": 750,
     }
@@ -922,7 +1000,11 @@ def _default_draft() -> dict[str, Any]:
             }]
         },
         "portfolio": {"policies": [policy], "groups": [], "mandates": mandates},
-        "oms": {"profiles": [_default_oms_profile()]},
+        "oms": {
+            "profiles": [_default_oms_profile()],
+            "execution_policies": _default_execution_policies(),
+            "protection_profiles": _default_protection_profiles(),
+        },
         "accounts": {"bindings": bindings},
     }
 
@@ -976,6 +1058,10 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         modes = set(row.get("modes") or [])
         if not modes or not modes <= SUPPORTED_MODES:
             raise ValueError(f"Account {row.get('account_key')} has unsupported runtime modes")
+        if require_runtime_ready and modes.intersection({"paper", "live"}) and not str(row.get("source_account_id") or "").strip():
+            raise ValueError(f"Account {row.get('account_key')} requires an exact broker account id for Paper or Live")
+        if not str(row.get("session_key") or "").strip():
+            raise ValueError(f"Account {row.get('account_key')} requires a session key")
 
     policies = [portfolio_policy_from_payload(dict(row)) for row in dict(draft["portfolio"]).get("policies") or []]
     if not policies:
@@ -989,8 +1075,43 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
 
     oms_profiles = list(dict(draft["oms"]).get("profiles") or [])
     oms_ids = _unique_ids(oms_profiles, "profile_id", "OMS profile")
+    execution_policies = list(dict(draft["oms"]).get("execution_policies") or [])
+    protection_profiles = list(dict(draft["oms"]).get("protection_profiles") or [])
+    if not execution_policies or not protection_profiles:
+        raise ValueError("OMS requires execution policies and protection profiles")
+    execution_ids = _unique_ids(execution_policies, "policy_id", "Execution policy")
+    protection_ids = _unique_ids(protection_profiles, "profile_id", "Protection profile")
+    execution_references: set[str] = set()
+    protection_references: set[str] = set()
+    for row in execution_policies:
+        policy = _validate_execution_policy_config(row)
+        execution_references.update({policy.policy_id, policy.identity})
+    for row in protection_profiles:
+        profile = _validate_protection_profile_config(row)
+        protection_references.update({profile.profile_id, profile.identity})
     for row in oms_profiles:
         _validate_oms_settings(dict(row.get("settings") or {}))
+        settings = dict(row.get("settings") or {})
+        for key in ("entry_execution_policy_id", "exit_execution_policy_id"):
+            if str(settings.get(key) or "") not in execution_references:
+                raise ValueError(f"OMS profile {row.get('name')} references unknown {key}")
+        if str(settings.get("protection_profile_id") or "") not in protection_references:
+            raise ValueError(f"OMS profile {row.get('name')} references an unknown protection profile")
+    for profile in profiles:
+        lifecycle = dict(profile.get("lifecycle") or {})
+        for intent in _lifecycle_order_intents(lifecycle):
+            if str(intent.get("execution_policy") or "") not in execution_references:
+                raise ValueError(f"Strategy Profile {profile.get('name')} references an unknown execution policy")
+            protection_reference = str(intent.get("protection_profile") or "")
+            if protection_reference and protection_reference not in protection_references:
+                raise ValueError(f"Strategy Profile {profile.get('name')} references an unknown protection profile")
+    for policy in policies:
+        unknown_execution = set(policy.allowed_execution_policies) - {"*"} - execution_references
+        unknown_protection = set(policy.allowed_protection_profiles) - {"*"} - protection_references
+        if unknown_execution:
+            raise ValueError(f"Portfolio policy {policy.identity} allows unknown execution policies")
+        if unknown_protection:
+            raise ValueError(f"Portfolio policy {policy.identity} allows unknown protection profiles")
 
     deployments = list(dict(draft["assignments"]).get("deployments") or [])
     if require_runtime_ready and not deployments:
@@ -1027,6 +1148,9 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         if str(mandate.get("autonomy") or "") not in {"manual", "confirm", "automatic"}:
             raise ValueError(f"Mandate {mandate.get('mandate_id')} has unsupported autonomy")
     for deployment in deployments:
+        deployment_modes = set(deployment.get("modes") or [])
+        if not deployment_modes or not deployment_modes <= SUPPORTED_MODES:
+            raise ValueError(f"Deployment {deployment.get('deployment_id')} has unsupported runtime modes")
         if str(deployment.get("profile_id") or "") not in profile_ids:
             raise ValueError(f"Deployment {deployment.get('deployment_id')} references an unknown Strategy Profile")
         if str(deployment.get("oms_profile_id") or "") not in oms_ids:
@@ -1075,11 +1199,29 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
                 raise ValueError(f"Runtime assignment {assignment.get('assignment_id')} references an unknown account")
             if not str(assignment.get("ticker") or "").strip() or int(assignment.get("conid") or 0) <= 0:
                 raise ValueError(f"Runtime assignment {assignment.get('assignment_id')} requires ticker and conid")
-    if require_runtime_ready and not any(
-        bool(row.get("enabled", True)) and "replay" in set(row.get("modes") or [])
-        for row in deployments
-    ):
-        raise ValueError("At least one enabled Strategy Deployment must support Replay")
+    if require_runtime_ready:
+        mandate_pairs = {
+            (str(mandate.get("account_key") or ""), str(mandate.get("deployment_id") or ""))
+            for mandate in mandates
+            if bool(mandate.get("enabled", True))
+        }
+        for account in accounts:
+            if not bool(account.get("enabled", True)):
+                continue
+            for mode in account.get("modes") or []:
+                eligible = any(
+                    bool(deployment.get("enabled", True))
+                    and mode in set(deployment.get("modes") or [])
+                    and (
+                        str(account.get("account_key") or ""),
+                        str(deployment.get("deployment_id") or ""),
+                    ) in mandate_pairs
+                    for deployment in deployments
+                )
+                if not eligible:
+                    raise ValueError(
+                        f"Account {account.get('account_key')} requires an enabled {mode} deployment mandate"
+                    )
     for raw in dict(draft["portfolio"]).get("groups") or []:
         group = PortfolioGroupPolicy(
             group_id=str(raw.get("group_id") or ""),
@@ -1109,7 +1251,16 @@ def merged_assignment_parameters(configuration: dict[str, Any], assignment: dict
             bool(reentry.get("enabled", True))
             and str(campaign_policy.get("reentry_authority")) != "disabled"
         )
-    oms = dict(configuration["oms"])
+    oms_contract = dict(configuration["oms"])
+    oms = dict(oms_contract.get("settings") or oms_contract)
+    execution_policies = list(oms_contract.get("execution_policies") or [])
+    protection_profiles = list(oms_contract.get("protection_profiles") or [])
+    base["execution_policy_catalog"] = _policy_catalog_payload(
+        execution_policies, "policy_id"
+    )
+    base["protection_profile_catalog"] = _policy_catalog_payload(
+        protection_profiles, "profile_id"
+    )
     execution = base.setdefault("execution", {})
     execution.update({
         "entry_urgency": oms["entry_urgency"],
@@ -1127,6 +1278,21 @@ def merged_assignment_parameters(configuration: dict[str, Any], assignment: dict
     })
     base["protection"].setdefault("trailing", {})["enabled"] = bool(protection.get("trailing_enabled", True))
     return resolve_long_momentum_parameters(base)
+
+
+def _policy_catalog_payload(
+    rows: list[dict[str, Any]],
+    identity_key: str,
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        payload = deepcopy(row)
+        policy_id = str(row.get(identity_key) or "")
+        revision = int(row.get("revision") or 1)
+        references = {policy_id, f"{policy_id}@{revision}"}
+        for reference in references - {""}:
+            result[reference] = payload
+    return result
 
 
 def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
@@ -1185,6 +1351,8 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                     legacy_reentry.get("enabled", True)
                 )
             lifecycle = _migrate_lifecycle_v7(lifecycle, parameters)
+            for intent in _lifecycle_order_intents(lifecycle):
+                intent.setdefault("protection_profile", "hybrid-single")
             initial_entry = dict(lifecycle.get("initial_entry") or {})
             _normalize_entry_rule_sources({
                 key: value
@@ -1282,11 +1450,16 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             for row in defaults["oms"]["profiles"]
             if str(row["profile_id"]) not in existing_oms
         )
+        for key in ("execution_policies", "protection_profiles"):
+            result["oms"].setdefault(key, deepcopy(defaults["oms"][key]))
         for oms_profile in result["oms"]["profiles"]:
             settings = dict(oms_profile.get("settings") or {})
             settings.pop("time_in_force", None)
             settings.pop("outside_rth", None)
             settings["session_routing"] = "smart"
+            settings.setdefault("entry_execution_policy_id", "adaptive_urgent")
+            settings.setdefault("exit_execution_policy_id", "adaptive_very_urgent")
+            settings.setdefault("protection_profile_id", "hybrid-single")
             oms_profile["settings"] = settings
         for binding in dict(result.get("accounts") or {}).get("bindings") or []:
             _normalize_account_binding(binding)
@@ -1321,6 +1494,15 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
     base["oms"]["profiles"][0]["settings"].pop("time_in_force", None)
     base["oms"]["profiles"][0]["settings"].pop("outside_rth", None)
     base["oms"]["profiles"][0]["settings"]["session_routing"] = "smart"
+    base["oms"]["profiles"][0]["settings"].setdefault(
+        "entry_execution_policy_id", "adaptive_urgent"
+    )
+    base["oms"]["profiles"][0]["settings"].setdefault(
+        "exit_execution_policy_id", "adaptive_very_urgent"
+    )
+    base["oms"]["profiles"][0]["settings"].setdefault(
+        "protection_profile_id", "hybrid-single"
+    )
     base["accounts"] = deepcopy(old["accounts"])
     for binding in base["accounts"].get("bindings") or []:
         _normalize_account_binding(binding)
@@ -1406,6 +1588,24 @@ def _normalize_account_binding(binding: dict[str, Any]) -> None:
     account_key = str(binding.get("account_key") or "")
     fallback = "Replay account" if account_key == "replay" else account_key or "Trading account"
     binding["name"] = str(binding.get("name") or binding.get("display_name") or fallback)
+
+
+def _lifecycle_order_intents(lifecycle: dict[str, Any]) -> list[dict[str, Any]]:
+    initial = lifecycle.setdefault("initial_entry", {})
+    reentry = lifecycle.setdefault("reentry", {})
+    exit_section = lifecycle.setdefault("exit", {})
+    return [
+        initial.setdefault("order_intent", {}),
+        *[
+            step.setdefault("order_intent", {})
+            for step in initial.get("add_steps") or []
+        ],
+        reentry.setdefault("order_intent", {}),
+        *[
+            route.setdefault("order_intent", {})
+            for route in exit_section.get("rule_sets") or []
+        ],
+    ]
 
 
 def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
@@ -1504,18 +1704,8 @@ def _validate_capital_request(request: dict[str, Any], label: str) -> None:
 
 
 def _validate_order_intent(intent: dict[str, Any], label: str) -> None:
-    if str(intent.get("execution_policy") or "") not in {
-        "passive",
-        "midpoint",
-        "adaptive_patient",
-        "adaptive_regular",
-        "adaptive_urgent",
-        "adaptive_very_urgent",
-        "immediate_with_limit",
-        "ibkr_native_adaptive",
-        "cancel_if_not_filled",
-    }:
-        raise ValueError(f"{label} execution policy is unsupported")
+    if not str(intent.get("execution_policy") or "").strip():
+        raise ValueError(f"{label} execution policy is required")
     if "time_in_force" in intent or "outside_rth" in intent:
         raise ValueError(
             f"{label} session routing must be derived by OMS from Trading Behavior"
@@ -1559,6 +1749,9 @@ def _default_oms_profile() -> dict[str, Any]:
         "origin": "system",
         "editable": True,
         "settings": {
+            "entry_execution_policy_id": "adaptive_urgent",
+            "exit_execution_policy_id": "adaptive_very_urgent",
+            "protection_profile_id": "hybrid-single",
             "entry_urgency": "urgent",
             "exit_urgency": "very_urgent",
             "limit_offset_bps": 5.0,
@@ -1573,6 +1766,84 @@ def _default_oms_profile() -> dict[str, Any]:
             },
         },
     }
+
+
+def _default_execution_policies() -> list[dict[str, Any]]:
+    timing = {
+        "passive": (1_000, 2, 250),
+        "midpoint": (750, 3, 150),
+        "adaptive_patient": (1_000, 3, 250),
+        "adaptive_regular": (750, 4, 100),
+        "adaptive_urgent": (500, 6, 50),
+        "adaptive_very_urgent": (300, 8, 25),
+        "immediate_with_limit": (250, 3, 25),
+        "ibkr_native_adaptive": (1_000, 0, 0),
+        "cancel_if_not_filled": (500, 3, 100),
+    }
+    return [
+        {
+            "policy_id": name,
+            "revision": 1,
+            "name": name,
+            "description": f"System {name.replace('_', ' ')} execution policy.",
+            "origin": "system",
+            "editable": True,
+            "quote_source": "qmd",
+            "partial_fill_policy": "complete_remainder",
+            "envelope": {
+                "maximum_buy_price": None,
+                "minimum_sell_price": None,
+                "deadline_ms": values[0],
+                "maximum_reprices": values[1],
+                "minimum_reprice_interval_ms": values[2],
+            },
+        }
+        for name, values in timing.items()
+    ]
+
+
+def _default_protection_profiles() -> list[dict[str, Any]]:
+    return [{
+        "profile_id": "hybrid-single",
+        "revision": 1,
+        "name": "Hybrid single stop",
+        "description": "One full-position hybrid stop using the current causal strategy swing and volatility.",
+        "origin": "system",
+        "editable": True,
+        "add_policy": "independent_slice",
+        "profit_pocket_transition": "move_to_breakeven",
+        "mandatory_catastrophic_backstop": True,
+        "emergency_repair_deadline_ms": 500,
+        "slices": [{
+            "slice_id": "position",
+            "quantity_fraction": 1.0,
+            "profit_target_price": None,
+            "use_strategy_profit_target": True,
+            "stop": {
+                "rule_type": "hybrid",
+                "order_type": "STP",
+                "price": None,
+                "distance_percent": None,
+                "distance_bps": None,
+                "maximum_cash_risk": None,
+                "volatility_multiple": 1.25,
+                "buffer_bps": 8.0,
+                "anchor_source": "strategy_swing",
+                "anchor_ordinal": "most_recent",
+                "structural_timeframe": "strategy",
+                "stop_limit_offset_bps": None,
+            },
+            "trailing": {
+                "rule_type": "none",
+                "amount": None,
+                "percent": None,
+                "volatility_multiple": None,
+                "activation_gain_percent": 0.0,
+                "breakeven_buffer_bps": 0.0,
+                "structural_timeframe": "",
+            },
+        }],
+    }]
 
 
 def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
@@ -1641,6 +1912,45 @@ def _validate_oms_settings(oms: dict[str, Any]) -> None:
         raise ValueError("OMS session routing must use smart broker-aware mode")
     if str(dict(oms.get("protection") or {}).get("stop_method") or "") not in {"structure", "volatility", "hybrid"}:
         raise ValueError("Protection stop method is unsupported")
+
+
+def _validate_execution_policy_config(payload: dict[str, Any]):
+    try:
+        return execution_policy_from_payload(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Execution policy {payload.get('policy_id') or '<unknown>'} is invalid: {exc}"
+        ) from exc
+
+
+def _validate_protection_profile_config(payload: dict[str, Any]):
+    resolved = deepcopy(payload)
+    for raw_slice in resolved.get("slices") or []:
+        raw_slice.pop("use_strategy_profit_target", None)
+        stop = dict(raw_slice.get("stop") or {})
+        anchor_source = str(stop.pop("anchor_source", "") or "")
+        stop.pop("anchor_ordinal", None)
+        stop.pop("structural_timeframe", None)
+        rule_type = str(stop.get("rule_type") or "")
+        if anchor_source and anchor_source not in {"strategy_swing", "explicit"}:
+            raise ValueError("Protection anchor source must be strategy_swing or explicit")
+        if rule_type in {"swing_anchored", "hybrid"} and anchor_source == "strategy_swing":
+            stop["anchor"] = {
+                "observation_id": "configuration-validation",
+                "price": 90.0,
+                "confirmed_at": "2000-01-01T00:00:00+00:00",
+                "timeframe": "strategy",
+                "ordinal": "most_recent",
+            }
+        if rule_type in {"fixed_price", "catastrophic"} and not stop.get("price"):
+            stop["price"] = 90.0
+        raw_slice["stop"] = stop
+    try:
+        return protection_profile_from_payload(resolved)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Protection profile {payload.get('profile_id') or '<unknown>'} is invalid: {exc}"
+        ) from exc
 
 
 def _validate_capability_settings(definition: dict[str, Any], settings: dict[str, Any]) -> None:

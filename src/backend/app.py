@@ -137,6 +137,7 @@ from src.backend.trading_configuration_service import (
     approved_configuration,
     configuration_draft,
     configuration_revisions,
+    effective_configuration_snapshot,
     publish_configuration,
     replay_configuration_snapshot,
     update_configuration_section,
@@ -4339,6 +4340,17 @@ def trading_configuration_revision_list() -> dict[str, Any]:
 def trading_configuration_approved() -> dict[str, Any]:
     result = approved_configuration()
     return {"schema_version": 1, "approved": result}
+
+
+@app.get("/api/trading/configuration/effective")
+def trading_configuration_effective(
+    mode: str = "replay",
+    approved: bool = False,
+) -> dict[str, Any]:
+    try:
+        return effective_configuration_snapshot(mode=mode, use_approved=approved)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/trading/configuration/publish")

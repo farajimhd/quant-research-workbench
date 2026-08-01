@@ -142,6 +142,7 @@ type OrderIntentConfig = {
   deadline_ms: number;
   execution_policy: string;
   partial_fill_policy: "complete_remainder" | "accept_partial" | "cancel_remainder";
+  protection_profile: string;
 };
 
 type AddStep = {
@@ -271,6 +272,9 @@ type OmsProfile = {
   profile_id: string;
   revision: number;
   settings: {
+    entry_execution_policy_id: string;
+    exit_execution_policy_id: string;
+    protection_profile_id: string;
     entry_urgency: string;
     exit_urgency: string;
     limit_offset_bps: number;
@@ -285,7 +289,72 @@ type OmsProfile = {
     session_routing: "smart";
   };
 };
-type OmsSection = { profiles: OmsProfile[] };
+type ExecutionPolicyConfig = {
+  description: string;
+  editable: boolean;
+  envelope: {
+    deadline_ms: number;
+    maximum_buy_price: number | null;
+    maximum_reprices: number;
+    minimum_reprice_interval_ms: number;
+    minimum_sell_price: number | null;
+  };
+  name: string;
+  origin: "system" | "user";
+  partial_fill_policy: "complete_remainder" | "accept_partial" | "cancel_remainder";
+  policy_id: string;
+  quote_source: "qmd" | "ibkr" | "simulated";
+  revision: number;
+};
+type ProtectionStopConfig = {
+  anchor_ordinal: string;
+  anchor_source: "strategy_swing" | "explicit";
+  buffer_bps: number;
+  distance_bps: number | null;
+  distance_percent: number | null;
+  maximum_cash_risk: number | null;
+  order_type: "STP" | "STOP_LIMIT";
+  price: number | null;
+  rule_type: string;
+  stop_limit_offset_bps: number | null;
+  structural_timeframe: string;
+  volatility_multiple: number | null;
+};
+type ProtectionTrailingConfig = {
+  activation_gain_percent: number;
+  amount: number | null;
+  breakeven_buffer_bps: number;
+  percent: number | null;
+  rule_type: string;
+  structural_timeframe: string;
+  volatility_multiple: number | null;
+};
+type ProtectionSliceConfig = {
+  profit_target_price: number | null;
+  quantity_fraction: number;
+  slice_id: string;
+  stop: ProtectionStopConfig;
+  trailing: ProtectionTrailingConfig;
+  use_strategy_profit_target: boolean;
+};
+type ProtectionProfileConfig = {
+  add_policy: string;
+  description: string;
+  editable: boolean;
+  emergency_repair_deadline_ms: number;
+  mandatory_catastrophic_backstop: boolean;
+  name: string;
+  origin: "system" | "user";
+  profile_id: string;
+  profit_pocket_transition: string;
+  revision: number;
+  slices: ProtectionSliceConfig[];
+};
+type OmsSection = {
+  execution_policies: ExecutionPolicyConfig[];
+  profiles: OmsProfile[];
+  protection_profiles: ProtectionProfileConfig[];
+};
 
 type AccountBinding = {
   account_class: string;
@@ -519,6 +588,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
           {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
           {section === "accounts" ? <AccountsEditor draft={draft} onChange={(value) => updateDraft("accounts", value)} /> : null}
+          {["assignments", "portfolio", "oms", "accounts"].includes(section) ? <EffectiveConfigurationPreview updatedAt={draft.updated_at || ""} /> : null}
           <div className="configuration-save-bar">
             <span>{dirtySection === section ? "Unsaved draft changes" : "Draft matches saved configuration"}</span>
             <button className="button primary" disabled={dirtySection !== section || status === "saving"} onClick={saveSection} type="button">
@@ -681,6 +751,8 @@ function StrategyStudio({ draft, onChange, onPersist, section }: { draft: Draft;
             eligibleSessions={selected.lifecycle.trading_behavior.eligible_sessions}
             orderIntent={selected.lifecycle.initial_entry.order_intent}
             title="Initial order request"
+            executionPolicies={draft.oms.execution_policies}
+            protectionProfiles={draft.oms.protection_profiles}
             onCapitalRequest={(capital_request) => replaceProfile({
               ...selected,
               lifecycle: {
@@ -712,6 +784,8 @@ function StrategyStudio({ draft, onChange, onPersist, section }: { draft: Draft;
           <AddStepsEditor
             catalog={section.input_catalog}
             eligibleSessions={selected.lifecycle.trading_behavior.eligible_sessions}
+            executionPolicies={draft.oms.execution_policies}
+            protectionProfiles={draft.oms.protection_profiles}
             steps={selected.lifecycle.initial_entry.add_steps}
             onChange={(add_steps) => replaceProfile({
               ...selected,
@@ -728,7 +802,7 @@ function StrategyStudio({ draft, onChange, onPersist, section }: { draft: Draft;
           summary={selected.lifecycle.reentry.enabled ? `Up to ${selected.lifecycle.reentry.maximum_attempts} reentries · ${selected.lifecycle.reentry.cooldown_ms} ms cooldown` : "Reentry disabled"}
           title="Reentry"
         >
-          <ReentryEditor catalog={section.input_catalog} profile={selected} onChange={replaceProfile} />
+          <ReentryEditor catalog={section.input_catalog} draft={draft} profile={selected} onChange={replaceProfile} />
         </LifecyclePanel>
 
         <LifecyclePanel
@@ -864,8 +938,9 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
   );
 }
 
-function ReentryEditor({ catalog, onChange, profile }: {
+function ReentryEditor({ catalog, draft, onChange, profile }: {
   catalog: StrategyInput[];
+  draft: Draft;
   onChange: (value: StrategyProfile) => void;
   profile: StrategyProfile;
 }) {
@@ -881,6 +956,8 @@ function ReentryEditor({ catalog, onChange, profile }: {
         eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions}
         orderIntent={reentry.order_intent}
         title="Reentry order request"
+        executionPolicies={draft.oms.execution_policies}
+        protectionProfiles={draft.oms.protection_profiles}
         onCapitalRequest={(capital_request) => update({ ...reentry, capital_request })}
         onOrderIntent={(order_intent) => update({ ...reentry, order_intent })}
       />
@@ -931,7 +1008,7 @@ function ExitRuleSetsEditor({ catalog, draft, onChange, profile }: {
             action: "close",
             enabled: true,
             name: "New exit rule set",
-            order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", partial_fill_policy: "complete_remainder" },
+            order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", partial_fill_policy: "complete_remainder", protection_profile: "hybrid-single" },
             position_fraction: 1,
             rule_set_id: ruleSetId,
             rules: {
@@ -954,6 +1031,7 @@ function ExitRuleSetsEditor({ catalog, draft, onChange, profile }: {
   }
   const deployment = draft.assignments.deployments.find((row) => row.profile_id === profile.profile_id);
   const omsProfile = draft.oms.profiles.find((row) => row.profile_id === deployment?.oms_profile_id);
+  const protectionProfile = draft.oms.protection_profiles.find((row) => row.profile_id === omsProfile?.settings.protection_profile_id);
   return (
     <div className="strategy-exit-routes">
       <div className="configuration-protection-authority">
@@ -961,7 +1039,7 @@ function ExitRuleSetsEditor({ catalog, draft, onChange, profile }: {
         <div>
           <span>OMS safety authority</span>
           <strong>Protective stop is independent of strategic exit rules</strong>
-          <p>OMS calculates, submits, repairs, and reconciles the protective order. Strategy rules cannot disable or delay it. {omsProfile ? `${omsProfile.name} uses ${readableLabel(omsProfile.settings.protection.stop_method)}, a ${omsProfile.settings.protection.structure_buffer_bps} bps structure buffer, ${omsProfile.settings.protection.volatility_multiple}× volatility, ${omsProfile.settings.protection.maximum_risk_pct}% maximum risk, and trailing ${omsProfile.settings.protection.trailing_enabled ? "enabled" : "disabled"}.` : "Select an OMS profile in Deployment to resolve its exact parameters."}</p>
+          <p>OMS calculates, submits, repairs, and reconciles broker-held protection. Strategy rules cannot disable or delay it. {protectionProfile ? `${protectionProfile.name} protects ${protectionProfile.slices.length} independent slice${protectionProfile.slices.length === 1 ? "" : "s"}, applies ${readableLabel(protectionProfile.add_policy)} to adds, and uses ${readableLabel(protectionProfile.profit_pocket_transition)} after profit fills.` : "Select an OMS and protection profile in Deployment to resolve the exact plan."}</p>
           <a href="#oms-configuration">Configure OMS protection</a>
         </div>
       </div>
@@ -984,6 +1062,8 @@ function ExitRuleSetsEditor({ catalog, draft, onChange, profile }: {
             </div>
             <OrderIntentEditor
               eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions}
+              executionPolicies={draft.oms.execution_policies}
+              protectionProfiles={draft.oms.protection_profiles}
               value={ruleSet.order_intent}
               onChange={(order_intent) => replace(ruleSet.rule_set_id, { ...ruleSet, order_intent })}
             />
@@ -1397,12 +1477,14 @@ function RuleStageEditor({ catalog, label, onChange, stage }: {
   );
 }
 
-function PhaseOrderEditor({ capitalRequest, eligibleSessions, onCapitalRequest, onOrderIntent, orderIntent, title }: {
+function PhaseOrderEditor({ capitalRequest, eligibleSessions, executionPolicies, onCapitalRequest, onOrderIntent, orderIntent, protectionProfiles, title }: {
   capitalRequest: CapitalRequestConfig;
   eligibleSessions: string[];
+  executionPolicies: ExecutionPolicyConfig[];
   onCapitalRequest: (value: CapitalRequestConfig) => void;
   onOrderIntent: (value: OrderIntentConfig) => void;
   orderIntent: OrderIntentConfig;
+  protectionProfiles: ProtectionProfileConfig[];
   title: string;
 }) {
   return (
@@ -1413,7 +1495,7 @@ function PhaseOrderEditor({ capitalRequest, eligibleSessions, onCapitalRequest, 
       </header>
       <div className="strategy-handoff-grid">
         <CapitalRequestEditor onChange={onCapitalRequest} value={capitalRequest} />
-        <OrderIntentEditor eligibleSessions={eligibleSessions} onChange={onOrderIntent} value={orderIntent} />
+        <OrderIntentEditor eligibleSessions={eligibleSessions} executionPolicies={executionPolicies} protectionProfiles={protectionProfiles} onChange={onOrderIntent} value={orderIntent} />
       </div>
     </section>
   );
@@ -1481,10 +1563,12 @@ function CapitalRequestEditor({ onChange, value }: {
   );
 }
 
-function OrderIntentEditor({ eligibleSessions, onChange, value }: {
+function OrderIntentEditor({ eligibleSessions, executionPolicies, onChange, protectionProfiles, value }: {
   eligibleSessions: string[];
+  executionPolicies: ExecutionPolicyConfig[];
   onChange: (value: OrderIntentConfig) => void;
   value: OrderIntentConfig;
+  protectionProfiles: ProtectionProfileConfig[];
 }) {
   const usesExtendedHours = eligibleSessions.some((session) => session === "premarket" || session === "after_hours");
   return (
@@ -1512,9 +1596,10 @@ function OrderIntentEditor({ eligibleSessions, onChange, value }: {
         }}
         label="Execution policy"
         onChange={(execution_policy) => onChange({ ...value, execution_policy })}
-        options={["passive", "midpoint", "adaptive_patient", "adaptive_regular", "adaptive_urgent", "adaptive_very_urgent", "immediate_with_limit", "ibkr_native_adaptive", "cancel_if_not_filled"].map((policy) => ({ label: readableLabel(policy), value: policy }))}
+        options={executionPolicies.map((policy) => ({ label: `${readableLabel(policy.name)} · v${policy.revision}`, value: policy.policy_id }))}
         value={value.execution_policy}
       />
+      <SelectField help="Selects the independently versioned stop, target, and trailing plan used for a filled entry or add." label="Protection profile" onChange={(protection_profile) => onChange({ ...value, protection_profile })} options={protectionProfiles.map((profile) => ({ label: `${profile.name} · v${profile.revision}`, value: profile.profile_id }))} value={value.protection_profile} />
       <SelectField help={{ role: "Determines how OMS handles an incomplete fill.", values: { "Complete remainder": "Continue working the unfilled quantity under the selected policy.", "Accept partial": "Keep the fill received and stop requesting the remainder.", "Cancel remainder": "Cancel any remainder after the first partial fill." } }} label="Partial fill" onChange={(partial_fill_policy) => onChange({ ...value, partial_fill_policy: partial_fill_policy as OrderIntentConfig["partial_fill_policy"] })} options={["complete_remainder", "accept_partial", "cancel_remainder"].map((item) => ({ label: readableLabel(item), value: item }))} value={value.partial_fill_policy} />
       <NumberField help="Maximum time OMS may work this execution policy before its terminal policy is applied. Zero means the policy's immediate behavior." label="Execution deadline" minimum={0} onChange={(deadline_ms) => onChange({ ...value, deadline_ms })} step={50} unit="ms" value={value.deadline_ms} />
       </div>
@@ -1527,10 +1612,12 @@ function OrderIntentEditor({ eligibleSessions, onChange, value }: {
   );
 }
 
-function AddStepsEditor({ catalog, eligibleSessions, onChange, steps }: {
+function AddStepsEditor({ catalog, eligibleSessions, executionPolicies, onChange, protectionProfiles, steps }: {
   catalog: StrategyInput[];
   eligibleSessions: string[];
+  executionPolicies: ExecutionPolicyConfig[];
   onChange: (value: AddStep[]) => void;
+  protectionProfiles: ProtectionProfileConfig[];
   steps: AddStep[];
 }) {
   function addStep() {
@@ -1541,7 +1628,7 @@ function AddStepsEditor({ catalog, eligibleSessions, onChange, steps }: {
       enabled: true,
       maximum_uses: 1,
       name: "New position add",
-      order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", partial_fill_policy: "complete_remainder" },
+      order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", partial_fill_policy: "complete_remainder", protection_profile: "hybrid-single" },
       rules: {
         groups: [{
           conditions: [{ comparator: source.value_type === "boolean" ? "is_true" : "greater_or_equal", condition_id: `${stepId}-condition`, enabled: true, left_source_id: source.source_id, left_timeframe: source.timeframes[0], right_source_id: "", right_timeframe: "", value: source.value_type === "boolean" ? null : 0 }],
@@ -1567,7 +1654,7 @@ function AddStepsEditor({ catalog, eligibleSessions, onChange, steps }: {
                 <button className="button compact danger" onClick={() => onChange(steps.filter((row) => row.step_id !== step.step_id))} type="button"><Trash2 size={14} /> Remove step</button>
               </div>
               <RuleStageEditor catalog={catalog} label={`${step.name} rules`} onChange={(rules) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, rules } : row))} stage={step.rules} />
-              <PhaseOrderEditor capitalRequest={step.capital_request} eligibleSessions={eligibleSessions} orderIntent={step.order_intent} title={`${step.name} request`} onCapitalRequest={(capital_request) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, capital_request } : row))} onOrderIntent={(order_intent) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, order_intent } : row))} />
+              <PhaseOrderEditor capitalRequest={step.capital_request} eligibleSessions={eligibleSessions} executionPolicies={executionPolicies} protectionProfiles={protectionProfiles} orderIntent={step.order_intent} title={`${step.name} request`} onCapitalRequest={(capital_request) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, capital_request } : row))} onOrderIntent={(order_intent) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, order_intent } : row))} />
             </div>
           </details>
         ))}
@@ -1749,9 +1836,16 @@ function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: 
   const policyIndex = Math.max(0, section.policies.findIndex((row) => String(row.policy_id) === selectedPolicyId));
   const policy = section.policies[policyIndex];
 
-  function updatePolicy(key: string, value: Primitive) {
+  function updatePolicy(key: string, value: Primitive | string[]) {
     const policies = section.policies.map((row, index) => index === policyIndex ? { ...row, [key]: value } : row);
     onChange({ ...section, policies });
+  }
+
+  function clonePolicy() {
+    if (!policy) return;
+    const policy_id = uniqueId(`${String(policy.policy_id)}-copy`, section.policies.map((row) => String(row.policy_id)));
+    onChange({ ...section, policies: [...section.policies, { ...deepClone(policy), policy_id, revision: 1 }] });
+    setSelectedPolicyId(policy_id);
   }
 
   function addMandate() {
@@ -1780,6 +1874,15 @@ function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: 
     onChange({ ...section, mandates });
   }
 
+  function addGroup() {
+    const group_id = uniqueId("account-group", section.groups.map((row) => String(row.group_id)));
+    onChange({ ...section, groups: [...section.groups, { group_id, account_keys: [], maximum_gross_exposure: 0, maximum_ticker_exposure: 0 }] });
+  }
+
+  function replaceGroup(groupId: string, next: ParameterMap) {
+    onChange({ ...section, groups: section.groups.map((row) => String(row.group_id) === groupId ? next : row) });
+  }
+
   return (
     <div className="configuration-stack">
       <GuideCallout icon={<BriefcaseBusiness size={17} />} title="Strategy requests are relative; Portfolio makes them account-specific">
@@ -1788,18 +1891,56 @@ function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: 
       <ConfigGroup summary="Stable account-level limits apply to every strategy using the account." title="Account safety policy">
         <div className="configuration-toolbar">
           <SelectField help="Policy revision being edited." label="Policy" onChange={setSelectedPolicyId} options={section.policies.map((row) => ({ label: String(row.policy_id), value: String(row.policy_id) }))} value={selectedPolicyId} />
+          <button className="button compact" onClick={clonePolicy} type="button"><Clipboard size={14} /> Clone policy</button>
         </div>
         {policy ? <div className="configuration-field-grid">
           {[
+            field("revision", "Revision", "Immutable policy revision published with the release.", "number", undefined, "revision", 1),
             field("eligible_equity_fraction", "Eligible equity", "Fraction of account equity available to all trading mandates.", "number", undefined, "fraction", 0.05),
             field("minimum_cash_reserve", "Cash reserve", "Cash that Portfolio must leave unused.", "number", undefined, "currency", 100),
             field("maximum_buying_power_utilization", "Buying power use", "Maximum fraction of broker buying power Portfolio may consume.", "number", undefined, "fraction", 0.05),
+            field("maximum_gross_exposure", "Gross exposure", "Maximum absolute long plus short exposure.", "number", undefined, "currency", 1000),
+            field("maximum_net_long_exposure", "Net long exposure", "Maximum directional long exposure.", "number", undefined, "currency", 1000),
+            field("maximum_net_short_exposure", "Net short exposure", "Maximum directional short exposure.", "number", undefined, "currency", 1000),
             field("maximum_position_fraction", "Position ceiling", "Maximum account equity attributable to one position.", "number", undefined, "fraction", 0.01),
+            field("maximum_ticker_fraction", "Ticker ceiling", "Maximum account equity attributable to one ticker.", "number", undefined, "fraction", 0.01),
+            field("maximum_strategy_fraction", "Strategy ceiling", "Maximum eligible equity allocated to one strategy.", "number", undefined, "fraction", 0.01),
+            field("maximum_sector_fraction", "Sector ceiling", "Maximum eligible equity allocated to one sector.", "number", undefined, "fraction", 0.01),
+            field("maximum_industry_fraction", "Industry ceiling", "Maximum eligible equity allocated to one industry.", "number", undefined, "fraction", 0.01),
+            field("maximum_correlated_group_fraction", "Correlated-group ceiling", "Maximum eligible equity allocated to one correlated group.", "number", undefined, "fraction", 0.01),
+            field("maximum_planned_risk_fraction", "Per-request risk", "Maximum planned loss for one approved request.", "number", undefined, "fraction", 0.001),
             field("maximum_open_risk_fraction", "Open risk ceiling", "Maximum aggregate planned open risk.", "number", undefined, "fraction", 0.005),
             field("maximum_open_positions", "Open positions", "Maximum simultaneous positions for this account policy.", "number", undefined, "positions", 1),
+            field("maximum_order_quantity", "Order quantity", "Maximum approved quantity for one order request.", "number", undefined, "shares", 1),
+            field("maximum_order_notional", "Order notional", "Maximum worst-price notional for one order request.", "number", undefined, "currency", 1000),
             field("maximum_daily_loss", "Daily loss limit", "New entries stop when the loss limit is reached.", "number", undefined, "currency", 100),
             field("maximum_drawdown", "Drawdown limit", "Hard peak-to-trough account control.", "number", undefined, "currency", 100),
-          ].map((definition) => <ParameterField definition={definition} key={definition.path} value={policy[definition.path] as Primitive} onChange={(value) => updatePolicy(definition.path, value)} />)}
+            field("daily_loss_warning", "Loss warning", "Pause entries before the hard daily-loss limit.", "number", undefined, "currency", 100),
+            field("emergency_loss", "Emergency loss", "Escalate to the configured emergency action at this daily loss.", "number", undefined, "currency", 100),
+            field("maximum_snapshot_age_ms", "Snapshot age", "Maximum broker-state age allowed for new risk.", "number", undefined, "ms", 100),
+            field("maximum_protection_slices", "Protection slices", "Maximum independently protected slices per entry or add.", "number", undefined, "slices", 1),
+            field("maximum_internal_reaction_ms", "Reaction limit", "Maximum measured internal risk reaction time.", "number", undefined, "ms", 10),
+        ].map((definition) => <ParameterField definition={definition} key={definition.path} value={policy[definition.path] as Primitive} onChange={(value) => updatePolicy(definition.path, value)} />)}
+          <div className="configuration-fixed-value"><span>Stable policy ID</span><strong>{String(policy.policy_id)}</strong><small>Clone the policy to create a new identity.</small></div>
+          {[
+            ["allow_long", "Allow long", "Permit new long exposure."],
+            ["allow_short", "Allow short", "Permit new short exposure when the account also supports it."],
+            ["allow_margin", "Allow margin", "Permit margin use when the broker account supports it."],
+            ["allow_unsettled_cash", "Allow unsettled cash", "Permit eligible unsettled cash in buying power."],
+            ["allow_outside_rth", "Allow extended hours", "Permit orders outside regular trading hours."],
+            ["allow_overnight", "Allow overnight", "Permit positions to remain open overnight."],
+            ["block_on_unattributed_position", "Block unattributed positions", "Fail closed when broker positions cannot be attributed."],
+            ["allow_stop_limit_protection", "Allow stop-limit protection", "Permit protection that may remain unfilled through a gap."],
+            ["allow_partial_profit_pocket", "Allow partial profit pocket", "Permit profit taking that leaves a managed remainder."],
+            ["allow_emergency_auto_liquidation", "Emergency auto-liquidation", "Authorize account-scoped emergency flattening after reconciliation."],
+          ].map(([key, label, help]) => <BooleanField help={help} key={key} label={label} onChange={(value) => updatePolicy(key, value)} value={Boolean(policy[key])} />)}
+          {[
+            ["allowed_security_types", "Security types", "Allowed broker security types such as STK."],
+            ["allowed_currencies", "Currencies", "Allowed contract and ledger currencies."],
+            ["restricted_symbols", "Restricted symbols", "Symbols that Portfolio must reject."],
+            ["allowed_execution_policies", "Execution allowlist", "Policy IDs or immutable identities; use * for all."],
+            ["allowed_protection_profiles", "Protection allowlist", "Profile IDs or immutable identities; use * for all."],
+          ].map(([key, label, help]) => <TextField help={help} key={key} label={label} onChange={(value) => updatePolicy(key, value.split(",").map((item) => item.trim()).filter(Boolean))} value={Array.isArray(policy[key]) ? (policy[key] as string[]).join(", ") : ""} />)}
         </div> : null}
       </ConfigGroup>
       <ConfigGroup
@@ -1828,6 +1969,24 @@ function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: 
           ))}
         </div>
       </ConfigGroup>
+      <ConfigGroup action={<button className="button compact" onClick={addGroup} type="button"><Plus size={14} /> Add account group</button>} summary="Optional aggregate limits serialize decisions across several independently configured accounts." title="Cross-account risk groups">
+        <div className="mandate-grid">
+          {section.groups.map((group) => {
+            const groupId = String(group.group_id || "");
+            const accountKeys = Array.isArray(group.account_keys) ? group.account_keys.map(String) : [];
+            return <article className="mandate-card" key={groupId}>
+              <header><div><strong>{groupId}</strong><span>{accountKeys.length} accounts</span></div><button aria-label={`Delete ${groupId}`} onClick={() => onChange({ ...section, groups: section.groups.filter((row) => String(row.group_id) !== groupId) })} type="button"><Trash2 size={14} /></button></header>
+              <div className="configuration-field-grid one-column">
+                <div className="configuration-fixed-value"><span>Stable group ID</span><strong>{groupId}</strong><small>Recorded in reservations and decisions.</small></div>
+                <NumberField help="Maximum combined absolute exposure across group accounts." label="Gross exposure" minimum={0} onChange={(value) => replaceGroup(groupId, { ...group, maximum_gross_exposure: value })} step={1000} unit="currency" value={Number(group.maximum_gross_exposure || 0)} />
+                <NumberField help="Maximum combined exposure to one ticker across group accounts." label="Ticker exposure" minimum={0} onChange={(value) => replaceGroup(groupId, { ...group, maximum_ticker_exposure: value })} step={1000} unit="currency" value={Number(group.maximum_ticker_exposure || 0)} />
+              </div>
+              <fieldset className="configuration-choice-set"><legend>Member accounts</legend><div>{draft.accounts.bindings.map((account) => <label key={account.account_key}><input checked={accountKeys.includes(account.account_key)} onChange={(event) => replaceGroup(groupId, { ...group, account_keys: event.target.checked ? [...accountKeys, account.account_key] : accountKeys.filter((key) => key !== account.account_key) })} type="checkbox" />{account.name}</label>)}</div></fieldset>
+            </article>;
+          })}
+          {!section.groups.length ? <EmptyState title="No cross-account groups" detail="Each account remains independently governed until an aggregate group is added." /> : null}
+        </div>
+      </ConfigGroup>
     </div>
   );
 }
@@ -1837,15 +1996,16 @@ function OmsEditor({ onChange, section }: { onChange: (value: OmsSection) => voi
   const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
   if (!selected) return <EmptyState title="No OMS profile" detail="Create a shared execution and protection profile." />;
   function replace(next: OmsProfile) {
-    onChange({ profiles: section.profiles.map((row) => row.profile_id === selected.profile_id ? next : row) });
+    onChange({ ...section, profiles: section.profiles.map((row) => row.profile_id === selected.profile_id ? next : row) });
   }
   function clone() {
     const id = uniqueId(`${selected.profile_id}-copy`, section.profiles.map((row) => row.profile_id));
     const next = { ...deepClone(selected), profile_id: id, name: `${selected.name} copy`, origin: "user" as const, revision: 1 };
-    onChange({ profiles: [...section.profiles, next] });
+    onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(id);
   }
   return (
+    <div className="configuration-stack">
     <div className="configuration-workbench">
       <aside className="configuration-library">
         <header><div><span>OMS profiles</span><strong>{section.profiles.length} configured</strong></div><button onClick={clone} title="Clone OMS profile" type="button"><Plus size={15} /></button></header>
@@ -1864,6 +2024,9 @@ function OmsEditor({ onChange, section }: { onChange: (value: OmsSection) => voi
             <FieldHelp content={{ role: "Keeps broker mechanics centralized in OMS while Strategy Profiles define only when they are eligible to trade.", parameters: { "Strategy input": "Eligible sessions from Trading Behavior.", "OMS decision": "Compatible time in force, outside-hours flag, venue, and broker order instructions.", "Safety gate": "Account, broker, venue, and order-type support must all permit the resolved instruction." }, note: "There is intentionally no manual time-in-force or outside-hours override here. A raw override could contradict the strategy session or broker capabilities." }} />
           </div>
           <div className="configuration-field-grid">
+            <SelectField help="Default entry policy used when a phase does not override execution." label="Default entry policy" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, entry_execution_policy_id: value } })} options={section.execution_policies.map((policy) => ({ label: `${readableLabel(policy.name)} · v${policy.revision}`, value: policy.policy_id }))} value={selected.settings.entry_execution_policy_id} />
+            <SelectField help="Default risk-reducing and final-exit execution policy." label="Default exit policy" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, exit_execution_policy_id: value } })} options={section.execution_policies.map((policy) => ({ label: `${readableLabel(policy.name)} · v${policy.revision}`, value: policy.policy_id }))} value={selected.settings.exit_execution_policy_id} />
+            <SelectField help="Default independently versioned protection plan for entries and adds." label="Default protection" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, protection_profile_id: value } })} options={section.protection_profiles.map((profile) => ({ label: `${profile.name} · v${profile.revision}`, value: profile.profile_id }))} value={selected.settings.protection_profile_id} />
             <SelectField help="Default urgency for entries. Strategy capabilities may select only an allowed profile." label="Entry urgency" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, entry_urgency: value } })} options={urgencyOptions()} value={selected.settings.entry_urgency} />
             <SelectField help="Default urgency for risk-reducing and final exits." label="Exit urgency" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, exit_urgency: value } })} options={urgencyOptions()} value={selected.settings.exit_urgency} />
             <NumberField help="Permitted limit-price offset from current execution evidence." label="Limit offset" onChange={(value) => replace({ ...selected, settings: { ...selected.settings, limit_offset_bps: value } })} step={0.5} unit="bps" value={selected.settings.limit_offset_bps} />
@@ -1881,7 +2044,97 @@ function OmsEditor({ onChange, section }: { onChange: (value: OmsSection) => voi
         </ConfigGroup>
       </main>
     </div>
+    <ExecutionPoliciesEditor policies={section.execution_policies} onChange={(execution_policies) => onChange({ ...section, execution_policies })} />
+    <ProtectionProfilesEditor profiles={section.protection_profiles} onChange={(protection_profiles) => onChange({ ...section, protection_profiles })} />
+    </div>
   );
+}
+
+function ExecutionPoliciesEditor({ onChange, policies }: { onChange: (value: ExecutionPolicyConfig[]) => void; policies: ExecutionPolicyConfig[] }) {
+  const [selectedId, setSelectedId] = useState(policies[0]?.policy_id ?? "");
+  const selected = policies.find((row) => row.policy_id === selectedId) ?? policies[0];
+  if (!selected) return <EmptyState title="No execution policies" detail="Create at least one bounded broker-neutral execution policy." />;
+  const replace = (next: ExecutionPolicyConfig) => onChange(policies.map((row) => row.policy_id === selected.policy_id ? next : row));
+  const clone = () => {
+    const policy_id = uniqueId(`${selected.policy_id}-copy`, policies.map((row) => row.policy_id));
+    onChange([...policies, { ...deepClone(selected), policy_id, name: selected.name, description: `${selected.description} Copy.`, origin: "user", revision: 1 }]);
+    setSelectedId(policy_id);
+  };
+  return <ConfigGroup action={<button className="button compact" onClick={clone} type="button"><Clipboard size={14} /> Clone execution policy</button>} summary="Each immutable policy owns its quote authority, price envelope, bounded repricing, deadline, and partial-fill behavior." title="Execution policy catalog">
+    <div className="configuration-toolbar"><SelectField help="Execution policy revision being edited." label="Policy" onChange={setSelectedId} options={policies.map((row) => ({ label: `${readableLabel(row.name)} · ${row.policy_id}@${row.revision}`, value: row.policy_id }))} value={selectedId} /></div>
+    <div className="configuration-field-grid">
+      <div className="configuration-fixed-value"><span>Stable policy ID</span><strong>{selected.policy_id}</strong><small>Clone the policy to create a new identity.</small></div>
+      <NumberField help="Immutable revision published with the release." label="Revision" minimum={1} onChange={(revision) => replace({ ...selected, revision })} step={1} unit="revision" value={selected.revision} />
+      <SelectField help="Adaptive behavior implemented by OMS." label="Policy behavior" onChange={(name) => replace({ ...selected, name })} options={["passive", "midpoint", "adaptive_patient", "adaptive_regular", "adaptive_urgent", "adaptive_very_urgent", "immediate_with_limit", "ibkr_native_adaptive", "cancel_if_not_filled"].map((value) => ({ label: readableLabel(value), value }))} value={selected.name} />
+      <SelectField help="Market-data authority used for execution-time repricing." label="Quote source" onChange={(quote_source) => replace({ ...selected, quote_source: quote_source as ExecutionPolicyConfig["quote_source"] })} options={["qmd", "ibkr", "simulated"].map((value) => ({ label: readableLabel(value), value }))} value={selected.quote_source} />
+      <SelectField help="Action applied to the broker-known unfilled quantity." label="Partial fill" onChange={(partial_fill_policy) => replace({ ...selected, partial_fill_policy: partial_fill_policy as ExecutionPolicyConfig["partial_fill_policy"] })} options={["complete_remainder", "accept_partial", "cancel_remainder"].map((value) => ({ label: readableLabel(value), value }))} value={selected.partial_fill_policy} />
+      <OptionalNumberField help="Hard buy-price ceiling. Empty means the strategy or broker band supplies the boundary." label="Maximum buy price" minimum={0.0001} onChange={(maximum_buy_price) => replace({ ...selected, envelope: { ...selected.envelope, maximum_buy_price } })} step={0.01} unit="price" value={selected.envelope.maximum_buy_price} />
+      <OptionalNumberField help="Hard sell-price floor. Empty means the strategy or broker band supplies the boundary." label="Minimum sell price" minimum={0.0001} onChange={(minimum_sell_price) => replace({ ...selected, envelope: { ...selected.envelope, minimum_sell_price } })} step={0.01} unit="price" value={selected.envelope.minimum_sell_price} />
+      <NumberField help="Maximum time OMS may work this policy." label="Deadline" minimum={0} onChange={(deadline_ms) => replace({ ...selected, envelope: { ...selected.envelope, deadline_ms } })} step={25} unit="ms" value={selected.envelope.deadline_ms} />
+      <NumberField help="Maximum broker modifications before terminal policy applies." label="Maximum reprices" minimum={0} onChange={(maximum_reprices) => replace({ ...selected, envelope: { ...selected.envelope, maximum_reprices } })} step={1} unit="replaces" value={selected.envelope.maximum_reprices} />
+      <NumberField help="Minimum interval between modifications; partial-fill events still wake OMS immediately." label="Reprice interval" minimum={0} onChange={(minimum_reprice_interval_ms) => replace({ ...selected, envelope: { ...selected.envelope, minimum_reprice_interval_ms } })} step={5} unit="ms" value={selected.envelope.minimum_reprice_interval_ms} />
+    </div>
+  </ConfigGroup>;
+}
+
+function ProtectionProfilesEditor({ onChange, profiles }: { onChange: (value: ProtectionProfileConfig[]) => void; profiles: ProtectionProfileConfig[] }) {
+  const [selectedId, setSelectedId] = useState(profiles[0]?.profile_id ?? "");
+  const selected = profiles.find((row) => row.profile_id === selectedId) ?? profiles[0];
+  if (!selected) return <EmptyState title="No protection profiles" detail="Create at least one broker-held protection profile." />;
+  const replace = (next: ProtectionProfileConfig) => onChange(profiles.map((row) => row.profile_id === selected.profile_id ? next : row));
+  const replaceSlice = (sliceId: string, next: ProtectionSliceConfig) => replace({ ...selected, slices: selected.slices.map((row) => row.slice_id === sliceId ? next : row) });
+  const rebalance = (rows: ProtectionSliceConfig[]) => rows.map((row) => ({ ...row, quantity_fraction: 1 / rows.length }));
+  const addSlice = () => {
+    if (selected.slices.length >= 4) return;
+    const slice_id = uniqueId("slice", selected.slices.map((row) => row.slice_id));
+    const template = deepClone(selected.slices[0]);
+    replace({ ...selected, slices: rebalance([...selected.slices, { ...template, slice_id, stop: { ...template.stop, anchor_ordinal: ["most_recent", "second_recent", "third_recent", "fourth_recent"][selected.slices.length] } }]) });
+  };
+  const removeSlice = (sliceId: string) => {
+    if (selected.slices.length <= 1) return;
+    replace({ ...selected, slices: rebalance(selected.slices.filter((row) => row.slice_id !== sliceId)) });
+  };
+  const clone = () => {
+    const profile_id = uniqueId(`${selected.profile_id}-copy`, profiles.map((row) => row.profile_id));
+    onChange([...profiles, { ...deepClone(selected), profile_id, name: `${selected.name} copy`, origin: "user", revision: 1 }]);
+    setSelectedId(profile_id);
+  };
+  return <ConfigGroup action={<div><button className="button compact" onClick={clone} type="button"><Clipboard size={14} /> Clone profile</button> <button className="button compact" disabled={selected.slices.length >= 4} onClick={addSlice} type="button"><Plus size={14} /> Add slice</button></div>} summary="One to four fractions must total exactly 100 percent. Every slice owns a hard stop and may own a target and trailing rule." title="Protection profile catalog">
+    <div className="configuration-toolbar"><SelectField help="Protection profile revision being edited." label="Profile" onChange={setSelectedId} options={profiles.map((row) => ({ label: `${row.name} · ${row.profile_id}@${row.revision}`, value: row.profile_id }))} value={selectedId} /></div>
+    <div className="configuration-field-grid">
+      <div className="configuration-fixed-value"><span>Stable profile ID</span><strong>{selected.profile_id}</strong><small>Clone the profile to create a new identity.</small></div>
+      <NumberField help="Immutable revision published with the release." label="Revision" minimum={1} onChange={(revision) => replace({ ...selected, revision })} step={1} unit="revision" value={selected.revision} />
+      <TextField help="Operator-facing profile name." label="Profile name" onChange={(name) => replace({ ...selected, name })} value={selected.name} />
+      <SelectField help="How a filled add changes existing protection." label="Add protection" onChange={(add_policy) => replace({ ...selected, add_policy })} options={["independent_slice", "inherit_position_stop", "rebase_all", "tighten_only", "preserve_existing"].map((value) => ({ label: readableLabel(value), value }))} value={selected.add_policy} />
+      <SelectField help="Protection transition after an actual profit-pocket fill." label="Profit-pocket transition" onChange={(profit_pocket_transition) => replace({ ...selected, profit_pocket_transition })} options={["keep_existing", "move_to_breakeven", "lock_profit_price", "start_broker_trail", "start_volatility_trail", "start_swing_trail", "tighten_existing", "replan_remaining_slices", "full_exit_and_optional_reentry"].map((value) => ({ label: readableLabel(value), value }))} value={selected.profit_pocket_transition} />
+      <NumberField help="Maximum time allowed to repair missing broker-held protection." label="Repair deadline" minimum={1} onChange={(emergency_repair_deadline_ms) => replace({ ...selected, emergency_repair_deadline_ms })} step={25} unit="ms" value={selected.emergency_repair_deadline_ms} />
+      <BooleanField help="Require OMS to retain or repair a catastrophic broker-held backstop." label="Mandatory catastrophic backstop" onChange={(mandatory_catastrophic_backstop) => replace({ ...selected, mandatory_catastrophic_backstop })} value={selected.mandatory_catastrophic_backstop} />
+    </div>
+    <div className="mandate-grid">{selected.slices.map((slice) => <article className="mandate-card" key={slice.slice_id}>
+      <header><div><strong>{slice.slice_id}</strong><span>{round(slice.quantity_fraction * 100)}% of filled quantity</span></div><button aria-label={`Delete ${slice.slice_id}`} disabled={selected.slices.length <= 1} onClick={() => removeSlice(slice.slice_id)} type="button"><Trash2 size={14} /></button></header>
+      <div className="configuration-field-grid one-column">
+        <TextField help="Stable slice identity used in broker mappings and fill attribution." label="Slice ID" onChange={(slice_id) => replaceSlice(slice.slice_id, { ...slice, slice_id })} value={slice.slice_id} />
+        <NumberField help="Fraction of the filled entry protected by this slice; all slices must total 100 percent." label="Quantity fraction" maximum={1} minimum={0.01} onChange={(quantity_fraction) => replaceSlice(slice.slice_id, { ...slice, quantity_fraction })} step={0.05} unit="fraction" value={slice.quantity_fraction} />
+        <SelectField help="Hard-stop calculation applied from causal entry evidence." label="Stop rule" onChange={(rule_type) => replaceSlice(slice.slice_id, { ...slice, stop: { ...slice.stop, rule_type } })} options={["fixed_price", "fixed_percent", "fixed_bps", "fixed_cash_risk", "swing_anchored", "volatility", "hybrid", "catastrophic"].map((value) => ({ label: readableLabel(value), value }))} value={slice.stop.rule_type} />
+        <SelectField help="Broker-held stop type. Stop-limit requires account-policy permission and may not fill through a gap." label="Stop order" onChange={(order_type) => replaceSlice(slice.slice_id, { ...slice, stop: { ...slice.stop, order_type: order_type as ProtectionStopConfig["order_type"] } })} options={[{ label: "Stop market", value: "STP" }, { label: "Stop limit", value: "STOP_LIMIT" }]} value={slice.stop.order_type} />
+        {slice.stop.rule_type === "fixed_price" || slice.stop.rule_type === "catastrophic" ? <OptionalNumberField help="Absolute stop price. Empty uses the strategy-computed causal invalidation price." label="Stop price" minimum={0.0001} onChange={(price) => replaceSlice(slice.slice_id, { ...slice, stop: { ...slice.stop, price } })} step={0.01} unit="price" value={slice.stop.price} /> : null}
+        {slice.stop.rule_type === "fixed_percent" ? <OptionalNumberField help="Distance from the approved entry price." label="Stop distance" minimum={0} onChange={(distance_percent) => replaceSlice(slice.slice_id, { ...slice, stop: { ...slice.stop, distance_percent } })} step={0.1} unit="%" value={slice.stop.distance_percent} /> : null}
+        {slice.stop.rule_type === "fixed_bps" ? <OptionalNumberField help="Distance from the approved entry price." label="Stop distance" minimum={0} onChange={(distance_bps) => replaceSlice(slice.slice_id, { ...slice, stop: { ...slice.stop, distance_bps } })} step={1} unit="bps" value={slice.stop.distance_bps} /> : null}
+        {slice.stop.rule_type === "fixed_cash_risk" ? <OptionalNumberField help="Maximum cash loss assigned to this slice." label="Cash risk" minimum={0} onChange={(maximum_cash_risk) => replaceSlice(slice.slice_id, { ...slice, stop: { ...slice.stop, maximum_cash_risk } })} step={10} unit="currency" value={slice.stop.maximum_cash_risk} /> : null}
+        {["swing_anchored", "hybrid"].includes(slice.stop.rule_type) ? <><SelectField help="Causal confirmed swing selected from the strategy observation history." label="Swing ordinal" onChange={(anchor_ordinal) => replaceSlice(slice.slice_id, { ...slice, stop: { ...slice.stop, anchor_source: "strategy_swing", anchor_ordinal } })} options={["most_recent", "second_recent", "third_recent", "fourth_recent"].map((value) => ({ label: readableLabel(value), value }))} value={slice.stop.anchor_ordinal} /><TextField help="Timeframe recorded with the selected structural anchor." label="Structure timeframe" onChange={(structural_timeframe) => replaceSlice(slice.slice_id, { ...slice, stop: { ...slice.stop, structural_timeframe } })} value={slice.stop.structural_timeframe} /><NumberField help="Additional distance beyond the confirmed swing." label="Structure buffer" minimum={0} onChange={(buffer_bps) => replaceSlice(slice.slice_id, { ...slice, stop: { ...slice.stop, buffer_bps } })} step={0.5} unit="bps" value={slice.stop.buffer_bps} /></> : null}
+        {["volatility", "hybrid"].includes(slice.stop.rule_type) ? <OptionalNumberField help="Volatility distance used to resolve the stop." label="Volatility multiple" minimum={0.01} onChange={(volatility_multiple) => replaceSlice(slice.slice_id, { ...slice, stop: { ...slice.stop, volatility_multiple } })} step={0.05} unit="×" value={slice.stop.volatility_multiple} /> : null}
+        {slice.stop.order_type === "STOP_LIMIT" ? <OptionalNumberField help="Positive limit offset beyond the stop trigger." label="Stop-limit offset" minimum={0.01} onChange={(stop_limit_offset_bps) => replaceSlice(slice.slice_id, { ...slice, stop: { ...slice.stop, stop_limit_offset_bps } })} step={0.5} unit="bps" value={slice.stop.stop_limit_offset_bps} /> : null}
+        <BooleanField help="Use the strategy's causal target for this slice." label="Use strategy target" onChange={(use_strategy_profit_target) => replaceSlice(slice.slice_id, { ...slice, use_strategy_profit_target })} value={slice.use_strategy_profit_target} />
+        {!slice.use_strategy_profit_target ? <OptionalNumberField help="Optional absolute profit-target price." label="Profit target" minimum={0.0001} onChange={(profit_target_price) => replaceSlice(slice.slice_id, { ...slice, profit_target_price })} step={0.01} unit="price" value={slice.profit_target_price} /> : null}
+        <SelectField help="Trailing behavior for the slice after its activation condition." label="Trailing rule" onChange={(rule_type) => replaceSlice(slice.slice_id, { ...slice, trailing: { ...slice.trailing, rule_type } })} options={["none", "broker_amount", "broker_percent", "volatility_trail", "swing_trail", "chandelier", "breakeven_then_trail", "profit_lock_r", "time_tightening"].map((value) => ({ label: readableLabel(value), value }))} value={slice.trailing.rule_type} />
+        {slice.trailing.rule_type === "broker_amount" ? <OptionalNumberField help="Broker-held trailing amount; empty uses the strategy-computed amount." label="Trail amount" minimum={0.0001} onChange={(amount) => replaceSlice(slice.slice_id, { ...slice, trailing: { ...slice.trailing, amount } })} step={0.01} unit="price" value={slice.trailing.amount} /> : null}
+        {slice.trailing.rule_type === "broker_percent" ? <OptionalNumberField help="Broker-held trailing percentage." label="Trail percent" minimum={0.01} onChange={(percent) => replaceSlice(slice.slice_id, { ...slice, trailing: { ...slice.trailing, percent } })} step={0.1} unit="%" value={slice.trailing.percent} /> : null}
+        {["volatility_trail", "chandelier", "breakeven_then_trail"].includes(slice.trailing.rule_type) ? <OptionalNumberField help="Volatility multiple used by the dynamic trail." label="Trail volatility" minimum={0.01} onChange={(volatility_multiple) => replaceSlice(slice.slice_id, { ...slice, trailing: { ...slice.trailing, volatility_multiple } })} step={0.05} unit="×" value={slice.trailing.volatility_multiple} /> : null}
+        {slice.trailing.rule_type !== "none" ? <><NumberField help="Minimum favorable gain before trailing activates." label="Activation gain" minimum={0} onChange={(activation_gain_percent) => replaceSlice(slice.slice_id, { ...slice, trailing: { ...slice.trailing, activation_gain_percent } })} step={0.1} unit="%" value={slice.trailing.activation_gain_percent} /><NumberField help="Profit retained beyond breakeven when applicable." label="Breakeven buffer" minimum={0} onChange={(breakeven_buffer_bps) => replaceSlice(slice.slice_id, { ...slice, trailing: { ...slice.trailing, breakeven_buffer_bps } })} step={0.5} unit="bps" value={slice.trailing.breakeven_buffer_bps} /></> : null}
+      </div>
+    </article>)}</div>
+    <p className="configuration-safety-note"><ShieldCheck size={15} /> Slice fractions total {round(selected.slices.reduce((total, row) => total + row.quantity_fraction, 0) * 100)}%. Publication requires exactly 100%, causal swing availability, and account-policy permission for every selected stop and transition.</p>
+  </ConfigGroup>;
 }
 
 function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: AccountSection) => void }) {
@@ -1906,7 +2159,7 @@ function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: A
   return (
     <div className="configuration-stack">
       <GuideCallout icon={<Boxes size={17} />} title="One stable key, mode-specific session binding">
-        Deployments and Portfolio mandates reference the stable account key. Replay uses simulated state; Paper and Live later bind the same policy contract to authenticated broker accounts.
+        Deployments and Portfolio mandates reference the stable account key. Replay and Backtest bind simulated accounts; Paper and Live require the exact externally discovered IBKR account ID and consume the same published policy contract.
       </GuideCallout>
       <ConfigGroup action={<button className="button compact" onClick={addAccount} type="button"><Plus size={14} /> Add account</button>} summary="Account settings change less frequently than strategy behavior and remain reusable across deployments." title="Configured accounts">
         <div className="account-config-grid">
@@ -1915,7 +2168,7 @@ function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: A
               <header><div><strong>{account.name}</strong><span>{account.account_key}</span></div><label className="configuration-switch"><input checked={account.enabled} onChange={(event) => replace(index, { ...account, enabled: event.target.checked })} type="checkbox" /><span /></label></header>
               <div className="configuration-field-grid one-column">
                 <TextField help="Human-readable name shown throughout configuration and runtime evidence." label="Account name" onChange={(value) => replace(index, { ...account, name: value })} value={account.name} />
-                <TextField help="Stable application identity. Existing mandates refer to this value." label="Account key" onChange={(value) => replace(index, { ...account, account_key: value })} value={account.account_key} />
+                <div className="configuration-fixed-value"><span>Stable account key</span><strong>{account.account_key}</strong><small>Mandates, groups, and runtime state refer to this identity.</small></div>
                 <TextField help="IBKR account ID or simulated runtime account identity." label="Source account" onChange={(value) => replace(index, { ...account, source_account_id: value })} value={account.source_account_id} />
                 <SelectField help="Determines broker capability and regulatory constraints." label="Account class" onChange={(value) => replace(index, { ...account, account_class: value })} options={["simulated", "cash", "margin", "registered"].map((value) => ({ label: readableLabel(value), value }))} value={account.account_class} />
                 <SelectField help="Reusable account-level capital and risk policy." label="Portfolio policy" onChange={(value) => replace(index, { ...account, portfolio_policy_id: value })} options={draft.portfolio.policies.map((row) => ({ label: String(row.policy_id), value: String(row.policy_id) }))} value={account.portfolio_policy_id} />
@@ -1923,6 +2176,7 @@ function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: A
                 <TextField help="Currency used for Portfolio limits and account summaries." label="Base currency" onChange={(value) => replace(index, { ...account, base_currency: value.toUpperCase() })} value={account.base_currency} />
               </div>
               <ModeSelector modes={account.modes} onChange={(modes) => replace(index, { ...account, modes })} />
+              {account.modes.some((mode) => mode === "paper" || mode === "live") ? <p className="configuration-safety-note"><ShieldCheck size={15} /> Publication and broker preflight require this exact account ID, a matching external IBKR discovery binding, and an enabled deployment for every selected live mode.</p> : null}
             </article>
           ))}
         </div>
@@ -1982,15 +2236,42 @@ function releaseReadiness(draft: Draft) {
     deployments.some((deployment) => deployment.deployment_id === mandate.deployment_id)
     && accountKeys.has(mandate.account_key)
   ));
-  const replayReady = deployments.some((deployment) => deployment.enabled && deployment.modes.includes("replay"));
+  const configuredModes = new Set(draft.accounts.bindings.filter((account) => account.enabled).flatMap((account) => account.modes));
+  const modeCoverageReady = draft.accounts.bindings.filter((account) => account.enabled).every((account) => account.modes.every((mode) => deployments.some((deployment) => (
+    deployment.enabled
+    && deployment.modes.includes(mode)
+    && draft.portfolio.mandates.some((mandate) => mandate.enabled && mandate.account_key === account.account_key && mandate.deployment_id === deployment.deployment_id)
+  ))));
+  const liveBindingsReady = draft.accounts.bindings.every((account) => !account.enabled || !account.modes.some((mode) => mode === "paper" || mode === "live") || Boolean(account.source_account_id.trim() && account.session_key.trim()));
   return [
     { detail: String(draft.strategy.profiles.length), label: "Strategy Profiles", ready: draft.strategy.profiles.length > 0 },
     { detail: deploymentsReady ? `${deployments.length} ready` : "needs mandate or profile", label: "Deployments", ready: deploymentsReady },
     { detail: String(draft.portfolio.mandates.length), label: "Account mandates", ready: mandatesReady },
     { detail: String(draft.oms.profiles.length), label: "OMS profiles", ready: draft.oms.profiles.length > 0 },
     { detail: String(draft.accounts.bindings.length), label: "Accounts", ready: draft.accounts.bindings.length > 0 },
-    { detail: replayReady ? "enabled" : "required", label: "Replay mode", ready: replayReady },
+    { detail: modeCoverageReady ? [...configuredModes].map(readableLabel).join(", ") : "deployment coverage missing", label: "Mode coverage", ready: modeCoverageReady },
+    { detail: liveBindingsReady ? "exact bindings" : "broker id or session missing", label: "Paper and Live bindings", ready: liveBindingsReady },
+    { detail: `${draft.oms.execution_policies.length} execution · ${draft.oms.protection_profiles.length} protection`, label: "Policy catalogs", ready: draft.oms.execution_policies.length > 0 && draft.oms.protection_profiles.length > 0 },
   ];
+}
+
+function EffectiveConfigurationPreview({ updatedAt }: { updatedAt: string }) {
+  const [mode, setMode] = useState<RuntimeMode>("replay");
+  const [payload, setPayload] = useState<{ accounts: Array<Record<string, unknown>>; runtime_count: number; source: string } | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    setError("");
+    api<{ accounts: Array<Record<string, unknown>>; runtime_count: number; source: string }>(`/api/trading/configuration/effective?mode=${mode}`)
+      .then((value) => { if (!cancelled) setPayload(value); })
+      .catch((reason) => { if (!cancelled) { setPayload(null); setError(reason instanceof Error ? reason.message : String(reason)); } });
+    return () => { cancelled = true; };
+  }, [mode, updatedAt]);
+  return <ConfigGroup summary="Backend-resolved saved-draft evidence. This is the exact account, policy, deployment, and mode projection that a new runtime will consume after publication." title="Effective configuration preview">
+    <div className="configuration-toolbar"><SelectField help="Resolve the saved draft for one runtime mode." label="Runtime mode" onChange={(value) => setMode(value as RuntimeMode)} options={["replay", "backtest", "backtest_debug", "paper", "live"].map((value) => ({ label: readableLabel(value), value }))} value={mode} /></div>
+    {error ? <p className="configuration-safety-note"><TriangleAlert size={15} /> {error}</p> : null}
+    {payload ? <><p className="configuration-section-guide">{payload.runtime_count} eligible deployment{payload.runtime_count === 1 ? "" : "s"} · {payload.accounts.length} bound account{payload.accounts.length === 1 ? "" : "s"} · {readableLabel(payload.source)}</p><div className="mandate-grid">{payload.accounts.map((account) => <article className="mandate-card" key={String(account.account_key)}><header><div><strong>{String(account.name || account.account_key)}</strong><span>{String(account.account_key)} · {String(account.account_class)}</span></div></header><div className="configuration-fixed-value"><span>Broker/session binding</span><strong>{String(account.source_account_id || "Simulated")}</strong><small>{String(account.session_key)} · {String(account.policy_identity)}</small></div><div className="configuration-fixed-value"><span>Eligible deployments</span><strong>{Array.isArray(account.deployment_ids) ? account.deployment_ids.length : 0}</strong><small>{Array.isArray(account.deployment_ids) ? account.deployment_ids.join(", ") || "None for this mode" : "None for this mode"}</small></div></article>)}</div></> : null}
+  </ConfigGroup>;
 }
 
 function ConfigGroup({ action, children, summary, title }: { action?: ReactNode; children: ReactNode; summary: string; title: string }) {
@@ -2095,6 +2376,10 @@ function TextField({ help, label, onChange, value }: { help: HelpContent; label:
 function NumberField({ help, label, maximum, minimum, onChange, step, unit, value }: { help: HelpContent; label: string; maximum?: number; minimum?: number; onChange: (value: number) => void; step: number; unit?: string; value: number }) {
   const fraction = unit === "fraction";
   return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><div className="configuration-number"><input max={fraction ? 100 : maximum} min={fraction ? 0 : minimum} onChange={(event) => onChange(fraction ? Number(event.target.value) / 100 : Number(event.target.value))} step={fraction ? step * 100 : step} type="number" value={fraction ? round(value * 100) : value} />{unit ? <em>{fraction ? "%" : unit}</em> : null}</div></label>;
+}
+
+function OptionalNumberField({ help, label, minimum, onChange, step, unit, value }: { help: HelpContent; label: string; minimum?: number; onChange: (value: number | null) => void; step: number; unit?: string; value: number | null }) {
+  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><div className="configuration-number"><input min={minimum} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} placeholder="Automatic" step={step} type="number" value={value ?? ""} />{unit ? <em>{unit}</em> : null}</div></label>;
 }
 
 function SelectField({ help, label, onChange, options, value }: { help: HelpContent; label: string; onChange: (value: string) => void; options: Array<{ label: string; value: string }>; value: string }) {

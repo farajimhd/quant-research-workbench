@@ -33,6 +33,13 @@ Every assignment names a stable `account_key`. The externally supplied broker
 binding maps that key to one exact IBKR account id. Portfolio management never
 silently reroutes an intent to an account with more capacity.
 
+For a configured application, the newest immutable Approved Release owns the
+account bindings, portfolio policies, aggregate groups, strategy-account
+mandates, and eligible runtime modes. `IBKR_ACCOUNTS_JSON` or
+`IBKR_ACCOUNT_<KEY>_ID` remains an external discovery input only: the broker
+account returned for a stable key must exactly match the release's
+`source_account_id`. A mismatch fails closed before broker operation.
+
 One supervised Client Portal brokerage session belongs to one IBKR username
 and mode. A live username may expose cash, margin, and registered accounts in
 one session. Paper uses a separate username/session. Every order still carries
@@ -99,9 +106,11 @@ Example:
 }
 ```
 
-Supply this object through `PORTFOLIO_MANAGEMENT_JSON`. It intentionally does
-not contain broker account ids. Existing `IBKR_ACCOUNTS_JSON` or
-`IBKR_ACCOUNT_<KEY>_ID` bindings remain the external identity source.
+This JSON shape is retained only as a legacy bootstrap when no Approved
+Release exists. New and migrated deployments configure the equivalent fields
+on **Configuration -> Portfolio & Risk**, bind exact accounts on **Accounts &
+Sessions**, then publish them together. Once an Approved Release exists,
+`PORTFOLIO_MANAGEMENT_JSON` is not consulted and cannot override it.
 
 Account-class capability is fail-closed. Cash and registered accounts cannot
 be made margin-enabled or short-enabled by a portfolio policy. Configuration
@@ -276,6 +285,9 @@ APIs:
 - `POST /api/trading/portfolio-management/{account_key}/commands`
 - `GET /api/trading/portfolio`, which includes management evidence in
   Live/Paper
+- `GET /api/trading/configuration/effective?mode=<mode>&approved=true`, which
+  shows the exact release, eligible deployments, account bindings, portfolio
+  policy identities, and OMS identities projected for a mode
 
 Supported operator commands are pause entries, resume entries, reduce-only,
 reconcile, kill open entry remainders, confirmation-gated emergency flatten,

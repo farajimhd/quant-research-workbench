@@ -160,7 +160,7 @@ def configured_real_live_account(account_type: str) -> RealLiveAccount:
 def real_live_preflight(account_type: str = "paper", account_keys: str | list[str] | None = None) -> dict[str, Any]:
     accounts = configured_real_live_accounts()
     selected_accounts = resolve_real_live_accounts(account_keys, account_type)
-    checks = [check_massive_rest()]
+    checks = [check_massive_rest(), *_approved_configuration_checks(selected_accounts)]
     for account in selected_accounts:
         checks.extend(check_ibkr(account))
     return {
@@ -174,6 +174,57 @@ def real_live_preflight(account_type: str = "paper", account_keys: str | list[st
         "data_provider": {"name": "massive", "base_url": massive_base_url()},
         "broker": {"name": "ibkr_client_portal", "base_url": ibkr_base_url()},
     }
+
+
+def _approved_configuration_checks(
+    accounts: list[RealLiveAccount],
+) -> list[dict[str, Any]]:
+    from src.backend.trading_configuration_service import approved_configuration
+
+    approved = approved_configuration()
+    if approved is None:
+        return [{
+            "name": "approved_trading_configuration",
+            "status": "blocked",
+            "detail": "Publish an immutable trading configuration before Paper or Live operation.",
+        }]
+    payload = dict(approved.get("payload") or {})
+    bindings = {
+        str(row.get("account_key") or ""): row
+        for row in dict(payload.get("accounts") or {}).get("bindings") or []
+    }
+    deployments = list(dict(payload.get("assignments") or {}).get("deployments") or [])
+    mandate_pairs = {
+        (str(row.get("account_key") or ""), str(row.get("deployment_id") or ""))
+        for row in dict(payload.get("portfolio") or {}).get("mandates") or []
+        if bool(row.get("enabled", True))
+    }
+    checks: list[dict[str, Any]] = []
+    for account in accounts:
+        binding = bindings.get(account.account_key)
+        mode_ready = any(
+            bool(row.get("enabled", True))
+            and account.trading_mode in set(row.get("modes") or [])
+            and (account.account_key, str(row.get("deployment_id") or "")) in mandate_pairs
+            for row in deployments
+        )
+        ready = bool(
+            binding
+            and bool(binding.get("enabled", True))
+            and account.trading_mode in set(binding.get("modes") or [])
+            and str(binding.get("source_account_id") or "") == account.account_id
+            and mode_ready
+        )
+        checks.append({
+            "name": f"approved_configuration:{account.account_key}",
+            "status": "ready" if ready else "blocked",
+            "detail": (
+                f"Release {approved.get('revision')} binds this {account.trading_mode} account and deployment."
+                if ready
+                else "The approved release must bind the exact broker account and include an enabled deployment for this mode."
+            ),
+        })
+    return checks
 
 
 def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:

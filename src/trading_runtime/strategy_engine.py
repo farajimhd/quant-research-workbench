@@ -7,10 +7,21 @@ from typing import Any
 from uuid import uuid4
 
 from src.trading_runtime.execution_policies import (
+    AddProtectionPolicy,
     ExecutionEnvelope,
     ExecutionPolicy,
     ExecutionPolicyName,
     PartialFillPolicy,
+    ProfitPocketTransition,
+    ProtectionProfile,
+    ProtectionSlice,
+    StopOrderType,
+    StopRule,
+    StopRuleType,
+    StructuralAnchor,
+    TrailingRule,
+    TrailingRuleType,
+    execution_policy_from_payload,
 )
 from src.trading_runtime.signals import CapitalRequest, StrategyEvaluation, StrategyIntent, StrategySignal
 from src.market_engine.events import MarketEvent
@@ -502,6 +513,7 @@ class LongMomentumStrategyEngine:
 
         state["last_observed_at"] = observation.observed_at.isoformat()
         state["last_price"] = observation.price
+        _record_structural_anchors(state, observation)
         if observation.position_quantity > 0:
             return self._evaluate_position(assignment, observation, parameters, state)
         return self._evaluate_flat(assignment, observation, parameters, state)
@@ -630,6 +642,26 @@ class LongMomentumStrategyEngine:
             else 0.0
         )
         target = _luld_target(observation, parameters, side=side)
+        order_intent = dict(phase.get("order_intent") or {})
+        missing_anchor = _missing_protection_anchor(
+            order_intent,
+            observation=observation,
+            parameters=parameters,
+            state=state,
+            side=side,
+        )
+        if missing_anchor:
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                "protection_anchor_unavailable",
+                confirmation_score,
+                _confirmation_confidence(observation),
+                state,
+                AssignmentStatus.WATCHING,
+                metadata={"missing_protection_anchor": missing_anchor},
+            )
         state.update(
             {
                 "breakout_level": reference,
@@ -659,7 +691,7 @@ class LongMomentumStrategyEngine:
             profit_target_price=target,
             trailing_amount=_trailing_amount(observation, parameters),
             capital_request=capital_request,
-            order_intent=dict(phase.get("order_intent") or {}),
+            order_intent=order_intent,
             metadata={
                 "triggers": triggered,
                 "confirmation": confirmation,
@@ -832,6 +864,26 @@ class LongMomentumStrategyEngine:
             add_request = _capital_request_from_payload(
                 dict(add_step.get("capital_request") or {})
             )
+            order_intent = dict(add_step.get("order_intent") or {})
+            missing_anchor = _missing_protection_anchor(
+                order_intent,
+                observation=observation,
+                parameters=parameters,
+                state=state,
+                side=side,
+            )
+            if missing_anchor:
+                return self._result(
+                    assignment,
+                    observation,
+                    "hold",
+                    "protection_anchor_unavailable",
+                    observation.qmd_score,
+                    _confirmation_confidence(observation),
+                    state,
+                    AssignmentStatus.MANAGING,
+                    metadata={"missing_protection_anchor": missing_anchor},
+                )
             add_qty = add_request.value if add_request.mode == "fixed_quantity" else 0.0
             uses[step_id] = used + 1
             state["add_step_uses"] = uses
@@ -842,7 +894,7 @@ class LongMomentumStrategyEngine:
                 AssignmentStatus.MANAGING, quantity=add_qty, invalidation_price=stop,
                 trailing_amount=_trailing_amount(observation, parameters),
                 capital_request=add_request,
-                order_intent=dict(add_step.get("order_intent") or {}),
+                order_intent=order_intent,
                 metadata={"add_step_id": step_id, "add_step_name": add_step.get("name")},
             )
 
@@ -984,7 +1036,20 @@ class LongMomentumStrategyEngine:
                         resolved_order_intent,
                         observation=observation,
                         action=action,
+                        parameters=assignment.parameters,
                     ) if resolved_order_intent else None,
+                    protection_profile=_protection_profile_from_phase(
+                        resolved_order_intent,
+                        observation=observation,
+                        action=action,
+                        parameters=assignment.parameters,
+                        state=state,
+                        invalidation_price=invalidation_price,
+                        profit_target_price=profit_target_price,
+                        trailing_amount=trailing_amount,
+                    ) if resolved_order_intent and action in {
+                        "enter_long", "add_long", "enter_short", "add_short"
+                    } else None,
                     urgency=str(assignment.parameters.get("execution", {}).get("entry_urgency") or "urgent") if action in {"enter_long", "add_long", "enter_short", "add_short"} else str(assignment.parameters.get("execution", {}).get("exit_urgency") or "very_urgent"),  # type: ignore[arg-type]
                     time_in_force="",
                     outside_rth=False,
@@ -1088,32 +1153,235 @@ def _execution_policy_from_phase(
     *,
     observation: StrategyObservation,
     action: str,
+    parameters: dict[str, Any],
 ) -> ExecutionPolicy:
+    reference = str(
+        payload.get("execution_policy") or ExecutionPolicyName.ADAPTIVE_REGULAR
+    )
+    catalog = dict(parameters.get("execution_policy_catalog") or {})
+    configured = dict(catalog.get(reference) or {})
     name = ExecutionPolicyName(
-        str(payload.get("execution_policy") or ExecutionPolicyName.ADAPTIVE_REGULAR)
+        str(configured.get("name") or reference)
     )
     buying = action in {"enter_long", "add_long", "reduce_short", "cover"}
+    if configured:
+        envelope = dict(configured.get("envelope") or {})
+        if int(payload.get("deadline_ms") or 0) > 0:
+            envelope["deadline_ms"] = int(payload["deadline_ms"])
+        if buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT and envelope.get("maximum_buy_price") is None:
+            envelope["maximum_buy_price"] = observation.price
+        if not buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT and envelope.get("minimum_sell_price") is None:
+            envelope["minimum_sell_price"] = observation.price
+        configured["envelope"] = envelope
+        if payload.get("partial_fill_policy"):
+            configured["partial_fill_policy"] = str(payload["partial_fill_policy"])
+        return execution_policy_from_payload(configured)
     return ExecutionPolicy(
         policy_id=f"strategy-{name.value}",
         name=name,
         envelope=ExecutionEnvelope(
-            maximum_buy_price=(
-                observation.price
-                if buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT
-                else None
-            ),
-            minimum_sell_price=(
-                observation.price
-                if not buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT
-                else None
-            ),
+            maximum_buy_price=observation.price if buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT else None,
+            minimum_sell_price=observation.price if not buying and name == ExecutionPolicyName.IMMEDIATE_WITH_LIMIT else None,
             deadline_ms=int(payload.get("deadline_ms") or 750),
         ),
-        partial_fill_policy=PartialFillPolicy(
-            str(payload.get("partial_fill_policy") or "complete_remainder")
-        ),
+        partial_fill_policy=PartialFillPolicy(str(payload.get("partial_fill_policy") or "complete_remainder")),
         quote_source="qmd",
     )
+
+
+def _protection_profile_from_phase(
+    payload: dict[str, Any],
+    *,
+    observation: StrategyObservation,
+    action: str,
+    parameters: dict[str, Any],
+    state: dict[str, Any],
+    invalidation_price: float | None,
+    profit_target_price: float | None,
+    trailing_amount: float | None,
+) -> ProtectionProfile | None:
+    reference = str(payload.get("protection_profile") or "")
+    configured = dict(
+        dict(parameters.get("protection_profile_catalog") or {}).get(reference)
+        or {}
+    )
+    if not configured:
+        return None
+    side = "short" if action in {"enter_short", "add_short"} else "long"
+    slices: list[ProtectionSlice] = []
+    for raw in configured.get("slices") or []:
+        stop_raw = dict(raw.get("stop") or {})
+        rule_type = StopRuleType(str(stop_raw.pop("rule_type", StopRuleType.FIXED_PRICE)))
+        order_type = StopOrderType(str(stop_raw.pop("order_type", StopOrderType.STOP)))
+        anchor_source = str(stop_raw.pop("anchor_source", "") or "")
+        ordinal = str(stop_raw.pop("anchor_ordinal", "most_recent") or "most_recent")
+        timeframe = str(stop_raw.pop("structural_timeframe", "") or "")
+        raw_anchor_value = stop_raw.pop("anchor", None)
+        anchor = None
+        if anchor_source == "strategy_swing" or rule_type == StopRuleType.SWING_ANCHORED:
+            anchor = _structural_anchor_from_state(
+                state,
+                observation=observation,
+                side=side,
+                ordinal=ordinal,
+                timeframe=timeframe,
+            )
+            if anchor is None and (
+                anchor_source == "strategy_swing"
+                or rule_type == StopRuleType.SWING_ANCHORED
+            ):
+                raise ValueError(
+                    f"Protection profile {reference} requires unavailable {ordinal} causal swing"
+                )
+        elif isinstance(raw_anchor_value, dict):
+            raw_anchor = dict(raw_anchor_value)
+            anchor = StructuralAnchor(
+                observation_id=str(raw_anchor["observation_id"]),
+                price=float(raw_anchor["price"]),
+                confirmed_at=_aware_datetime(raw_anchor["confirmed_at"]),
+                timeframe=str(raw_anchor.get("timeframe") or ""),
+                ordinal=str(raw_anchor.get("ordinal") or ordinal),
+            )
+        if rule_type in {StopRuleType.FIXED_PRICE, StopRuleType.CATASTROPHIC} and not stop_raw.get("price"):
+            stop_raw["price"] = invalidation_price
+        stop = StopRule(
+            rule_type=rule_type,
+            order_type=order_type,
+            anchor=anchor,
+            **stop_raw,
+        )
+        trailing_raw = dict(raw.get("trailing") or {})
+        trailing_rule = TrailingRuleType(
+            str(trailing_raw.pop("rule_type", TrailingRuleType.NONE))
+        )
+        if trailing_rule == TrailingRuleType.BROKER_AMOUNT and not trailing_raw.get("amount"):
+            trailing_raw["amount"] = trailing_amount
+        trailing = TrailingRule(rule_type=trailing_rule, **trailing_raw)
+        slices.append(
+            ProtectionSlice(
+                slice_id=str(raw.get("slice_id") or ""),
+                quantity_fraction=float(raw.get("quantity_fraction") or 0),
+                stop=stop,
+                profit_target_price=(
+                    profit_target_price
+                    if bool(raw.get("use_strategy_profit_target"))
+                    else float(raw["profit_target_price"])
+                    if raw.get("profit_target_price") is not None
+                    else None
+                ),
+                trailing=trailing,
+            )
+        )
+    return ProtectionProfile(
+        profile_id=str(configured.get("profile_id") or reference),
+        revision=int(configured.get("revision") or 1),
+        slices=tuple(slices),
+        add_policy=AddProtectionPolicy(
+            str(configured.get("add_policy") or AddProtectionPolicy.INDEPENDENT_SLICE)
+        ),
+        profit_pocket_transition=ProfitPocketTransition(
+            str(configured.get("profit_pocket_transition") or ProfitPocketTransition.KEEP_EXISTING)
+        ),
+        mandatory_catastrophic_backstop=bool(
+            configured.get("mandatory_catastrophic_backstop", True)
+        ),
+        emergency_repair_deadline_ms=int(
+            configured.get("emergency_repair_deadline_ms") or 500
+        ),
+    )
+
+
+def _missing_protection_anchor(
+    payload: dict[str, Any],
+    *,
+    observation: StrategyObservation,
+    parameters: dict[str, Any],
+    state: dict[str, Any],
+    side: str,
+) -> str:
+    reference = str(payload.get("protection_profile") or "")
+    configured = dict(
+        dict(parameters.get("protection_profile_catalog") or {}).get(reference)
+        or {}
+    )
+    for raw in configured.get("slices") or []:
+        stop = dict(raw.get("stop") or {})
+        rule_type = str(stop.get("rule_type") or "")
+        anchor_source = str(stop.get("anchor_source") or "")
+        if anchor_source != "strategy_swing" and rule_type != StopRuleType.SWING_ANCHORED:
+            continue
+        ordinal = str(stop.get("anchor_ordinal") or "most_recent")
+        if _structural_anchor_from_state(
+            state,
+            observation=observation,
+            side=side,
+            ordinal=ordinal,
+            timeframe=str(stop.get("structural_timeframe") or ""),
+        ) is None:
+            return ordinal
+    return ""
+
+
+def _record_structural_anchors(
+    state: dict[str, Any], observation: StrategyObservation
+) -> None:
+    anchors = dict(state.get("structural_anchors") or {})
+    for side, price in (("long", observation.swing_low), ("short", observation.swing_high)):
+        if price is None or price <= 0:
+            continue
+        rows = list(anchors.get(side) or [])
+        if rows and abs(float(rows[0].get("price") or 0) - float(price)) < 1e-12:
+            continue
+        rows.insert(0, {
+            "observation_id": (
+                str(observation.source_signal_ids[0])
+                if observation.source_signal_ids
+                else f"{observation.ticker}:{side}:{observation.observed_at.isoformat()}"
+            ),
+            "price": float(price),
+            "confirmed_at": observation.observed_at.isoformat(),
+            "timeframe": "strategy",
+        })
+        anchors[side] = rows[:8]
+    state["structural_anchors"] = anchors
+
+
+def _structural_anchor_from_state(
+    state: dict[str, Any],
+    *,
+    observation: StrategyObservation,
+    side: str,
+    ordinal: str,
+    timeframe: str,
+) -> StructuralAnchor | None:
+    rows = list(dict(state.get("structural_anchors") or {}).get(side) or [])
+    index = {
+        "most_recent": 0,
+        "second_recent": 1,
+        "third_recent": 2,
+        "fourth_recent": 3,
+    }.get(ordinal, 0)
+    if index >= len(rows):
+        return None
+    raw = rows[index]
+    return StructuralAnchor(
+        observation_id=str(raw.get("observation_id") or ""),
+        price=float(raw.get("price") or 0),
+        confirmed_at=_aware_datetime(raw.get("confirmed_at")),
+        timeframe=timeframe or str(raw.get("timeframe") or "strategy"),
+        ordinal=ordinal,
+    )
+
+
+def _aware_datetime(value: Any) -> datetime:
+    parsed = (
+        value
+        if isinstance(value, datetime)
+        else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    )
+    if parsed.tzinfo is None:
+        raise ValueError("Structural anchor confirmation time must include a timezone")
+    return parsed
 
 
 def _validate_phase_capital_request(payload: dict[str, Any]) -> None:
@@ -1127,7 +1395,8 @@ def _validate_phase_capital_request(payload: dict[str, Any]) -> None:
 
 
 def _validate_phase_order_intent(payload: dict[str, Any]) -> None:
-    ExecutionPolicyName(str(payload.get("execution_policy") or ""))
+    if not str(payload.get("execution_policy") or "").strip():
+        raise ValueError("Strategy phase execution policy is required")
     PartialFillPolicy(str(payload.get("partial_fill_policy") or ""))
     if "time_in_force" in payload or "outside_rth" in payload:
         raise ValueError(

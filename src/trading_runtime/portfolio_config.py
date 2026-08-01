@@ -12,6 +12,7 @@ from src.trading_runtime.portfolio import (
     PortfolioPolicy,
     default_policy_for_account,
     narrow_policy_for_account_class,
+    portfolio_policy_from_payload,
     profiles_for_runtime,
 )
 
@@ -20,6 +21,7 @@ def configured_portfolio_profiles(
     accounts: Iterable[Any],
     *,
     raw_config: str | None = None,
+    configuration: Mapping[str, Any] | None = None,
 ) -> tuple[tuple[PortfolioAccountProfile, ...], tuple[PortfolioGroupPolicy, ...]]:
     """Bind stable configured account keys to externally supplied broker ids.
 
@@ -28,6 +30,8 @@ def configured_portfolio_profiles(
     inside the durable portfolio policy JSON.
     """
 
+    if configuration is not None:
+        return portfolio_profiles_from_configuration(accounts, configuration)
     config_text = raw_config if raw_config is not None else os.environ.get("PORTFOLIO_MANAGEMENT_JSON", "")
     config = json.loads(config_text) if config_text.strip() else {}
     if not isinstance(config, dict):
@@ -73,10 +77,116 @@ def configured_portfolio_profiles(
     return tuple(profiles), groups
 
 
+def portfolio_profiles_from_configuration(
+    accounts: Iterable[Any],
+    configuration: Mapping[str, Any],
+) -> tuple[tuple[PortfolioAccountProfile, ...], tuple[PortfolioGroupPolicy, ...]]:
+    """Bind an approved application release to externally discovered IBKR ids."""
+
+    portfolio = dict(configuration.get("portfolio") or {})
+    account_section = dict(configuration.get("accounts") or {})
+    policies = {
+        str(row.get("policy_id") or ""): portfolio_policy_from_payload(row)
+        for row in portfolio.get("policies") or []
+    }
+    policies.update({policy.identity: policy for policy in policies.values()})
+    discovered: dict[str, Mapping[str, Any]] = {}
+    for source in accounts:
+        raw = source if isinstance(source, Mapping) else asdict(source)
+        key = str(raw.get("account_key") or raw.get("key") or "").strip()
+        if key:
+            discovered[key] = raw
+    deployments = {
+        str(row.get("deployment_id") or ""): row
+        for row in dict(configuration.get("assignments") or {}).get("deployments") or []
+    }
+    strategy_profiles = {
+        str(row.get("profile_id") or ""): row
+        for row in dict(configuration.get("strategy") or {}).get("profiles") or []
+    }
+    mandates_by_account: dict[str, list[dict[str, Any]]] = {}
+    for mandate in portfolio.get("mandates") or []:
+        if bool(mandate.get("enabled", True)):
+            mandates_by_account.setdefault(str(mandate.get("account_key") or ""), []).append(dict(mandate))
+    profiles: list[PortfolioAccountProfile] = []
+    configured_keys: set[str] = set()
+    for binding in account_section.get("bindings") or []:
+        modes = {str(value) for value in binding.get("modes") or []}
+        if not modes.intersection({"paper", "live"}) or not bool(binding.get("enabled", True)):
+            continue
+        account_key = str(binding.get("account_key") or "").strip()
+        source = discovered.get(account_key)
+        if source is None:
+            continue
+        configured_keys.add(account_key)
+        account_id = str(source.get("account_id") or source.get("id") or "").strip()
+        expected_id = str(binding.get("source_account_id") or "").strip()
+        if expected_id and expected_id != account_id:
+            raise ValueError(
+                f"Approved account {account_key} expects broker account {expected_id} but discovery returned {account_id}"
+            )
+        discovered_mode = str(source.get("trading_mode") or source.get("mode") or "live").lower()
+        mode = "paper" if discovered_mode == "paper" else "live"
+        if mode not in modes:
+            continue
+        account_class = str(source.get("account_class") or binding.get("account_class") or account_key).lower()
+        configured_class = str(binding.get("account_class") or account_class).lower()
+        if configured_class not in {account_class, "paper"}:
+            raise ValueError(
+                f"Approved account {account_key} class {configured_class} does not match discovered class {account_class}"
+            )
+        policy_reference = str(binding.get("portfolio_policy_id") or "")
+        policy = policies.get(policy_reference)
+        if policy is None:
+            raise ValueError(f"Approved account {account_key} references unknown policy {policy_reference}")
+        allocations: dict[str, float] = {}
+        strategy_mandates: dict[str, dict[str, Any]] = {}
+        for mandate in mandates_by_account.get(account_key, []):
+            deployment = deployments.get(str(mandate.get("deployment_id") or "")) or {}
+            if (
+                not bool(deployment.get("enabled", True))
+                or mode not in {str(value) for value in deployment.get("modes") or []}
+            ):
+                continue
+            strategy_profile = strategy_profiles.get(str(deployment.get("profile_id") or "")) or {}
+            strategy_id = str(strategy_profile.get("definition_id") or deployment.get("profile_id") or "")
+            if strategy_id:
+                allocations[strategy_id] = float(mandate.get("maximum_cash_fraction") or 0)
+                strategy_mandates[strategy_id] = mandate
+        profiles.append(PortfolioAccountProfile(
+            account_key=account_key,
+            account_id=account_id,
+            mode=mode,
+            account_class=account_class,
+            policy=narrow_policy_for_account_class(policy, account_class),
+            session_key=str(binding.get("session_key") or f"ibkr-{mode}"),
+            enabled=True,
+            base_currency=str(binding.get("base_currency") or "USD").upper(),
+            strategy_allocations=allocations,
+            strategy_mandates=strategy_mandates,
+        ))
+    groups = tuple(
+        PortfolioGroupPolicy(
+            group_id=str(row.get("group_id") or ""),
+            account_keys=tuple(str(value) for value in row.get("account_keys") or ()),
+            maximum_gross_exposure=float(row.get("maximum_gross_exposure") or 0),
+            maximum_ticker_exposure=float(row.get("maximum_ticker_exposure") or 0),
+        )
+        for row in portfolio.get("groups") or []
+        if set(str(value) for value in row.get("account_keys") or ()) <= configured_keys
+    )
+    return tuple(profiles), groups
+
+
 def configured_portfolio_policy_catalog(
     *,
     raw_config: str | None = None,
+    configuration: Mapping[str, Any] | None = None,
 ) -> dict[str, PortfolioPolicy]:
+    if configuration is not None:
+        rows = list(dict(configuration.get("portfolio") or {}).get("policies") or [])
+        policies = [portfolio_policy_from_payload(dict(row)) for row in rows]
+        return {policy.identity: policy for policy in policies}
     config_text = raw_config if raw_config is not None else os.environ.get("PORTFOLIO_MANAGEMENT_JSON", "")
     config = json.loads(config_text) if config_text.strip() else {}
     if not isinstance(config, dict):
@@ -89,6 +199,7 @@ def configured_portfolio_profiles_for_runtime(
     account_ids: Iterable[str],
     *,
     mode: str,
+    configuration: Mapping[str, Any] | None = None,
 ) -> tuple[tuple[PortfolioAccountProfile, ...], tuple[PortfolioGroupPolicy, ...]]:
     """Resolve the runtime's live account bindings from the same durable config.
 
@@ -106,6 +217,10 @@ def configured_portfolio_profiles_for_runtime(
         if str(row["trading_mode"]) == mode and str(row["account_id"])
     ]
     if not selected:
+        if configuration is not None:
+            raise ValueError(
+                f"Approved {mode} configuration requires externally discovered IBKR account bindings"
+            )
         return profiles_for_runtime(requested, mode=mode), ()
     available_ids = {str(row["account_id"]) for row in selected}
     missing = set(requested) - available_ids
@@ -114,7 +229,7 @@ def configured_portfolio_profiles_for_runtime(
             "Configured runtime account ids are not bound in IBKR_ACCOUNTS_JSON "
             f"or IBKR_ACCOUNT_*_ID: {', '.join(sorted(missing))}"
         )
-    return configured_portfolio_profiles(selected)
+    return configured_portfolio_profiles(selected, configuration=configuration)
 
 
 def portfolio_configuration_payload(

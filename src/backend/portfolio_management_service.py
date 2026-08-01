@@ -7,6 +7,7 @@ from typing import Any
 from src.backend.canonical_trading_service import portfolio_exposure, portfolio_metrics
 from src.backend.real_live_trading_service import configured_real_live_accounts
 from src.backend.trading_runtime_service import trading_journal
+from src.backend.trading_configuration_service import approved_configuration
 from src.trading_runtime.portfolio import (
     PortfolioControlMode,
     narrow_policy_for_account_class,
@@ -20,8 +21,12 @@ from src.trading_runtime.portfolio_config import (
 
 
 def portfolio_management_snapshot(canonical_state: dict[str, Any]) -> dict[str, Any]:
-    profiles, groups = configured_portfolio_profiles(configured_real_live_accounts())
-    policy_catalog = configured_portfolio_policy_catalog()
+    approved = approved_configuration()
+    configuration = dict(approved.get("payload") or {}) if approved else None
+    profiles, groups = configured_portfolio_profiles(
+        configured_real_live_accounts(), configuration=configuration
+    )
+    policy_catalog = configured_portfolio_policy_catalog(configuration=configuration)
     selected_ids = {str(row.get("account_id") or "") for row in canonical_state.get("accounts") or []}
     profiles = tuple(profile for profile in profiles if profile.account_id in selected_ids)
     persisted = trading_journal().portfolio_states()
@@ -164,6 +169,11 @@ def portfolio_management_snapshot(canonical_state: dict[str, Any]) -> dict[str, 
         "groups": _group_rows(groups, account_rows),
         "recent_decisions": decisions,
         "configuration": portfolio_configuration_payload(profiles, groups),
+        "configuration_authority": {
+            "source": "approved_release" if approved else "legacy_environment",
+            "revision_id": str(approved.get("revision_id") or "") if approved else "",
+            "revision": int(approved.get("revision") or 0) if approved else 0,
+        },
     }
 
 
@@ -174,7 +184,11 @@ def portfolio_management_command(
     reason: str = "",
     detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    profiles, _ = configured_portfolio_profiles(configured_real_live_accounts())
+    approved = approved_configuration()
+    configuration = dict(approved.get("payload") or {}) if approved else None
+    profiles, _ = configured_portfolio_profiles(
+        configured_real_live_accounts(), configuration=configuration
+    )
     profile = next((row for row in profiles if row.account_key == account_key), None)
     if profile is None:
         raise KeyError(account_key)
@@ -200,7 +214,7 @@ def portfolio_management_command(
     response: dict[str, Any]
     if normalized == "select_policy":
         identity = str(detail.get("policy_identity") or "").strip()
-        catalog = configured_portfolio_policy_catalog()
+        catalog = configured_portfolio_policy_catalog(configuration=configuration)
         catalog[profile.policy.identity] = profile.policy
         policy = catalog.get(identity)
         if policy is None:

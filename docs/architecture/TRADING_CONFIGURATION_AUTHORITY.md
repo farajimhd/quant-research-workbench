@@ -149,7 +149,7 @@ and autonomy requirement. It does not silently release capital or bypass OMS.
 | Strategy Studio | Protected default and user Strategy Profiles, Trading Behavior, Initial Entry, Reentry, ordered Exit routes, typed inputs, and Capability Bindings |
 | Strategy Deployments | Watch Universes, profile-to-OMS composition, deterministic selection priority, campaign lifecycle authority, runtime modes, and readiness |
 | Portfolio & Risk | Account policies and Strategy-account mandates |
-| OMS & Protection | Reusable named execution and protection profiles |
+| OMS & Protection | Versioned execution-policy and protection-profile catalogs, plus reusable OMS routing profiles |
 | Accounts & Sessions | Stable application accounts and mode-specific session bindings |
 | Approved Releases | Whole-model validation, Canvas capture, immutable publication, and current runtime authority |
 
@@ -205,7 +205,9 @@ Draft entities are mutable and non-executable. Publication:
 3. validates Watch Universes, deployment references, deterministic selection
    priority, and campaign authority;
 4. validates account policies and Strategy-account mandates;
-5. validates OMS/protection profiles;
+5. validates execution-policy and protection-profile identities, revisions,
+   envelopes, partial-fill behavior, one-to-four protection slices, stop and
+   trailing contracts, transition rules, and account-policy allowlists;
 6. captures the complete configured Canvas registry;
 7. serializes the complete model canonically;
 8. records a SHA-256 content hash and immutable journal revision; and
@@ -217,7 +219,7 @@ Later draft edits or publications cannot mutate it.
 
 ## Runtime compatibility boundary
 
-The schema-v7 model is authoritative. `resolve_runtime_configurations()` orders
+The schema-v8 model is authoritative. `resolve_runtime_configurations()` orders
 every approved deployment eligible for a runtime mode by configured selection
 priority and projects each profile, Watch Universe, campaign policy, Portfolio,
 OMS, account, and campaign leg through one shared boundary. Individual
@@ -243,8 +245,25 @@ broker-facing fields from eligible sessions and validates the account, venue,
 broker, and order type before submission. Portfolio must first approve and size
 the semantic request; OMS then chooses and manages broker-native order types,
 session routing, replacements, partial fills, protection, and reconciliation.
-Schema-v7 migration removes legacy phase and OMS session flags so an older
-draft cannot reintroduce conflicting authority.
+Schema-v8 migration removes legacy phase and OMS session flags, creates the
+versioned execution/protection catalogs, and binds every lifecycle order
+intent to configured catalog identities so an older draft cannot reintroduce
+conflicting authority.
+
+The configuration UI exposes the complete `PortfolioPolicy` contract,
+cross-account group limits, OMS quote source and bounded repricing envelope,
+partial-fill behavior, and one-to-four protection slices. Every entry, add,
+reentry, and strategic exit chooses an execution-policy identity; entry-like
+actions also choose a protection-profile identity. Swing-based protection is
+resolved only from causal structural observations already held by the
+strategy, including first through fourth recent swings. The runtime projection
+copies the selected immutable catalog revisions into each assignment before
+evaluation.
+
+`GET /api/trading/configuration/effective` provides a mode-selectable operator
+preview. It does not make drafts executable: with `approved=true` it resolves
+only the newest Approved Release and reports eligible deployments, exact
+account/session bindings, policy identities, and OMS identities.
 
 An exit makes a position flat; it does not necessarily finish a campaign.
 `Exit and keep watching` retains the lease and enters Reentry wait. `Exit and
@@ -258,7 +277,9 @@ execution, or protection controls.
 
 ## Completion gate for another mode
 
-Live or Backtest Debug is not migrated until it:
+Configuration eligibility for Live, Paper, Backtest, and Backtest Debug is
+migrated through the shared resolver. A mode is operationally complete only
+when its controller:
 
 - loads one approved release through the shared configuration service;
 - selects a valid Strategy Deployment;

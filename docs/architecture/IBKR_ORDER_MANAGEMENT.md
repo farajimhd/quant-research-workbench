@@ -64,6 +64,13 @@ command is sent. A quote update, partial fill, or bounded timer can wake the
 adaptive policy. OMS first applies the broker's cumulative fill, then modifies
 the same live root order; it never submits the original quantity again.
 
+These choices are edited as versioned catalog entries under **Configuration ->
+OMS & Protection**. Strategy lifecycle actions select an identity; they do not
+copy quote or repricing algorithms. OMS obtains the newest permitted quote
+from its injected QMD, IBKR, or simulated execution-data provider and reacts on
+the subsecond event path bounded by the configured deadline, reprice count,
+minimum interval, and account reaction-latency policy.
+
 | Partial-fill policy | Remainder behavior |
 |---|---|
 | `complete_remainder` | Reprice from the newest permitted quote |

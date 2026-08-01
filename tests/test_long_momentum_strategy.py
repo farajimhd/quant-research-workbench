@@ -176,6 +176,122 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertGreater(intent.profit_target_price or 0, intent.reference_price)
         self.assertGreater(intent.trailing_amount or 0, 0)
 
+    def test_configured_execution_and_multi_swing_protection_reach_entry_intent(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["phase_policy"] = {
+            "initial_entry": {
+                "capital_request": {
+                    "mode": "mandate_fraction",
+                    "value": 0.2,
+                    "priority": 70,
+                    "allow_replacement": True,
+                },
+                "order_intent": {
+                    "execution_policy": "fast-entry@2",
+                    "protection_profile": "layered-swings@3",
+                    "partial_fill_policy": "complete_remainder",
+                    "deadline_ms": 180,
+                },
+                "add_steps": [],
+            }
+        }
+        parameters["execution_policy_catalog"] = {
+            "fast-entry@2": {
+                "policy_id": "fast-entry",
+                "revision": 2,
+                "name": "adaptive_urgent",
+                "quote_source": "qmd",
+                "partial_fill_policy": "accept_partial",
+                "envelope": {
+                    "deadline_ms": 500,
+                    "maximum_reprices": 7,
+                    "minimum_reprice_interval_ms": 25,
+                },
+            }
+        }
+        parameters["protection_profile_catalog"] = {
+            "layered-swings@3": {
+                "profile_id": "layered-swings",
+                "revision": 3,
+                "add_policy": "tighten_only",
+                "profit_pocket_transition": "start_swing_trail",
+                "mandatory_catastrophic_backstop": True,
+                "emergency_repair_deadline_ms": 250,
+                "slices": [
+                    {
+                        "slice_id": "near",
+                        "quantity_fraction": 0.5,
+                        "use_strategy_profit_target": True,
+                        "stop": {
+                            "rule_type": "swing_anchored",
+                            "order_type": "STP",
+                            "anchor_source": "strategy_swing",
+                            "anchor_ordinal": "most_recent",
+                            "buffer_bps": 5,
+                        },
+                        "trailing": {"rule_type": "none"},
+                    },
+                    {
+                        "slice_id": "deep",
+                        "quantity_fraction": 0.5,
+                        "stop": {
+                            "rule_type": "swing_anchored",
+                            "order_type": "STP",
+                            "anchor_source": "strategy_swing",
+                            "anchor_ordinal": "second_recent",
+                            "buffer_bps": 5,
+                        },
+                        "trailing": {
+                            "rule_type": "swing_trail",
+                            "structural_timeframe": "strategy",
+                        },
+                    },
+                ],
+            }
+        }
+        prior = {
+            "structural_anchors": {
+                "long": [{
+                    "observation_id": "prior-swing",
+                    "price": 98.8,
+                    "confirmed_at": (NOW - timedelta(minutes=2)).isoformat(),
+                    "timeframe": "strategy",
+                }]
+            }
+        }
+
+        blocked = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(),
+        )
+        self.assertEqual(blocked.evaluation.signals[0].action, "wait")
+        self.assertEqual(
+            blocked.evaluation.signals[0].reason,
+            "protection_anchor_unavailable",
+        )
+        self.assertFalse(blocked.evaluation.intents)
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters, state=prior),
+            confirmed_observation(),
+        )
+        intent = result.evaluation.intents[0]
+
+        self.assertEqual(intent.execution_policy.identity, "fast-entry@2")
+        self.assertEqual(intent.execution_policy.envelope.deadline_ms, 180)
+        self.assertEqual(intent.execution_policy.envelope.maximum_reprices, 7)
+        self.assertEqual(intent.execution_policy.partial_fill_policy.value, "complete_remainder")
+        self.assertEqual(intent.protection_profile.identity, "layered-swings@3")
+        self.assertEqual(
+            [item.stop.anchor.price for item in intent.protection_profile.slices],
+            [99.5, 98.8],
+        )
+        self.assertEqual(intent.protection_profile.add_policy.value, "tighten_only")
+        self.assertEqual(
+            intent.protection_profile.profit_pocket_transition.value,
+            "start_swing_trail",
+        )
+
     def test_short_profile_emits_relative_sell_intent_with_phase_order_policy(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["strategy_behavior"] = {
