@@ -46,7 +46,8 @@ export function InventoryFilterSelect({ ariaLabel, onChange, options, value }: {
     const menuStyle = menu ? getComputedStyle(menu) : null;
     const menuChrome = menuStyle ? Number.parseFloat(menuStyle.paddingLeft) + Number.parseFloat(menuStyle.paddingRight) + Number.parseFloat(menuStyle.borderLeftWidth) + Number.parseFloat(menuStyle.borderRightWidth) : 10 * scale;
     const scrollbarAllowance = contentHeight > maxHeight ? 18 : 0;
-    const width = Math.min(window.innerWidth - 16, Math.max(rect.width, 170 * scale, labelWidth + optionPadding + menuChrome + scrollbarAllowance));
+    const textSafety = 28 * readableScale;
+    const width = Math.min(window.innerWidth - 16, Math.max(rect.width, 170 * scale, 210 * readableScale, labelWidth + optionPadding + menuChrome + scrollbarAllowance + textSafety));
     setPlacement({
       left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
       maxHeight,
