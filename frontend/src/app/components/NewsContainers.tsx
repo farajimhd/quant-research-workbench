@@ -403,7 +403,7 @@ function ScopedLabelPanel({ label, presentations }: { label: ScopedNewsLabel; pr
     <DetailList label="Direction basis" values={label.semantic_direction_basis.map(readableStructuredLabel)} emptyLabel="Text evidence" />
     <DetailList label="Event tickers" values={label.event_tickers} emptyLabel="None" />
     <div className="news-label-identifiers"><DetailDatum label="Unit ID" value={label.unit_id || "Not reported"} /><DetailDatum label="Event ID" value={label.event_id || "Not reported"} /><DetailDatum label="Label version" value={label.labeling_version || "Not reported"} /></div>
-    <details><summary>Read direction evidence</summary><p>{label.semantic_evidence_text ? <MarketNumberText text={label.semantic_evidence_text} /> : "Not reported"}</p></details>
+    <details open><summary>Read direction evidence</summary><p>{label.semantic_evidence_text ? <MarketNumberText text={label.semantic_evidence_text} /> : "Not reported"}</p></details>
     <DetailList label="Quality flags" values={label.quality_flags.map(readableStructuredLabel)} emptyLabel="None" />
     <footer><EligibilityState active={label.forecast_trigger_eligible} label="Forecast trigger" /><EligibilityState active={label.reaction_evaluation_eligible} label="Reaction study" /><EligibilityState active={label.issuer_history_context_eligible} label="Issuer history" /><EligibilityState active={label.prior_primary_context_eligible} label="Prior primary context" /><EligibilityState active={label.episode_followup_eligible} label="Episode follow-up" /></footer>
   </article>;
