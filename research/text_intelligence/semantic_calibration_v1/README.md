@@ -225,8 +225,16 @@ the local report states that the matching remote baseline is pending.
 Serve one model at a time through vLLM with the exact public name and at least
 a 65,536-token context. The long-context requirement is real: one untruncated
 gold article is approximately 59,200 `o200k_harmony` input tokens. The generic
-launcher applies the required model-family flags and lets vLLM download missing
-Hugging Face artifacts into `/mnt/d/models_artifacts/opensource/huggingface`.
+launcher applies the required model-family flags. A model already downloaded
+under `/mnt/d/models_artifacts/opensource/huggingface` is staged once into the
+WSL-native cache at `~/.cache/quant-research-workbench/vllm-models`; vLLM loads
+only from that native cache. Staging is resumable through `rsync`, verifies the
+Hugging Face revision plus blob count and bytes, rejects 9P/DrvFS destinations,
+and is skipped on later starts when the completion marker still matches. If a
+model has no durable mounted copy yet, Hugging Face downloads it directly into
+the native cache. Ensure WSL has enough disk space for the selected model; the
+Qwen checkpoint needs approximately 67 GiB plus working headroom. Install
+`rsync` in WSL if it is absent.
 Before invoking `vllm`, the launcher starts Bash and sources
 `~/.venvs/vllm/bin/activate`; if that environment is missing, serving stops
 immediately instead of falling back to an unrelated system installation.

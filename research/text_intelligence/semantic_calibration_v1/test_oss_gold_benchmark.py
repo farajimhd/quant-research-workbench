@@ -249,9 +249,16 @@ class OssGoldBenchmarkTests(unittest.TestCase):
         self.assertIn(
             "exec env VLLM_USE_FLASHINFER_SAMPLER=0 vllm serve", qwen_shell
         )
+        self.assertIn(
+            'native_cache="$HOME"/.cache/quant-research-workbench/vllm-models',
+            qwen_shell,
+        )
+        self.assertIn("rsync -a --partial --delete --info=progress2", qwen_shell)
+        self.assertIn('--download-dir "$native_cache"', qwen_shell)
         self.assertIn("--language-model-only", qwen_shell)
         self.assertIn("--reasoning-parser", qwen_shell)
         self.assertIn("--max-num-seqs 64", qwen_shell)
+        self.assertNotIn("--safetensors-load-strategy", qwen_shell)
         self.assertIn("--tokenizer-mode", mistral_shell)
         self.assertIn("--config-format", mistral_shell)
         self.assertNotIn("--max-num-seqs", mistral_shell)
@@ -272,6 +279,7 @@ class OssGoldBenchmarkTests(unittest.TestCase):
         self.assertIn(
             "'/mnt/d/models with spaces/openai-gpt-oss-20b'", command[-1]
         )
+        self.assertNotIn("rsync -a", command[-1])
 
     def test_combined_report_adds_local_row_without_equating_speed_modes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

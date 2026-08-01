@@ -85,8 +85,6 @@ OSS_PROFILES: dict[str, OssProfile] = {
             "--reasoning-parser",
             "qwen3",
             "--language-model-only",
-            "--safetensors-load-strategy",
-            "prefetch",
         ),
     ),
     "mistral-small-3.1-24b": OssProfile(
