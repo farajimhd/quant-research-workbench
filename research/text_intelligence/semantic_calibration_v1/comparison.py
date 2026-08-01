@@ -135,11 +135,13 @@ def evaluate_predictions(
     prediction_dir: Path,
     splits: set[str] | None = None,
     canonical_concepts: bool = False,
+    missing_as_failure: bool = False,
 ) -> dict[str, Any]:
     rows = [item for item in items if splits is None or item.split in splits]
     article_role = Counter()
     article_origin = Counter()
     extraction = Counter()
+    extraction_decision = Counter()
     truth_tickers: set[tuple[str, str]] = set()
     predicted_tickers: set[tuple[str, str]] = set()
     truth_concepts: set[tuple[str, str, str]] = set()
@@ -155,18 +157,38 @@ def evaluate_predictions(
     }
     errors: list[dict[str, Any]] = []
     for item in rows:
-        prediction = read_json(prediction_dir / f"{item.sample_id}.json")
+        prediction_path = prediction_dir / f"{item.sample_id}.json"
+        if prediction_path.exists():
+            prediction = read_json(prediction_path)
+        elif missing_as_failure:
+            prediction = {
+                "sample_id": item.sample_id,
+                "extraction_decision": "__missing__",
+                "content_role": "__missing__",
+                "source_origin": "__missing__",
+                "labels": [],
+            }
+        else:
+            prediction = read_json(prediction_path)
         truth = item.truth
         human_units = _human_by_ticker(truth)
         predicted_units = _prediction_by_ticker(prediction)
         truth_labeled = truth["extraction_decision"] == "labeled"
         prediction_labeled = bool(predicted_units)
         extraction[(truth_labeled, prediction_labeled)] += 1
-        predicted_role = _majority(
+        predicted_decision = str(prediction.get("extraction_decision") or "") or (
+            "labeled" if prediction_labeled else "__missing__"
+        )
+        _confusion_add(
+            extraction_decision,
+            str(truth["extraction_decision"]),
+            predicted_decision,
+        )
+        predicted_role = str(prediction.get("content_role") or "") or _majority(
             str(label["classification"].get("content_role") or "")
             for label in prediction["labels"]
         )
-        predicted_origin = _majority(
+        predicted_origin = str(prediction.get("source_origin") or "") or _majority(
             str(label["classification"].get("source_origin") or "")
             for label in prediction["labels"]
         )
@@ -230,6 +252,7 @@ def evaluate_predictions(
         "splits": sorted(splits) if splits else ["all"],
         "concept_contract": "canonical_family_v1" if canonical_concepts else "exact_raw_label",
         "extraction": _binary_metrics(extraction),
+        "extraction_decision": _multiclass_metrics(extraction_decision),
         "ticker_scope": _set_metrics(truth_tickers, predicted_tickers),
         "event_concepts": _set_metrics(truth_concepts, predicted_concepts),
         "content_role": _multiclass_metrics(article_role),

@@ -155,3 +155,32 @@ writes the locked-holdout comparison and serialized research artifact beneath
 the runtime collection. It is not a production authority and must not be used
 for live classification or a historical backfill until its scope recall and
 external validation are certified.
+
+## Benchmark OpenAI teacher models on 100 gold articles
+
+Plan the deterministic stratified 100-article comparison without making a
+paid request:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_openai_gold_benchmark
+```
+
+The plan covers GPT-5.6 Sol, Terra and Luna, GPT-5.4 mini and nano, and GPT-4.1
+mini and nano. It uses the same strict issuer-scoped output contract for every
+model, sizes the output allowance for broad multi-issuer articles, and enforces
+both an explicit authorization and a hard $20 ceiling. Submit and wait only
+after inspecting the protected total printed by the plan:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_openai_gold_benchmark `
+  --execute --authorize-cost-usd <PROTECTED_TOTAL>
+```
+
+The job is resumable: rerunning the same command reconciles existing remote
+Batch jobs and never resubmits a completed model. Requests, raw responses,
+validated predictions, failures, exact token usage, actual Batch cost, metrics,
+and `COMPARISON.md` are written under
+`D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\openai_gold_100_v4`.
+All 100 articles remain in the scoring denominator; malformed or contract-invalid
+responses are scored as missing predictions. Batch elapsed time includes queue
+time and must not be interpreted as synchronous production latency.
