@@ -714,19 +714,20 @@ function ConfigurationJourney({ active, draft, experience, onOmsStageChange }: {
   onOmsStageChange: (value: OmsGuidedStage) => void;
 }) {
   const steps = [
-    { key: "strategy", label: "Strategy", ready: Boolean(draft?.strategy.profiles.length) },
-    { key: "assignments", label: "Deploy", ready: Boolean(draft?.assignments.deployments.length) },
-    { key: "portfolio", label: "Portfolio", ready: Boolean(draft?.portfolio.mandates.length) },
-    { key: "execution", label: "Execute", ready: Boolean(draft?.oms.execution_policies.length) },
-    { key: "protection", label: "Protect", ready: Boolean(draft?.oms.protection_profiles.length) },
-    { key: "accounts", label: "Accounts", ready: Boolean(draft?.accounts.bindings.length) },
+    { key: "strategy", label: "Strategy", ready: false },
+    { key: "assignments", label: "Deploy", ready: false },
+    { key: "portfolio", label: "Portfolio", ready: false },
+    { key: "execution", label: "Execute", ready: false },
+    { key: "protection", label: "Protect", ready: false },
+    { key: "accounts", label: "Accounts", ready: false },
     { key: "revisions", label: "Review", ready: false },
   ];
+  const activeIndex = steps.findIndex((step) => step.key === active);
   return (
     <nav aria-label="Configuration journey" className="configuration-journey" data-experience={experience}>
       {steps.map((step, index) => (
-        <a aria-current={active === step.key ? "step" : undefined} data-ready={step.ready ? "true" : "false"} data-step={step.key} href={`#${pageForGuidedStep(step.key as GuidedStep)}`} key={step.key} onClick={() => { if (step.key === "execution" || step.key === "protection") onOmsStageChange(step.key); }}>
-          <span>{step.ready ? <Check size={13} /> : index + 1}</span>
+        <a aria-current={active === step.key ? "step" : undefined} data-ready={index < activeIndex ? "true" : "false"} data-step={step.key} href={`#${pageForGuidedStep(step.key as GuidedStep)}`} key={step.key} onClick={() => { if (step.key === "execution" || step.key === "protection") onOmsStageChange(step.key); }}>
+          <span>{index < activeIndex ? <Check size={13} /> : index + 1}</span>
           <strong>{step.label}</strong>
           {index < steps.length - 1 ? <ChevronRight size={14} /> : null}
         </a>
@@ -804,6 +805,9 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   const previous = steps[index - 1];
   const next = steps[index + 1];
   const context = guidedContextRows(draft, step);
+  const [questionIndex, setQuestionIndex] = useState(0);
+  useEffect(() => setQuestionIndex(0), [step]);
+  const questionCount = step === "assignments" || step === "protection" ? 2 : step === "accounts" && !account?.modes.some((mode) => mode === "paper" || mode === "live") ? 2 : 3;
 
   function replaceProfile(nextProfile: StrategyProfile) {
     onChange("strategy", { ...draft.strategy, profiles: draft.strategy.profiles.map((row) => row.profile_id === profile.profile_id ? nextProfile : row) });
@@ -832,16 +836,16 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
 
   return <div className="guided-configuration-shell" data-guided-step={step}>
     <main className="guided-question-surface">
-      <header><span>Step {index + 1} of {steps.length}</span><h2>{guidedStepTitle(step)}</h2><p>{guidedStepDescription(step)}</p></header>
-      <div className="guided-question-list">
+      <header><span>{guidedStepTitle(step)} · question {questionIndex + 1} of {questionCount}</span><h2>{guidedStepDescription(step)}</h2><div className="guided-question-progress"><span style={{ width: `${((questionIndex + 1) / questionCount) * 100}%` }} /></div></header>
+      <div className="guided-question-list" data-question-index={questionIndex}>
         {step === "strategy" ? <>
-          <GuidedQuestion description="Choose the behavior profile used as the draft's starting point. Deployments may still select another profile." label="Which Strategy Profile should be the default?" status={profile.protected ? "Using recommended" : "Customized"}>
+          <GuidedQuestion description="This plan supplies the entry, exit, and sizing rules. The protected plan is the safest starting point; you can still customize it later." label="Which trading plan do you want to use?" status={profile.protected ? "Using recommended" : "Customized"}>
             <DecisionOptions onChange={(profile_id) => onChange("strategy", { ...draft.strategy, default_profile_id: profile_id })} options={draft.strategy.profiles.map((row) => ({ detail: `${row.origin} · v${row.revision}`, label: row.name, recommended: row.protected, value: row.profile_id }))} value={profile.profile_id} />
           </GuidedQuestion>
-          <GuidedQuestion description="Direction determines campaign ownership and order direction. It never reverses your rules automatically." label="Which side does this profile trade?" status="Needs review">
+          <GuidedQuestion description="Long buys first and sells later. Short sells borrowed shares first and buys them back later. This choice does not reverse any rule automatically." label="Should it trade long or short?" status="Needs review">
             <DecisionOptions onChange={(side) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, side: side as "long" | "short" } } })} options={[{ detail: "Buy to enter, sell to exit", label: "Long", recommended: true, value: "long" }, { detail: "Short-sell to enter, buy to cover", label: "Short", value: "short" }]} value={profile.lifecycle.trading_behavior.side} />
           </GuidedQuestion>
-          <GuidedQuestion description="Entry evaluation is limited to these sessions. Protective exits remain active whenever exposure exists." label="When may the strategy look for entries?" status={profile.lifecycle.trading_behavior.eligible_sessions.length ? "Configured" : "Needs decision"}>
+          <GuidedQuestion description="These sessions control only when a new position may open. Existing positions can still be protected and closed outside the selected entry sessions." label="When may it open a new position?" status={profile.lifecycle.trading_behavior.eligible_sessions.length ? "Configured" : "Needs decision"}>
             <ModeChoices onChange={(eligible_sessions) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, eligible_sessions } } })} options={["premarket", "regular", "after_hours"]} values={profile.lifecycle.trading_behavior.eligible_sessions} />
           </GuidedQuestion>
         </> : null}
@@ -852,29 +856,29 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
           <GuidedQuestion description="Enable only modes in which the account and mandate bindings should be valid." label="Where may it run?" status={deployment.modes.length ? "Configured" : "Needs decision"}><ModeSelector modes={deployment.modes} onChange={(modes) => replaceDeployment({ ...deployment, modes })} /></GuidedQuestion>
         </> : null}
         {step === "portfolio" ? <>
-          <GuidedQuestion description="Portfolio resolves requested capital against the selected account, its synchronized state, reservations, and policy limits." label="Which account funds this deployment?" status="Configured"><SelectField help="Stable account key referenced by this mandate." label="Mandate account" onChange={(account_key) => replaceMandate({ ...mandate, account_key })} options={draft.accounts.bindings.map((row) => ({ label: row.name, value: row.account_key }))} value={mandate.account_key} /></GuidedQuestion>
-          <GuidedQuestion description="These are hard mandate ceilings, not target position sizes. Portfolio may approve less." label="How much account capacity may it use?" status={mandate.maximum_planned_risk_fraction > 0 ? "Customized" : "Needs decision"}><div className="configuration-field-grid"><NumberField help="Maximum fraction of available account cash reserved for this deployment." label="Maximum cash" maximum={1} minimum={0} onChange={(maximum_cash_fraction) => replaceMandate({ ...mandate, maximum_cash_fraction })} step={0.01} unit="fraction" value={mandate.maximum_cash_fraction} /><NumberField help="Maximum planned loss across positions opened under this mandate." label="Maximum planned risk" maximum={1} minimum={0} onChange={(maximum_planned_risk_fraction) => replaceMandate({ ...mandate, maximum_planned_risk_fraction })} step={0.001} unit="fraction" value={mandate.maximum_planned_risk_fraction} /><NumberField help="Maximum simultaneous positions attributed to this mandate." label="Maximum positions" minimum={1} onChange={(maximum_positions) => replaceMandate({ ...mandate, maximum_positions })} step={1} value={mandate.maximum_positions} /></div></GuidedQuestion>
+          <GuidedQuestion description={draft.accounts.bindings.length === 1 ? "Only one account is eligible, so it is selected automatically. Portfolio still synchronizes its cash, positions, buying power, and reservations before approving an order." : "Portfolio checks synchronized cash, positions, buying power, reservations, and policy limits before approving an order."} label="Which account supplies the capital?" status={draft.accounts.bindings.length === 1 ? "Selected automatically" : "Choose an account"}>{draft.accounts.bindings.length === 1 ? <div className="guided-confirmed-choice"><BadgeCheck size={20} /><span><strong>{account.name}</strong><small>{readableLabel(account.account_class)} account · {account.modes.map(readableLabel).join(", ")}</small></span></div> : <DecisionOptions onChange={(account_key) => replaceMandate({ ...mandate, account_key })} options={draft.accounts.bindings.map((row) => ({ detail: `${readableLabel(row.account_class)} account`, label: row.name, value: row.account_key }))} value={mandate.account_key} />}</GuidedQuestion>
+          <GuidedQuestion description="These are ceilings, not target position sizes. Portfolio can approve less when cash, buying power, open positions, or another risk rule requires it." label="What are the maximum capital and loss limits?" status="Review these limits"><div className="guided-limit-fields"><div><NumberField help="Maximum share of otherwise available cash." label="Maximum cash fraction" maximum={1} minimum={0} onChange={(maximum_cash_fraction) => replaceMandate({ ...mandate, maximum_cash_fraction })} step={0.01} unit="fraction" value={mandate.maximum_cash_fraction} /><p>100% allows all otherwise available cash; Portfolio can still approve less.</p></div><div><NumberField help="Maximum combined loss planned at active stops." label="Maximum planned loss fraction" maximum={1} minimum={0} onChange={(maximum_planned_risk_fraction) => replaceMandate({ ...mandate, maximum_planned_risk_fraction })} step={0.001} unit="fraction" value={mandate.maximum_planned_risk_fraction} /><p>1% caps the combined planned loss at all active stops to 1% of account equity.</p></div><div><NumberField help="Maximum simultaneous positions for this deployment." label="Maximum open positions" minimum={1} onChange={(maximum_positions) => replaceMandate({ ...mandate, maximum_positions })} step={1} value={mandate.maximum_positions} /><p>This setup may have at most {mandate.maximum_positions} positions open at once.</p></div></div></GuidedQuestion>
           <GuidedQuestion description="Automatic autonomy may act only within every account policy, risk, broker, and protection gate." label="How much autonomy should Portfolio have?" status={mandate.autonomy === "automatic" ? "Needs review" : "Configured"}><DecisionOptions onChange={(autonomy) => replaceMandate({ ...mandate, autonomy: autonomy as Mandate["autonomy"] })} options={[{ detail: "Prepare proposals for an operator", label: "Manual", value: "manual" }, { detail: "Require confirmation before capital action", label: "Confirm", recommended: true, value: "confirm" }, { detail: "Act inside all published limits", label: "Automatic", value: "automatic" }]} value={mandate.autonomy} /></GuidedQuestion>
         </> : null}
         {step === "execution" ? <>
-          <GuidedQuestion description="The execution policy owns quote source, repricing envelope, deadline, and partial-fill behavior." label="How should entries be worked?" status={executionPolicy.origin === "system" ? "Using recommended" : "Customized"}><DecisionOptions onChange={(entry_execution_policy_id) => replaceOmsProfile({ ...omsProfile, settings: { ...omsProfile.settings, entry_execution_policy_id } })} options={draft.oms.execution_policies.map((row) => ({ detail: `${readableLabel(row.quote_source)} quotes · ${row.envelope.deadline_ms} ms`, label: readableLabel(row.name), recommended: row.policy_id === "adaptive_urgent", value: row.policy_id }))} value={omsProfile.settings.entry_execution_policy_id} /></GuidedQuestion>
-          <GuidedQuestion description="On a partial fill, OMS reconciles broker truth before completing, accepting, or canceling the remainder." label="What should happen to the unfilled remainder?" status="Configured"><DecisionOptions onChange={(partial_fill_policy) => replaceExecutionPolicy({ ...executionPolicy, partial_fill_policy: partial_fill_policy as ExecutionPolicyConfig["partial_fill_policy"] })} options={[{ detail: "Reprice the broker-confirmed remainder inside the envelope", label: "Complete remainder", recommended: true, value: "complete_remainder" }, { detail: "Keep the filled quantity and stop", label: "Accept partial", value: "accept_partial" }, { detail: "Cancel whatever remains", label: "Cancel remainder", value: "cancel_remainder" }]} value={executionPolicy.partial_fill_policy} /></GuidedQuestion>
-          <GuidedQuestion description="QMD is the normal adaptive-order quote authority; IBKR and simulated sources remain explicit alternatives." label="Where should adaptive pricing read quotes?" status="Configured"><DecisionOptions onChange={(quote_source) => replaceExecutionPolicy({ ...executionPolicy, quote_source: quote_source as ExecutionPolicyConfig["quote_source"] })} options={[{ detail: "Shared normalized market-data authority", label: "QMD", recommended: true, value: "qmd" }, { detail: "Broker quote stream", label: "IBKR", value: "ibkr" }, { detail: "Deterministic simulation quotes", label: "Simulated", value: "simulated" }]} value={executionPolicy.quote_source} /></GuidedQuestion>
+          <GuidedQuestion description="This controls how quickly OMS follows the market while staying inside the approved price and time limits. It never changes the approved quantity." label="How aggressively should entries seek a fill?" status="Choose a pace"><DecisionOptions onChange={(entry_execution_policy_id) => replaceOmsProfile({ ...omsProfile, settings: { ...omsProfile.settings, entry_execution_policy_id } })} options={draft.oms.execution_policies.filter((row) => ["adaptive_patient", "adaptive_regular", "adaptive_urgent", executionPolicy.policy_id].includes(row.policy_id)).map((row) => ({ detail: row.policy_id === "adaptive_patient" ? "Wait longer for a favorable price." : row.policy_id === "adaptive_urgent" ? "Follow the market quickly when completing the entry matters most." : row.policy_id === "adaptive_regular" ? "Balance price quality with a timely fill." : `Keep the current ${readableLabel(row.name)} policy.`, label: row.policy_id === "adaptive_patient" ? "Patient" : row.policy_id === "adaptive_urgent" ? "Fast" : row.policy_id === "adaptive_regular" ? "Balanced" : readableLabel(row.name), recommended: row.policy_id === "adaptive_regular", value: row.policy_id }))} value={omsProfile.settings.entry_execution_policy_id} /></GuidedQuestion>
+          <GuidedQuestion description="A partial fill means the broker filled only part of the approved quantity. OMS reconciles the broker's confirmed fill first, so it never orders more than the true remainder." label="What should happen to the unfilled remainder?" status="Choose a response"><DecisionOptions onChange={(partial_fill_policy) => replaceExecutionPolicy({ ...executionPolicy, partial_fill_policy: partial_fill_policy as ExecutionPolicyConfig["partial_fill_policy"] })} options={[{ detail: "Keep working only the broker-confirmed remainder, using the latest allowed price.", label: "Finish the approved quantity", recommended: true, value: "complete_remainder" }, { detail: "Keep the shares already filled and stop trying to fill the rest.", label: "Accept the partial fill", value: "accept_partial" }, { detail: "Cancel the remainder immediately; keep any shares already filled.", label: "Cancel the remainder", value: "cancel_remainder" }]} value={executionPolicy.partial_fill_policy} /></GuidedQuestion>
+          <GuidedQuestion description="Adaptive orders need a current bid and ask. QMD is the shared normalized source; IBKR uses the broker stream; Simulated is deterministic for historical runs." label="Which price feed should adaptive orders use?" status="Choose a source"><DecisionOptions onChange={(quote_source) => replaceExecutionPolicy({ ...executionPolicy, quote_source: quote_source as ExecutionPolicyConfig["quote_source"] })} options={[{ detail: "Shared normalized market data for live and replay-capable logic.", label: "QMD", recommended: true, value: "qmd" }, { detail: "Quotes from the active IBKR gateway session.", label: "IBKR", value: "ibkr" }, { detail: "Deterministic quotes for repeatable historical execution.", label: "Simulated", value: "simulated" }]} value={executionPolicy.quote_source} /></GuidedQuestion>
         </> : null}
         {step === "protection" ? <>
-          <GuidedQuestion description="The protection profile is submitted and reconciled independently of strategic exits." label="Which protection profile guards new exposure?" status={protectionProfile.origin === "system" ? "Using recommended" : "Customized"}><DecisionOptions onChange={(protection_profile_id) => replaceOmsProfile({ ...omsProfile, settings: { ...omsProfile.settings, protection_profile_id } })} options={draft.oms.protection_profiles.map((row) => ({ detail: `${row.slices.length} slice${row.slices.length === 1 ? "" : "s"} · ${readableLabel(row.profit_pocket_transition)}`, label: row.name, recommended: row.mandatory_catastrophic_backstop, value: row.profile_id }))} value={omsProfile.settings.protection_profile_id} /></GuidedQuestion>
+          <GuidedQuestion description={draft.oms.protection_profiles.length === 1 ? "Only one approved protection design is available, so it is selected automatically. Its stop orders are placed and reconciled independently of normal strategy exits." : "Protection stays active independently of normal strategy exits and cannot be weakened by another authority."} label="How is a new position protected?" status={draft.oms.protection_profiles.length === 1 ? "Selected automatically" : "Choose protection"}>{draft.oms.protection_profiles.length === 1 ? <div className="guided-confirmed-choice"><ShieldCheck size={20} /><span><strong>{protectionProfile.name}</strong><small>{protectionProfile.slices.length} stop slice{protectionProfile.slices.length === 1 ? "" : "s"}; catastrophic backstop {protectionProfile.mandatory_catastrophic_backstop ? "required" : "not required"}</small></span></div> : <DecisionOptions onChange={(protection_profile_id) => replaceOmsProfile({ ...omsProfile, settings: { ...omsProfile.settings, protection_profile_id } })} options={draft.oms.protection_profiles.map((row) => ({ detail: `${row.slices.length} stop slice${row.slices.length === 1 ? "" : "s"}`, label: row.name, recommended: row.mandatory_catastrophic_backstop, value: row.profile_id }))} value={omsProfile.settings.protection_profile_id} />}</GuidedQuestion>
           <GuidedQuestion description="Profit-pocket transitions define how stop protection changes after an intentional reduction." label="After pocketing profit, what happens to remaining protection?" status="Configured"><DecisionOptions onChange={(profit_pocket_transition) => replaceProtectionProfile({ ...protectionProfile, profit_pocket_transition })} options={[{ detail: "Raise the remaining floor to entry plus buffer", label: "Move to breakeven", recommended: true, value: "move_to_breakeven" }, { detail: "Activate the configured swing-based trail", label: "Start swing trail", value: "start_swing_trail" }, { detail: "Retain the existing stop contract", label: "Keep existing protection", value: "keep_existing" }]} value={protectionProfile.profit_pocket_transition} /></GuidedQuestion>
           <div className="guided-safety-callout"><ShieldCheck size={16} /><p><strong>Protection cannot be weakened by another authority.</strong><span>{protectionProfile.slices.length} configured slice{protectionProfile.slices.length === 1 ? "" : "s"}; catastrophic backstop {protectionProfile.mandatory_catastrophic_backstop ? "required" : "requires expert review"}.</span></p></div>
         </> : null}
         {step === "accounts" ? <>
-          <GuidedQuestion description="The stable application key is mapped to a simulated or externally discovered broker account." label="Which account binding completes this setup?" status={account.modes.some((mode) => mode === "live" || mode === "paper") ? "Needs broker verification" : "Configured"}><div className="configuration-field-grid"><SelectField help="Account capability and regulatory class." label="Account class" onChange={(account_class) => replaceAccount({ ...account, account_class })} options={["simulated", "cash", "margin", "registered"].map((value) => ({ label: readableLabel(value), value }))} value={account.account_class} /><SelectField help="Reusable account-level Portfolio policy." label="Portfolio policy" onChange={(portfolio_policy_id) => replaceAccount({ ...account, portfolio_policy_id })} options={draft.portfolio.policies.map((row) => ({ label: String(row.policy_id), value: String(row.policy_id) }))} value={account.portfolio_policy_id} /></div></GuidedQuestion>
+          <GuidedQuestion description="This binding connects the setup to a simulated account or an externally discovered IBKR account. Runtime synchronizes cash, positions, and buying power before Portfolio acts." label="Which account will this configuration use?" status="Account selected"><div className="guided-confirmed-choice"><BadgeCheck size={20} /><span><strong>{account.name}</strong><small>{readableLabel(account.account_class)} · Portfolio policy {account.portfolio_policy_id}</small></span></div></GuidedQuestion>
           <GuidedQuestion description="Paper and Live require an exact external IBKR account and session match. Secrets remain outside configuration." label="Which modes may bind this account?" status={account.modes.length ? "Configured" : "Needs decision"}><ModeSelector modes={account.modes} onChange={(modes) => replaceAccount({ ...account, modes })} /></GuidedQuestion>
           {account.modes.some((mode) => mode === "paper" || mode === "live") ? <GuidedQuestion description="These identifiers must match IBKR discovery. Publication and runtime preflight fail closed on mismatch." label="Confirm the broker binding" status={account.source_account_id.trim() && account.session_key.trim() ? "Needs broker verification" : "Invalid"}><div className="configuration-field-grid"><TextField help="Exact externally discovered IBKR account ID." label="IBKR account ID" onChange={(source_account_id) => replaceAccount({ ...account, source_account_id })} value={account.source_account_id} /><TextField help="Configured gateway session identity." label="Session key" onChange={(session_key) => replaceAccount({ ...account, session_key })} value={account.session_key} /></div></GuidedQuestion> : null}
         </> : null}
       </div>
-      <GuidedFooter next={next} onNext={() => next && onContinue(next)} onPrevious={() => previous && navigateGuidedStep(previous, onOmsStageChange)} onSwitchToExpert={onSwitchToExpert} previous={previous} />
+      <details className="guided-running-summary"><summary>Your setup so far <ChevronRight size={15} /></summary><div>{context.map((row) => <span key={row.label}><small>{row.label}</small><strong>{row.value}</strong></span>)}</div></details>
+      <GuidedFooter isFirst={questionIndex === 0} isLast={questionIndex === questionCount - 1} next={next} onNext={() => questionIndex < questionCount - 1 ? setQuestionIndex(questionIndex + 1) : next && onContinue(next)} onPrevious={() => questionIndex > 0 ? setQuestionIndex(questionIndex - 1) : previous && navigateGuidedStep(previous, onOmsStageChange)} previous={previous} />
     </main>
-    <aside className="guided-context-panel"><header><span>Current result</span><strong>{guidedStepTitle(step)}</strong></header><div>{context.map((row) => <span key={row.label}><small>{row.label}</small><strong>{row.value}</strong></span>)}</div><footer><BadgeCheck size={15} /><p><strong>Saved as canonical configuration</strong><span>Next saves this authority before moving forward.</span></p></footer></aside>
   </div>;
 }
 
@@ -891,15 +895,15 @@ function ModeChoices({ onChange, options, values }: { onChange: (values: string[
   return <div className="guided-mode-choices">{options.map((option) => <label key={option}><input checked={values.includes(option)} onChange={(event) => onChange(event.target.checked ? [...values, option] : values.filter((value) => value !== option))} type="checkbox" /><span><Check size={13} />{readableLabel(option)}</span></label>)}</div>;
 }
 
-function GuidedFooter({ next, onNext, onPrevious, onSwitchToExpert, previous }: { next?: GuidedStep; onNext: () => void; onPrevious: () => void; onSwitchToExpert: () => void; previous?: GuidedStep }) {
-  return <footer className="guided-navigation"><button className="button" disabled={!previous} onClick={onPrevious} type="button"><ArrowLeft size={15} /> Previous</button><button className="button" onClick={onSwitchToExpert} type="button"><Settings2 size={14} /> View all parameters</button><button className="button primary" disabled={!next} onClick={onNext} type="button">Save &amp; continue <ArrowRight size={15} /></button></footer>;
+function GuidedFooter({ isFirst, isLast, next, onNext, onPrevious, previous }: { isFirst: boolean; isLast: boolean; next?: GuidedStep; onNext: () => void; onPrevious: () => void; previous?: GuidedStep }) {
+  return <footer className="guided-navigation"><button className="button" disabled={isFirst && !previous} onClick={onPrevious} type="button"><ArrowLeft size={15} /> Previous</button><span>Your changes stay in this draft until you publish a release.</span><button className="button primary" disabled={isLast && !next} onClick={onNext} type="button">{isLast ? "Save and continue" : "Next question"} <ArrowRight size={15} /></button></footer>;
 }
 
 function GuidedReview({ approved, draft, label, onLabelChange, onPublish, onReturn, publishing, revisions }: { approved: Revision | null; draft: Draft; label: string; onLabelChange: (value: string) => void; onPublish: () => void; onReturn: () => void; publishing: boolean; revisions: Revision[] }) {
   const rows = reviewRows(draft, approved);
   return <div className="guided-review">
     <header><span>Final step</span><h2>Review the effective configuration</h2><p>Resolve anything marked invalid or needing a decision. Publication freezes the entire draft and configured Canvas for new runs.</p></header>
-    <div className="guided-review-layout"><div className="guided-review-matrix"><header><span>Authority</span><span>Selection</span><span>Provenance</span><span /></header>{rows.map((row) => { const Icon = row.icon; return <article key={row.step}><span><Icon size={16} /><strong>{row.label}</strong></span><span>{row.selection}</span><em data-state={row.state.toLowerCase().replaceAll(" ", "-")}>{row.state}</em><button onClick={() => navigateGuidedStep(row.step, () => undefined)} type="button">Review <ChevronRight size={13} /></button></article>; })}</div><main><EffectiveConfigurationPreview updatedAt={draft.updated_at || ""} /></main><aside><RevisionPublisher approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} /></aside></div>
+    <div className="guided-review-layout"><div className="guided-review-matrix">{rows.map((row) => { const Icon = row.icon; return <article key={row.step}><span><Icon size={18} /><strong>{row.label}</strong></span><span>{row.selection}</span><em data-state={row.state.toLowerCase().replaceAll(" ", "-")}>{row.state}</em><button onClick={() => navigateGuidedStep(row.step, () => undefined)} type="button">Change <ChevronRight size={13} /></button></article>; })}</div><aside><RevisionPublisher approved={approved} draft={draft} guided label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} /></aside><details className="guided-technical-preview"><summary>Show the technical runtime preview <ChevronRight size={15} /></summary><EffectiveConfigurationPreview updatedAt={draft.updated_at || ""} /></details></div>
     <button className="button" onClick={onReturn} type="button"><ArrowLeft size={15} /> Back to accounts</button>
   </div>;
 }
@@ -2475,9 +2479,10 @@ function RevisionBadge({ approved }: { approved: Revision | null }) {
   return <div className="configuration-revision-badge" data-approved={approved ? "true" : "false"}><small>Runtime authority</small><strong>{approved ? `Release ${approved.revision}` : "Not published"}</strong><span>{approved ? approved.label : "Replay is gated"}</span></div>;
 }
 
-function RevisionPublisher({ approved, draft, label, onLabelChange, onPublish, publishing, revisions }: {
+function RevisionPublisher({ approved, draft, guided = false, label, onLabelChange, onPublish, publishing, revisions }: {
   approved: Revision | null;
   draft: Draft | null;
+  guided?: boolean;
   label: string;
   onLabelChange: (value: string) => void;
   onPublish: () => void;
@@ -2487,14 +2492,15 @@ function RevisionPublisher({ approved, draft, label, onLabelChange, onPublish, p
   const canvas = useMemo(canvasApprovalSnapshot, [approved, draft]);
   const checks = draft ? releaseReadiness(draft) : [];
   const configurationReady = checks.every((check) => check.ready);
+  const visibleChecks = guided ? checks.filter((check) => ["Deployments", "Mode coverage", "Paper and Live bindings"].includes(check.label)) : checks;
   return (
     <div className="configuration-revision-layout">
       <section className="configuration-publish-card">
-        <header><div><span>Completion gate</span><strong>Publish the application release</strong></div><Send size={18} /></header>
-        <p>A release freezes every referenced Strategy Profile, capability setting, deployment, mandate, policy, OMS profile, account binding, and Canvas. Active runs never change underneath you.</p>
+        <header><div><span>{guided ? "Ready for use" : "Completion gate"}</span><strong>{guided ? "Publish this setup" : "Publish the application release"}</strong></div><Send size={18} /></header>
+        <p>{guided ? "Publishing makes this complete setup available to new runs. Existing runs keep the release they started with." : "A release freezes every referenced Strategy Profile, capability setting, deployment, mandate, policy, OMS profile, account binding, and Canvas. Active runs never change underneath you."}</p>
         <div className="configuration-publish-proof">
-          {checks.map((check) => <span data-ready={check.ready ? "true" : "false"} key={check.label}>{check.ready ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />} {check.label} · {check.detail}</span>)}
-          <span data-ready={canvas.ready ? "true" : "false"}><CheckCircle2 size={14} /> Canvas · {canvas.containerCount} containers</span>
+          {visibleChecks.map((check) => <span data-ready={check.ready ? "true" : "false"} key={check.label}>{check.ready ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />} {guided ? publishCheckLabel(check.label) : check.label} · {check.detail}</span>)}
+          <span data-ready={canvas.ready ? "true" : "false"}><CheckCircle2 size={14} /> {guided ? "Workspace layout" : "Canvas"} · {canvas.containerCount} containers</span>
         </div>
         <label><span>Release label <FieldHelp content="Use a short operational label that explains what this release is intended to validate." /></span><input onChange={(event) => onLabelChange(event.target.value)} placeholder="Replay strategy-studio acceptance" value={label} /></label>
         <button className="button primary" disabled={!draft || !configurationReady || !canvas.ready || !label.trim() || publishing} onClick={onPublish} type="button"><Send size={15} /> {publishing ? "Publishing…" : "Publish release"}</button>
@@ -2539,6 +2545,13 @@ function releaseReadiness(draft: Draft) {
     { detail: liveBindingsReady ? "exact bindings" : "broker id or session missing", label: "Paper and Live bindings", ready: liveBindingsReady },
     { detail: `${draft.oms.execution_policies.length} execution · ${draft.oms.protection_profiles.length} protection`, label: "Policy catalogs", ready: draft.oms.execution_policies.length > 0 && draft.oms.protection_profiles.length > 0 },
   ];
+}
+
+function publishCheckLabel(label: string) {
+  if (label === "Deployments") return "Trading setup";
+  if (label === "Mode coverage") return "Selected modes";
+  if (label === "Paper and Live bindings") return "Broker connection";
+  return label;
 }
 
 function EffectiveConfigurationPreview({ updatedAt }: { updatedAt: string }) {
@@ -2857,13 +2870,13 @@ function guidedStepTitle(step: GuidedStep) {
 }
 
 function guidedStepDescription(step: GuidedStep) {
-  if (step === "strategy") return "Answer only the decisions that change strategy meaning. Rules and advanced parameters remain available in Expert mode.";
-  if (step === "assignments") return "Compose the profile, universe, OMS profile, modes, and campaign boundary into one runnable deployment.";
-  if (step === "portfolio") return "Portfolio owns account selection, final sizing, reservations, arbitration, and continuous risk enforcement.";
-  if (step === "execution") return "OMS reads its configured quote source and works broker-confirmed remaining quantity inside a bounded execution envelope.";
-  if (step === "protection") return "Stops and trailing transitions remain independently managed even when strategy evaluation or normal exits are delayed.";
-  if (step === "accounts") return "Simulated modes use local bindings; Paper and Live must match externally discovered IBKR account and session identities.";
-  return "Compare every authority and resolve incomplete decisions before creating an immutable runtime release.";
+  if (step === "strategy") return "Choose the plan, direction, and entry sessions.";
+  if (step === "assignments") return "Choose what it watches and where it may run.";
+  if (step === "portfolio") return "Set the account, capital limits, and approval level.";
+  if (step === "execution") return "Choose how orders follow prices and handle partial fills.";
+  if (step === "protection") return "Choose the initial stop design and what happens after taking profit.";
+  if (step === "accounts") return "Confirm which account and broker session may be used.";
+  return "Review the complete setup before publishing it for new runs.";
 }
 
 function guidedContextRows(draft: Draft, step: GuidedStep) {
