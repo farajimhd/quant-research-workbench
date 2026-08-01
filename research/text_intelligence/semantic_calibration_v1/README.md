@@ -442,3 +442,43 @@ the partitions that fit both rolling authorization ceilings and then returns.
 The Batch API currently permits up to 50,000 requests and a 200 MB JSONL input
 file. This pipeline intentionally uses much smaller rolling partitions to make
 cost authorization, recovery, and output auditing bounded.
+
+## Deterministic News V7 candidate
+
+V7 is the rule-only successor to V6. It was developed against the 900-item
+development split and evaluated once against the sealed 100-item acceptance
+split after its rules and tests were locked. It does not use price reaction,
+Sol output, a learned classifier, sample identities, or headline-specific
+exceptions.
+
+The repair adds ordered structural role detection, provider-linked issuer scope,
+separate trigger and history eligibility, and generalized handling of mover
+recaps, market roundups, why-moving follow-ups, analyst previews, regulatory
+events, and direct issuer events. Large roundup annotations were not treated as
+exhaustive when their rendered text contained legitimate additional issuer
+events.
+
+Run development evaluation:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_deterministic_news_v7 --phase development
+```
+
+Run the sealed acceptance split only for a newly locked authority version:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_deterministic_news_v7 --phase frozen-acceptance
+```
+
+Generate the final comparison under the machine runtime root:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.deterministic_v7_audit
+```
+
+The first sealed result improved extraction F1 from 0.901 to 0.911, ticker-scope
+F1 from 0.693 to 0.697, role macro F1 from 0.531 to 0.573, origin macro F1 from
+0.441 to 0.450, and concept-family F1 from 0.369 to 0.370. Direction macro F1
+was unchanged at 0.415, history eligibility was unchanged at 0.876, and forecast
+eligibility declined from 0.426 to 0.415. V7 is therefore a better structural
+candidate, not a certified global replacement for V6's trigger authority.
