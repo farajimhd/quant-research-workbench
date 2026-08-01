@@ -251,9 +251,18 @@ class OssGoldBenchmarkTests(unittest.TestCase):
         )
         self.assertIn("--language-model-only", qwen_shell)
         self.assertIn("--reasoning-parser", qwen_shell)
+        self.assertIn("--max-num-seqs 64", qwen_shell)
         self.assertIn("--tokenizer-mode", mistral_shell)
         self.assertIn("--config-format", mistral_shell)
+        self.assertNotIn("--max-num-seqs", mistral_shell)
         self.assertNotIn("--safetensors-load-strategy", mistral_shell)
+
+    def test_server_max_num_seqs_override_replaces_profile_default(self) -> None:
+        command = build_server_command(
+            profile=OSS_PROFILES["qwen35-a3b"], max_num_seqs=32
+        )
+        self.assertIn("--max-num-seqs 32", command[-1])
+        self.assertNotIn("--max-num-seqs 64", command[-1])
 
     def test_server_command_quotes_paths_after_activating_wsl_venv(self) -> None:
         command = build_server_command(

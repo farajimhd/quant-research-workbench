@@ -43,6 +43,7 @@ class OssProfile:
     seed: int | None = None
     reasoning_effort: str | None = None
     chat_template_kwargs: tuple[tuple[str, bool], ...] = ()
+    max_num_seqs: int | None = None
     server_args: tuple[str, ...] = ()
 
 
@@ -76,6 +77,10 @@ OSS_PROFILES: dict[str, OssProfile] = {
         presence_penalty=1.5,
         seed=42,
         chat_template_kwargs=(("enable_thinking", False),),
+        # Qwen3.5's hybrid Mamba cache requires one block per decode sequence.
+        # Keep server capacity comfortably above the benchmark's 4 workers while
+        # avoiding vLLM's incompatible 1,024-sequence CUDA-graph default.
+        max_num_seqs=64,
         server_args=(
             "--reasoning-parser",
             "qwen3",

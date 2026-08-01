@@ -30,6 +30,7 @@ def build_server_command(
     port: int = 8000,
     gpu_memory_utilization: float = 0.88,
     max_model_len: int = 65_536,
+    max_num_seqs: int | None = None,
 ) -> list[str]:
     serve = [
         vllm_bin,
@@ -48,8 +49,13 @@ def build_server_command(
         "--download-dir",
         download_dir,
         "--enable-prefix-caching",
-        *profile.server_args,
     ]
+    resolved_max_num_seqs = (
+        max_num_seqs if max_num_seqs is not None else profile.max_num_seqs
+    )
+    if resolved_max_num_seqs is not None:
+        serve.extend(("--max-num-seqs", str(resolved_max_num_seqs)))
+    serve.extend(profile.server_args)
     command = ["wsl.exe"]
     if distro:
         command.extend(("-d", distro))
@@ -79,12 +85,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.88)
     parser.add_argument("--max-model-len", type=int, default=65_536)
+    parser.add_argument("--max-num-seqs", type=int)
     parser.add_argument("--print-only", action="store_true")
     args = parser.parse_args(argv)
     if not 0.1 <= args.gpu_memory_utilization <= 0.99:
         parser.error("--gpu-memory-utilization must be between 0.1 and 0.99")
     if args.max_model_len < 16_384:
         parser.error("--max-model-len must be at least 16384")
+    if args.max_num_seqs is not None and not 1 <= args.max_num_seqs <= 1_024:
+        parser.error("--max-num-seqs must be between 1 and 1024")
     command = build_server_command(
         profile=OSS_PROFILES[args.profile],
         distro=args.distro,
@@ -96,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         gpu_memory_utilization=args.gpu_memory_utilization,
         max_model_len=args.max_model_len,
+        max_num_seqs=args.max_num_seqs,
     )
     print("COMMAND " + subprocess.list2cmdline(command), flush=True)
     if args.print_only:

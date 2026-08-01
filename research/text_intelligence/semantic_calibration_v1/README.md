@@ -260,7 +260,10 @@ are:
 
 - `qwen35-a3b`: `Qwen/Qwen3.5-35B-A3B`, a 35B-total/3B-active MoE. The server
   uses language-model-only mode and the benchmark disables thinking so the
-  response is the requested JSON rather than a hidden reasoning stream.
+  response is the requested JSON rather than a hidden reasoning stream. Its
+  hybrid Mamba cache is explicitly bounded to 64 concurrent sequences; this is
+  well above the four benchmark workers and avoids vLLM's incompatible 1,024
+  sequence CUDA-graph default at the required 65,536-token context.
 - `mistral-small-3.1-24b`:
   `mistralai/Mistral-Small-3.1-24B-Instruct-2503`, selected for its explicit
   structured-JSON and instruction-following capability and independent model
