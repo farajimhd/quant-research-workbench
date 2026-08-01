@@ -29,8 +29,16 @@ TEACHER_LABEL_VERSION = "news_sol_teacher_labels_v1"
 HARD_MAX_COST_USD = Decimal("250.00")
 DEFAULT_EXPECTED_OUTPUT_TOKENS = 350
 DEFAULT_CHUNK_ROWS = 250
+DEFAULT_MAX_ENQUEUED_INPUT_TOKENS = 1_200_000
+DEFAULT_MAX_BATCH_ATTEMPTS = 10
+PLAN_VERSION = 2
 MAX_BATCH_FILE_BYTES = 180 * 1024 * 1024
 TERMINAL_BATCH_STATUSES = {"completed", "failed", "expired", "cancelled"}
+RETRYABLE_BATCH_ERROR_CODES = {
+    "token_limit_exceeded",
+    "rate_limit_exceeded",
+    "server_error",
+}
 
 # GPT-5.6 Sol Batch rates. The maximum input rate is the cache-write rate and
 # is used for authorization reserves; actual accounting separates cache reads,
@@ -50,6 +58,8 @@ class TeacherBatchConfig:
     max_dynamic_output_tokens: int = 16_384
     expected_output_tokens: int = DEFAULT_EXPECTED_OUTPUT_TOKENS
     poll_seconds: int = 30
+    max_enqueued_input_tokens: int = DEFAULT_MAX_ENQUEUED_INPUT_TOKENS
+    max_batch_attempts: int = DEFAULT_MAX_BATCH_ATTEMPTS
     hard_max_cost_usd: Decimal = HARD_MAX_COST_USD
     base_url: str = "https://api.openai.com/v1"
     project_id: str = ""
@@ -68,8 +78,7 @@ def run_teacher_batch(
     if config.chunk_rows < 1 or config.chunk_rows > 5_000:
         raise ValueError("chunk_rows must be between 1 and 5000")
     items = _collection_items(config.corpus_root)
-    plan = build_teacher_plan(config, items)
-    _write_or_validate_json(config.runtime_root / "plan.json", plan)
+    plan = ensure_teacher_plan(config, items)
     print_teacher_plan(plan)
     if not execute:
         print("PLANNED | no OpenAI request was made", flush=True)
@@ -126,7 +135,11 @@ def run_teacher_batch(
                 flush=True,
             )
             return 0
-        if not submitted and int(summary["active_chunks"]) == 0:
+        if (
+            not submitted
+            and int(summary["active_chunks"]) == 0
+            and int(summary["retry_pending_chunks"]) == 0
+        ):
             raise RuntimeError(
                 "No remaining chunk fits under the authorized rolling maximum. "
                 f"actual=${summary['actual_cost_usd']:.6f}, "
@@ -136,21 +149,82 @@ def run_teacher_batch(
         time.sleep(max(5, config.poll_seconds))
 
 
+def ensure_teacher_plan(
+    config: TeacherBatchConfig,
+    items: tuple[CollectionItem, ...],
+) -> dict[str, Any]:
+    """Create the token-bounded v2 plan once and validate it on every resume.
+
+    The v1 run may already contain durable labels and billed work.  V2 freezes
+    those identities as prior work and plans only missing articles, avoiding
+    both duplicate requests and mutation of the original forensic artifacts.
+    """
+    path = config.runtime_root / "plan_v2.json"
+    selection_sha256 = _selection_hash(items)
+    if path.exists():
+        plan = read_json(path)
+        expected = {
+            "plan_version": PLAN_VERSION,
+            "teacher_label_version": TEACHER_LABEL_VERSION,
+            "teacher_corpus_version": CORPUS_VERSION,
+            "selection_sha256": selection_sha256,
+            "sample_size": len(items),
+            "max_enqueued_input_tokens": config.max_enqueued_input_tokens,
+        }
+        drift = [key for key, value in expected.items() if plan.get(key) != value]
+        if drift:
+            raise RuntimeError(f"existing teacher plan v2 drift: {', '.join(drift)}")
+        _validate_prior_labels(config, plan)
+        return plan
+
+    by_id = {item.sample_id: item for item in items}
+    labels_root = config.runtime_root / "labels"
+    prior_ids = tuple(
+        sorted(path.stem for path in labels_root.glob("*.json") if path.stem in by_id)
+    )
+    prior_hash = _label_set_hash(labels_root, prior_ids)
+    prior_cost = _legacy_actual_cost(config.runtime_root / "chunks")
+    pending = tuple(item for item in items if item.sample_id not in set(prior_ids))
+    plan = build_teacher_plan(
+        config,
+        pending,
+        total_items=items,
+        prior_completed_sample_ids=prior_ids,
+        prior_labels_sha256=prior_hash,
+        prior_actual_cost_usd=prior_cost,
+    )
+    write_json_atomic(path, plan)
+    print(
+        f"PLAN V2 | reused_labels={len(prior_ids):,} "
+        f"pending={len(pending):,} prior_cost=${prior_cost:.6f} "
+        f"token_limit={config.max_enqueued_input_tokens:,}",
+        flush=True,
+    )
+    return plan
+
+
 def build_teacher_plan(
-    config: TeacherBatchConfig, items: tuple[CollectionItem, ...]
+    config: TeacherBatchConfig,
+    items: tuple[CollectionItem, ...],
+    *,
+    total_items: tuple[CollectionItem, ...] | None = None,
+    prior_completed_sample_ids: tuple[str, ...] = (),
+    prior_labels_sha256: str = "",
+    prior_actual_cost_usd: Decimal = Decimal("0"),
 ) -> dict[str, Any]:
     profile = MODEL_PROFILES["gpt-5.6-sol"]
     chunks_out: list[dict[str, Any]] = []
     current_rows: list[dict[str, Any]] = []
     current_items: list[CollectionItem] = []
     current_bytes = 0
+    current_tokens = 0
 
     def flush() -> None:
-        nonlocal current_rows, current_items, current_bytes
+        nonlocal current_rows, current_items, current_bytes, current_tokens
         if not current_rows:
             return
         chunk_index = len(chunks_out) + 1
-        path = config.runtime_root / "inputs" / f"chunk_{chunk_index:04d}.jsonl"
+        path = config.runtime_root / "inputs_v2" / f"chunk_{chunk_index:04d}.jsonl"
         _write_or_validate_jsonl(path, current_rows)
         input_tokens = sum(
             _conservative_tokens(json.dumps(row["body"], ensure_ascii=False))
@@ -184,6 +258,7 @@ def build_teacher_plan(
         current_rows = []
         current_items = []
         current_bytes = 0
+        current_tokens = 0
 
     for item in items:
         request = batch_request(
@@ -198,26 +273,45 @@ def build_teacher_plan(
         encoded = (
             json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n"
         ).encode("utf-8")
+        request_tokens = _conservative_tokens(
+            json.dumps(request["body"], ensure_ascii=False)
+        )
+        if request_tokens > config.max_enqueued_input_tokens:
+            raise RuntimeError(
+                "single request exceeds the configured enqueued-token ceiling: "
+                f"{item.sample_id} tokens={request_tokens:,} "
+                f"limit={config.max_enqueued_input_tokens:,}"
+            )
         if len(encoded) > MAX_BATCH_FILE_BYTES:
             raise RuntimeError(f"single request exceeds Batch file limit: {item.sample_id}")
         if current_rows and (
             len(current_rows) >= config.chunk_rows
             or current_bytes + len(encoded) > MAX_BATCH_FILE_BYTES
+            or current_tokens + request_tokens > config.max_enqueued_input_tokens
         ):
             flush()
         current_rows.append(request)
         current_items.append(item)
         current_bytes += len(encoded)
+        current_tokens += request_tokens
     flush()
-    selection_sha256 = _selection_hash(items)
+    all_items = total_items or items
+    selection_sha256 = _selection_hash(all_items)
     return {
+        "plan_version": PLAN_VERSION,
         "teacher_label_version": TEACHER_LABEL_VERSION,
         "teacher_corpus_version": CORPUS_VERSION,
         "prompt_version": PROMPT_VERSION,
         "model": profile.model,
         "selection_sha256": selection_sha256,
-        "sample_size": len(items),
+        "sample_size": len(all_items),
+        "pending_sample_size": len(items),
+        "prior_completed_rows": len(prior_completed_sample_ids),
+        "prior_completed_sample_ids": list(prior_completed_sample_ids),
+        "prior_labels_sha256": prior_labels_sha256,
+        "prior_actual_cost_usd": str(prior_actual_cost_usd),
         "chunk_rows": config.chunk_rows,
+        "max_enqueued_input_tokens": config.max_enqueued_input_tokens,
         "chunk_count": len(chunks_out),
         "expected_cost_usd": str(
             sum(Decimal(row["expected_cost_usd"]) for row in chunks_out)
@@ -245,6 +339,39 @@ def build_teacher_plan(
     }
 
 
+def _validate_prior_labels(
+    config: TeacherBatchConfig, plan: Mapping[str, Any]
+) -> None:
+    sample_ids = tuple(str(value) for value in plan["prior_completed_sample_ids"])
+    actual = _label_set_hash(config.runtime_root / "labels", sample_ids)
+    if actual != str(plan.get("prior_labels_sha256") or ""):
+        raise RuntimeError(
+            "durable labels reused by plan v2 are missing or have changed; "
+            "restore the original label files before resuming"
+        )
+
+
+def _label_set_hash(root: Path, sample_ids: tuple[str, ...]) -> str:
+    rows: list[dict[str, str]] = []
+    for sample_id in sample_ids:
+        path = root / f"{sample_id}.json"
+        if not path.exists():
+            return "missing"
+        rows.append({"sample_id": sample_id, "sha256": _file_hash(path)})
+    return _json_hash(rows)
+
+
+def _legacy_actual_cost(root: Path) -> Decimal:
+    actual = Decimal("0")
+    if not root.exists():
+        return actual
+    for path in root.glob("chunk_*/manifest.json"):
+        manifest = read_json(path)
+        if int(manifest.get("completed_rows") or 0) > 0:
+            actual += Decimal(str(manifest.get("actual_batch_cost_usd") or "0"))
+    return actual
+
+
 def reconcile_all(
     client: OpenAIClient,
     config: TeacherBatchConfig,
@@ -261,14 +388,14 @@ def reconcile_all(
         if state.get("collected"):
             continue
         if not state.get("batch_id"):
-            submit_chunk(client, config, plan, chunk)
-            state = read_json(state_path)
-            if not state.get("batch_id"):
-                continue
+            continue
         batch = client.retrieve_batch(str(state["batch_id"]))
         state.update(_state_from_batch(batch, plan, chunk))
         write_json_atomic(state_path, state)
         if str(state.get("status") or "") not in TERMINAL_BATCH_STATUSES:
+            continue
+        if _is_retryable_zero_work_failure(state):
+            _schedule_retry(config, state_path, state)
             continue
         output_path = _chunk_root(config, chunk) / "output.jsonl"
         if state.get("output_file_id") and not output_path.exists():
@@ -300,23 +427,41 @@ def submit_affordable_chunks(
     committed = Decimal(str(summary["actual_cost_usd"])) + Decimal(
         str(summary["active_maximum_reserve_usd"])
     )
+    active_tokens = int(summary["active_enqueued_input_tokens"])
+    now = int(time.time())
     submitted = 0
     for chunk in plan["chunks"]:
         state_path = _state_path(config, chunk)
-        if state_path.exists():
-            continue
+        state = read_json(state_path) if state_path.exists() else {}
+        if state:
+            _validate_chunk_state(state, plan, chunk)
+            if state.get("collected") or state.get("batch_id"):
+                continue
+            if int(state.get("next_retry_at") or 0) > now:
+                continue
+            if int(state.get("attempt_count") or 0) >= config.max_batch_attempts:
+                _settle_exhausted_chunk(config, chunk, state)
+                continue
         reserve = Decimal(str(chunk["maximum_reserved_cost_usd"]))
         if committed + reserve > authorized_cost_usd:
+            continue
+        chunk_tokens = int(chunk["estimated_input_tokens"])
+        if active_tokens + chunk_tokens > config.max_enqueued_input_tokens:
             continue
         submit_chunk(
             client,
             config,
             plan,
             chunk,
-            recovered=remote_batches.get(int(chunk["chunk_index"])),
+            recovered=(
+                None
+                if state.get("attempt_count")
+                else remote_batches.get(int(chunk["chunk_index"]))
+            ),
             remote_lookup_complete=True,
         )
         committed += reserve
+        active_tokens += chunk_tokens
         submitted += 1
     return submitted
 
@@ -361,8 +506,12 @@ def submit_chunk(
             "selection": str(plan["selection_sha256"])[:32],
             "chunk": f"{int(chunk['chunk_index']):04d}",
             "input": str(chunk["input_sha256"])[:32],
+            "attempt": str(int(state.get("attempt_count") or 0) + 1),
         },
     )
+    state["attempt_count"] = int(state.get("attempt_count") or 0) + 1
+    state.pop("retry_pending", None)
+    state.pop("next_retry_at", None)
     state.update(_state_from_batch(batch, plan, chunk))
     write_json_atomic(state_path, state)
 
@@ -521,12 +670,15 @@ class CounterUsage:
 def budget_summary(
     config: TeacherBatchConfig, plan: Mapping[str, Any]
 ) -> dict[str, Any]:
-    actual = Decimal("0")
+    actual = Decimal(str(plan.get("prior_actual_cost_usd") or "0"))
     active_reserve = Decimal("0")
     completed_chunks = 0
     active_chunks = 0
-    completed_rows = 0
+    completed_rows = int(plan.get("prior_completed_rows") or 0)
     failure_rows = 0
+    active_tokens = 0
+    retry_pending_chunks = 0
+    pending_chunks = 0
     for chunk in plan["chunks"]:
         state_path = _state_path(config, chunk)
         manifest_path = _chunk_root(config, chunk) / "manifest.json"
@@ -537,13 +689,25 @@ def budget_summary(
             failure_rows += int(manifest["failure_rows"])
             completed_chunks += 1
         elif state_path.exists():
-            active_chunks += 1
-            active_reserve += Decimal(str(chunk["maximum_reserved_cost_usd"]))
+            state = read_json(state_path)
+            if state.get("batch_id"):
+                active_chunks += 1
+                active_reserve += Decimal(str(chunk["maximum_reserved_cost_usd"]))
+                active_tokens += int(chunk["estimated_input_tokens"])
+            elif state.get("retry_pending"):
+                retry_pending_chunks += 1
+            else:
+                pending_chunks += 1
+        else:
+            pending_chunks += 1
     return {
         "actual_cost_usd": actual,
         "active_maximum_reserve_usd": active_reserve,
         "completed_chunks": completed_chunks,
         "active_chunks": active_chunks,
+        "active_enqueued_input_tokens": active_tokens,
+        "retry_pending_chunks": retry_pending_chunks,
+        "pending_chunks": pending_chunks,
         "completed_rows": completed_rows,
         "failure_rows": failure_rows,
     }
@@ -599,6 +763,8 @@ def print_teacher_status(
     print(
         f"STATUS | chunks={int(summary['completed_chunks']):,}/{chunk_count:,} "
         f"active={int(summary['active_chunks']):,} "
+        f"retry={int(summary['retry_pending_chunks']):,} "
+        f"queued_tokens={int(summary['active_enqueued_input_tokens']):,} "
         f"labels={int(summary['completed_rows']):,}/{item_count:,} "
         f"failures={int(summary['failure_rows']):,} "
         f"actual=${Decimal(str(summary['actual_cost_usd'])):.4f} "
@@ -614,7 +780,10 @@ def write_teacher_report(config: TeacherBatchConfig, plan: Mapping[str, Any]) ->
         "teacher_corpus_version": CORPUS_VERSION,
         "selection_sha256": plan["selection_sha256"],
         "sample_size": plan["sample_size"],
-        **summary,
+        **{
+            key: str(value) if isinstance(value, Decimal) else value
+            for key, value in summary.items()
+        },
     }
     write_json_atomic(config.runtime_root / "result.json", payload)
     path = config.runtime_root / "RESULT.md"
@@ -649,7 +818,7 @@ def _collection_items(root: Path) -> tuple[CollectionItem, ...]:
 
 
 def _chunk_root(config: TeacherBatchConfig, chunk: Mapping[str, Any]) -> Path:
-    return config.runtime_root / "chunks" / f"chunk_{int(chunk['chunk_index']):04d}"
+    return config.runtime_root / "chunks_v2" / f"chunk_{int(chunk['chunk_index']):04d}"
 
 
 def _state_path(config: TeacherBatchConfig, chunk: Mapping[str, Any]) -> Path:
@@ -674,12 +843,118 @@ def _state_from_batch(
         "error_file_id": batch.get("error_file_id"),
         "created_at": batch.get("created_at"),
         "completed_at": batch.get("completed_at"),
+        "errors": batch.get("errors"),
         "request_counts": {
             "total": int(counts.get("total") or 0),
             "completed": int(counts.get("completed") or 0),
             "failed": int(counts.get("failed") or 0),
         },
     }
+
+
+def _batch_error_codes(state: Mapping[str, Any]) -> set[str]:
+    errors = state.get("errors") or {}
+    rows: Iterable[Any]
+    if isinstance(errors, Mapping):
+        rows = errors.get("data") or (errors,)
+    elif isinstance(errors, list):
+        rows = errors
+    else:
+        rows = ()
+    return {
+        str(row.get("code") or "").strip()
+        for row in rows
+        if isinstance(row, Mapping) and row.get("code")
+    }
+
+
+def _is_retryable_zero_work_failure(state: Mapping[str, Any]) -> bool:
+    status = str(state.get("status") or "")
+    counts = state.get("request_counts") or {}
+    if int(counts.get("total") or 0) != 0:
+        return False
+    if state.get("output_file_id") or state.get("error_file_id"):
+        return False
+    if status == "expired":
+        return True
+    return status == "failed" and bool(
+        _batch_error_codes(state) & RETRYABLE_BATCH_ERROR_CODES
+    )
+
+
+def _schedule_retry(
+    config: TeacherBatchConfig, state_path: Path, state: dict[str, Any]
+) -> None:
+    attempts = list(state.get("attempts") or ())
+    batch_id = str(state.get("batch_id") or "")
+    if batch_id and not any(row.get("batch_id") == batch_id for row in attempts):
+        attempts.append(
+            {
+                "batch_id": batch_id,
+                "status": state.get("status"),
+                "created_at": state.get("created_at"),
+                "completed_at": state.get("completed_at"),
+                "request_counts": state.get("request_counts"),
+                "errors": state.get("errors"),
+            }
+        )
+    attempt_count = max(int(state.get("attempt_count") or 1), len(attempts))
+    delay = min(900, 30 * (2 ** min(5, max(0, attempt_count - 1))))
+    state.update(
+        {
+            "attempts": attempts,
+            "attempt_count": attempt_count,
+            "batch_id": None,
+            "status": "retry_wait",
+            "retry_pending": True,
+            "next_retry_at": int(time.time()) + delay,
+        }
+    )
+    write_json_atomic(state_path, state)
+    print(
+        f"RETRY | chunk={int(state['chunk_index']):04d} "
+        f"attempt={attempt_count}/{config.max_batch_attempts} wait={delay}s "
+        f"reason={','.join(sorted(_batch_error_codes(attempts[-1]))) or 'expired'}",
+        flush=True,
+    )
+
+
+def _settle_exhausted_chunk(
+    config: TeacherBatchConfig,
+    chunk: Mapping[str, Any],
+    state: dict[str, Any],
+) -> None:
+    failures = [
+        {
+            "sample_id": str(sample_id),
+            "error": "batch_retry_attempts_exhausted",
+        }
+        for sample_id in chunk["sample_ids"]
+    ]
+    _write_jsonl(_chunk_root(config, chunk) / "failures.jsonl", failures)
+    write_json_atomic(
+        _chunk_root(config, chunk) / "manifest.json",
+        {
+            "teacher_label_version": TEACHER_LABEL_VERSION,
+            "chunk_index": chunk["chunk_index"],
+            "sample_rows": len(failures),
+            "completed_rows": 0,
+            "failure_rows": len(failures),
+            "input_tokens": 0,
+            "uncached_input_tokens": 0,
+            "cached_input_tokens": 0,
+            "cache_write_tokens": 0,
+            "output_tokens": 0,
+            "cache_write_reporting_complete": True,
+            "actual_batch_cost_usd": "0",
+            "cost_accounting_basis": "no_requests_processed",
+            "batch_elapsed_seconds": 0,
+        },
+    )
+    state["collected"] = True
+    state["status"] = "retry_exhausted"
+    state["retry_pending"] = False
+    write_json_atomic(_state_path(config, chunk), state)
 
 
 def _validate_chunk_state(
@@ -712,7 +987,8 @@ def _find_remote_batch(
             and metadata.get("chunk") == f"{int(chunk['chunk_index']):04d}"
             and metadata.get("input") == str(chunk["input_sha256"])[:32]
         ):
-            matches.append(batch)
+            if not _is_retryable_zero_work_failure(_state_from_batch(batch, plan, chunk)):
+                matches.append(batch)
     if len(matches) > 1:
         raise RuntimeError(
             f"multiple remote batches match chunk {chunk['chunk_index']}"
@@ -742,8 +1018,19 @@ def _remote_batch_index(
         index = int(raw_index)
         if metadata.get("input") != expected_inputs.get(index):
             continue
-        if index in matches:
-            raise RuntimeError(f"multiple remote batches match chunk {index}")
+        chunk = next(
+            row for row in plan["chunks"] if int(row["chunk_index"]) == index
+        )
+        if _is_retryable_zero_work_failure(_state_from_batch(batch, plan, chunk)):
+            continue
+        existing = matches.get(index)
+        if existing is not None:
+            existing_terminal = str(existing.get("status") or "") in TERMINAL_BATCH_STATUSES
+            candidate_terminal = str(batch.get("status") or "") in TERMINAL_BATCH_STATUSES
+            if not existing_terminal and not candidate_terminal:
+                raise RuntimeError(f"multiple active remote batches match chunk {index}")
+            if int(batch.get("created_at") or 0) <= int(existing.get("created_at") or 0):
+                continue
         matches[index] = batch
     return matches
 

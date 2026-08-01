@@ -10,7 +10,11 @@ from .schema import stable_json_hash
 from .sol_teacher_batch import (
     CounterUsage,
     TeacherBatchConfig,
+    _is_retryable_zero_work_failure,
     build_teacher_plan,
+    budget_summary,
+    submit_affordable_chunks,
+    write_teacher_report,
 )
 from .sol_teacher_corpus import (
     load_ground_truth_exclusion,
@@ -155,6 +159,132 @@ class SolTeacherPipelineTests(unittest.TestCase):
         self.assertGreater(
             Decimal(plan["maximum_cost_usd"]), Decimal(plan["expected_cost_usd"])
         )
+
+    def test_plan_partitions_on_enqueued_token_ceiling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtimes" / "teacher"
+            config = TeacherBatchConfig(
+                corpus_root=root,
+                runtime_root=root / "sol_batch",
+                chunk_rows=10,
+                max_enqueued_input_tokens=3_500,
+            )
+            items = tuple(_collection_item(index) for index in range(5))
+            plan = build_teacher_plan(config, items)
+        self.assertGreater(plan["chunk_count"], 1)
+        self.assertTrue(
+            all(
+                int(chunk["estimated_input_tokens"])
+                <= config.max_enqueued_input_tokens
+                for chunk in plan["chunks"]
+            )
+        )
+
+    def test_zero_work_token_rejection_is_retryable(self) -> None:
+        self.assertTrue(
+            _is_retryable_zero_work_failure(
+                {
+                    "status": "failed",
+                    "request_counts": {"total": 0, "completed": 0, "failed": 0},
+                    "output_file_id": None,
+                    "error_file_id": None,
+                    "errors": {
+                        "data": [
+                            {
+                                "code": "token_limit_exceeded",
+                                "message": "enqueued token limit reached",
+                            }
+                        ]
+                    },
+                }
+            )
+        )
+        self.assertFalse(
+            _is_retryable_zero_work_failure(
+                {
+                    "status": "failed",
+                    "request_counts": {"total": 2, "completed": 0, "failed": 2},
+                    "errors": {"data": [{"code": "token_limit_exceeded"}]},
+                }
+            )
+        )
+
+    def test_admission_control_submits_only_one_token_bounded_chunk(self) -> None:
+        class Client:
+            def __init__(self) -> None:
+                self.created = 0
+
+            def list_batches(self, *, limit: int) -> list[dict[str, object]]:
+                return []
+
+            def upload_batch_file(self, path: Path) -> dict[str, str]:
+                return {"id": f"file-{path.stem}"}
+
+            def create_batch(
+                self, input_file_id: str, metadata: dict[str, str]
+            ) -> dict[str, object]:
+                self.created += 1
+                return {
+                    "id": f"batch-{self.created}",
+                    "input_file_id": input_file_id,
+                    "status": "validating",
+                    "request_counts": {},
+                    "metadata": metadata,
+                }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtimes" / "teacher"
+            config = TeacherBatchConfig(
+                corpus_root=root,
+                runtime_root=root / "sol_batch",
+                max_enqueued_input_tokens=1_000,
+            )
+            inputs = root / "sol_batch" / "inputs_v2"
+            inputs.mkdir(parents=True)
+            chunks = []
+            for index in (1, 2):
+                path = inputs / f"chunk_{index:04d}.jsonl"
+                path.write_text("{}\n", encoding="utf-8")
+                chunks.append(
+                    {
+                        "chunk_index": index,
+                        "sample_ids": [f"S{index}"],
+                        "input_path": str(path),
+                        "input_sha256": f"hash-{index}",
+                        "estimated_input_tokens": 700,
+                        "maximum_reserved_cost_usd": "1",
+                    }
+                )
+            plan = {
+                "selection_sha256": "selection",
+                "prior_actual_cost_usd": "0",
+                "prior_completed_rows": 0,
+                "chunks": chunks,
+            }
+            client = Client()
+            submitted = submit_affordable_chunks(
+                client, config, plan, authorized_cost_usd=Decimal("10")
+            )
+            summary = budget_summary(config, plan)
+        self.assertEqual(submitted, 1)
+        self.assertEqual(client.created, 1)
+        self.assertEqual(summary["active_chunks"], 1)
+        self.assertEqual(summary["active_enqueued_input_tokens"], 700)
+
+    def test_final_report_serializes_decimal_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtimes" / "teacher"
+            config = TeacherBatchConfig(corpus_root=root, runtime_root=root / "sol_batch")
+            plan = {
+                "selection_sha256": "selection",
+                "sample_size": 2,
+                "prior_actual_cost_usd": "1.25",
+                "prior_completed_rows": 2,
+                "chunks": [],
+            }
+            write_teacher_report(config, plan)
+            result = (config.runtime_root / "result.json").read_text(encoding="utf-8")
+        self.assertIn('"actual_cost_usd": "1.25"', result)
 
 
 if __name__ == "__main__":

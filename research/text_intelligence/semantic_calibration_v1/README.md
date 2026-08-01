@@ -416,9 +416,14 @@ authorize the bounded run:
 python -m research.text_intelligence.semantic_calibration_v1.run_sol_teacher_labels --execute --authorize-cost-usd 225
 ```
 
-The launcher uses at most 250 requests per Batch partition. Before submitting a
-partition it reserves the maximum permitted cost of all active work plus that
-partition. Completed usage releases its reserve and is charged using separate
+The launcher uses at most 250 requests per Batch partition and also closes a
+partition before its conservative input estimate would exceed 1.2 million
+tokens. Only partitions whose combined active input remains within that same
+1.2-million-token admission ceiling can be enqueued. This keeps the job below
+the authenticated organization's current 1.35-million enqueued-token limit;
+`--max-enqueued-input-tokens` makes the local ceiling explicit if that external
+limit changes. Before submitting a partition it reserves the maximum permitted
+cost of all active work plus that partition. Completed usage releases its reserve and is charged using separate
 uncached-input, cached-input, cache-write, and output counters. Therefore, the
 job can progress near the measured expected cost without permitting total
 authorized spend above the explicit command authorization. The immutable
@@ -426,8 +431,13 @@ launcher ceiling is $250; the current 10,000-item corpus plans at a conservative
 $195.64 expected cost, so the documented $225 authorization leaves bounded
 variance without authorizing the theoretical all-output-token maximum.
 Rerunning the same command reconciles remote Batches and resumes from durable
-runtime state. `--no-wait` submits only the partitions that fit the same rolling
-authorization and then returns.
+runtime state. A whole-Batch rejection that processed zero requests is not
+misreported as article-level failure: retryable capacity and service errors are
+retained as attempt history and retried with bounded exponential backoff.
+Request-level output failures remain durable final evidence. The V2 execution
+plan can reuse already completed V1 labels and their billed usage while leaving
+the original states and failure artifacts unchanged. `--no-wait` submits only
+the partitions that fit both rolling authorization ceilings and then returns.
 
 The Batch API currently permits up to 50,000 requests and a 200 MB JSONL input
 file. This pipeline intentionally uses much smaller rolling partitions to make
