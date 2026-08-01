@@ -367,3 +367,64 @@ budget, while invalid structured responses retry with a concise contract repair
 instruction; successful articles are never repeated.
 Local API cost is zero, but the report does not misrepresent unmetered GPU,
 electricity, depreciation, or operator time as zero compute cost.
+## Balanced Sol teacher corpus
+
+The human-reviewed `news_1000` collection remains the calibration and frozen
+acceptance authority. It must never be used as paid teacher-training input.
+The independent `news_sol_teacher_corpus_v1` product selects 10,000 other
+canonical News articles with these contracts:
+
+- exact zero overlap with every source identity in the completed 1,000-item
+  ground-truth manifest;
+- equal quotas across each calendar year from 2010 through 2026;
+- a deliberate provider-ticker scope mix of 15 percent zero, 50 percent single,
+  and 35 percent multi-ticker articles within every year, followed by
+  deterministic round-robin coverage across V5 label presence, content role,
+  source origin, direction, eligibility, text length, and rare event concepts;
+- a 15 percent per-scope target for V5-missing articles when that population is
+  available, with its realized count recorded rather than fabricated;
+- source-independent candidate supplementation so V5-missing articles can be
+  selected rather than allowing the existing classifier to define its own
+  teacher population;
+- canonical rendered V2 text and point-in-time issuer candidates as the only
+  Sol input; V5 selection hints are sealed and never placed in the prompt; and
+- immutable item, selection, exclusion, and manifest hashes under the machine
+  runtime root.
+
+Prepare the corpus on the workstation after its code copy is synchronized:
+
+```powershell
+conda activate ml4t
+cd D:\TradingML\codes\quant-research-workbench
+python -m research.text_intelligence.semantic_calibration_v1.run_prepare_sol_teacher_corpus
+```
+
+Plan the GPT-5.6 Sol Batch job without making a paid request:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_sol_teacher_labels
+```
+
+Review the exact input and expected-cost plan printed by that command. To
+authorize the bounded run:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_sol_teacher_labels --execute --authorize-cost-usd 225
+```
+
+The launcher uses at most 250 requests per Batch partition. Before submitting a
+partition it reserves the maximum permitted cost of all active work plus that
+partition. Completed usage releases its reserve and is charged using separate
+uncached-input, cached-input, cache-write, and output counters. Therefore, the
+job can progress near the measured expected cost without permitting total
+authorized spend above the explicit command authorization. The immutable
+launcher ceiling is $250; the current 10,000-item corpus plans at a conservative
+$195.64 expected cost, so the documented $225 authorization leaves bounded
+variance without authorizing the theoretical all-output-token maximum.
+Rerunning the same command reconciles remote Batches and resumes from durable
+runtime state. `--no-wait` submits only the partitions that fit the same rolling
+authorization and then returns.
+
+The Batch API currently permits up to 50,000 requests and a 200 MB JSONL input
+file. This pipeline intentionally uses much smaller rolling partitions to make
+cost authorization, recovery, and output auditing bounded.
