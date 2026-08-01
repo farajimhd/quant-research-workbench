@@ -26,18 +26,34 @@ export function InventoryFilterSelect({ ariaLabel, onChange, options, value }: {
     if (!button) return;
     const rect = button.getBoundingClientRect();
     const scale = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-zoom")) || 1;
-    const width = Math.min(280, Math.max(rect.width, 170 * scale));
+    const readableScale = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-readable-scale")) || 1;
+    const menu = menuRef.current;
     const availableBelow = window.innerHeight - rect.bottom - 8;
     const availableAbove = rect.top - 8;
-    const maxHeight = Math.max(112, Math.min(280 * scale, Math.max(availableBelow, availableAbove)));
-    const openAbove = availableBelow < Math.min(190 * scale, maxHeight) && availableAbove > availableBelow;
+    const heightCap = 420 * readableScale;
+    const contentHeight = menu?.scrollHeight || heightCap;
+    const desiredHeight = Math.min(contentHeight, heightCap);
+    const openAbove = availableBelow < desiredHeight && availableAbove > availableBelow;
+    const availableHeight = openAbove ? availableAbove : availableBelow;
+    const maxHeight = Math.max(80, Math.min(heightCap, availableHeight));
+    const renderedHeight = Math.min(contentHeight, maxHeight);
+    const option = menu?.querySelector<HTMLElement>(".inventory-filter-option");
+    const optionStyle = option ? getComputedStyle(option) : null;
+    const measureContext = document.createElement("canvas").getContext("2d");
+    if (measureContext && optionStyle) measureContext.font = optionStyle.font;
+    const labelWidth = measureContext ? Math.max(0, ...options.map(({ label }) => measureContext.measureText(label).width)) : 0;
+    const optionPadding = optionStyle ? Number.parseFloat(optionStyle.paddingLeft) + Number.parseFloat(optionStyle.paddingRight) : 24 * scale;
+    const menuStyle = menu ? getComputedStyle(menu) : null;
+    const menuChrome = menuStyle ? Number.parseFloat(menuStyle.paddingLeft) + Number.parseFloat(menuStyle.paddingRight) + Number.parseFloat(menuStyle.borderLeftWidth) + Number.parseFloat(menuStyle.borderRightWidth) : 10 * scale;
+    const scrollbarAllowance = contentHeight > maxHeight ? 18 : 0;
+    const width = Math.min(window.innerWidth - 16, Math.max(rect.width, 170 * scale, labelWidth + optionPadding + menuChrome + scrollbarAllowance));
     setPlacement({
       left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
       maxHeight,
-      top: openAbove ? Math.max(8, rect.top - maxHeight - 4) : rect.bottom + 4,
+      top: openAbove ? Math.max(8, rect.top - renderedHeight - 4) : rect.bottom + 4,
       width,
     });
-  }, []);
+  }, [options]);
 
   useLayoutEffect(() => {
     if (!open) return;
