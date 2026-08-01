@@ -1,4 +1,4 @@
-/* Configuration-specific visual hierarchy. All colors derive from theme.ts tokens. */
+/* Configuration presentation. Colors resolve from theme.ts; layout stays full-width. */
 
 .nav-item[data-config-tone="canvas"] { --configuration-nav-accent: var(--canvas-link-cyan); }
 .nav-item[data-config-tone="strategy"] { --configuration-nav-accent: var(--canvas-link-blue); }
@@ -7,94 +7,90 @@
 .nav-item[data-config-tone="oms"] { --configuration-nav-accent: var(--canvas-link-cyan); }
 .nav-item[data-config-tone="accounts"] { --configuration-nav-accent: var(--canvas-link-amber); }
 .nav-item[data-config-tone="revisions"] { --configuration-nav-accent: var(--canvas-link-rose); }
+.nav-item[data-config-tone] > svg { color: var(--configuration-nav-accent); }
+.nav-item.active[data-config-tone] > svg { color: currentColor; }
 
-.nav-item[data-config-tone] > svg {
-  color: var(--configuration-nav-accent);
-  filter: drop-shadow(0 1px 5px color-mix(in oklab, var(--configuration-nav-accent) 25%, transparent));
-  transition: color 140ms ease, filter 140ms ease, transform 140ms ease;
-}
+/* The navigation should begin directly below the application header. */
+.sidebar { left: 0; position: fixed; top: 64px; width: 256px; }
+.sidebar-collapsed .sidebar { width: 64px; }
+.shell-body > .main { grid-column: 2; }
+.sidebar-nav { padding-top: 8px; }
+.sidebar-collapsed .sidebar-nav { padding-top: 8px; }
+.collapse-button { top: 8px; }
 
-.nav-item[data-config-tone]:hover > svg { transform: translateY(-1px); }
-.nav-item.active[data-config-tone] > svg { color: currentColor; filter: none; }
-
-.trading-configuration-page[data-configuration-section="strategy"] { --configuration-accent: var(--canvas-link-blue); --configuration-accent-secondary: var(--canvas-link-cyan); }
-.trading-configuration-page[data-configuration-section="assignments"] { --configuration-accent: var(--canvas-link-violet); --configuration-accent-secondary: var(--canvas-link-blue); }
-.trading-configuration-page[data-configuration-section="portfolio"] { --configuration-accent: var(--canvas-link-green); --configuration-accent-secondary: var(--canvas-link-amber); }
-.trading-configuration-page[data-configuration-section="oms"] { --configuration-accent: var(--canvas-link-cyan); --configuration-accent-secondary: var(--canvas-link-blue); }
-.trading-configuration-page[data-configuration-section="accounts"] { --configuration-accent: var(--canvas-link-amber); --configuration-accent-secondary: var(--canvas-link-orange); }
-.trading-configuration-page[data-configuration-section="revisions"] { --configuration-accent: var(--canvas-link-rose); --configuration-accent-secondary: var(--canvas-link-violet); }
+.trading-configuration-page[data-configuration-section="strategy"] { --configuration-accent: var(--canvas-link-blue); }
+.trading-configuration-page[data-configuration-section="assignments"] { --configuration-accent: var(--canvas-link-violet); }
+.trading-configuration-page[data-configuration-section="portfolio"] { --configuration-accent: var(--canvas-link-green); }
+.trading-configuration-page[data-configuration-section="oms"] { --configuration-accent: var(--canvas-link-cyan); }
+.trading-configuration-page[data-configuration-section="accounts"] { --configuration-accent: var(--canvas-link-amber); }
+.trading-configuration-page[data-configuration-section="revisions"] { --configuration-accent: var(--canvas-link-rose); }
 
 .trading-configuration-page {
   --configuration-accent: var(--primary);
-  --configuration-accent-secondary: var(--canvas-link-cyan);
-  gap: 18px;
-  max-width: 1560px;
-  padding: 22px clamp(18px, 2.2vw, 34px) 36px;
+  gap: 14px;
+  margin: 0;
+  max-width: none;
+  padding: 16px;
+  width: 100%;
 }
 
 .configuration-page-header {
-  background:
-    radial-gradient(circle at 4% 0%, color-mix(in oklab, var(--configuration-accent) 11%, transparent), transparent 33%),
-    var(--surface);
-  border-color: color-mix(in oklab, var(--configuration-accent) 24%, var(--border));
-  border-radius: 15px;
-  box-shadow: 0 12px 34px color-mix(in oklab, var(--configuration-accent) 7%, transparent), var(--shadow-sm);
-  min-height: 116px;
-  overflow: hidden;
-  padding: 21px 24px;
+  background: var(--surface);
+  border-color: var(--border);
+  border-radius: 10px;
+  box-shadow: none;
+  min-height: 0;
+  padding: 18px 20px;
   position: relative;
 }
 
 .configuration-page-header::before {
-  background: linear-gradient(180deg, var(--configuration-accent), color-mix(in oklab, var(--configuration-accent-secondary) 72%, var(--configuration-accent)));
-  bottom: 18px;
+  background: var(--configuration-accent);
+  bottom: 14px;
   content: "";
-  left: 0;
+  left: -1px;
   position: absolute;
-  top: 18px;
+  top: 14px;
   width: 3px;
 }
 
 .configuration-page-icon {
-  background: color-mix(in oklab, var(--configuration-accent) 12%, var(--surface));
-  border-color: color-mix(in oklab, var(--configuration-accent) 34%, var(--border));
-  border-radius: 12px;
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, white 15%, transparent), 0 8px 18px color-mix(in oklab, var(--configuration-accent) 13%, transparent);
+  background: color-mix(in oklab, var(--configuration-accent) 9%, var(--surface));
+  border-color: color-mix(in oklab, var(--configuration-accent) 28%, var(--border));
+  border-radius: 9px;
+  box-shadow: none;
   color: var(--configuration-accent);
-  height: 48px;
-  width: 48px;
+  height: 42px;
+  width: 42px;
 }
 
-.configuration-page-header > div:nth-child(2) > span { color: var(--configuration-accent); font-size: 10.5px; letter-spacing: .095em; }
-.configuration-page-header h1 { font-size: clamp(22px, 1.8vw, 28px); font-weight: 710; letter-spacing: -.025em; margin-top: 3px; }
-.configuration-page-header p { font-size: 13px; line-height: 1.55; max-width: 980px; }
-.configuration-revision-badge { background: color-mix(in oklab, var(--surface-alt) 86%, var(--configuration-accent)); border-color: color-mix(in oklab, var(--configuration-accent) 20%, var(--border)); }
+.configuration-page-header > div:nth-child(2) > span { color: var(--configuration-accent); }
+.configuration-page-header h1 { font-size: 22px; font-weight: 680; letter-spacing: -.015em; }
+.configuration-page-header p { font-size: 13px; line-height: 1.5; max-width: 1040px; }
+.configuration-revision-badge { background: var(--surface-alt); border-color: var(--border); }
 
 .configuration-journey {
-  background: color-mix(in oklab, var(--surface) 94%, var(--configuration-accent));
-  border-color: color-mix(in oklab, var(--configuration-accent) 18%, var(--border));
-  border-radius: 12px;
-  box-shadow: var(--shadow-sm);
-  overflow: hidden;
+  background: var(--surface);
+  border-color: var(--border);
+  border-radius: 9px;
+  box-shadow: none;
 }
 
-.configuration-journey a { min-height: 48px; position: relative; }
-.configuration-journey a::after { background: var(--configuration-accent); bottom: 0; content: ""; height: 2px; left: 14px; opacity: 0; position: absolute; right: 14px; transform: scaleX(.45); transition: opacity 140ms ease, transform 140ms ease; }
-.configuration-journey a[aria-current="step"]::after { opacity: 1; transform: scaleX(1); }
-.configuration-journey a[aria-current="step"] { background: color-mix(in oklab, var(--configuration-accent) 9%, var(--surface)); color: var(--foreground); }
+.configuration-journey a { min-height: 42px; }
+.configuration-journey a[aria-current="step"] { background: color-mix(in oklab, var(--configuration-accent) 7%, var(--surface)); }
 .configuration-journey a[aria-current="step"] > span { background: var(--configuration-accent); border-color: var(--configuration-accent); color: var(--primary-foreground); }
 
 .configuration-guide {
-  background: color-mix(in oklab, var(--configuration-accent) 7%, var(--surface));
-  border-color: color-mix(in oklab, var(--configuration-accent) 25%, var(--border));
+  background: color-mix(in oklab, var(--configuration-accent) 5%, var(--surface));
+  border-color: color-mix(in oklab, var(--configuration-accent) 22%, var(--border));
   border-left: 3px solid var(--configuration-accent);
-  border-radius: 10px;
-  box-shadow: 0 6px 18px color-mix(in oklab, var(--configuration-accent) 5%, transparent);
-  padding: 13px 15px;
+  border-radius: 9px;
+  box-shadow: none;
+  padding: 12px 14px;
 }
 
-.configuration-guide > svg { color: var(--configuration-accent); }
-.configuration-guide strong { color: color-mix(in oklab, var(--configuration-accent) 68%, var(--foreground)); }
+.configuration-guide > svg,
+.configuration-guide strong { color: var(--configuration-accent); }
 
 .configuration-group,
 .configuration-editor-card,
@@ -103,75 +99,73 @@
 .strategy-library,
 .strategy-profile-workbench,
 .strategy-lifecycle-panel {
-  border-color: color-mix(in oklab, var(--configuration-accent) 13%, var(--border));
-  box-shadow: 0 8px 24px color-mix(in oklab, var(--foreground) 4%, transparent);
+  border-color: var(--border);
+  box-shadow: none;
 }
 
-.configuration-group { background: var(--surface); border-radius: 13px; }
-.configuration-group > header { background: color-mix(in oklab, var(--surface-alt) 86%, var(--configuration-accent)); min-height: 66px; padding: 12px 15px; }
-.configuration-group-heading { align-items: flex-start; display: flex !important; gap: 11px !important; min-width: 0; }
+.configuration-group { background: var(--surface); border-radius: 10px; }
+.configuration-group > header { background: var(--surface); min-height: 0; padding: 12px 14px; }
+.configuration-group-heading { align-items: flex-start; display: flex !important; gap: 10px !important; min-width: 0; }
 .configuration-group-heading > div { display: grid; gap: 3px; min-width: 0; }
-.configuration-group-icon { align-items: center; background: color-mix(in oklab, var(--group-accent) 11%, var(--surface)); border: 1px solid color-mix(in oklab, var(--group-accent) 31%, var(--border)); border-radius: 8px; color: var(--group-accent); display: flex; flex: 0 0 auto; height: 30px; justify-content: center; width: 30px; }
+.configuration-group-icon {
+  align-items: center;
+  background: color-mix(in oklab, var(--group-accent) 7%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--group-accent) 24%, var(--border));
+  border-radius: 7px;
+  color: var(--group-accent);
+  display: flex;
+  flex: 0 0 auto;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
 .configuration-group[data-group-tone="strategy"] { --group-accent: var(--canvas-link-blue); }
 .configuration-group[data-group-tone="portfolio"] { --group-accent: var(--canvas-link-green); }
 .configuration-group[data-group-tone="oms"] { --group-accent: var(--canvas-link-cyan); }
 .configuration-group[data-group-tone="protection"] { --group-accent: var(--canvas-link-rose); }
 .configuration-group[data-group-tone="ready"] { --group-accent: var(--success); }
 .configuration-group[data-group-tone="section"] { --group-accent: var(--configuration-accent); }
-.configuration-group > header strong { font-size: 14px; font-weight: 680; }
-.configuration-group > header p { font-size: 11.5px; max-width: 940px; }
-.configuration-group-body { padding: 16px; }
-
-.strategy-lifecycle-panel[data-section="initial-entry"] { --lifecycle-color: var(--canvas-link-blue); }
-.strategy-lifecycle-panel[data-section="reentry"] { --lifecycle-color: var(--canvas-link-violet); }
-.strategy-lifecycle-panel[data-section="normal-exit"] { --lifecycle-color: var(--canvas-link-rose); }
-.strategy-lifecycle-panel > header { background: linear-gradient(90deg, color-mix(in oklab, var(--lifecycle-color, var(--configuration-accent)) 8%, var(--surface)), var(--surface) 42%); }
+.configuration-group > header strong { font-size: 13px; font-weight: 680; }
+.configuration-group > header p { font-size: 11px; max-width: 1040px; }
+.configuration-group-body { padding: 14px; }
 
 .strategy-order-request {
-  background: color-mix(in oklab, var(--canvas-link-blue) 4%, var(--surface));
-  border-color: color-mix(in oklab, var(--canvas-link-blue) 25%, var(--border));
-  border-top-width: 3px;
-  box-shadow: 0 10px 28px color-mix(in oklab, var(--canvas-link-blue) 7%, transparent);
+  background: var(--surface);
+  border-color: color-mix(in oklab, var(--canvas-link-blue) 30%, var(--border));
+  border-top-width: 2px;
+  box-shadow: none;
 }
 
 .strategy-handoff-flow span:first-child { --handoff-accent: var(--canvas-link-blue); }
 .strategy-handoff-flow span:nth-child(3) { --handoff-accent: var(--canvas-link-green); }
 .strategy-handoff-flow span:nth-child(5) { --handoff-accent: var(--canvas-link-cyan); }
-.strategy-handoff-flow span { background: color-mix(in oklab, var(--handoff-accent, var(--canvas-link-blue)) 9%, var(--surface)); border-color: color-mix(in oklab, var(--handoff-accent, var(--canvas-link-blue)) 28%, var(--border)); color: var(--handoff-accent, var(--foreground)); }
+.strategy-handoff-flow span { background: var(--surface); border-color: color-mix(in oklab, var(--handoff-accent) 28%, var(--border)); color: var(--handoff-accent); }
 .strategy-handoff-card:first-child { --handoff-card-accent: var(--canvas-link-green); }
 .strategy-handoff-card:last-child { --handoff-card-accent: var(--canvas-link-cyan); }
-.strategy-handoff-card { background: color-mix(in oklab, var(--handoff-card-accent) 4%, var(--surface)); border-top: 2px solid var(--handoff-card-accent); padding: 16px; }
+.strategy-handoff-card { background: var(--surface); border-top: 2px solid var(--handoff-card-accent); padding: 14px; }
 .strategy-handoff-card > header > svg,
 .strategy-handoff-card > header span { color: var(--handoff-card-accent); }
 
-.configuration-save-bar { background: color-mix(in oklab, var(--surface) 94%, var(--configuration-accent)); border-color: color-mix(in oklab, var(--configuration-accent) 17%, var(--border)); border-radius: 11px; box-shadow: var(--shadow-sm); }
-.trading-configuration-page .button.primary { background: var(--configuration-accent); border-color: color-mix(in oklab, var(--configuration-accent) 85%, black); }
-.trading-configuration-page .button.primary:hover:not(:disabled) { background: color-mix(in oklab, var(--configuration-accent) 88%, var(--foreground)); }
-
-@media (min-width: 1320px) {
-  .trading-configuration-page .configuration-field-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
+.configuration-save-bar { background: var(--surface); border-color: var(--border); border-radius: 9px; box-shadow: none; }
+.trading-configuration-page .button.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+.trading-configuration-page .button.primary:hover:not(:disabled) { background: color-mix(in oklab, var(--primary) 88%, var(--foreground)); }
 
 @media (max-width: 1100px) {
-  .trading-configuration-page { padding-inline: 16px; }
-  .configuration-page-header { min-height: auto; }
-  .configuration-group > header { align-items: flex-start; }
+  .trading-configuration-page { padding: 14px; }
 }
 
 @media (max-width: 760px) {
-  .trading-configuration-page { gap: 13px; padding: 12px; }
-  .configuration-page-header { gap: 11px; padding: 16px; }
-  .configuration-page-header::before { bottom: 14px; top: 14px; }
-  .configuration-page-icon { height: 40px; width: 40px; }
-  .configuration-page-header h1 { font-size: 21px; }
+  .sidebar-nav,
+  .sidebar-collapsed .sidebar-nav { padding-top: 6px; }
+  .collapse-button { top: 6px; }
+  .trading-configuration-page { gap: 12px; padding: 10px; }
+  .configuration-page-header { gap: 11px; padding: 15px 16px; }
+  .configuration-page-header::before { bottom: 12px; top: 12px; }
+  .configuration-page-icon { height: 38px; width: 38px; }
+  .configuration-page-header h1 { font-size: 20px; }
   .configuration-page-header p { font-size: 12px; }
   .configuration-journey { overflow-x: auto; }
-  .configuration-journey a { flex: 0 0 min(220px, 58vw); }
-  .configuration-group > header { gap: 10px; }
+  .configuration-journey a { flex: 0 0 min(210px, 58vw); }
   .configuration-group-body { padding: 12px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .nav-item[data-config-tone] > svg,
-  .configuration-journey a::after { transition: none; }
 }

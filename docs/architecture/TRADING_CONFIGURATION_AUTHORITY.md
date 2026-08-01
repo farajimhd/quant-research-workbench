@@ -170,6 +170,10 @@ Raw JSON is never the primary configuration interface.
 - The visual hierarchy remains usable at every supported application scale and
   compact viewport. Color supplements icons, labels, borders, and structure; it
   is never the only distinction between configuration authorities.
+- Configuration pages use the full main-workspace width with only the shared
+  content inset; they do not impose a desktop max-width that narrows forms or
+  leaves an unused right rail. The application sidebar begins directly below
+  the top bar at every supported scale.
 - Strategy Studio presents Trading Behavior, Initial Entry, Reentry, Exit, and
   Capabilities as collapsible containers with descriptive headers and
   at-a-glance configured summaries.
