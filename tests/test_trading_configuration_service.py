@@ -14,6 +14,7 @@ from src.backend.trading_configuration_service import (
     capability_catalog,
     publish_configuration,
     replay_configuration_snapshot,
+    replace_configuration_draft,
     resolve_runtime_configuration,
     resolve_runtime_configurations,
     update_configuration_section,
@@ -190,6 +191,27 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         self.assertEqual(first["revision_id"], second["revision_id"])
         self.assertEqual(second["label"], "First label")
+
+    def test_complete_draft_replacement_is_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            original = self._draft()
+            journal.save_trading_configuration_draft(original)
+            replacement = deepcopy(original)
+            replacement["strategy"]["profiles"][0]["name"] = "Cloned profile"
+            replacement["assignments"]["deployments"][0]["name"] = "Cloned deployment"
+            with self._service_patches(journal):
+                saved = replace_configuration_draft(replacement)
+                invalid = deepcopy(replacement)
+                invalid["assignments"]["deployments"][0]["profile_id"] = "missing-profile"
+                with self.assertRaisesRegex(ValueError, "unknown Strategy Profile"):
+                    replace_configuration_draft(invalid)
+                reloaded = journal.trading_configuration_draft()
+            journal.close()
+
+        self.assertEqual(saved["strategy"]["profiles"][0]["name"], "Cloned profile")
+        self.assertEqual(saved["assignments"]["deployments"][0]["name"], "Cloned deployment")
+        self.assertEqual(reloaded["assignments"]["deployments"][0]["name"], "Cloned deployment")
 
     def test_runtime_projection_uses_account_mandate_and_capability_settings(self) -> None:
         draft = self._draft()

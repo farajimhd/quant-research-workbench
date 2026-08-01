@@ -1,5 +1,7 @@
 import {
   BadgeCheck,
+  ArrowLeft,
+  ArrowRight,
   BookOpenCheck,
   Boxes,
   BriefcaseBusiness,
@@ -15,8 +17,10 @@ import {
   Network,
   PencilLine,
   Plus,
+  RotateCcw,
   Save,
   Send,
+  Settings2,
   ShieldCheck,
   Sparkles,
   Target,
@@ -381,6 +385,10 @@ type Draft = {
   updated_at?: string;
 };
 
+type ConfigurationExperience = "guided" | "expert";
+type OmsGuidedStage = "execution" | "protection";
+type GuidedStep = TradingConfigurationSection | OmsGuidedStage;
+
 type Revision = {
   approved_at: string;
   content_hash: string;
@@ -456,6 +464,9 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   const [dirtySection, setDirtySection] = useState<TradingConfigurationSection | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "saving" | "saved" | "error">("loading");
   const [message, setMessage] = useState("");
+  const [experience, setExperienceState] = useState<ConfigurationExperience>(() => readStoredExperience());
+  const [showStudioHome, setShowStudioHome] = useState(() => section === "strategy" && !window.sessionStorage.getItem("configuration-studio-started"));
+  const [omsGuidedStage, setOmsGuidedStageState] = useState<OmsGuidedStage>(() => readStoredOmsStage());
   const meta = SECTION_META[section];
   const Icon = meta.icon;
 
@@ -490,8 +501,44 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     setStatus("ready");
   }
 
-  async function saveSection() {
+  function setExperience(value: ConfigurationExperience) {
+    window.localStorage.setItem("trading-configuration-experience", value);
+    window.sessionStorage.setItem("configuration-studio-started", "true");
+    setExperienceState(value);
+    setShowStudioHome(false);
+  }
+
+  function setOmsGuidedStage(value: OmsGuidedStage) {
+    window.localStorage.setItem("trading-configuration-oms-stage", value);
+    setOmsGuidedStageState(value);
+  }
+
+  async function persistSections(next: Draft, sections: Array<Exclude<TradingConfigurationSection, "revisions">>, successMessage: string) {
+    setStatus("saving");
+    setMessage("");
+    try {
+      const saved = sections.length > 1
+        ? await api<Draft>("/api/trading/configuration/draft", { body: JSON.stringify({ payload: next }), method: "PUT" })
+        : await api<Draft>(`/api/trading/configuration/draft/${sections[0]}`, { body: JSON.stringify({ payload: next[sections[0]] }), method: "PUT" });
+      setDraft(saved);
+      setDirtySection(null);
+      setStatus("saved");
+      setMessage(successMessage);
+      return saved;
+    } catch (reason) {
+      setStatus("error");
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+      throw reason;
+    }
+  }
+
+  async function saveAndContinue(nextStep: GuidedStep) {
     if (!draft || section === "revisions") return;
+    if (await saveSection()) navigateGuidedStep(nextStep, setOmsGuidedStage);
+  }
+
+  async function saveSection() {
+    if (!draft || section === "revisions") return false;
     setStatus("saving");
     setMessage("");
     try {
@@ -503,9 +550,11 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       setDirtySection(null);
       setStatus("saved");
       setMessage("Draft saved. Active and approved runs remain unchanged until you publish a release.");
+      return true;
     } catch (reason) {
       setStatus("error");
       setMessage(reason instanceof Error ? reason.message : String(reason));
+      return false;
     }
   }
 
@@ -564,7 +613,26 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         <RevisionBadge approved={approved} />
       </header>
 
-      <ConfigurationJourney active={section} draft={draft} />
+      {draft ? (
+        <ConfigurationExperienceBar
+          experience={experience}
+          onExperienceChange={setExperience}
+          onOpenHome={() => { window.sessionStorage.setItem("configuration-studio-started", "true"); setShowStudioHome(true); }}
+        />
+      ) : null}
+
+      {draft && showStudioHome ? (
+        <ConfigurationStudioHome
+          approved={approved}
+          draft={draft}
+          pending={status === "saving"}
+          onApplyRecommended={(next) => persistSections(next, ["strategy", "assignments"], "Protected Strategy and OMS starting points applied. Account and risk decisions were preserved for review.")}
+          onCloneApproved={(next) => persistSections(next, ["strategy", "assignments", "portfolio", "oms", "accounts"], "The approved release was cloned into the mutable draft. Runtime authority remains unchanged until publication.")}
+          onStart={(value) => { setExperience(value); if (value === "guided") navigateGuidedStep("strategy", setOmsGuidedStage); }}
+        />
+      ) : (
+        <>
+      <ConfigurationJourney active={section === "oms" ? omsGuidedStage : section} draft={draft} experience={experience} onOmsStageChange={setOmsGuidedStage} />
 
       {message ? (
         <div className={`configuration-message ${status === "error" ? "error" : "success"}`}>
@@ -573,7 +641,23 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         </div>
       ) : null}
 
-      {section === "revisions" ? (
+      {experience === "guided" && draft ? (
+        <GuidedConfiguration
+          approved={approved}
+          draft={draft}
+          label={label}
+          omsStage={omsGuidedStage}
+          onChange={updateDraft}
+          onContinue={(step) => void saveAndContinue(step)}
+          onLabelChange={setLabel}
+          onOmsStageChange={setOmsGuidedStage}
+          onPublish={publish}
+          onSwitchToExpert={() => setExperience("expert")}
+          publishing={status === "saving"}
+          revisions={revisions}
+          section={section}
+        />
+      ) : section === "revisions" ? (
         <RevisionPublisher
           approved={approved}
           draft={draft}
@@ -600,21 +684,48 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           <JsonInspector label={`${meta.title} generated JSON`} value={draft[section]} />
         </>
       ) : <ConfigurationLoading />}
+        </>
+      )}
     </div>
   );
 }
 
-function ConfigurationJourney({ active, draft }: { active: TradingConfigurationSection; draft: Draft | null }) {
+function ConfigurationExperienceBar({ experience, onExperienceChange, onOpenHome }: {
+  experience: ConfigurationExperience;
+  onExperienceChange: (value: ConfigurationExperience) => void;
+  onOpenHome: () => void;
+}) {
+  return <div className="configuration-experience-bar">
+    <div><Sparkles size={16} /><span><strong>Configuration Studio</strong><small>One draft, two ways to work</small></span></div>
+    <div className="configuration-experience-actions">
+      <button onClick={onOpenHome} type="button"><RotateCcw size={14} /> Setup options</button>
+      <div aria-label="Configuration editing mode" className="configuration-experience-switch" role="group">
+        <button aria-pressed={experience === "guided"} onClick={() => onExperienceChange("guided")} type="button">Guided</button>
+        <button aria-pressed={experience === "expert"} onClick={() => onExperienceChange("expert")} type="button"><Settings2 size={13} /> Expert</button>
+      </div>
+    </div>
+  </div>;
+}
+
+function ConfigurationJourney({ active, draft, experience, onOmsStageChange }: {
+  active: GuidedStep;
+  draft: Draft | null;
+  experience: ConfigurationExperience;
+  onOmsStageChange: (value: OmsGuidedStage) => void;
+}) {
   const steps = [
-    { key: "strategy", label: "Strategy Profile", ready: Boolean(draft?.strategy.profiles.length) },
-    { key: "assignments", label: "Deployment", ready: Boolean(draft?.assignments.deployments.length) },
-    { key: "portfolio", label: "Capital mandates", ready: Boolean(draft?.portfolio.mandates.length) },
-    { key: "revisions", label: "Publish", ready: false },
+    { key: "strategy", label: "Strategy", ready: Boolean(draft?.strategy.profiles.length) },
+    { key: "assignments", label: "Deploy", ready: Boolean(draft?.assignments.deployments.length) },
+    { key: "portfolio", label: "Portfolio", ready: Boolean(draft?.portfolio.mandates.length) },
+    { key: "execution", label: "Execute", ready: Boolean(draft?.oms.execution_policies.length) },
+    { key: "protection", label: "Protect", ready: Boolean(draft?.oms.protection_profiles.length) },
+    { key: "accounts", label: "Accounts", ready: Boolean(draft?.accounts.bindings.length) },
+    { key: "revisions", label: "Review", ready: false },
   ];
   return (
-    <nav aria-label="Configuration journey" className="configuration-journey">
+    <nav aria-label="Configuration journey" className="configuration-journey" data-experience={experience}>
       {steps.map((step, index) => (
-        <a aria-current={active === step.key ? "step" : undefined} data-ready={step.ready ? "true" : "false"} data-step={step.key} href={`#${pageForSection(step.key as TradingConfigurationSection)}`} key={step.key}>
+        <a aria-current={active === step.key ? "step" : undefined} data-ready={step.ready ? "true" : "false"} data-step={step.key} href={`#${pageForGuidedStep(step.key as GuidedStep)}`} key={step.key} onClick={() => { if (step.key === "execution" || step.key === "protection") onOmsStageChange(step.key); }}>
           <span>{step.ready ? <Check size={13} /> : index + 1}</span>
           <strong>{step.label}</strong>
           {index < steps.length - 1 ? <ChevronRight size={14} /> : null}
@@ -622,6 +733,179 @@ function ConfigurationJourney({ active, draft }: { active: TradingConfigurationS
       ))}
     </nav>
   );
+}
+
+function ConfigurationStudioHome({ approved, draft, onApplyRecommended, onCloneApproved, onStart, pending }: {
+  approved: Revision | null;
+  draft: Draft;
+  onApplyRecommended: (value: Draft) => Promise<Draft>;
+  onCloneApproved: (value: Draft) => Promise<Draft>;
+  onStart: (value: ConfigurationExperience) => void;
+  pending: boolean;
+}) {
+  const [selectedPath, setSelectedPath] = useState<"recommended" | "clone" | null>(null);
+  const systemProfile = draft.strategy.profiles.find((profile) => profile.protected) ?? draft.strategy.profiles.find((profile) => profile.origin === "system");
+  const systemOms = draft.oms.profiles.find((profile) => profile.origin === "system");
+  const deployment = draft.assignments.deployments[0];
+  const recommended = recommendedDraft(draft);
+  return <section className="configuration-studio-home">
+    <header>
+      <div><span>Choose how to begin</span><h2>Set up a complete trading configuration without losing the details</h2><p>Every path edits the same schema-v{draft.schema_version} draft. Nothing becomes executable until the final release is reviewed and published.</p></div>
+      <div className="configuration-home-authority"><ShieldCheck size={18} /><span><strong>One authority</strong><small>Guided choices become canonical draft patches</small></span></div>
+    </header>
+    <div className="configuration-start-paths">
+      <button className="recommended" onClick={() => setSelectedPath("recommended")} type="button"><span className="configuration-path-icon"><Sparkles size={19} /></span><span><em>Fastest safe start</em><strong>Use recommended setup</strong><small>Apply the protected Strategy and system OMS starting points, then review account and risk decisions.</small></span><ChevronRight size={18} /></button>
+      <button onClick={() => onStart("guided")} type="button"><span className="configuration-path-icon"><BookOpenCheck size={19} /></span><span><em>Best for most changes</em><strong>Guided setup</strong><small>Answer a small set of consequential questions across Strategy, Portfolio, execution, and accounts.</small></span><ChevronRight size={18} /></button>
+      <button disabled={!approved} onClick={() => setSelectedPath("clone")} type="button"><span className="configuration-path-icon"><FileInput size={19} /></span><span><em>{approved ? `Release ${approved.revision}` : "No approved release"}</em><strong>Clone approved release</strong><small>Start from the immutable runtime configuration and change only what is different.</small></span><ChevronRight size={18} /></button>
+      <button onClick={() => onStart("expert")} type="button"><span className="configuration-path-icon"><Settings2 size={19} /></span><span><em>Full control</em><strong>Expert editor</strong><small>Open every field, rule set, policy catalog, and generated payload in the existing editors.</small></span><ChevronRight size={18} /></button>
+    </div>
+    {selectedPath === "recommended" ? <div className="configuration-path-confirmation">
+      <header><div><span>Recommended patch preview</span><strong>Two references change; account-specific limits remain untouched</strong></div><button aria-label="Close preview" onClick={() => setSelectedPath(null)} type="button"><X size={16} /></button></header>
+      <div className="configuration-change-preview">
+        <span><GitBranch size={15} /><span><small>Default Strategy Profile</small><strong>{systemProfile?.name ?? "No protected profile available"}</strong></span></span>
+        <span><ShieldCheck size={15} /><span><small>{deployment?.name ?? "Deployment"} OMS</small><strong>{systemOms?.name ?? "No system OMS available"}</strong></span></span>
+        <span><BriefcaseBusiness size={15} /><span><small>Portfolio and accounts</small><strong>Preserved for review</strong></span></span>
+      </div>
+      <footer><p>This does not publish or enable Live. You will review all inherited mandate, protection, and broker bindings before approval.</p><button className="button primary" disabled={pending || !systemProfile || !systemOms || !deployment} onClick={() => void onApplyRecommended(recommended).then(() => onStart("guided"))} type="button">{pending ? "Applying…" : "Apply and review"}<ArrowRight size={15} /></button></footer>
+    </div> : null}
+    {selectedPath === "clone" && approved ? <div className="configuration-path-confirmation">
+      <header><div><span>Clone preview</span><strong>Replace the mutable draft with release {approved.revision}</strong></div><button aria-label="Close preview" onClick={() => setSelectedPath(null)} type="button"><X size={16} /></button></header>
+      <div className="configuration-clone-summary"><BadgeCheck size={17} /><p><strong>{approved.label}</strong><span>{approved.payload.strategy.profiles.length} profiles · {approved.payload.assignments.deployments.length} deployments · {approved.payload.portfolio.mandates.length} mandates · {approved.payload.accounts.bindings.length} accounts</span></p></div>
+      <footer><p>The approved release remains immutable. Only the draft is replaced, and it still requires publication to affect new runs.</p><button className="button primary" disabled={pending} onClick={() => void onCloneApproved(cloneApprovedDraft(approved, draft)).then(() => onStart("guided"))} type="button">{pending ? "Cloning…" : "Clone into draft"}<ArrowRight size={15} /></button></footer>
+    </div> : null}
+  </section>;
+}
+
+function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onContinue, onLabelChange, onOmsStageChange, onPublish, onSwitchToExpert, publishing, revisions, section }: {
+  approved: Revision | null;
+  draft: Draft;
+  label: string;
+  omsStage: OmsGuidedStage;
+  onChange: <K extends keyof Draft>(key: K, value: Draft[K]) => void;
+  onContinue: (step: GuidedStep) => void;
+  onLabelChange: (value: string) => void;
+  onOmsStageChange: (value: OmsGuidedStage) => void;
+  onPublish: () => void;
+  onSwitchToExpert: () => void;
+  publishing: boolean;
+  revisions: Revision[];
+  section: TradingConfigurationSection;
+}) {
+  const step: GuidedStep = section === "oms" ? omsStage : section;
+  const profile = draft.strategy.profiles.find((row) => row.profile_id === draft.strategy.default_profile_id) ?? draft.strategy.profiles[0];
+  const deployment = draft.assignments.deployments.find((row) => row.enabled) ?? draft.assignments.deployments[0];
+  const mandate = draft.portfolio.mandates.find((row) => row.deployment_id === deployment?.deployment_id) ?? draft.portfolio.mandates[0];
+  const omsProfile = draft.oms.profiles.find((row) => row.profile_id === deployment?.oms_profile_id) ?? draft.oms.profiles[0];
+  const executionPolicy = draft.oms.execution_policies.find((row) => row.policy_id === omsProfile?.settings.entry_execution_policy_id) ?? draft.oms.execution_policies[0];
+  const protectionProfile = draft.oms.protection_profiles.find((row) => row.profile_id === omsProfile?.settings.protection_profile_id) ?? draft.oms.protection_profiles[0];
+  const account = draft.accounts.bindings.find((row) => row.account_key === mandate?.account_key) ?? draft.accounts.bindings[0];
+  const steps: GuidedStep[] = ["strategy", "assignments", "portfolio", "execution", "protection", "accounts", "revisions"];
+  const index = steps.indexOf(step);
+  const previous = steps[index - 1];
+  const next = steps[index + 1];
+  const context = guidedContextRows(draft, step);
+
+  function replaceProfile(nextProfile: StrategyProfile) {
+    onChange("strategy", { ...draft.strategy, profiles: draft.strategy.profiles.map((row) => row.profile_id === profile.profile_id ? nextProfile : row) });
+  }
+  function replaceDeployment(nextDeployment: Deployment) {
+    onChange("assignments", { ...draft.assignments, deployments: draft.assignments.deployments.map((row) => row.deployment_id === deployment.deployment_id ? nextDeployment : row) });
+  }
+  function replaceMandate(nextMandate: Mandate) {
+    onChange("portfolio", { ...draft.portfolio, mandates: draft.portfolio.mandates.map((row) => row.mandate_id === mandate.mandate_id ? nextMandate : row) });
+  }
+  function replaceOmsProfile(nextProfile: OmsProfile) {
+    onChange("oms", { ...draft.oms, profiles: draft.oms.profiles.map((row) => row.profile_id === omsProfile.profile_id ? nextProfile : row) });
+  }
+  function replaceExecutionPolicy(nextPolicy: ExecutionPolicyConfig) {
+    onChange("oms", { ...draft.oms, execution_policies: draft.oms.execution_policies.map((row) => row.policy_id === executionPolicy.policy_id ? nextPolicy : row) });
+  }
+  function replaceProtectionProfile(nextProfile: ProtectionProfileConfig) {
+    onChange("oms", { ...draft.oms, protection_profiles: draft.oms.protection_profiles.map((row) => row.profile_id === protectionProfile.profile_id ? nextProfile : row) });
+  }
+  function replaceAccount(nextAccount: AccountBinding) {
+    onChange("accounts", { bindings: draft.accounts.bindings.map((row) => row.account_key === account.account_key ? nextAccount : row) });
+  }
+
+  if (section === "revisions") return <GuidedReview approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={onPublish} onReturn={() => navigateGuidedStep("accounts", onOmsStageChange)} publishing={publishing} revisions={revisions} />;
+  if (!profile || !deployment || !mandate || !omsProfile || !executionPolicy || !protectionProfile || !account) return <GuidedEmpty onSwitchToExpert={onSwitchToExpert} />;
+
+  return <div className="guided-configuration-shell" data-guided-step={step}>
+    <main className="guided-question-surface">
+      <header><span>Step {index + 1} of {steps.length}</span><h2>{guidedStepTitle(step)}</h2><p>{guidedStepDescription(step)}</p></header>
+      <div className="guided-question-list">
+        {step === "strategy" ? <>
+          <GuidedQuestion description="Choose the behavior profile used as the draft's starting point. Deployments may still select another profile." label="Which Strategy Profile should be the default?" status={profile.protected ? "Using recommended" : "Customized"}>
+            <DecisionOptions onChange={(profile_id) => onChange("strategy", { ...draft.strategy, default_profile_id: profile_id })} options={draft.strategy.profiles.map((row) => ({ detail: `${row.origin} · v${row.revision}`, label: row.name, recommended: row.protected, value: row.profile_id }))} value={profile.profile_id} />
+          </GuidedQuestion>
+          <GuidedQuestion description="Direction determines campaign ownership and order direction. It never reverses your rules automatically." label="Which side does this profile trade?" status="Needs review">
+            <DecisionOptions onChange={(side) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, side: side as "long" | "short" } } })} options={[{ detail: "Buy to enter, sell to exit", label: "Long", recommended: true, value: "long" }, { detail: "Short-sell to enter, buy to cover", label: "Short", value: "short" }]} value={profile.lifecycle.trading_behavior.side} />
+          </GuidedQuestion>
+          <GuidedQuestion description="Entry evaluation is limited to these sessions. Protective exits remain active whenever exposure exists." label="When may the strategy look for entries?" status={profile.lifecycle.trading_behavior.eligible_sessions.length ? "Configured" : "Needs decision"}>
+            <ModeChoices onChange={(eligible_sessions) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, eligible_sessions } } })} options={["premarket", "regular", "after_hours"]} values={profile.lifecycle.trading_behavior.eligible_sessions} />
+          </GuidedQuestion>
+        </> : null}
+        {step === "assignments" ? <>
+          <GuidedQuestion description="A deployment is the runnable composition: behavior, universe, execution profile, account mandates, and runtime modes." label="What should this deployment run?" status={deployment.enabled ? "Configured" : "Needs review"}>
+            <div className="configuration-field-grid"><SelectField help="Behavior evaluated by this deployment." label="Strategy Profile" onChange={(profile_id) => replaceDeployment({ ...deployment, profile_id })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.profile_id} /><SelectField help="Reusable execution and protection behavior." label="OMS profile" onChange={(oms_profile_id) => replaceDeployment({ ...deployment, oms_profile_id })} options={draft.oms.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.oms_profile_id} /><SelectField help="Eligible symbol authority." label="Watch Universe" onChange={(universe_id) => replaceDeployment({ ...deployment, universe_id })} options={draft.assignments.universes.map((row) => ({ label: row.name, value: row.universe_id }))} value={deployment.universe_id} /></div>
+          </GuidedQuestion>
+          <GuidedQuestion description="Enable only modes in which the account and mandate bindings should be valid." label="Where may it run?" status={deployment.modes.length ? "Configured" : "Needs decision"}><ModeSelector modes={deployment.modes} onChange={(modes) => replaceDeployment({ ...deployment, modes })} /></GuidedQuestion>
+        </> : null}
+        {step === "portfolio" ? <>
+          <GuidedQuestion description="Portfolio resolves requested capital against the selected account, its synchronized state, reservations, and policy limits." label="Which account funds this deployment?" status="Configured"><SelectField help="Stable account key referenced by this mandate." label="Mandate account" onChange={(account_key) => replaceMandate({ ...mandate, account_key })} options={draft.accounts.bindings.map((row) => ({ label: row.name, value: row.account_key }))} value={mandate.account_key} /></GuidedQuestion>
+          <GuidedQuestion description="These are hard mandate ceilings, not target position sizes. Portfolio may approve less." label="How much account capacity may it use?" status={mandate.maximum_planned_risk_fraction > 0 ? "Customized" : "Needs decision"}><div className="configuration-field-grid"><NumberField help="Maximum fraction of available account cash reserved for this deployment." label="Maximum cash" maximum={1} minimum={0} onChange={(maximum_cash_fraction) => replaceMandate({ ...mandate, maximum_cash_fraction })} step={0.01} unit="fraction" value={mandate.maximum_cash_fraction} /><NumberField help="Maximum planned loss across positions opened under this mandate." label="Maximum planned risk" maximum={1} minimum={0} onChange={(maximum_planned_risk_fraction) => replaceMandate({ ...mandate, maximum_planned_risk_fraction })} step={0.001} unit="fraction" value={mandate.maximum_planned_risk_fraction} /><NumberField help="Maximum simultaneous positions attributed to this mandate." label="Maximum positions" minimum={1} onChange={(maximum_positions) => replaceMandate({ ...mandate, maximum_positions })} step={1} value={mandate.maximum_positions} /></div></GuidedQuestion>
+          <GuidedQuestion description="Automatic autonomy may act only within every account policy, risk, broker, and protection gate." label="How much autonomy should Portfolio have?" status={mandate.autonomy === "automatic" ? "Needs review" : "Configured"}><DecisionOptions onChange={(autonomy) => replaceMandate({ ...mandate, autonomy: autonomy as Mandate["autonomy"] })} options={[{ detail: "Prepare proposals for an operator", label: "Manual", value: "manual" }, { detail: "Require confirmation before capital action", label: "Confirm", recommended: true, value: "confirm" }, { detail: "Act inside all published limits", label: "Automatic", value: "automatic" }]} value={mandate.autonomy} /></GuidedQuestion>
+        </> : null}
+        {step === "execution" ? <>
+          <GuidedQuestion description="The execution policy owns quote source, repricing envelope, deadline, and partial-fill behavior." label="How should entries be worked?" status={executionPolicy.origin === "system" ? "Using recommended" : "Customized"}><DecisionOptions onChange={(entry_execution_policy_id) => replaceOmsProfile({ ...omsProfile, settings: { ...omsProfile.settings, entry_execution_policy_id } })} options={draft.oms.execution_policies.map((row) => ({ detail: `${readableLabel(row.quote_source)} quotes · ${row.envelope.deadline_ms} ms`, label: readableLabel(row.name), recommended: row.policy_id === "adaptive_urgent", value: row.policy_id }))} value={omsProfile.settings.entry_execution_policy_id} /></GuidedQuestion>
+          <GuidedQuestion description="On a partial fill, OMS reconciles broker truth before completing, accepting, or canceling the remainder." label="What should happen to the unfilled remainder?" status="Configured"><DecisionOptions onChange={(partial_fill_policy) => replaceExecutionPolicy({ ...executionPolicy, partial_fill_policy: partial_fill_policy as ExecutionPolicyConfig["partial_fill_policy"] })} options={[{ detail: "Reprice the broker-confirmed remainder inside the envelope", label: "Complete remainder", recommended: true, value: "complete_remainder" }, { detail: "Keep the filled quantity and stop", label: "Accept partial", value: "accept_partial" }, { detail: "Cancel whatever remains", label: "Cancel remainder", value: "cancel_remainder" }]} value={executionPolicy.partial_fill_policy} /></GuidedQuestion>
+          <GuidedQuestion description="QMD is the normal adaptive-order quote authority; IBKR and simulated sources remain explicit alternatives." label="Where should adaptive pricing read quotes?" status="Configured"><DecisionOptions onChange={(quote_source) => replaceExecutionPolicy({ ...executionPolicy, quote_source: quote_source as ExecutionPolicyConfig["quote_source"] })} options={[{ detail: "Shared normalized market-data authority", label: "QMD", recommended: true, value: "qmd" }, { detail: "Broker quote stream", label: "IBKR", value: "ibkr" }, { detail: "Deterministic simulation quotes", label: "Simulated", value: "simulated" }]} value={executionPolicy.quote_source} /></GuidedQuestion>
+        </> : null}
+        {step === "protection" ? <>
+          <GuidedQuestion description="The protection profile is submitted and reconciled independently of strategic exits." label="Which protection profile guards new exposure?" status={protectionProfile.origin === "system" ? "Using recommended" : "Customized"}><DecisionOptions onChange={(protection_profile_id) => replaceOmsProfile({ ...omsProfile, settings: { ...omsProfile.settings, protection_profile_id } })} options={draft.oms.protection_profiles.map((row) => ({ detail: `${row.slices.length} slice${row.slices.length === 1 ? "" : "s"} · ${readableLabel(row.profit_pocket_transition)}`, label: row.name, recommended: row.mandatory_catastrophic_backstop, value: row.profile_id }))} value={omsProfile.settings.protection_profile_id} /></GuidedQuestion>
+          <GuidedQuestion description="Profit-pocket transitions define how stop protection changes after an intentional reduction." label="After pocketing profit, what happens to remaining protection?" status="Configured"><DecisionOptions onChange={(profit_pocket_transition) => replaceProtectionProfile({ ...protectionProfile, profit_pocket_transition })} options={[{ detail: "Raise the remaining floor to entry plus buffer", label: "Move to breakeven", recommended: true, value: "move_to_breakeven" }, { detail: "Activate the configured swing-based trail", label: "Start swing trail", value: "start_swing_trail" }, { detail: "Retain the existing stop contract", label: "Keep existing protection", value: "keep_existing" }]} value={protectionProfile.profit_pocket_transition} /></GuidedQuestion>
+          <div className="guided-safety-callout"><ShieldCheck size={16} /><p><strong>Protection cannot be weakened by another authority.</strong><span>{protectionProfile.slices.length} configured slice{protectionProfile.slices.length === 1 ? "" : "s"}; catastrophic backstop {protectionProfile.mandatory_catastrophic_backstop ? "required" : "requires expert review"}.</span></p></div>
+        </> : null}
+        {step === "accounts" ? <>
+          <GuidedQuestion description="The stable application key is mapped to a simulated or externally discovered broker account." label="Which account binding completes this setup?" status={account.modes.some((mode) => mode === "live" || mode === "paper") ? "Needs broker verification" : "Configured"}><div className="configuration-field-grid"><SelectField help="Account capability and regulatory class." label="Account class" onChange={(account_class) => replaceAccount({ ...account, account_class })} options={["simulated", "cash", "margin", "registered"].map((value) => ({ label: readableLabel(value), value }))} value={account.account_class} /><SelectField help="Reusable account-level Portfolio policy." label="Portfolio policy" onChange={(portfolio_policy_id) => replaceAccount({ ...account, portfolio_policy_id })} options={draft.portfolio.policies.map((row) => ({ label: String(row.policy_id), value: String(row.policy_id) }))} value={account.portfolio_policy_id} /></div></GuidedQuestion>
+          <GuidedQuestion description="Paper and Live require an exact external IBKR account and session match. Secrets remain outside configuration." label="Which modes may bind this account?" status={account.modes.length ? "Configured" : "Needs decision"}><ModeSelector modes={account.modes} onChange={(modes) => replaceAccount({ ...account, modes })} /></GuidedQuestion>
+          {account.modes.some((mode) => mode === "paper" || mode === "live") ? <GuidedQuestion description="These identifiers must match IBKR discovery. Publication and runtime preflight fail closed on mismatch." label="Confirm the broker binding" status={account.source_account_id.trim() && account.session_key.trim() ? "Needs broker verification" : "Invalid"}><div className="configuration-field-grid"><TextField help="Exact externally discovered IBKR account ID." label="IBKR account ID" onChange={(source_account_id) => replaceAccount({ ...account, source_account_id })} value={account.source_account_id} /><TextField help="Configured gateway session identity." label="Session key" onChange={(session_key) => replaceAccount({ ...account, session_key })} value={account.session_key} /></div></GuidedQuestion> : null}
+        </> : null}
+      </div>
+      <GuidedFooter next={next} onNext={() => next && onContinue(next)} onPrevious={() => previous && navigateGuidedStep(previous, onOmsStageChange)} onSwitchToExpert={onSwitchToExpert} previous={previous} />
+    </main>
+    <aside className="guided-context-panel"><header><span>Current result</span><strong>{guidedStepTitle(step)}</strong></header><div>{context.map((row) => <span key={row.label}><small>{row.label}</small><strong>{row.value}</strong></span>)}</div><footer><BadgeCheck size={15} /><p><strong>Saved as canonical configuration</strong><span>Next saves this authority before moving forward.</span></p></footer></aside>
+  </div>;
+}
+
+function GuidedQuestion({ children, description, label, status }: { children: ReactNode; description: string; label: string; status: string }) {
+  return <section className="guided-question"><header><div><span>{label}</span><p>{description}</p></div><em data-state={status.toLowerCase().replaceAll(" ", "-")}>{status}</em></header><div>{children}</div></section>;
+}
+
+function DecisionOptions({ onChange, options, value }: { onChange: (value: string) => void; options: Array<{ detail: string; label: string; recommended?: boolean; value: string }>; value: string }) {
+  const name = useId();
+  return <div className="guided-decision-options">{options.map((option) => <label key={option.value}><input checked={value === option.value} name={name} onChange={() => onChange(option.value)} type="radio" /><span><span><strong>{option.label}</strong>{option.recommended ? <em>Recommended</em> : null}</span><small>{option.detail}</small></span></label>)}</div>;
+}
+
+function ModeChoices({ onChange, options, values }: { onChange: (values: string[]) => void; options: string[]; values: string[] }) {
+  return <div className="guided-mode-choices">{options.map((option) => <label key={option}><input checked={values.includes(option)} onChange={(event) => onChange(event.target.checked ? [...values, option] : values.filter((value) => value !== option))} type="checkbox" /><span><Check size={13} />{readableLabel(option)}</span></label>)}</div>;
+}
+
+function GuidedFooter({ next, onNext, onPrevious, onSwitchToExpert, previous }: { next?: GuidedStep; onNext: () => void; onPrevious: () => void; onSwitchToExpert: () => void; previous?: GuidedStep }) {
+  return <footer className="guided-navigation"><button className="button" disabled={!previous} onClick={onPrevious} type="button"><ArrowLeft size={15} /> Previous</button><button className="button" onClick={onSwitchToExpert} type="button"><Settings2 size={14} /> View all parameters</button><button className="button primary" disabled={!next} onClick={onNext} type="button">Save &amp; continue <ArrowRight size={15} /></button></footer>;
+}
+
+function GuidedReview({ approved, draft, label, onLabelChange, onPublish, onReturn, publishing, revisions }: { approved: Revision | null; draft: Draft; label: string; onLabelChange: (value: string) => void; onPublish: () => void; onReturn: () => void; publishing: boolean; revisions: Revision[] }) {
+  const rows = reviewRows(draft, approved);
+  return <div className="guided-review">
+    <header><span>Final step</span><h2>Review the effective configuration</h2><p>Resolve anything marked invalid or needing a decision. Publication freezes the entire draft and configured Canvas for new runs.</p></header>
+    <div className="guided-review-layout"><div className="guided-review-matrix"><header><span>Authority</span><span>Selection</span><span>Provenance</span><span /></header>{rows.map((row) => { const Icon = row.icon; return <article key={row.step}><span><Icon size={16} /><strong>{row.label}</strong></span><span>{row.selection}</span><em data-state={row.state.toLowerCase().replaceAll(" ", "-")}>{row.state}</em><button onClick={() => navigateGuidedStep(row.step, () => undefined)} type="button">Review <ChevronRight size={13} /></button></article>; })}</div><main><EffectiveConfigurationPreview updatedAt={draft.updated_at || ""} /></main><aside><RevisionPublisher approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} /></aside></div>
+    <button className="button" onClick={onReturn} type="button"><ArrowLeft size={15} /> Back to accounts</button>
+  </div>;
+}
+
+function GuidedEmpty({ onSwitchToExpert }: { onSwitchToExpert: () => void }) {
+  return <div className="guided-empty"><TriangleAlert size={20} /><h2>This step needs a base object</h2><p>Create the missing profile, deployment, mandate, OMS profile, policy, protection profile, or account in Expert mode. Guided setup never invents a live-critical object.</p><button className="button primary" onClick={onSwitchToExpert} type="button"><Settings2 size={15} /> Open Expert editor</button></div>;
 }
 
 function StrategyStudio({ draft, onChange, onPersist, section }: { draft: Draft; onChange: (value: StrategySection) => void; onPersist: (value: StrategySection) => Promise<StrategySection>; section: StrategySection }) {
@@ -2516,6 +2800,137 @@ function percent(value: number) { return `${round(value * 100)}%`; }
 function accountName(section: AccountSection, id: string) { return section.bindings.find((row) => row.account_key === id)?.name ?? id; }
 function deploymentName(section: AssignmentSection, id: string) { return section.deployments.find((row) => row.deployment_id === id)?.name ?? id; }
 function urgencyOptions() { return ["patient", "regular", "urgent", "very_urgent"].map((value) => ({ label: readableLabel(value), value })); }
+
+function readStoredExperience(): ConfigurationExperience {
+  return window.localStorage.getItem("trading-configuration-experience") === "expert" ? "expert" : "guided";
+}
+
+function readStoredOmsStage(): OmsGuidedStage {
+  return window.localStorage.getItem("trading-configuration-oms-stage") === "protection" ? "protection" : "execution";
+}
+
+function recommendedDraft(draft: Draft): Draft {
+  const next = deepClone(draft);
+  const profile = next.strategy.profiles.find((row) => row.protected) ?? next.strategy.profiles.find((row) => row.origin === "system");
+  const oms = next.oms.profiles.find((row) => row.origin === "system");
+  const deployment = next.assignments.deployments[0];
+  if (profile) next.strategy.default_profile_id = profile.profile_id;
+  if (deployment && profile && oms) {
+    next.assignments.deployments[0] = { ...deployment, profile_id: profile.profile_id, oms_profile_id: oms.profile_id };
+  }
+  return next;
+}
+
+function cloneApprovedDraft(approved: Revision, current: Draft): Draft {
+  return {
+    accounts: deepClone(approved.payload.accounts),
+    assignments: deepClone(approved.payload.assignments),
+    oms: deepClone(approved.payload.oms),
+    portfolio: deepClone(approved.payload.portfolio),
+    schema_version: approved.payload.schema_version,
+    strategy: deepClone(approved.payload.strategy),
+    updated_at: current.updated_at,
+  };
+}
+
+function navigateGuidedStep(step: GuidedStep, onOmsStageChange: (value: OmsGuidedStage) => void) {
+  if (step === "execution" || step === "protection") {
+    window.localStorage.setItem("trading-configuration-oms-stage", step);
+    onOmsStageChange(step);
+  }
+  window.location.hash = pageForGuidedStep(step);
+}
+
+function pageForGuidedStep(step: GuidedStep) {
+  if (step === "execution" || step === "protection") return "oms-configuration";
+  return pageForSection(step);
+}
+
+function guidedStepTitle(step: GuidedStep) {
+  if (step === "strategy") return "Choose the trading behavior";
+  if (step === "assignments") return "Make the strategy deployable";
+  if (step === "portfolio") return "Set capital and risk authority";
+  if (step === "execution") return "Choose order placement behavior";
+  if (step === "protection") return "Define broker-held protection";
+  if (step === "accounts") return "Bind accounts and sessions";
+  return "Review and publish";
+}
+
+function guidedStepDescription(step: GuidedStep) {
+  if (step === "strategy") return "Answer only the decisions that change strategy meaning. Rules and advanced parameters remain available in Expert mode.";
+  if (step === "assignments") return "Compose the profile, universe, OMS profile, modes, and campaign boundary into one runnable deployment.";
+  if (step === "portfolio") return "Portfolio owns account selection, final sizing, reservations, arbitration, and continuous risk enforcement.";
+  if (step === "execution") return "OMS reads its configured quote source and works broker-confirmed remaining quantity inside a bounded execution envelope.";
+  if (step === "protection") return "Stops and trailing transitions remain independently managed even when strategy evaluation or normal exits are delayed.";
+  if (step === "accounts") return "Simulated modes use local bindings; Paper and Live must match externally discovered IBKR account and session identities.";
+  return "Compare every authority and resolve incomplete decisions before creating an immutable runtime release.";
+}
+
+function guidedContextRows(draft: Draft, step: GuidedStep) {
+  const profile = draft.strategy.profiles.find((row) => row.profile_id === draft.strategy.default_profile_id) ?? draft.strategy.profiles[0];
+  const deployment = draft.assignments.deployments.find((row) => row.enabled) ?? draft.assignments.deployments[0];
+  const mandate = draft.portfolio.mandates.find((row) => row.deployment_id === deployment?.deployment_id) ?? draft.portfolio.mandates[0];
+  const oms = draft.oms.profiles.find((row) => row.profile_id === deployment?.oms_profile_id) ?? draft.oms.profiles[0];
+  const execution = draft.oms.execution_policies.find((row) => row.policy_id === oms?.settings.entry_execution_policy_id) ?? draft.oms.execution_policies[0];
+  const protection = draft.oms.protection_profiles.find((row) => row.profile_id === oms?.settings.protection_profile_id) ?? draft.oms.protection_profiles[0];
+  const account = draft.accounts.bindings.find((row) => row.account_key === mandate?.account_key) ?? draft.accounts.bindings[0];
+  if (step === "strategy") return [
+    { label: "Profile", value: profile?.name ?? "Missing" },
+    { label: "Direction", value: profile ? readableLabel(profile.lifecycle.trading_behavior.side) : "Missing" },
+    { label: "Sessions", value: profile?.lifecycle.trading_behavior.eligible_sessions.map(readableLabel).join(", ") || "None" },
+  ];
+  if (step === "assignments") return [
+    { label: "Deployment", value: deployment?.name ?? "Missing" },
+    { label: "Universe", value: draft.assignments.universes.find((row) => row.universe_id === deployment?.universe_id)?.name ?? "Missing" },
+    { label: "Modes", value: deployment?.modes.map(readableLabel).join(", ") || "None" },
+  ];
+  if (step === "portfolio") return [
+    { label: "Account", value: account?.name ?? mandate?.account_key ?? "Missing" },
+    { label: "Cash ceiling", value: mandate ? percent(mandate.maximum_cash_fraction) : "Missing" },
+    { label: "Risk ceiling", value: mandate ? percent(mandate.maximum_planned_risk_fraction) : "Missing" },
+    { label: "Autonomy", value: mandate ? readableLabel(mandate.autonomy) : "Missing" },
+  ];
+  if (step === "execution") return [
+    { label: "OMS profile", value: oms?.name ?? "Missing" },
+    { label: "Entry policy", value: execution ? readableLabel(execution.name) : "Missing" },
+    { label: "Quote source", value: execution ? readableLabel(execution.quote_source) : "Missing" },
+    { label: "Partial fill", value: execution ? readableLabel(execution.partial_fill_policy) : "Missing" },
+  ];
+  if (step === "protection") return [
+    { label: "Protection", value: protection?.name ?? "Missing" },
+    { label: "Slices", value: String(protection?.slices.length ?? 0) },
+    { label: "Profit transition", value: protection ? readableLabel(protection.profit_pocket_transition) : "Missing" },
+    { label: "Backstop", value: protection?.mandatory_catastrophic_backstop ? "Required" : "Not required" },
+  ];
+  return [
+    { label: "Account", value: account?.name ?? "Missing" },
+    { label: "Class", value: account ? readableLabel(account.account_class) : "Missing" },
+    { label: "Modes", value: account?.modes.map(readableLabel).join(", ") || "None" },
+    { label: "Policy", value: account?.portfolio_policy_id ?? "Missing" },
+  ];
+}
+
+function reviewRows(draft: Draft, approved: Revision | null) {
+  const profile = draft.strategy.profiles.find((row) => row.profile_id === draft.strategy.default_profile_id) ?? draft.strategy.profiles[0];
+  const deployment = draft.assignments.deployments.find((row) => row.enabled) ?? draft.assignments.deployments[0];
+  const mandate = draft.portfolio.mandates.find((row) => row.deployment_id === deployment?.deployment_id) ?? draft.portfolio.mandates[0];
+  const oms = draft.oms.profiles.find((row) => row.profile_id === deployment?.oms_profile_id) ?? draft.oms.profiles[0];
+  const execution = draft.oms.execution_policies.find((row) => row.policy_id === oms?.settings.entry_execution_policy_id) ?? draft.oms.execution_policies[0];
+  const protection = draft.oms.protection_profiles.find((row) => row.profile_id === oms?.settings.protection_profile_id) ?? draft.oms.protection_profiles[0];
+  const account = draft.accounts.bindings.find((row) => row.account_key === mandate?.account_key) ?? draft.accounts.bindings[0];
+  const checks = releaseReadiness(draft);
+  const inherited = <K extends keyof Draft>(key: K) => Boolean(approved && stableStringify(draft[key]) === stableStringify(approved.payload[key]));
+  const state = (key: keyof Draft, valid: boolean, recommended: boolean): "Inherited" | "Invalid" | "Using recommended" | "Customized" => !valid ? "Invalid" : inherited(key) ? "Inherited" : recommended ? "Using recommended" : "Customized";
+  return [
+    { icon: GitBranch, label: "Strategy", selection: profile?.name ?? "Missing", state: state("strategy", Boolean(profile), Boolean(profile?.protected)), step: "strategy" as GuidedStep },
+    { icon: Network, label: "Deployment", selection: deployment?.name ?? "Missing", state: state("assignments", Boolean(deployment && checks[1]?.ready), false), step: "assignments" as GuidedStep },
+    { icon: BriefcaseBusiness, label: "Portfolio", selection: mandate ? `${account?.name ?? mandate.account_key} · ${percent(mandate.maximum_planned_risk_fraction)} risk` : "Missing", state: state("portfolio", Boolean(checks[2]?.ready), false), step: "portfolio" as GuidedStep },
+    { icon: Send, label: "Execution", selection: execution ? readableLabel(execution.name) : "Missing", state: state("oms", Boolean(execution), execution?.origin === "system"), step: "execution" as GuidedStep },
+    { icon: ShieldCheck, label: "Protection", selection: protection?.name ?? "Missing", state: state("oms", Boolean(protection?.mandatory_catastrophic_backstop), protection?.origin === "system"), step: "protection" as GuidedStep },
+    { icon: Boxes, label: "Accounts", selection: account ? `${account.name} · ${account.modes.map(readableLabel).join(", ")}` : "Missing", state: state("accounts", Boolean(checks[4]?.ready && checks[6]?.ready), false), step: "accounts" as GuidedStep },
+  ];
+}
+
 function pageForSection(section: TradingConfigurationSection) {
   if (section === "strategy") return "strategy-configuration";
   if (section === "assignments") return "assignment-configuration";

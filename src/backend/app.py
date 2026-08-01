@@ -139,6 +139,7 @@ from src.backend.trading_configuration_service import (
     configuration_revisions,
     effective_configuration_snapshot,
     publish_configuration,
+    replace_configuration_draft,
     replay_configuration_snapshot,
     update_configuration_section,
 )
@@ -4317,6 +4318,16 @@ def trading_taxonomy() -> dict[str, Any]:
 @app.get("/api/trading/configuration/draft")
 def trading_configuration_draft() -> dict[str, Any]:
     return configuration_draft()
+
+
+@app.put("/api/trading/configuration/draft")
+def trading_configuration_draft_replace(
+    payload: TradingConfigurationSectionSubmit,
+) -> dict[str, Any]:
+    try:
+        return replace_configuration_draft(payload.payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.put("/api/trading/configuration/draft/{section}")

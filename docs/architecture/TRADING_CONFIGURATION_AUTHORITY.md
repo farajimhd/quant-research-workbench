@@ -161,6 +161,29 @@ and execution pace. Live owns session startup and operational controls.
 
 Raw JSON is never the primary configuration interface.
 
+Configuration begins in one hybrid Configuration Studio rather than forcing
+every operator into the full field inventory:
+
+- **Use recommended setup** applies only registered protected Strategy and
+  system OMS starting points. It previews the affected references and preserves
+  account-specific mandates, risk limits, and broker bindings for explicit
+  review.
+- **Guided setup** asks a bounded set of consequential questions in authority
+  order: Strategy, Deployment, Portfolio, Execution, Protection, Accounts, and
+  Review. Previous and next navigation preserves the same mutable draft, and
+  each Continue action validates and saves the current canonical section.
+- **Clone approved release** previews the immutable source release and replaces
+  the complete mutable draft atomically. The approved release and active runs
+  remain unchanged.
+- **Expert editor** retains every existing field, rule set, catalog, advanced
+  parameter, and generated JSON inspector. Guided and Expert are views over the
+  same schema-v8 model, not separate configuration systems.
+
+Recommended, inherited, customized, incomplete, invalid, and approved states
+are shown as explicit provenance/status text rather than inferred from color.
+The final review matrix names the effective selection for every authority and
+links back to the relevant guided decision before publication.
+
 - Every page starts with a concise summary of its responsibility and authority.
 - Configuration navigation, page headers, journey state, and section headers
   use icon-backed domain accents resolved from the registered application
@@ -224,6 +247,12 @@ Draft entities are mutable and non-executable. Publication:
 7. serializes the complete model canonically;
 8. records a SHA-256 content hash and immutable journal revision; and
 9. makes the newest approved release authoritative for new runs.
+
+Section edits use `PUT /api/trading/configuration/draft/{section}`. Operations
+that intentionally replace several interdependent authorities, such as cloning
+an approved release, use `PUT /api/trading/configuration/draft`; the backend
+migrates, validates, and commits that complete draft atomically so intermediate
+cross-reference states can never become the saved authority.
 
 An active run pins the release identity, hash, approval timestamp, selected
 deployment, full configuration model, and deterministic runtime projection.

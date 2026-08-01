@@ -142,6 +142,15 @@ def update_configuration_section(section: str, payload: Any) -> dict[str, Any]:
     return trading_journal().save_trading_configuration_draft(candidate)
 
 
+def replace_configuration_draft(payload: Any) -> dict[str, Any]:
+    """Validate and replace one complete mutable draft atomically."""
+    if not isinstance(payload, dict):
+        raise TypeError("Trading configuration draft must be an object")
+    candidate = _without_timestamp(_migrate_draft(deepcopy(payload)))
+    _validate_draft(candidate, require_runtime_ready=False)
+    return trading_journal().save_trading_configuration_draft(candidate)
+
+
 def configuration_revisions() -> list[dict[str, Any]]:
     return trading_journal().trading_configuration_revisions()
 
