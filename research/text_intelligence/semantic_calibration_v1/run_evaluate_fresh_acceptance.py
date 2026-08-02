@@ -4,14 +4,16 @@ import argparse
 import json
 from pathlib import Path
 
-import joblib
-
 from research.mlops.paths import MLOpsPathConfig
 
 from .annotation_audit import audit_annotations
 from .audit import audit_sample
 from .comparison import evaluate_predictions, load_collection
-from .news_v10 import V10_VERSION, generate_human_predictions
+from .news_v10 import (
+    V10_VERSION,
+    generate_human_predictions,
+    human_prediction_cache_complete,
+)
 from .run_deterministic_news_v6 import _headline
 from .run_news_v10 import _delta, _generate_v9
 from .schema import ANNOTATION_VERSION_V3
@@ -54,12 +56,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     if len(items) != 100 or {item.split for item in items} != {"fresh_acceptance"}:
         raise RuntimeError("fresh acceptance identity or split contract drift")
-    model = joblib.load(args.v10_artifact)
-    if model.version != V10_VERSION:
-        raise RuntimeError(f"unexpected V10 artifact version: {model.version}")
     v10_dir = args.output_root / "v10_predictions"
     v9_dir = args.output_root / "v9_predictions"
-    generate_human_predictions(model, items, output_dir=v10_dir)
+    if human_prediction_cache_complete(items, output_dir=v10_dir):
+        print(f"V10 reusing {len(items):,} identity-verified predictions", flush=True)
+    else:
+        import joblib
+
+        model = joblib.load(args.v10_artifact)
+        if model.version != V10_VERSION:
+            raise RuntimeError(f"unexpected V10 artifact version: {model.version}")
+        generate_human_predictions(model, items, output_dir=v10_dir)
     _generate_v9(items, v9_dir)
     v10 = evaluate_predictions(items, prediction_dir=v10_dir, canonical_concepts=True)
     v9 = evaluate_predictions(items, prediction_dir=v9_dir, canonical_concepts=True)

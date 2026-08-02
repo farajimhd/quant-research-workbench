@@ -4,10 +4,39 @@ import unittest
 
 import numpy as np
 
-from .news_v10 import ForestConfig, _forest, source_candidates, unit_text
+from .comparison import CollectionItem
+from .news_v10 import (
+    V10_VERSION,
+    ForestConfig,
+    _forest,
+    _prediction_matches_item,
+    source_candidates,
+    unit_text,
+)
 
 
 class NewsV10Tests(unittest.TestCase):
+    def test_prediction_cache_requires_exact_v10_and_source_identity(self) -> None:
+        item = CollectionItem(
+            sample_id="N1001",
+            split="fresh_acceptance",
+            blinded={"source_id": "source-1"},
+            truth={},
+        )
+        prediction = {
+            "version": V10_VERSION,
+            "sample_id": "N1001",
+            "split": "fresh_acceptance",
+            "source_id": "source-1",
+        }
+        self.assertTrue(_prediction_matches_item(prediction, item))
+        self.assertFalse(
+            _prediction_matches_item({**prediction, "source_id": "source-2"}, item)
+        )
+        self.assertFalse(
+            _prediction_matches_item({**prediction, "version": "stale"}, item)
+        )
+
     def test_target_identity_is_masked_from_unit_features(self) -> None:
         source = {
             "publication": {

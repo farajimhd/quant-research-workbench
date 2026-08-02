@@ -156,6 +156,7 @@ def _headline(report: dict) -> dict:
         "content_role_macro_f1": report["content_role"]["macro_f1"],
         "source_origin_macro_f1": report["source_origin"]["macro_f1"],
         "direction_macro_f1": report["semantic_direction"]["macro_f1"],
+        "forecast_direction_macro_f1": report["forecast_direction"]["macro_f1"],
         "concept_family_f1": report["event_concepts"]["f1"],
         "forecast_f1": report["eligibility"]["forecast_trigger_eligible"]["f1"],
         "history_f1": report["eligibility"]["issuer_history_context_eligible"]["f1"],

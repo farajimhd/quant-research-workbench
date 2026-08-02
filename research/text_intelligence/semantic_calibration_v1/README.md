@@ -740,7 +740,8 @@ Fresh-set results are:
 | Ticker-scope F1 | 0.462 | 0.395 | -0.066 |
 | Content-role macro F1 | 0.459 | 0.430 | -0.029 |
 | Source-origin macro F1 | 0.395 | 0.504 | +0.109 |
-| Direction macro F1 | 0.394 | 0.424 | +0.029 |
+| Text-sentiment macro F1 | 0.394 | 0.424 | +0.029 |
+| Forecast-direction macro F1 | 0.398 | 0.317 | -0.081 |
 | Concept-family F1 | 0.492 | 0.221 | -0.271 |
 | Forecast eligibility F1 | 0.722 | 0.849 | +0.127 |
 | Issuer-history eligibility F1 | 0.888 | 0.952 | +0.064 |
@@ -766,21 +767,30 @@ The final audit launcher writes one Markdown document per article plus an
 error-sorted `INDEX.md` under the configured runtime root. Each document shows
 the complete frozen source metadata and every original source-lane text first;
 the frozen human, V9 and V10 values for article extraction, role and origin;
-issuer ticker scope; per-issuer direction, canonical concept families and all
-three eligibility decisions; the human evidence; V9's persisted deterministic
+issuer ticker scope; per-issuer textual sentiment, eligibility-gated forecast
+direction, canonical concept families and all three eligibility decisions; the
+human evidence; V9's persisted deterministic
 rule and score trace; V10's recorded score/confidence output; and the complete
 rendered article used during review. V9 has no hidden model reasoning chain,
 and V10 has no faithful natural-language explanation, so the audit never
 manufactures either one.
 
-The strict article-level audit found at least one difference in 90 of 100 V9
-articles and 95 of 100 V10 articles. This is intentionally stricter than the
-earlier `error_articles` count because it treats concept, eligibility, and each
-extra or missing issuer-unit field as independently auditable comparisons. Ten
-V9 articles and five V10 articles matched the human authority on every displayed
-comparison cell.
+The strict article-level audit found at least one difference in 89 of 100 V9
+articles and 95 of 100 V10 articles. An issuer-presence mismatch is scored once,
+in addition to the article ticker-set comparison. Dimensions belonging to a
+ticker for which the human authority has no issuer unit are displayed as `N/A`;
+the audit no longer fabricates `none` or `no` human labels and then marks those
+display values `DIFF`. For a real human issuer unit, each field is compared by
+its normalized value, consistently with the benchmark evaluator.
 
-Audit contract V3 begins with the exact raw provider JSON downloaded by News
+Text sentiment describes what the article says and remains independent of
+actionability. Forecast direction is a derived operational view: it equals the
+text sentiment only for human units with forecast eligibility enabled, and is
+otherwise `not applicable`. The forecast-direction benchmark therefore measures
+direction only where a forecast decision exists; it does not penalize an
+ineligible article for correctly abstaining from direction prediction.
+
+Audit contract V4 begins with the exact raw provider JSON downloaded by News
 Gateway. The renderer resolves the retained `raw_artifact_path` and verifies its
 Blake2b payload hash using the recorded historical serialization contract
 (exact UTF-8 artifact bytes or canonical JSON with escaped Unicode). It reports

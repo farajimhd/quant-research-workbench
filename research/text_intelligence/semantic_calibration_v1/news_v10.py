@@ -474,9 +474,34 @@ def generate_human_predictions(
 ) -> None:
     assert_runtime_root(output_dir)
     for index, item in enumerate(items, 1):
-        write_json_atomic(output_dir / f"{item.sample_id}.json", predict_human_item(model, item))
+        target = output_dir / f"{item.sample_id}.json"
+        if target.exists() and _prediction_matches_item(read_json(target), item):
+            continue
+        write_json_atomic(target, predict_human_item(model, item))
         if index % 100 == 0:
             print(f"V10 HUMAN {index:,}", flush=True)
+
+
+def _prediction_matches_item(
+    prediction: Mapping[str, Any], item: CollectionItem
+) -> bool:
+    return (
+        str(prediction.get("version") or "") == V10_VERSION
+        and str(prediction.get("sample_id") or "") == item.sample_id
+        and str(prediction.get("split") or "") == item.split
+        and str(prediction.get("source_id") or "")
+        == str(item.blinded.get("source_id") or "")
+    )
+
+
+def human_prediction_cache_complete(
+    items: Iterable[CollectionItem], *, output_dir: Path
+) -> bool:
+    for item in items:
+        target = output_dir / f"{item.sample_id}.json"
+        if not target.exists() or not _prediction_matches_item(read_json(target), item):
+            return False
+    return True
 
 
 def file_sha256(path: Path) -> str:

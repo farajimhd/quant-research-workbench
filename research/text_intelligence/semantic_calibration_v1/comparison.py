@@ -161,6 +161,7 @@ def evaluate_predictions(
     truth_concepts: set[tuple[str, str, str]] = set()
     predicted_concepts: set[tuple[str, str, str]] = set()
     directions = Counter()
+    forecast_directions = Counter()
     eligibility = {
         name: Counter()
         for name in (
@@ -231,6 +232,18 @@ def evaluate_predictions(
             directions[(str(unit["semantic_direction"]), predicted_direction)] += 1
             if predicted_direction != unit["semantic_direction"]:
                 sample_errors.append(f"direction:{ticker}")
+            if bool(unit["forecast_trigger_eligible"]):
+                predicted_forecast_direction = (
+                    predicted_direction
+                    if predicted is not None
+                    and bool(predicted["forecast_trigger_eligible"])
+                    else "__missing__"
+                )
+                forecast_directions[
+                    (str(unit["semantic_direction"]), predicted_forecast_direction)
+                ] += 1
+                if predicted_forecast_direction != unit["semantic_direction"]:
+                    sample_errors.append(f"forecast_direction:{ticker}")
             for field, counter in eligibility.items():
                 actual = bool(unit[field])
                 observed = bool(predicted[field]) if predicted is not None else False
@@ -272,6 +285,7 @@ def evaluate_predictions(
         "content_role": _multiclass_metrics(article_role),
         "source_origin": _multiclass_metrics(article_origin),
         "semantic_direction": _multiclass_metrics(directions),
+        "forecast_direction": _multiclass_metrics(forecast_directions),
         "eligibility": {
             name: _binary_metrics(counter)
             for name, counter in eligibility.items()

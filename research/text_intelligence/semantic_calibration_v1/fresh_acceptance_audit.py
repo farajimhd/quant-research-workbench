@@ -25,7 +25,7 @@ from .schema import stable_json_hash
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
 
-AUDIT_CONTRACT = "news_fresh_acceptance_article_audit_v3"
+AUDIT_CONTRACT = "news_fresh_acceptance_article_audit_v4"
 GATEWAY_TEXT_FIELDS = (
     "body_text",
     "external_text",
@@ -38,7 +38,8 @@ ARTICLE_FIELDS = (
     ("Source origin", "source_origin"),
 )
 UNIT_FIELDS = (
-    ("Direction", "semantic_direction"),
+    ("Text sentiment", "semantic_direction"),
+    ("Forecast direction", "forecast_direction"),
     ("Concept families", "event_concepts"),
     ("Forecast eligible", "forecast_trigger_eligible"),
     ("Reaction-study eligible", "reaction_evaluation_eligible"),
@@ -283,7 +284,8 @@ def render_article_audit(
     v9_mismatches += human_tickers != v9_tickers
     v10_mismatches += human_tickers != v10_tickers
 
-    unit_rows: list[tuple[str, str, Any, Any, bool, Any, bool]] = []
+    unit_rows: list[tuple[str, str, Any, Any, str, Any, str]] = []
+    unit_comparison_cells = 0
     all_tickers = sorted(human_tickers | v9_tickers | v10_tickers)
     for ticker in all_tickers:
         human_present = ticker in human_units
@@ -294,23 +296,54 @@ def render_article_audit(
         )
         v9_unit = _normalized_unit(v9_units.get(ticker))
         v10_unit = _normalized_unit(v10_units.get(ticker))
+        v9_presence = _unit_presence_outcome(human_present, v9_present)
+        v10_presence = _unit_presence_outcome(human_present, v10_present)
+        unit_rows.append(
+            (
+                ticker,
+                "Issuer unit present",
+                human_present,
+                v9_present,
+                v9_presence,
+                v10_present,
+                v10_presence,
+            )
+        )
+        v9_mismatches += v9_presence == "diff"
+        v10_mismatches += v10_presence == "diff"
+        unit_comparison_cells += 1
         for label, field in UNIT_FIELDS:
-            truth_value = truth[field]
+            truth_value = truth[field] if human_present else "not applicable"
             v9_value = v9_unit[field]
             v10_value = v10_unit[field]
-            v9_match = _unit_field_matches(
-                human_present, v9_present, truth_value, v9_value
+            v9_outcome = _unit_field_outcome(
+                human_present,
+                field=field,
+                truth_value=truth_value,
+                predicted_value=v9_value,
             )
-            v10_match = _unit_field_matches(
-                human_present, v10_present, truth_value, v10_value
+            v10_outcome = _unit_field_outcome(
+                human_present,
+                field=field,
+                truth_value=truth_value,
+                predicted_value=v10_value,
             )
             unit_rows.append(
-                (ticker, label, truth_value, v9_value, v9_match, v10_value, v10_match)
+                (
+                    ticker,
+                    label,
+                    truth_value,
+                    v9_value,
+                    v9_outcome,
+                    v10_value,
+                    v10_outcome,
+                )
             )
-            v9_mismatches += not v9_match
-            v10_mismatches += not v10_match
+            v9_mismatches += v9_outcome == "diff"
+            v10_mismatches += v10_outcome == "diff"
+            unit_comparison_cells += v9_outcome != "not_applicable"
 
-    comparison_cells = len(article_rows) + len(unit_rows)
+    comparison_cells = len(article_rows) + unit_comparison_cells
     file_name = f"{item.sample_id}_{_slug(title)}.md"
     body = [
         f"# {item.sample_id} - {title}",
@@ -362,8 +395,13 @@ def render_article_audit(
         f"- **V9 mismatched comparison cells:** **{v9_mismatches} / {comparison_cells}**",
         f"- **V10 mismatched comparison cells:** **{v10_mismatches} / {comparison_cells}**",
         "",
-        "`MATCH` and `DIFF` compare each prediction with the frozen human label. "
-        "Concepts are compared at the same canonical family level used by the benchmark.",
+        "`MATCH` and `DIFF` compare each applicable prediction with the frozen "
+        "human label. `N/A` means the human authority has no issuer unit for that "
+        "ticker; the extra model issuer is scored once by issuer presence and the "
+        "article ticker set rather than producing fabricated field mismatches. "
+        "Text sentiment remains independent semantic evidence. Forecast direction "
+        "is applicable only when forecast eligibility is on. Concepts are compared "
+        "at the same canonical family level used by the benchmark.",
         "",
         "## Article-level labels",
         "",
@@ -439,6 +477,7 @@ def render_index(
         ("Content-role macro F1", "content_role_macro_f1"),
         ("Source-origin macro F1", "source_origin_macro_f1"),
         ("Direction macro F1", "direction_macro_f1"),
+        ("Forecast-direction macro F1", "forecast_direction_macro_f1"),
         ("Concept-family F1", "concept_family_f1"),
         ("Forecast eligibility F1", "forecast_f1"),
         ("Issuer-history eligibility F1", "history_f1"),
@@ -519,13 +558,19 @@ def _normalized_unit(
     if unit is None:
         return {
             "semantic_direction": missing_direction,
+            "forecast_direction": "not applicable",
             "event_concepts": (),
             "forecast_trigger_eligible": False,
             "reaction_evaluation_eligible": False,
             "issuer_history_context_eligible": False,
         }
+    semantic_direction = str(unit.get("semantic_direction") or "neutral")
+    forecast_eligible = bool(unit.get("forecast_trigger_eligible"))
     return {
-        "semantic_direction": str(unit.get("semantic_direction") or "neutral"),
+        "semantic_direction": semantic_direction,
+        "forecast_direction": (
+            semantic_direction if forecast_eligible else "not applicable"
+        ),
         "event_concepts": tuple(
             sorted(
                 {
@@ -535,7 +580,7 @@ def _normalized_unit(
                 }
             )
         ),
-        "forecast_trigger_eligible": bool(unit.get("forecast_trigger_eligible")),
+        "forecast_trigger_eligible": forecast_eligible,
         "reaction_evaluation_eligible": bool(unit.get("reaction_evaluation_eligible")),
         "issuer_history_context_eligible": bool(
             unit.get("issuer_history_context_eligible")
@@ -557,17 +602,17 @@ def _comparison_table(rows: Iterable[tuple[str, Any, Any, Any]]) -> str:
 
 
 def _unit_comparison_table(
-    rows: Iterable[tuple[str, str, Any, Any, bool, Any, bool]]
+    rows: Iterable[tuple[str, str, Any, Any, str, Any, str]]
 ) -> str:
     output = [
         "| Ticker | Dimension | Human gold | V9 | V9 result | V10 | V10 result |",
         "|---|---|---|---|---|---|---|",
     ]
-    for ticker, label, truth, v9, v9_match, v10, v10_match in rows:
+    for ticker, label, truth, v9, v9_outcome, v10, v10_outcome in rows:
         output.append(
             f"| `{_escape_table(ticker)}` | {_escape_table(label)} | {_display(truth)} | "
-            f"{_display(v9)} | {_match_outcome(v9_match)} | {_display(v10)} | "
-            f"{_match_outcome(v10_match)} |"
+            f"{_display(v9)} | {_unit_outcome(v9_outcome)} | {_display(v10)} | "
+            f"{_unit_outcome(v10_outcome)} |"
         )
     if len(output) == 2:
         output.append("| - | No issuer-level units | - | - | MATCH | - | MATCH |")
@@ -885,15 +930,27 @@ def _match_outcome(matches: bool) -> str:
     return "**MATCH**" if matches else "**DIFF**"
 
 
-def _unit_field_matches(
+def _unit_presence_outcome(human_present: bool, prediction_present: bool) -> str:
+    return "match" if human_present == prediction_present else "diff"
+
+
+def _unit_field_outcome(
     human_present: bool,
-    prediction_present: bool,
+    *,
+    field: str,
     truth_value: Any,
     predicted_value: Any,
-) -> bool:
+) -> str:
+    del field  # The explicit parameter keeps future field-specific policies visible.
     if not human_present:
-        return not prediction_present
-    return prediction_present and truth_value == predicted_value
+        return "not_applicable"
+    return "match" if truth_value == predicted_value else "diff"
+
+
+def _unit_outcome(outcome: str) -> str:
+    if outcome == "not_applicable":
+        return "**N/A**"
+    return _match_outcome(outcome == "match")
 
 
 def _escape_table(value: Any) -> str:

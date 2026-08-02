@@ -18,7 +18,8 @@ from .fresh_acceptance_audit import (
     _resolve_raw_artifact_path,
     _slug,
     _source_text_sections,
-    _unit_field_matches,
+    _unit_field_outcome,
+    _unit_presence_outcome,
 )
 
 
@@ -35,11 +36,13 @@ class FreshAcceptanceAuditTests(unittest.TestCase):
         )
         self.assertEqual(unit["event_concepts"], ("capital_return",))
         self.assertEqual(unit["semantic_direction"], "positive")
+        self.assertEqual(unit["forecast_direction"], "positive")
         self.assertTrue(unit["forecast_trigger_eligible"])
 
     def test_missing_unit_is_explicit_and_not_silently_neutral(self) -> None:
         unit = _normalized_unit(None)
         self.assertEqual(unit["semantic_direction"], "not predicted")
+        self.assertEqual(unit["forecast_direction"], "not applicable")
         self.assertEqual(unit["event_concepts"], ())
         human = _normalized_unit(None, missing_direction="not an issuer unit")
         self.assertEqual(human["semantic_direction"], "not an issuer unit")
@@ -50,15 +53,62 @@ class FreshAcceptanceAuditTests(unittest.TestCase):
         self.assertNotIn("/", slug)
         self.assertTrue(slug.endswith(".audit"))
 
-    def test_unit_comparison_treats_two_absences_as_match(self) -> None:
-        self.assertTrue(
-            _unit_field_matches(False, False, "not an issuer unit", "not predicted")
+    def test_unit_presence_is_scored_once_and_absent_human_fields_are_na(self) -> None:
+        self.assertEqual(_unit_presence_outcome(False, False), "match")
+        self.assertEqual(_unit_presence_outcome(False, True), "diff")
+        self.assertEqual(_unit_presence_outcome(True, False), "diff")
+        self.assertEqual(_unit_presence_outcome(True, True), "match")
+        self.assertEqual(
+            _unit_field_outcome(
+                False,
+                field="forecast_trigger_eligible",
+                truth_value="not applicable",
+                predicted_value=False,
+            ),
+            "not_applicable",
         )
-        self.assertFalse(
-            _unit_field_matches(False, True, "not an issuer unit", "neutral")
+
+    def test_missing_prediction_compares_field_values_like_benchmark(self) -> None:
+        self.assertEqual(
+            _unit_field_outcome(
+                True,
+                field="event_concepts",
+                truth_value=(),
+                predicted_value=(),
+            ),
+            "match",
         )
-        self.assertFalse(_unit_field_matches(True, False, "positive", "not predicted"))
-        self.assertTrue(_unit_field_matches(True, True, "positive", "positive"))
+        self.assertEqual(
+            _unit_field_outcome(
+                True,
+                field="forecast_trigger_eligible",
+                truth_value=False,
+                predicted_value=False,
+            ),
+            "match",
+        )
+        self.assertEqual(
+            _unit_field_outcome(
+                True,
+                field="semantic_direction",
+                truth_value="neutral",
+                predicted_value="not predicted",
+            ),
+            "diff",
+        )
+
+    def test_ineligible_unit_has_semantic_but_no_forecast_direction(self) -> None:
+        unit = _normalized_unit(
+            {
+                "semantic_direction": "neutral",
+                "event_concepts": [],
+                "forecast_trigger_eligible": False,
+                "reaction_evaluation_eligible": False,
+                "issuer_history_context_eligible": True,
+            }
+        )
+        self.assertEqual(unit["semantic_direction"], "neutral")
+        self.assertEqual(unit["forecast_direction"], "not applicable")
 
     def test_metadata_payload_preserves_metadata_without_duplicating_text(self) -> None:
         payload = _metadata_payload(
