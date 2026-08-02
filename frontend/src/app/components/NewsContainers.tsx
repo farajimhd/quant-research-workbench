@@ -46,6 +46,7 @@ type NewsPayload = {
   next_before_id: string;
   query_id: string;
   rows: NewsRow[];
+  ticker_options: string[];
   window_start: string;
 };
 
@@ -151,11 +152,20 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
   const state = useNewsQuery({ asOf, content: settings.content, direction, eligibilityFilters, endDate: customReady ? settings.endDate : "", hours: settings.lookbackHours, kind: settings.kind, labelState, limit: settings.limit, live, origin, refreshKey, role, search: committedSearch, startDate: customReady ? settings.startDate : "", ticker: settings.ticker });
   const presentations = useTickerPresentations(state.rows.flatMap((row) => row.ticker_link_sample ?? []));
   const displayRows = useMemo(() => sortRowsBySentimentScore(state.rows, (row) => row.scoped_summary?.semantic_score, sentimentSort), [sentimentSort, state.rows]);
+  const tickerOptions = useMemo<InventoryFilterOption[]>(() => {
+    const values = new Set(state.tickerOptions);
+    if (settings.ticker) values.add(settings.ticker);
+    return [{ value: "", label: "Any ticker" }, ...[...values].sort().map((value) => ({ value, label: value }))];
+  }, [settings.ticker, state.tickerOptions]);
+  const commitSearch = (value: string) => {
+    setCommittedSearch(value.trim());
+    if (settings.ticker) onSettingsChange({ ticker: "" });
+  };
 
   return <section className="news-all" aria-label="All news">
-    <form className="news-query-bar" onSubmit={(event) => { event.preventDefault(); setCommittedSearch(search.trim()); }}>
+    <form className="news-query-bar" onSubmit={(event) => { event.preventDefault(); commitSearch(search); }}>
       <div className="news-query-primary">
-        <label className="news-search"><Search size={13} /><input aria-label="Search all news" onChange={(event) => setSearch(event.target.value)} placeholder="Search source ID, ticker, headline…" value={search} /></label>
+        <label className="news-search"><Search size={13} /><input aria-label="Search all news" onChange={(event) => { const next = event.target.value; setSearch(next); if (!next.trim() && committedSearch) commitSearch(""); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSearch(event.currentTarget.value); } }} placeholder="Search source ID, ticker, headline…" value={search} /></label>
         <button className="button secondary compact news-search-submit" type="submit">Search</button>
         <InventoryFilterSelect ariaLabel="Semantic direction" onChange={setDirection} options={NEWS_DIRECTION_OPTIONS} value={direction} />
         <InventoryFilterSelect ariaLabel="News time window" onChange={(value) => value === "custom" ? onSettingsChange({ rangeMode: "custom" }) : onSettingsChange({ lookbackHours: Number(value), rangeMode: "preset" })} options={NEWS_WINDOW_OPTIONS} value={settings.rangeMode === "custom" ? "custom" : settings.lookbackHours} />
@@ -163,7 +173,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
         <InventoryFilterSelect ariaLabel="Source origin" onChange={setOrigin} options={NEWS_ORIGIN_OPTIONS} value={origin} />
         {settings.rangeMode === "custom" ? <><label title="Exchange date in America/New_York"><span>From (ET)</span><input aria-label="News range start date in exchange time" onChange={(event) => onSettingsChange({ startDate: event.target.value })} type="date" value={settings.startDate} /></label><label title="Exchange date in America/New_York"><span>Through (ET)</span><input aria-label="News range end date in exchange time" onChange={(event) => onSettingsChange({ endDate: event.target.value })} type="date" value={settings.endDate} /></label></> : null}
         <InventoryFilterSelect ariaLabel="News result limit" onChange={(value) => onSettingsChange({ limit: Number(value) })} options={NEWS_LIMIT_OPTIONS} value={settings.limit} />
-        <label><span>Ticker</span><input aria-label="Filter by ticker" maxLength={16} onChange={(event) => onSettingsChange({ ticker: event.target.value.toUpperCase() })} placeholder="Any ticker" value={settings.ticker} /></label>
+        <InventoryFilterSelect ariaLabel="Ticker" onChange={(value) => onSettingsChange({ ticker: value })} options={tickerOptions} searchable searchPlaceholder="Search tickers…" value={settings.ticker} />
         <EligibilityFilters filters={eligibilityFilters} onChange={setEligibilityFilters} prefix="News" />
         <InventoryFilterSelect ariaLabel="Label state" onChange={setLabelState} options={NEWS_LABEL_STATE_OPTIONS} value={labelState} />
         <InventoryFilterSelect ariaLabel="Legacy source format" onChange={(value) => onSettingsChange({ kind: value })} options={NEWS_SOURCE_FORMAT_OPTIONS} value={settings.kind} />
@@ -375,7 +385,7 @@ function useNewsQuery({ asOf, content, direction, eligibilityFilters, endDate, h
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
       .finally(() => setLoadingPage(false));
   }, [load, pageIndex, payload]);
-  return { asOf: payload?.as_of, canGoNext: Boolean(payload?.has_more), canGoPrevious: pageIndex > 0, error, goToNextPage: () => goToPage(pageIndex + 1), goToPreviousPage: () => goToPage(pageIndex - 1), hasMore: Boolean(payload?.has_more), live, liveConnected, liveError, loading, loadingPage, marketTimezone: payload?.market_timezone ?? "America/New_York", pageNumber: pageIndex + 1, queryId: payload?.query_id ?? "", rows, windowStart: payload?.window_start };
+  return { asOf: payload?.as_of, canGoNext: Boolean(payload?.has_more), canGoPrevious: pageIndex > 0, error, goToNextPage: () => goToPage(pageIndex + 1), goToPreviousPage: () => goToPage(pageIndex - 1), hasMore: Boolean(payload?.has_more), live, liveConnected, liveError, loading, loadingPage, marketTimezone: payload?.market_timezone ?? "America/New_York", pageNumber: pageIndex + 1, queryId: payload?.query_id ?? "", rows, tickerOptions: payload?.ticker_options ?? [], windowStart: payload?.window_start };
 }
 
 // Product UI reports user-relevant freshness only. Never render database/table

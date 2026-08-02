@@ -34,6 +34,7 @@ class TextQuerySession:
     params: dict[str, Any]
     created_monotonic: float = field(default_factory=time.monotonic)
     item_hints: dict[str, dict[str, str]] = field(default_factory=dict)
+    facets: dict[str, list[str]] = field(default_factory=dict)
 
 
 class TextQuerySessionStore:
@@ -85,6 +86,21 @@ class TextQuerySessionStore:
             current = self._sessions.get(query_id)
             if current is not None:
                 current.item_hints.update(hints)
+
+    def remember_facet(self, query_id: str, corpus: str, name: str, values: list[str]) -> None:
+        session = self.get(query_id, corpus)
+        if session is None:
+            return
+        with self._lock:
+            current = self._sessions.get(query_id)
+            if current is not None:
+                current.facets[name] = list(values)
+
+    def facet(self, query_id: str, corpus: str, name: str) -> list[str] | None:
+        session = self.get(query_id, corpus)
+        if session is None or name not in session.facets:
+            return None
+        return list(session.facets[name])
 
     def hint(self, query_id: str, corpus: str, item_id: str) -> dict[str, str]:
         session = self.get(query_id, corpus)

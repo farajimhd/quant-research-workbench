@@ -1567,29 +1567,21 @@ def trading_news_rows(
     start_date_sql = sql_string(window_start.date().isoformat())
     end_date_sql = sql_string(cutoff.date().isoformat())
     cursor_sql = f"toDateTime64({sql_string(min(cursor, cutoff).strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
+    search_term = search.strip()
+    exact_source_id = search_term.lower() if re.fullmatch(r"[0-9a-fA-F]{32}", search_term) else ""
     cursor_id = before_id.strip()
     cursor_filter = "n.published_at_utc < page_before"
     if before.strip() and cursor_id:
         cursor_filter = f"(n.published_at_utc < page_before OR (n.published_at_utc = page_before AND n.canonical_news_id < {sql_string(cursor_id)}))"
-    filters = [
+    base_filters = [
         "n.published_date >= toDate(window_start)",
         "n.published_date <= toDate(window_end)",
         "n.published_at_utc >= window_start",
         "n.published_at_utc <= window_end",
-        cursor_filter,
     ]
+    filters = [*base_filters, cursor_filter]
     if safe_ticker:
         filters.append(f"has(n.tickers, {sql_string(safe_ticker)})")
-    label_prewhere = [
-        "l.corpus = 'news'",
-        "l.source_timestamp >= window_start",
-        "l.source_timestamp <= window_end",
-    ]
-    if safe_ticker:
-        label_prewhere.append(f"l.ticker = {sql_string(safe_ticker)}")
-    label_conditions = [
-        "l.labeling_version = 'scoped_text_labeling_v5'",
-    ]
     label_having: list[str] = []
     if safe_role:
         label_having.append(f"countIf(l.content_role = {sql_string(safe_role)}) > 0")
@@ -1618,48 +1610,70 @@ def trading_news_rows(
         if value:
             label_having.append(f"max({eligibility_expressions[name]}) = {1 if value == 'eligible' else 0}")
     label_group_having = f" GROUP BY l.source_id HAVING {' AND '.join(f'({item})' for item in label_having)}" if label_having else " GROUP BY l.source_id"
-    label_exists = (
-        "n.canonical_news_id IN (SELECT source_id "
-        "FROM q_live.scoped_text_labels_v5 AS l FINAL "
-        f"PREWHERE {' AND '.join(label_prewhere)} "
-        f"WHERE {' AND '.join(label_conditions)}{label_group_having})"
-    )
-    quality_label_exists = (
-        "n.canonical_news_id IN (SELECT source_id "
-        "FROM q_live.scoped_text_labels_v5 AS l FINAL "
-        f"PREWHERE {' AND '.join(label_prewhere)} "
-        f"WHERE {' AND '.join(label_conditions)} "
-        "AND position(l.classification_json, 'quality_flags') > 0 "
-        "AND position(l.classification_json, '[]') = 0)"
-    )
+
+    def label_predicates(ticker_scope: str = "") -> tuple[str, str]:
+        label_prewhere = [
+            "l.corpus = 'news'",
+            "l.source_timestamp >= window_start",
+            "l.source_timestamp <= window_end",
+        ]
+        if ticker_scope:
+            label_prewhere.append(f"l.ticker = {sql_string(ticker_scope)}")
+        label_exists_sql = (
+            "n.canonical_news_id IN (SELECT source_id "
+            "FROM q_live.scoped_text_labels_v5 AS l FINAL "
+            f"PREWHERE {' AND '.join(label_prewhere)} "
+            f"WHERE l.labeling_version = 'scoped_text_labeling_v5'{label_group_having})"
+        )
+        quality_exists_sql = (
+            "n.canonical_news_id IN (SELECT source_id "
+            "FROM q_live.scoped_text_labels_v5 AS l FINAL "
+            f"PREWHERE {' AND '.join(label_prewhere)} "
+            "WHERE l.labeling_version = 'scoped_text_labeling_v5' "
+            "AND position(l.classification_json, 'quality_flags') > 0 "
+            "AND position(l.classification_json, '[]') = 0)"
+        )
+        return label_exists_sql, quality_exists_sql
+
+    label_exists, quality_label_exists = label_predicates(safe_ticker)
+    facet_label_exists, facet_quality_label_exists = label_predicates()
     has_label_filters = bool(safe_role or safe_origin or safe_direction or safe_eligibility or any(eligibility_filters.values()))
+    facet_filters = list(base_filters)
     if has_label_filters:
         filters.append(label_exists)
+        facet_filters.append(facet_label_exists)
     if safe_label_state == "classified":
         filters.append(label_exists)
+        facet_filters.append(facet_label_exists)
     elif safe_label_state == "pending":
         filters.append(f"NOT ({label_exists})")
+        facet_filters.append(f"NOT ({facet_label_exists})")
     elif safe_label_state == "quality":
         filters.append(quality_label_exists)
-    search_term = search.strip()
-    exact_source_id = search_term.lower() if re.fullmatch(r"[0-9a-fA-F]{32}", search_term) else ""
+        facet_filters.append(facet_quality_label_exists)
     if search_term:
         if exact_source_id:
             filters.append(f"n.canonical_news_id = {sql_string(exact_source_id)}")
+            facet_filters.append(f"n.canonical_news_id = {sql_string(exact_source_id)}")
         else:
             escaped = sql_string(search_term)
-            filters.append(
+            search_filter = (
                 "positionCaseInsensitiveUTF8(concat("
                 "ifNull(n.canonical_news_id, ''), ' ', ifNull(n.provider_article_id, ''), ' ', "
                 "arrayStringConcat(n.tickers, ' '), ' ', ifNull(n.title, ''), ' ', "
                 "ifNull(r.rendered_text, ''), ' ', ifNull(n.author, ''), ' ', "
                 f"ifNull(n.url_domain, '')), {escaped}) > 0"
             )
-    if safe_content == "full":
+            filters.append(search_filter)
+            facet_filters.append(search_filter)
+    # Exact source identity is authoritative. Completeness is presentation
+    # metadata and must never make a known record undiscoverable.
+    if safe_content == "full" and not exact_source_id:
         filters.append("ifNull(r.source_count, 0) > 0")
-    elif safe_content == "title":
+        facet_filters.append("ifNull(r.source_count, 0) > 0")
+    elif safe_content == "title" and not exact_source_id:
         filters.append("ifNull(r.source_count, 0) = 0")
-    where_sql = " AND ".join(filters)
+        facet_filters.append("ifNull(r.source_count, 0) = 0")
     ticker_links_sql = (
         "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), "
         "arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
@@ -1667,8 +1681,11 @@ def trading_news_rows(
     classification_sql = news_classification_sql(ticker_links_sql, body_sql="r.rendered_text")
     news_kind_sql = classification_sql["kind"]
     if safe_kind != "all":
-        filters.append(f"({news_kind_sql}) = {sql_string(safe_kind)}")
-        where_sql = " AND ".join(filters)
+        kind_filter = f"({news_kind_sql}) = {sql_string(safe_kind)}"
+        filters.append(kind_filter)
+        facet_filters.append(kind_filter)
+    where_sql = " AND ".join(filters)
+    facet_where_sql = " AND ".join(facet_filters)
     source_cursor_filter = "published_at_utc < page_before"
     if before.strip() and cursor_id:
         source_cursor_filter = (
@@ -1792,6 +1809,53 @@ def trading_news_rows(
         raise HTTPException(status_code=503, detail="News is temporarily unavailable") from exc
     has_more = len(rows) > safe_limit
     rows = rows[:safe_limit]
+    ticker_options = TEXT_QUERY_SESSIONS.facet(effective_query_id, "news", "tickers")
+    if ticker_options is None:
+        facet_query = f"""
+            WITH
+                {start_sql} AS window_start,
+                {end_sql} AS window_end
+            SELECT arraySort(groupUniqArray(ticker)) AS ticker_options
+            FROM
+            (
+                SELECT arrayJoin({ticker_links_sql}) AS ticker
+                FROM
+                (
+                    SELECT *
+                    FROM {quote_ident(database)}.{quote_ident(normalized_table)} FINAL
+                    PREWHERE published_date >= toDate({start_date_sql})
+                      AND published_date <= toDate({end_date_sql})
+                    WHERE published_at_utc >= {start_sql}
+                      AND published_at_utc <= {end_sql}
+                ) AS n
+                LEFT JOIN
+                (
+                    SELECT *
+                    FROM {quote_ident(database)}.{quote_ident(rendered_table)} FINAL
+                    PREWHERE published_date >= toDate({start_date_sql})
+                      AND published_date <= toDate({end_date_sql})
+                    WHERE published_at_utc >= {start_sql}
+                      AND published_at_utc <= {end_sql}
+                ) AS r
+                    ON r.published_date=n.published_date
+                    AND r.provider_article_id=n.provider_article_id
+                    AND r.source_revision_key=n.source_revision_key
+                WHERE {facet_where_sql}
+            )
+            FORMAT JSONEachRow
+        """
+        try:
+            facet_rows = clickhouse_json_each_row(facet_query)
+            ticker_options = sorted({
+                str(value).strip().upper()
+                for value in (facet_rows[0].get("ticker_options") or [] if facet_rows else [])
+                if str(value).strip()
+            })
+            TEXT_QUERY_SESSIONS.remember_facet(effective_query_id, "news", "tickers", ticker_options)
+        except TimeoutError as exc:
+            raise HTTPException(status_code=504, detail="News ticker lookup timed out") from exc
+        except urllib.error.URLError as exc:
+            raise HTTPException(status_code=503, detail="News ticker lookup is temporarily unavailable") from exc
     TEXT_QUERY_SESSIONS.remember(
         effective_query_id,
         "news",
@@ -1836,6 +1900,7 @@ def trading_news_rows(
         "next_before": str(rows[-1].get("published_at_utc") or "") if has_more and rows else "",
         "next_before_id": str(rows[-1].get("canonical_news_id") or "") if has_more and rows else "",
         "rows": rows,
+        "ticker_options": ticker_options,
         "intelligence_status": intelligence_status,
         "window_start": window_start.isoformat().replace("+00:00", "Z"),
     }

@@ -64,11 +64,14 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("'company'", sql)
         self.assertIn("LIMIT 2", sql)
         self.assertEqual(query_mock.call_args_list[0].kwargs["timeout_seconds"], 12.0)
-        self.assertIn("scoped_text_labels_v5", query_mock.call_args_list[1].args[0])
-        self.assertIn("PREWHERE corpus='news'", query_mock.call_args_list[1].args[0])
+        facet_sql = query_mock.call_args_list[1].args[0]
+        self.assertNotIn("page_before", facet_sql)
+        self.assertNotIn("has(n.tickers, 'AAPL')", facet_sql)
+        self.assertIn("scoped_text_labels_v5", query_mock.call_args_list[2].args[0])
+        self.assertIn("PREWHERE corpus='news'", query_mock.call_args_list[2].args[0])
         self.assertTrue(payload["query_id"])
         self.assertEqual(payload["market_timezone"], "America/New_York")
-        self.assertEqual(query_mock.call_args_list[1].kwargs["timeout_seconds"], 1.5)
+        self.assertEqual(query_mock.call_args_list[2].kwargs["timeout_seconds"], 1.5)
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_search_includes_exact_source_identity(self, query_mock) -> None:
@@ -84,6 +87,50 @@ class TradingNewsTests(unittest.TestCase):
         sql = query_mock.call_args_list[0].args[0]
         self.assertEqual(sql.count(f"canonical_news_id = '{source_id}'"), 3)
         self.assertNotIn("ifNull(n.canonical_news_id, ''), ' '", sql)
+
+    @patch("src.backend.app.clickhouse_status_query")
+    def test_exact_source_identity_is_not_hidden_by_full_text_filter(self, query_mock) -> None:
+        source_id = "d99dd26da27e325682cb6be4274d3b60"
+        query_mock.side_effect = [
+            json.dumps({"canonical_news_id": source_id, "published_at_utc": "2017-12-15T15:52:09.000000Z", "is_title_only": 1}),
+            json.dumps({"ticker_options": ["AYTU"]}),
+            "",
+        ]
+
+        payload = trading_news_rows(
+            as_of="2017-12-16T04:59:59Z",
+            start_date="2017-12-15",
+            end_date="2017-12-15",
+            search=source_id,
+            content="full",
+        )
+
+        self.assertEqual(payload["rows"][0]["canonical_news_id"], source_id)
+        self.assertEqual(payload["ticker_options"], ["AYTU"])
+        self.assertNotIn("ifNull(r.source_count, 0) > 0", query_mock.call_args_list[0].args[0])
+        self.assertNotIn("ifNull(r.source_count, 0) > 0", query_mock.call_args_list[1].args[0])
+
+    @patch("src.backend.app.clickhouse_status_query")
+    def test_ticker_options_cover_full_filtered_query_not_page_or_ticker(self, query_mock) -> None:
+        query_mock.side_effect = [
+            json.dumps({"canonical_news_id": "page-row", "published_at_utc": "2026-07-10T13:44:00.000000Z", "ticker_link_sample": ["AAPL"]}),
+            json.dumps({"ticker_options": ["AAPL", "MSFT", "NVDA"]}),
+            "",
+        ]
+
+        payload = trading_news_rows(
+            as_of="2026-07-10T13:45:07Z",
+            lookback_hours=24,
+            search="earnings",
+            ticker="AAPL",
+        )
+
+        self.assertEqual(payload["ticker_options"], ["AAPL", "MSFT", "NVDA"])
+        main_sql, facet_sql = [call.args[0] for call in query_mock.call_args_list[:2]]
+        self.assertIn("has(n.tickers, 'AAPL')", main_sql)
+        self.assertNotIn("has(n.tickers, 'AAPL')", facet_sql)
+        self.assertNotIn("page_before", facet_sql)
+        self.assertIn("positionCaseInsensitiveUTF8", facet_sql)
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_custom_date_range_is_bounded_by_market_dates(self, query_mock) -> None:
