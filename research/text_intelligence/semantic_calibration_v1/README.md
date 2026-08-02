@@ -759,17 +759,17 @@ Fresh-set results are:
 | Metric | V9 deterministic | V10 TF-IDF forest | V10 - V9 |
 |---|---:|---:|---:|
 | Extraction F1 | 0.925 | 0.950 | +0.025 |
-| Ticker-scope F1 | 0.625 | 0.559 | -0.066 |
-| Content-role macro F1 | 0.494 | 0.430 | -0.064 |
-| Source-origin macro F1 | 0.455 | 0.504 | +0.049 |
-| Text-sentiment macro F1 | 0.410 | 0.404 | -0.006 |
-| Forecast-direction macro F1 | 0.402 | 0.276 | -0.126 |
-| Concept-family F1 | 0.534 | 0.260 | -0.274 |
-| Forecast eligibility F1 | 0.731 | 0.827 | +0.096 |
-| Forecast eligibility end-to-end F1 | 0.723 | 0.632 | -0.091 |
-| Reaction eligibility end-to-end F1 | 0.723 | 0.637 | -0.086 |
-| Issuer-history eligibility F1 | 0.862 | 0.955 | +0.093 |
-| Issuer-history end-to-end F1 | 0.625 | 0.559 | -0.066 |
+| Ticker-scope F1 | 0.622 | 0.560 | -0.062 |
+| Content-role macro F1 | 0.514 | 0.442 | -0.072 |
+| Source-origin macro F1 | 0.475 | 0.503 | +0.029 |
+| Text-sentiment macro F1 | 0.414 | 0.405 | -0.009 |
+| Forecast-direction macro F1 | 0.410 | 0.282 | -0.128 |
+| Concept-family F1 | 0.529 | 0.260 | -0.269 |
+| Forecast eligibility F1 | 0.756 | 0.851 | +0.096 |
+| Forecast eligibility end-to-end F1 | 0.747 | 0.647 | -0.101 |
+| Reaction eligibility end-to-end F1 | 0.747 | 0.652 | -0.096 |
+| Issuer-history eligibility F1 | 0.861 | 0.958 | +0.097 |
+| Issuer-history end-to-end F1 | 0.622 | 0.560 | -0.062 |
 
 These values incorporate the source-first N1093 review correction. The human
 authority now records a regulatory event rather than an automated summary,
@@ -845,7 +845,22 @@ launcher is idempotent, validates exact evidence spans, writes a correction
 receipt, and propagates new annotation hashes into the combined 1,100
 authority. N1035 was re-reviewed but deliberately kept as
 `no_supported_event`: its text contains price observations and stale rating
-context, not a current issuer event. The results table above is candidate 7
+context, not a current issuer event.
+
+Candidate 8 corrects a source-function defect found by direct audit of N1068.
+High-confidence bot challenges, JavaScript gates and access-denied payloads are
+now rejected by one shared transport-quality authority during URL extraction,
+normalization and structured rendering. A compatibility sanitizer removes only
+rejected `external` blocks from historical packed text; it never removes a
+provider-body block. Zacks titles ending in `Analyst Blog` are classified as
+syndicated `editorial_analysis` / `editorial_original`, not primary issuer
+events, and remain issuer-history context rather than forecast or reaction
+triggers. The same defect affected N1019; an isolated JavaScript gate affected
+N1096. N1068's provider ticker `AIA` was also removed from the US issuer gold
+scope because the article refers to Hong Kong-listed AIA Group. The exact
+legacy transport payload remains visible in audit provenance, while the
+rendered article used by V9 and shown in the semantic-review section excludes
+it. The results table above is candidate 8
 against this corrected gold authority; all 100 audit documents were regenerated
 from those exact evaluator outputs.
 

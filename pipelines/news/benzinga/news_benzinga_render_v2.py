@@ -10,6 +10,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
+from pipelines.news.benzinga.core.content_quality import transport_artifact_reasons
 from pipelines.news.benzinga.core.clickhouse_values import datetime64_utc_text
 from pipelines.sec.edgar.sec_pipeline.text_renderer import (
     SEC_PACKED_TEXT_RENDERER_VERSION,
@@ -18,8 +19,8 @@ from pipelines.sec.edgar.sec_pipeline.text_renderer import (
 )
 
 
-NEWS_RENDERER_VERSION = f"benzinga_structured_renderer_v2+{SEC_PACKED_TEXT_RENDERER_VERSION}"
-NEWS_RENDERED_TEXT_CONTRACT = "benzinga_article_sources_block_packed_v2"
+NEWS_RENDERER_VERSION = f"benzinga_structured_renderer_v3+{SEC_PACKED_TEXT_RENDERER_VERSION}"
+NEWS_RENDERED_TEXT_CONTRACT = "benzinga_article_sources_block_packed_v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,7 @@ def render_news_article(
     raw_hash = str(normalized.get("raw_payload_hash") or _sha256_json(payload))
 
     sources: list[NewsSource] = []
+    rejected_quality_flags: set[str] = set()
     if body_html:
         sources.append(
             render_news_source(
@@ -138,6 +140,9 @@ def render_news_article(
             fmt = "html" if row.get("raw_html") else "plain_text"
             if row.get("raw_html"):
                 text = str(row["raw_html"])
+            if transport_artifact_reasons(text):
+                rejected_quality_flags.add("external_transport_artifact_rejected")
+                continue
         artifact_path = str(row.get("artifact_path") or "")
         if is_pdf and artifact_path and Path(artifact_path).exists():
             source = render_pdf_artifact(
@@ -162,17 +167,24 @@ def render_news_article(
     # plain text when the source artifact is unavailable. It is never presented
     # as structurally recovered HTML/PDF.
     if normalized.get("external_text") and not any(source.source_kind == "external" for source in sources):
-        sources.append(
-            render_news_source(
-                str(normalized["external_text"]),
-                source_kind="external",
-                source_ordinal=1,
-                source_url="",
-                artifact_path="",
-                content_format="plain_text",
-                additional_flags=("legacy_flattened_enrichment", "external_source_artifact_unavailable"),
+        legacy_external_text = str(normalized["external_text"])
+        if transport_artifact_reasons(legacy_external_text):
+            rejected_quality_flags.add("external_transport_artifact_rejected")
+        else:
+            sources.append(
+                render_news_source(
+                    legacy_external_text,
+                    source_kind="external",
+                    source_ordinal=1,
+                    source_url="",
+                    artifact_path="",
+                    content_format="plain_text",
+                    additional_flags=(
+                        "legacy_flattened_enrichment",
+                        "external_source_artifact_unavailable",
+                    ),
+                )
             )
-        )
     if normalized.get("pdf_text") and not any(source.source_kind == "pdf" for source in sources):
         artifact = _first_string(normalized.get("pdf_artifact_paths"))
         pdf_path = Path(artifact) if artifact else None
@@ -204,7 +216,7 @@ def render_news_article(
     if teaser and teaser.casefold() != title.casefold():
         article_parts.append(f"Teaser: {teaser}")
     all_blocks: list[NewsBlock] = []
-    flags: set[str] = set()
+    flags: set[str] = set(rejected_quality_flags)
     for source in sources:
         article_parts.append(
             f"Source [{source.source_kind}:{source.source_ordinal}]"

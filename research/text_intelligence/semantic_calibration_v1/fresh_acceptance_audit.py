@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from pipelines.news.benzinga.core.clickhouse_writer import NORMALIZED_COLUMNS
+from pipelines.news.benzinga.core.content_quality import sanitize_packed_news_text
 from research.mlops.clickhouse import ClickHouseHttpClient, sql_string
 
 from .comparison import (
@@ -411,7 +412,7 @@ def render_article_audit(
         "",
         "<details open><summary>Full rendered text</summary>",
         "",
-        f"<pre>{html.escape(str((item.blinded.get('rendered_product') or {}).get('text') or ''))}</pre>",
+        _rendered_review_text(item.blinded),
         "",
         "</details>",
         "",
@@ -427,6 +428,19 @@ def render_article_audit(
         v10_scored_cells=v10_scored_cells,
         markdown="\n".join(body),
     )
+
+
+def _rendered_review_text(blinded: Mapping[str, Any]) -> str:
+    original = str((blinded.get("rendered_product") or {}).get("text") or "")
+    sanitized, rejected = sanitize_packed_news_text(original)
+    note = ""
+    if rejected:
+        note = (
+            "<p><strong>Current renderer:</strong> rejected an external transport "
+            f"artifact ({html.escape(', '.join(rejected))}). The exact retained "
+            "legacy field remains visible in the provenance section above.</p>\n\n"
+        )
+    return f"{note}<pre>{html.escape(sanitized)}</pre>"
 
 
 def render_index(

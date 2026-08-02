@@ -102,6 +102,44 @@ class StructuredNewsRendererTest(unittest.TestCase):
         self.assertNotIn("â", rendered.packed_text)
         self.assertIn("mojibake_repaired", rendered.quality_flags)
 
+    def test_transport_artifact_external_text_is_rejected(self) -> None:
+        row = dict(self.row)
+        row["external_text"] = (
+            "As you were browsing something about your browser made us think "
+            "you were a bot. Please stand by. We're getting everything ready."
+        )
+        payload = {
+            "id": "42",
+            "title": self.row["title"],
+            "body": "<p>Authoritative provider body.</p>",
+        }
+        rendered = render_news_article(payload, normalized_row=row)
+        self.assertIn("Authoritative provider body", rendered.packed_text)
+        self.assertNotIn("made us think you were a bot", rendered.packed_text)
+        self.assertIn(
+            "external_transport_artifact_rejected", rendered.quality_flags
+        )
+
+    def test_javascript_gate_enrichment_is_rejected(self) -> None:
+        payload = {
+            "id": "42",
+            "title": self.row["title"],
+            "body": "<p>Authoritative provider body.</p>",
+        }
+        rendered = render_news_article(
+            payload,
+            normalized_row=self.row,
+            enrichment_rows=({
+                "extracted_text": "To use this website, please enable JavaScript.",
+                "resolved_action": "fetch_html",
+                "extracted_text_hash": "transport-hash",
+            },),
+        )
+        self.assertNotIn("enable JavaScript", rendered.packed_text)
+        self.assertIn(
+            "external_transport_artifact_rejected", rendered.quality_flags
+        )
+
 
     def test_resume_requires_every_daily_product_to_be_complete(self) -> None:
         class FakeClient:

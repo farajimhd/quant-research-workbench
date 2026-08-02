@@ -13,7 +13,7 @@ This package contains the Benzinga news workflow:
 - reusable item-level package used by live ingestion and concurrent gap fills.
 - deterministic phrase-presence and causal post-news reaction reference tables.
 - versioned deterministic issuer relevance, structured language, and calibrated reaction intelligence.
-- certified structured rendering v2 with original-versus-rendered audit samples.
+- certified V2 tables with structured renderer v3 and original-versus-rendered audit samples.
 - one-embedding-per-article OpenAI extraction with separate multi-ticker links.
 
 Structured v2 rebuild and audit (stop the live news gateway first):
@@ -31,6 +31,10 @@ retries, and JSONEachRow batches bounded by both row count and encoded bytes.
 rows, body bytes, and largest row without logging article text. The command is
 safe to rerun: complete days are skipped and every interrupted partial day is
 rerendered from retained source evidence, including its full article text.
+Renderer v3 rejects high-confidence transport artifacts such as bot challenges,
+JavaScript gates and access-denied pages before they enter semantic text. The
+normalizer and URL extractor use the same detection authority. Raw artifacts
+and retained provenance remain unchanged for forensic audit.
 
 After the rebuild reports `status=ready`, restart the news gateway. The gateway
 preflight deliberately refuses to write until that certification exists.

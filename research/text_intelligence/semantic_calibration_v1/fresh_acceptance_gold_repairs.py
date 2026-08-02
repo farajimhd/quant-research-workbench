@@ -16,7 +16,8 @@ from .storage import (
 )
 
 
-REPAIR_CONTRACT = "news_fresh_acceptance_gold_repairs_v1"
+REPAIR_CONTRACT = "news_fresh_acceptance_gold_repairs_v2"
+REPAIR_NOTE = "Fresh-100 source-function and transport-artifact correction."
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,21 +136,40 @@ FLAG_REPAIRS: dict[str, dict[str, tuple[bool, bool, bool]]] = {
 }
 
 
+ARTICLE_REPAIRS: dict[str, tuple[str, str]] = {
+    "N1019": ("editorial_analysis", "editorial_original"),
+    "N1068": ("editorial_analysis", "editorial_original"),
+}
+
+UNIT_REMOVALS: dict[str, dict[str, tuple[str, str]]] = {
+    "N1068": {
+        "AIA": (
+            "unsupported_instrument",
+            "The article refers to Hong Kong-listed AIA Group, not the US instrument represented by provider ticker AIA.",
+        ),
+    },
+}
+
+
 def repair_fresh_acceptance_gold(
     root: Path, *, report: Callable[[str], None] | None = None
 ) -> dict[str, Any]:
     emit = report or (lambda _message: None)
     annotations = annotation_directory(root, ANNOTATION_VERSION_V3)
-    targets = sorted(set(ADDITIONS) | set(FLAG_REPAIRS) | {"N1035"})
+    targets = sorted(
+        set(ADDITIONS)
+        | set(FLAG_REPAIRS)
+        | set(ARTICLE_REPAIRS)
+        | set(UNIT_REMOVALS)
+        | {"N1035"}
+    )
     changes: list[dict[str, Any]] = []
     for index, sample_id in enumerate(targets, start=1):
         emit(f"REPAIR {index}/{len(targets)} {sample_id}")
         path = annotations / f"{sample_id}.json"
         item = read_json(root / "blinded_articles" / f"{sample_id}.json")
         record = read_json(path)
-        if "Fresh-100 exhaustive coverage and eligibility correction" in str(
-            record.get("review_notes") or ""
-        ):
+        if REPAIR_NOTE in str(record.get("review_notes") or ""):
             emit(f"ALREADY REPAIRED {sample_id}")
             changes.append({
                 "sample_id": sample_id,
@@ -163,6 +183,38 @@ def repair_fresh_acceptance_gold(
             })
             continue
         old_hash = str(record.pop("annotation_sha256", ""))
+        article_change = ARTICLE_REPAIRS.get(sample_id)
+        if article_change:
+            record["content_role"], record["source_origin"] = article_change
+        removed: list[str] = []
+        removals = UNIT_REMOVALS.get(sample_id, {})
+        if removals:
+            kept_units = []
+            for unit in record.get("issuer_units") or ():
+                ticker = str(unit.get("ticker") or "").upper()
+                if ticker in removals:
+                    removed.append(ticker)
+                else:
+                    kept_units.append(unit)
+            record["issuer_units"] = kept_units
+            dispositions = [
+                value
+                for value in record.get("ticker_dispositions") or ()
+                if str(value.get("ticker") or "").upper() not in removals
+            ]
+            for ticker, (disposition, rationale) in removals.items():
+                dispositions.append({
+                    "ticker": ticker,
+                    "disposition": disposition,
+                    "annotation_confidence": 4,
+                    "rationale": rationale,
+                    "evidence_quotes": [],
+                    "evidence_spans": [],
+                    "review_basis": "manual_review_with_point_in_time_identity",
+                })
+            record["ticker_dispositions"] = sorted(
+                dispositions, key=lambda value: str(value["ticker"])
+            )
         old_units = {str(unit["ticker"]).upper() for unit in record.get("issuer_units") or ()}
         added: list[str] = []
         for repair in ADDITIONS.get(sample_id, ()):
@@ -198,10 +250,22 @@ def repair_fresh_acceptance_gold(
             unit["forecast_trigger_eligible"], unit["reaction_evaluation_eligible"], unit["issuer_history_context_eligible"] = flags
             unit["eligibility_reason"] = "Point-in-time review: contextual issuer evidence without a tradable independent trigger."
             flag_changes.append(ticker)
+        if article_change:
+            for unit in record.get("issuer_units") or ():
+                unit["forecast_trigger_eligible"] = False
+                unit["reaction_evaluation_eligible"] = False
+                unit["issuer_history_context_eligible"] = True
+                unit["eligibility_reason"] = (
+                    "Syndicated editorial analysis is issuer history context, "
+                    "not an independent primary-event trigger."
+                )
         record["extraction_decision"] = "labeled" if record.get("issuer_units") else "no_supported_event"
         record["review_round"] = int(record.get("review_round") or 1) + 1
         record["reviewer"] = "codex_primary"
-        note = "Fresh-100 exhaustive coverage and eligibility correction after source-text audit."
+        note = (
+            "Fresh-100 exhaustive coverage and eligibility correction after "
+            f"source-text audit. {REPAIR_NOTE}"
+        )
         if sample_id == "N1035":
             note += " Verified that the article contains price observations and stale rating context, but no current supported issuer event."
         record["review_notes"] = f"{str(record.get('review_notes') or '').strip()} {note}".strip()
@@ -218,6 +282,8 @@ def repair_fresh_acceptance_gold(
             "old_annotation_sha256": old_hash,
             "new_annotation_sha256": record["annotation_sha256"],
             "reviewed_issuer_units": added,
+            "removed_issuer_units": removed,
+            "article_classification_updated": bool(article_change),
             "eligibility_updates": flag_changes,
         })
         emit(f"REPAIRED {sample_id} units_added={len(added)} flags={len(flag_changes)}")

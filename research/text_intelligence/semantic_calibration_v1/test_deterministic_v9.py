@@ -66,6 +66,37 @@ class DeterministicV9Tests(unittest.TestCase):
         self.assertFalse(result.labels[0]["forecast_trigger_eligible"])
         self.assertTrue(result.labels[0]["issuer_history_context_eligible"])
 
+    def test_syndicated_analyst_blog_is_editorial_not_primary_event(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="zacks-blog-v9",
+            timestamp="2010-10-19T19:27:41Z",
+            title="AIG's AIA IPO Closes In Advance - Analyst Blog",
+            text=(
+                "American International Group Inc. (NYSE:AIG) decided to close "
+                "the AIA initial public offering early. Zacks Investment Research."
+            ),
+            tickers=("AIG",),
+            metadata={
+                "issuer_identities": ({
+                    "ticker": "AIG",
+                    "issuer_id": "issuer:aig",
+                    "aliases": ("American International Group",),
+                },),
+            },
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("AIG", "issuer:aig", ("American International Group",)),),
+            article_tickers=("AIG",),
+        )
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "editorial_analysis")
+        self.assertEqual(result.source_origin, "editorial_original")
+        self.assertTrue(result.labels)
+        self.assertFalse(result.labels[0]["forecast_trigger_eligible"])
+        self.assertFalse(result.labels[0]["reaction_evaluation_eligible"])
+        self.assertTrue(result.labels[0]["issuer_history_context_eligible"])
+
     def test_nasdaq_venue_comment_assigns_halt_to_affected_security(self) -> None:
         title = (
             "Nasdaq Comments On Aytu Bioscience Trading Halt, Tells Benzinga "

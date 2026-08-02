@@ -21,6 +21,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.mlops.env import discover_env_files, load_env_files  # noqa: E402
+from pipelines.news.benzinga.core.content_quality import (  # noqa: E402
+    transport_artifact_reasons,
+)
 from pipelines.news.benzinga.news_benzinga_normalize import (  # noqa: E402
     BENZINGA_NORMALIZER_VERSION,
     NewsExtractionOptions,
@@ -1720,6 +1723,7 @@ def apply_enrichments(
     pdf_texts: list[str] = []
     pdf_metadata: list[dict[str, Any]] = []
     external_metadata: list[dict[str, Any]] = []
+    rejected_external_metadata: list[dict[str, Any]] = []
     seen_url_hashes: set[str] = set()
 
     for enrichment in sorted(enrichments, key=enrichment_sort_key):
@@ -1736,10 +1740,22 @@ def apply_enrichments(
             pdf_texts.append(text)
             pdf_metadata.append(meta)
         else:
-            external_texts.append(text)
-            external_metadata.append(meta)
+            rejection_reasons = transport_artifact_reasons(text)
+            if rejection_reasons:
+                meta["rejection_reasons"] = list(rejection_reasons)
+                rejected_external_metadata.append(meta)
+            else:
+                external_texts.append(text)
+                external_metadata.append(meta)
 
     existing_external = normalize_text(str(row.get("external_text") or ""))
+    existing_rejections = transport_artifact_reasons(existing_external)
+    if existing_rejections:
+        rejected_external_metadata.append({
+            "source": "existing_normalized_external_text",
+            "rejection_reasons": list(existing_rejections),
+        })
+        existing_external = ""
     existing_pdf = normalize_text(str(row.get("pdf_text") or ""))
     external_text = truncate_text(normalize_text(" ".join([existing_external, *external_texts])), args.text_limit_chars)
     pdf_text = truncate_text(normalize_text(" ".join([existing_pdf, *pdf_texts])), args.text_limit_chars)
@@ -1768,7 +1784,9 @@ def apply_enrichments(
     row["pdf_urls"] = pdf_urls
     row["pdf_artifact_paths"] = pdf_artifact_paths
     row["pdf_metadata_json"] = compact_json(merge_pdf_metadata(row.get("pdf_metadata_json"), pdf_metadata))
-    row["external_fetch_status"] = external_status(external_metadata, attachments)
+    row["external_fetch_status"] = external_status(
+        external_metadata, attachments, rejected_external_metadata
+    )
     row["external_fetch_error"] = ""
     row["pdf_extract_status"] = pdf_status(pdf_metadata, pdf_text, attachments)
     row["pdf_extract_error"] = ""
@@ -1785,6 +1803,8 @@ def apply_enrichments(
     )
     if row["external_fetch_status"] == "artifact_missing":
         quality_flags.append("external_artifact_missing")
+    if rejected_external_metadata:
+        quality_flags.append("external_transport_artifact_rejected")
     if row["pdf_extract_status"] == "artifact_missing":
         quality_flags.append("pdf_artifact_missing")
     row["content_quality_flags"] = dedupe_strings(quality_flags)
@@ -1800,6 +1820,7 @@ def apply_enrichments(
         "external_url_count": len(external_metadata),
         "pdf_url_count": len(pdf_metadata),
         "external_metadata_json": compact_json(external_metadata),
+        "rejected_external_metadata_json": compact_json(rejected_external_metadata),
         "pdf_metadata_json": compact_json(pdf_metadata),
     }
     return row, summary
@@ -1872,9 +1893,15 @@ def merge_pdf_metadata(existing_json: Any, additions: list[dict[str, Any]]) -> l
     return [*existing, *additions]
 
 
-def external_status(external_metadata: list[dict[str, Any]], attachments: list[dict[str, Any]]) -> str:
+def external_status(
+    external_metadata: list[dict[str, Any]],
+    attachments: list[dict[str, Any]],
+    rejected_external_metadata: list[dict[str, Any]] | None = None,
+) -> str:
     if external_metadata:
-        return "artifact_extracted"
+        return "partial" if rejected_external_metadata else "artifact_extracted"
+    if rejected_external_metadata:
+        return "rejected_transport_artifact"
     if any(str(row.get("final_action") or "") in {"fetch_html", "fetch_text", "resolve_redirect", "sec_handler"} for row in attachments):
         return "artifact_missing"
     return "not_needed"

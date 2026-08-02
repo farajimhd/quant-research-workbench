@@ -25,6 +25,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.mlops.env import discover_env_files, load_env_files  # noqa: E402
+from pipelines.news.benzinga.core.content_quality import (  # noqa: E402
+    transport_artifact_reasons,
+)
 from pipelines.news.benzinga.news_benzinga_normalize import (  # noqa: E402
     extract_pdf_text,
     normalize_text,
@@ -878,7 +881,7 @@ def quality_flags(text: str, *, content_type: str, method: str) -> list[str]:
         flags.append("short_text")
     if len(text) > 0 and boilerplate_ratio(text) > 0.45:
         flags.append("boilerplate_heavy")
-    if any(token in lowered for token in ["enable javascript", "access denied", "verify you are human", "captcha"]):
+    if transport_artifact_reasons(text):
         flags.append("blocked_or_bot_challenge")
     if any(token in lowered for token in ["subscribe to continue", "sign in to continue", "already a subscriber"]):
         flags.append("paywall_or_login")

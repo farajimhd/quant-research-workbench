@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
+from pipelines.news.benzinga.core.content_quality import sanitize_packed_news_text
 from research.text_intelligence.scoped_labeling_v1.news_identity import (
     ANNOUNCED_TICKER_RE,
     NewsIssuerResolver,
@@ -85,6 +86,9 @@ def classify_news_document_v9(
     Provider links remain identity candidates; issuer direction and eligibility
     are then composed only from each unit's scoped evidence and event role.
     """
+    sanitized_text, _rejected_sources = sanitize_packed_news_text(document.text)
+    if sanitized_text != document.text:
+        document = replace(document, text=sanitized_text)
     raw_labels = classify_news_document(document, issuer_resolver=issuer_resolver)
     base_role, base_role_rule = _classify_role_v8(document, raw_labels)
     base_origin, base_origin_rule = _classify_origin_v8(
@@ -227,6 +231,7 @@ _PREVIEW_ARTICLE_RE = re.compile(
     re.I,
 )
 _WHY_MOVING_RE = re.compile(r"\bwhy\s+(?:is|are|did)\b.{0,80}\bmoving\b", re.I)
+_ANALYST_BLOG_RE = re.compile(r"(?:^|[-:|]\s*)analyst\s+blog\s*$", re.I)
 _EXPLICIT_ANALYST_ACTION_RE = re.compile(
     r"\b(?:analyst|securities|capital|research)\b.{0,100}"
     r"\b(?:upgrade[sd]?|downgrade[sd]?|maintain(?:s|ed)?|reiterate[sd]?|"
@@ -263,6 +268,8 @@ def _classify_article_role_v9(
         return "why_moving_followup", "structural_why_moving_title"
     if _PREVIEW_ARTICLE_RE.search(title):
         return "preview", "structural_preview_title"
+    if _ANALYST_BLOG_RE.search(title):
+        return "editorial_analysis", "structural_analyst_blog_title"
     if _EXPLICIT_ANALYST_ACTION_RE.search(title):
         return "analyst_event", "explicit_analyst_action_title"
     if _REGULATORY_CURRENT_RE.search(title):
@@ -284,6 +291,8 @@ def _classify_source_origin_v9(
         return "issuer_direct", "issuer_distribution_channel"
     if role == "analyst_event":
         return "analyst_research", "analyst_role"
+    if _ANALYST_BLOG_RE.search(document.title or ""):
+        return "editorial_original", "syndicated_analyst_blog"
     if role in {"market_roundup", "mover_recap"}:
         return "editorial_aggregation", "aggregation_role"
     if role == "regulatory_event" and _REGULATORY_CURRENT_RE.search(document.title):

@@ -17,9 +17,11 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
+from pipelines.news.benzinga.core.content_quality import transport_artifact_reasons
+
 
 BENZINGA_PROVIDER = "benzinga"
-BENZINGA_NORMALIZER_VERSION = "benzinga-normalizer-v1"
+BENZINGA_NORMALIZER_VERSION = "benzinga-normalizer-v2"
 DEFAULT_TEXT_LIMIT_CHARS = 24_000
 DEFAULT_EXTRACTION_MIN_BODY_CHARS = 300
 DEFAULT_EXTERNAL_SOURCE_URL_LIMIT = 3
@@ -166,6 +168,7 @@ def normalize_benzinga_payload(
     external_text = ""
     external_status = "not_needed"
     external_error = ""
+    external_rejections: list[str] = []
     if options.fetch_external and len(body_text) < options.external_min_body_chars and not external_source_urls:
         external_status = "no_source_url"
         record_extraction_event(
@@ -195,12 +198,20 @@ def normalize_benzinga_payload(
                         options=options,
                     )
                 fetched_text, fetched_links = html_to_text_and_links(fetched)
+                rejection_reasons = transport_artifact_reasons(fetched_text)
+                if rejection_reasons:
+                    external_rejections.extend(rejection_reasons)
+                    fetched_text = ""
                 if fetched_text:
                     external_texts.append(fetched_text)
                 record_extraction_event(
                     diagnostics,
                     stage="external_fetch",
-                    status="fetched" if fetched_text else "empty",
+                    status=(
+                        "rejected_transport_artifact"
+                        if rejection_reasons
+                        else ("fetched" if fetched_text else "empty")
+                    ),
                     provider_article_id=provider_article_id,
                     published_raw=published_raw,
                     url=source_url,
@@ -227,12 +238,14 @@ def normalize_benzinga_payload(
                     elapsed_seconds=time.perf_counter() - started_at,
                 )
         external_text = normalize_text(" ".join(external_texts))
-        if external_text and external_errors:
+        if external_text and (external_errors or external_rejections):
             external_status = "partial"
         elif external_text:
             external_status = "fetched"
         elif external_errors:
             external_status = "failed"
+        elif external_rejections:
+            external_status = "rejected_transport_artifact"
         else:
             external_status = "empty"
         external_error = "; ".join(external_errors)
@@ -349,6 +362,8 @@ def normalize_benzinga_payload(
     canonical_news_id = stable_hash("|".join([BENZINGA_PROVIDER, provider_article_id, published_raw, title]))
 
     content_quality_flags = content_flags(body_text, external_text, pdf_text, pdf_urls, external_status, pdf_status, pdf_metadata)
+    if external_status in {"partial", "rejected_transport_artifact"} and external_rejections:
+        content_quality_flags.append("external_transport_artifact_rejected")
     return {
         "provider": BENZINGA_PROVIDER,
         "provider_article_id": provider_article_id,
