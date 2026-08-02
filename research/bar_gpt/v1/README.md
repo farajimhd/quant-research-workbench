@@ -180,6 +180,38 @@ The canonical workstation launch is:
 python -B -m research.bar_gpt.v1.run_train
 ```
 
+Before the first training run, exercise the exact multi-worker Arrow, online
+rollup, collation, pinned-memory, and device-target path:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_benchmark_loader
+```
+
+The bounded default uses four workers, 16 warmup batches, and 128 measured
+batches over the last quarter of 2025. It reports cold-start latency, sustained
+origins and batches per second, loader-wait p50/p95/max, device handoff plus
+physical-target construction, and loader-wait share. The benchmark does not
+claim capacity acceptance unless a measured trainer demand is supplied:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_benchmark_loader `
+  --required-origins-per-second <measured CUDA trainer demand>
+```
+
+The 2026 held-out validation path is independently benchmarked with:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_benchmark_loader `
+  --split validation `
+  --start-date 2026-01-01 `
+  --end-date 2026-08-01
+```
+
+`--progress-layout rich` forces the compact interactive progress surface;
+redirected output is stable text, and `--json --progress-layout none` emits one
+machine-readable result. The command is read-only and writes no runtime
+artifacts.
+
 The launcher prints the complete equivalent command before execution. Important
 defaults are visible in `run_train.py`: 2,048 one-second context bars, 512
 origins per block, batch size 2, four loader workers, a 384-wide eight-layer
