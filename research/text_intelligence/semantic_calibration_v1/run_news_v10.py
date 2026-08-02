@@ -6,6 +6,8 @@ from pathlib import Path
 
 import joblib
 
+from research.text_intelligence.scoped_labeling_v1.schema import NEWS_EXTRACTOR_VERSION
+
 from .comparison import evaluate_predictions, load_collection
 from .news_v10 import (
     DEFAULT_HUMAN_ROOT,
@@ -21,6 +23,7 @@ from .news_v10 import (
 )
 from .run_deterministic_news_v6 import _headline
 from .run_deterministic_news_v9 import _predict as predict_v9
+from .deterministic_v9_config import DETERMINISTIC_V9_VERSION
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
 
@@ -104,7 +107,11 @@ def _generate_v9(items, output_dir: Path) -> None:
         target = output_dir / f"{item.sample_id}.json"
         if target.exists():
             existing = read_json(target)
-            if str(existing.get("version") or "").startswith("news_deterministic_v9"):
+            if (
+                str(existing.get("version") or "") == DETERMINISTIC_V9_VERSION
+                and str(existing.get("scope_extractor_version") or "")
+                == NEWS_EXTRACTOR_VERSION
+            ):
                 continue
         result = predict_v9(item)
         result.update({

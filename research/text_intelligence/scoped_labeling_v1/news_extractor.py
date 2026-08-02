@@ -229,6 +229,11 @@ def analyze_news_scope(
         for fragment in primary_fragments
         for match in (*fragment.heading_matches, *fragment.matches)
     }))
+    resolved_subjects, subject_resolution_flags = _resolve_venue_actor_subjects(
+        title,
+        linked_tickers=linked,
+        resolved_subjects=resolved_subjects,
+    )
     unresolved_company = any(
         fragment.unresolved_company_mention
         for fragment in primary_fragments
@@ -289,6 +294,7 @@ def analyze_news_scope(
             extractor_version=NEWS_EXTRACTOR_VERSION,
             quality_flags=(
                 "document_single_resolved_issuer",
+                *subject_resolution_flags,
                 *(
                     ()
                     if linked_subject
@@ -751,6 +757,46 @@ def _subject_matches(
             or any(value.startswith("symbol:") for value in match.evidence)
             or _issuer_is_event_subject(text, match)
         )
+    )
+
+
+_NASDAQ_VENUE_HALT_ACTOR_RE = re.compile(
+    r"\bnasdaq\s+"
+    r"(?:comments?|commented|says?|said|tells?|told|confirms?|confirmed|notes?|noted)\s+"
+    r"(?:to\s+[a-z][a-z0-9.-]*\s+)?(?:on|that)\b"
+    r"(?=.{0,240}\b(?:trading\s+halt|stock\s+(?:remains?\s+)?halted|"
+    r"shares?\s+(?:remains?\s+)?halted)\b)",
+    re.I | re.S,
+)
+
+
+def _resolve_venue_actor_subjects(
+    title: str,
+    *,
+    linked_tickers: tuple[str, ...],
+    resolved_subjects: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Separate a listed venue operator from the security affected by its action.
+
+    ``Nasdaq`` is both an exchange role and an issuer alias for ``NDAQ``.  A
+    provider may consequently link NDAQ when Nasdaq is merely the venue
+    speaking about another security.  Provider links remain candidates, but a
+    venue-actor construction plus exactly one other linked instrument is
+    stronger affected-subject evidence than the venue's issuer alias.
+
+    The rule is deliberately narrow: it does not suppress NDAQ in ordinary
+    issuer news, when NDAQ is the only linked instrument, or when several
+    possible affected instruments would require guessing.
+    """
+    linked = tuple(dict.fromkeys(value.upper() for value in linked_tickers if value))
+    if "NDAQ" not in linked or not _NASDAQ_VENUE_HALT_ACTOR_RE.search(title):
+        return resolved_subjects, ()
+    affected = tuple(value for value in linked if value != "NDAQ")
+    if len(affected) != 1:
+        return resolved_subjects, ()
+    return affected, (
+        "venue_actor_disambiguated_from_listed_issuer",
+        "provider_link_used_as_affected_subject_candidate",
     )
 
 

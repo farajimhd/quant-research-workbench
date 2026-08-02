@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from research.text_intelligence.scoped_labeling_v1.news_identity import NewsIssuerResolver
+from research.text_intelligence.scoped_labeling_v1.schema import NEWS_EXTRACTOR_VERSION
 from research.text_intelligence.semantic_label_authority_v1.schema import SemanticDocument
 
 from .deterministic_v6 import _deduplicate_labels
@@ -49,6 +50,7 @@ class DeterministicNewsResultV9:
         return {
             "version": self.version,
             "calibration_version": self.calibration_version,
+            "scope_extractor_version": NEWS_EXTRACTOR_VERSION,
             "extraction_decision": self.extraction_decision,
             "content_role": self.content_role,
             "source_origin": self.source_origin,

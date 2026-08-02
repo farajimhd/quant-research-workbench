@@ -583,6 +583,16 @@ runtime authority is a source-controlled set of readable structural rules,
 concept additions, eligibility decisions, signed concept weights, and direction
 thresholds applied on top of V8.
 
+Candidate 2 adds role-aware issuer scoping for a dual-role exchange operator.
+In constructions such as ``Nasdaq comments on <security> trading halt``, Nasdaq
+is the venue actor rather than evidence that the event affects listed issuer
+``NDAQ``. Provider ticker links remain candidates, but the event predicate and
+affected-security role outrank the venue alias. The rule applies only when the
+venue operator and exactly one other linked instrument are present; ordinary
+Nasdaq, Inc. issuer news and ambiguous multi-security cases remain unchanged.
+V9 artifacts record both the V9 candidate and scope-extractor versions, and the
+evaluation cache requires exact version equality before reusing a prediction.
+
 The teacher corpus is partitioned before calibration into 7,997 development,
 1,000 validation, and 1,000 locked-test articles. Articles sharing a provider
 and normalized headline template remain in the same partition, which prevents
@@ -727,13 +737,21 @@ Fresh-set results are:
 | Metric | V9 deterministic | V10 TF-IDF forest | V10 - V9 |
 |---|---:|---:|---:|
 | Extraction F1 | 0.880 | 0.931 | +0.052 |
-| Ticker-scope F1 | 0.456 | 0.395 | -0.061 |
-| Content-role macro F1 | 0.447 | 0.430 | -0.017 |
-| Source-origin macro F1 | 0.388 | 0.494 | +0.106 |
-| Direction macro F1 | 0.378 | 0.424 | +0.046 |
-| Concept-family F1 | 0.486 | 0.222 | -0.265 |
+| Ticker-scope F1 | 0.462 | 0.395 | -0.066 |
+| Content-role macro F1 | 0.459 | 0.430 | -0.029 |
+| Source-origin macro F1 | 0.395 | 0.504 | +0.109 |
+| Direction macro F1 | 0.394 | 0.424 | +0.029 |
+| Concept-family F1 | 0.492 | 0.221 | -0.271 |
 | Forecast eligibility F1 | 0.722 | 0.849 | +0.127 |
-| Issuer-history eligibility F1 | 0.882 | 0.952 | +0.070 |
+| Issuer-history eligibility F1 | 0.888 | 0.952 | +0.064 |
+
+These values incorporate the source-first N1093 review correction. The human
+authority now records a regulatory event rather than an automated summary,
+``AYTU`` as the affected security, ``Nasdaq`` as the venue actor, and the
+canonical trading-halt concept. Relative to the preceding frozen artifacts,
+candidate 2 changed only N1093 among the 100 semantic predictions. No metric
+regressed; ticker scope, role, origin, direction, concepts, and issuer-history
+F1 all improved, while extraction and forecast F1 were unchanged.
 
 The untouched set confirms that V10's learned text representation improves
 article extraction and eligibility decisions, and modestly improves direction.
