@@ -10,8 +10,9 @@ export function inventoryEligibilityOptions(label: string): InventoryFilterOptio
 
 type MenuPlacement = CSSProperties & { maxHeight: number; width: number };
 
-export function InventoryFilterSelect({ ariaLabel, onChange, options, searchable = false, searchPlaceholder = "Search…", value }: { ariaLabel: string; onChange: (value: string) => void; options: InventoryFilterOption[]; searchable?: boolean; searchPlaceholder?: string; value: string | number }) {
+export function InventoryFilterSelect({ ariaLabel, defaultValue, onChange, options, searchable = false, searchPlaceholder = "Search…", value }: { ariaLabel: string; defaultValue?: string | number; onChange: (value: string) => void; options: InventoryFilterOption[]; searchable?: boolean; searchPlaceholder?: string; value: string | number }) {
   const normalizedValue = String(value);
+  const normalizedDefaultValue = String(defaultValue ?? options[0]?.value ?? "");
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === normalizedValue));
   const selected = options[selectedIndex] ?? options[0];
   const [open, setOpen] = useState(false);
@@ -133,7 +134,7 @@ export function InventoryFilterSelect({ ariaLabel, onChange, options, searchable
   }
 
   return <>
-    <button aria-controls={open ? menuId : undefined} aria-expanded={open} aria-haspopup="listbox" aria-label={ariaLabel} className="inventory-filter-button" onClick={() => setOpen((current) => !current)} onKeyDown={onButtonKeyDown} ref={buttonRef} type="button">
+    <button aria-controls={open ? menuId : undefined} aria-expanded={open} aria-haspopup="listbox" aria-label={ariaLabel} className="inventory-filter-button" data-filter-active={normalizedValue !== normalizedDefaultValue ? "true" : undefined} onClick={() => setOpen((current) => !current)} onKeyDown={onButtonKeyDown} ref={buttonRef} type="button">
       <span>{selected?.label ?? "Select"}</span><ChevronDown aria-hidden="true" size={12} />
     </button>
     {open ? createPortal(<div className="inventory-filter-menu" ref={menuRef} style={placement}>
