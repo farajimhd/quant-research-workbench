@@ -131,10 +131,20 @@ class TickerResult:
 class DailyBootstrapReporter:
     """Stable bounded-job display; the JSONL report remains the evidence authority."""
 
-    def __init__(self, report_path: Path, total_tickers: int, *, layout: str) -> None:
+    def __init__(
+        self,
+        report_path: Path,
+        total_tickers: int,
+        *,
+        layout: str,
+        title: str = "BarGPT pre-2019 daily context",
+        job_label: str = "Massive daily context bootstrap",
+    ) -> None:
         self.report_path = report_path
         self.total_tickers = total_tickers
         self.layout = layout
+        self.title = title
+        self.job_label = job_label
         self.started = time.perf_counter()
         self.state = "starting"
         self.current = "-"
@@ -163,7 +173,7 @@ class DailyBootstrapReporter:
             self._live = Live(self._render(), console=self._console, refresh_per_second=2, transient=False)
             self._live.start()
         self.state = "running"
-        self.event("start", message="Massive daily context bootstrap started")
+        self.event("start", message=f"{self.job_label} started")
         return self
 
     def __exit__(self, exc_type: object, exc: object, _tb: object) -> bool:
@@ -210,7 +220,7 @@ class DailyBootstrapReporter:
         from rich.table import Table
 
         width = self._console.width if self._console is not None else shutil.get_terminal_size((100, 24)).columns
-        table = Table(title="BarGPT pre-2019 daily context", expand=True)
+        table = Table(title=self.title, expand=True)
         table.add_column("Status", no_wrap=True, width=11)
         table.add_column("Value", overflow="fold", ratio=1)
         style = {"complete": "bold green", "failed": "bold red", "interrupted": "bold yellow"}.get(

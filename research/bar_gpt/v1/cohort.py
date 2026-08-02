@@ -27,3 +27,11 @@ BAR_GPT_COHORT_2TB_TABLE = "bar_gpt_1s_bars_v1_cohort_2tb"
 BAR_GPT_COHORT_2TB_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v1_cohort_2tb"
 BAR_GPT_DAILY_BOOTSTRAP_TABLE = "bar_gpt_daily_context_v1_massive_unadjusted"
 BAR_GPT_DAILY_BOOTSTRAP_MANIFEST_TABLE = "bar_gpt_daily_context_manifest_v1_massive_unadjusted"
+
+# Split-adjusted v2 authorities.  The v1 tables remain immutable evidence; these
+# names deliberately require an explicit cutover after certification.
+BAR_GPT_ADJUSTED_DAILY_TABLE = "bar_gpt_daily_sessions_v2_massive_adjusted"
+BAR_GPT_ADJUSTED_DAILY_MANIFEST_TABLE = "bar_gpt_daily_sessions_manifest_v2_massive_adjusted"
+BAR_GPT_ADJUSTED_1S_TABLE = "bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted"
+BAR_GPT_ADJUSTED_1S_MANIFEST_TABLE = "bar_gpt_1s_adjustment_manifest_v2_cohort_2tb"
+BAR_GPT_SPLIT_FACTOR_TABLE = "bar_gpt_split_factors_v2_cohort_2tb"

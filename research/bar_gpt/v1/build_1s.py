@@ -66,10 +66,22 @@ class TickerBatch:
 class BuildReporter:
     """Compact truthful terminal state with readable redirected output."""
 
-    def __init__(self, *, report_path: Path, total_days: int, interactive: bool) -> None:
+    def __init__(
+        self,
+        *,
+        report_path: Path,
+        total_days: int,
+        interactive: bool,
+        title: str = "BarGPT 1s materialization",
+        progress_noun: str = "days",
+        job_label: str = "BarGPT one-second build",
+    ) -> None:
         self.report_path = report_path
         self.total_days = int(total_days)
         self.interactive = bool(interactive and sys.stdout.isatty() and not os.environ.get("NO_COLOR"))
+        self.title = title
+        self.progress_noun = progress_noun
+        self.job_label = job_label
         self.started = time.perf_counter()
         self.day = "-"
         self.unit = "-"
@@ -98,7 +110,7 @@ class BuildReporter:
                 self._live.start()
             except Exception:
                 self.interactive = False
-        self.event("start", message="BarGPT one-second build started")
+        self.event("start", message=f"{self.job_label} started")
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
@@ -121,7 +133,7 @@ class BuildReporter:
         from rich.table import Table
 
         width = self._console.width if self._console is not None else shutil.get_terminal_size((100, 24)).columns
-        table = Table(title="BarGPT 1s materialization", expand=True)
+        table = Table(title=self.title, expand=True)
         table.add_column("Status", no_wrap=True, width=11)
         table.add_column("Value", overflow="fold", ratio=1)
         state_style = {
@@ -133,7 +145,7 @@ class BuildReporter:
         table.add_row("current", f"{self.day}  {self.unit}")
         table.add_row(
             "durable",
-            f"days {self.completed_days}/{self.total_days}  units {self.completed_units}  skipped {self.skipped_units}  "
+            f"{self.progress_noun} {self.completed_days}/{self.total_days}  units {self.completed_units}  skipped {self.skipped_units}  "
             f"rows {self.rows:,}  source events {self.source_events:,}",
         )
         if self.last_unit_seconds > 0:
@@ -150,7 +162,7 @@ class BuildReporter:
             table.add_row("evidence", str(self.report_path))
 
         progress = Progress(
-            TextColumn("days"),
+            TextColumn(self.progress_noun),
             BarColumn(bar_width=None),
             TaskProgressColumn(),
             expand=True,

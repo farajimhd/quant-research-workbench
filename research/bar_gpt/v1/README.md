@@ -7,8 +7,9 @@ predictions, and direct physical-horizon quantiles.
 
 ## Data authority
 
-The intraday storage authority is one rich row per completed, active 1-second
-bucket in `market_sip_compact.bar_gpt_1s_bars_v1_cohort_2tb`. The table is built directly
+The immutable raw-basis intraday authority is one rich row per completed,
+active 1-second bucket in
+`market_sip_compact.bar_gpt_1s_bars_v1_cohort_2tb`. The table is built directly
 inside ClickHouse from the ordered `events_YYYY` tables. It preserves:
 
 - independent trade, quote-bid, and quote-ask price and size geometry;
@@ -29,8 +30,9 @@ views are derived in the loader. `daily_range_query`,
 `daily_family_frame_to_view`, and `calendar_period_ids` implement that path; the
 loader never reads persisted weekly or monthly rows.
 
-The SIP daily authority starts in 2019, so BarGPT has a separate versioned
-bootstrap authority for earlier calendar context:
+The first pre-2019 bootstrap is retained as source evidence but is
+**superseded for model input** because it is unadjusted. It must not be mixed
+with split-adjusted model bars:
 `market_sip_compact.bar_gpt_daily_context_v1_massive_unadjusted`. It is not
 presented as schema-equivalent to the SIP daily table. Massive supplies one
 trade OHLCV aggregate, optional VWAP, and transaction count; it does not supply
@@ -39,6 +41,8 @@ must preserve those missing families explicitly rather than filling them with
 synthetic values.
 
 ## Pre-2019 daily context
+
+> Historical/superseded model-input direction. Use the adjusted v2 build below.
 
 The downloader deliberately uses Massive's hourly Custom Bars range endpoint
 instead of issuing one Daily Ticker Summary request for every ticker-session.
@@ -73,6 +77,54 @@ coverage is certified explicitly rather than fabricated. Runtime JSONL evidence
 lives under `D:\TradingML\runtimes\bar_gpt\v1\build_daily_context`; interactive
 runs retain a compact Rich display with durable ticker progress, provider
 requests/retries, row counts, current ticker, failure state, and evidence path.
+
+## Split-adjusted model authorities (v2)
+
+Model training uses one explicit current-share basis. The v2 daily builder
+downloads Massive `adjusted=true` 30-minute Custom Bars from 2017 through the
+latest completed New York session and emits three rows for every date with
+activity: `premarket` (04:00-09:30), `regular` (09:30-16:00), and
+`after_hours` (16:00-20:00). Missing extended-hours activity is represented by
+`present=0` and nullable OHLC, not a fabricated price. Weekly and monthly bars
+remain loader-side calendar rollups.
+
+Ticker changes are resolved point-in-time through Massive Ticker Events. The
+canonical model identity remains stable while `provider_ticker` records the
+symbol used for each source interval (for example, `META` uses `FB` before
+2022-06-09). Because that endpoint is experimental, a chain whose latest event
+does not match the requested ticker falls back to the literal ticker instead of
+silently mixing share classes.
+
+The v2 one-second builder avoids replaying billions of raw events. On every
+non-split execution date it applies cumulative future-split price and reciprocal
+size factors directly to the v1 sufficient statistics inside ClickHouse.
+Price, size, squared, and price-size moments receive dimensionally correct
+factors. Every split execution date is excluded and replayed from raw events
+because old- and new-scale prints can coexist within one stored second. Replay
+normalizes each trade, bid, and ask leg with its paired size and certifies exact
+source-event and output-second counts.
+
+Both authorities store the same deduplicated corporate-action schedule hash
+and adjustment cutoff date. A Massive request made after the cutoff is accepted
+only if its applicable split schedule is unchanged. Raw SIP events, v1 one-
+second rows, and the superseded unadjusted daily table remain immutable.
+
+```powershell
+# Preview, then build 2017 through the latest completed session.
+python -B -m research.bar_gpt.v1.run_build_adjusted_daily_sessions
+python -B -m research.bar_gpt.v1.run_build_adjusted_daily_sessions --execute
+
+# Preview, then build the adjusted 1s authority from completed v1 rows.
+python -B -m research.bar_gpt.v1.run_build_adjusted_1s
+python -B -m research.bar_gpt.v1.run_build_adjusted_1s --execute
+```
+
+The destinations are `bar_gpt_daily_sessions_v2_massive_adjusted` and
+`bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted`; manifests and the compact daily
+factor schedule are separate versioned tables. All use
+`CLICKHOUSE_LIVE_STORAGE_POLICY` and write runtime evidence under
+`D:\TradingML\runtimes\bar_gpt\v1`. Training defaults deliberately remain on
+v1 until both v2 builds and their cross-basis audit are complete.
 
 QMD structure decisions are not fabricated by the SQL builder. The v1 table
 contains the exact paired-event geometry that QMD and the model can consume.
