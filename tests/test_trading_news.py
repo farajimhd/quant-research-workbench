@@ -45,6 +45,9 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers)", sql)
         self.assertNotIn("ticker_counts AS", sql)
         self.assertIn("positionCaseInsensitiveUTF8", sql)
+        self.assertIn("ifNull(n.canonical_news_id, '')", sql)
+        self.assertIn("ifNull(n.provider_article_id, '')", sql)
+        self.assertIn("arrayStringConcat(n.tickers, ' ')", sql)
         self.assertIn("ifNull(r.source_count, 0) > 0", sql)
         self.assertIn("n.published_at_utc <= window_end", sql)
         self.assertIn("AS news_kind", sql)
@@ -65,6 +68,21 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("PREWHERE corpus='news'", query_mock.call_args_list[1].args[0])
         self.assertTrue(payload["query_id"])
         self.assertEqual(query_mock.call_args_list[1].kwargs["timeout_seconds"], 1.5)
+
+    @patch("src.backend.app.clickhouse_status_query", return_value="")
+    def test_search_includes_exact_source_identity(self, query_mock) -> None:
+        source_id = "d99dd26da27e325682cb6be4274d3b60"
+
+        trading_news_rows(
+            as_of="2026-08-02T12:00:00Z",
+            start_date="2017-12-15",
+            end_date="2017-12-15",
+            search=source_id,
+        )
+
+        sql = query_mock.call_args_list[0].args[0]
+        self.assertEqual(sql.count(f"canonical_news_id = '{source_id}'"), 3)
+        self.assertNotIn("ifNull(n.canonical_news_id, ''), ' '", sql)
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_custom_date_range_is_bounded_by_market_dates(self, query_mock) -> None:

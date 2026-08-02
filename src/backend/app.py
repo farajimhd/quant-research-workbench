@@ -1641,13 +1641,19 @@ def trading_news_rows(
     elif safe_label_state == "quality":
         filters.append(quality_label_exists)
     search_term = search.strip()
+    exact_source_id = search_term.lower() if re.fullmatch(r"[0-9a-fA-F]{32}", search_term) else ""
     if search_term:
-        escaped = sql_string(search_term)
-        filters.append(
-            "positionCaseInsensitiveUTF8(concat("
-            "ifNull(n.title, ''), ' ', ifNull(r.rendered_text, ''), ' ', "
-            f"ifNull(n.author, ''), ' ', ifNull(n.url_domain, '')), {escaped}) > 0"
-        )
+        if exact_source_id:
+            filters.append(f"n.canonical_news_id = {sql_string(exact_source_id)}")
+        else:
+            escaped = sql_string(search_term)
+            filters.append(
+                "positionCaseInsensitiveUTF8(concat("
+                "ifNull(n.canonical_news_id, ''), ' ', ifNull(n.provider_article_id, ''), ' ', "
+                "arrayStringConcat(n.tickers, ' '), ' ', ifNull(n.title, ''), ' ', "
+                "ifNull(r.rendered_text, ''), ' ', ifNull(n.author, ''), ' ', "
+                f"ifNull(n.url_domain, '')), {escaped}) > 0"
+            )
     if safe_content == "full":
         filters.append("ifNull(r.source_count, 0) > 0")
     elif safe_content == "title":
@@ -1670,6 +1676,11 @@ def trading_news_rows(
         )
     source_ticker_filter = (
         f"AND has(tickers, {sql_string(safe_ticker)})" if safe_ticker else ""
+    )
+    if exact_source_id:
+        source_ticker_filter += f"\n              AND canonical_news_id = {sql_string(exact_source_id)}"
+    rendered_source_filter = (
+        f"AND canonical_news_id = {sql_string(exact_source_id)}" if exact_source_id else ""
     )
     source_label_filter = label_exists.replace("n.canonical_news_id", "canonical_news_id")
     if has_label_filters or safe_label_state == "classified":
@@ -1760,6 +1771,7 @@ def trading_news_rows(
               AND published_date <= toDate({end_date_sql})
             WHERE published_at_utc >= {start_sql}
               AND published_at_utc <= {end_sql}
+              {rendered_source_filter}
         ) AS r
             ON r.published_date=n.published_date
             AND r.provider_article_id=n.provider_article_id
