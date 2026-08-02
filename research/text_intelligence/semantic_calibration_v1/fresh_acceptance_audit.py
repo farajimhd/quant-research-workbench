@@ -16,35 +16,38 @@ from research.mlops.clickhouse import ClickHouseHttpClient, sql_string
 
 from .comparison import (
     CollectionItem,
+    IssuerComparison,
     _human_by_ticker,
-    _majority,
     _prediction_by_ticker,
-    canonical_concept_family,
+    compare_article_fields,
+    compare_issuer_units,
 )
 from .schema import stable_json_hash
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
 
-AUDIT_CONTRACT = "news_fresh_acceptance_article_audit_v4"
+AUDIT_CONTRACT = "news_fresh_acceptance_article_audit_v5"
 GATEWAY_TEXT_FIELDS = (
     "body_text",
     "external_text",
     "pdf_text",
     "normalized_full_text",
 )
-ARTICLE_FIELDS = (
-    ("Extraction decision", "extraction_decision"),
-    ("Content role", "content_role"),
-    ("Source origin", "source_origin"),
-)
-UNIT_FIELDS = (
-    ("Text sentiment", "semantic_direction"),
-    ("Forecast direction", "forecast_direction"),
-    ("Concept families", "event_concepts"),
-    ("Forecast eligible", "forecast_trigger_eligible"),
-    ("Reaction-study eligible", "reaction_evaluation_eligible"),
-    ("Issuer-history eligible", "issuer_history_context_eligible"),
-)
+ARTICLE_FIELD_LABELS = {
+    "extraction_presence": "Issuer labels emitted",
+    "extraction_decision": "Extraction decision",
+    "content_role": "Content role",
+    "source_origin": "Source origin",
+}
+UNIT_FIELD_LABELS = {
+    "issuer_presence": "Issuer unit present",
+    "semantic_direction": "Text sentiment",
+    "forecast_direction": "Forecast direction",
+    "event_concepts": "Concept families",
+    "forecast_trigger_eligible": "Forecast eligible",
+    "reaction_evaluation_eligible": "Reaction-study eligible",
+    "issuer_history_context_eligible": "Issuer-history eligible",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +58,8 @@ class ArticleAudit:
     v9_mismatches: int
     v10_mismatches: int
     comparison_cells: int
+    v9_scored_cells: int
+    v10_scored_cells: int
     markdown: str
 
 
@@ -236,6 +241,8 @@ def render_acceptance_audits(
                 "v9_mismatches": row.v9_mismatches,
                 "v10_mismatches": row.v10_mismatches,
                 "comparison_cells": row.comparison_cells,
+                "v9_scored_cells": row.v9_scored_cells,
+                "v10_scored_cells": row.v10_scored_cells,
                 "markdown_sha256": stable_json_hash(row.markdown),
             }
             for row in sorted(articles, key=lambda row: row.sample_id)
@@ -259,91 +266,62 @@ def render_article_audit(
     human_units = _human_by_ticker(human)
     v9_units = _prediction_by_ticker(v9)
     v10_units = _prediction_by_ticker(v10)
-    article_rows: list[tuple[str, Any, Any, Any]] = []
-    v9_mismatches = 0
-    v10_mismatches = 0
-    for label, field in ARTICLE_FIELDS:
-        truth_value = human.get(field) or "not set"
-        v9_value = _article_prediction(v9, field)
-        v10_value = _article_prediction(v10, field)
-        article_rows.append((label, truth_value, v9_value, v10_value))
-        v9_mismatches += truth_value != v9_value
-        v10_mismatches += truth_value != v10_value
+    v9_article = {
+        comparison.dimension: comparison
+        for comparison in compare_article_fields(human, v9)
+    }
+    v10_article = {
+        comparison.dimension: comparison
+        for comparison in compare_article_fields(human, v10)
+    }
+    article_rows = [
+        (label, v9_article[dimension], v10_article[dimension])
+        for dimension, label in ARTICLE_FIELD_LABELS.items()
+    ]
+    v9_mismatches = sum(row.status == "diff" for row in v9_article.values())
+    v10_mismatches = sum(row.status == "diff" for row in v10_article.values())
 
     human_tickers = set(human_units)
     v9_tickers = set(v9_units)
     v10_tickers = set(v10_units)
-    article_rows.append(
-        (
-            "Issuer ticker set",
-            sorted(human_tickers),
-            sorted(v9_tickers),
-            sorted(v10_tickers),
-        )
-    )
-    v9_mismatches += human_tickers != v9_tickers
-    v10_mismatches += human_tickers != v10_tickers
-
-    unit_rows: list[tuple[str, str, Any, Any, str, Any, str]] = []
-    unit_comparison_cells = 0
     all_tickers = sorted(human_tickers | v9_tickers | v10_tickers)
+    v9_comparisons = {
+        (comparison.ticker, comparison.dimension): comparison
+        for comparison in compare_issuer_units(
+            human_units,
+            v9_units,
+            canonical_concepts=True,
+            ticker_universe=all_tickers,
+        )
+    }
+    v10_comparisons = {
+        (comparison.ticker, comparison.dimension): comparison
+        for comparison in compare_issuer_units(
+            human_units,
+            v10_units,
+            canonical_concepts=True,
+            ticker_universe=all_tickers,
+        )
+    }
+    unit_rows: list[tuple[str, str, IssuerComparison, IssuerComparison]] = []
     for ticker in all_tickers:
-        human_present = ticker in human_units
-        v9_present = ticker in v9_units
-        v10_present = ticker in v10_units
-        truth = _normalized_unit(
-            human_units.get(ticker), missing_direction="not an issuer unit"
-        )
-        v9_unit = _normalized_unit(v9_units.get(ticker))
-        v10_unit = _normalized_unit(v10_units.get(ticker))
-        v9_presence = _unit_presence_outcome(human_present, v9_present)
-        v10_presence = _unit_presence_outcome(human_present, v10_present)
-        unit_rows.append(
-            (
-                ticker,
-                "Issuer unit present",
-                human_present,
-                v9_present,
-                v9_presence,
-                v10_present,
-                v10_presence,
-            )
-        )
-        v9_mismatches += v9_presence == "diff"
-        v10_mismatches += v10_presence == "diff"
-        unit_comparison_cells += 1
-        for label, field in UNIT_FIELDS:
-            truth_value = truth[field] if human_present else "not applicable"
-            v9_value = v9_unit[field]
-            v10_value = v10_unit[field]
-            v9_outcome = _unit_field_outcome(
-                human_present,
-                field=field,
-                truth_value=truth_value,
-                predicted_value=v9_value,
-            )
-            v10_outcome = _unit_field_outcome(
-                human_present,
-                field=field,
-                truth_value=truth_value,
-                predicted_value=v10_value,
-            )
-            unit_rows.append(
-                (
-                    ticker,
-                    label,
-                    truth_value,
-                    v9_value,
-                    v9_outcome,
-                    v10_value,
-                    v10_outcome,
-                )
-            )
-            v9_mismatches += v9_outcome == "diff"
-            v10_mismatches += v10_outcome == "diff"
-            unit_comparison_cells += v9_outcome != "not_applicable"
+        for dimension, label in UNIT_FIELD_LABELS.items():
+            key = (ticker, dimension)
+            unit_rows.append((ticker, label, v9_comparisons[key], v10_comparisons[key]))
 
-    comparison_cells = len(article_rows) + unit_comparison_cells
+    v9_mismatches += sum(
+        comparison.status == "diff" for comparison in v9_comparisons.values()
+    )
+    v10_mismatches += sum(
+        comparison.status == "diff" for comparison in v10_comparisons.values()
+    )
+    v9_scored_cells = len(article_rows) + sum(
+        comparison.scored for comparison in v9_comparisons.values()
+    )
+    v10_scored_cells = len(article_rows) + sum(
+        comparison.scored for comparison in v10_comparisons.values()
+    )
+    comparison_cells = len(article_rows) + len(unit_rows)
     file_name = f"{item.sample_id}_{_slug(title)}.md"
     body = [
         f"# {item.sample_id} - {title}",
@@ -392,16 +370,15 @@ def render_article_audit(
         f"- **Published:** `{item.blinded['source_timestamp']}`",
         f"- **Provider tickers:** {_display(publication.get('provider_tickers') or [])}",
         f"- **Channels:** {_display(publication.get('channels') or [])}",
-        f"- **V9 mismatched comparison cells:** **{v9_mismatches} / {comparison_cells}**",
-        f"- **V10 mismatched comparison cells:** **{v10_mismatches} / {comparison_cells}**",
+        f"- **V9 evaluator mismatches:** **{v9_mismatches} / {v9_scored_cells} scored fields**",
+        f"- **V10 evaluator mismatches:** **{v10_mismatches} / {v10_scored_cells} scored fields**",
         "",
-        "`MATCH` and `DIFF` compare each applicable prediction with the frozen "
-        "human label. `N/A` means the human authority has no issuer unit for that "
-        "ticker; the extra model issuer is scored once by issuer presence and the "
-        "article ticker set rather than producing fabricated field mismatches. "
-        "Text sentiment remains independent semantic evidence. Forecast direction "
-        "is applicable only when forecast eligibility is on. Concepts are compared "
-        "at the same canonical family level used by the benchmark.",
+        "Every issuer result below is emitted by the same comparison authority used "
+        "by aggregate evaluation. Categorical fields report `MATCH` or `DIFF`; "
+        "binary eligibility reports `TP`, `TN`, `FP`, or `FN`; concepts report set "
+        "`TP/FP/FN`; and `NOT SCORED` includes the evaluator's dependency reason. "
+        "In particular, forecast direction is not scored when the human forecast "
+        "eligibility label is off. It is not treated as a third direction class.",
         "",
         "## Article-level labels",
         "",
@@ -446,6 +423,8 @@ def render_article_audit(
         v9_mismatches=v9_mismatches,
         v10_mismatches=v10_mismatches,
         comparison_cells=comparison_cells,
+        v9_scored_cells=v9_scored_cells,
+        v10_scored_cells=v10_scored_cells,
         markdown="\n".join(body),
     )
 
@@ -461,10 +440,9 @@ def render_index(
         "generated. Files are ordered by the larger model mismatch count so the "
         "most useful error audits appear first.",
         "",
-        "A mismatch cell is stricter than the benchmark's earlier error-article "
-        "summary: it includes article classification, ticker-set, direction, "
-        "concept-family and all eligibility differences, including every extra "
-        "or missing issuer unit.",
+            "Audit mismatches come from the same issuer-comparison authority as the "
+            "aggregate benchmark. The denominator is model-specific because "
+            "dependency-gated fields can be explicitly NOT SCORED.",
         "",
         "## Benchmark headline",
         "",
@@ -479,8 +457,11 @@ def render_index(
         ("Direction macro F1", "direction_macro_f1"),
         ("Forecast-direction macro F1", "forecast_direction_macro_f1"),
         ("Concept-family F1", "concept_family_f1"),
-        ("Forecast eligibility F1", "forecast_f1"),
-        ("Issuer-history eligibility F1", "history_f1"),
+        ("Forecast eligibility F1 (human issuers)", "forecast_f1"),
+        ("Forecast eligibility F1 (end to end)", "forecast_end_to_end_f1"),
+        ("Reaction eligibility F1 (end to end)", "reaction_end_to_end_f1"),
+        ("Issuer-history eligibility F1 (human issuers)", "history_f1"),
+        ("Issuer-history eligibility F1 (end to end)", "history_end_to_end_f1"),
     )
     for label, key in metric_names:
         lines.append(
@@ -493,7 +474,7 @@ def render_index(
             "",
             "## V9 mismatches",
             "",
-            "| Article | V9 mismatch cells | V10 mismatch cells | Compared cells |",
+            "| Article | V9 errors / scored | V10 errors / scored | Displayed fields |",
             "|---|---:|---:|---:|",
         ]
     )
@@ -503,7 +484,7 @@ def render_index(
             "",
             "## V10 mismatches",
             "",
-            "| Article | V9 mismatch cells | V10 mismatch cells | Compared cells |",
+            "| Article | V9 errors / scored | V10 errors / scored | Displayed fields |",
             "|---|---:|---:|---:|",
         ]
     )
@@ -520,7 +501,7 @@ def render_index(
             "",
             "## All 100 articles",
             "",
-            "| Article | V9 mismatch cells | V10 mismatch cells | Compared cells |",
+            "| Article | V9 errors / scored | V10 errors / scored | Displayed fields |",
             "|---|---:|---:|---:|",
         ]
     )
@@ -534,89 +515,68 @@ def _index_rows(articles: Iterable[ArticleAudit]) -> list[str]:
     for row in articles:
         label = _escape_table(f"{row.sample_id} - {row.title}")
         lines.append(
-            f"| [{label}](articles/{row.file_name}) | {row.v9_mismatches} | "
-            f"{row.v10_mismatches} | {row.comparison_cells} |"
+            f"| [{label}](articles/{row.file_name}) | "
+            f"{row.v9_mismatches} / {row.v9_scored_cells} | "
+            f"{row.v10_mismatches} / {row.v10_scored_cells} | "
+            f"{row.comparison_cells} |"
         )
     return lines
 
 
-def _article_prediction(prediction: Mapping[str, Any], field: str) -> str:
-    explicit = str(prediction.get(field) or "")
-    if explicit:
-        return explicit
-    labels = prediction.get("labels") or ()
-    if field == "extraction_decision":
-        return "labeled" if labels else "not labeled"
-    return _majority(
-        str((label.get("classification") or {}).get(field) or "") for label in labels
-    )
-
-
-def _normalized_unit(
-    unit: Mapping[str, Any] | None, *, missing_direction: str = "not predicted"
-) -> dict[str, Any]:
-    if unit is None:
-        return {
-            "semantic_direction": missing_direction,
-            "forecast_direction": "not applicable",
-            "event_concepts": (),
-            "forecast_trigger_eligible": False,
-            "reaction_evaluation_eligible": False,
-            "issuer_history_context_eligible": False,
-        }
-    semantic_direction = str(unit.get("semantic_direction") or "neutral")
-    forecast_eligible = bool(unit.get("forecast_trigger_eligible"))
-    return {
-        "semantic_direction": semantic_direction,
-        "forecast_direction": (
-            semantic_direction if forecast_eligible else "not applicable"
-        ),
-        "event_concepts": tuple(
-            sorted(
-                {
-                    projected
-                    for concept in unit.get("event_concepts") or ()
-                    if (projected := canonical_concept_family(str(concept)))
-                }
-            )
-        ),
-        "forecast_trigger_eligible": forecast_eligible,
-        "reaction_evaluation_eligible": bool(unit.get("reaction_evaluation_eligible")),
-        "issuer_history_context_eligible": bool(
-            unit.get("issuer_history_context_eligible")
-        ),
-    }
-
-
-def _comparison_table(rows: Iterable[tuple[str, Any, Any, Any]]) -> str:
+def _comparison_table(
+    rows: Iterable[tuple[str, IssuerComparison, IssuerComparison]]
+) -> str:
     output = [
         "| Dimension | Human gold | V9 | V9 result | V10 | V10 result |",
         "|---|---|---|---|---|---|",
     ]
-    for label, truth, v9, v10 in rows:
+    for label, v9, v10 in rows:
+        truth = v9.actual
         output.append(
-            f"| {_escape_table(label)} | {_display(truth)} | {_display(v9)} | "
-            f"{_outcome(truth, v9)} | {_display(v10)} | {_outcome(truth, v10)} |"
+            f"| {_escape_table(label)} | {_display(truth)} | "
+            f"{_display(v9.predicted)} | {_evaluator_outcome(v9)} | "
+            f"{_display(v10.predicted)} | {_evaluator_outcome(v10)} |"
         )
     return "\n".join(output)
 
 
 def _unit_comparison_table(
-    rows: Iterable[tuple[str, str, Any, Any, str, Any, str]]
+    rows: Iterable[tuple[str, str, IssuerComparison, IssuerComparison]]
 ) -> str:
     output = [
         "| Ticker | Dimension | Human gold | V9 | V9 result | V10 | V10 result |",
         "|---|---|---|---|---|---|---|",
     ]
-    for ticker, label, truth, v9, v9_outcome, v10, v10_outcome in rows:
+    row_count = 0
+    for ticker, label, v9, v10 in rows:
+        row_count += 1
+        truth = v9.actual if v9.actual is not None else v10.actual
         output.append(
-            f"| `{_escape_table(ticker)}` | {_escape_table(label)} | {_display(truth)} | "
-            f"{_display(v9)} | {_unit_outcome(v9_outcome)} | {_display(v10)} | "
-            f"{_unit_outcome(v10_outcome)} |"
+            f"| `{_escape_table(ticker)}` | {_escape_table(label)} | "
+            f"{_display(truth) if truth is not None else 'not an issuer unit'} | "
+            f"{_display(v9.predicted)} | {_evaluator_outcome(v9)} | "
+            f"{_display(v10.predicted)} | {_evaluator_outcome(v10)} |"
         )
-    if len(output) == 2:
-        output.append("| - | No issuer-level units | - | - | MATCH | - | MATCH |")
+    if row_count == 0:
+        output.append(
+            "| - | No issuer-level units | none | none | NOT SCORED | none | NOT SCORED |"
+        )
     return "\n".join(output)
+
+
+def _evaluator_outcome(comparison: IssuerComparison) -> str:
+    if comparison.status == "not_scored":
+        return (
+            "**NOT SCORED**<br>"
+            f"<small>{_escape_table(comparison.reason)}</small>"
+        )
+    status = "MATCH" if comparison.matches else "DIFF"
+    metric = ", ".join(comparison.metrics) or "no aggregate metric"
+    return (
+        f"**{_escape_table(comparison.category)} - {status}**<br>"
+        f"<small>{_escape_table(comparison.reason)}; "
+        f"metric: {_escape_table(metric)}</small>"
+    )
 
 
 def _human_evidence(human: Mapping[str, Any]) -> str:
@@ -920,37 +880,6 @@ def _display(value: Any) -> str:
         values = list(value)
         return "<br>".join(_escape_table(item) for item in values) if values else "none"
     return _escape_table(value if value not in (None, "") else "none")
-
-
-def _outcome(truth: Any, predicted: Any) -> str:
-    return _match_outcome(truth == predicted)
-
-
-def _match_outcome(matches: bool) -> str:
-    return "**MATCH**" if matches else "**DIFF**"
-
-
-def _unit_presence_outcome(human_present: bool, prediction_present: bool) -> str:
-    return "match" if human_present == prediction_present else "diff"
-
-
-def _unit_field_outcome(
-    human_present: bool,
-    *,
-    field: str,
-    truth_value: Any,
-    predicted_value: Any,
-) -> str:
-    del field  # The explicit parameter keeps future field-specific policies visible.
-    if not human_present:
-        return "not_applicable"
-    return "match" if truth_value == predicted_value else "diff"
-
-
-def _unit_outcome(outcome: str) -> str:
-    if outcome == "not_applicable":
-        return "**N/A**"
-    return _match_outcome(outcome == "match")
 
 
 def _escape_table(value: Any) -> str:

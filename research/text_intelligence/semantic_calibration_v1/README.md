@@ -775,22 +775,26 @@ rendered article used during review. V9 has no hidden model reasoning chain,
 and V10 has no faithful natural-language explanation, so the audit never
 manufactures either one.
 
-The strict article-level audit found at least one difference in 89 of 100 V9
-articles and 95 of 100 V10 articles. An issuer-presence mismatch is scored once,
-in addition to the article ticker-set comparison. Dimensions belonging to a
-ticker for which the human authority has no issuer unit are displayed as `N/A`;
-the audit no longer fabricates `none` or `no` human labels and then marks those
-display values `DIFF`. For a real human issuer unit, each field is compared by
-its normalized value, consistently with the benchmark evaluator.
+Audit contract V5 uses the exact same issuer-comparison authority as aggregate
+evaluation. It does not maintain a renderer-specific `N/A`, match or mismatch
+policy. Each displayed issuer field reports the evaluator outcome: categorical
+`MATCH`/`DIFF`, binary `TP`/`TN`/`FP`/`FN`, concept-set `TP`/`FP`/`FN`, or
+`NOT SCORED` with the dependency reason. Thus false/false eligibility is visibly
+a true negative, while an extra actionable issuer is an end-to-end false
+positive rather than a fabricated negative human issuer label.
 
 Text sentiment describes what the article says and remains independent of
 actionability. Forecast direction is a derived operational view: it equals the
 text sentiment only for human units with forecast eligibility enabled, and is
 otherwise `not applicable`. The forecast-direction benchmark therefore measures
-direction only where a forecast decision exists; it does not penalize an
-ineligible article for correctly abstaining from direction prediction.
+direction only where the human forecast-eligibility authority enables that
+downstream target. Otherwise the evaluator and audit both report
+`NOT SCORED: human_forecast_ineligible`; this is not a direction class and does
+not enter direction metrics. Eligibility is reported both conditionally on
+human issuer units and end to end, where actionable predictions on extra model
+issuers count as false positives.
 
-Audit contract V4 begins with the exact raw provider JSON downloaded by News
+Audit contract V5 begins with the exact raw provider JSON downloaded by News
 Gateway. The renderer resolves the retained `raw_artifact_path` and verifies its
 Blake2b payload hash using the recorded historical serialization contract
 (exact UTF-8 artifact bytes or canonical JSON with escaped Unicode). It reports

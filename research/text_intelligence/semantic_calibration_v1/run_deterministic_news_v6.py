@@ -159,7 +159,16 @@ def _headline(report: dict) -> dict:
         "forecast_direction_macro_f1": report["forecast_direction"]["macro_f1"],
         "concept_family_f1": report["event_concepts"]["f1"],
         "forecast_f1": report["eligibility"]["forecast_trigger_eligible"]["f1"],
+        "forecast_end_to_end_f1": report["eligibility_end_to_end"][
+            "forecast_trigger_eligible"
+        ]["f1"],
+        "reaction_end_to_end_f1": report["eligibility_end_to_end"][
+            "reaction_evaluation_eligible"
+        ]["f1"],
         "history_f1": report["eligibility"]["issuer_history_context_eligible"]["f1"],
+        "history_end_to_end_f1": report["eligibility_end_to_end"][
+            "issuer_history_context_eligible"
+        ]["f1"],
     }
 
 

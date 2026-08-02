@@ -35,6 +35,28 @@ class CollectionItem:
     truth: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class IssuerComparison:
+    """One evaluator-authoritative issuer/dimension decision."""
+
+    ticker: str
+    dimension: str
+    actual: Any
+    predicted: Any
+    status: str
+    category: str
+    reason: str
+    metrics: tuple[str, ...]
+
+    @property
+    def scored(self) -> bool:
+        return self.status != "not_scored"
+
+    @property
+    def matches(self) -> bool:
+        return self.status == "match"
+
+
 def load_collection(
     root: Path,
     *,
@@ -143,6 +165,348 @@ def run_v5_predictions(
     return items
 
 
+def compare_article_fields(
+    truth: Mapping[str, Any], prediction: Mapping[str, Any]
+) -> tuple[IssuerComparison, ...]:
+    """Return article decisions in the exact form used by evaluation and audits."""
+
+    predicted_units = _prediction_by_ticker(prediction)
+    truth_labeled = str(truth["extraction_decision"]) == "labeled"
+    prediction_labeled = bool(predicted_units)
+    predicted_decision = str(prediction.get("extraction_decision") or "") or (
+        "labeled" if prediction_labeled else "__missing__"
+    )
+    predicted_role = str(prediction.get("content_role") or "") or _majority(
+        str(label["classification"].get("content_role") or "")
+        for label in prediction.get("labels") or ()
+    )
+    predicted_origin = str(prediction.get("source_origin") or "") or _majority(
+        str(label["classification"].get("source_origin") or "")
+        for label in prediction.get("labels") or ()
+    )
+    return (
+        _binary_comparison(
+            "",
+            "extraction_presence",
+            truth_labeled,
+            prediction_labeled,
+            metrics=("extraction",),
+        ),
+        _categorical_comparison(
+            "",
+            "extraction_decision",
+            str(truth["extraction_decision"]),
+            predicted_decision,
+            metric="extraction_decision",
+        ),
+        _categorical_comparison(
+            "",
+            "content_role",
+            str(truth["content_role"]),
+            predicted_role,
+            metric="content_role",
+        ),
+        _categorical_comparison(
+            "",
+            "source_origin",
+            str(truth["source_origin"]),
+            predicted_origin,
+            metric="source_origin",
+        ),
+    )
+
+
+def compare_issuer_units(
+    human_units: Mapping[str, Mapping[str, Any]],
+    predicted_units: Mapping[str, Mapping[str, Any]],
+    *,
+    canonical_concepts: bool = False,
+    ticker_universe: Iterable[str] | None = None,
+) -> tuple[IssuerComparison, ...]:
+    """Return the exact per-field decisions consumed by metrics and audits.
+
+    `not_scored` is an explicit evaluator outcome, not a third label value. A
+    downstream dimension is scored only when its authoritative prerequisite
+    exists. Set-valued concepts and eligibility flags still expose false
+    positives from extra predicted issuers because those predictions enter the
+    corresponding end-to-end metric.
+    """
+
+    output: list[IssuerComparison] = []
+    tickers = (
+        set(ticker_universe)
+        if ticker_universe is not None
+        else set(human_units) | set(predicted_units)
+    )
+    for ticker in sorted(tickers):
+        human = human_units.get(ticker)
+        predicted = predicted_units.get(ticker)
+        human_present = human is not None
+        predicted_present = predicted is not None
+        if not human_present and not predicted_present:
+            for dimension in (
+                "issuer_presence",
+                "semantic_direction",
+                "forecast_direction",
+                "event_concepts",
+                "forecast_trigger_eligible",
+                "reaction_evaluation_eligible",
+                "issuer_history_context_eligible",
+            ):
+                output.append(
+                    _not_scored(
+                        ticker,
+                        dimension,
+                        actual=False if dimension == "issuer_presence" else None,
+                        predicted=False if dimension == "issuer_presence" else None,
+                        reason="outside_model_ticker_scope",
+                    )
+                )
+            continue
+        presence_category = (
+            "TP"
+            if human_present and predicted_present
+            else "FN"
+            if human_present
+            else "FP"
+        )
+        output.append(
+            IssuerComparison(
+                ticker=ticker,
+                dimension="issuer_presence",
+                actual=human_present,
+                predicted=predicted_present,
+                status="match" if human_present == predicted_present else "diff",
+                category=presence_category,
+                reason="ticker_scope",
+                metrics=("ticker_scope",),
+            )
+        )
+
+        actual_direction = str(human["semantic_direction"]) if human else None
+        predicted_direction = (
+            str(predicted["semantic_direction"]) if predicted else "__missing__"
+        )
+        if human_present:
+            output.append(
+                _categorical_comparison(
+                    ticker,
+                    "semantic_direction",
+                    actual_direction,
+                    predicted_direction,
+                    metric="semantic_direction",
+                )
+            )
+        else:
+            output.append(
+                _not_scored(
+                    ticker,
+                    "semantic_direction",
+                    actual=None,
+                    predicted=predicted_direction,
+                    reason="no_human_issuer_unit",
+                )
+            )
+
+        human_forecast = bool(human["forecast_trigger_eligible"]) if human else False
+        predicted_forecast = (
+            bool(predicted["forecast_trigger_eligible"]) if predicted else False
+        )
+        predicted_forecast_direction = (
+            predicted_direction
+            if predicted_present and predicted_forecast
+            else "__missing__"
+        )
+        if not human_present:
+            output.append(
+                _not_scored(
+                    ticker,
+                    "forecast_direction",
+                    actual=None,
+                    predicted=(
+                        predicted_direction if predicted_forecast else "not_applicable"
+                    ),
+                    reason="no_human_issuer_unit",
+                )
+            )
+        elif not human_forecast:
+            output.append(
+                _not_scored(
+                    ticker,
+                    "forecast_direction",
+                    actual="not_applicable",
+                    predicted=(
+                        predicted_direction if predicted_forecast else "not_applicable"
+                    ),
+                    reason="human_forecast_ineligible",
+                )
+            )
+        else:
+            output.append(
+                _categorical_comparison(
+                    ticker,
+                    "forecast_direction",
+                    actual_direction,
+                    predicted_forecast_direction,
+                    metric="forecast_direction",
+                )
+            )
+
+        actual_concepts = _project_concepts(
+            human.get("event_concepts") if human else (),
+            canonical=canonical_concepts,
+        )
+        predicted_concepts = _project_concepts(
+            predicted.get("event_concepts") if predicted else (),
+            canonical=canonical_concepts,
+        )
+        if human_present or predicted_concepts:
+            concept_tp = len(actual_concepts & predicted_concepts)
+            concept_fp = len(predicted_concepts - actual_concepts)
+            concept_fn = len(actual_concepts - predicted_concepts)
+            output.append(
+                IssuerComparison(
+                    ticker=ticker,
+                    dimension="event_concepts",
+                    actual=(
+                        tuple(sorted(actual_concepts)) if human_present else None
+                    ),
+                    predicted=tuple(sorted(predicted_concepts)),
+                    status="match" if not concept_fp and not concept_fn else "diff",
+                    category=f"TP={concept_tp} FP={concept_fp} FN={concept_fn}",
+                    reason="canonical_concept_set",
+                    metrics=("event_concepts",),
+                )
+            )
+        else:
+            output.append(
+                _not_scored(
+                    ticker,
+                    "event_concepts",
+                    actual=None,
+                    predicted=(),
+                    reason="no_human_issuer_or_predicted_concept",
+                )
+            )
+
+        for field in (
+            "forecast_trigger_eligible",
+            "reaction_evaluation_eligible",
+            "issuer_history_context_eligible",
+        ):
+            actual = bool(human[field]) if human else False
+            observed = bool(predicted[field]) if predicted else False
+            metric_names = (f"eligibility.{field}",)
+            if actual or observed:
+                metric_names += (f"eligibility_end_to_end.{field}",)
+            if human_present:
+                output.append(
+                    _binary_comparison(
+                        ticker,
+                        field,
+                        actual,
+                        observed,
+                        metrics=metric_names,
+                    )
+                )
+            elif observed:
+                output.append(
+                    IssuerComparison(
+                        ticker=ticker,
+                        dimension=field,
+                        actual=None,
+                        predicted=True,
+                        status="diff",
+                        category="FP",
+                        reason="extra_issuer_actionable_prediction",
+                        metrics=(f"eligibility_end_to_end.{field}",),
+                    )
+                )
+            else:
+                output.append(
+                    _not_scored(
+                        ticker,
+                        field,
+                        actual=None,
+                        predicted=False,
+                        reason="no_human_issuer_and_no_positive_prediction",
+                    )
+                )
+    return tuple(output)
+
+
+def _categorical_comparison(
+    ticker: str,
+    dimension: str,
+    actual: str,
+    predicted: str,
+    *,
+    metric: str,
+) -> IssuerComparison:
+    return IssuerComparison(
+        ticker=ticker,
+        dimension=dimension,
+        actual=actual,
+        predicted=predicted,
+        status="match" if actual == predicted else "diff",
+        category=f"{actual}->{predicted}",
+        reason="categorical_comparison",
+        metrics=(metric,),
+    )
+
+
+def _binary_comparison(
+    ticker: str,
+    dimension: str,
+    actual: bool,
+    predicted: bool,
+    *,
+    metrics: tuple[str, ...],
+) -> IssuerComparison:
+    category = (
+        "TP" if actual and predicted else "FN" if actual else "FP" if predicted else "TN"
+    )
+    return IssuerComparison(
+        ticker=ticker,
+        dimension=dimension,
+        actual=actual,
+        predicted=predicted,
+        status="match" if actual == predicted else "diff",
+        category=category,
+        reason="binary_comparison",
+        metrics=metrics,
+    )
+
+
+def _not_scored(
+    ticker: str,
+    dimension: str,
+    *,
+    actual: Any,
+    predicted: Any,
+    reason: str,
+) -> IssuerComparison:
+    return IssuerComparison(
+        ticker=ticker,
+        dimension=dimension,
+        actual=actual,
+        predicted=predicted,
+        status="not_scored",
+        category="NOT SCORED",
+        reason=reason,
+        metrics=(),
+    )
+
+
+def _project_concepts(values: Iterable[Any], *, canonical: bool) -> set[str]:
+    output: set[str] = set()
+    for value in values or ():
+        projected = canonical_concept_family(str(value)) if canonical else str(value)
+        if projected:
+            output.add(projected)
+    return output
+
+
 def evaluate_predictions(
     items: Iterable[CollectionItem],
     *,
@@ -170,6 +534,10 @@ def evaluate_predictions(
             "issuer_history_context_eligible",
         )
     }
+    eligibility_end_to_end = {
+        name: (set(), set())
+        for name in eligibility
+    }
     errors: list[dict[str, Any]] = []
     for item in rows:
         prediction_path = prediction_dir / f"{item.sample_id}.json"
@@ -188,80 +556,72 @@ def evaluate_predictions(
         truth = item.truth
         human_units = _human_by_ticker(truth)
         predicted_units = _prediction_by_ticker(prediction)
-        truth_labeled = truth["extraction_decision"] == "labeled"
-        prediction_labeled = bool(predicted_units)
-        extraction[(truth_labeled, prediction_labeled)] += 1
-        predicted_decision = str(prediction.get("extraction_decision") or "") or (
-            "labeled" if prediction_labeled else "__missing__"
-        )
-        _confusion_add(
-            extraction_decision,
-            str(truth["extraction_decision"]),
-            predicted_decision,
-        )
-        predicted_role = str(prediction.get("content_role") or "") or _majority(
-            str(label["classification"].get("content_role") or "")
-            for label in prediction["labels"]
-        )
-        predicted_origin = str(prediction.get("source_origin") or "") or _majority(
-            str(label["classification"].get("source_origin") or "")
-            for label in prediction["labels"]
-        )
-        _confusion_add(article_role, str(truth["content_role"]), predicted_role)
-        _confusion_add(article_origin, str(truth["source_origin"]), predicted_origin)
         sample_errors: list[str] = []
-        if truth_labeled != prediction_labeled:
-            sample_errors.append("extraction")
-        if predicted_role != truth["content_role"]:
-            sample_errors.append("content_role")
-        if predicted_origin != truth["source_origin"]:
-            sample_errors.append("source_origin")
-        for ticker, unit in human_units.items():
-            key = (item.sample_id, ticker)
-            truth_tickers.add(key)
-            for concept in unit["event_concepts"]:
-                projected = canonical_concept_family(concept) if canonical_concepts else concept
-                if projected:
-                    truth_concepts.add((*key, projected))
-            predicted = predicted_units.get(ticker)
-            predicted_direction = (
-                str(predicted["semantic_direction"])
-                if predicted is not None
-                else "__missing__"
-            )
-            directions[(str(unit["semantic_direction"]), predicted_direction)] += 1
-            if predicted_direction != unit["semantic_direction"]:
-                sample_errors.append(f"direction:{ticker}")
-            if bool(unit["forecast_trigger_eligible"]):
-                predicted_forecast_direction = (
-                    predicted_direction
-                    if predicted is not None
-                    and bool(predicted["forecast_trigger_eligible"])
-                    else "__missing__"
+        article_comparisons = compare_article_fields(truth, prediction)
+        article_by_dimension = {
+            comparison.dimension: comparison for comparison in article_comparisons
+        }
+        extraction_comparison = article_by_dimension["extraction_presence"]
+        extraction[
+            (bool(extraction_comparison.actual), bool(extraction_comparison.predicted))
+        ] += 1
+        for dimension, counter in (
+            ("extraction_decision", extraction_decision),
+            ("content_role", article_role),
+            ("source_origin", article_origin),
+        ):
+            comparison = article_by_dimension[dimension]
+            _confusion_add(counter, str(comparison.actual), str(comparison.predicted))
+        for comparison in article_comparisons:
+            if comparison.status == "diff":
+                sample_errors.append(
+                    f"{comparison.dimension}:{comparison.category}"
                 )
-                forecast_directions[
-                    (str(unit["semantic_direction"]), predicted_forecast_direction)
-                ] += 1
-                if predicted_forecast_direction != unit["semantic_direction"]:
-                    sample_errors.append(f"forecast_direction:{ticker}")
-            for field, counter in eligibility.items():
-                actual = bool(unit[field])
-                observed = bool(predicted[field]) if predicted is not None else False
-                counter[(actual, observed)] += 1
-            if predicted is not None:
-                for concept in predicted["event_concepts"]:
-                    projected = canonical_concept_family(concept) if canonical_concepts else concept
-                    if projected:
-                        predicted_concepts.add((*key, projected))
-        for ticker, unit in predicted_units.items():
-            key = (item.sample_id, ticker)
-            predicted_tickers.add(key)
-            if ticker not in human_units:
-                sample_errors.append(f"extra_ticker:{ticker}")
-            for concept in unit["event_concepts"]:
-                projected = canonical_concept_family(concept) if canonical_concepts else concept
-                if projected:
-                    predicted_concepts.add((*key, projected))
+        comparisons = compare_issuer_units(
+            human_units,
+            predicted_units,
+            canonical_concepts=canonical_concepts,
+        )
+        for comparison in comparisons:
+            key = (item.sample_id, comparison.ticker)
+            if comparison.dimension == "issuer_presence":
+                if comparison.actual:
+                    truth_tickers.add(key)
+                if comparison.predicted:
+                    predicted_tickers.add(key)
+            elif comparison.dimension == "semantic_direction" and comparison.scored:
+                directions[(comparison.actual, comparison.predicted)] += 1
+            elif comparison.dimension == "forecast_direction" and comparison.scored:
+                forecast_directions[(comparison.actual, comparison.predicted)] += 1
+            elif comparison.dimension == "event_concepts":
+                for concept in comparison.actual or ():
+                    truth_concepts.add((*key, concept))
+                for concept in comparison.predicted or ():
+                    predicted_concepts.add((*key, concept))
+            elif comparison.dimension in eligibility and comparison.scored:
+                if f"eligibility.{comparison.dimension}" in comparison.metrics:
+                    eligibility[comparison.dimension][
+                        (bool(comparison.actual), bool(comparison.predicted))
+                    ] += 1
+                actual_set, predicted_set = eligibility_end_to_end[
+                    comparison.dimension
+                ]
+                if (
+                    f"eligibility_end_to_end.{comparison.dimension}"
+                    in comparison.metrics
+                    and comparison.actual
+                ):
+                    actual_set.add(key)
+                if (
+                    f"eligibility_end_to_end.{comparison.dimension}"
+                    in comparison.metrics
+                    and comparison.predicted
+                ):
+                    predicted_set.add(key)
+            if comparison.status == "diff":
+                sample_errors.append(
+                    f"{comparison.dimension}:{comparison.ticker}:{comparison.category}"
+                )
         if sample_errors:
             errors.append(
                 {
@@ -269,7 +629,7 @@ def evaluate_predictions(
                     "split": item.split,
                     "errors": sorted(set(sample_errors)),
                     "truth_role": truth["content_role"],
-                    "predicted_role": predicted_role,
+                    "predicted_role": article_by_dimension["content_role"].predicted,
                     "truth_tickers": sorted(human_units),
                     "predicted_tickers": sorted(predicted_units),
                 }
@@ -289,6 +649,10 @@ def evaluate_predictions(
         "eligibility": {
             name: _binary_metrics(counter)
             for name, counter in eligibility.items()
+        },
+        "eligibility_end_to_end": {
+            name: _set_metrics(actual, predicted)
+            for name, (actual, predicted) in eligibility_end_to_end.items()
         },
         "error_articles": len(errors),
         "errors": errors,
