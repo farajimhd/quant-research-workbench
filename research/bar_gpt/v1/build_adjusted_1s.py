@@ -27,7 +27,6 @@ from research.bar_gpt.v1.cohort import (
     BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
     BAR_GPT_COHORT_2TB_TABLE,
     BAR_GPT_SPLIT_FACTOR_TABLE,
-    BAR_GPT_REVIEWED_TICKER_CHAINS,
 )
 from research.bar_gpt.v1.schema import (
     FEATURE_NAMES,
@@ -109,6 +108,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--index-table", default="events_ticker_day_index")
     parser.add_argument("--split-database", default=DEFAULT_SPLIT_DATABASE)
     parser.add_argument("--split-table", default=DEFAULT_SPLIT_TABLE)
+    parser.add_argument("--identity-database", default="q_live")
+    parser.add_argument("--identity-interval-table", default="id_symbol_interval_v1")
+    parser.add_argument("--identity-entity-table", default="market_ticker_event_entity_v1")
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY", ""))
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url())
     parser.add_argument("--clickhouse-user", default=default_clickhouse_user())
@@ -226,12 +228,16 @@ ORDER BY upper(provider_ticker), execution_date, split_from, split_to
     return actions, digest
 
 
-def adjustment_basis_hash(split_schedule_sha256: str, tickers: tuple[str, ...]) -> str:
-    identity = {
-        ticker: BAR_GPT_REVIEWED_TICKER_CHAINS[ticker]
-        for ticker in tickers if ticker in BAR_GPT_REVIEWED_TICKER_CHAINS
-    }
-    payload = {"split_schedule_sha256": split_schedule_sha256, "identity_chains": identity}
+def adjustment_basis_hash(
+    split_schedule_sha256: str,
+    tickers: tuple[str, ...],
+    identity_intervals: list[tuple[str, str, dt.date, dt.date]] | None = None,
+) -> str:
+    identity = [
+        (canonical, provider, str(left), str(right))
+        for canonical, provider, left, right in sorted(identity_intervals or [])
+    ]
+    payload = {"split_schedule_sha256": split_schedule_sha256, "tickers": list(tickers), "identity_intervals": identity}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -301,15 +307,36 @@ def scaled_feature_expression(name: str, source: str = "s") -> str:
 
 
 def identity_alias_intervals(
-    tickers: tuple[str, ...], start: dt.date, end: dt.date
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    tickers: tuple[str, ...],
+    start: dt.date,
+    end: dt.date,
 ) -> list[tuple[str, str, dt.date, dt.date]]:
+    selected = ",".join(sql_string(ticker) for ticker in tickers)
+    rows = _query_tsv(client, f"""
+SELECT upper(e.current_ticker), upper(i.ticker_normalized), i.valid_from_date,
+       ifNull(i.valid_to_date_exclusive, toDate('9999-12-31'))
+FROM
+(
+    SELECT provider_entity_key,current_ticker
+    FROM {quote_ident(args.identity_database)}.{quote_ident(args.identity_entity_table)} FINAL
+    WHERE is_deleted=0 AND upper(current_ticker) IN ({selected})
+) AS e
+INNER JOIN
+(
+    SELECT provider_entity_key,ticker_normalized,valid_from_date,valid_to_date_exclusive
+    FROM {quote_ident(args.identity_database)}.{quote_ident(args.identity_interval_table)} FINAL
+    WHERE is_deleted=0 AND mapping_status='mapped'
+) AS i USING provider_entity_key
+ORDER BY e.current_ticker,i.valid_from_date,i.ticker_normalized
+""")
     intervals: list[tuple[str, str, dt.date, dt.date]] = []
-    for canonical in tickers:
-        for provider, left_text, right_text in BAR_GPT_REVIEWED_TICKER_CHAINS.get(canonical, ()):
-            left = max(start, dt.date.fromisoformat(left_text))
-            right = min(end, dt.date.fromisoformat(right_text))
-            if provider != canonical and left < right:
-                intervals.append((canonical, provider, left, right))
+    for canonical, provider, left_text, right_text in rows:
+        left = max(start, dt.date.fromisoformat(left_text))
+        right = min(end, dt.date.fromisoformat(right_text))
+        if provider != canonical and left < right:
+            intervals.append((canonical, provider, left, right))
     return intervals
 
 
@@ -552,7 +579,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         start, end, asof = resolve_range(client, args)
         actions, split_schedule_sha256 = load_split_actions(client, args, tickers, asof)
-        digest = adjustment_basis_hash(split_schedule_sha256, tickers)
+        identity_intervals = identity_alias_intervals(client, args, tickers, start, end)
+        digest = adjustment_basis_hash(split_schedule_sha256, tickers, identity_intervals)
         client.execute(create_target_table_sql(args)); client.execute(create_factor_table_sql(args)); client.execute(create_manifest_table_sql(args))
         validate_table(client, args.database, args.target_table, dict(adjusted_table_columns()))
         validate_table(client, args.database, args.factor_table, FACTOR_TYPES)
@@ -560,7 +588,6 @@ def main(argv: list[str] | None = None) -> int:
         validate_existing_basis(client, args, asof, digest)
         schedule = factor_rows(tickers, start, end, asof, actions, digest)
         materialize_factor_schedule(client, args, schedule, tickers, start, end, asof, digest)
-        identity_intervals = identity_alias_intervals(tickers, start, end)
         alias_units = identity_alias_days(client, args, identity_intervals)
         alias_dates = {(canonical, day) for canonical, _provider, day in alias_units}
         split_units = [

@@ -101,31 +101,23 @@ def daily_range_query(
     ticker: str,
     start_date: str,
     end_date: str,
-    daily_table: str = "macro_bars_by_time_symbol",
+    daily_table: str = "daily_session_bars_by_symbol_time_v1",
+    mapped_identity: bool = True,
 ) -> str:
+    identity_filter = (
+        f"canonical_ticker = {sql_string(ticker.upper())}"
+        if mapped_identity
+        else f"(canonical_ticker = {sql_string(ticker.upper())} OR (canonical_ticker IS NULL AND source_ticker = {sql_string(ticker.upper())}))"
+    )
+    columns = ",\n    ".join(("session_date AS local_date", f"{sql_string(ticker.upper())} AS ticker", "session_kind", "bar_start_us", "bar_end_us", "available_at_us", *FEATURE_NAMES))
     return f"""
 SELECT
-    session_date AS local_date,
-    sym AS ticker,
-    toString(bar_family) AS bar_family,
-    toUnixTimestamp64Micro(bar_start) AS bar_start_us,
-    toUnixTimestamp64Micro(bar_end) AS bar_end_us,
-    open,
-    high,
-    low,
-    close,
-    size_sum,
-    size_open,
-    size_high,
-    size_low,
-    size_close,
-    event_count
+    {columns}
 FROM {quote_ident(config.database)}.{quote_ident(daily_table)} FINAL
-PREWHERE timeframe = '1d'
-  AND sym = {sql_string(ticker.upper())}
-WHERE session_date >= toDate({sql_string(start_date)})
+PREWHERE session_date >= toDate({sql_string(start_date)})
   AND session_date < toDate({sql_string(end_date)})
-ORDER BY sym, bar_start, bar_family
+WHERE {identity_filter}
+ORDER BY local_date, bar_start_us
 SETTINGS max_threads = {max(1, int(config.max_threads))}, max_block_size = {max(1, int(config.max_block_size))}
 FORMAT ArrowStream
 """
@@ -137,28 +129,60 @@ def daily_tickers_range_query(
     tickers: tuple[str, ...],
     start_date: str,
     end_date: str,
-    daily_table: str = "macro_bars_by_time_symbol",
+    daily_table: str = "daily_session_bars_by_symbol_time_v1",
+    mapped_tickers: frozenset[str] = frozenset(),
 ) -> str:
     if not tickers:
         raise ValueError("at least one daily ticker is required")
-    selected = ", ".join(sql_string(ticker.upper()) for ticker in tickers)
+    mapped = tuple(ticker.upper() for ticker in tickers if ticker.upper() in mapped_tickers)
+    fallback = tuple(ticker.upper() for ticker in tickers if ticker.upper() not in mapped_tickers)
+    predicates: list[str] = []
+    if mapped:
+        predicates.append("canonical_ticker IN (" + ", ".join(sql_string(ticker) for ticker in mapped) + ")")
+    if fallback:
+        fallback_sql = ", ".join(sql_string(ticker) for ticker in fallback)
+        predicates.append(f"(canonical_ticker IN ({fallback_sql}) OR (canonical_ticker IS NULL AND source_ticker IN ({fallback_sql})))")
+    identity_filter = " OR ".join(predicates)
+    columns = ",\n    ".join(
+        (
+            "session_date AS local_date",
+            "ifNull(canonical_ticker, source_ticker) AS ticker",
+            "session_kind",
+            "bar_start_us",
+            "bar_end_us",
+            "available_at_us",
+            *FEATURE_NAMES,
+        )
+    )
     return f"""
 SELECT
-    session_date AS local_date,
-    sym AS ticker,
-    toString(bar_family) AS bar_family,
-    toUnixTimestamp64Micro(bar_start) AS bar_start_us,
-    toUnixTimestamp64Micro(bar_end) AS bar_end_us,
-    open, high, low, close,
-    size_sum, size_open, size_high, size_low, size_close,
-    event_count
+    {columns}
 FROM {quote_ident(config.database)}.{quote_ident(daily_table)} FINAL
-PREWHERE timeframe = '1d'
-  AND session_date >= toDate({sql_string(start_date)})
+PREWHERE session_date >= toDate({sql_string(start_date)})
   AND session_date < toDate({sql_string(end_date)})
-WHERE sym IN ({selected})
-ORDER BY sym, bar_start, bar_family
+WHERE {identity_filter}
+ORDER BY ticker, local_date, bar_start_us
 SETTINGS max_threads = {max(1, int(config.max_threads))}, max_block_size = {max(1, int(config.max_block_size))}
+FORMAT ArrowStream
+"""
+
+
+def mapped_identity_tickers_query(
+    *,
+    tickers: tuple[str, ...],
+    identity_database: str,
+    interval_table: str,
+    entity_table: str,
+) -> str:
+    selected = ", ".join(sql_string(ticker.upper()) for ticker in tickers)
+    return f"""
+SELECT DISTINCT upper(e.current_ticker) AS ticker
+FROM (SELECT provider_entity_key FROM {quote_ident(identity_database)}.{quote_ident(interval_table)} FINAL
+      WHERE is_deleted=0 AND mapping_status='mapped') AS i
+INNER JOIN (SELECT provider_entity_key,current_ticker FROM {quote_ident(identity_database)}.{quote_ident(entity_table)} FINAL
+            WHERE is_deleted=0) AS e USING provider_entity_key
+WHERE upper(e.current_ticker) IN ({selected})
+ORDER BY ticker
 FORMAT ArrowStream
 """
 
@@ -227,8 +251,17 @@ class ArrowStreamClient:
         start_date: str,
         end_date: str,
         daily_table: str,
+        identity_database: str = "q_live",
+        identity_interval_table: str = "id_symbol_interval_v1",
+        identity_entity_table: str = "market_ticker_event_entity_v1",
         device: torch.device | str = "cpu",
     ) -> tuple[list[str], BarView] | None:
+        mapped = self.read_mapped_identity_tickers(
+            (ticker,),
+            identity_database=identity_database,
+            interval_table=identity_interval_table,
+            entity_table=identity_entity_table,
+        )
         frames: list[pl.DataFrame] = []
         query = daily_range_query(
             self.config,
@@ -236,6 +269,7 @@ class ArrowStreamClient:
             start_date=start_date,
             end_date=end_date,
             daily_table=daily_table,
+            mapped_identity=ticker.upper() in mapped,
         )
         with self.record_batches(query) as batches:
             for batch in batches:
@@ -244,7 +278,7 @@ class ArrowStreamClient:
                     frames.append(frame)
         if not frames:
             return None
-        return daily_family_frame_to_view(pl.concat(frames, how="vertical"), device=device)
+        return daily_session_frame_to_view(pl.concat(frames, how="vertical"), device=device)
 
     def read_daily_views(
         self,
@@ -253,8 +287,17 @@ class ArrowStreamClient:
         start_date: str,
         end_date: str,
         daily_table: str,
+        identity_database: str = "q_live",
+        identity_interval_table: str = "id_symbol_interval_v1",
+        identity_entity_table: str = "market_ticker_event_entity_v1",
         device: torch.device | str = "cpu",
     ) -> dict[str, tuple[list[str], BarView]]:
+        mapped = self.read_mapped_identity_tickers(
+            tickers,
+            identity_database=identity_database,
+            interval_table=identity_interval_table,
+            entity_table=identity_entity_table,
+        )
         frames: list[pl.DataFrame] = []
         query = daily_tickers_range_query(
             self.config,
@@ -262,6 +305,7 @@ class ArrowStreamClient:
             start_date=start_date,
             end_date=end_date,
             daily_table=daily_table,
+            mapped_tickers=mapped,
         )
         with self.record_batches(query) as batches:
             for batch in batches:
@@ -274,8 +318,32 @@ class ArrowStreamClient:
         result: dict[str, tuple[list[str], BarView]] = {}
         for part in combined.partition_by("ticker", maintain_order=True):
             ticker = str(part["ticker"][0]).upper()
-            result[ticker] = daily_family_frame_to_view(part, device=device)
+            result[ticker] = daily_session_frame_to_view(part, device=device)
         return result
+
+    def read_mapped_identity_tickers(
+        self,
+        tickers: tuple[str, ...],
+        *,
+        identity_database: str,
+        interval_table: str,
+        entity_table: str,
+    ) -> frozenset[str]:
+        if not tickers:
+            return frozenset()
+        query = mapped_identity_tickers_query(
+            tickers=tickers,
+            identity_database=identity_database,
+            interval_table=interval_table,
+            entity_table=entity_table,
+        )
+        values: set[str] = set()
+        with self.record_batches(query) as batches:
+            for batch in batches:
+                frame = pl.from_arrow(batch)
+                if not frame.is_empty():
+                    values.update(str(value).upper() for value in frame["ticker"].to_list())
+        return frozenset(values)
 
 
 def frame_to_dense_view(frame: pl.DataFrame, *, device: torch.device | str = "cpu") -> BarView:
@@ -340,6 +408,50 @@ def daily_family_frame_to_view(
         bar_end_us=torch.as_tensor(np.array(ends, copy=True), dtype=torch.long, device=device),
         available_at_us=torch.as_tensor(np.array(ends, copy=True), dtype=torch.long, device=device),
     )
+
+
+def daily_session_frame_to_view(
+    frame: pl.DataFrame,
+    *,
+    device: torch.device | str = "cpu",
+) -> tuple[list[str], BarView]:
+    """Collapse three explicit SIP sessions into causally completed daily sufficient statistics."""
+    if frame.is_empty() or frame["ticker"].n_unique() != 1:
+        raise ValueError("a non-empty single-ticker daily-session frame is required")
+    required = {"local_date", "session_kind", "bar_start_us", "bar_end_us", "available_at_us", *FEATURE_NAMES}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"daily-session frame is missing columns: {missing}")
+    expected_sessions = {"premarket", "regular", "after_hours"}
+    unknown = sorted(set(str(value) for value in frame["session_kind"].to_list()) - expected_sessions)
+    if unknown:
+        raise ValueError(f"unsupported daily session kinds: {unknown}")
+    frame = frame.sort(["bar_start_us", "session_kind"])
+    duplicate_keys = frame.group_by(["local_date", "session_kind"]).len().filter(pl.col("len") != 1)
+    if not duplicate_keys.is_empty():
+        raise ValueError("daily-session frame has duplicate or ambiguous session keys")
+    incomplete_dates = (
+        frame.group_by("local_date")
+        .agg(pl.len().alias("rows"), pl.col("session_kind").n_unique().alias("sessions"))
+        .filter((pl.col("rows") != 3) | (pl.col("sessions") != 3))
+    )
+    if not incomplete_dates.is_empty():
+        raise ValueError("daily-session frame must contain premarket, regular, and after-hours for every date")
+    feature_array = np.array(frame.select(list(FEATURE_NAMES)).to_numpy(), dtype=np.float32, copy=True)
+    session_view = BarView(
+        features=torch.as_tensor(feature_array, device=device),
+        bar_start_us=torch.as_tensor(np.array(frame["bar_start_us"].to_numpy(), copy=True), dtype=torch.long, device=device),
+        bar_end_us=torch.as_tensor(np.array(frame["bar_end_us"].to_numpy(), copy=True), dtype=torch.long, device=device),
+        available_at_us=torch.as_tensor(np.array(frame["available_at_us"].to_numpy(), copy=True), dtype=torch.long, device=device),
+    )
+    session_dates = [str(value) for value in frame["local_date"].to_list()]
+    unique_dates = list(dict.fromkeys(session_dates))
+    date_index = {value: index for index, value in enumerate(unique_dates)}
+    period_ids = torch.as_tensor([date_index[value] for value in session_dates], dtype=torch.long, device=device)
+    daily = rollup_calendar_view(session_view, period_ids)
+    if daily.features.shape[0] != len(unique_dates):
+        raise RuntimeError("daily-session collapse did not produce exactly one row per session date")
+    return unique_dates, daily
 
 
 def calendar_period_ids(dates: list[str], timeframe: str, *, device: torch.device | str = "cpu") -> torch.Tensor:
@@ -555,7 +667,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
     def __iter__(self) -> Iterator[BarGPTExample]:
         client = ArrowStreamClient(self.stream_config)
         start_date = self.data_config.validation_start_date if self.split == "validation" else self.data_config.start_date
-        end_date = self.data_config.end_date
+        end_date = self.data_config.end_date if self.split == "validation" else self.data_config.validation_start_date
         lookback_days = max(730, int(self.data_config.daily_context_bars * 2.2))
         daily_start = (dt.date.fromisoformat(start_date) - dt.timedelta(days=lookback_days)).isoformat()
         def raw_examples() -> Iterator[BarGPTExample]:
@@ -565,6 +677,9 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                 start_date=daily_start,
                 end_date=end_date,
                 daily_table=self.data_config.daily_table,
+                identity_database=self.data_config.identity_database,
+                identity_interval_table=self.data_config.identity_interval_table,
+                identity_entity_table=self.data_config.identity_entity_table,
             ) if tickers else {}
             for ticker in tickers:
                 calendars = _calendar_views(daily_by_ticker.get(ticker))

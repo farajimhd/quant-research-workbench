@@ -25,6 +25,8 @@ The pipeline writes:
 - loader-facing per-ticker/day event index rows in
   `market_sip_compact.events_ticker_day_index`
 - macro bar rows in `market_sip_compact.macro_bars_by_time_symbol`
+- replacement three-session event-geometry rows in
+  `market_sip_compact.daily_session_bars_by_symbol_time_v1`
 
 It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 
@@ -69,14 +71,33 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
    latest continuity state. This table is the loader-facing discovery/index
    table; train and validation periods are selected by the loader instead of
    being baked into table names.
-13. Rebuild daily macro bar rows for the successfully updated date range
-   directly from the same yearly event table. The direct flatfile update default is `1d` only,
+13. Build and certify the replacement daily-session authority for the updated
+   range directly from the same yearly event table. It emits scheduled
+   `premarket`, `regular`, and `after_hours` rows with the complete composable
+   trade, bid, ask, paired-quote, size, condition, and source-event geometry.
+   Identity fields are joined point-in-time from `q_live`; no Massive aggregate
+   or ticker-event API call occurs here.
+14. During migration, rebuild compatibility macro rows for the successfully updated date range.
+   The direct flatfile update default is `1d` only,
    which matches the current training data requirement. Daily bars use the New
    York extended-hours session, 04:00 ET through 20:00 ET, so the daily close is
    the after-hours close. Weekly/yearly bars can still be requested explicitly
    with `--bar-timeframes`, but they are not built by default here. This
    automatic post-ingest bar step never drops or purges the macro bar table; it
    only replaces overlapping rows for the requested timeframe/date range.
+
+Use `--skip-legacy-macro-bars` after every remaining consumer has moved to the
+replacement authority. `--skip-bars` skips both contracts.
+
+Rebuild the replacement authority from all existing ordered events:
+
+```powershell
+python -B -m pipelines.market_sip.events.run_build_daily_session_bars --execute
+```
+
+The rebuild is non-destructive to `macro_bars_by_time_symbol`. It writes the
+versioned replacement and its manifest, resumes by certified date chunk, and
+keeps runtime evidence under `D:\TradingML\runtimes\market_sip`.
 
 The standalone bar builder, `pipelines/market_sip/events/run_build_trade_bars.py`,
 uses the same direct event-to-macro aggregation and writes

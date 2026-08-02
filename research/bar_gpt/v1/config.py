@@ -4,7 +4,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from research.bar_gpt.v1.cohort import BAR_GPT_COHORT_2TB, BAR_GPT_COHORT_2TB_MANIFEST_TABLE, BAR_GPT_COHORT_2TB_TABLE
+from research.bar_gpt.v1.cohort import (
+    BAR_GPT_COHORT_2TB,
+    BAR_GPT_ADJUSTED_1S_TABLE,
+    BAR_GPT_ADJUSTED_1S_MANIFEST_TABLE,
+    BAR_GPT_ADJUSTED_SIP_DAILY_TABLE,
+    BAR_GPT_ADJUSTED_SIP_DAILY_MANIFEST_TABLE,
+)
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES
 
@@ -62,17 +68,22 @@ class BarGPTConfig:
 @dataclass(slots=True)
 class DataConfig:
     database: str = "market_sip_compact"
-    one_second_table: str = BAR_GPT_COHORT_2TB_TABLE
-    manifest_table: str = BAR_GPT_COHORT_2TB_MANIFEST_TABLE
-    daily_table: str = "macro_bars_by_time_symbol"
+    one_second_table: str = BAR_GPT_ADJUSTED_1S_TABLE
+    manifest_table: str = BAR_GPT_ADJUSTED_1S_MANIFEST_TABLE
+    daily_table: str = BAR_GPT_ADJUSTED_SIP_DAILY_TABLE
+    daily_manifest_table: str = BAR_GPT_ADJUSTED_SIP_DAILY_MANIFEST_TABLE
+    identity_database: str = "q_live"
+    identity_interval_table: str = "id_symbol_interval_v1"
+    identity_entity_table: str = "market_ticker_event_entity_v1"
     base_timeframe_us: int = 1_000_000
     intraday_timeframes_us: tuple[int, ...] = INTRADAY_TIMEFRAMES_US
     calendar_timeframes: tuple[str, ...] = CALENDAR_TIMEFRAMES
     horizons_us: tuple[int, ...] = DEFAULT_HORIZONS_US
     tickers: tuple[str, ...] = BAR_GPT_COHORT_2TB
-    start_date: str = "2019-01-01"
+    start_date: str = "2020-01-01"
     end_date: str = "2027-01-01"
-    validation_start_date: str = "2025-01-01"
+    validation_start_date: str = "2026-01-01"
+    daily_history_start_date: str = "2019-01-01"
     validation_ticker_fraction: float = 0.15
     context_bars_1s: int = 2_048
     origin_bars_1s: int = 512
@@ -110,6 +121,10 @@ class DataConfig:
             raise ValueError("every horizon must be a positive integral multiple of the base timeframe")
         if not 0.0 < self.validation_ticker_fraction < 1.0:
             raise ValueError("validation_ticker_fraction must be between zero and one")
+        if not self.start_date <= self.validation_start_date <= self.end_date:
+            raise ValueError("validation_start_date must lie inside the requested date range")
+        if self.daily_history_start_date > self.start_date:
+            raise ValueError("daily_history_start_date cannot be later than the training start")
         if self.batch_size <= 0 or self.loader_workers < 0:
             raise ValueError("batch_size must be positive and loader_workers cannot be negative")
 

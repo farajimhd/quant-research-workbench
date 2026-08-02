@@ -37,6 +37,8 @@ def one_second_args() -> argparse.Namespace:
         database="market_sip_compact", target_table="bars_v2", source_table="bars_v1",
         factor_table="factors_v2", events_table_base="events", storage_policy="live_market_ssd",
         max_threads=8, max_memory_usage="48G", max_bytes_before_external_group_by="12G",
+        identity_database="q_live", identity_interval_table="id_symbol_interval_v1",
+        identity_entity_table="market_ticker_event_entity_v1",
     )
 
 
@@ -142,7 +144,13 @@ class AdjustedOneSecondContractTest(unittest.TestCase):
         self.assertIn("GROUP BY local_date_value,ticker,second_bucket_index,second_start_us", sql)
 
     def test_identity_alias_interval_excludes_reused_canonical_ticker(self) -> None:
-        intervals = identity_alias_intervals(("META",), dt.date(2019, 1, 1), dt.date(2023, 1, 1))
+        class FakeClient:
+            def execute(self, _sql: str) -> str:
+                return "META\tFB\t2012-05-18\t2022-06-09\nMETA\tMETA\t2022-06-09\t9999-12-31\n"
+
+        intervals = identity_alias_intervals(
+            FakeClient(), one_second_args(), ("META",), dt.date(2019, 1, 1), dt.date(2023, 1, 1)  # type: ignore[arg-type]
+        )
         self.assertEqual(intervals, [("META", "FB", dt.date(2019, 1, 1), dt.date(2022, 6, 9))])
         clause = identity_exclusion_sql(intervals)
         self.assertIn("s.ticker='META'", clause)

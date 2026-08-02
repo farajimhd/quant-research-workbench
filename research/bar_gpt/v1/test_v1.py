@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import torch
+import polars as pl
 from rich.console import Console
 
 from research.bar_gpt.v1.build_1s import (
@@ -22,12 +23,19 @@ from research.bar_gpt.v1.cohort import (
     BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
     BAR_GPT_COHORT_2TB_SHA256,
     BAR_GPT_COHORT_2TB_TABLE,
+    BAR_GPT_ADJUSTED_1S_TABLE,
 )
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig
 from research.bar_gpt.v1.data import BarView, causal_asof_indices, densify_one_second_view, horizon_target_indices, rollup_intraday_view
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
 from research.bar_gpt.v1.model import BarGPTV1
-from research.bar_gpt.v1.loader import ClickHouseBarStreamConfig, daily_range_query, daily_tickers_range_query, ticker_range_query
+from research.bar_gpt.v1.loader import (
+    ClickHouseBarStreamConfig,
+    daily_range_query,
+    daily_session_frame_to_view,
+    daily_tickers_range_query,
+    ticker_range_query,
+)
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES, build_physical_horizon_targets
 from research.bar_gpt.v1.run_build_1s import main as launcher_main
@@ -61,7 +69,7 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertEqual(tuple(args.tickers.split(",")), BAR_GPT_COHORT_2TB)
         self.assertEqual(args.target_table, BAR_GPT_COHORT_2TB_TABLE)
         self.assertEqual(args.manifest_table, BAR_GPT_COHORT_2TB_MANIFEST_TABLE)
-        self.assertEqual(DataConfig().one_second_table, BAR_GPT_COHORT_2TB_TABLE)
+        self.assertEqual(DataConfig().one_second_table, BAR_GPT_ADJUSTED_1S_TABLE)
 
     def test_custom_tickers_cannot_contaminate_canonical_tables(self) -> None:
         with self.assertRaisesRegex(SystemExit, "Custom --tickers require custom"):
@@ -127,16 +135,17 @@ class BuilderSqlTest(unittest.TestCase):
             start_date="2025-01-01",
             end_date="2026-01-01",
         )
-        self.assertIn("PREWHERE timeframe = '1d'", daily_sql)
-        self.assertNotIn("timeframe = '1w'", daily_sql)
+        self.assertIn("canonical_ticker = 'AAPL'", daily_sql)
+        self.assertIn("session_kind", daily_sql)
+        self.assertIn("available_at_us", daily_sql)
         batched_daily_sql = daily_tickers_range_query(
             ClickHouseBarStreamConfig(url="http://localhost:8123", user="default", password=""),
             tickers=("AAPL", "MSFT"),
             start_date="2025-01-01",
             end_date="2026-01-01",
         )
-        self.assertIn("sym IN ('AAPL', 'MSFT')", batched_daily_sql)
-        self.assertIn("ORDER BY sym, bar_start, bar_family", batched_daily_sql)
+        self.assertIn("source_ticker IN ('AAPL', 'MSFT')", batched_daily_sql)
+        self.assertIn("ORDER BY ticker, local_date, bar_start_us", batched_daily_sql)
 
 
 class BuildReporterTest(unittest.TestCase):
@@ -212,6 +221,36 @@ class TemporalContractTest(unittest.TestCase):
         self.assertEqual(float(coarse.features[0, FEATURE_INDEX["trade_open"]]), 10.0)
         self.assertEqual(float(coarse.features[0, FEATURE_INDEX["trade_close"]]), 14.5)
         self.assertEqual(float(coarse.features[0, FEATURE_INDEX["trade_size_sum"]]), 10.0)
+
+    def test_three_sessions_collapse_to_one_daily_bar_available_at_20_et(self) -> None:
+        rows = []
+        bounds = ((1, 2), (2, 3), (3, 4))
+        for session, (start, end) in zip(("premarket", "regular", "after_hours"), bounds, strict=True):
+            row = {name: 0.0 for name in FEATURE_NAMES}
+            row.update(
+                local_date="2026-01-02",
+                ticker="AAPL",
+                session_kind=session,
+                bar_start_us=start,
+                bar_end_us=end,
+                available_at_us=end,
+            )
+            rows.append(row)
+        rows[1]["trade_present"] = 1.0
+        rows[1]["trade_open"] = 100.0
+        rows[1]["trade_high"] = 102.0
+        rows[1]["trade_low"] = 99.0
+        rows[1]["trade_close"] = 101.0
+        rows[1]["trade_size_sum"] = 10.0
+        rows[1]["trade_event_count"] = 2.0
+        rows[1]["source_event_count"] = 2.0
+        dates, daily = daily_session_frame_to_view(pl.DataFrame(rows))
+        self.assertEqual(dates, ["2026-01-02"])
+        self.assertEqual(daily.available_at_us.tolist(), [4])
+        self.assertEqual(float(daily.features[0, FEATURE_INDEX["trade_close"]]), 101.0)
+        self.assertEqual(float(daily.features[0, FEATURE_INDEX["source_event_count"]]), 2.0)
+        with self.assertRaisesRegex(ValueError, "premarket, regular, and after-hours"):
+            daily_session_frame_to_view(pl.DataFrame(rows[:2]))
 
     def test_horizon_support_is_indexed_without_window_copies(self) -> None:
         timestamps = torch.arange(1, 11, dtype=torch.long) * 1_000_000

@@ -69,6 +69,18 @@ from pipelines.market_sip.events.clickhouse_build_trade_bars import (  # noqa: E
     parse_timeframes,
     timeframe_ranges,
 )
+from pipelines.market_sip.events.clickhouse_build_daily_session_bars import (  # noqa: E402
+    BUILD_VERSION as DAILY_SESSION_BUILD_VERSION,
+    build_chunk as build_daily_session_chunk,
+    create_manifest_table_sql as create_daily_session_manifest_table_sql,
+    create_target_table_sql as create_daily_session_target_table_sql,
+    date_chunks as daily_session_date_chunks,
+    validate_schema as validate_daily_session_schema,
+)
+from pipelines.market_sip.events.session_bar_contract import (  # noqa: E402
+    DEFAULT_DAILY_SESSION_BARS_TABLE,
+    DEFAULT_DAILY_SESSION_MANIFEST_TABLE,
+)
 from pipelines.market_sip.flatfiles.download_massive_sip_flatfiles import (  # noqa: E402
     DEFAULT_AWS_REGION,
     DEFAULT_AWS_SERVICE,
@@ -201,6 +213,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--refresh-source-day-stats", action="store_true")
     parser.add_argument("--no-source-day-stats-cache", action="store_true")
     parser.add_argument("--macro-bars-table", default=DEFAULT_MACRO_BARS_TABLE)
+    parser.add_argument("--daily-session-bars-table", default=DEFAULT_DAILY_SESSION_BARS_TABLE)
+    parser.add_argument("--daily-session-bars-manifest-table", default=DEFAULT_DAILY_SESSION_MANIFEST_TABLE)
+    parser.add_argument("--daily-session-bars-chunk-days", type=int, default=7)
+    parser.add_argument("--identity-database", default="q_live")
+    parser.add_argument("--symbol-interval-table", default="id_symbol_interval_v1")
+    parser.add_argument("--ticker-entity-table", default="market_ticker_event_entity_v1")
     parser.add_argument("--bars-table", default=DEFAULT_BARS_TABLE)
     parser.add_argument("--bars-by-symbol-time-table", default=DEFAULT_BARS_BY_SYMBOL_TIME_TABLE)
     parser.add_argument("--bars-by-time-symbol-table", default=DEFAULT_BARS_BY_TIME_SYMBOL_TABLE)
@@ -270,7 +288,12 @@ def parse_args() -> argparse.Namespace:
             "from the source-day continuity timestamp bounds before reinserting."
         ),
     )
-    parser.add_argument("--skip-bars", action="store_true", help="Only update compact events; do not rebuild macro bar rows.")
+    parser.add_argument("--skip-bars", action="store_true", help="Only update compact events; do not rebuild legacy macro or daily-session bars.")
+    parser.add_argument(
+        "--skip-legacy-macro-bars",
+        action="store_true",
+        help="Build the replacement daily-session authority but skip compatibility writes to macro_bars_by_time_symbol.",
+    )
     parser.add_argument(
         "--bar-replace-range",
         action=argparse.BooleanOptionalAction,
@@ -1882,6 +1905,8 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
         DEFAULT_TICKER_DAY_INDEX_TABLE,
         DEFAULT_SOURCE_DAY_STATS_TABLE,
         DEFAULT_MACRO_BARS_TABLE,
+        DEFAULT_DAILY_SESSION_BARS_TABLE,
+        DEFAULT_DAILY_SESSION_MANIFEST_TABLE,
         DEFAULT_BARS_TABLE,
         DEFAULT_BARS_BY_SYMBOL_TIME_TABLE,
         DEFAULT_BARS_BY_TIME_SYMBOL_TABLE,
@@ -1897,6 +1922,8 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
     args.ticker_day_index_table = f"{prefix}_{run_id}_ticker_day_index"
     args.source_day_stats_table = f"{prefix}_{run_id}_source_day_stats"
     args.macro_bars_table = f"{prefix}_{run_id}_macro_bars_by_time_symbol"
+    args.daily_session_bars_table = f"{prefix}_{run_id}_daily_session_bars"
+    args.daily_session_bars_manifest_table = f"{prefix}_{run_id}_daily_session_manifest"
     args.bars_table = f"{prefix}_{run_id}_bars"
     args.bars_by_symbol_time_table = f"{prefix}_{run_id}_bars_by_symbol_time"
     args.bars_by_time_symbol_table = f"{prefix}_{run_id}_bars_by_time_symbol"
@@ -1907,6 +1934,8 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
         args.ticker_day_index_table,
         args.source_day_stats_table,
         args.macro_bars_table,
+        args.daily_session_bars_table,
+        args.daily_session_bars_manifest_table,
         args.bars_table,
         args.bars_by_symbol_time_table,
         args.bars_by_time_symbol_table,
@@ -1918,6 +1947,8 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
             DEFAULT_TICKER_DAY_INDEX_TABLE,
             DEFAULT_SOURCE_DAY_STATS_TABLE,
             DEFAULT_MACRO_BARS_TABLE,
+            DEFAULT_DAILY_SESSION_BARS_TABLE,
+            DEFAULT_DAILY_SESSION_MANIFEST_TABLE,
             DEFAULT_BARS_TABLE,
             DEFAULT_BARS_BY_SYMBOL_TIME_TABLE,
             DEFAULT_BARS_BY_TIME_SYMBOL_TABLE,
@@ -1939,6 +1970,8 @@ def drop_test_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> 
         args.ticker_day_index_table,
         args.source_day_stats_table,
         args.macro_bars_table,
+        args.daily_session_bars_table,
+        args.daily_session_bars_manifest_table,
         args.bars_table,
         args.bars_by_symbol_time_table,
         args.bars_by_time_symbol_table,
@@ -3416,6 +3449,77 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
     parse_timeframes(args.bar_timeframes)
     min_day = min(day.source_date for day in days)
     max_day = max(day.source_date for day in days)
+    daily_start = date.fromisoformat(min_day)
+    daily_end = date.fromisoformat(max_day) + timedelta(days=1)
+    daily_args = argparse.Namespace(
+        database=args.database,
+        events_table_base=args.events_table,
+        tickers="",
+        index_table=args.ticker_day_index_table,
+        target_table=args.daily_session_bars_table,
+        manifest_table=args.daily_session_bars_manifest_table,
+        identity_database=args.identity_database,
+        symbol_interval_table=args.symbol_interval_table,
+        ticker_entity_table=args.ticker_entity_table,
+        storage_policy=args.storage_policy,
+        allow_empty_storage_policy=False,
+        chunk_days=args.daily_session_bars_chunk_days,
+        replace_range=args.bar_replace_range,
+        verify_source_count=True,
+        max_threads=args.max_threads,
+        max_memory_usage=args.max_memory_usage,
+        max_bytes_before_external_group_by="24G",
+    )
+    daily_task = "daily_session_bars:build"
+    if reporter is not None:
+        reporter.task_start(daily_task, "build replacement daily-session bars", day=f"{min_day}->{max_day}", stage="daily sessions")
+    daily_started = time.time()
+    try:
+        if args.dry_run:
+            print(create_daily_session_target_table_sql(daily_args), flush=True)
+            print(create_daily_session_manifest_table_sql(daily_args), flush=True)
+            daily_results = []
+        else:
+            client.execute(create_daily_session_target_table_sql(daily_args))
+            client.execute(create_daily_session_manifest_table_sql(daily_args))
+            validate_daily_session_schema(client, daily_args)
+            daily_results = [
+                build_daily_session_chunk(client, daily_args, left, right)
+                for left, right in daily_session_date_chunks(daily_start, daily_end, daily_args.chunk_days)
+            ]
+    except Exception as exc:
+        if reporter is not None:
+            reporter.task_done(daily_task, "failed", seconds=time.time() - daily_started, detail=repr(exc))
+        raise
+    daily_rows = sum(result.rows for result in daily_results)
+    daily_events = sum(result.source_events for result in daily_results)
+    if reporter is not None:
+        reporter.task_done(
+            daily_task,
+            "ok",
+            seconds=time.time() - daily_started,
+            rows=daily_rows,
+            detail=f"events={daily_events:,} contract={DAILY_SESSION_BUILD_VERSION}",
+        )
+    append_jsonl(
+        report_path,
+        {
+            "type": "daily_session_bar_update",
+            "events_table": args.events_table,
+            "target_table": args.daily_session_bars_table,
+            "manifest_table": args.daily_session_bars_manifest_table,
+            "requested_start_date": min_day,
+            "requested_end_date_exclusive": daily_end.isoformat(),
+            "output_rows": daily_rows,
+            "source_events": daily_events,
+            "build_version": DAILY_SESSION_BUILD_VERSION,
+        },
+    )
+    if args.skip_legacy_macro_bars:
+        if reporter is not None:
+            reporter.notice("Legacy macro-bar compatibility write skipped; replacement daily-session bars are certified.", style="yellow")
+        print("LEGACY MACRO BAR SKIP --skip-legacy-macro-bars was set", flush=True)
+        return
     bar_args = argparse.Namespace(
         bar_mode="macro",
         clickhouse_url=args.clickhouse_url,

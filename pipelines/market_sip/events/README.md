@@ -5,6 +5,32 @@ training tables from `market_sip_compact.events`.
 
 ## Macro Bars
 
+### Replacement daily-session authority
+
+`clickhouse_build_daily_session_bars.py` is the current daily contract. It
+builds `daily_session_bars_by_symbol_time_v1` from ordered SIP events and emits
+exactly three scheduled rows per active ticker/date: premarket 04:00-09:30,
+regular 09:30-16:00, and after-hours 16:00-20:00 New York time. Empty sessions
+retain zero family-availability masks instead of fabricated prices.
+
+Each row uses the same composable sufficient statistics as BarGPT one-second
+bars: trade/bid/ask price and size geometry, squared size and price-size sums,
+paired spread/midpoint/microprice/queue-imbalance moments, locked/crossed quote
+counts, conditions, source-event counts, exact source bounds, causal availability,
+and q_live point-in-time identity. The table is raw/unadjusted; model-specific
+adjusted products are derived without overwriting it.
+
+Identity intervals use an ASOF rule: the latest valid interval start wins, and
+same-start duplicates resolve only when exactly one row is current. Remaining
+collisions retain the raw bar with null canonical identity and
+`ambiguous_source_ticker`; they are never assigned arbitrarily.
+
+```powershell
+python -B -m pipelines.market_sip.events.run_build_daily_session_bars --execute
+```
+
+The legacy macro table below remains during consumer migration only.
+
 `clickhouse_build_trade_bars.py` builds training macro bars directly from
 `market_sip_compact.events` into `market_sip_compact.macro_bars_by_time_symbol`.
 The default path does not create `_staging_trade_bars` and does not copy rows

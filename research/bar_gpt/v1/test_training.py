@@ -108,7 +108,18 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
             def query_tsv(self, query: str) -> str:
                 if "system.tables" in query:
-                    return "bar_gpt_1s_bars_v1_cohort_2tb\nbar_gpt_1s_build_manifest_v1_cohort_2tb\nmacro_bars_by_time_symbol\n"
+                    if "q_live" in query:
+                        return "id_symbol_interval_v1\nmarket_ticker_event_entity_v1\n"
+                    return (
+                        "bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted\n"
+                        "bar_gpt_1s_adjustment_manifest_v2_cohort_2tb\n"
+                        "bar_gpt_daily_sessions_v3_sip_adjusted\n"
+                        "bar_gpt_daily_sessions_manifest_v3_sip_adjusted\n"
+                    )
+                if "system.columns" in query:
+                    return "local_date\n"
+                if "daily_sessions_manifest_v3" in query:
+                    return "2019-01-01\t2020-03-01\n"
                 return self.messages
 
         config = self.data_config()

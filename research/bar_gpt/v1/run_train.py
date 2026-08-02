@@ -8,9 +8,9 @@ from research.bar_gpt.v1.train import main
 
 
 DEFAULT_ARGS: dict[str, str] = {
-    "--start-date": "2019-01-01",
+    "--start-date": "2020-01-01",
     "--end-date": "2027-01-01",
-    "--validation-start-date": "2025-01-01",
+    "--validation-start-date": "2026-01-01",
     "--context-bars-1s": "2048",
     "--origin-bars-1s": "512",
     "--batch-size": "2",
@@ -39,4 +39,3 @@ if __name__ == "__main__":
     command = [sys.executable, "-B", "-m", "research.bar_gpt.v1.train", *args]
     print("Equivalent command: " + " ".join(shlex.quote(item) for item in command), flush=True)
     raise SystemExit(main(args))
-

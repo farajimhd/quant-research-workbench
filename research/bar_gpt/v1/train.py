@@ -77,10 +77,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--one-second-table", default=data.one_second_table)
     parser.add_argument("--manifest-table", default=data.manifest_table)
     parser.add_argument("--daily-table", default=data.daily_table)
+    parser.add_argument("--daily-manifest-table", default=data.daily_manifest_table)
+    parser.add_argument("--identity-database", default=data.identity_database)
+    parser.add_argument("--identity-interval-table", default=data.identity_interval_table)
+    parser.add_argument("--identity-entity-table", default=data.identity_entity_table)
     parser.add_argument("--tickers", default=",".join(data.tickers))
     parser.add_argument("--start-date", default=data.start_date)
     parser.add_argument("--end-date", default=data.end_date)
     parser.add_argument("--validation-start-date", default=data.validation_start_date)
+    parser.add_argument("--daily-history-start-date", default=data.daily_history_start_date)
     parser.add_argument("--validation-ticker-fraction", type=float, default=data.validation_ticker_fraction)
     parser.add_argument("--horizons-us", default=",".join(str(value) for value in data.horizons_us))
     parser.add_argument("--context-bars-1s", type=int, default=data.context_bars_1s)
@@ -135,10 +140,15 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         one_second_table=str(args.one_second_table),
         manifest_table=str(args.manifest_table),
         daily_table=str(args.daily_table),
+        daily_manifest_table=str(args.daily_manifest_table),
+        identity_database=str(args.identity_database),
+        identity_interval_table=str(args.identity_interval_table),
+        identity_entity_table=str(args.identity_entity_table),
         tickers=_csv(args.tickers),
         start_date=str(args.start_date),
         end_date=str(args.end_date),
         validation_start_date=str(args.validation_start_date),
+        daily_history_start_date=str(args.daily_history_start_date),
         validation_ticker_fraction=float(args.validation_ticker_fraction),
         horizons_us=horizons,
         context_bars_1s=int(args.context_bars_1s),
@@ -196,24 +206,47 @@ def preflight(client: ClickHouseHttpClient, config: DataConfig) -> dict[str, str
     tables = {row.split("\t")[0] for row in client.query_tsv(
         f"SELECT name FROM system.tables WHERE database = {sql_string(config.database)} FORMAT TSVRaw"
     ).splitlines() if row}
-    required = {config.one_second_table, config.manifest_table, config.daily_table}
+    required = {config.one_second_table, config.manifest_table, config.daily_table, config.daily_manifest_table}
     missing = sorted(required - tables)
     if missing:
         raise RuntimeError(f"missing required ClickHouse tables in {config.database}: {missing}")
-    sql = f"""
+    identity_tables = {row.split("\t")[0] for row in client.query_tsv(
+        f"SELECT name FROM system.tables WHERE database = {sql_string(config.identity_database)} FORMAT TSVRaw"
+    ).splitlines() if row}
+    identity_required = {config.identity_interval_table, config.identity_entity_table}
+    identity_missing = sorted(identity_required - identity_tables)
+    if identity_missing:
+        raise RuntimeError(f"missing required identity tables in {config.identity_database}: {identity_missing}")
+    manifest_columns = {row.split("\t")[0] for row in client.query_tsv(
+        f"SELECT name FROM system.columns WHERE database={sql_string(config.database)} "
+        f"AND table={sql_string(config.manifest_table)} FORMAT TSVRaw"
+    ).splitlines() if row}
+    intervals: list[tuple[str, str]] = []
+    if "local_date" in manifest_columns:
+        sql = f"""
 SELECT message
 FROM {quote_ident(config.database)}.{quote_ident(config.manifest_table)} FINAL
 WHERE artifact_name = {sql_string(config.one_second_table)} AND status = 'certified_range'
 ORDER BY local_date, unit_id
 FORMAT TSVRaw
 """
-    intervals: list[tuple[str, str]] = []
-    for line in client.query_tsv(sql).splitlines():
-        match = re.search(r"certified range \[(\d{4}-\d{2}-\d{2}),(\d{4}-\d{2}-\d{2})\)", line)
-        if match:
-            intervals.append((match.group(1), match.group(2)))
+        for line in client.query_tsv(sql).splitlines():
+            match = re.search(r"certified range \[(\d{4}-\d{2}-\d{2}),(\d{4}-\d{2}-\d{2})\)", line)
+            if match:
+                intervals.append((match.group(1), match.group(2)))
+    elif "partition_month" in manifest_columns:
+        sql = f"""
+SELECT toString(min(partition_month)), toString(addMonths(max(partition_month), 1)),
+       uniqExact(tuple(adjustment_asof_date, schedule_sha256))
+FROM {quote_ident(config.database)}.{quote_ident(config.manifest_table)} FINAL
+WHERE artifact_name={sql_string(config.one_second_table)} AND status='certified'
+FORMAT TSVRaw
+"""
+        rows = [line.split("\t") for line in client.query_tsv(sql).splitlines() if line]
+        if rows and len(rows[0]) == 3 and int(rows[0][2] or 0) == 1:
+            intervals.append((rows[0][0], rows[0][1]))
     if not intervals:
-        raise RuntimeError(f"{config.database}.{config.one_second_table} has no certified training ranges")
+        raise RuntimeError(f"{config.database}.{config.one_second_table} has no single-basis certified training range")
     cursor = config.start_date
     for start, end in sorted(intervals):
         if end <= cursor or start > cursor:
@@ -226,7 +259,38 @@ FORMAT TSVRaw
             f"requested training range [{config.start_date},{config.end_date}) is not continuously certified; "
             f"certified coverage reaches only {cursor}"
         )
-    return {"certified_start": config.start_date, "certified_end": cursor, "certified_ranges": str(len(intervals))}
+    daily_sql = f"""
+SELECT chunk_start, chunk_end
+FROM {quote_ident(config.database)}.{quote_ident(config.daily_manifest_table)} FINAL
+WHERE artifact_name = {sql_string(config.daily_table)} AND status = 'complete'
+ORDER BY chunk_start, chunk_end
+FORMAT TSVRaw
+"""
+    daily_cursor = config.daily_history_start_date
+    daily_ranges = 0
+    for line in client.query_tsv(daily_sql).splitlines():
+        values = line.split("\t")
+        if len(values) != 2:
+            continue
+        start, end = values
+        if end <= daily_cursor or start > daily_cursor:
+            continue
+        daily_cursor = max(daily_cursor, end)
+        daily_ranges += 1
+        if daily_cursor >= config.end_date:
+            break
+    if daily_cursor < config.end_date:
+        raise RuntimeError(
+            f"requested daily-session range [{config.daily_history_start_date},{config.end_date}) is not continuously certified; "
+            f"certified coverage reaches only {daily_cursor}"
+        )
+    return {
+        "certified_start": config.start_date,
+        "certified_end": cursor,
+        "certified_ranges": str(len(intervals)),
+        "daily_certified_end": daily_cursor,
+        "daily_certified_ranges": str(daily_ranges),
+    }
 
 
 def _stream_config(data: DataConfig) -> ClickHouseBarStreamConfig:
@@ -440,7 +504,16 @@ def main(argv: Iterable[str] | None = None) -> int:
         run_name=run_name,
         args=vars(args),
         config={**to_dict(config), "data_evidence": evidence, "validation_tickers": holdout},
-        data_roots={"clickhouse": default_clickhouse_url(), "database": config.data.database, "one_second_table": config.data.one_second_table, "daily_table": config.data.daily_table},
+        data_roots={
+            "clickhouse": default_clickhouse_url(),
+            "database": config.data.database,
+            "one_second_table": config.data.one_second_table,
+            "one_second_manifest_table": config.data.manifest_table,
+            "daily_table": config.data.daily_table,
+            "daily_manifest_table": config.data.daily_manifest_table,
+            "identity_database": config.data.identity_database,
+            "identity_interval_table": config.data.identity_interval_table,
+        },
         output_root=paths.run_root,
         source_checkpoint=Path(args.resume_checkpoint) if args.resume_checkpoint else None,
         wandb_info={"project": config.train.wandb_project, "entity": config.train.wandb_entity, "run_name": run_name},

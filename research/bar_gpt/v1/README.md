@@ -24,11 +24,24 @@ The table does **not** persist redundant `5s` through `1h` rows and does not
 persist forecast targets. The loader derives fixed intraday scales from 1-second
 sufficient statistics. Entirely inactive seconds remain sparse on disk; the
 loader restores the one-second clock with explicit zero availability masks and
-does not fabricate family OHLC values. Existing completed `1d` rows from
-`macro_bars_by_time_symbol` are the calendar base; ISO-week and calendar-month
-views are derived in the loader. `daily_range_query`,
-`daily_family_frame_to_view`, and `calendar_period_ids` implement that path; the
-loader never reads persisted weekly or monthly rows.
+does not fabricate family OHLC values. The production model input uses the
+split-adjusted v2 one-second authority and
+`bar_gpt_daily_sessions_v3_sip_adjusted`. The latter is an exact three-session
+rollup of the adjusted one-second sufficient statistics, so trade, bid, ask,
+spread, midpoint, microprice, queue-imbalance, size, VWAP, condition, and source
+geometry remain on one price basis. The loader causally collapses completed
+premarket, regular, and after-hours rows into `1D`; ISO-week and calendar-month
+views remain loader-side.
+
+The shared ingestion authority for all symbols is
+`daily_session_bars_by_symbol_time_v1`. It is rebuilt directly from ordered SIP
+events and maintained by `download_update_events`. Every active ticker/date has
+three scheduled rows, including explicit zero-activity sessions. Point-in-time
+identity comes from `q_live.id_symbol_interval_v1` and
+`q_live.market_ticker_event_entity_v1`; Massive ticker-event calls are not part
+of the BarGPT build path. Overlapping reference intervals resolve by latest
+valid start; unresolved same-start collisions remain explicitly ambiguous and
+are excluded from canonical-ticker training reads rather than silently merged.
 
 The first pre-2019 bootstrap is retained as source evidence but is
 **superseded for model input** because it is unadjusted. It must not be mixed
@@ -40,9 +53,10 @@ the SIP table's bid/ask families or trade-size OHLC. The future loader adapter
 must preserve those missing families explicitly rather than filling them with
 synthetic values.
 
-## Pre-2019 daily context
+## Pre-2019 daily context (superseded)
 
-> Historical/superseded model-input direction. Use the adjusted v2 build below.
+> Historical evidence only. Massive bars are not accepted as BarGPT input
+> because they do not retain SIP event geometry.
 
 The downloader deliberately uses Massive's hourly Custom Bars range endpoint
 instead of issuing one Daily Ticker Summary request for every ticker-session.
@@ -78,24 +92,18 @@ lives under `D:\TradingML\runtimes\bar_gpt\v1\build_daily_context`; interactive
 runs retain a compact Rich display with durable ticker progress, provider
 requests/retries, row counts, current ticker, failure state, and evidence path.
 
-## Split-adjusted model authorities (v2)
+## Split-adjusted model authorities
 
-Model training uses one explicit current-share basis. The v2 daily builder
-downloads Massive `adjusted=true` 30-minute Custom Bars from 2017 through the
-latest completed New York session and emits three rows for every date with
-activity: `premarket` (04:00-09:30), `regular` (09:30-16:00), and
-`after_hours` (16:00-20:00). Missing extended-hours activity is represented by
-`present=0` and nullable OHLC, not a fabricated price. Weekly and monthly bars
-remain loader-side calendar rollups.
+Model training uses one explicit current-share basis. The v2 one-second builder
+applies q_live split actions and uses q_live point-in-time ticker intervals.
+Non-split dates use dimensionally correct sufficient-statistic scaling; split
+execution dates and ticker aliases are replayed from raw events.
 
-Ticker changes are resolved point-in-time through Massive Ticker Events. The
-canonical model identity remains stable while `provider_ticker` records the
-symbol used for each source interval (for example, `META` uses `FB` before
-2022-06-09). Because that endpoint is experimental, a chain whose latest event
-does not match the requested ticker falls back to the literal ticker instead of
-silently mixing share classes.
+Ticker changes are resolved from the Reference Gateway tables in `q_live`.
+Canonical identity remains stable while `source_ticker` preserves the symbol
+that produced the event. Unmapped or conflicting identities are never renamed.
 
-The same reviewed interval authority applies to one-second bars. Ticker strings
+The same q_live interval authority applies to one-second bars. Ticker strings
 are never renamed without bounds: pre-2022-06-09 `META` rows belong to an
 unrelated ETF and are excluded, raw `FB` events are replayed as canonical
 `META` through 2022-06-08, and native `META` rows begin on 2022-06-09. The v2
@@ -112,32 +120,30 @@ because old- and new-scale prints can coexist within one stored second. Replay
 normalizes each trade, bid, and ask leg with its paired size and certifies exact
 source-event and output-second counts.
 
-Both authorities store the same adjustment-basis hash, which binds the
-deduplicated corporate-action schedule and reviewed ticker-validity chains, plus
-the adjustment cutoff date. A Massive request made after the cutoff is accepted
-only if its applicable split schedule is unchanged. Raw SIP events, v1 one-
-second rows, and the superseded unadjusted daily table remain immutable.
+The adjustment-basis hash binds the deduplicated q_live split schedule, q_live
+ticker-validity intervals, cohort, and adjustment cutoff date. Raw SIP events,
+v1 one-second rows, and the superseded Massive tables remain immutable.
 
 ```powershell
-# Preview, then build 2017 through the latest completed session.
-python -B -m research.bar_gpt.v1.run_build_adjusted_daily_sessions
-python -B -m research.bar_gpt.v1.run_build_adjusted_daily_sessions --execute
-
 # Preview, then build the adjusted 1s authority from completed v1 rows.
 python -B -m research.bar_gpt.v1.run_build_adjusted_1s
 python -B -m research.bar_gpt.v1.run_build_adjusted_1s --execute
+
+# Roll the adjusted 1s authority into three exact SIP daily sessions.
+python -B -m research.bar_gpt.v1.run_build_daily_sessions_from_adjusted_1s
+python -B -m research.bar_gpt.v1.run_build_daily_sessions_from_adjusted_1s --execute
 ```
 
 Both launchers resolve `auto` to one concrete New York adjustment date inside
 the Python launcher and print it in the equivalent command; no PowerShell
 `$asof` variable is required.
 
-The destinations are `bar_gpt_daily_sessions_v2_massive_adjusted` and
-`bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted`; manifests and the compact daily
-factor schedule are separate versioned tables. All use
+The active destinations are `bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted` and
+`bar_gpt_daily_sessions_v3_sip_adjusted`; manifests and the compact daily factor
+schedule are separate versioned tables. All use
 `CLICKHOUSE_LIVE_STORAGE_POLICY` and write runtime evidence under
-`D:\TradingML\runtimes\bar_gpt\v1`. Training defaults deliberately remain on
-v1 until both v2 builds and their cross-basis audit are complete.
+`D:\TradingML\runtimes\bar_gpt\v1`. Training defaults require these certified
+adjusted authorities.
 
 QMD structure decisions are not fabricated by the SQL builder. The v1 table
 contains the exact paired-event geometry that QMD and the model can consume.
@@ -173,8 +179,8 @@ python -B -m research.bar_gpt.v1.run_build_1s --execute
 contains macro and sector instruments, liquid equities, extreme regimes,
 lifecycle names, and persistently illiquid equities. The canonical launcher
 uses that cohort and the dedicated `bar_gpt_1s_bars_v1_cohort_2tb` and
-`bar_gpt_1s_build_manifest_v1_cohort_2tb` tables by default. `DataConfig` reads
-the same target. Runtime preflight evidence records the resolved ticker count
+`bar_gpt_1s_build_manifest_v1_cohort_2tb` tables by default. Training consumes
+the subsequently certified adjusted v2 target. Runtime preflight evidence records the resolved ticker count
 and SHA-256 fingerprint. A custom `--tickers` list must also provide custom
 `--target-table` and `--manifest-table` names so a different population cannot
 silently contaminate the canonical cohort.
@@ -225,8 +231,8 @@ default block encodes 2,048 context seconds and 512 origins together, with a
 3,600-second target-only right halo. It therefore does not create one copied
 input window per origin.
 
-Daily rows for held-out and training tickers remain separate from the one-second
-source. Weekly and monthly rows are computed from canonical daily sessions.
+Daily rows are exact rollups of the adjusted one-second source. Weekly and
+monthly rows are computed from causally completed daily sessions.
 The last weekly/monthly group for a ticker is withheld until a following period
 proves that the group closed, preventing a delisting or partial final period
 from appearing as a completed calendar bar.
@@ -322,8 +328,11 @@ redirected output is stable text, and `--json --progress-layout none` emits one
 machine-readable result. The command is read-only and writes no runtime
 artifacts.
 
-The launcher prints the complete equivalent command before execution. Important
-defaults are visible in `run_train.py`: 2,048 one-second context bars, 512
+The launcher prints the complete equivalent command before execution. Training
+uses `[2020-01-01, 2026-01-01)` and validation uses 2026 onward; available 2019
+daily sessions provide left context. Earlier unavailable context is shortened
+and batch padding remains zero with availability/as-of masks. Important defaults
+are visible in `run_train.py`: 2,048 one-second context bars, 512
 origins per block, batch size 2, four loader workers, a 384-wide eight-layer
 decoder, BF16, six physical horizons from 5 seconds through 1 hour, and 50
 million training origins. Overrides follow the printed defaults, for example:
