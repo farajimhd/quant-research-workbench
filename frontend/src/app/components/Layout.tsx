@@ -76,11 +76,13 @@ export function Layout({
   }, [themeId]);
 
   useEffect(() => {
+    const readableScale = uiScale < 1 ? 1 / uiScale : 1;
     document.documentElement.style.setProperty("--app-zoom", String(uiScale));
     document.documentElement.style.setProperty("--app-zoom-inverse", String(1 / uiScale));
     document.documentElement.style.setProperty("--app-zoomed-viewport-height", `${100 / uiScale}vh`);
     document.documentElement.style.setProperty("--app-zoomed-viewport-width", `${100 / uiScale}vw`);
-    document.documentElement.style.setProperty("--app-readable-scale", String(uiScale < 1 ? 1 / uiScale : 1));
+    document.documentElement.style.setProperty("--app-readable-scale", String(readableScale));
+    document.documentElement.style.setProperty("--app-overlay-scale", String(uiScale * readableScale));
     window.localStorage.setItem(UI_SCALE_STORAGE_KEY, String(uiScale));
     window.setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
   }, [uiScale]);

@@ -34,12 +34,14 @@ export function InventoryFilterSelect({ ariaLabel, onChange, options, searchable
     const button = buttonRef.current;
     if (!button) return;
     const rect = button.getBoundingClientRect();
-    const scale = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-zoom")) || 1;
-    const readableScale = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-readable-scale")) || 1;
+    const rootStyle = getComputedStyle(document.documentElement);
+    const scale = Number.parseFloat(rootStyle.getPropertyValue("--app-zoom")) || 1;
+    const readableScale = Number.parseFloat(rootStyle.getPropertyValue("--app-readable-scale")) || 1;
+    const overlayScale = Number.parseFloat(rootStyle.getPropertyValue("--app-overlay-scale")) || scale * readableScale;
     const menu = menuRef.current;
     const availableBelow = window.innerHeight - rect.bottom - 8;
     const availableAbove = rect.top - 8;
-    const heightCap = 420 * readableScale;
+    const heightCap = 420 * overlayScale;
     const contentHeight = menu?.scrollHeight || heightCap;
     const desiredHeight = Math.min(contentHeight, heightCap);
     const openAbove = availableBelow < desiredHeight && availableAbove > availableBelow;
@@ -51,12 +53,12 @@ export function InventoryFilterSelect({ ariaLabel, onChange, options, searchable
     const measureContext = document.createElement("canvas").getContext("2d");
     if (measureContext && optionStyle) measureContext.font = optionStyle.font;
     const labelWidth = measureContext ? Math.max(0, ...options.map(({ label }) => measureContext.measureText(label).width)) : 0;
-    const optionPadding = optionStyle ? Number.parseFloat(optionStyle.paddingLeft) + Number.parseFloat(optionStyle.paddingRight) : 24 * scale;
+    const optionPadding = optionStyle ? Number.parseFloat(optionStyle.paddingLeft) + Number.parseFloat(optionStyle.paddingRight) : 24 * overlayScale;
     const menuStyle = menu ? getComputedStyle(menu) : null;
-    const menuChrome = menuStyle ? Number.parseFloat(menuStyle.paddingLeft) + Number.parseFloat(menuStyle.paddingRight) + Number.parseFloat(menuStyle.borderLeftWidth) + Number.parseFloat(menuStyle.borderRightWidth) : 10 * scale;
+    const menuChrome = menuStyle ? Number.parseFloat(menuStyle.paddingLeft) + Number.parseFloat(menuStyle.paddingRight) + Number.parseFloat(menuStyle.borderLeftWidth) + Number.parseFloat(menuStyle.borderRightWidth) : 10 * overlayScale;
     const scrollbarAllowance = contentHeight > maxHeight ? 18 : 0;
-    const textSafety = 28 * readableScale;
-    const width = Math.min(window.innerWidth - 16, Math.max(rect.width, 170 * scale, 210 * readableScale, labelWidth + optionPadding + menuChrome + scrollbarAllowance + textSafety));
+    const textSafety = 28 * overlayScale;
+    const width = Math.min(window.innerWidth - 16, Math.max(rect.width, 170 * overlayScale, 210 * overlayScale, labelWidth + optionPadding + menuChrome + scrollbarAllowance + textSafety));
     setPlacement({
       left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
       maxHeight,

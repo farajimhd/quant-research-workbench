@@ -19,11 +19,14 @@ export function FilterOverflowMenu({ activeCount = 0, children, label = "More fi
     const button = buttonRef.current;
     if (!button) return;
     const rect = button.getBoundingClientRect();
-    const readableScale = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-readable-scale")) || 1;
-    const width = Math.min(window.innerWidth - 16, 400 * readableScale);
+    const rootStyle = getComputedStyle(document.documentElement);
+    const appZoom = Number.parseFloat(rootStyle.getPropertyValue("--app-zoom")) || 1;
+    const readableScale = Number.parseFloat(rootStyle.getPropertyValue("--app-readable-scale")) || 1;
+    const overlayScale = Number.parseFloat(rootStyle.getPropertyValue("--app-overlay-scale")) || appZoom * readableScale;
+    const width = Math.min(window.innerWidth - 16, 400 * overlayScale);
     const availableBelow = window.innerHeight - rect.bottom - 8;
     const availableAbove = rect.top - 8;
-    const heightCap = Math.min(560 * readableScale, Math.max(180, window.innerHeight - 16));
+    const heightCap = Math.min(560 * overlayScale, Math.max(180, window.innerHeight - 16));
     const desiredHeight = Math.min(menuRef.current?.scrollHeight || heightCap, heightCap);
     const openAbove = availableBelow < desiredHeight && availableAbove > availableBelow;
     const maxHeight = Math.max(160, Math.min(heightCap, openAbove ? availableAbove : availableBelow));

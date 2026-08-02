@@ -163,6 +163,38 @@ class TradingNewsTests(unittest.TestCase):
         self.assertNotIn("page_before", facet_sql)
         self.assertIn("positionCaseInsensitiveUTF8", facet_sql)
 
+    @patch("src.backend.app.clickhouse_status_query")
+    def test_ticker_options_are_transferred_only_on_initial_query_page(self, query_mock) -> None:
+        query_mock.side_effect = [
+            "\n".join([
+                json.dumps({"canonical_news_id": "facet-page-2", "published_at_utc": "2026-07-10T13:44:00.000000Z"}),
+                json.dumps({"canonical_news_id": "facet-page-1", "published_at_utc": "2026-07-10T13:43:00.000000Z"}),
+            ]),
+            json.dumps({"ticker_options": ["AAPL", "MSFT", "NVDA"]}),
+            "",
+            json.dumps({"canonical_news_id": "facet-page-1", "published_at_utc": "2026-07-10T13:43:00.000000Z"}),
+            "",
+        ]
+
+        first = trading_news_rows(
+            as_of="2026-07-10T13:45:07Z",
+            limit=1,
+            search="once-per-query-ticker-facet",
+        )
+        second = trading_news_rows(
+            as_of="2026-07-10T13:45:07Z",
+            before=first["next_before"],
+            before_id=first["next_before_id"],
+            limit=1,
+            query_id=first["query_id"],
+            search="once-per-query-ticker-facet",
+        )
+
+        self.assertEqual(first["ticker_options"], ["AAPL", "MSFT", "NVDA"])
+        self.assertNotIn("ticker_options", second)
+        self.assertEqual(query_mock.call_count, 5)
+        self.assertNotIn("groupUniqArray(ticker)", query_mock.call_args_list[3].args[0])
+
     @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_custom_date_range_is_bounded_by_market_dates(self, query_mock) -> None:
         payload = trading_news_rows(

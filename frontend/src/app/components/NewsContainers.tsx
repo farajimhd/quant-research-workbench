@@ -48,7 +48,7 @@ type NewsPayload = {
   next_before_id: string;
   query_id: string;
   rows: NewsRow[];
-  ticker_options: string[];
+  ticker_options?: string[];
   window_start: string;
 };
 
@@ -350,6 +350,7 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
 
 function useNewsQuery({ asOf, content, direction, eligibilityFilters, endDate, hours, kind, labelState, limit, live, origin, refreshKey, role, search, startDate, ticker }: { asOf: string; content: string; direction: string; eligibilityFilters: EligibilityQuery; endDate: string; hours: number; kind: string; labelState: string; limit: number; live: boolean; origin: string; refreshKey: number; role: string; search: string; startDate: string; ticker: string }) {
   const [rows, setRows] = useState<NewsRow[]>([]); const [payload, setPayload] = useState<NewsPayload | null>(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const [loadingPage, setLoadingPage] = useState(false);
+  const [tickerOptions, setTickerOptions] = useState<string[]>([]);
   const [pageIndex, setPageIndex] = useState(0);
   const pageStartsRef = useRef<Array<{ before: string; beforeId: string }>>([{ before: "", beforeId: "" }]);
   const queryIdRef = useRef("");
@@ -362,9 +363,10 @@ function useNewsQuery({ asOf, content, direction, eligibilityFilters, endDate, h
     if (signal?.aborted) return;
     queryIdRef.current = next.query_id;
     setError("");
+    if (next.ticker_options) setTickerOptions(next.ticker_options);
     setPayload(next); setRows(next.rows);
   }, [asOf, content, direction, eligibilityFilters.followup, eligibilityFilters.forecast, eligibilityFilters.history, eligibilityFilters.prior, eligibilityFilters.reaction, endDate, hours, kind, labelState, limit, live, origin, role, search, startDate, ticker]);
-  useEffect(() => { const controller = new AbortController(); pageStartsRef.current = [{ before: "", beforeId: "" }]; setPageIndex(0); setLoading(true); setError(""); load("", "", controller.signal).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); return () => controller.abort(); }, [load, refreshKey]);
+  useEffect(() => { const controller = new AbortController(); pageStartsRef.current = [{ before: "", beforeId: "" }]; setPageIndex(0); setTickerOptions([]); setLoading(true); setError(""); load("", "", controller.signal).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); return () => controller.abort(); }, [load, refreshKey]);
   useEffect(() => {
     if (!live) { setLiveConnected(false); latestRevision.current = null; return; }
     let closed = false;
@@ -419,7 +421,7 @@ function useNewsQuery({ asOf, content, direction, eligibilityFilters, endDate, h
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
       .finally(() => setLoadingPage(false));
   }, [load, pageIndex, payload]);
-  return { asOf: payload?.as_of, canGoNext: Boolean(payload?.has_more), canGoPrevious: pageIndex > 0, error, goToNextPage: () => goToPage(pageIndex + 1), goToPreviousPage: () => goToPage(pageIndex - 1), hasMore: Boolean(payload?.has_more), live, liveConnected, liveError, loading, loadingPage, marketTimezone: payload?.market_timezone ?? "America/New_York", pageNumber: pageIndex + 1, queryId: payload?.query_id ?? "", rows, tickerOptions: payload?.ticker_options ?? [], windowStart: payload?.window_start };
+  return { asOf: payload?.as_of, canGoNext: Boolean(payload?.has_more), canGoPrevious: pageIndex > 0, error, goToNextPage: () => goToPage(pageIndex + 1), goToPreviousPage: () => goToPage(pageIndex - 1), hasMore: Boolean(payload?.has_more), live, liveConnected, liveError, loading, loadingPage, marketTimezone: payload?.market_timezone ?? "America/New_York", pageNumber: pageIndex + 1, queryId: payload?.query_id ?? "", rows, tickerOptions, windowStart: payload?.window_start };
 }
 
 // Product UI reports user-relevant freshness only. Never render database/table

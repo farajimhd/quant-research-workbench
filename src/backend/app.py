@@ -1812,8 +1812,11 @@ def trading_news_rows(
         raise HTTPException(status_code=503, detail="News is temporarily unavailable") from exc
     has_more = len(rows) > safe_limit
     rows = rows[:safe_limit]
-    ticker_options = TEXT_QUERY_SESSIONS.facet(effective_query_id, "news", "tickers")
-    if ticker_options is None:
+    # The query-wide ticker facet belongs to the initial query contract. It is
+    # retained in the session for the client and must not be retransmitted on
+    # every cursor page.
+    ticker_options = TEXT_QUERY_SESSIONS.facet(effective_query_id, "news", "tickers") if not query_id.strip() else None
+    if ticker_options is None and not query_id.strip():
         facet_query = f"""
             WITH
                 {start_sql} AS window_start,
@@ -1893,7 +1896,7 @@ def trading_news_rows(
             labels, ticker=safe_ticker
         )
         row["intelligence_status"] = intelligence_status
-    return {
+    response = {
         "as_of": cutoff.isoformat().replace("+00:00", "Z"),
         "has_more": has_more,
         "limit": safe_limit,
@@ -1903,10 +1906,12 @@ def trading_news_rows(
         "next_before": str(rows[-1].get("published_at_utc") or "") if has_more and rows else "",
         "next_before_id": str(rows[-1].get("canonical_news_id") or "") if has_more and rows else "",
         "rows": rows,
-        "ticker_options": ticker_options,
         "intelligence_status": intelligence_status,
         "window_start": window_start.isoformat().replace("+00:00", "Z"),
     }
+    if ticker_options is not None:
+        response["ticker_options"] = ticker_options
+    return response
 
 
 def clickhouse_json_each_row(
