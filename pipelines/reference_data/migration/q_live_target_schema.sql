@@ -332,6 +332,36 @@ ENGINE = ReplacingMergeTree(last_seen_at_utc)
 ORDER BY (source_system, ticker_normalized, listing_id, symbol_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
+-- Massive Ticker Events is the point-in-time symbol authority. id_symbol_v1
+-- remains the current-state projection used by live paths.
+CREATE TABLE IF NOT EXISTS q_live.id_symbol_interval_v1
+(
+    symbol_interval_id String,
+    provider_entity_key String,
+    provider_identifier_kind LowCardinality(String),
+    provider_identifier String,
+    security_id String,
+    listing_id String,
+    ticker String,
+    ticker_normalized String,
+    valid_from_date Date,
+    valid_to_date_exclusive Nullable(Date),
+    is_current UInt8,
+    mapping_status LowCardinality(String),
+    confidence_score Float64,
+    source_event_id String,
+    source_system LowCardinality(String),
+    is_deleted UInt8,
+    observed_at_utc DateTime64(3, 'UTC'),
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY toYYYYMM(valid_from_date)
+ORDER BY (security_id, listing_id, valid_from_date, ticker_normalized, symbol_interval_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
 CREATE TABLE IF NOT EXISTS q_live.id_source_mapping_v1
 (
     source_mapping_id String,
@@ -524,6 +554,90 @@ CREATE TABLE IF NOT EXISTS q_live.market_short_volume_v1
 ENGINE = ReplacingMergeTree(inserted_at)
 PARTITION BY toYYYYMM(trade_date)
 ORDER BY (symbol_id, trade_date, source_system, short_volume_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.market_ticker_event_entity_v1
+(
+    provider_entity_key String,
+    provider_identifier_kind LowCardinality(String),
+    provider_identifier String,
+    current_ticker String,
+    entity_name String,
+    active UInt8,
+    composite_figi Nullable(String),
+    share_class_figi Nullable(String),
+    cik Nullable(String),
+    primary_exchange Nullable(String),
+    currency_name Nullable(String),
+    provider_last_updated_utc Nullable(DateTime64(3, 'UTC')),
+    source_payload_json String,
+    source_content_sha256 String,
+    is_deleted UInt8,
+    observed_at_utc DateTime64(3, 'UTC'),
+    source_run_id String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+ORDER BY provider_entity_key
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.market_ticker_event_v1
+(
+    ticker_event_id String,
+    provider_entity_key String,
+    provider_identifier_kind LowCardinality(String),
+    provider_identifier String,
+    security_id Nullable(String),
+    listing_id Nullable(String),
+    entity_name String,
+    event_date Date,
+    event_type LowCardinality(String),
+    ticker Nullable(String),
+    event_payload_json String,
+    source_request_id Nullable(String),
+    source_response_sha256 String,
+    source_content_sha256 String,
+    source_system LowCardinality(String),
+    is_deleted UInt8,
+    observed_at_utc DateTime64(3, 'UTC'),
+    source_run_id String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY toYYYYMM(event_date)
+ORDER BY (provider_entity_key, event_date, event_type, ticker_event_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.market_ticker_event_entity_coverage_v1
+(
+    provider_entity_key String,
+    provider_identifier_kind LowCardinality(String),
+    provider_identifier String,
+    current_ticker String,
+    security_id Nullable(String),
+    listing_id Nullable(String),
+    source_status LowCardinality(String),
+    mapping_status LowCardinality(String),
+    mapping_reason Nullable(String),
+    event_count UInt32,
+    active_event_count UInt32,
+    min_event_date Nullable(Date),
+    max_event_date Nullable(Date),
+    source_response_sha256 Nullable(String),
+    provider_last_updated_utc Nullable(DateTime64(3, 'UTC')),
+    last_started_at_utc DateTime64(3, 'UTC'),
+    last_finished_at_utc DateTime64(3, 'UTC'),
+    last_success_at_utc Nullable(DateTime64(3, 'UTC')),
+    next_due_at_utc DateTime64(3, 'UTC'),
+    rows_written UInt64,
+    rows_deleted UInt64,
+    error_type Nullable(String),
+    error_message Nullable(String),
+    source_run_id String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+ORDER BY provider_entity_key
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
 CREATE TABLE IF NOT EXISTS q_live.market_stock_split_v1

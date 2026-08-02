@@ -20,6 +20,15 @@ class MassiveTickerResult:
     saturated: bool
 
 
+@dataclass(frozen=True, slots=True)
+class MassiveTickerEventsResult:
+    identifier: str
+    name: str
+    events: list[dict[str, Any]]
+    status: str
+    request_id: str
+
+
 class MassiveReferenceClient:
     def __init__(self, *, base_url: str, api_key: str, page_limit: int, max_pages: int) -> None:
         self.base_url = base_url.rstrip("/")
@@ -30,10 +39,13 @@ class MassiveReferenceClient:
             raise RuntimeError("MASSIVE_API_KEY is required for Massive reference sync")
 
     def fetch_active_us_stock_tickers(self) -> MassiveTickerResult:
+        return self.fetch_us_stock_tickers(active=True)
+
+    def fetch_us_stock_tickers(self, *, active: bool) -> MassiveTickerResult:
         params = {
             "market": "stocks",
             "locale": "us",
-            "active": "true",
+            "active": "true" if active else "false",
             "limit": str(self.page_limit),
             "sort": "ticker",
             "order": "asc",
@@ -54,9 +66,46 @@ class MassiveReferenceClient:
 
     def fetch_ticker_overview(self, ticker: str) -> dict[str, Any]:
         url = self.base_url + "/v3/reference/tickers/" + parse.quote(ticker, safe="") + "?" + parse.urlencode({"apiKey": self.api_key})
-        payload = fetch_json(url, user_agent="quant-reference-gateway-massive/1.0")
+        payload = fetch_json(url, user_agent="quant-reference-gateway-massive/1.0", allow_not_found=True)
         result = payload.get("results")
         return result if isinstance(result, dict) else {}
+
+    def fetch_ticker_events(self, identifier: str) -> MassiveTickerEventsResult:
+        clean_identifier = str(identifier or "").strip()
+        if not clean_identifier:
+            raise ValueError("ticker-event identifier is required")
+        url = (
+            self.base_url
+            + "/vX/reference/tickers/"
+            + parse.quote(clean_identifier, safe="")
+            + "/events?"
+            + parse.urlencode({"types": "ticker_change", "apiKey": self.api_key})
+        )
+        payload = fetch_json(
+            url,
+            user_agent="quant-reference-gateway-massive/1.0",
+            allow_not_found=True,
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError("Massive ticker-events response is not an object")
+        result = payload.get("results")
+        if result is None:
+            result = {}
+        if not isinstance(result, dict):
+            raise RuntimeError("Massive ticker-events results is not an object")
+        raw_events = result.get("events") or []
+        if not isinstance(raw_events, list):
+            raise RuntimeError("Massive ticker-events events is not an array")
+        events = [event for event in raw_events if isinstance(event, dict)]
+        if len(events) != len(raw_events):
+            raise RuntimeError("Massive ticker-events response contains a non-object event")
+        return MassiveTickerEventsResult(
+            identifier=clean_identifier,
+            name=str(result.get("name") or "").strip(),
+            events=events,
+            status=str(payload.get("status") or "").strip(),
+            request_id=str(payload.get("request_id") or "").strip(),
+        )
 
 
 class IbkrReferenceClient:
@@ -99,6 +148,7 @@ def fetch_json(
     payload: dict[str, Any] | None = None,
     timeout: int = 60,
     allow_self_signed: bool = False,
+    allow_not_found: bool = False,
     user_agent: str,
 ) -> Any:
     body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -115,6 +165,8 @@ def fetch_json(
                 break
         except error.HTTPError as exc:
             response_text = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 404 and allow_not_found:
+                break
             if exc.code not in RETRY_HTTP_CODES or attempt >= 4:
                 raise RuntimeError(f"{method} {safe_url(url)} failed with HTTP {exc.code}: {response_text[:500]}") from exc
             time.sleep(retry_sleep_seconds(exc, attempt))

@@ -13,7 +13,7 @@ from pipelines.reference_data.market_publications_historical_gap_fill import (
 )
 from services.reference_gateway.main import publication_schedule_details
 from services.reference_gateway.publication_maintenance import PublicationMaintenanceResult, run_recent_publication_gap_fill
-from services.reference_gateway.source_schedule import record_source_schedule
+from services.reference_gateway.source_schedule import record_source_schedule, schedule_decision
 from services.reference_gateway.state import coverage_status, latest_publication_coverage
 
 
@@ -118,6 +118,23 @@ class MarketPublicationReliabilityTests(unittest.TestCase):
         self.assertEqual(len(client.sql), 2)
         self.assertEqual(client.sql[0], client.sql[1])
         sleep.assert_called_once_with(1.0)
+
+    def test_failed_source_schedule_is_immediately_retryable(self) -> None:
+        class FailedScheduleClient:
+            def execute(self, sql: str) -> str:
+                if "FROM system.tables" in sql:
+                    return "1\n"
+                return '{"last_finished_at_utc":"2026-08-02 12:00:00.000","last_status":"failed","inserted_at":"2026-08-02 12:00:00.000"}\n'
+
+        decision = schedule_decision(
+            FailedScheduleClient(),
+            SimpleNamespace(clickhouse_write_database="q_live"),
+            source_name="massive_ticker_events",
+            frequency_seconds=86_400,
+        )
+
+        self.assertTrue(decision.should_run)
+        self.assertEqual(decision.reason, "previous_run_failed")
 
     def test_publication_schedule_details_exclude_runtime_output(self) -> None:
         result = PublicationMaintenanceResult(

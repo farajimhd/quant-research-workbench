@@ -15,6 +15,7 @@ from services.reference_gateway.market_publications import (
     market_publication_audit,
 )
 from services.reference_gateway.table_groups import REFERENCE_TABLE_GROUPS
+from services.reference_gateway.ticker_events import ticker_event_audit
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,7 @@ def run_reference_audit(config: ReferenceGatewayConfig) -> ReferenceAuditReport:
         check_tradable_universe_blocked_rows(client, read_database),
         check_market_publication_recency(client, write_database),
     ]
+    checks.extend(check_ticker_event_identity(client, write_database, read_database=read_database))
     status = "ok" if all(check.status == "ok" for check in checks if check.severity == "error") else "failed"
     if any(check.status != "ok" for check in checks if check.severity == "warning") and status == "ok":
         status = "warning"
@@ -561,6 +563,35 @@ def check_market_publication_recency(client: ClickHouseHttpClient, database: str
     )
 
 
+def check_ticker_event_identity(
+    client: ClickHouseHttpClient,
+    database: str,
+    *,
+    read_database: str | None = None,
+) -> list[AuditCheck]:
+    rows = ticker_event_audit(client, database=database, read_database=read_database)
+    error_checks = {"schema", "orphan_intervals", "overlapping_intervals", "current_ticker_mismatch"}
+    output: list[AuditCheck] = []
+    for row in rows:
+        name = str(row.get("check") or "ticker_event_identity")
+        count = int(row.get("count") or 0)
+        output.append(
+            AuditCheck(
+                name="ticker_events_" + name,
+                severity="error" if name in error_checks else "warning",
+                status="ok" if count == 0 else "failed",
+                count=count,
+                message=(
+                    f"Ticker-event {name.replace('_', ' ')} check passed."
+                    if count == 0
+                    else f"Ticker-event {name.replace('_', ' ')} requires repair."
+                ),
+                sample_rows=[row],
+            )
+        )
+    return output
+
+
 def active_stock_base_query(database: str) -> str:
     return f"""
     SELECT
@@ -601,7 +632,7 @@ def existing_tables(client: ClickHouseHttpClient, database: str) -> set[str]:
 
 
 def group_database(group_id: str, read_database: str, write_database: str) -> str:
-    if group_id in {"market_reference_publications", "source_schedule"}:
+    if group_id in {"market_reference_publications", "point_in_time_symbol_identity", "source_schedule"}:
         return write_database
     return read_database
 

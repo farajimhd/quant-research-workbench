@@ -184,6 +184,8 @@ Operational source sync always runs, but expensive provider jobs are gated by
 - `country_assertions`
 - `sec_market_bridge`
 - `market_publication_gap_fill`
+- `massive_ticker_event_inventory`
+- `massive_ticker_events`
 
 The schedule table is DB-backed so daemon restarts do not lose cadence state.
 Tune cadence with:
@@ -195,6 +197,11 @@ REFERENCE_GATEWAY_IBKR_BORROW_FREQUENCY_SECONDS=1800
 REFERENCE_GATEWAY_COUNTRY_ASSERTION_FREQUENCY_SECONDS=86400
 REFERENCE_GATEWAY_SEC_BRIDGE_SYNC_FREQUENCY_SECONDS=900
 REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_FREQUENCY_SECONDS=3600
+REFERENCE_GATEWAY_TICKER_EVENT_INVENTORY_FREQUENCY_SECONDS=86400
+REFERENCE_GATEWAY_TICKER_EVENT_SYNC_FREQUENCY_SECONDS=3600
+REFERENCE_GATEWAY_TICKER_EVENT_SYNC_BATCH_SIZE=1000
+REFERENCE_GATEWAY_TICKER_EVENT_STALE_AFTER_DAYS=7
+REFERENCE_GATEWAY_TICKER_EVENT_REQUEST_MIN_INTERVAL_SECONDS=0.12
 ```
 
 Source sync is diff-based. The Massive active ticker list is checked at the
@@ -204,6 +211,37 @@ provider tickers that are not already known and not already blocked by an open
 issue. Massive ticker-detail sync in the source-sync path is called only for
 newly accepted canonical tickers; an empty diff is skipped and never expands to
 the full universe.
+
+## Ticker Event Identity History
+
+The gateway owns Massive's experimental Ticker Events endpoint as an
+entity-scoped reference source. It refreshes the active and inactive U.S. stock
+inventory daily, processes a bounded due batch hourly, retries failed entities
+first, and records durable per-entity coverage so restarts resume safely.
+
+The four owned tables are:
+
+- `market_ticker_event_entity_v1`: stable Composite-FIGI-first provider inventory.
+- `market_ticker_event_v1`: lossless normalized ticker-change events and source provenance.
+- `market_ticker_event_entity_coverage_v1`: success, empty, failure, mapping, and next-due state.
+- `id_symbol_interval_v1`: canonical half-open `[valid_from, valid_to)` symbol intervals.
+
+Canonical intervals require one exact Composite FIGI mapping. Unmapped,
+ambiguous, or provider-current conflicts remain visible in coverage and raw
+events but are not promoted. A blank terminal ticker closes an inactive
+entity's preceding interval. HTTP 404 `No events found` is successful empty
+coverage, not a retrying failure.
+
+Historical/reconciliation fill:
+
+```powershell
+python pipelines\reference_data\ticker_events_historical_fill.py --database q_live --read-database q_live --mode historical --execute
+```
+
+Use `--mode reconcile` to re-read every entity, `--mode rolling` for stale or
+changed entities, `--identifier META` for a targeted repair, and
+`--no-refresh-inventory` when a current inventory already exists. Run summaries
+default to `D:/TradingML/runtimes/reference_gateway/ticker_events`.
 
 ## Autonomous Publication Maintenance
 

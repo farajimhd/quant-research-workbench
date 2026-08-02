@@ -162,6 +162,13 @@ class OperationalTerminalTests(unittest.TestCase):
             output = render_text_output(render_reference_dashboard(record), width=100, height=24)
         self.assertIn("Reference Gateway  FAILED", output)
 
+    def test_reference_ticker_event_coverage_is_visible_in_normal_terminal(self) -> None:
+        record = self._reference_record(run_mode="once")
+        with patch.object(rich_renderer.shutil, "get_terminal_size", return_value=(160, 44)):
+            output = render_text_output(render_reference_dashboard(record), width=160, height=44)
+        self.assertIn("Massive ticker events", output)
+        self.assertIn("entities 34000/35075", output.replace(",", ""))
+
     def _gateways(self) -> dict[str, Any]:
         sec = FakeGateway()
         sec.config = SecGatewayConfig.from_env()
@@ -232,6 +239,7 @@ class OperationalTerminalTests(unittest.TestCase):
         record.source_states = [
             ReferenceSourceState("FINRA short volume", "stale", "through 2026-07-10", 1_000, "market_short_volume_v1", "overdue"),
             ReferenceSourceState("IBKR borrow snapshot", "ok", "current", 800, "market_security_borrow_v1", "latest completed"),
+            ReferenceSourceState("Massive ticker events", "warning", "entities 34,000/35,075", 2_100, "market_ticker_event_v1, id_symbol_interval_v1", "mapping_gaps=240"),
         ]
         record.table_states = [
             ReferenceTableState("identity", "ok", 3, 3, 12_000, "2026-07-14", ()),

@@ -99,6 +99,17 @@ The reference gateway can run a recent coverage-aware publication fill after its
 execute-mode audit. Large/manual historical fills should still use the script
 directly with explicit date ranges.
 
+Massive ticker-change history uses a separate stable-entity fill because its
+coverage unit is a Composite FIGI, not a date window:
+
+```powershell
+python pipelines\reference_data\ticker_events_historical_fill.py --database q_live --read-database q_live --mode historical --execute
+```
+
+It inventories active and inactive U.S. stock entities, resumes from durable
+per-entity coverage, writes raw normalized events, and publishes canonical
+half-open symbol intervals only for exact, non-conflicting identity mappings.
+
 Dry-run mode does not create or alter tables. If the target write database has
 not been initialized, the script reports `schema_missing` and exits after
 writing the run summary. Weekend, regular holiday, and explicitly catalogued

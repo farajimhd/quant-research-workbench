@@ -81,7 +81,64 @@ def collect_source_states(client: ClickHouseHttpClient, *, database: str) -> lis
 
     for planned_table in sorted(PLANNED_PUBLICATION_TABLES):
         states.append(ReferenceSourceState(planned_source_label(planned_table), "planned", "-", None, planned_table, "schema planned; writer not enabled yet"))
+    states.append(ticker_event_source_state(client, database=database))
     return states
+
+
+def ticker_event_source_state(client: ClickHouseHttpClient, *, database: str) -> ReferenceSourceState:
+    entity_table = "market_ticker_event_entity_v1"
+    event_table = "market_ticker_event_v1"
+    coverage_table = "market_ticker_event_entity_coverage_v1"
+    if not all(table_exists(client, database, name) for name in (entity_table, event_table, coverage_table)):
+        return ReferenceSourceState(
+            "Massive ticker events",
+            "missing",
+            "-",
+            None,
+            "market_ticker_event_v1, id_symbol_interval_v1",
+            "entity inventory, event, or coverage schema is missing",
+        )
+    row = query_json_each_row(
+        client,
+        f"""
+        SELECT
+            count() AS entities,
+            countIf(c.provider_entity_key != '') AS covered,
+            countIf(c.source_status = 'failed') AS failed,
+            countIf(c.mapping_status IN ('unmapped', 'ambiguous', 'weak_ticker', 'source_conflict')) AS mapping_gaps,
+            sum(c.active_event_count) AS events,
+            min(c.last_success_at_utc) AS oldest_success,
+            max(c.last_success_at_utc) AS latest_success
+        FROM {table(database, entity_table)} e FINAL
+        LEFT JOIN {table(database, coverage_table)} c FINAL USING provider_entity_key
+        WHERE e.is_deleted = 0
+        """,
+    )
+    values = row[0] if row else {}
+    entities = int(values.get("entities") or 0)
+    covered = int(values.get("covered") or 0)
+    failed = int(values.get("failed") or 0)
+    mapping_gaps = int(values.get("mapping_gaps") or 0)
+    events = int(values.get("events") or 0)
+    if entities == 0:
+        status = "missing"
+    elif failed:
+        status = "failed"
+    elif covered < entities or mapping_gaps:
+        status = "warning"
+    else:
+        status = "ok"
+    return ReferenceSourceState(
+        "Massive ticker events",
+        status,
+        f"entities {covered:,}/{entities:,}",
+        events,
+        "market_ticker_event_v1, id_symbol_interval_v1",
+        (
+            f"failed={failed:,}; mapping_gaps={mapping_gaps:,}; "
+            f"oldest_success={str(values.get('oldest_success') or '-')}; latest_success={str(values.get('latest_success') or '-')}"
+        ),
+    )
 
 
 def collect_table_states(client: ClickHouseHttpClient, *, database: str) -> list[ReferenceTableState]:
@@ -263,6 +320,10 @@ def parse_date(value: Any) -> date | None:
 
 def parse_json_lines(text: str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def query_json_each_row(client: ClickHouseHttpClient, sql: str) -> list[dict[str, Any]]:
+    return parse_json_lines(client.execute(sql.rstrip().rstrip(";") + " FORMAT JSONEachRow").strip())
 
 
 def planned_source_label(table_name: str) -> str:

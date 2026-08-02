@@ -76,6 +76,11 @@ class ReferenceGatewayConfig:
     country_assertion_frequency_seconds: int
     sec_bridge_sync_frequency_seconds: int
     market_publication_gap_fill_frequency_seconds: int
+    ticker_event_inventory_frequency_seconds: int
+    ticker_event_sync_frequency_seconds: int
+    ticker_event_sync_batch_size: int
+    ticker_event_stale_after_days: int
+    ticker_event_request_min_interval_seconds: float
     current_ticker_detail_insert_batch_size: int
     current_ticker_detail_request_min_interval_seconds: float
     current_ticker_detail_request_timeout_seconds: int
@@ -176,6 +181,11 @@ class ReferenceGatewayConfig:
             country_assertion_frequency_seconds=env_int("REFERENCE_GATEWAY_COUNTRY_ASSERTION_FREQUENCY_SECONDS", 86400),
             sec_bridge_sync_frequency_seconds=env_int("REFERENCE_GATEWAY_SEC_BRIDGE_SYNC_FREQUENCY_SECONDS", 900),
             market_publication_gap_fill_frequency_seconds=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_FREQUENCY_SECONDS", 3600),
+            ticker_event_inventory_frequency_seconds=env_int("REFERENCE_GATEWAY_TICKER_EVENT_INVENTORY_FREQUENCY_SECONDS", 86_400),
+            ticker_event_sync_frequency_seconds=env_int("REFERENCE_GATEWAY_TICKER_EVENT_SYNC_FREQUENCY_SECONDS", 3_600),
+            ticker_event_sync_batch_size=env_int("REFERENCE_GATEWAY_TICKER_EVENT_SYNC_BATCH_SIZE", 1_000),
+            ticker_event_stale_after_days=env_int("REFERENCE_GATEWAY_TICKER_EVENT_STALE_AFTER_DAYS", 7),
+            ticker_event_request_min_interval_seconds=env_float("REFERENCE_GATEWAY_TICKER_EVENT_REQUEST_MIN_INTERVAL_SECONDS", 0.12),
             current_ticker_detail_insert_batch_size=env_int("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_INSERT_BATCH_SIZE", 50_000),
             current_ticker_detail_request_min_interval_seconds=env_float("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_MIN_INTERVAL_SECONDS", 0.12),
             current_ticker_detail_request_timeout_seconds=env_int("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_TIMEOUT_SECONDS", 60),

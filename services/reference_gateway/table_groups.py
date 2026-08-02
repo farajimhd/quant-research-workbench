@@ -60,6 +60,16 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
         ),
     ),
     ReferenceTableGroup(
+        group_id="point_in_time_symbol_identity",
+        owner="reference_gateway",
+        purpose="Validity-dated provider symbols bound to canonical securities and listings.",
+        tables=("id_symbol_interval_v1",),
+        update_policy=(
+            "Build only from complete Massive entity event timelines bound by Composite FIGI. "
+            "Unmapped, ambiguous, or provider-current conflicts remain explicit coverage findings and never become canonical intervals."
+        ),
+    ),
+    ReferenceTableGroup(
         group_id="source_mapping_and_issues",
         owner="reference_gateway",
         purpose="Accepted mappings, unresolved mapping issues, issuer relationships, and the active SEC-to-market bridge.",
@@ -97,13 +107,16 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
             "market_reg_sho_threshold_v1",
             "market_security_borrow_v1",
             "market_security_country_v1",
+            "market_ticker_event_entity_v1",
+            "market_ticker_event_v1",
+            "market_ticker_event_entity_coverage_v1",
             "market_reference_publication_coverage_v1",
         ),
         update_policy=(
             "Fill from authoritative or best-available publication sources. FINRA owns short volume, Massive owns "
             "short interest, SEC owns fails-to-deliver and XBRL-derived country/float evidence, Massive owns corporate "
-            "actions and overview snapshots, and IBKR owns broker-specific borrow availability. Coverage rows are "
-            "the source of truth for historical/gap-fill completeness."
+            "actions and overview snapshots, and IBKR owns broker-specific borrow availability. Date-window coverage "
+            "owns publication completeness; ticker-event entity coverage separately owns symbol-history completeness."
         ),
     ),
     ReferenceTableGroup(

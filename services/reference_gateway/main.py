@@ -25,6 +25,7 @@ from services.reference_gateway.market_publications import ensure_market_publica
 from services.reference_gateway.memory import memory_snapshot, start_memory_trace
 from services.reference_gateway.policy import evaluate_write_policy
 from services.reference_gateway.preflight import run_preflight
+from services.reference_gateway.providers import MassiveReferenceClient
 from services.reference_gateway.publication_bootstrap import bootstrap_existing_publication_coverage
 from services.reference_gateway.publication_maintenance import PublicationMaintenanceResult, run_recent_publication_gap_fill
 from services.reference_gateway.publication_rebuild import rebuild_sec_market_bridge, rebuild_tradable_publications
@@ -34,6 +35,11 @@ from services.reference_gateway.state import collect_reference_state
 from services.reference_gateway.status import build_reference_status_snapshot
 from services.reference_gateway.table_groups import table_group_markdown
 from services.reference_gateway.terminal import OperationRecord, ReferenceRunRecord, ReferenceTerminalSession
+from services.reference_gateway.ticker_events import (
+    ensure_ticker_event_schema,
+    refresh_ticker_event_inventory,
+    sync_ticker_events,
+)
 from services.reference_gateway.tradable_blocker import block_latest_universe_for_open_issues
 from services.reference_gateway.tradability import tradability_rule_markdown
 
@@ -48,6 +54,8 @@ SOURCE_SYNC_OPERATION_NAMES = {
     "country_assertions": "Source: country assertions",
     "sec_market_bridge": "Source: SEC market bridge",
     "ticker_reconciliation": "Source: ticker reconciliation",
+    "massive_ticker_event_inventory": "Source: Massive ticker-event inventory",
+    "massive_ticker_events": "Source: Massive ticker events",
 }
 
 PUBLICATION_OPERATION_NAMES = {
@@ -255,6 +263,22 @@ def main() -> None:
         )
         add_operation("Source schedule schema", "completed", f"write={config.clickhouse_write_database}", seconds=time.perf_counter() - started)
         refresh_reference_state("after_source_schedule_schema")
+    if config.execute:
+        from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+
+        started = time.perf_counter()
+        ensure_ticker_event_schema(
+            ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
+            database=config.clickhouse_write_database,
+            storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
+        )
+        add_operation(
+            "Ticker event schema",
+            "completed",
+            f"write={config.clickhouse_write_database}",
+            seconds=time.perf_counter() - started,
+        )
+        refresh_reference_state("after_ticker_event_schema")
     if config.execute and config.market_publication_gap_fill_enabled:
         from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
 
@@ -672,6 +696,107 @@ def main() -> None:
     maintenance_allowed = config.execute and config.maintenance_mode != "skip" and write_policy.writes_allowed
     maintenance_skip_reason = "maintenance_disabled" if config.maintenance_mode == "skip" else write_policy.reason
     if maintenance_allowed:
+        from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+
+        ticker_event_client = ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password())
+        ticker_event_provider = MassiveReferenceClient(
+            base_url=config.massive_base_url,
+            api_key=os.environ.get("MASSIVE_API_KEY") or "",
+            page_limit=config.active_ticker_page_limit,
+            max_pages=config.active_ticker_max_pages,
+        )
+
+        def ticker_event_progress(source: str, status: str, message: str, rows: int | None) -> None:
+            operation_name = SOURCE_SYNC_OPERATION_NAMES.get(source, "Source: " + source.replace("_", " "))
+            update_latest_operation(operation_name, status, truncate_detail(message), rows=rows)
+
+        inventory_schedule = schedule_decision(
+            ticker_event_client,
+            config,
+            source_name="massive_ticker_event_inventory",
+            frequency_seconds=config.ticker_event_inventory_frequency_seconds,
+            force=config.maintenance_mode == "force",
+        )
+        ensure_operation(
+            SOURCE_SYNC_OPERATION_NAMES["massive_ticker_event_inventory"],
+            "running" if inventory_schedule.should_run else "skipped",
+            f"schedule={inventory_schedule.reason}; next_due={inventory_schedule.next_due_at_utc or '-'}",
+        )
+        inventory_result = None
+        if inventory_schedule.should_run:
+            inventory_result = refresh_ticker_event_inventory(
+                ticker_event_client,
+                ticker_event_provider,
+                database=config.clickhouse_write_database,
+                execute=True,
+                on_progress=ticker_event_progress,
+            )
+            record_source_schedule(
+                ticker_event_client,
+                config,
+                source_name="massive_ticker_event_inventory",
+                status=inventory_result.status,
+                rows_written=inventory_result.rows_written,
+                details=asdict(inventory_result) | {"schedule_reason": inventory_schedule.reason},
+                source_run_id=inventory_result.run_id,
+                frequency_seconds=config.ticker_event_inventory_frequency_seconds,
+            )
+            logger.event("ticker_event_inventory_completed", **asdict(inventory_result))
+
+        event_schedule = schedule_decision(
+            ticker_event_client,
+            config,
+            source_name="massive_ticker_events",
+            frequency_seconds=config.ticker_event_sync_frequency_seconds,
+            force=config.maintenance_mode == "force",
+        )
+        ensure_operation(
+            SOURCE_SYNC_OPERATION_NAMES["massive_ticker_events"],
+            "running" if event_schedule.should_run else "skipped",
+            f"schedule={event_schedule.reason}; next_due={event_schedule.next_due_at_utc or '-'}",
+        )
+        ticker_event_result = None
+        if event_schedule.should_run and not bool(getattr(inventory_result, "saturated", False)):
+            ticker_event_result = sync_ticker_events(
+                ticker_event_client,
+                ticker_event_provider,
+                database=config.clickhouse_write_database,
+                read_database=config.clickhouse_read_database,
+                execute=True,
+                mode="rolling",
+                max_entities=config.ticker_event_sync_batch_size,
+                stale_after_days=config.ticker_event_stale_after_days,
+                request_min_interval_seconds=config.ticker_event_request_min_interval_seconds,
+                on_progress=ticker_event_progress,
+            )
+            record_source_schedule(
+                ticker_event_client,
+                config,
+                source_name="massive_ticker_events",
+                status=ticker_event_result.status,
+                rows_written=ticker_event_result.events_written + ticker_event_result.intervals_written,
+                details=ticker_event_result.public_dict() | {"schedule_reason": event_schedule.reason},
+                source_run_id=ticker_event_result.run_id,
+                frequency_seconds=config.ticker_event_sync_frequency_seconds,
+            )
+            logger.event("ticker_event_sync_completed", **ticker_event_result.public_dict())
+        elif event_schedule.should_run:
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES["massive_ticker_events"],
+                "failed",
+                "Ticker-event inventory was saturated; refusing to claim complete entity coverage.",
+                rows=0,
+            )
+            record_source_schedule(
+                ticker_event_client,
+                config,
+                source_name="massive_ticker_events",
+                status="failed",
+                rows_written=0,
+                details={"reason": "ticker_event_inventory_saturated", "schedule_reason": event_schedule.reason},
+                frequency_seconds=config.ticker_event_sync_frequency_seconds,
+            )
+        refresh_reference_state("after_ticker_event_maintenance")
         if config.resolve_stale_issues:
             started = time.perf_counter()
             resolution = resolve_stale_active_ticker_issues(config)
@@ -693,6 +818,9 @@ def main() -> None:
             if report_path:
                 emit(f"post_maintenance_report={report_path}")
     else:
+        if config.execute:
+            ensure_operation(SOURCE_SYNC_OPERATION_NAMES["massive_ticker_event_inventory"], "skipped", maintenance_skip_reason)
+            ensure_operation(SOURCE_SYNC_OPERATION_NAMES["massive_ticker_events"], "skipped", maintenance_skip_reason)
         if config.execute and config.resolve_stale_issues:
             add_operation("Resolve issues", "skipped", maintenance_skip_reason)
         if config.execute and config.rebuild_tradable_on_execute:

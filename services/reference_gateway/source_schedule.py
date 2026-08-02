@@ -84,6 +84,9 @@ def schedule_decision(
     if not rows:
         return SourceScheduleDecision(source_name, True, "no_previous_run", "", "", int(frequency_seconds))
     row = rows[0]
+    last_status = str(row.get("last_status") or "").strip().lower()
+    if last_status in {"failed", "error"}:
+        return SourceScheduleDecision(source_name, True, "previous_run_failed", str(row.get("last_finished_at_utc") or ""), "", int(frequency_seconds))
     last_text = str(row.get("last_finished_at_utc") or "")
     last_finished = parse_clickhouse_datetime(last_text)
     if last_finished is None:
