@@ -187,11 +187,30 @@ class DeterministicV9Tests(unittest.TestCase):
             )
         )
         result = classify_news_document_v9(document, issuer_resolver=resolver)
-        self.assertEqual({label["ticker"] for label in result.labels}, {"HEES", "URI"})
-        for label in result.labels:
-            self.assertIn(
-                "ma_transaction", label["classification"]["event_concepts"]
-            )
+        labels = {label["ticker"]: label for label in result.labels}
+        self.assertEqual(set(labels), {"HEES", "URI"})
+        self.assertIn(
+            "ma_transaction", labels["HEES"]["classification"]["event_concepts"]
+        )
+        self.assertNotIn(
+            "capital_return", labels["HEES"]["classification"]["event_concepts"]
+        )
+        self.assertIn(
+            "ma_transaction", labels["URI"]["classification"]["event_concepts"]
+        )
+        self.assertIn(
+            "capital_return", labels["URI"]["classification"]["event_concepts"]
+        )
+        self.assertNotIn(
+            "share repurchase",
+            str(labels["HEES"]["semantic_evidence_text"]).casefold(),
+        )
+        self.assertIn(
+            "share repurchase",
+            str(labels["URI"]["semantic_evidence_text"]).casefold(),
+        )
+        self.assertEqual(labels["HEES"]["issuer_role"], "target")
+        self.assertEqual(labels["URI"]["issuer_role"], "acquirer")
 
 
 if __name__ == "__main__":

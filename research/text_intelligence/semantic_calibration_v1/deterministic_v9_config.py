@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-DETERMINISTIC_V9_VERSION = "news_deterministic_v9_candidate_3"
+DETERMINISTIC_V9_VERSION = "news_deterministic_v9_candidate_4"
 CALIBRATION_VERSION = "news_deterministic_v9_calibration_3"
 CALIBRATION_SPLIT_SHA256 = "dd960925e6ae60a6a465847717a89b277b8f453341187db3058bca446481765f"
 

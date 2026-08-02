@@ -761,9 +761,9 @@ Fresh-set results are:
 | Ticker-scope F1 | 0.466 | 0.395 | -0.070 |
 | Content-role macro F1 | 0.466 | 0.430 | -0.036 |
 | Source-origin macro F1 | 0.395 | 0.504 | +0.109 |
-| Text-sentiment macro F1 | 0.399 | 0.430 | +0.031 |
-| Forecast-direction macro F1 | 0.405 | 0.329 | -0.076 |
-| Concept-family F1 | 0.496 | 0.221 | -0.275 |
+| Text-sentiment macro F1 | 0.393 | 0.430 | +0.037 |
+| Forecast-direction macro F1 | 0.389 | 0.329 | -0.060 |
+| Concept-family F1 | 0.504 | 0.224 | -0.279 |
 | Forecast eligibility F1 | 0.740 | 0.849 | +0.109 |
 | Issuer-history eligibility F1 | 0.893 | 0.952 | +0.059 |
 
@@ -784,6 +784,21 @@ candidate 3 improved ticker scope (0.462 to 0.466), role (0.459 to 0.466),
 direction (0.395 to 0.399), forecast direction (0.399 to 0.405), concept family
 (0.492 to 0.496), forecast eligibility (0.722 to 0.740), and issuer-history
 eligibility (0.888 to 0.893), with extraction and source origin unchanged.
+
+Candidate 4 fixes a different N1098 defect: the issuer resolver was correct,
+but the News scope extractor treated the semicolon-delimited title as one
+shared fragment. It therefore attached URI's subjectless ``Plans To Immediately
+Restart Its Share Repurchase Program`` clause to both URI and HEES. The shared
+extractor now preserves the acquisition clause for both named participants,
+selects the relational lead as the grammatical subject of a following omitted-
+subject predicate, and gives the buyback clause only to URI. The corrected gold
+annotation also records both ``ma_transaction`` and ``capital_return`` for URI.
+Across the other 99 articles, candidate 4 makes no semantic prediction change.
+Against the corrected gold it raises concept-family F1 from 0.502 to 0.504.
+The direction metrics fall slightly because removing the false HEES buyback
+signal exposes a separate unresolved limitation: V9 does not yet infer the
+target's positive superior-bid outcome from the longer article context. That
+limitation was not hidden by retaining issuer-incorrect evidence.
 
 The untouched set confirms that V10's learned text representation improves
 article extraction and eligibility decisions, and modestly improves direction.

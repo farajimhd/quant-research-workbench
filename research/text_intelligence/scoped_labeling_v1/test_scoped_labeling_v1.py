@@ -1305,6 +1305,47 @@ Body:
             0.8,
         )
 
+    def test_relational_lead_owns_subjectless_followup_predicate(self) -> None:
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("HEES", "hees", ("H&E Equipment Services",)),
+            IssuerIdentity("URI", "uri", ("United Rentals",)),
+        ))
+        variants = (
+            (
+                "United Rentals To No Longer Pursue Acquisition Of H&E "
+                "Equipment Services; Plans To Restart Its Share Repurchase Program"
+            ),
+            (
+                "United Rentals To No Longer Pursue Acquisition Of H&E "
+                "Equipment Services And Plans To Restart Its Share Repurchase Program"
+            ),
+        )
+        for title in variants:
+            with self.subTest(title=title):
+                analysis = analyze_news_scope(
+                    source_id="clause-attribution",
+                    title=title,
+                    text=f"Title: {title}",
+                    tickers=("HEES", "URI"),
+                    timestamp="2025-02-18T12:19:44Z",
+                    issuer_resolver=resolver,
+                )
+                units = {unit.tickers[0]: unit for unit in analysis.units}
+                self.assertEqual(set(units), {"HEES", "URI"})
+                self.assertNotIn(
+                    "share repurchase", units["HEES"].semantic_text.casefold()
+                )
+                self.assertIn(
+                    "share repurchase", units["URI"].semantic_text.casefold()
+                )
+                self.assertEqual(units["HEES"].issuer_role, "target")
+                self.assertEqual(units["URI"].issuer_role, "acquirer")
+                self.assertTrue(any(
+                    passage.decision == "assigned_relational_subject_continuation"
+                    and passage.assigned_ticker == "URI"
+                    for passage in analysis.passages
+                ))
+
     def test_unresolved_background_does_not_disable_resolved_event(
         self,
     ) -> None:

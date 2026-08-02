@@ -85,6 +85,14 @@ RELATIONSHIP_RE = re.compile(
     r"settlement)\b",
     re.IGNORECASE,
 )
+COORDINATED_PREDICATE_BOUNDARY_RE = re.compile(
+    r"\s+(?:and|but)\s+(?="
+    r"(?:(?:it|they|the\s+company)\s+)?"
+    r"(?:plans?|will|expects?|intends?|announces?|resumes?|restarts?|"
+    r"raises?|cuts?|reports?|files?|launches?|withdraws?|terminates?|"
+    r"suspends?|declares?|authorizes?)\b)",
+    re.IGNORECASE,
+)
 EVENT_EVIDENCE_RE = re.compile(
     r"\b(?:clinical\s+(?:trial|study|update|data)|"
     r"interim\s+(?:analysis|data)|enrollment|primary\s+endpoint|"
@@ -96,7 +104,7 @@ EVENT_EVIDENCE_RE = re.compile(
     re.IGNORECASE,
 )
 ACQUISITION_RE = re.compile(
-    r"\b(?:agree[sd]?\s+to\s+acquire|acquire[sd]?)\b",
+    r"\b(?:agree[sd]?\s+to\s+acquire|acquire[sd]?|acquisition(?:\s+of)?)\b",
     re.IGNORECASE,
 )
 COMPANY_LIKE_RE = re.compile(
@@ -533,6 +541,7 @@ def _resolve_passages(
     passages: list[PassageResolution] = []
     title_subjects = {match.ticker for match in title_matches}
     previous_by_block: dict[int, str] = {}
+    relational_subject_by_block: dict[int, str] = {}
     for fragment in fragments:
         if fragment.source_lane == "external_enrichment":
             passages.append(
@@ -563,12 +572,18 @@ def _resolve_passages(
                 flags.append("unresolved_counterparty_or_background")
         elif len(direct) > 1:
             assigned_tickers = tuple(sorted(direct))
+            relational = bool(RELATIONSHIP_RE.search(fragment.text))
             decision = (
                 "assigned_shared_relational_event"
-                if RELATIONSHIP_RE.search(fragment.text)
+                if relational
                 else "assigned_shared_multi_issuer_evidence"
             )
             flags.extend(("passage_explicit_issuer", "shared_issuer_evidence"))
+            if relational:
+                lead = _relational_lead_subject(fragment)
+                if lead:
+                    previous_by_block[fragment.block_index] = lead
+                    relational_subject_by_block[fragment.block_index] = lead
         elif fragment.unresolved_company_mention:
             decision = "abstained_unresolved_company_mention"
         elif len(heading) == 1:
@@ -577,8 +592,12 @@ def _resolve_passages(
             flags.append("passage_inherited_heading_issuer")
         elif fragment.block_index in previous_by_block:
             assigned_tickers = (previous_by_block[fragment.block_index],)
-            decision = "assigned_local_preceding_issuer"
-            flags.append("passage_inherited_local_issuer")
+            if fragment.block_index in relational_subject_by_block:
+                decision = "assigned_relational_subject_continuation"
+                flags.append("passage_inherited_relational_subject")
+            else:
+                decision = "assigned_local_preceding_issuer"
+                flags.append("passage_inherited_local_issuer")
         elif not aggregation and len(title_subjects) == 1:
             assigned_tickers = tuple(title_subjects)
             decision = "assigned_title_issuer"
@@ -900,6 +919,27 @@ def _issuer_role(
     return "affected_participant"
 
 
+def _relational_lead_subject(fragment: _Fragment) -> str:
+    """Return the grammatical lead whose omitted subject continues next clause.
+
+    Relational clauses are still assigned to every explicitly named participant,
+    but a following subjectless clause (for example, ``; plans to restart its
+    buyback``) inherits only the participant before the relational predicate.
+    """
+    relation = ACQUISITION_RE.search(fragment.text) or RELATIONSHIP_RE.search(
+        fragment.text
+    )
+    if relation is None:
+        return ""
+    preceding = tuple(
+        (position, match.ticker)
+        for match in fragment.matches
+        if (position := _match_position(fragment.text, match)) >= 0
+        and position < relation.start()
+    )
+    return max(preceding, default=(-1, ""))[1]
+
+
 def _event_id(source_id: str, text: str) -> str:
     digest = hashlib.sha256(text.casefold().encode("utf-8")).hexdigest()[:16]
     return f"{source_id}:event:{digest}"
@@ -927,12 +967,24 @@ def _has_unresolved_company_mention(
 
 
 def _split_sentences(text: str) -> tuple[str, ...]:
+    """Split semantic clauses without destructively separating relationships.
+
+    A semicolon or a coordinated new predicate begins a new evidence clause.
+    The relationship clause retains all named participants, while subsequent
+    subjectless clauses can inherit its grammatical lead in ``_resolve_passages``.
+    """
     values: list[str] = []
     start = 0
-    for match in re.finditer(r"[.!?]\s+(?=[\"'(]*[A-Z$])", text):
-        candidate = text[start : match.end() - 1].strip()
+    boundaries = re.compile(
+        rf";|[.!?]\s+(?=[\"'(]*[A-Z$])|"
+        rf"{COORDINATED_PREDICATE_BOUNDARY_RE.pattern}",
+        re.IGNORECASE,
+    )
+    for match in boundaries.finditer(text):
+        candidate_end = match.start() + 1 if match.group(0)[:1] in ".!?" else match.start()
+        candidate = text[start:candidate_end].strip()
         last_word = candidate.rsplit(" ", 1)[-1].casefold() if candidate else ""
-        if last_word in ABBREVIATIONS:
+        if match.group(0)[:1] == "." and last_word in ABBREVIATIONS:
             continue
         if candidate:
             values.append(candidate)

@@ -5,7 +5,7 @@ from typing import Any
 
 
 SCOPED_LABELING_VERSION = "scoped_text_labeling_v5"
-NEWS_EXTRACTOR_VERSION = "news_event_scope_v5"
+NEWS_EXTRACTOR_VERSION = "news_event_scope_v6"
 SEC_EXTRACTOR_VERSION = "sec_relevant_section_v3"
 PERSISTENCE_CONTRACT_VERSION = "compact_semantic_label_v1"
 
