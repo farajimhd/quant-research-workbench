@@ -1043,9 +1043,11 @@ def ticker_event_audit(
         ),
     ]
     output: list[dict[str, Any]] = []
+    warning_checks = {"ambiguous_entities", "source_conflict_entities"}
     for name, sql in checks:
         count = scalar_int(client, sql)
-        output.append({"check": name, "count": count, "status": "ok" if count == 0 else "failed"})
+        status = "ok" if count == 0 else "warning" if name in warning_checks else "failed"
+        output.append({"check": name, "count": count, "status": status})
     return output
 
 

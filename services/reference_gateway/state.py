@@ -106,6 +106,7 @@ def ticker_event_source_state(client: ClickHouseHttpClient, *, database: str) ->
             countIf(c.provider_entity_key != '') AS covered,
             countIf(c.source_status = 'failed') AS failed,
             countIf(c.mapping_status IN ('unmapped', 'ambiguous', 'weak_ticker', 'source_conflict')) AS mapping_gaps,
+            countIf(c.mapping_status IN ('ambiguous', 'source_conflict')) AS review_conflicts,
             sum(c.active_event_count) AS events,
             min(c.last_success_at_utc) AS oldest_success,
             max(c.last_success_at_utc) AS latest_success
@@ -119,12 +120,13 @@ def ticker_event_source_state(client: ClickHouseHttpClient, *, database: str) ->
     covered = int(values.get("covered") or 0)
     failed = int(values.get("failed") or 0)
     mapping_gaps = int(values.get("mapping_gaps") or 0)
+    review_conflicts = int(values.get("review_conflicts") or 0)
     events = int(values.get("events") or 0)
     if entities == 0:
         status = "missing"
     elif failed:
         status = "failed"
-    elif covered < entities or mapping_gaps:
+    elif covered < entities or review_conflicts:
         status = "warning"
     else:
         status = "ok"
@@ -135,7 +137,7 @@ def ticker_event_source_state(client: ClickHouseHttpClient, *, database: str) ->
         events,
         "market_ticker_event_v1, id_symbol_interval_v1",
         (
-            f"failed={failed:,}; mapping_gaps={mapping_gaps:,}; "
+            f"failed={failed:,}; mapping_gaps={mapping_gaps:,}; review_conflicts={review_conflicts:,}; "
             f"oldest_success={str(values.get('oldest_success') or '-')}; latest_success={str(values.get('latest_success') or '-')}"
         ),
     )
