@@ -718,7 +718,8 @@ python -m research.text_intelligence.semantic_calibration_v1.run_prepare_fresh_a
 python -m research.text_intelligence.semantic_calibration_v1.run_record_fresh_acceptance --input-jsonl <manual-review.jsonl>
 python -m research.text_intelligence.semantic_calibration_v1.run_finalize_fresh_acceptance
 python -m research.text_intelligence.semantic_calibration_v1.run_evaluate_fresh_acceptance
-python -m research.text_intelligence.semantic_calibration_v1.run_render_fresh_acceptance_audits
+python -m research.text_intelligence.semantic_calibration_v1.run_render_fresh_acceptance_audits `
+  --raw-path-map "D:\market-data=\\DESKTOP-SAAI85T\Workstation-D\market-data"
 ```
 
 Fresh-set results are:
@@ -761,10 +762,25 @@ extra or missing issuer-unit field as independently auditable comparisons. Ten
 V9 articles and five V10 articles matched the human authority on every displayed
 comparison cell.
 
-Audit contract V2 omits text fields only from the complete metadata JSON because
-those payloads are reproduced immediately afterward in full. The packed rendered
-article remains at the end so the original source lanes and the review input can
-be compared directly.
+Audit contract V3 begins with the exact raw provider JSON downloaded by News
+Gateway. The renderer resolves the retained `raw_artifact_path` and verifies its
+Blake2b payload hash using the recorded historical serialization contract
+(exact UTF-8 artifact bytes or canonical JSON with escaped Unicode). It reports
+that method and the exact current artifact-byte hash, and refuses to write an
+audit when the artifact is missing, the provider identity differs, or no known
+hash contract matches. It then shows the
+gateway download timestamps and provenance followed by every column of the
+42-column `benzinga_news_normalized_v1` authority. Large retained text fields are
+separated from the record metadata only to keep the document readable; all are
+reproduced in full. The downstream frozen calibration metadata is explicitly
+identified as derived and appears only after the original provider and gateway
+authorities.
+
+`--raw-path-map SOURCE=TARGET` is repeatable. It is unnecessary when the stored
+gateway path is directly readable (for example, when running on the workstation),
+but is required when a laptop audit must resolve workstation-local source paths.
+The packed rendered article remains at the end so the raw payload, retained
+normalized record, source lanes, and actual review input can be compared directly.
 
 Every source-text section starts with the exact publication title and teaser,
 then lists every preserved source lane in ordinal order. Some legacy headline

@@ -4,9 +4,19 @@ import argparse
 from pathlib import Path
 
 from research.mlops.paths import MLOpsPathConfig
+from research.mlops.clickhouse import (
+    ClickHouseHttpClient,
+    default_clickhouse_password,
+    default_clickhouse_url,
+    default_clickhouse_user,
+)
+from research.mlops.env import discover_env_files, load_env_files
 
 from .comparison import load_collection
-from .fresh_acceptance_audit import render_acceptance_audits
+from .fresh_acceptance_audit import (
+    load_gateway_source_evidence,
+    render_acceptance_audits,
+)
 from .schema import ANNOTATION_VERSION_V3
 
 
@@ -29,10 +39,34 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=base / "news_acceptance_100_v1" / "article_audits",
     )
+    parser.add_argument(
+        "--raw-path-map",
+        action="append",
+        default=[],
+        metavar="SOURCE=TARGET",
+        help=(
+            "Map a stored News Gateway raw-artifact path prefix to the machine "
+            "that renders the audit; repeat for multiple roots."
+        ),
+    )
     args = parser.parse_args(argv)
+    repo = Path(__file__).resolve().parents[3]
+    load_env_files(discover_env_files(repo), verbose=True)
     items = load_collection(
         args.acceptance_root,
         annotation_version=ANNOTATION_VERSION_V3,
+    )
+    client = ClickHouseHttpClient(
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+        timeout_seconds=120,
+    )
+    path_maps = [_parse_path_map(value) for value in args.raw_path_map]
+    gateway_evidence = load_gateway_source_evidence(
+        client,
+        items,
+        raw_path_maps=path_maps,
     )
     manifest = render_acceptance_audits(
         items,
@@ -40,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         v10_prediction_dir=args.evaluation_root / "v10_predictions",
         output_root=args.output_root,
         evaluation_path=args.evaluation_root / "evaluation.json",
+        gateway_evidence=gateway_evidence,
     )
     print(
         f"READY | articles={manifest['article_count']:,} "
@@ -49,6 +84,15 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
     return 0
+
+
+def _parse_path_map(value: str) -> tuple[str, str]:
+    source, separator, target = value.partition("=")
+    if not separator or not source.strip() or not target.strip():
+        raise argparse.ArgumentTypeError(
+            f"invalid --raw-path-map {value!r}; expected SOURCE=TARGET"
+        )
+    return source.strip(), target.strip()
 
 
 if __name__ == "__main__":

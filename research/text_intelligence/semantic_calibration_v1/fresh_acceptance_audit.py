@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import os
 import re
 import tempfile
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+
+from pipelines.news.benzinga.core.clickhouse_writer import NORMALIZED_COLUMNS
+from research.mlops.clickhouse import ClickHouseHttpClient, sql_string
 
 from .comparison import (
     CollectionItem,
@@ -20,7 +25,13 @@ from .schema import stable_json_hash
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
 
-AUDIT_CONTRACT = "news_fresh_acceptance_article_audit_v2"
+AUDIT_CONTRACT = "news_fresh_acceptance_article_audit_v3"
+GATEWAY_TEXT_FIELDS = (
+    "body_text",
+    "external_text",
+    "pdf_text",
+    "normalized_full_text",
+)
 ARTICLE_FIELDS = (
     ("Extraction decision", "extraction_decision"),
     ("Content role", "content_role"),
@@ -46,6 +57,96 @@ class ArticleAudit:
     markdown: str
 
 
+@dataclass(frozen=True, slots=True)
+class GatewaySourceEvidence:
+    retained_record: Mapping[str, Any]
+    raw_payload: Mapping[str, Any]
+    resolved_raw_artifact_path: str
+    retained_payload_hash: str
+    raw_artifact_byte_hash: str
+    hash_verification_method: str
+
+
+def load_gateway_source_evidence(
+    client: ClickHouseHttpClient,
+    items: Sequence[CollectionItem],
+    *,
+    raw_path_maps: Sequence[tuple[str, str]] = (),
+) -> dict[str, GatewaySourceEvidence]:
+    """Load and verify the exact News Gateway source authority for each item."""
+    expected = {
+        str(item.blinded["source_id"]): str(item.blinded["source_timestamp"])[:10]
+        for item in items
+    }
+    pairs = ",".join(
+        f"({sql_string(date)}, {sql_string(source_id)})"
+        for source_id, date in sorted(expected.items())
+    )
+    sql = f"""
+SELECT *
+FROM q_live.benzinga_news_normalized_v1 FINAL
+WHERE (published_date, canonical_news_id) IN ({pairs})
+FORMAT JSONEachRow
+"""
+    records = {
+        str(row["canonical_news_id"]): row
+        for row in _json_each_rows(client.execute(sql))
+    }
+    missing = sorted(set(expected) - set(records))
+    if missing:
+        raise RuntimeError(
+            f"News Gateway retained record missing for {len(missing)} audits; "
+            f"first={missing[:5]}"
+        )
+    output: dict[str, GatewaySourceEvidence] = {}
+    for source_id, record in records.items():
+        missing_columns = sorted(set(NORMALIZED_COLUMNS) - set(record))
+        if missing_columns:
+            raise RuntimeError(
+                f"News Gateway retained record is incomplete for {source_id}: "
+                f"missing={missing_columns}"
+            )
+        if str(record.get("published_date") or "") != expected[source_id]:
+            raise RuntimeError(f"News Gateway publication-date mismatch: {source_id}")
+        raw_path = _resolve_raw_artifact_path(
+            str(record.get("raw_artifact_path") or ""), raw_path_maps
+        )
+        if raw_path is None:
+            raise RuntimeError(
+                "News Gateway raw provider artifact is unavailable for "
+                f"{source_id}: {record.get('raw_artifact_path') or '<empty>'}"
+            )
+        raw_bytes = raw_path.read_bytes()
+        raw_payload = json.loads(raw_bytes.decode("utf-8"))
+        if not isinstance(raw_payload, dict):
+            raise RuntimeError(f"raw provider payload is not an object: {raw_path}")
+        retained_hash = str(record.get("raw_payload_hash") or "")
+        raw_byte_hash = _raw_artifact_hash(raw_bytes)
+        verification_method = _payload_hash_verification_method(
+            raw_payload,
+            retained_hash=retained_hash,
+            raw_artifact_byte_hash=raw_byte_hash,
+        )
+        if verification_method is None:
+            raise RuntimeError(
+                f"raw provider payload hash mismatch for {source_id}: "
+                f"retained={retained_hash} artifact_bytes={raw_byte_hash}"
+            )
+        if _raw_provider_article_id(raw_payload) != str(
+            record.get("provider_article_id") or ""
+        ):
+            raise RuntimeError(f"raw provider article identity mismatch: {source_id}")
+        output[source_id] = GatewaySourceEvidence(
+            retained_record=record,
+            raw_payload=raw_payload,
+            resolved_raw_artifact_path=str(raw_path),
+            retained_payload_hash=retained_hash,
+            raw_artifact_byte_hash=raw_byte_hash,
+            hash_verification_method=verification_method,
+        )
+    return output
+
+
 def render_acceptance_audits(
     items: Sequence[CollectionItem],
     *,
@@ -53,6 +154,7 @@ def render_acceptance_audits(
     v10_prediction_dir: Path,
     output_root: Path,
     evaluation_path: Path,
+    gateway_evidence: Mapping[str, GatewaySourceEvidence],
 ) -> dict[str, Any]:
     assert_runtime_root(output_root)
     evaluation = read_json(evaluation_path)
@@ -64,9 +166,15 @@ def render_acceptance_audits(
         if item.blinded["source_id"] in source_ids:
             raise RuntimeError(f"duplicate source identity: {item.blinded['source_id']}")
         source_ids.add(str(item.blinded["source_id"]))
+        source_id = str(item.blinded["source_id"])
+        evidence = gateway_evidence.get(source_id)
+        if evidence is None:
+            raise RuntimeError(f"missing News Gateway source evidence: {source_id}")
         v9 = read_json(v9_prediction_dir / f"{item.sample_id}.json")
         v10 = read_json(v10_prediction_dir / f"{item.sample_id}.json")
-        articles.append(render_article_audit(item, v9=v9, v10=v10))
+        articles.append(
+            render_article_audit(item, v9=v9, v10=v10, gateway_evidence=evidence)
+        )
     if len(articles) != 100:
         raise RuntimeError("fresh acceptance audit did not render 100 unique articles")
 
@@ -94,6 +202,23 @@ def render_acceptance_audits(
         "contract": AUDIT_CONTRACT,
         "article_count": len(articles),
         "source_count": len(source_ids),
+        "gateway_source_count": len(gateway_evidence),
+        "raw_provider_payload_count": len(gateway_evidence),
+        "raw_provider_payloads_verified": True,
+        "gateway_hash_verification_methods": dict(
+            sorted(
+                Counter(
+                    value.hash_verification_method
+                    for value in gateway_evidence.values()
+                ).items()
+            )
+        ),
+        "gateway_retained_column_count_min": min(
+            len(value.retained_record) for value in gateway_evidence.values()
+        ),
+        "gateway_retained_column_count_max": max(
+            len(value.retained_record) for value in gateway_evidence.values()
+        ),
         "evaluation_report_sha256": str(
             evaluation.get("v9", {}).get("report_sha256") or ""
         )
@@ -125,6 +250,7 @@ def render_article_audit(
     *,
     v9: Mapping[str, Any],
     v10: Mapping[str, Any],
+    gateway_evidence: GatewaySourceEvidence,
 ) -> ArticleAudit:
     human = item.truth
     publication = item.blinded.get("publication") or {}
@@ -189,9 +315,31 @@ def render_article_audit(
     body = [
         f"# {item.sample_id} - {title}",
         "",
-        "## Complete source metadata",
+        "## Original provider payload downloaded by News Gateway",
         "",
-        "This is the complete frozen article record metadata. Only the large text "
+        "This is the exact provider JSON loaded from the gateway's retained raw "
+        "artifact. It is shown before every normalized or derived product. The "
+        "stored payload hash was verified against its recorded historical "
+        "serialization contract before this audit was written.",
+        "",
+        _raw_provider_payload_section(gateway_evidence),
+        "",
+        "## News Gateway download provenance",
+        "",
+        _gateway_provenance_section(gateway_evidence),
+        "",
+        "## Complete News Gateway retained record",
+        "",
+        "This is the complete 42-column `benzinga_news_normalized_v1` row. Large "
+        "retained text fields are removed only from the metadata JSON and reproduced "
+        "verbatim immediately afterward; no retained column is omitted.",
+        "",
+        _gateway_retained_record_section(gateway_evidence.retained_record),
+        "",
+        "## Derived frozen calibration metadata",
+        "",
+        "This downstream record was created for blinded calibration review; it is "
+        "not original provider metadata. Only its large text "
         "payloads are removed from this JSON and reproduced verbatim in the next "
         "section so metadata and source text are not duplicated or truncated.",
         "",
@@ -514,6 +662,139 @@ def _metadata_section(article: Mapping[str, Any]) -> str:
             "</details>",
         ]
     )
+
+
+def _raw_provider_payload_section(evidence: GatewaySourceEvidence) -> str:
+    return "\n".join(
+        [
+            "<details open><summary>Exact downloaded provider JSON</summary>",
+            "",
+            "<pre>"
+            + html.escape(
+                json.dumps(
+                    evidence.raw_payload,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            + "</pre>",
+            "",
+            "</details>",
+        ]
+    )
+
+
+def _gateway_provenance_section(evidence: GatewaySourceEvidence) -> str:
+    record = evidence.retained_record
+    return "\n".join(
+        [
+            f"- **Provider:** `{_escape_text(record.get('provider') or '')}`",
+            f"- **Provider article ID:** `{_escape_text(record.get('provider_article_id') or '')}`",
+            f"- **Canonical news ID:** `{_escape_text(record.get('canonical_news_id') or '')}`",
+            f"- **Provider published value:** `{_escape_text(record.get('published_raw') or '')}`",
+            f"- **Provider last-updated value:** `{_escape_text(record.get('last_updated_raw') or '')}`",
+            f"- **Gateway downloaded at:** `{_escape_text(record.get('downloaded_at_utc') or '')}`",
+            f"- **Provider delay (ns):** `{_escape_text(record.get('provider_delay_ns'))}`",
+            f"- **Stored raw artifact path:** `{_escape_text(record.get('raw_artifact_path') or '')}`",
+            f"- **Resolved audit read path:** `{_escape_text(evidence.resolved_raw_artifact_path)}`",
+            f"- **Retained payload hash:** `{_escape_text(evidence.retained_payload_hash)}`",
+            f"- **Hash verification method:** `{_escape_text(evidence.hash_verification_method)}`",
+            f"- **Exact artifact-byte hash:** `{_escape_text(evidence.raw_artifact_byte_hash)}`",
+        ]
+    )
+
+
+def _gateway_retained_record_section(record: Mapping[str, Any]) -> str:
+    metadata = dict(record)
+    text_fields = {name: metadata.pop(name, "") for name in GATEWAY_TEXT_FIELDS}
+    lines = [
+        "<details open><summary>All retained non-text fields</summary>",
+        "",
+        "<pre>"
+        + html.escape(
+            json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True)
+        )
+        + "</pre>",
+        "",
+        "</details>",
+    ]
+    for field, value in text_fields.items():
+        lines.extend(
+            [
+                "",
+                f"<details open><summary>Retained field: {field}</summary>",
+                "",
+                f"<pre>{html.escape(str(value or ''))}</pre>",
+                "",
+                "</details>",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _resolve_raw_artifact_path(
+    stored_path: str, raw_path_maps: Sequence[tuple[str, str]]
+) -> Path | None:
+    if not stored_path:
+        return None
+    direct = Path(stored_path)
+    if direct.is_file():
+        return direct
+    comparable = stored_path.replace("/", "\\")
+    for source, target in raw_path_maps:
+        source_prefix = source.replace("/", "\\").rstrip("\\")
+        if comparable.casefold() == source_prefix.casefold():
+            candidate = Path(target)
+        elif comparable.casefold().startswith(source_prefix.casefold() + "\\"):
+            suffix = comparable[len(source_prefix) + 1 :]
+            candidate = Path(target) / Path(suffix)
+        else:
+            continue
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _provider_payload_hash(payload: Mapping[str, Any]) -> str:
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, default=str
+    ).encode("utf-8")
+    return _raw_artifact_hash(canonical)
+
+
+def _payload_hash_verification_method(
+    payload: Mapping[str, Any],
+    *,
+    retained_hash: str,
+    raw_artifact_byte_hash: str,
+) -> str | None:
+    candidates = (
+        ("exact_utf8_artifact_bytes", raw_artifact_byte_hash),
+        (
+            "canonical_json_ascii_escaped",
+            _raw_artifact_hash(
+                json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+            ),
+        ),
+        ("canonical_json_utf8", _provider_payload_hash(payload)),
+    )
+    return next((method for method, value in candidates if value == retained_hash), None)
+
+
+def _raw_artifact_hash(raw_bytes: bytes) -> str:
+    return hashlib.blake2b(raw_bytes, digest_size=16).hexdigest()
+
+
+def _raw_provider_article_id(payload: Mapping[str, Any]) -> str:
+    value = payload.get("benzinga_id", payload.get("id", ""))
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value or "").strip()
+
+
+def _json_each_rows(value: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in value.splitlines() if line.strip()]
 
 
 def _metadata_payload(article: Mapping[str, Any]) -> dict[str, Any]:
