@@ -3,10 +3,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 
 import { api, query } from "../../api/client";
 import { NEWS_READER_CANVAS_ID, ensureNewsReaderCanvas, focusCanvasUrl } from "../canvasWorkspace";
+import { FilterOverflowMenu } from "./FilterOverflowMenu";
 import { InventoryFilterSelect, inventoryEligibilityOptions, type InventoryFilterOption } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
 import { normalizeSemanticDirection, SemanticDirectionMetric, SentimentSortButton, sortRowsBySentimentScore, type SentimentSortOrder } from "./SemanticDirectionMetric";
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations, type TickerPresentation } from "./TickerIdentity";
+import { useWallClock } from "./useWallClock";
 
 type NewsRow = {
   article_url?: string;
@@ -162,6 +164,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
   const [refreshKey, setRefreshKey] = useState(0);
   const [sentimentSort, setSentimentSort] = useState<SentimentSortOrder>("none");
   const [role, setRole] = useState(""); const [origin, setOrigin] = useState(""); const [direction, setDirection] = useState(""); const [eligibilityFilters, setEligibilityFilters] = useState<EligibilityQuery>(EMPTY_ELIGIBILITY_QUERY); const [labelState, setLabelState] = useState("");
+  const wallClockMs = useWallClock();
   const customReady = settings.rangeMode === "custom" && settings.startDate && settings.endDate;
   const state = useNewsQuery({ asOf, content: settings.content, direction, eligibilityFilters, endDate: customReady ? settings.endDate : "", hours: settings.lookbackHours, kind: settings.kind, labelState, limit: settings.limit, live, origin, refreshKey, role, search: committedSearch, startDate: customReady ? settings.startDate : "", ticker: settings.ticker });
   const presentations = useTickerPresentations(state.rows.flatMap((row) => row.ticker_link_sample ?? []));
@@ -176,6 +179,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
     if (settings.ticker) onSettingsChange({ ticker: "" });
   };
   const hasRefinements = Boolean(direction || role || origin || settings.ticker || eligibilityFilters.forecast || eligibilityFilters.reaction || eligibilityFilters.history || eligibilityFilters.prior || eligibilityFilters.followup || labelState || settings.kind !== "all" || settings.content !== "all");
+  const activeFilterCount = [direction, settings.rangeMode === "custom" || settings.lookbackHours !== 168, role, origin, settings.limit !== 100, settings.ticker, eligibilityFilters.forecast, eligibilityFilters.reaction, eligibilityFilters.history, eligibilityFilters.prior, eligibilityFilters.followup, labelState, settings.kind !== "all", settings.content !== "all"].filter(Boolean).length;
   const clearRefinements = () => {
     setDirection("");
     setRole("");
@@ -190,19 +194,24 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
       <div className="news-query-primary">
         <label className="news-search"><Search size={13} /><input aria-label="Search all news" onChange={(event) => { const next = event.target.value; setSearch(next); if (!next.trim() && committedSearch) commitSearch(""); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSearch(event.currentTarget.value); } }} placeholder="Search source ID, ticker, headline…" value={search} /></label>
         <button className="button secondary compact news-search-submit" type="submit">Search</button>
-        <InventoryFilterSelect ariaLabel="Semantic direction" onChange={setDirection} options={NEWS_DIRECTION_OPTIONS} value={direction} />
-        <InventoryFilterSelect ariaLabel="News time window" onChange={(value) => value === "custom" ? onSettingsChange({ rangeMode: "custom" }) : onSettingsChange({ lookbackHours: Number(value), rangeMode: "preset" })} options={NEWS_WINDOW_OPTIONS} value={settings.rangeMode === "custom" ? "custom" : settings.lookbackHours} />
-        <InventoryFilterSelect ariaLabel="News content role" onChange={setRole} options={NEWS_ROLE_OPTIONS} value={role} />
-        <InventoryFilterSelect ariaLabel="Source origin" onChange={setOrigin} options={NEWS_ORIGIN_OPTIONS} value={origin} />
-        {settings.rangeMode === "custom" ? <><label title="Exchange date in America/New_York"><span>From (ET)</span><input aria-label="News range start date in exchange time" onChange={(event) => onSettingsChange({ startDate: event.target.value })} type="date" value={settings.startDate} /></label><label title="Exchange date in America/New_York"><span>Through (ET)</span><input aria-label="News range end date in exchange time" onChange={(event) => onSettingsChange({ endDate: event.target.value })} type="date" value={settings.endDate} /></label></> : null}
-        <InventoryFilterSelect ariaLabel="News result limit" onChange={(value) => onSettingsChange({ limit: Number(value) })} options={NEWS_LIMIT_OPTIONS} value={settings.limit} />
+        <span className="news-query-visible-core"><InventoryFilterSelect ariaLabel="Semantic direction" onChange={setDirection} options={NEWS_DIRECTION_OPTIONS} value={direction} /></span>
+        <span className="news-query-visible-core"><InventoryFilterSelect ariaLabel="News time window" onChange={(value) => value === "custom" ? onSettingsChange({ rangeMode: "custom" }) : onSettingsChange({ lookbackHours: Number(value), rangeMode: "preset" })} options={NEWS_WINDOW_OPTIONS} value={settings.rangeMode === "custom" ? "custom" : settings.lookbackHours} /></span>
+        <span className="news-query-visible-wide"><InventoryFilterSelect ariaLabel="News content role" onChange={setRole} options={NEWS_ROLE_OPTIONS} value={role} /></span>
+        <span className="news-query-visible-wide"><InventoryFilterSelect ariaLabel="Source origin" onChange={setOrigin} options={NEWS_ORIGIN_OPTIONS} value={origin} /></span>
+        {settings.rangeMode === "custom" ? <span className="news-query-date-controls news-query-visible-wide"><NewsDateRangeFilters onSettingsChange={onSettingsChange} settings={settings} /></span> : null}
         <InventoryFilterSelect ariaLabel="Ticker" onChange={(value) => onSettingsChange({ ticker: value })} options={tickerOptions} searchable searchPlaceholder="Search tickers…" value={settings.ticker} />
-        <EligibilityFilters filters={eligibilityFilters} onChange={setEligibilityFilters} prefix="News" />
-        <InventoryFilterSelect ariaLabel="Label state" onChange={setLabelState} options={NEWS_LABEL_STATE_OPTIONS} value={labelState} />
-        <InventoryFilterSelect ariaLabel="News article class" onChange={(value) => onSettingsChange({ kind: value })} options={NEWS_ARTICLE_CLASS_OPTIONS} value={settings.kind} />
-        <InventoryFilterSelect ariaLabel="News text coverage" onChange={(value) => onSettingsChange({ content: value })} options={NEWS_TEXT_OPTIONS} value={settings.content} />
-        {hasRefinements ? <button className="button secondary compact news-clear-filters" onClick={clearRefinements} type="button">Clear filters</button> : null}
-        <button aria-label="Refresh news" className="toolbar-button compact" onClick={() => setRefreshKey((value) => value + 1)} title="Refresh" type="button"><RefreshCw size={13} /></button>
+        <FilterOverflowMenu activeCount={activeFilterCount}>
+          <div className="filter-overflow-section"><strong>Query filters</strong><div className="filter-overflow-grid">
+            <InventoryFilterSelect ariaLabel="Semantic direction" onChange={setDirection} options={NEWS_DIRECTION_OPTIONS} value={direction} />
+            <InventoryFilterSelect ariaLabel="News time window" onChange={(value) => value === "custom" ? onSettingsChange({ rangeMode: "custom" }) : onSettingsChange({ lookbackHours: Number(value), rangeMode: "preset" })} options={NEWS_WINDOW_OPTIONS} value={settings.rangeMode === "custom" ? "custom" : settings.lookbackHours} />
+            <InventoryFilterSelect ariaLabel="News content role" onChange={setRole} options={NEWS_ROLE_OPTIONS} value={role} />
+            <InventoryFilterSelect ariaLabel="Source origin" onChange={setOrigin} options={NEWS_ORIGIN_OPTIONS} value={origin} />
+            <InventoryFilterSelect ariaLabel="News result limit" onChange={(value) => onSettingsChange({ limit: Number(value) })} options={NEWS_LIMIT_OPTIONS} value={settings.limit} />
+            <InventoryFilterSelect ariaLabel="Ticker" onChange={(value) => onSettingsChange({ ticker: value })} options={tickerOptions} searchable value={settings.ticker} />
+          </div>{settings.rangeMode === "custom" ? <div className="filter-overflow-dates"><NewsDateRangeFilters onSettingsChange={onSettingsChange} settings={settings} /></div> : null}</div>
+          <div className="filter-overflow-section"><strong>Labels and eligibility</strong><div className="filter-overflow-grid"><EligibilityFilters filters={eligibilityFilters} onChange={setEligibilityFilters} prefix="News" /><InventoryFilterSelect ariaLabel="Label state" onChange={setLabelState} options={NEWS_LABEL_STATE_OPTIONS} value={labelState} /><InventoryFilterSelect ariaLabel="News article class" onChange={(value) => onSettingsChange({ kind: value })} options={NEWS_ARTICLE_CLASS_OPTIONS} value={settings.kind} /><InventoryFilterSelect ariaLabel="News text coverage" onChange={(value) => onSettingsChange({ content: value })} options={NEWS_TEXT_OPTIONS} value={settings.content} /></div></div>
+          <div className="filter-overflow-actions">{hasRefinements ? <button className="button secondary compact news-clear-filters" onClick={clearRefinements} type="button">Clear filters</button> : <span />}<button className="button secondary compact" onClick={() => setRefreshKey((value) => value + 1)} type="button"><RefreshCw size={13} /> Refresh</button></div>
+        </FilterOverflowMenu>
       </div>
       <NewsStatus inline state={state} />
     </form>
@@ -210,7 +219,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
       <div className="intelligence-feed news-intelligence-feed" role="list">
         <div className="intelligence-feed-header news-intelligence-grid" role="row"><span>Time</span><span>Ticker</span><span>Headline &amp; context</span><span>Role</span><span>Origin</span><SentimentSortButton onChange={setSentimentSort} order={sentimentSort} /><span>Forecast</span><span>Reaction</span><span>History</span><span>Prior context</span><span>Follow-up</span><span>Text</span></div>
         {displayRows.map((row) => {
-          const tone = newsTemperature(row.published_at_utc, Date.parse(state.asOf || asOf));
+          const tone = newsTemperature(row.published_at_utc, wallClockMs);
           const directionValue = normalizeSemanticDirection(row.scoped_summary?.semantic_direction);
           return <article className="intelligence-feed-row news-intelligence-grid" data-direction={directionValue} key={row.canonical_news_id} role="listitem">
             <div className="intelligence-time-block"><NewsTemperatureTag tone={tone} /><MarketTime className="news-row-time" dateStyle="short" includeDate value={row.published_at_utc} /></div>
@@ -239,7 +248,7 @@ export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settin
   const state = useNewsQuery({ asOf, content: "all", direction: "", eligibilityFilters: EMPTY_ELIGIBILITY_QUERY, endDate: "", hours: settings.lookbackHours, kind: "all", labelState: "", limit: 100, live, origin: "", refreshKey: 0, role: "", search: "", startDate: "", ticker: symbol });
   const presentations = useTickerPresentations([symbol]);
   const effectiveAsOf = state.asOf || asOf;
-  const asOfMs = Date.parse(effectiveAsOf);
+  const wallClockMs = useWallClock();
   const orderedRows = [...state.rows].sort(compareNewsRecency);
   const eventRows = orderedRows.filter((row) => row.scoped_summary?.forecast_trigger_eligible);
   const contextRows = orderedRows.filter((row) => !row.scoped_summary?.forecast_trigger_eligible && ["analyst_event", "editorial_analysis", "regulatory_event"].includes(row.scoped_summary?.content_role ?? ""));
@@ -248,9 +257,9 @@ export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settin
     <header><div><TickerIdentityWithChange asOf={effectiveAsOf} className="ticker-news-symbol" inputAriaLabel="Ticker news symbol" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={effectiveAsOf} /></small></header>
     <NewsStatus state={state} compact />
     <div className="ticker-news-feed">
-      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No actionable events in this window." label="Actionable events" queryId={state.queryId} rows={eventRows} showTeaser={settings.showTeaser} />
-      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No analysis or issuer context." label="Analysis & issuer context" queryId={state.queryId} rows={contextRows} showTeaser={settings.showTeaser} />
-      <TickerNewsSection asOfMs={asOfMs} emptyLabel="No follow-ups or market summaries." label="Follow-ups & market summaries" queryId={state.queryId} rows={followupRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOfMs={wallClockMs} emptyLabel="No actionable events in this window." label="Actionable events" queryId={state.queryId} rows={eventRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOfMs={wallClockMs} emptyLabel="No analysis or issuer context." label="Analysis & issuer context" queryId={state.queryId} rows={contextRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOfMs={wallClockMs} emptyLabel="No follow-ups or market summaries." label="Follow-ups & market summaries" queryId={state.queryId} rows={followupRows} showTeaser={settings.showTeaser} />
       {!state.loading && !state.rows.length ? <NewsEmpty label={`No ${symbol} news in the last ${settings.lookbackHours} hours.`} /> : null}
     </div>
   </section>;
@@ -276,6 +285,7 @@ function TickerNewsStory({ asOfMs, queryId, row, showTeaser }: { asOfMs: number;
 }
 
 export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf: string; canvasId: string; requestedNewsId?: string }) {
+  const wallClockMs = useWallClock();
   const [selection, setSelection] = useState<NewsSelection>(() => { const stored = readSelectedNews(canvasId); return requestedNewsId ? stored.newsId === requestedNewsId ? stored : { newsId: requestedNewsId, publishedAt: "", queryId: "" } : stored; });
   const newsId = selection.newsId;
   const [detail, setDetail] = useState<NewsDetailPayload | null>(null);
@@ -315,7 +325,7 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
   const body = row.text;
   const classification = row.classification;
   const tags = Array.from(new Set(classification.topics.concat(row.channels, row.provider_tags))).slice(0, 16);
-  const tone = newsTemperature(row.published_at_utc, Date.parse(asOf));
+  const tone = newsTemperature(row.published_at_utc, wallClockMs);
   const kind = isNewsKind(row.news_kind) ? row.news_kind : classification.kind;
   const scopedLabels = row.scoped_labels ?? [];
   const scopedSummary = row.scoped_summary ?? null;
@@ -421,6 +431,7 @@ function NewsTextState({ row }: { row: NewsRow }) { const state = row.render_sta
 function NewsKind({ classification }: { classification: NewsClassification }) { const values = { ai: { Icon: Bot, label: "AI" }, analyst: { Icon: TrendingUp, label: "Analyst" }, company: { Icon: Building2, label: classification.format === "earnings_flash" ? "Company earnings" : "Company" }, editorial: { Icon: Newspaper, label: "Editorial" }, insights: { Icon: Lightbulb, label: "Insights" }, market: { Icon: Globe2, label: classification.format === "trading_halt" ? "Trading halt" : "Market" }, multi: { Icon: Layers3, label: "Multi-company" }, regulatory: { Icon: FileCheck2, label: "Regulatory" }, why_moving: { Icon: Megaphone, label: "Why moving" } }; const value = values[classification.kind]; return <span className="news-kind" data-kind={classification.kind} title={`${Math.round(classification.confidence * 100)}% classification confidence`}><value.Icon size={11} />{value.label}</span>; }
 function ScopedDirection({ compact = false, prominent = false, salient = false, summary }: { compact?: boolean; prominent?: boolean; salient?: boolean; summary?: ScopedNewsSummary | null }) { return <SemanticDirectionMetric compact={compact} direction={summary?.semantic_direction} prominent={prominent || salient} score={summary?.semantic_score} />; }
 function EligibilityCell({ active }: { active?: boolean }) { return <span aria-label={active ? "Eligible" : "Not eligible"} className="eligibility-column-value" data-active={active ? "true" : "false"} title={active ? "Eligible" : "Not eligible"}>{active ? <Check aria-hidden="true" size={12} strokeWidth={2.4} /> : "—"}</span>; }
+function NewsDateRangeFilters({ onSettingsChange, settings }: { onSettingsChange: (patch: Partial<AllNewsSettings>) => void; settings: AllNewsSettings }) { return <><label title="Exchange date in America/New_York"><span>From (ET)</span><input aria-label="News range start date in exchange time" onChange={(event) => onSettingsChange({ startDate: event.target.value })} type="date" value={settings.startDate} /></label><label title="Exchange date in America/New_York"><span>Through (ET)</span><input aria-label="News range end date in exchange time" onChange={(event) => onSettingsChange({ endDate: event.target.value })} type="date" value={settings.endDate} /></label></>; }
 function EligibilityFilters({ filters, onChange, prefix }: { filters: EligibilityQuery; onChange: (next: EligibilityQuery) => void; prefix: string }) { const fields: { key: keyof EligibilityQuery; label: string }[] = [{ key: "forecast", label: "Forecast" }, { key: "reaction", label: "Reaction" }, { key: "history", label: "History" }, { key: "prior", label: "Prior context" }, { key: "followup", label: "Follow-up" }]; return <>{fields.map(({ key, label }) => <InventoryFilterSelect ariaLabel={`${prefix} ${label} eligibility`} key={key} onChange={(value) => onChange({ ...filters, [key]: value })} options={inventoryEligibilityOptions(label)} value={filters[key]} />)}</>; }
 function ScopedClass({ summary }: { summary?: ScopedNewsSummary | null }) { if (!summary) return <span className="news-scoped-class" data-state="pending">Unclassified</span>; return <span className="news-scoped-class" data-state={summary.forecast_trigger_eligible ? "event" : "context"} title={summary.forecast_trigger_eligible ? "Eligible primary event evidence" : "Supporting context or follow-up"}>{summary.forecast_trigger_eligible ? <CircleDot size={10} /> : <History size={10} />}{readableLabel(summary.content_role || summary.source_origin || "context")}</span>; }
 function ScopedConcepts({ compact = false, concepts = [] }: { compact?: boolean; concepts?: string[] }) { const readable = concepts.map(shortConcept).filter(Boolean); const visible = readable.slice(0, compact ? 1 : 3); if (!visible.length) return null; return <span className="news-scoped-concepts">{visible.map((concept) => <span key={concept}>{concept}</span>)}{readable.length > visible.length ? <span>+{readable.length - visible.length}</span> : null}</span>; }
