@@ -1261,6 +1261,12 @@ def capture(args: argparse.Namespace) -> int:
                     + json.dumps(scale_value)
                     + ");"
                 )
+                if args.configuration_experience:
+                    context.add_init_script(
+                        "localStorage.setItem('trading-configuration-experience', "
+                        + json.dumps(args.configuration_experience)
+                        + ");"
+                    )
                 if args.canvas_visible_indicators:
                     canvas_settings = {
                         "version": 8,
@@ -1573,6 +1579,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--settle-ms", type=int, default=1500)
     result.add_argument("--timeout-ms", type=int, default=15000)
     result.add_argument("--headed", action="store_true")
+    result.add_argument(
+        "--configuration-experience",
+        choices=("guided", "expert"),
+        help="seed the non-Canvas configuration editor mode before capture",
+    )
     result.add_argument(
         "--strict", action="store_true",
         help="return non-zero for objective layout, theme, scale, or blank-page issues",

@@ -464,6 +464,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   const [dirtySection, setDirtySection] = useState<TradingConfigurationSection | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "saving" | "saved" | "error">("loading");
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"success" | "error">("success");
   const [experience, setExperienceState] = useState<ConfigurationExperience>(() => readStoredExperience());
   const [showStudioHome, setShowStudioHome] = useState(() => section === "strategy" && !window.sessionStorage.getItem("configuration-studio-started"));
   const [omsGuidedStage, setOmsGuidedStageState] = useState<OmsGuidedStage>(() => readStoredOmsStage());
@@ -489,6 +490,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       .catch((reason) => {
         if (cancelled) return;
         setMessage(reason instanceof Error ? reason.message : String(reason));
+        setMessageTone("error");
         setStatus("error");
       });
     return () => { cancelled = true; };
@@ -523,10 +525,12 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       setDraft(saved);
       setDirtySection(null);
       setStatus("saved");
+      setMessageTone("success");
       setMessage(successMessage);
       return saved;
     } catch (reason) {
       setStatus("error");
+      setMessageTone("error");
       setMessage(reason instanceof Error ? reason.message : String(reason));
       throw reason;
     }
@@ -549,10 +553,12 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       setDraft(nextDraft);
       setDirtySection(null);
       setStatus("saved");
+      setMessageTone("success");
       setMessage("Draft saved. Active and approved runs remain unchanged until you publish a release.");
       return true;
     } catch (reason) {
       setStatus("error");
+      setMessageTone("error");
       setMessage(reason instanceof Error ? reason.message : String(reason));
       return false;
     }
@@ -569,10 +575,12 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       setDraft(nextDraft);
       setDirtySection(null);
       setStatus("saved");
+      setMessageTone("success");
       setMessage("Strategy clone saved to the configuration draft.");
       return nextDraft.strategy;
     } catch (reason) {
       setStatus("error");
+      setMessageTone("error");
       setMessage(reason instanceof Error ? reason.message : String(reason));
       throw reason;
     }
@@ -594,32 +602,35 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       window.dispatchEvent(new CustomEvent("quant-trading-configuration-published"));
       setLabel("");
       setStatus("saved");
+      setMessageTone("success");
       setMessage(`Release ${revision.revision} is approved. New Replay runs now pin this exact configuration.`);
     } catch (reason) {
       setStatus("error");
+      setMessageTone("error");
       setMessage(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
   return (
-    <div className="trading-configuration-page" data-configuration-section={section}>
+    <div className="trading-configuration-page" data-configuration-experience={experience} data-configuration-section={section}>
       <header className="configuration-page-header">
         <div className="configuration-page-icon"><Icon size={20} /></div>
-        <div>
+        <div className="configuration-page-heading">
           <span>{meta.eyebrow}</span>
           <h1>{meta.title}</h1>
           <p>{meta.description}</p>
         </div>
-        <RevisionBadge approved={approved} />
+        <div className="configuration-header-controls">
+          <RevisionBadge approved={approved} />
+          {draft ? (
+            <ConfigurationExperienceBar
+              experience={experience}
+              onExperienceChange={setExperience}
+              onOpenHome={() => { window.sessionStorage.setItem("configuration-studio-started", "true"); setShowStudioHome(true); }}
+            />
+          ) : null}
+        </div>
       </header>
-
-      {draft ? (
-        <ConfigurationExperienceBar
-          experience={experience}
-          onExperienceChange={setExperience}
-          onOpenHome={() => { window.sessionStorage.setItem("configuration-studio-started", "true"); setShowStudioHome(true); }}
-        />
-      ) : null}
 
       {draft && showStudioHome ? (
         <ConfigurationStudioHome
@@ -635,14 +646,14 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       <ConfigurationJourney active={section === "oms" ? omsGuidedStage : section} draft={draft} experience={experience} onOmsStageChange={setOmsGuidedStage} />
 
       {message ? (
-        <div className={`configuration-message ${status === "error" ? "error" : "success"}`}>
-          {status === "error" ? <TriangleAlert size={17} /> : <CheckCircle2 size={17} />}
+        <div className={`configuration-message ${messageTone}`}>
+          {messageTone === "error" ? <TriangleAlert size={17} /> : <CheckCircle2 size={17} />}
           <span>{message}</span>
         </div>
       ) : null}
 
       {experience === "guided" && draft ? (
-        <GuidedConfiguration
+        <div className="configuration-guided-workspace"><GuidedConfiguration
           approved={approved}
           draft={draft}
           label={label}
@@ -656,9 +667,9 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           publishing={status === "saving"}
           revisions={revisions}
           section={section}
-        />
+        /></div>
       ) : section === "revisions" ? (
-        <RevisionPublisher
+        <div className="configuration-expert-workspace"><RevisionPublisher
           approved={approved}
           draft={draft}
           label={label}
@@ -666,9 +677,9 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           publishing={status === "saving"}
           onLabelChange={setLabel}
           onPublish={publish}
-        />
+        /></div>
       ) : draft ? (
-        <>
+        <div className="configuration-expert-workspace">
           {section === "strategy" ? <StrategyStudio draft={draft} section={draft.strategy} onChange={(value) => updateDraft("strategy", value)} onPersist={persistStrategy} /> : null}
           {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
           {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
@@ -682,7 +693,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
             </button>
           </div>
           <JsonInspector label={`${meta.title} generated JSON`} value={draft[section]} />
-        </>
+        </div>
       ) : <ConfigurationLoading />}
         </>
       )}
@@ -696,11 +707,11 @@ function ConfigurationExperienceBar({ experience, onExperienceChange, onOpenHome
   onOpenHome: () => void;
 }) {
   return <div className="configuration-experience-bar">
-    <div><Sparkles size={16} /><span><strong>Configuration Studio</strong><small>One draft, two ways to work</small></span></div>
+    <span className="configuration-editing-label">Editing mode</span>
     <div className="configuration-experience-actions">
-      <button onClick={onOpenHome} type="button"><RotateCcw size={14} /> Setup options</button>
+      <button className="configuration-setup-link" onClick={onOpenHome} type="button"><RotateCcw size={14} /> Start options</button>
       <div aria-label="Configuration editing mode" className="configuration-experience-switch" role="group">
-        <button aria-pressed={experience === "guided"} onClick={() => onExperienceChange("guided")} type="button">Guided</button>
+        <button aria-pressed={experience === "guided"} onClick={() => onExperienceChange("guided")} type="button"><BookOpenCheck size={13} /> Guided</button>
         <button aria-pressed={experience === "expert"} onClick={() => onExperienceChange("expert")} type="button"><Settings2 size={13} /> Expert</button>
       </div>
     </div>
@@ -714,13 +725,13 @@ function ConfigurationJourney({ active, draft, experience, onOmsStageChange }: {
   onOmsStageChange: (value: OmsGuidedStage) => void;
 }) {
   const steps = [
-    { key: "strategy", label: "Strategy", ready: false },
-    { key: "assignments", label: "Deploy", ready: false },
-    { key: "portfolio", label: "Portfolio", ready: false },
-    { key: "execution", label: "Execute", ready: false },
-    { key: "protection", label: "Protect", ready: false },
-    { key: "accounts", label: "Accounts", ready: false },
-    { key: "revisions", label: "Review", ready: false },
+    { caption: "Decisions", key: "strategy", label: "Strategy" },
+    { caption: "Runtime", key: "assignments", label: "Deploy" },
+    { caption: "Capital", key: "portfolio", label: "Portfolio" },
+    { caption: "Orders", key: "execution", label: "Execute" },
+    { caption: "Stops", key: "protection", label: "Protect" },
+    { caption: "Bindings", key: "accounts", label: "Accounts" },
+    { caption: "Release", key: "revisions", label: "Review" },
   ];
   const activeIndex = steps.findIndex((step) => step.key === active);
   return (
@@ -728,7 +739,7 @@ function ConfigurationJourney({ active, draft, experience, onOmsStageChange }: {
       {steps.map((step, index) => (
         <a aria-current={active === step.key ? "step" : undefined} data-ready={index < activeIndex ? "true" : "false"} data-step={step.key} href={`#${pageForGuidedStep(step.key as GuidedStep)}`} key={step.key} onClick={() => { if (step.key === "execution" || step.key === "protection") onOmsStageChange(step.key); }}>
           <span>{index < activeIndex ? <Check size={13} /> : index + 1}</span>
-          <strong>{step.label}</strong>
+          <span className="configuration-journey-copy"><strong>{step.label}</strong><small>{step.caption}</small></span>
           {index < steps.length - 1 ? <ChevronRight size={14} /> : null}
         </a>
       ))}

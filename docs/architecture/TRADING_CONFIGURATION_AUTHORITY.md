@@ -161,6 +161,13 @@ and execution pace. Live owns session startup and operational controls.
 
 Raw JSON is never the primary configuration interface.
 
+Every non-Canvas configuration route uses the same Configuration Workbench
+shell. The compact workbench header is the single owner of page identity,
+runtime authority, start options, and the Guided/Expert mode switch. A shared
+seven-step workflow rail provides cross-authority orientation without
+duplicating page navigation or save state. Canvas remains a distinct visual
+workspace and is not governed by this form-oriented shell.
+
 Configuration begins in one hybrid Configuration Studio rather than forcing
 every operator into the full field inventory:
 
@@ -183,6 +190,14 @@ every operator into the full field inventory:
 - **Expert editor** retains every existing field, rule set, catalog, advanced
   parameter, and generated JSON inspector. Guided and Expert are views over the
   same schema-v8 model, not separate configuration systems.
+
+Guided mode is a focused decision document: it presents one question, its
+consequence and provenance, the current choices, and Previous/Continue actions.
+Expert mode is a full-width editorial workbench: each section keeps explanatory
+context beside a dense but readable control grid, while the save action remains
+available in a sticky footer. Profile libraries are supporting navigation, not
+a second page shell, and generated JSON stays visually subordinate to the
+human-readable editor.
 
 Recommended, inherited, customized, incomplete, invalid, and approved states
 are shown as explicit provenance/status text rather than inferred from color.

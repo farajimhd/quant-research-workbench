@@ -34,6 +34,293 @@
   width: 100%;
 }
 
+/* Configuration Workbench v2: one shared hierarchy for every non-Canvas route. */
+.trading-configuration-page {
+  container-name: configuration-workbench;
+  container-type: inline-size;
+  gap: 12px;
+  padding: 18px 22px 84px;
+}
+
+.configuration-page-header {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-height: 74px;
+  padding: 12px 14px 12px 16px;
+  position: relative;
+}
+.configuration-page-header::before { bottom: 12px; left: -1px; top: 12px; width: 3px; }
+.configuration-page-icon { border-radius: 8px; height: 38px; width: 38px; }
+.configuration-page-heading { min-width: 0; }
+.configuration-page-heading > span { font-size: 9px; font-weight: 680; letter-spacing: .075em; }
+.configuration-page-heading h1 { font-size: 20px; font-weight: 640; margin: 1px 0 2px; }
+.configuration-page-heading p { font-size: 11.5px; line-height: 1.45; max-width: 860px; }
+.configuration-header-controls { align-items: center; display: flex; gap: 12px; justify-content: flex-end; min-width: 0; }
+.configuration-revision-badge {
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  display: grid;
+  gap: 1px;
+  min-width: 132px;
+  padding: 2px 0 2px 12px;
+}
+.configuration-revision-badge small { font-size: 8px; letter-spacing: .06em; }
+.configuration-revision-badge strong { font-size: 12px; font-weight: 620; }
+.configuration-revision-badge span { font-size: 9px; max-width: 150px; }
+
+.configuration-experience-bar {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  display: flex;
+  gap: 8px;
+  min-height: 0;
+  padding: 0;
+}
+.configuration-editing-label { color: var(--muted-foreground); font-size: 9px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
+.configuration-experience-actions { gap: 5px; }
+.configuration-experience-actions > button,
+.configuration-experience-switch button { border-radius: 6px; font-size: 11px; min-height: 32px; padding: 0 9px; }
+.configuration-experience-switch { border-radius: 7px; padding: 2px; }
+.configuration-experience-switch button { gap: 5px; }
+
+.configuration-journey {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  min-height: 52px;
+  overflow: hidden;
+}
+.configuration-journey a,
+.configuration-journey[data-experience="guided"] a {
+  align-items: center;
+  border-right: 1px solid var(--border);
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+}
+.configuration-journey a:last-child { border-right: 0; }
+.configuration-journey a > span:first-child { flex: 0 0 auto; height: 25px; width: 25px; }
+.configuration-journey-copy { display: grid; gap: 1px; min-width: 0; }
+.configuration-journey-copy strong,
+.configuration-journey[data-experience="guided"] .configuration-journey-copy strong { font-size: 11px; font-weight: 610; }
+.configuration-journey-copy small { color: var(--muted-foreground); font-size: 8.5px; font-weight: 480; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.configuration-journey a > svg { height: 12px; opacity: .55; width: 12px; }
+.configuration-journey a[aria-current="step"] { background: color-mix(in oklab, var(--configuration-accent) 6%, var(--surface)); box-shadow: inset 0 -2px var(--configuration-accent); }
+
+.configuration-guided-workspace,
+.configuration-expert-workspace { display: grid; gap: 12px; min-width: 0; }
+.configuration-expert-workspace > .configuration-stack { gap: 12px; }
+
+/* Expert mode uses editorial sections: context on the left, work on the right. */
+.configuration-expert-workspace .configuration-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: grid;
+  grid-template-columns: minmax(190px, 220px) minmax(0, 1fr);
+  overflow: visible;
+}
+.configuration-expert-workspace .configuration-group > header {
+  align-content: start;
+  align-items: flex-start;
+  background: var(--surface-alt);
+  border-bottom: 0;
+  border-right: 1px solid var(--border);
+  display: grid;
+  gap: 10px;
+  grid-column: 1;
+  grid-row: 1;
+  justify-items: start;
+  padding: 16px 14px;
+}
+.configuration-expert-workspace .configuration-group-heading { gap: 8px !important; }
+.configuration-expert-workspace .configuration-group-icon { height: 28px; width: 28px; }
+.configuration-expert-workspace .configuration-group > header strong { font-size: 13px; font-weight: 620; }
+.configuration-expert-workspace .configuration-group > header p { font-size: 10.5px; line-height: 1.5; }
+.configuration-expert-workspace .configuration-group > header > .button { justify-self: start; }
+.configuration-expert-workspace .configuration-group-body { grid-column: 2; grid-row: 1; min-width: 0; padding: 16px; }
+
+.configuration-guide {
+  align-items: flex-start;
+  background: color-mix(in oklab, var(--configuration-accent) 4%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--configuration-accent) 20%, var(--border));
+  border-left: 2px solid var(--configuration-accent);
+  border-radius: 7px;
+  padding: 10px 12px;
+}
+.configuration-guide strong { font-size: 11.5px; font-weight: 620; }
+.configuration-guide p { font-size: 10.5px; line-height: 1.5; }
+
+.configuration-workbench { align-items: start; gap: 12px; grid-template-columns: 230px minmax(0, 1fr); }
+.configuration-library { border-radius: 9px; max-height: calc(100vh - 174px); overflow: auto; position: sticky; top: 12px; }
+.configuration-library > header { padding: 12px; }
+.configuration-library > p { font-size: 10.5px; line-height: 1.5; padding: 10px 12px; }
+.configuration-library > div > button { min-height: 54px; padding: 9px 11px; }
+.configuration-library > div > button strong { font-size: 11.5px; font-weight: 590; }
+.configuration-library > div > button small { font-size: 9px; }
+.configuration-detail { background: transparent; border: 0; gap: 12px; overflow: visible; }
+.configuration-detail-heading { background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 14px 16px; }
+.configuration-detail-heading input { font-size: 18px; font-weight: 620; }
+.configuration-detail-heading textarea { font-size: 11.5px; }
+
+.strategy-lifecycle-panel,
+.configuration-advanced { background: var(--surface); border: 1px solid var(--border); border-radius: 9px; }
+.strategy-lifecycle-panel > summary,
+.configuration-advanced > summary { min-height: 64px; padding: 11px 14px; }
+.strategy-lifecycle-panel > summary strong { font-size: 14px; font-weight: 610; }
+.strategy-lifecycle-panel > summary em { font-size: 10px; font-weight: 480; }
+.strategy-lifecycle-panel[open] > summary { background: var(--surface-alt); box-shadow: inset 2px 0 var(--strategy-tone); }
+.strategy-lifecycle-content { gap: 12px; padding: 14px; }
+
+.configuration-field-grid { gap: 14px 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.configuration-expert-workspace .configuration-field { min-width: 0; }
+.configuration-expert-workspace .configuration-field > span { font-size: 10.5px; font-weight: 590; }
+.configuration-expert-workspace .configuration-field > small { font-size: 9.5px; line-height: 1.45; }
+.configuration-expert-workspace .configuration-field input:not([type="checkbox"]),
+.configuration-expert-workspace .configuration-field select { border-radius: 6px; min-height: 36px; }
+
+.mandate-grid,
+.account-config-grid,
+.capability-grid { gap: 10px; }
+.mandate-card,
+.account-config-card,
+.capability-card,
+.strategy-add-step,
+.strategy-exit-route,
+.strategy-rule-group { background: var(--surface); border-radius: 7px; box-shadow: none; }
+.account-config-card { padding: 12px; }
+.configuration-safety-note { background: color-mix(in oklab, var(--success) 5%, var(--surface)); border-radius: 6px; font-size: 10.5px; line-height: 1.5; }
+
+.configuration-save-bar {
+  align-items: center;
+  backdrop-filter: blur(12px);
+  background: color-mix(in oklab, var(--surface) 92%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  bottom: 12px;
+  box-shadow: 0 8px 24px color-mix(in oklab, var(--foreground) 8%, transparent);
+  min-height: 48px;
+  padding: 7px 9px 7px 14px;
+  position: sticky;
+  z-index: 8;
+}
+.configuration-save-bar > span { font-size: 10.5px; }
+.configuration-json-inspector { border-radius: 8px; opacity: .86; }
+.configuration-json-inspector > summary { min-height: 44px; }
+
+/* Guided mode uses the same shell, but keeps one decision as the focal object. */
+.configuration-guided-workspace .guided-question-surface,
+.configuration-guided-workspace .guided-strategy-question { border-radius: 9px; }
+.configuration-guided-workspace .guided-question-surface > header { padding: 13px 20px 11px; }
+.configuration-guided-workspace .guided-question { min-height: 210px; padding: 20px 28px 24px; }
+.configuration-guided-workspace .guided-question > header > div > span { font-size: 18px; font-weight: 610; }
+.configuration-guided-workspace .guided-question > header p { font-size: 13px; line-height: 1.55; }
+.configuration-guided-workspace .guided-decision-options { gap: 8px; }
+.configuration-guided-workspace .guided-decision-options > label > span { border-radius: 7px; min-height: 70px; padding: 10px 12px; }
+.configuration-guided-workspace .guided-decision-options strong { font-size: 13px; font-weight: 590; }
+.configuration-guided-workspace .guided-decision-options small { font-size: 10.5px; }
+.configuration-guided-workspace .guided-navigation,
+.configuration-guided-workspace .guided-strategy-navigation { padding: 11px 14px; }
+.configuration-guided-workspace .guided-running-summary summary { min-height: 42px; padding-inline: 18px; }
+
+.configuration-revision-layout { align-items: start; gap: 12px; grid-template-columns: minmax(0, 1.35fr) minmax(290px, .65fr); }
+.configuration-publish-card,
+.configuration-history-card { border-radius: 9px; }
+.configuration-publish-card > header,
+.configuration-history-card > header { padding: 13px 15px; }
+.configuration-publish-card > p { font-size: 11px; line-height: 1.55; padding: 13px 15px 4px; }
+.configuration-publish-proof { gap: 6px; padding: 12px 15px; }
+.configuration-publish-proof span { font-size: 10px; }
+
+@media (max-width: 1180px) {
+  .configuration-page-header { grid-template-columns: auto minmax(0, 1fr); }
+  .configuration-header-controls { grid-column: 1 / -1; justify-content: space-between; }
+  .configuration-page-heading p { display: none; }
+  .configuration-revision-badge { border-left: 0; padding-left: 0; }
+  .configuration-journey-copy small { display: none; }
+  .configuration-journey a > svg { display: none; }
+  .configuration-expert-workspace .configuration-group { grid-template-columns: minmax(170px, 190px) minmax(0, 1fr); }
+  .configuration-field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* The sidebar and UI scale reduce usable workspace without changing viewport width. */
+@container configuration-workbench (max-width: 1050px) {
+  .configuration-page-header { grid-template-columns: auto minmax(0, 1fr); }
+  .configuration-header-controls { grid-column: 1 / -1; justify-content: space-between; }
+  .configuration-page-heading p { display: none; }
+  .configuration-revision-badge { border-left: 0; padding-left: 0; }
+  .configuration-journey-copy small,
+  .configuration-journey a > svg { display: none; }
+  .configuration-expert-workspace .configuration-group { grid-template-columns: minmax(170px, 190px) minmax(0, 1fr); }
+  .configuration-field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@container configuration-workbench (max-width: 720px) {
+  .configuration-header-controls { align-items: stretch; flex-direction: column; }
+  .configuration-experience-bar { justify-content: space-between; }
+  .configuration-editing-label { display: none; }
+  .configuration-journey { display: flex; overflow-x: auto; }
+  .configuration-journey a,
+  .configuration-journey[data-experience="guided"] a { flex: 0 0 130px; }
+  .configuration-workbench { grid-template-columns: 1fr; }
+  .configuration-library { max-height: none; position: static; }
+  .configuration-library > div { display: flex; overflow-x: auto; }
+  .configuration-library > div > button { flex: 0 0 210px; }
+  .configuration-expert-workspace .configuration-group { display: block; }
+  .configuration-expert-workspace .configuration-group > header { border-bottom: 1px solid var(--border); border-right: 0; }
+  .configuration-field-grid,
+  .account-config-grid,
+  .mandate-grid,
+  .configuration-revision-layout { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 840px) {
+  .trading-configuration-page { padding: 12px 12px 76px; }
+  .configuration-page-header { gap: 10px; padding: 11px 12px; }
+  .configuration-page-heading p { display: none; }
+  .configuration-header-controls { align-items: stretch; flex-direction: column; }
+  .configuration-experience-bar { justify-content: space-between; }
+  .configuration-editing-label { display: none; }
+  .configuration-journey { display: flex; overflow-x: auto; }
+  .configuration-journey a,
+  .configuration-journey[data-experience="guided"] a { flex: 0 0 130px; }
+  .configuration-workbench { grid-template-columns: 1fr; }
+  .configuration-library { max-height: none; position: static; }
+  .configuration-library > div { display: flex; overflow-x: auto; }
+  .configuration-library > div > button { flex: 0 0 210px; }
+  .configuration-expert-workspace .configuration-group { display: block; }
+  .configuration-expert-workspace .configuration-group > header { border-bottom: 1px solid var(--border); border-right: 0; }
+  .configuration-field-grid,
+  .account-config-grid,
+  .mandate-grid,
+  .configuration-revision-layout { grid-template-columns: 1fr; }
+  .configuration-save-bar { bottom: 8px; }
+}
+
+@media (max-width: 560px) {
+  .configuration-page-header { grid-template-columns: auto minmax(0, 1fr); }
+  .configuration-page-icon { height: 34px; width: 34px; }
+  .configuration-page-heading h1 { font-size: 17px; }
+  .configuration-revision-badge span { display: none; }
+  .configuration-experience-actions { justify-content: space-between; width: 100%; }
+  .configuration-setup-link { padding-inline: 4px !important; }
+  .configuration-field-grid { grid-template-columns: 1fr; }
+  .configuration-guided-workspace .guided-question { padding: 18px 16px 22px; }
+  .configuration-guided-workspace .guided-question > header > div > span { font-size: 17px; }
+}
+
+/* Retained micro-component rules are intentionally lower priority than Workbench v2. */
+@layer configuration-legacy {
 .configuration-page-header {
   background: var(--surface);
   border-color: var(--border);
@@ -587,4 +874,5 @@
   .guided-review-matrix > header { display: none; }
   .guided-review-matrix article { align-items: start; grid-template-columns: minmax(0, 1fr) auto; }
   .guided-review-matrix article > span:nth-child(2) { grid-column: 1 / -1; }
+}
 }
