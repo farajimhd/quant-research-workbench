@@ -566,6 +566,19 @@ def reconcile_source_binding(
         changes.append((parse_event_date(raw.get("date")), ticker))
     if not changes:
         return binding
+    tickers_by_date: dict[date, set[str]] = {}
+    for event_date, ticker in changes:
+        tickers_by_date.setdefault(event_date, set()).add(ticker)
+    conflicting_dates = sorted(event_date for event_date, tickers in tickers_by_date.items() if len(tickers) > 1)
+    if conflicting_dates:
+        conflict_date = conflicting_dates[-1]
+        tickers = sorted(tickers_by_date[conflict_date])
+        return CanonicalBinding(
+            "source_conflict",
+            security_id=binding.security_id,
+            listing_id=binding.listing_id,
+            reason=f"multiple_provider_tickers_on_date={conflict_date.isoformat()}:{','.join(ticker or '<empty>' for ticker in tickers)}",
+        )
     latest_date, latest_ticker = max(changes, key=lambda item: item[0])
     expected = entity.current_ticker.strip().upper()
     conflict = (entity.active and not latest_ticker) or (latest_ticker and expected and latest_ticker != expected)

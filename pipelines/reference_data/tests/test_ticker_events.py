@@ -121,6 +121,27 @@ class TickerEventTests(unittest.TestCase):
                 observed_at=datetime(2026, 8, 2, tzinfo=UTC),
             )
 
+    def test_same_day_provider_conflict_is_quarantined_before_interval_build(self) -> None:
+        response = MassiveTickerEventsResult(
+            identifier=META_FIGI,
+            name="Meta",
+            status="OK",
+            request_id="request-conflict",
+            events=[
+                {"date": "2022-06-09", "ticker_change": {"ticker": "META"}, "type": "ticker_change"},
+                {"date": "2022-06-09", "ticker_change": {"ticker": "FB"}, "type": "ticker_change"},
+            ],
+        )
+
+        binding = reconcile_source_binding(meta_entity(), response, CanonicalBinding("mapped", "security:meta", "listing:meta"))
+        events, intervals, _ = normalize_ticker_event_response(
+            meta_entity(), response, binding, run_id="test", observed_at=datetime(2026, 8, 2, tzinfo=UTC)
+        )
+
+        self.assertEqual(binding.status, "source_conflict")
+        self.assertEqual(len(events), 2)
+        self.assertEqual(intervals, [])
+
     def test_empty_ticker_change_closes_the_previous_symbol_without_creating_blank_interval(self) -> None:
         intervals = build_symbol_intervals(
             meta_entity(),
