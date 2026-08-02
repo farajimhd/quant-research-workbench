@@ -745,6 +745,7 @@ demonstrated fresh-set gains.
 
 The final audit launcher writes one Markdown document per article plus an
 error-sorted `INDEX.md` under the configured runtime root. Each document shows
+the complete frozen source metadata and every original source-lane text first;
 the frozen human, V9 and V10 values for article extraction, role and origin;
 issuer ticker scope; per-issuer direction, canonical concept families and all
 three eligibility decisions; the human evidence; V9's persisted deterministic
@@ -759,3 +760,13 @@ earlier `error_articles` count because it treats concept, eligibility, and each
 extra or missing issuer-unit field as independently auditable comparisons. Ten
 V9 articles and five V10 articles matched the human authority on every displayed
 comparison cell.
+
+Audit contract V2 omits text fields only from the complete metadata JSON because
+those payloads are reproduced immediately afterward in full. The packed rendered
+article remains at the end so the original source lanes and the review input can
+be compared directly.
+
+Every source-text section starts with the exact publication title and teaser,
+then lists every preserved source lane in ordinal order. Some legacy headline
+wires retain no separate source-body lane; those audits state that limitation
+explicitly and do not invent missing body text.

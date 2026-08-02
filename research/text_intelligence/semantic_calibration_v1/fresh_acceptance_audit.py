@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 import tempfile
@@ -19,7 +20,7 @@ from .schema import stable_json_hash
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
 
-AUDIT_CONTRACT = "news_fresh_acceptance_article_audit_v1"
+AUDIT_CONTRACT = "news_fresh_acceptance_article_audit_v2"
 ARTICLE_FIELDS = (
     ("Extraction decision", "extraction_decision"),
     ("Content role", "content_role"),
@@ -187,6 +188,22 @@ def render_article_audit(
     file_name = f"{item.sample_id}_{_slug(title)}.md"
     body = [
         f"# {item.sample_id} - {title}",
+        "",
+        "## Complete source metadata",
+        "",
+        "This is the complete frozen article record metadata. Only the large text "
+        "payloads are removed from this JSON and reproduced verbatim in the next "
+        "section so metadata and source text are not duplicated or truncated.",
+        "",
+        _metadata_section(item.blinded),
+        "",
+        "## Original news texts",
+        "",
+        "These are all source-lane texts preserved in the frozen acceptance item, "
+        "in source ordinal order. They are shown before human or model labels so "
+        "the article can be reviewed from source evidence first.",
+        "",
+        _source_text_sections(item.blinded),
         "",
         "## Audit summary",
         "",
@@ -484,6 +501,90 @@ def _v10_trace(prediction: Mapping[str, Any]) -> str:
             ]
         )
     return "\n".join(lines).rstrip()
+
+
+def _metadata_section(article: Mapping[str, Any]) -> str:
+    payload = _metadata_payload(article)
+    return "\n".join(
+        [
+            "<details open><summary>All metadata fields</summary>",
+            "",
+            f"<pre>{html.escape(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))}</pre>",
+            "",
+            "</details>",
+        ]
+    )
+
+
+def _metadata_payload(article: Mapping[str, Any]) -> dict[str, Any]:
+    """Return every frozen field except separately rendered large text payloads."""
+    payload = dict(article)
+    source_lanes: list[dict[str, Any]] = []
+    for lane in article.get("source_lanes") or ():
+        lane_metadata = dict(lane)
+        lane_metadata.pop("text", None)
+        source_lanes.append(lane_metadata)
+    payload["source_lanes"] = source_lanes
+    rendered_product = dict(article.get("rendered_product") or {})
+    rendered_product.pop("text", None)
+    payload["rendered_product"] = rendered_product
+    return payload
+
+
+def _source_text_sections(article: Mapping[str, Any]) -> str:
+    publication = article.get("publication") or {}
+    sections: list[str] = [
+        "### Publication text fields",
+        "",
+        "#### Title",
+        "",
+        f"<pre>{html.escape(str(publication.get('title') or ''))}</pre>",
+        "",
+        "#### Teaser",
+        "",
+        f"<pre>{html.escape(str(publication.get('teaser') or ''))}</pre>",
+        "",
+    ]
+    lanes = sorted(
+        article.get("source_lanes") or (),
+        key=lambda lane: (
+            int(lane.get("source_ordinal") or 0),
+            str(lane.get("source_kind") or ""),
+        ),
+    )
+    if not lanes:
+        sections.extend(
+            [
+                "### Source body availability",
+                "",
+                "No separate original source-body lane is present in this frozen "
+                "legacy article record. The title and teaser above are all original "
+                "publication text fields available for this item; no body is invented.",
+            ]
+        )
+        return "\n".join(sections).rstrip()
+    for lane in lanes:
+        source_kind = str(lane.get("source_kind") or "unknown")
+        ordinal = int(lane.get("source_ordinal") or 0)
+        source_url = str(lane.get("source_url") or "")
+        sections.extend(
+            [
+                f"### Source `{source_kind}:{ordinal}`",
+                "",
+                f"- **URL:** {_escape_text(source_url) if source_url else 'none'}",
+                f"- **Format:** `{_escape_text(lane.get('content_format') or 'unknown')}`",
+                f"- **Source hash:** `{_escape_text(lane.get('source_hash') or '')}`",
+                f"- **Stored characters:** `{int(lane.get('source_chars') or 0):,}`",
+                "",
+                "<details open><summary>Full original source text</summary>",
+                "",
+                f"<pre>{html.escape(str(lane.get('text') or ''))}</pre>",
+                "",
+                "</details>",
+                "",
+            ]
+        )
+    return "\n".join(sections).rstrip()
 
 
 def _display(value: Any) -> str:
