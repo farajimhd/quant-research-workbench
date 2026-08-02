@@ -74,6 +74,7 @@ from src.backend.sec_canvas_service import (
 )
 from src.backend.text_query_contract import (
     MARKET_TIME_ZONE_NAME,
+    MAX_TEXT_QUERY_HOURS,
     TEXT_QUERY_SESSIONS,
     resolve_text_query_window,
 )
@@ -1504,6 +1505,8 @@ def trading_news_rows(
 ) -> dict[str, Any]:
     """Return a bounded point-in-time news page for Canvas news containers."""
     safe_limit = max(1, min(limit, 250))
+    search_term = search.strip()
+    exact_source_id = search_term.lower() if re.fullmatch(r"[0-9a-fA-F]{32}", search_term) else ""
     try:
         window = resolve_text_query_window(
             as_of=as_of,
@@ -1514,7 +1517,9 @@ def trading_news_rows(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     cutoff = window.end
-    window_start = window.start
+    # Exact identity lookup is authoritative over presentation refinements. It
+    # remains bounded by the Canvas as-of cutoff and the retained query horizon.
+    window_start = cutoff - timedelta(hours=MAX_TEXT_QUERY_HOURS) if exact_source_id else window.start
     safe_hours = max(1, int(((cutoff - window_start).total_seconds() + 3599) // 3600))
     try:
         cursor = datetime.fromisoformat(before.replace("Z", "+00:00")) if before.strip() else cutoff
@@ -1567,8 +1572,6 @@ def trading_news_rows(
     start_date_sql = sql_string(window_start.date().isoformat())
     end_date_sql = sql_string(cutoff.date().isoformat())
     cursor_sql = f"toDateTime64({sql_string(min(cursor, cutoff).strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
-    search_term = search.strip()
-    exact_source_id = search_term.lower() if re.fullmatch(r"[0-9a-fA-F]{32}", search_term) else ""
     cursor_id = before_id.strip()
     cursor_filter = "n.published_at_utc < page_before"
     if before.strip() and cursor_id:
@@ -1580,7 +1583,7 @@ def trading_news_rows(
         "n.published_at_utc <= window_end",
     ]
     filters = [*base_filters, cursor_filter]
-    if safe_ticker:
+    if safe_ticker and not exact_source_id:
         filters.append(f"has(n.tickers, {sql_string(safe_ticker)})")
     label_having: list[str] = []
     if safe_role:
@@ -1639,16 +1642,16 @@ def trading_news_rows(
     facet_label_exists, facet_quality_label_exists = label_predicates()
     has_label_filters = bool(safe_role or safe_origin or safe_direction or safe_eligibility or any(eligibility_filters.values()))
     facet_filters = list(base_filters)
-    if has_label_filters:
+    if has_label_filters and not exact_source_id:
         filters.append(label_exists)
         facet_filters.append(facet_label_exists)
-    if safe_label_state == "classified":
+    if safe_label_state == "classified" and not exact_source_id:
         filters.append(label_exists)
         facet_filters.append(facet_label_exists)
-    elif safe_label_state == "pending":
+    elif safe_label_state == "pending" and not exact_source_id:
         filters.append(f"NOT ({label_exists})")
         facet_filters.append(f"NOT ({facet_label_exists})")
-    elif safe_label_state == "quality":
+    elif safe_label_state == "quality" and not exact_source_id:
         filters.append(quality_label_exists)
         facet_filters.append(facet_quality_label_exists)
     if search_term:
@@ -1680,7 +1683,7 @@ def trading_news_rows(
     )
     classification_sql = news_classification_sql(ticker_links_sql, body_sql="r.rendered_text")
     news_kind_sql = classification_sql["kind"]
-    if safe_kind != "all":
+    if safe_kind != "all" and not exact_source_id:
         kind_filter = f"({news_kind_sql}) = {sql_string(safe_kind)}"
         filters.append(kind_filter)
         facet_filters.append(kind_filter)
@@ -1693,7 +1696,7 @@ def trading_news_rows(
             f"(published_at_utc = page_before AND canonical_news_id < {sql_string(cursor_id)}))"
         )
     source_ticker_filter = (
-        f"AND has(tickers, {sql_string(safe_ticker)})" if safe_ticker else ""
+        f"AND has(tickers, {sql_string(safe_ticker)})" if safe_ticker and not exact_source_id else ""
     )
     if exact_source_id:
         source_ticker_filter += f"\n              AND canonical_news_id = {sql_string(exact_source_id)}"
@@ -1701,11 +1704,11 @@ def trading_news_rows(
         f"AND canonical_news_id = {sql_string(exact_source_id)}" if exact_source_id else ""
     )
     source_label_filter = label_exists.replace("n.canonical_news_id", "canonical_news_id")
-    if has_label_filters or safe_label_state == "classified":
+    if (has_label_filters or safe_label_state == "classified") and not exact_source_id:
         source_ticker_filter += f"\n              AND {source_label_filter}"
-    elif safe_label_state == "pending":
+    elif safe_label_state == "pending" and not exact_source_id:
         source_ticker_filter += f"\n              AND NOT ({source_label_filter})"
-    elif safe_label_state == "quality":
+    elif safe_label_state == "quality" and not exact_source_id:
         source_ticker_filter += f"\n              AND {quality_label_exists.replace('n.canonical_news_id', 'canonical_news_id')}"
     can_limit_event_source = not any(
         (
@@ -1876,7 +1879,7 @@ def trading_news_rows(
             quote=sql_string,
             source_end=cutoff.isoformat(),
             source_start=window_start.isoformat(),
-            ticker=safe_ticker,
+            ticker="" if exact_source_id else safe_ticker,
         )
         intelligence_status = "ready"
     except Exception:

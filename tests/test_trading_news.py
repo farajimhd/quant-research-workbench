@@ -111,6 +111,37 @@ class TradingNewsTests(unittest.TestCase):
         self.assertNotIn("ifNull(r.source_count, 0) > 0", query_mock.call_args_list[1].args[0])
 
     @patch("src.backend.app.clickhouse_status_query")
+    def test_exact_source_identity_bypasses_window_and_toolbar_refinements(self, query_mock) -> None:
+        source_id = "d99dd26da27e325682cb6be4274d3b60"
+        query_mock.side_effect = [
+            json.dumps({"canonical_news_id": source_id, "published_at_utc": "2017-12-15T15:52:09.000000Z", "is_title_only": 1}),
+            json.dumps({"ticker_options": ["AYTU", "NDAQ"]}),
+            "",
+        ]
+
+        payload = trading_news_rows(
+            as_of="2026-07-31T13:45:00Z",
+            lookback_hours=6,
+            search=source_id,
+            ticker="AAPL",
+            content="full",
+            kind="analyst",
+            role="primary_event",
+            origin="issuer",
+            direction="negative",
+            forecast_eligible="ineligible",
+            label_state="pending",
+        )
+
+        self.assertEqual(payload["rows"][0]["canonical_news_id"], source_id)
+        self.assertTrue(payload["window_start"].startswith("2016-"))
+        main_sql = query_mock.call_args_list[0].args[0]
+        self.assertNotIn("has(n.tickers, 'AAPL')", main_sql)
+        self.assertNotIn("l.ticker = 'AAPL'", main_sql)
+        self.assertNotIn("ifNull(r.source_count, 0) > 0", main_sql)
+        self.assertNotIn("countIf(l.content_role = 'primary_event')", main_sql)
+
+    @patch("src.backend.app.clickhouse_status_query")
     def test_ticker_options_cover_full_filtered_query_not_page_or_ticker(self, query_mock) -> None:
         query_mock.side_effect = [
             json.dumps({"canonical_news_id": "page-row", "published_at_utc": "2026-07-10T13:44:00.000000Z", "ticker_link_sample": ["AAPL"]}),
