@@ -218,7 +218,12 @@ def load_ground_truth_exclusion(root: Path) -> tuple[set[str], dict[str, Any]]:
     return set(source_ids), contract
 
 
-def fetch_teacher_label_candidates(client: ClickHouseHttpClient) -> list[dict[str, Any]]:
+def fetch_teacher_label_candidates(
+    client: ClickHouseHttpClient,
+    *,
+    sampling_seed: str = SAMPLING_SEED,
+    per_stratum_limit: int = 32,
+) -> list[dict[str, Any]]:
     sql = f"""
 SELECT
  source_id,
@@ -236,8 +241,8 @@ FROM q_live.scoped_text_labels_v5 AS label FINAL
 WHERE corpus='news'
   AND labeling_version={sql_string(LABELING_VERSION)}
   AND toUInt16OrZero(substring(source_timestamp, 1, 4)) BETWEEN 2010 AND 2026
-ORDER BY cityHash64(concat(source_id, ticker, {sql_string(SAMPLING_SEED)}))
-LIMIT 32 BY
+ORDER BY cityHash64(concat(source_id, ticker, {sql_string(sampling_seed)}))
+LIMIT {int(per_stratum_limit)} BY
  toUInt16OrZero(substring(source_timestamp, 1, 4)),
  content_role, source_origin, semantic_direction,
  forecast_trigger_eligible, reaction_evaluation_eligible
@@ -246,7 +251,12 @@ FORMAT JSONEachRow
     return json_rows(client.execute(sql))
 
 
-def fetch_teacher_baseline_candidates(client: ClickHouseHttpClient) -> list[dict[str, Any]]:
+def fetch_teacher_baseline_candidates(
+    client: ClickHouseHttpClient,
+    *,
+    sampling_seed: str = SAMPLING_SEED,
+    per_stratum_limit: int = 320,
+) -> list[dict[str, Any]]:
     sql = f"""
 SELECT
  canonical_news_id AS source_id,
@@ -268,8 +278,8 @@ SELECT
 FROM q_live.benzinga_news_event_v2 FINAL
 WHERE published_at_utc >= toDateTime64('2010-01-01 00:00:00', 9, 'UTC')
   AND published_at_utc < toDateTime64('2027-01-01 00:00:00', 9, 'UTC')
-ORDER BY cityHash64(concat(canonical_news_id, {sql_string(SAMPLING_SEED)}))
-LIMIT 320 BY
+ORDER BY cityHash64(concat(canonical_news_id, {sql_string(sampling_seed)}))
+LIMIT {int(per_stratum_limit)} BY
  toYear(published_at_utc),
  multiIf(length(tickers)=0, 'zero', length(tickers)=1, 'single', 'multi'),
  multiIf(length(title)+length(teaser)<160, 'short',
@@ -280,7 +290,10 @@ FORMAT JSONEachRow
 
 
 def select_teacher_candidates(
-    candidates: Iterable[dict[str, Any]], *, sample_size: int
+    candidates: Iterable[dict[str, Any]],
+    *,
+    sample_size: int,
+    sampling_seed: str = SAMPLING_SEED,
 ) -> list[dict[str, Any]]:
     rows_by_year: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in candidates:
@@ -296,12 +309,17 @@ def select_teacher_candidates(
                 f"year {year} has {len(rows):,} candidates after exclusion; "
                 f"needs {target:,}"
             )
-        selected.extend(select_teacher_year(rows, target=target))
+        selected.extend(
+            select_teacher_year(rows, target=target, sampling_seed=sampling_seed)
+        )
     return selected
 
 
 def select_teacher_year(
-    rows: Sequence[dict[str, Any]], *, target: int
+    rows: Sequence[dict[str, Any]],
+    *,
+    target: int,
+    sampling_seed: str = SAMPLING_SEED,
 ) -> list[dict[str, Any]]:
     by_scope: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -323,7 +341,7 @@ def select_teacher_year(
             round(scope_target * V5_MISSING_TARGET_PERCENT / 100),
         )
         missing_selected = round_robin_teacher_strata(
-            missing, target=missing_target
+            missing, target=missing_target, sampling_seed=sampling_seed
         ) if missing_target else []
         used = {str(row["source_id"]) for row in missing_selected}
         remainder_rows = [
@@ -336,13 +354,17 @@ def select_teacher_year(
             round_robin_teacher_strata(
                 remainder_rows,
                 target=scope_target - len(missing_selected),
+                sampling_seed=sampling_seed,
             )
         )
     return selected
 
 
 def round_robin_teacher_strata(
-    rows: Sequence[dict[str, Any]], *, target: int
+    rows: Sequence[dict[str, Any]],
+    *,
+    target: int,
+    sampling_seed: str = SAMPLING_SEED,
 ) -> list[dict[str, Any]]:
     concept_frequency = Counter(
         concept for row in rows for concept in article_concepts(row)
@@ -362,13 +384,13 @@ def round_robin_teacher_strata(
             sorted(
                 values,
                 key=lambda row: stable_json_hash(
-                    [SAMPLING_SEED, "within-stratum", row["source_id"]]
+                    [sampling_seed, "within-stratum", row["source_id"]]
                 ),
             )
         )
     keys = sorted(
         buckets,
-        key=lambda key: stable_json_hash([SAMPLING_SEED, "stratum", key]),
+        key=lambda key: stable_json_hash([sampling_seed, "stratum", key]),
     )
     output: list[dict[str, Any]] = []
     while len(output) < target:

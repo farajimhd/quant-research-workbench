@@ -692,3 +692,52 @@ more specific: learned TF-IDF features materially improve eligibility recall
 and article extraction. A future hybrid may use those heads as advisory signals
 behind deterministic structural constraints, but no production cutover is
 authorized by this experiment.
+
+### Fresh prediction-blind 100-article acceptance set
+
+The original 1,000 human articles were used while V9 was developed and are
+therefore no longer an untouched acceptance set. A separate 100-article set was
+selected and manually annotated before either V9 or V10 predictions were
+generated. The selection excludes every source ID in both the 1,000-article
+human authority and the 10,000-article Sol teacher corpus.
+
+The frozen set has:
+
+- 100 articles and zero training/development overlap;
+- coverage from 2010 through 2026, with six articles per year through 2024 and
+  five per year in 2025 and 2026;
+- 49 single-ticker, 34 multi-ticker, and 17 zero-ticker articles; and
+- balanced selection across the available V5 structural strata, while never
+  exposing article-level V9 or V10 output to the reviewer.
+
+The completed annotations extend the runtime-only human authority from 1,000
+to 1,100 articles. Prepare, record, certify, and evaluate the set with:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_prepare_fresh_acceptance
+python -m research.text_intelligence.semantic_calibration_v1.run_record_fresh_acceptance --input-jsonl <manual-review.jsonl>
+python -m research.text_intelligence.semantic_calibration_v1.run_finalize_fresh_acceptance
+python -m research.text_intelligence.semantic_calibration_v1.run_evaluate_fresh_acceptance
+```
+
+Fresh-set results are:
+
+| Metric | V9 deterministic | V10 TF-IDF forest | V10 - V9 |
+|---|---:|---:|---:|
+| Extraction F1 | 0.880 | 0.931 | +0.052 |
+| Ticker-scope F1 | 0.456 | 0.395 | -0.061 |
+| Content-role macro F1 | 0.447 | 0.430 | -0.017 |
+| Source-origin macro F1 | 0.388 | 0.494 | +0.106 |
+| Direction macro F1 | 0.378 | 0.424 | +0.046 |
+| Concept-family F1 | 0.486 | 0.222 | -0.265 |
+| Forecast eligibility F1 | 0.722 | 0.849 | +0.127 |
+| Issuer-history eligibility F1 | 0.882 | 0.952 | +0.070 |
+
+The untouched set confirms that V10's learned text representation improves
+article extraction and eligibility decisions, and modestly improves direction.
+It also confirms a material structural weakness: V10 over-predicts tickers and
+concepts, with concept precision only 0.132 despite recall of 0.691. V9 remains
+the stronger concept authority and is still better for ticker scope and content
+role. Consequently, neither result supports replacing V9 wholesale with V10;
+V10 is suitable only as an advisory source for the dimensions on which it has
+demonstrated fresh-set gains.
