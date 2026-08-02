@@ -644,3 +644,51 @@ neutral-class F1 is 0.218 and the overall direction gain comes primarily from
 better mixed-event recognition. The candidate must therefore remain outside
 production until the intended authority cutover is separately reviewed and
 approved.
+
+## TF-IDF bagged random-forest News V10 experiment
+
+V10 tests whether a learned bagging baseline can capture nonlinear semantic
+combinations that the readable V9 rules miss. It trains only from the 9,997
+valid Sol teacher articles and evaluates on all 1,000 independently reviewed
+human articles. Human labels are never used to fit the text representation,
+forest heads, or thresholds. The Sol and human article sets are disjoint.
+
+The representation uses word and character TF-IDF features. Truncated SVD,
+fitted only on the Sol training corpus, produces bounded dense article and
+issuer-context vectors suitable for trees. Issuer names, aliases, and ticker
+symbols are replaced with a target-entity marker in issuer-scoped examples so
+the forest cannot solve the task by memorizing issuer identity. Separate
+bootstrap random-forest heads predict extraction, issuer scope, role, origin,
+direction, concepts, and eligibility. Forest depth is bounded through leaf
+limits, and each tree samples 80 percent of its training rows.
+
+Run the complete train/evaluate comparison with:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_news_v10
+```
+
+The generated model and evaluation report are written outside the repository
+under `D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\news_v10_tfidf_random_forest`.
+
+Results on all 1,000 human-reviewed articles are:
+
+| Metric | V9 deterministic | V10 TF-IDF forest | V10 - V9 |
+|---|---:|---:|---:|
+| Extraction F1 | 0.921 | 0.934 | +0.013 |
+| Ticker-scope F1 | 0.575 | 0.522 | -0.053 |
+| Content-role macro F1 | 0.726 | 0.591 | -0.135 |
+| Source-origin macro F1 | 0.594 | 0.562 | -0.032 |
+| Direction macro F1 | 0.431 | 0.414 | -0.017 |
+| Concept-family F1 | 0.458 | 0.244 | -0.214 |
+| Forecast eligibility F1 | 0.697 | 0.828 | +0.131 |
+| Issuer-history eligibility F1 | 0.897 | 0.959 | +0.063 |
+
+V10 is not a replacement for V9. Its high-recall issuer and concept heads
+over-predict substantially: issuer scope has 4,514 false positives and concept
+extraction has 9,678 false positives on the human set. It also nearly loses the
+regulatory-event role class (F1 0.053 versus V9's 0.613). The useful finding is
+more specific: learned TF-IDF features materially improve eligibility recall
+and article extraction. A future hybrid may use those heads as advisory signals
+behind deterministic structural constraints, but no production cutover is
+authorized by this experiment.
