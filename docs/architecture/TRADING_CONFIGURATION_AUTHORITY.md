@@ -200,6 +200,16 @@ settings must be separate questions. Every editable field shows a concise
 plain-language explanation inline, while the help control supplies secondary
 detail. Control boundaries use the active theme's authority accent and a
 distinct focus ring instead of a harsh dark stroke.
+
+The Configuration Workbench uses an editorial visual hierarchy derived from
+the application's white operations theme: neutral page and card surfaces,
+hairline structural rules, prominent decision headings, readable supporting
+copy, and restrained controls. Domain accents identify the current authority
+through navigation, icons, and focus; success, warning, and danger colors are
+reserved for semantic state. Ordinary sections, editable fields, and action
+subsections must not introduce independent tinted backgrounds or decorative
+phase colors. Dark themes preserve the same hierarchy with tone-appropriate
+neutral surfaces rather than becoming a separate visual language.
 Expert mode is a full-width editorial workbench: each section keeps explanatory
 context beside a dense but readable control grid, while the save action remains
 available in a sticky footer. Profile libraries are supporting navigation, not

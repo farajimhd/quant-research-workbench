@@ -381,7 +381,605 @@
   .configuration-guided-workspace .guided-question > header > div > span { font-size: 17px; }
 }
 
-/* Retained micro-component rules are intentionally lower priority than Workbench v2. */
+/* Configuration Workbench v3: a restrained editorial system derived from the
+   application's white operations theme. Surfaces stay neutral; domain color
+   identifies location and semantic color communicates state. */
+.trading-configuration-page {
+  --configuration-control-border: color-mix(in oklab, var(--foreground) 13%, transparent);
+  --configuration-control-fill: var(--surface);
+  --configuration-rule: color-mix(in oklab, var(--foreground) 9%, transparent);
+  --configuration-soft: color-mix(in oklab, var(--foreground) 2.5%, var(--surface));
+  background: var(--background);
+  gap: 16px;
+  padding: 20px 24px 88px;
+}
+
+.configuration-page-header {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--configuration-rule);
+  border-radius: 0;
+  gap: 16px;
+  min-height: 72px;
+  padding: 4px 0 16px;
+}
+.configuration-page-header::before { display: none; }
+.configuration-page-icon {
+  background: transparent;
+  border: 1px solid var(--configuration-rule);
+  border-radius: 8px;
+  color: var(--configuration-accent);
+  height: 40px;
+  width: 40px;
+}
+.configuration-page-heading > span {
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-weight: 680;
+  letter-spacing: .11em;
+}
+.configuration-page-heading h1 {
+  color: var(--foreground);
+  font-size: 24px;
+  font-weight: 660;
+  letter-spacing: -.025em;
+  line-height: 1.18;
+  margin: 2px 0 3px;
+}
+.configuration-page-heading p {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  line-height: 1.55;
+  max-width: 940px;
+}
+.configuration-revision-badge {
+  border-left-color: var(--configuration-rule);
+  gap: 2px;
+  min-width: 146px;
+  padding-left: 16px;
+}
+.configuration-revision-badge small { color: var(--muted-foreground); font-size: 8.5px; letter-spacing: .1em; }
+.configuration-revision-badge strong { font-size: 12.5px; font-weight: 650; }
+.configuration-revision-badge span { color: var(--muted-foreground); font-size: 10px; }
+
+.configuration-experience-bar { gap: 10px; }
+.configuration-editing-label { font-size: 9px; letter-spacing: .1em; }
+.configuration-experience-switch {
+  background: var(--configuration-soft);
+  border: 1px solid var(--configuration-rule);
+  border-radius: 7px;
+}
+.configuration-experience-actions > button,
+.configuration-experience-switch button { border-radius: 5px; font-size: 11.5px; min-height: 34px; }
+
+.configuration-journey {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--configuration-rule);
+  border-radius: 0;
+  min-height: 50px;
+}
+.configuration-journey a,
+.configuration-journey[data-experience="guided"] a {
+  border-right: 0;
+  color: var(--muted-foreground);
+  gap: 8px;
+  padding: 8px 12px;
+  position: relative;
+}
+.configuration-journey a > span:first-child {
+  background: transparent;
+  border: 1px solid var(--configuration-rule);
+  color: inherit;
+  height: 24px;
+  width: 24px;
+}
+.configuration-journey-copy strong,
+.configuration-journey[data-experience="guided"] .configuration-journey-copy strong { font-size: 11.5px; font-weight: 600; }
+.configuration-journey-copy small { font-size: 9px; }
+.configuration-journey a[aria-current="step"] {
+  background: transparent;
+  box-shadow: inset 0 -2px var(--configuration-accent);
+  color: var(--foreground);
+}
+.configuration-journey a[aria-current="step"] > span:first-child {
+  border-color: color-mix(in oklab, var(--configuration-accent) 45%, var(--configuration-rule));
+  color: var(--configuration-accent);
+}
+.configuration-journey { scrollbar-width: none; }
+.configuration-journey::-webkit-scrollbar { display: none; }
+
+.configuration-guided-workspace,
+.configuration-expert-workspace { gap: 16px; }
+
+/* The start screen reads as a short editorial choice, not a dashboard. */
+.configuration-studio-home {
+  background: var(--surface);
+  border: 1px solid var(--configuration-rule);
+  border-radius: 7px;
+  box-shadow: none;
+  overflow: hidden;
+}
+.configuration-studio-home > header {
+  align-items: flex-start;
+  background: transparent;
+  border-bottom: 1px solid var(--configuration-rule);
+  gap: 32px;
+  padding: 28px 30px 26px;
+}
+.configuration-studio-home > header span:first-child {
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  letter-spacing: .12em;
+}
+.configuration-studio-home h2 {
+  font-size: 25px;
+  font-weight: 660;
+  letter-spacing: -.025em;
+  line-height: 1.22;
+  max-width: 720px;
+}
+.configuration-studio-home > header p {
+  color: var(--muted-foreground);
+  font-size: 13.5px;
+  line-height: 1.62;
+  max-width: 760px;
+}
+.configuration-home-authority {
+  background: transparent;
+  border: 0;
+  border-left: 2px solid var(--success);
+  border-radius: 0;
+  color: var(--foreground);
+  padding: 4px 0 4px 16px;
+}
+.configuration-home-authority svg { color: var(--success); }
+.configuration-home-authority strong { font-size: 13px; font-weight: 650; }
+.configuration-home-authority small { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.5; }
+.configuration-start-paths { background: transparent; }
+.configuration-start-paths > button {
+  background: var(--surface);
+  border-color: var(--configuration-rule);
+  min-height: 124px;
+  padding: 20px 26px;
+}
+.configuration-start-paths > button:hover:not(:disabled) { background: var(--configuration-soft); }
+.configuration-start-paths > button.recommended { box-shadow: inset 2px 0 var(--configuration-accent); }
+.configuration-path-icon {
+  background: transparent;
+  border: 1px solid var(--configuration-rule);
+  border-radius: 7px;
+  color: var(--configuration-accent);
+}
+.configuration-start-paths em { color: var(--muted-foreground); font-size: 9px; letter-spacing: .1em; }
+.configuration-start-paths strong { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+.configuration-start-paths small { color: var(--muted-foreground); font-size: 12px; line-height: 1.55; }
+
+/* Guided mode: one quiet paper surface with a decisive reading order. */
+.configuration-guided-workspace .guided-question-surface,
+.configuration-guided-workspace .guided-strategy-question,
+.guided-strategy-section-nav {
+  background: var(--surface);
+  border-color: var(--configuration-rule);
+  border-radius: 7px;
+  box-shadow: none;
+}
+.configuration-guided-workspace .guided-question-surface > header,
+.guided-strategy-question > header {
+  background: transparent;
+  border-bottom-color: var(--configuration-rule);
+  padding: 18px 28px 16px;
+}
+.guided-question-surface > header > span,
+.guided-review > header > span,
+.guided-strategy-question > header span,
+.guided-strategy-question > header small {
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.guided-question-surface > header h2,
+.guided-review > header h2 { font-size: 22px; font-weight: 660; letter-spacing: -.02em; }
+.guided-question-surface > header p,
+.guided-review > header p { color: var(--muted-foreground); font-size: 13px; line-height: 1.6; }
+.guided-question-progress { background: var(--configuration-rule); border-radius: 0; height: 2px; }
+.guided-question-progress > span { background: var(--configuration-accent); }
+.configuration-guided-workspace .guided-question {
+  gap: 22px;
+  min-height: 230px;
+  padding: 28px 36px 34px;
+}
+.configuration-guided-workspace .guided-question > header > div > span {
+  color: var(--foreground);
+  font-size: 24px;
+  font-weight: 660;
+  letter-spacing: -.025em;
+  line-height: 1.25;
+}
+.configuration-guided-workspace .guided-question > header p {
+  color: var(--muted-foreground);
+  font-size: 14.5px;
+  line-height: 1.65;
+  max-width: 900px;
+}
+.guided-strategy-section-nav {
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  padding: 0 16px;
+}
+.guided-strategy-section-nav button { font-size: 11.5px; min-height: 48px; }
+.guided-strategy-section-nav button small {
+  background: transparent;
+  border-color: var(--configuration-rule);
+  color: var(--muted-foreground);
+}
+.configuration-guided-workspace .guided-strategy-question { border-radius: 0 0 7px 7px; }
+.guided-strategy-question > .guided-question-progress { margin: 0 28px; }
+.guided-strategy-prompt { gap: 8px; padding: 26px 36px 18px; }
+.guided-strategy-prompt h2 {
+  color: var(--foreground);
+  font-size: 25px;
+  font-weight: 660;
+  letter-spacing: -.025em;
+  line-height: 1.25;
+}
+.guided-strategy-prompt > p { color: var(--muted-foreground); font-size: 14px; line-height: 1.65; max-width: 900px; }
+.guided-strategy-prompt aside {
+  background: transparent;
+  border-left: 2px solid var(--configuration-rule);
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  line-height: 1.6;
+  margin-top: 10px;
+  max-width: 900px;
+  padding: 3px 0 3px 14px;
+}
+.guided-strategy-prompt aside svg { color: var(--muted-foreground); }
+.guided-strategy-prompt aside strong {
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.guided-strategy-controls { min-height: 230px; padding: 8px 36px 36px; }
+
+.configuration-guided-workspace .guided-decision-options { gap: 10px; }
+.configuration-guided-workspace .guided-decision-options > label > span {
+  background: var(--surface);
+  border-color: var(--configuration-rule);
+  border-radius: 6px;
+  box-shadow: none;
+  min-height: 78px;
+  padding: 14px 16px;
+}
+.configuration-guided-workspace .guided-decision-options > label > span:hover { background: var(--configuration-soft); }
+.configuration-guided-workspace .guided-decision-options input:checked + span {
+  background: var(--surface);
+  border-color: color-mix(in oklab, var(--configuration-accent) 58%, var(--configuration-rule));
+  box-shadow: inset 2px 0 var(--configuration-accent);
+}
+.configuration-guided-workspace .guided-decision-options strong { color: var(--foreground); font-size: 14px; font-weight: 640; }
+.configuration-guided-workspace .guided-decision-options small { color: var(--muted-foreground); font-size: 12px; line-height: 1.55; }
+.configuration-guided-workspace .guided-decision-options em {
+  background: transparent;
+  border: 0;
+  color: var(--success);
+  font-size: 9px;
+  font-weight: 680;
+  padding: 0;
+}
+
+.guided-action-form { gap: 0; }
+.guided-action-form > section {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  border-top: 1px solid var(--configuration-rule);
+  gap: 16px;
+  padding: 22px 0 24px;
+}
+.guided-action-form > section:first-child { border-top: 0; padding-top: 0; }
+.guided-action-form > section > header { gap: 5px; }
+.guided-action-form > section > header strong { color: var(--foreground); font-size: 16px; font-weight: 650; }
+.guided-action-form > section > header p { color: var(--muted-foreground); font-size: 12.5px; line-height: 1.55; }
+.guided-action-form > section > div { gap: 16px; }
+
+.guided-confirmed-choice,
+.guided-readonly-value {
+  background: var(--configuration-soft);
+  border-color: var(--configuration-rule);
+  border-radius: 6px;
+}
+.guided-confirmed-choice strong { font-size: 15px; font-weight: 650; }
+.guided-confirmed-choice small { font-size: 12px; }
+.guided-running-summary { background: transparent !important; border-top-color: var(--configuration-rule); }
+.guided-running-summary summary { color: var(--muted-foreground); font-size: 11.5px; font-weight: 580; }
+.guided-navigation,
+.guided-strategy-navigation { background: transparent; border-top-color: var(--configuration-rule); }
+
+/* Field hierarchy is typographic; the control is a white bounded tool. */
+.configuration-field { gap: 6px; }
+.configuration-field > span,
+.configuration-expert-workspace .configuration-field > span,
+.guided-form-grid .configuration-field > span {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.35;
+}
+.configuration-field > small,
+.configuration-expert-workspace .configuration-field > small,
+.guided-form-grid .configuration-field > small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 430;
+  line-height: 1.5;
+}
+.configuration-expert-workspace .configuration-field input:not([type="checkbox"]),
+.configuration-expert-workspace .configuration-field select,
+.configuration-guided-workspace .configuration-field input:not([type="checkbox"]),
+.configuration-guided-workspace .configuration-field select {
+  background: var(--surface);
+  border-color: var(--configuration-control-border);
+  border-radius: 6px;
+  box-shadow: none;
+  color: var(--foreground);
+  min-height: 42px;
+}
+.configuration-expert-workspace .configuration-field:focus-within input:not([type="checkbox"]),
+.configuration-expert-workspace .configuration-field:focus-within select,
+.configuration-guided-workspace .configuration-field:focus-within input:not([type="checkbox"]),
+.configuration-guided-workspace .configuration-field:focus-within select {
+  background: var(--surface);
+  border-color: var(--configuration-accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--configuration-accent) 13%, transparent);
+}
+.configuration-expert-workspace .configuration-number em,
+.configuration-guided-workspace .configuration-number em {
+  background: var(--configuration-soft);
+  border-color: var(--configuration-control-border);
+  color: var(--muted-foreground);
+}
+.configuration-expert-workspace .configuration-boolean,
+.configuration-guided-workspace .configuration-boolean {
+  background: var(--surface);
+  border-color: var(--configuration-control-border);
+  border-radius: 6px;
+  min-height: 72px;
+  padding: 12px 14px;
+}
+
+/* Rule editors keep semantic state but shed decorative stage coloring. */
+.guided-strategy-wizard .strategy-rule-stage,
+.guided-strategy-wizard .strategy-rule-group,
+.guided-strategy-wizard .strategy-condition,
+.guided-strategy-wizard .strategy-rule-stage.compact {
+  background: var(--surface);
+  border-color: var(--configuration-rule);
+  border-radius: 6px;
+  box-shadow: none;
+}
+.guided-strategy-wizard .strategy-rule-stage.compact > header,
+.guided-strategy-wizard .strategy-rule-stage > summary {
+  background: transparent;
+  border-bottom-color: var(--configuration-rule);
+  border-top: 1px solid var(--configuration-rule);
+}
+.guided-strategy-wizard .strategy-rule-stage.compact > header > div > span { color: var(--muted-foreground); }
+.guided-strategy-wizard .strategy-rule-group > summary,
+.guided-strategy-wizard .strategy-add-step > summary { background: transparent; }
+.guided-strategy-wizard .strategy-rule-groups { background: transparent; }
+
+/* Expert mode is a structured document rather than alternating colored cards. */
+.configuration-workbench { gap: 16px; grid-template-columns: 238px minmax(0, 1fr); }
+.configuration-library {
+  background: var(--surface);
+  border: 1px solid var(--configuration-rule);
+  border-radius: 7px;
+}
+.configuration-library > header { border-bottom-color: var(--configuration-rule); padding: 14px; }
+.configuration-library > p { color: var(--muted-foreground); font-size: 11px; line-height: 1.55; padding: 12px 14px; }
+.configuration-library > div > button { background: transparent; border-color: var(--configuration-rule); min-height: 58px; padding: 10px 13px; }
+.configuration-library > div > button:hover { background: var(--configuration-soft); }
+.configuration-library > div > button.active,
+.configuration-library > div > button[aria-current="true"] { background: var(--configuration-soft); box-shadow: inset 2px 0 var(--configuration-accent); }
+.configuration-library > div > button strong { font-size: 12px; font-weight: 630; }
+.configuration-library > div > button small { color: var(--muted-foreground); font-size: 9.5px; }
+.configuration-template-picker { border-top-color: var(--configuration-rule); gap: 0; padding: 0; }
+.configuration-template-picker > span { padding: 10px 13px 7px; }
+.configuration-template-picker > button {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  border-top: 1px solid var(--configuration-rule);
+  padding: 9px 13px;
+}
+.configuration-template-picker > button:hover { background: var(--configuration-soft); border-color: var(--configuration-rule); }
+.configuration-template-picker strong { font-size: 12px; font-weight: 630; }
+.configuration-template-picker small { font-size: 10px; }
+.configuration-detail { gap: 16px; }
+.configuration-detail-heading {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--configuration-rule);
+  border-radius: 0;
+  padding: 4px 0 16px;
+}
+.configuration-detail-heading input { font-size: 21px; font-weight: 650; }
+.configuration-detail-heading textarea { color: var(--muted-foreground); font-size: 12px; }
+.configuration-expert-workspace > .configuration-stack { gap: 16px; }
+.configuration-expert-workspace .configuration-group {
+  background: var(--surface);
+  border-color: var(--configuration-rule);
+  border-radius: 7px;
+  grid-template-columns: minmax(210px, 240px) minmax(0, 1fr);
+}
+.configuration-expert-workspace .configuration-group > header {
+  background: transparent;
+  border-right-color: var(--configuration-rule);
+  gap: 12px;
+  padding: 20px 18px;
+}
+.configuration-expert-workspace .configuration-group-icon {
+  background: transparent;
+  border-color: var(--configuration-rule);
+  color: var(--configuration-accent);
+  height: 30px;
+  width: 30px;
+}
+.configuration-expert-workspace .configuration-group > header strong { font-size: 14px; font-weight: 650; }
+.configuration-expert-workspace .configuration-group > header p { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.55; }
+.configuration-expert-workspace .configuration-group-body { padding: 20px; }
+.configuration-expert-workspace .configuration-field[data-editable="true"] > span:first-child::before { display: none; }
+.configuration-guide {
+  background: transparent;
+  border: 0;
+  border-left: 2px solid var(--configuration-rule);
+  border-radius: 0;
+  padding: 3px 0 3px 12px;
+}
+.configuration-guide strong { font-size: 12px; font-weight: 650; }
+.configuration-guide p { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.55; }
+.configuration-expert-workspace .configuration-guide > svg { color: var(--muted-foreground); }
+.configuration-expert-workspace .configuration-guide strong { color: var(--foreground); }
+.strategy-lifecycle-panel,
+.configuration-advanced,
+.configuration-publish-card,
+.configuration-history-card,
+.guided-technical-preview {
+  background: var(--surface);
+  border-color: var(--configuration-rule);
+  border-radius: 7px;
+  box-shadow: none;
+}
+.configuration-expert-workspace .strategy-lifecycle-panel { border-color: var(--configuration-rule); box-shadow: none; }
+.configuration-expert-workspace .strategy-lifecycle-panel > summary,
+.configuration-expert-workspace .strategy-lifecycle-panel[open] > summary {
+  background: transparent;
+  border-left: 0;
+  box-shadow: none;
+}
+.configuration-expert-workspace .strategy-lifecycle-panel > summary small,
+.configuration-expert-workspace .strategy-lifecycle-panel > summary > svg { color: var(--muted-foreground); }
+.configuration-expert-workspace .strategy-lifecycle-index {
+  background: transparent;
+  border-color: var(--configuration-rule);
+  color: var(--foreground);
+}
+.configuration-expert-workspace .strategy-order-request,
+.configuration-expert-workspace .strategy-add-plan {
+  background: var(--surface);
+  border-color: var(--configuration-rule);
+  border-top: 1px solid var(--configuration-rule);
+}
+.configuration-expert-workspace .strategy-handoff-flow span,
+.configuration-expert-workspace .strategy-handoff-card { border-color: var(--configuration-rule); }
+.configuration-expert-workspace .strategy-handoff-result,
+.configuration-expert-workspace .strategy-smart-session {
+  background: var(--configuration-soft);
+  border-color: var(--configuration-rule);
+}
+.configuration-expert-workspace .strategy-handoff-card > header span,
+.configuration-expert-workspace .strategy-handoff-result span,
+.configuration-expert-workspace .strategy-smart-session span { color: var(--muted-foreground); }
+.configuration-expert-workspace .strategy-rule-toolbar { border-left-color: var(--configuration-rule); }
+.configuration-safety-note {
+  background: transparent;
+  border-left: 2px solid var(--success);
+  border-radius: 0;
+  color: var(--muted-foreground);
+  padding-left: 12px;
+}
+.configuration-save-bar {
+  background: color-mix(in oklab, var(--surface) 96%, transparent);
+  border-color: var(--configuration-rule);
+  border-radius: 7px;
+  box-shadow: 0 8px 22px color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+.configuration-json-inspector { opacity: .72; }
+
+@container configuration-workbench (max-width: 1050px) {
+  .configuration-page-header { grid-template-columns: auto minmax(240px, 1fr) auto; }
+  .configuration-header-controls {
+    flex-wrap: wrap;
+    grid-column: 3;
+    grid-row: 1;
+    justify-content: flex-end;
+  }
+  .configuration-revision-badge { min-width: 118px; }
+  .configuration-expert-workspace .configuration-group { grid-template-columns: minmax(180px, 205px) minmax(0, 1fr); }
+}
+
+@container configuration-workbench (max-width: 720px) {
+  .configuration-page-header { grid-template-columns: auto minmax(220px, 1fr) auto; }
+  .configuration-header-controls {
+    align-items: center;
+    flex-direction: row;
+    grid-column: 3;
+    grid-row: 1;
+    justify-content: flex-end;
+  }
+  .configuration-revision-badge { display: none; }
+  .configuration-experience-bar { justify-content: flex-end; }
+  .configuration-workbench { grid-template-columns: 1fr; }
+  .configuration-library { max-height: none; position: static; }
+  .configuration-library > p { display: none; }
+  .configuration-library > header { min-height: 50px; padding: 10px 14px; }
+  .configuration-library > div { display: flex; overflow-x: auto; scrollbar-width: none; }
+  .configuration-library > div::-webkit-scrollbar { display: none; }
+  .configuration-library > div > button { flex: 0 0 210px; min-height: 54px; }
+  .configuration-template-picker {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 0;
+  }
+  .configuration-template-picker > span {
+    border-top: 1px solid var(--configuration-rule);
+    grid-column: 1 / -1;
+    padding: 9px 14px 6px;
+  }
+  .configuration-template-picker > button {
+    background: transparent;
+    border: 0;
+    border-right: 1px solid var(--configuration-rule);
+    border-radius: 0;
+    min-height: 54px;
+    padding: 9px 12px;
+  }
+  .configuration-template-picker > button:last-child { border-right: 0; }
+  .configuration-template-picker > button:hover { background: var(--configuration-soft); }
+  .configuration-expert-workspace .configuration-group { display: block; }
+  .configuration-expert-workspace .configuration-group > header { border-bottom: 1px solid var(--configuration-rule); border-right: 0; }
+}
+
+@media (max-width: 840px) {
+  .trading-configuration-page { padding: 14px 14px 80px; }
+  .configuration-page-header { padding-bottom: 14px; }
+  .configuration-studio-home > header { flex-direction: column; padding: 22px; }
+  .configuration-home-authority { flex-basis: auto; }
+  .configuration-guided-workspace .guided-question { padding: 24px 20px 28px; }
+  .guided-strategy-prompt { padding: 22px 20px 16px; }
+  .guided-strategy-controls { padding: 8px 20px 28px; }
+}
+
+@media (max-width: 560px) {
+  .configuration-page-header { grid-template-columns: auto minmax(0, 1fr); }
+  .configuration-header-controls {
+    align-items: stretch;
+    flex-direction: column;
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+  .configuration-page-heading h1 { font-size: 20px; }
+  .configuration-studio-home h2,
+  .guided-strategy-prompt h2,
+  .configuration-guided-workspace .guided-question > header > div > span { font-size: 21px; }
+}
+
+/* Retained micro-component rules are intentionally lower priority than Workbench v3. */
 @layer configuration-legacy {
 .configuration-page-header {
   background: var(--surface);
