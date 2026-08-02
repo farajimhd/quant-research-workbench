@@ -24853,8 +24853,8 @@ button {
 }
 
 .news-all { --news-readable-scale: var(--app-readable-scale, 1); container-type: inline-size; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
-.news-query-bar { background: var(--surface); border-bottom: 1px solid var(--border); min-height: calc(52px * var(--news-readable-scale)); padding: calc(8px * var(--news-readable-scale)) calc(14px * var(--news-readable-scale)); position: relative; z-index: 5; }
-.news-query-primary { align-items: center; display: flex; flex-wrap: nowrap; gap: calc(8px * var(--news-readable-scale)); min-width: 0; overflow-x: auto; scrollbar-color: var(--border-strong) transparent; scrollbar-width: thin; width: 100%; }
+.news-query-bar { align-items: center; background: var(--surface); border-bottom: 1px solid var(--border); box-sizing: border-box; display: flex; gap: calc(10px * var(--news-readable-scale)); inline-size: 100cqw; max-inline-size: 100cqw; min-height: calc(52px * var(--news-readable-scale)); min-width: 0; overflow: hidden; padding: calc(8px * var(--news-readable-scale)) calc(14px * var(--news-readable-scale)); position: sticky; left: 0; z-index: 5; }
+.news-query-primary { align-items: center; display: flex; flex: 1 1 auto; flex-wrap: nowrap; gap: calc(8px * var(--news-readable-scale)); min-width: 0; overflow-x: auto; scrollbar-color: var(--border-strong) transparent; scrollbar-width: thin; width: auto; }
 .news-search-submit { display: none; }
 .news-query-bar label { color: var(--muted-foreground); display: block; flex: 0 0 auto; font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .news-query-bar label > span { display: none; }
@@ -24879,7 +24879,14 @@ button {
 .inventory-filter-option:focus-visible { outline: 0; }
 .news-query-primary > .toolbar-button, .news-query-primary > .button { flex: 0 0 auto; height: calc(34px * var(--news-readable-scale)); min-width: calc(34px * var(--news-readable-scale)); }
 .news-status { align-items: center; background: color-mix(in oklab, var(--surface-alt) 52%, var(--surface)); border-bottom: 1px solid var(--border); color: var(--muted-foreground); display: flex; font-family: var(--font-mono); font-size: 9px; gap: 12px; min-height: 24px; padding: 0 14px; white-space: nowrap; }
-.news-status[data-inline="true"] { background: transparent; border: 0; flex: 0 0 auto; font-size: calc(10px * var(--news-readable-scale)); justify-content: flex-end; margin-left: auto; min-height: calc(34px * var(--news-readable-scale)); padding: 0 calc(4px * var(--news-readable-scale)); }
+.news-status[data-inline="true"] { background: transparent; border: 0; flex: 0 0 auto; font-size: calc(10px * var(--news-readable-scale)); justify-content: flex-end; min-height: calc(34px * var(--news-readable-scale)); padding: 0 calc(4px * var(--news-readable-scale)); }
+.news-pagination { align-items: center; display: flex; gap: calc(5px * var(--news-readable-scale)); }
+.news-pagination > span { color: var(--muted-foreground); margin-right: calc(2px * var(--news-readable-scale)); }
+.news-pagination > b { color: var(--foreground); font-weight: 600; min-width: calc(44px * var(--news-readable-scale)); text-align: center; }
+.news-pagination > button { align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: calc(7px * var(--news-readable-scale)); color: var(--muted-foreground); cursor: pointer; display: inline-flex; height: calc(28px * var(--news-readable-scale)); justify-content: center; padding: 0; width: calc(28px * var(--news-readable-scale)); }
+.news-pagination > button:hover:not(:disabled) { border-color: var(--border-strong); color: var(--foreground); }
+.news-pagination > button:focus-visible { border-color: var(--focus); outline: 1px solid color-mix(in oklab, var(--focus) 28%, transparent); }
+.news-pagination > button:disabled { cursor: default; opacity: .35; }
 .news-status > .news-source-label { margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
 .news-status strong { color: var(--danger); font-weight: 600; }
 .news-table-wrap { min-height: 0; overflow: auto; }

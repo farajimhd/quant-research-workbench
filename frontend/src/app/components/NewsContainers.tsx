@@ -1,4 +1,4 @@
-import { Bot, Building2, Check, CircleDot, Clock3, ExternalLink, FileCheck2, Flame, Globe2, History, Layers3, Lightbulb, Megaphone, Newspaper, RefreshCw, Search, Snowflake, TrendingUp } from "lucide-react";
+import { Bot, Building2, Check, ChevronLeft, ChevronRight, CircleDot, Clock3, ExternalLink, FileCheck2, Flame, Globe2, History, Layers3, Lightbulb, Megaphone, Newspaper, RefreshCw, Search, Snowflake, TrendingUp } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import { api, query } from "../../api/client";
@@ -41,6 +41,7 @@ type NewsRow = {
 type NewsPayload = {
   as_of: string;
   has_more: boolean;
+  market_timezone: string;
   next_before: string;
   next_before_id: string;
   query_id: string;
@@ -160,7 +161,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
         <InventoryFilterSelect ariaLabel="News time window" onChange={(value) => value === "custom" ? onSettingsChange({ rangeMode: "custom" }) : onSettingsChange({ lookbackHours: Number(value), rangeMode: "preset" })} options={NEWS_WINDOW_OPTIONS} value={settings.rangeMode === "custom" ? "custom" : settings.lookbackHours} />
         <InventoryFilterSelect ariaLabel="News content role" onChange={setRole} options={NEWS_ROLE_OPTIONS} value={role} />
         <InventoryFilterSelect ariaLabel="Source origin" onChange={setOrigin} options={NEWS_ORIGIN_OPTIONS} value={origin} />
-        {settings.rangeMode === "custom" ? <><label><span>From</span><input aria-label="News range start date" onChange={(event) => onSettingsChange({ startDate: event.target.value })} type="date" value={settings.startDate} /></label><label><span>Through</span><input aria-label="News range end date" onChange={(event) => onSettingsChange({ endDate: event.target.value })} type="date" value={settings.endDate} /></label></> : null}
+        {settings.rangeMode === "custom" ? <><label title="Exchange date in America/New_York"><span>From (ET)</span><input aria-label="News range start date in exchange time" onChange={(event) => onSettingsChange({ startDate: event.target.value })} type="date" value={settings.startDate} /></label><label title="Exchange date in America/New_York"><span>Through (ET)</span><input aria-label="News range end date in exchange time" onChange={(event) => onSettingsChange({ endDate: event.target.value })} type="date" value={settings.endDate} /></label></> : null}
         <InventoryFilterSelect ariaLabel="News result limit" onChange={(value) => onSettingsChange({ limit: Number(value) })} options={NEWS_LIMIT_OPTIONS} value={settings.limit} />
         <label><span>Ticker</span><input aria-label="Filter by ticker" maxLength={16} onChange={(event) => onSettingsChange({ ticker: event.target.value.toUpperCase() })} placeholder="Any ticker" value={settings.ticker} /></label>
         <EligibilityFilters filters={eligibilityFilters} onChange={setEligibilityFilters} prefix="News" />
@@ -168,8 +169,8 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
         <InventoryFilterSelect ariaLabel="Legacy source format" onChange={(value) => onSettingsChange({ kind: value })} options={NEWS_SOURCE_FORMAT_OPTIONS} value={settings.kind} />
         <InventoryFilterSelect ariaLabel="News text coverage" onChange={(value) => onSettingsChange({ content: value })} options={NEWS_TEXT_OPTIONS} value={settings.content} />
         <button aria-label="Refresh news" className="toolbar-button compact" onClick={() => setRefreshKey((value) => value + 1)} title="Refresh" type="button"><RefreshCw size={13} /></button>
-        <NewsStatus inline state={state} />
       </div>
+      <NewsStatus inline state={state} />
     </form>
     <div className="news-table-wrap intelligence-feed-scroll">
       <div className="intelligence-feed news-intelligence-feed" role="list">
@@ -197,7 +198,6 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
       </div>
       {!state.loading && !state.rows.length ? <NewsEmpty label="No news matches this query." /> : null}
     </div>
-    {state.hasMore ? <button className="news-load-more" disabled={state.loadingMore} onClick={state.loadMore} type="button">{state.loadingMore ? "Loading…" : "Load older news"}</button> : null}
   </section>;
 }
 
@@ -305,7 +305,9 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
 }
 
 function useNewsQuery({ asOf, content, direction, eligibilityFilters, endDate, hours, kind, labelState, limit, live, origin, refreshKey, role, search, startDate, ticker }: { asOf: string; content: string; direction: string; eligibilityFilters: EligibilityQuery; endDate: string; hours: number; kind: string; labelState: string; limit: number; live: boolean; origin: string; refreshKey: number; role: string; search: string; startDate: string; ticker: string }) {
-  const [rows, setRows] = useState<NewsRow[]>([]); const [payload, setPayload] = useState<NewsPayload | null>(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const [loadingMore, setLoadingMore] = useState(false);
+  const [rows, setRows] = useState<NewsRow[]>([]); const [payload, setPayload] = useState<NewsPayload | null>(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const [loadingPage, setLoadingPage] = useState(false);
+  const [pageIndex, setPageIndex] = useState(0);
+  const pageStartsRef = useRef<Array<{ before: string; beforeId: string }>>([{ before: "", beforeId: "" }]);
   const queryIdRef = useRef("");
   const [liveConnected, setLiveConnected] = useState(false);
   const [liveError, setLiveError] = useState("");
@@ -316,9 +318,9 @@ function useNewsQuery({ asOf, content, direction, eligibilityFilters, endDate, h
     if (signal?.aborted) return;
     queryIdRef.current = next.query_id;
     setError("");
-    setPayload(next); setRows((current) => before ? [...current, ...next.rows.filter((row) => !current.some((item) => item.canonical_news_id === row.canonical_news_id))] : next.rows);
+    setPayload(next); setRows(next.rows);
   }, [asOf, content, direction, eligibilityFilters.followup, eligibilityFilters.forecast, eligibilityFilters.history, eligibilityFilters.prior, eligibilityFilters.reaction, endDate, hours, kind, labelState, limit, live, origin, role, search, startDate, ticker]);
-  useEffect(() => { const controller = new AbortController(); setLoading(true); setError(""); load("", "", controller.signal).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); return () => controller.abort(); }, [load, refreshKey]);
+  useEffect(() => { const controller = new AbortController(); pageStartsRef.current = [{ before: "", beforeId: "" }]; setPageIndex(0); setLoading(true); setError(""); load("", "", controller.signal).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); return () => controller.abort(); }, [load, refreshKey]);
   useEffect(() => {
     if (!live) { setLiveConnected(false); latestRevision.current = null; return; }
     let closed = false;
@@ -341,6 +343,8 @@ function useNewsQuery({ asOf, content, direction, eligibilityFilters, endDate, h
           if (firstSnapshot) return;
           refreshController?.abort();
           refreshController = new AbortController();
+          pageStartsRef.current = [{ before: "", beforeId: "" }];
+          setPageIndex(0);
           load("", "", refreshController.signal).catch((reason) => { if (!refreshController?.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); });
         } catch (reason) {
           setLiveError(reason instanceof Error ? reason.message : String(reason));
@@ -356,13 +360,27 @@ function useNewsQuery({ asOf, content, direction, eligibilityFilters, endDate, h
     connect();
     return () => { closed = true; window.clearTimeout(retryTimer); refreshController?.abort(); socket?.close(); };
   }, [live, load, ticker]);
-  const loadMore = useCallback(() => { if (!payload?.next_before) return; setLoadingMore(true); load(payload.next_before, payload.next_before_id, undefined, payload.as_of).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoadingMore(false)); }, [load, payload]);
-  return { asOf: payload?.as_of, error, hasMore: Boolean(payload?.has_more), live, liveConnected, liveError, loadMore, loading, loadingMore, queryId: payload?.query_id ?? "", rows, windowStart: payload?.window_start };
+  const goToPage = useCallback((targetIndex: number) => {
+    if (!payload || targetIndex < 0) return;
+    let start = pageStartsRef.current[targetIndex];
+    if (targetIndex === pageIndex + 1) {
+      if (!payload.has_more || !payload.next_before) return;
+      start = { before: payload.next_before, beforeId: payload.next_before_id };
+      pageStartsRef.current[targetIndex] = start;
+    }
+    if (!start) return;
+    setLoadingPage(true); setError("");
+    load(start.before, start.beforeId, undefined, payload.as_of)
+      .then(() => setPageIndex(targetIndex))
+      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
+      .finally(() => setLoadingPage(false));
+  }, [load, pageIndex, payload]);
+  return { asOf: payload?.as_of, canGoNext: Boolean(payload?.has_more), canGoPrevious: pageIndex > 0, error, goToNextPage: () => goToPage(pageIndex + 1), goToPreviousPage: () => goToPage(pageIndex - 1), hasMore: Boolean(payload?.has_more), live, liveConnected, liveError, loading, loadingPage, marketTimezone: payload?.market_timezone ?? "America/New_York", pageNumber: pageIndex + 1, queryId: payload?.query_id ?? "", rows, windowStart: payload?.window_start };
 }
 
 // Product UI reports user-relevant freshness only. Never render database/table
 // names, storage paths, raw service errors, implementation notes, or agent/chat text.
-function NewsStatus({ compact, inline, state }: { compact?: boolean; inline?: boolean; state: ReturnType<typeof useNewsQuery> }) { const resultState = `${state.rows.length} loaded · ${state.hasMore ? "more available" : "all matches"}`; return <div className="news-status" data-compact={compact ? "true" : "false"} data-inline={inline ? "true" : "false"}>{state.loading ? <span>Querying news…</span> : state.error ? <strong>{state.error}</strong> : inline ? <span title={resultState}>{resultState}</span> : <><span>{resultState}</span>{!compact && state.windowStart ? <span className="news-window-start"><span>Since</span><MarketTime dateStyle="short" includeDate layout="inline" value={state.windowStart} /></span> : null}<span className="news-source-label">{state.live ? state.liveConnected ? "Live updates" : "Reconnecting…" : "Point-in-time"}</span></>}</div>; }
+function NewsStatus({ compact, inline, state }: { compact?: boolean; inline?: boolean; state: ReturnType<typeof useNewsQuery> }) { const resultState = `${state.rows.length} rows on page ${state.pageNumber}${state.hasMore ? " · more available" : ""}`; return <div className="news-status" data-compact={compact ? "true" : "false"} data-inline={inline ? "true" : "false"}>{state.loading ? <span>Querying news…</span> : state.error ? <strong>{state.error}</strong> : inline ? <div className="news-pagination" title={`${resultState} · custom dates use ${state.marketTimezone}`}><span>{state.rows.length} rows</span><button aria-label="Previous News page" disabled={!state.canGoPrevious || state.loadingPage} onClick={state.goToPreviousPage} type="button"><ChevronLeft size={13} /></button><b>Page {state.pageNumber}</b><button aria-label="Next News page" disabled={!state.canGoNext || state.loadingPage} onClick={state.goToNextPage} type="button"><ChevronRight size={13} /></button></div> : <><span>{resultState}</span>{!compact && state.windowStart ? <span className="news-window-start"><span>Since</span><MarketTime dateStyle="short" includeDate layout="inline" value={state.windowStart} /></span> : null}<span className="news-source-label">{state.live ? state.liveConnected ? "Live updates" : "Reconnecting…" : "Point-in-time"}</span></>}</div>; }
 function NewsEmpty({ label }: { label: string }) { return <div className="news-empty"><Newspaper size={18} /><span>{label}</span></div>; }
 function TickerList({ presentations, tickers = [] }: { presentations: Record<string, TickerPresentation>; tickers?: string[] }) { return <span className="news-tickers">{tickers.slice(0, 3).map((ticker) => <b key={ticker}><TickerIdentity logoUrl={presentations[ticker]?.logo_url} showLogoPlaceholder ticker={ticker} /></b>)}{tickers.length > 3 ? <b>+{tickers.length - 3}</b> : !tickers.length ? "—" : null}</span>; }
 function NewsTextState({ row }: { row: NewsRow }) { const state = row.render_status === "unrendered" ? "unrendered" : row.is_title_only ? "title" : "full"; return <span className="news-text-state" data-state={state}>{state === "unrendered" ? "Unrendered" : row.is_title_only ? "Title" : row.has_pdf ? "PDF" : row.has_external_text ? "Full" : "Body"}</span>; }

@@ -12,7 +12,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 
-MARKET_TIME_ZONE = ZoneInfo("America/New_York")
+MARKET_TIME_ZONE_NAME = "America/New_York"
+MARKET_TIME_ZONE = ZoneInfo(MARKET_TIME_ZONE_NAME)
 MAX_TEXT_QUERY_HOURS = 24 * 366 * 10
 QUERY_SESSION_TTL_SECONDS = 30 * 60
 MAX_QUERY_SESSIONS = 64

@@ -73,6 +73,7 @@ from src.backend.sec_canvas_service import (
     sec_filings_payload,
 )
 from src.backend.text_query_contract import (
+    MARKET_TIME_ZONE_NAME,
     TEXT_QUERY_SESSIONS,
     resolve_text_query_window,
 )
@@ -168,7 +169,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_env_files(discover_env_files(PROJECT_ROOT), verbose=False)
 FRONTEND_DIST = frontend_dist_root()
 CHART_DISPLAY_ITEMS_NONE = "__none__"
-EXCHANGE_TIME_ZONE = "America/New_York"
+EXCHANGE_TIME_ZONE = MARKET_TIME_ZONE_NAME
 BACKTEST_ARTIFACT_ROOT = PROJECT_ROOT / "data" / "backtests"
 SERVICE_STATUS_TIMEOUT_SECONDS = 1.8
 NEWS_QUERY_TIMEOUT_SECONDS = 12.0
@@ -1830,6 +1831,7 @@ def trading_news_rows(
         "has_more": has_more,
         "limit": safe_limit,
         "lookback_hours": safe_hours,
+        "market_timezone": EXCHANGE_TIME_ZONE,
         "query_id": effective_query_id,
         "next_before": str(rows[-1].get("published_at_utc") or "") if has_more and rows else "",
         "next_before_id": str(rows[-1].get("canonical_news_id") or "") if has_more and rows else "",

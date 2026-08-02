@@ -67,6 +67,7 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("scoped_text_labels_v5", query_mock.call_args_list[1].args[0])
         self.assertIn("PREWHERE corpus='news'", query_mock.call_args_list[1].args[0])
         self.assertTrue(payload["query_id"])
+        self.assertEqual(payload["market_timezone"], "America/New_York")
         self.assertEqual(query_mock.call_args_list[1].kwargs["timeout_seconds"], 1.5)
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
@@ -96,6 +97,7 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("PREWHERE published_date >= toDate('2026-07-08')", sql)
         self.assertIn("published_at_utc <= toDateTime64('2026-07-10 15:00:00.000000'", sql)
         self.assertEqual(payload["limit"], 25)
+        self.assertEqual(payload["market_timezone"], "America/New_York")
         self.assertEqual(payload["window_start"], "2026-07-08T04:00:00Z")
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")

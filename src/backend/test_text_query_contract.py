@@ -17,6 +17,16 @@ class TextQueryContractTests(unittest.TestCase):
         self.assertEqual(window.end.isoformat(), "2026-07-10T15:00:00+00:00")
         self.assertTrue(window.custom)
 
+    def test_custom_market_date_covers_the_full_winter_exchange_day_in_utc(self) -> None:
+        window = resolve_text_query_window(
+            as_of="2018-01-01T00:00:00Z",
+            lookback_hours=6,
+            start_date="2017-12-15",
+            end_date="2017-12-15",
+        )
+        self.assertEqual(window.start.isoformat(), "2017-12-15T05:00:00+00:00")
+        self.assertEqual(window.end.isoformat(), "2017-12-16T04:59:59.999999+00:00")
+
     def test_custom_range_rejects_partial_or_future_windows(self) -> None:
         with self.assertRaisesRegex(ValueError, "Both start_date"):
             resolve_text_query_window(as_of="2026-07-10T15:00:00Z", lookback_hours=6, start_date="2026-07-08")
