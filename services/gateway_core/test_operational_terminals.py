@@ -73,6 +73,14 @@ class OperationalTerminalTests(unittest.TestCase):
             self.assertNotIn("Attention Required", recovered)
             self.assertIn("RUNNING", recovered)
 
+    def test_reference_public_config_exposes_ticker_event_cadence(self) -> None:
+        source_sync = self._reference_config("daemon").public_dict()["source_sync"]
+
+        self.assertEqual(source_sync["ticker_event_inventory_frequency_seconds"], 86_400)
+        self.assertEqual(source_sync["ticker_event_sync_frequency_seconds"], 3_600)
+        self.assertEqual(source_sync["ticker_event_sync_batch_size"], 1_000)
+        self.assertEqual(source_sync["ticker_event_stale_after_days"], 7)
+
     def test_recent_rows_expand_to_fill_available_height(self) -> None:
         gateways = self._gateways()
         sec_rows = [
