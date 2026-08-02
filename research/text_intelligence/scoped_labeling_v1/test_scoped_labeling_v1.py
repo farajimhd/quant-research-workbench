@@ -899,6 +899,38 @@ Body:
         )
         self.assertEqual(set(analysis.resolved_subjects), {"HEES", "URI"})
 
+    def test_full_article_name_introduces_bounded_ampersand_shorthand(self) -> None:
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("HEES", "issuer:hees", ("H&E Equipment Services",)),
+            IssuerIdentity("URI", "issuer:uri", ("United Rentals",)),
+        ))
+        text = (
+            "United Rentals will no longer pursue H&E Equipment Services. "
+            "H&E may enter into a competing acquisition proposal."
+        )
+        local = resolver.with_article_identities(text)
+        matches = local.resolve(
+            "H&E may enter into a competing acquisition proposal.",
+            linked_tickers=("HEES", "URI"),
+        )
+        self.assertEqual(tuple(match.ticker for match in matches), ("HEES",))
+        self.assertIn("issuer_alias:h e", matches[0].evidence)
+        self.assertFalse(resolver.resolve("H&E may enter another proposal."))
+
+    def test_ampersand_shorthand_requires_full_name_in_same_article(self) -> None:
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("ABCO", "issuer:abco", ("A&B Holdings",)),
+            IssuerIdentity("ABIO", "issuer:abio", ("A&B Industries",)),
+        ))
+        local = resolver.with_article_identities(
+            "A&B Holdings announced a review. A&B later issued a statement."
+        )
+        matches = local.resolve(
+            "A&B later issued a statement.",
+            linked_tickers=("ABCO", "ABIO"),
+        )
+        self.assertEqual(tuple(match.ticker for match in matches), ("ABCO",))
+
     def test_unlinked_common_single_word_alias_cannot_create_issuer(self) -> None:
         resolver = NewsIssuerResolver((
             IssuerIdentity("MAJI", "issuer-maji", ("Marijuana",)),

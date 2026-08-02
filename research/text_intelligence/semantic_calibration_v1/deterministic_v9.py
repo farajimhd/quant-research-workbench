@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,6 +24,9 @@ from .deterministic_v9_config import (
     ELIGIBILITY_TRUE_KEYS,
     MIXED_COMPONENT_THRESHOLD,
     MIXED_DOMINANCE_MARGIN,
+    ISSUER_STATE_DIRECTION_RULES,
+    MA_ACTIVE_SIGNING_PATTERNS,
+    MA_INACTIVE_PATTERNS,
     NEGATIVE_THRESHOLD,
     POSITIVE_THRESHOLD,
     SINGLE_TICKER_CONCEPT_ADDITIONS,
@@ -87,7 +91,11 @@ def classify_news_document_v9(
             continue
         label = dict(source)
         classification = dict(label.get("classification") or {})
-        direction = _recalibrate_direction(classification)
+        direction = _recalibrate_direction(
+            classification,
+            issuer_role=str(label.get("issuer_role") or ""),
+            evidence_text=str(label.get("semantic_evidence_text") or ""),
+        )
         concepts = set(classification.get("event_concepts") or ())
         concepts.update(concept_additions)
         if str(label.get("evidence_scope") or "") == "shared_relational":
@@ -149,7 +157,12 @@ def _override(current: str, signals: tuple[str, ...], table: dict[str, str]) -> 
     return current, ""
 
 
-def _recalibrate_direction(classification: dict[str, Any]) -> dict[str, Any]:
+def _recalibrate_direction(
+    classification: dict[str, Any],
+    *,
+    issuer_role: str = "",
+    evidence_text: str = "",
+) -> dict[str, Any]:
     matched_values = list(classification.get("deterministic_direction_evidence") or ())
     matched_ids = [str(value).split(":", 1)[0] for value in matched_values]
     v8_added = sum(_DEFAULT_DIRECTION_WEIGHTS.get(rule_id, 0.0) for rule_id in matched_ids)
@@ -158,12 +171,36 @@ def _recalibrate_direction(classification: dict[str, Any]) -> dict[str, Any]:
     positive = max(raw, 0.0)
     negative = max(-raw, 0.0)
     evidence = []
+    inactive_ma = any(
+        re.search(pattern, evidence_text, re.I | re.S)
+        for pattern in MA_INACTIVE_PATTERNS
+    )
+    active_ma = any(
+        re.search(pattern, evidence_text, re.I | re.S)
+        for pattern in MA_ACTIVE_SIGNING_PATTERNS
+    )
     for rule_id in matched_ids:
+        if inactive_ma and not active_ma and rule_id == "ma_signed":
+            evidence.append("ma_signed:suppressed_inactive_transaction")
+            continue
         weight = DIRECTION_RULE_WEIGHTS.get(rule_id, _DEFAULT_DIRECTION_WEIGHTS.get(rule_id, 0.0))
         raw += weight
         positive += max(weight, 0.0)
         negative += max(-weight, 0.0)
         evidence.append(f"{rule_id}:{weight:+.2f}")
+    for rule in ISSUER_STATE_DIRECTION_RULES:
+        if issuer_role not in rule.roles:
+            continue
+        if not any(
+            re.search(pattern, evidence_text, re.I | re.S)
+            for pattern in rule.patterns
+        ):
+            continue
+        weight = rule.weight
+        raw += weight
+        positive += max(weight, 0.0)
+        negative += max(-weight, 0.0)
+        evidence.append(f"{rule.rule_id}:{weight:+.2f}")
     if (
         positive >= MIXED_COMPONENT_THRESHOLD
         and negative >= MIXED_COMPONENT_THRESHOLD

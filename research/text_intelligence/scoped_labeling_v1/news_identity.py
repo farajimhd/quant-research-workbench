@@ -8,7 +8,7 @@ from typing import Iterable, Mapping, Sequence
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
 
 
-ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v4"
+ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v5"
 ISSUER_IDENTITY_AUTHORITY_VERSION = "news_issuer_identity_authority_v5"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?:NASDAQ|NYSE|NYSEAMERICAN|NYSE\s+AMERICAN|AMEX|OTC(?:QX|QB)?|"
@@ -84,6 +84,9 @@ class IssuerIdentity:
     investor_website_url: str = ""
     status: str = ""
     source_authority: str = ""
+    # Short forms learned from an explicit full-name mention in the current
+    # article only. They never enter the durable issuer authority.
+    article_local_aliases: tuple[str, ...] = ()
 
     def valid_on(self, day: dt.date | None) -> bool:
         if day is None:
@@ -117,6 +120,7 @@ class NewsIssuerResolver:
         identity_rows = tuple(identities)
         ticker_entries: dict[str, list[IssuerIdentity]] = {}
         alias_entries: dict[str, list[IssuerIdentity]] = {}
+        raw_alias_entries: dict[str, list[tuple[IssuerIdentity, str]]] = {}
         max_alias_tokens = 1
         for identity in identity_rows:
             ticker = identity.ticker.upper().strip()
@@ -128,12 +132,24 @@ class NewsIssuerResolver:
                 if not is_safe_alias(alias, ticker):
                     continue
                 alias_entries.setdefault(alias, []).append(identity)
+                raw_alias_entries.setdefault(alias, []).append(
+                    (identity, raw_alias)
+                )
+                max_alias_tokens = max(max_alias_tokens, len(alias.split()))
+            for raw_alias in identity.article_local_aliases:
+                alias = normalize_issuer_alias(raw_alias)
+                if not is_safe_article_local_alias(alias):
+                    continue
+                alias_entries.setdefault(alias, []).append(identity)
                 max_alias_tokens = max(max_alias_tokens, len(alias.split()))
         self._ticker_entries = {
             key: tuple(value) for key, value in ticker_entries.items()
         }
         self._alias_entries = {
             key: tuple(value) for key, value in alias_entries.items()
+        }
+        self._raw_alias_entries = {
+            key: tuple(value) for key, value in raw_alias_entries.items()
         }
         self._max_alias_tokens = min(max_alias_tokens, 10)
         self._identities = identity_rows
@@ -299,13 +315,59 @@ class NewsIssuerResolver:
         )
 
     def with_article_identities(self, text: str) -> "NewsIssuerResolver":
-        """Add exact issuer-name/symbol pairs stated by the article itself."""
+        """Add exact identities and conservative article-local short names.
+
+        A short name is introduced only after the same article spells out an
+        existing full issuer alias. This lets a later ``H&E`` resolve to the
+        earlier ``H&E Equipment Services`` without promoting that ambiguous
+        shorthand into the global identity authority.
+        """
         local: list[IssuerIdentity] = []
         searchable = re.sub(
             r"(?im)^\s*(?:Title|Teaser|Summary|Body)\s*:\s*",
             "",
             text,
         )
+        matched_aliases: dict[str, set[str]] = {}
+        for match in self.resolve(searchable):
+            for value in match.evidence:
+                kind, separator, normalized = value.partition(":")
+                if not separator or kind != "issuer_alias":
+                    continue
+                matched_aliases.setdefault(match.ticker, set()).add(normalized)
+        for ticker, normalized_aliases in matched_aliases.items():
+            for normalized in normalized_aliases:
+                for identity, raw_alias in self._raw_alias_entries.get(
+                    normalized, ()
+                ):
+                    if identity.ticker != ticker:
+                        continue
+                    local_aliases = _derived_article_short_aliases(raw_alias)
+                    if not local_aliases:
+                        continue
+                    local.append(
+                        IssuerIdentity(
+                            ticker=identity.ticker,
+                            issuer_id=identity.issuer_id,
+                            aliases=(raw_alias,),
+                            list_date=identity.list_date,
+                            delisted_date=identity.delisted_date,
+                            exchange_code=identity.exchange_code,
+                            cik=identity.cik,
+                            entity_type=identity.entity_type,
+                            domicile_country_code=identity.domicile_country_code,
+                            state_of_incorporation=identity.state_of_incorporation,
+                            sic_code=identity.sic_code,
+                            sic_description=identity.sic_description,
+                            sector=identity.sector,
+                            industry=identity.industry,
+                            website_url=identity.website_url,
+                            investor_website_url=identity.investor_website_url,
+                            status=identity.status,
+                            source_authority=identity.source_authority,
+                            article_local_aliases=local_aliases,
+                        )
+                    )
         for match in ARTICLE_ISSUER_RE.finditer(searchable):
             name = match.group("name").strip(" ,")
             ticker = match.group("ticker").upper()
@@ -356,13 +418,49 @@ class NewsIssuerResolver:
                 )
         if not local:
             return self
-        return NewsIssuerResolver(
-            (*self._identities, *local),
-            article_tickers=(
-                *self._article_tickers,
-                *(identity.ticker for identity in local),
-            ),
-        )
+        return self._with_local_identities(local)
+
+    def _with_local_identities(
+        self,
+        local: Sequence[IssuerIdentity],
+    ) -> "NewsIssuerResolver":
+        """Clone only touched index buckets instead of rebuilding the authority."""
+        resolver = object.__new__(NewsIssuerResolver)
+        ticker_entries = dict(self._ticker_entries)
+        alias_entries = dict(self._alias_entries)
+        raw_alias_entries = dict(self._raw_alias_entries)
+        max_alias_tokens = self._max_alias_tokens
+        for identity in local:
+            ticker = identity.ticker.upper().strip()
+            if not ticker:
+                continue
+            ticker_entries[ticker] = (*ticker_entries.get(ticker, ()), identity)
+            for raw_alias in identity.aliases:
+                alias = normalize_issuer_alias(raw_alias)
+                if not is_safe_alias(alias, ticker):
+                    continue
+                alias_entries[alias] = (*alias_entries.get(alias, ()), identity)
+                raw_alias_entries[alias] = (
+                    *raw_alias_entries.get(alias, ()),
+                    (identity, raw_alias),
+                )
+                max_alias_tokens = max(max_alias_tokens, len(alias.split()))
+            for raw_alias in identity.article_local_aliases:
+                alias = normalize_issuer_alias(raw_alias)
+                if not is_safe_article_local_alias(alias):
+                    continue
+                alias_entries[alias] = (*alias_entries.get(alias, ()), identity)
+                max_alias_tokens = max(max_alias_tokens, len(alias.split()))
+        resolver._ticker_entries = ticker_entries
+        resolver._alias_entries = alias_entries
+        resolver._raw_alias_entries = raw_alias_entries
+        resolver._max_alias_tokens = min(max_alias_tokens, 10)
+        resolver._identities = (*self._identities, *local)
+        resolver._article_tickers = frozenset((
+            *self._article_tickers,
+            *(identity.ticker for identity in local),
+        ))
+        return resolver
 
     def issuer_group_count(
         self,
@@ -611,6 +709,33 @@ def is_safe_alias(alias: str, ticker: str) -> bool:
     if len(tokens) == 1:
         return len(alias) >= 5 and alias not in UNSAFE_SINGLE_TOKEN_ALIASES
     return len(alias) >= 5
+
+
+def is_safe_article_local_alias(alias: str) -> bool:
+    """Accept compact local aliases only when their structure is distinctive."""
+    tokens = alias.split()
+    return (
+        len(tokens) >= 2
+        and len(alias) >= 3
+        and any(len(token) == 1 for token in tokens)
+        and all(token.isalnum() for token in tokens)
+    )
+
+
+def _derived_article_short_aliases(alias: str) -> tuple[str, ...]:
+    """Derive ampersand short names such as ``H&E`` from a full issuer name."""
+    match = re.match(
+        r"\s*([A-Za-z0-9]+(?:\s*&\s*[A-Za-z0-9]+)+)(?=\s|,|$)",
+        alias,
+    )
+    if match is None:
+        return ()
+    short = match.group(1).strip()
+    return (
+        (short,)
+        if is_safe_article_local_alias(normalize_issuer_alias(short))
+        else ()
+    )
 
 
 def _timestamp_date(value: str) -> dt.date | None:

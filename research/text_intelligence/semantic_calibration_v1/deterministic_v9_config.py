@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 
-DETERMINISTIC_V9_VERSION = "news_deterministic_v9_candidate_4"
+
+DETERMINISTIC_V9_VERSION = "news_deterministic_v9_candidate_5"
 CALIBRATION_VERSION = "news_deterministic_v9_calibration_3"
 CALIBRATION_SPLIT_SHA256 = "dd960925e6ae60a6a465847717a89b277b8f453341187db3058bca446481765f"
 
@@ -214,6 +216,73 @@ DIRECTION_RULE_WEIGHTS: dict[str, float] = {
     "weak_guidance": -0.6,
     "weak_results": -0.6,
 }
+
+# Issuer-role and transaction-state rules are evaluated only against the
+# already issuer-scoped evidence. They correct the meaning of a transaction
+# without leaking one participant's consequence to another participant.
+@dataclass(frozen=True, slots=True)
+class IssuerStateDirectionRule:
+    rule_id: str
+    roles: tuple[str, ...]
+    patterns: tuple[str, ...]
+    weight: float
+
+
+ISSUER_STATE_DIRECTION_RULES: tuple[IssuerStateDirectionRule, ...] = (
+    IssuerStateDirectionRule(
+        rule_id="ma_withdrawal_acquirer",
+        roles=("acquirer",),
+        patterns=(
+            r"\bno\s+longer\s+pursue\b.{0,100}\b(?:acquisition|merger|offer|bid)\b",
+            r"\b(?:withdraw(?:s|n|al)?|withdrew)\b.{0,100}\b(?:acquisition|offer|bid|proposal)\b",
+            r"\b(?:terminate[ds]?|abandon(?:s|ed)?)\b.{0,100}\b(?:acquisition|merger|offer|bid|proposal)\b",
+        ),
+        weight=-0.75,
+    ),
+    IssuerStateDirectionRule(
+        rule_id="ma_replacement_proposal_target",
+        roles=("target",),
+        patterns=(
+            r"\b(?:superior|higher|competing)\b.{0,80}\b(?:acquisition\s+)?(?:proposal|offer|bid)\b",
+            r"\benter(?:s|ed|ing)?\b.{0,80}\b(?:acquisition\s+proposal|alternative\s+acquisition|competing\s+offer)\b",
+        ),
+        weight=0.85,
+    ),
+    IssuerStateDirectionRule(
+        rule_id="termination_fee_payer",
+        roles=("target",),
+        patterns=(
+            r"\b(?:required|agreed)\s+to\s+pay\b.{0,60}\btermination\s+fee\b",
+            r"\bpay(?:s|ing)?\b.{0,40}\btermination\s+fee\b",
+        ),
+        weight=-0.25,
+    ),
+    IssuerStateDirectionRule(
+        rule_id="termination_fee_recipient",
+        roles=("acquirer",),
+        patterns=(
+            r"\btermination\s+fee\b.{0,60}\bto\b",
+            r"\bpay\b.{0,60}\btermination\s+fee\b.{0,60}\bto\b",
+        ),
+        weight=0.25,
+    ),
+)
+
+# A signed agreement is not an active positive state after the same scoped
+# event explicitly says that the acquisition, merger, offer, or bid ended.
+MA_INACTIVE_PATTERNS: tuple[str, ...] = (
+    r"\bno\s+longer\s+pursue\b.{0,100}\b(?:acquisition|merger|offer|bid)\b",
+    r"\b(?:withdraw(?:s|n|al)?|withdrew)\b.{0,100}\b(?:acquisition|offer|bid|proposal)\b",
+    r"\b(?:terminate[ds]?|abandon(?:s|ed)?)\b.{0,100}\b(?:acquisition|merger|offer|bid|proposal)\b",
+)
+
+# Explicit action is required to keep a positive signed-deal signal when the
+# same issuer evidence also discusses a withdrawn deal. A bare historical
+# phrase such as ``under the merger agreement`` is not a new active signing.
+MA_ACTIVE_SIGNING_PATTERNS: tuple[str, ...] = (
+    r"\bagree(?:s|d)?\s+to\s+acquire\b",
+    r"\b(?:enter(?:s|ed)?\s+into|sign(?:s|ed)?)\b.{0,80}\b(?:definitive\s+)?(?:merger|acquisition)\s+agreement\b",
+)
 
 DIRECTION_BASE_SCALE = 1.0
 POSITIVE_THRESHOLD = 0.20

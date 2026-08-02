@@ -6,12 +6,30 @@ from research.text_intelligence.scoped_labeling_v1.news_identity import IssuerId
 from research.text_intelligence.scoped_labeling_v1.schema import NEWS_EXTRACTOR_VERSION
 from research.text_intelligence.semantic_label_authority_v1.schema import SemanticDocument
 
-from .deterministic_v9 import classify_news_document_v9
+from .deterministic_v9 import _recalibrate_direction, classify_news_document_v9
 from .deterministic_v9_config import CALIBRATION_SPLIT_SHA256, CALIBRATION_VERSION
 from .teacher_split_v9 import normalized_headline_template
 
 
 class DeterministicV9Tests(unittest.TestCase):
+    def test_new_signed_deal_is_not_suppressed_by_separate_withdrawal(self) -> None:
+        result = _recalibrate_direction(
+            {
+                "semantic_score_raw": 0.7,
+                "deterministic_direction_evidence": ("ma_signed:+0.70",),
+            },
+            issuer_role="acquirer",
+            evidence_text=(
+                "The issuer withdrew its prior acquisition offer and entered "
+                "into a definitive merger agreement with another target."
+            ),
+        )
+        self.assertNotIn(
+            "ma_signed:suppressed_inactive_transaction", result["matched_rules"]
+        )
+        self.assertIn("ma_signed:+0.70", result["matched_rules"])
+        self.assertIn("ma_withdrawal_acquirer:-0.75", result["matched_rules"])
+
     def test_template_normalization_removes_ticker_numbers_and_money(self) -> None:
         left = normalized_headline_template("AAPL Raises Target From $200 To $250", ("AAPL",))
         right = normalized_headline_template("MSFT Raises Target From $300 To $350", ("MSFT",))
@@ -174,8 +192,9 @@ class DeterministicV9Tests(unittest.TestCase):
             timestamp="2025-02-18T12:19:44Z",
             title=title,
             text=(
-                f"Title: {title}\nH&E Equipment Services must pay a termination "
-                "fee to United Rentals if it enters another acquisition agreement."
+                f"Title: {title}\nUnder the merger agreement, H&E is required "
+                "to pay a termination fee to United Rentals if H&E terminates "
+                "the agreement to enter into an acquisition proposal."
             ),
             tickers=("HEES", "HRI", "URI"),
         )
@@ -211,6 +230,24 @@ class DeterministicV9Tests(unittest.TestCase):
         )
         self.assertEqual(labels["HEES"]["issuer_role"], "target")
         self.assertEqual(labels["URI"]["issuer_role"], "acquirer")
+        self.assertEqual(
+            labels["HEES"]["classification"]["semantic_direction"], "positive"
+        )
+        self.assertEqual(
+            labels["URI"]["classification"]["semantic_direction"], "mixed"
+        )
+        self.assertIn(
+            "ma_replacement_proposal_target:+0.85",
+            labels["HEES"]["classification"]["deterministic_direction_evidence"],
+        )
+        self.assertIn(
+            "ma_withdrawal_acquirer:-0.75",
+            labels["URI"]["classification"]["deterministic_direction_evidence"],
+        )
+        self.assertIn(
+            "ma_signed:suppressed_inactive_transaction",
+            labels["URI"]["classification"]["deterministic_direction_evidence"],
+        )
 
 
 if __name__ == "__main__":

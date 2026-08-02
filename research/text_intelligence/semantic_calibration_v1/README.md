@@ -761,8 +761,8 @@ Fresh-set results are:
 | Ticker-scope F1 | 0.466 | 0.395 | -0.070 |
 | Content-role macro F1 | 0.466 | 0.430 | -0.036 |
 | Source-origin macro F1 | 0.395 | 0.504 | +0.109 |
-| Text-sentiment macro F1 | 0.393 | 0.430 | +0.037 |
-| Forecast-direction macro F1 | 0.389 | 0.329 | -0.060 |
+| Text-sentiment macro F1 | 0.421 | 0.430 | +0.009 |
+| Forecast-direction macro F1 | 0.438 | 0.329 | -0.109 |
 | Concept-family F1 | 0.504 | 0.224 | -0.279 |
 | Forecast eligibility F1 | 0.740 | 0.849 | +0.109 |
 | Issuer-history eligibility F1 | 0.893 | 0.952 | +0.059 |
@@ -799,6 +799,27 @@ The direction metrics fall slightly because removing the false HEES buyback
 signal exposes a separate unresolved limitation: V9 does not yet infer the
 target's positive superior-bid outcome from the longer article context. That
 limitation was not hidden by retaining issuer-incorrect evidence.
+
+Candidate 5 repairs that remaining limitation without adding an article,
+source-ID, or ticker exception. The issuer authority now learns a conservative
+ampersand shorthand only after the same article explicitly names the full
+issuer (for example, a later short name can inherit an earlier full name), and
+keeps that alias local to the publication. V9 then applies transaction-state
+evidence per resolved issuer role: an inactive signed deal no longer contributes
+the generic signed-deal benefit; withdrawal is adverse to the acquirer;
+replacement acquisition proposals benefit the target; and termination-fee
+payer/recipient effects remain separate. Capital-return evidence continues to
+belong only to its grammatical subject.
+
+On the unchanged frozen 100, only the two N1098 issuer directions change:
+``HEES`` moves from neutral to positive and ``URI`` from positive to mixed;
+both now match the human authority. Text-sentiment macro F1 rises from 0.393 to
+0.421 and forecast-direction macro F1 from 0.389 to 0.438. Extraction, ticker
+scope, content role, source origin, concepts, all eligibility metrics, and all
+end-to-end scope metrics are unchanged. The final live-authority evaluator and
+all 100 Markdown audits were regenerated from candidate 5. Article-local index
+cloning avoids rebuilding the 45,261-row issuer authority per publication; the
+final combined evaluation and audit-render run completed in 7.5 seconds.
 
 The untouched set confirms that V10's learned text representation improves
 article extraction and eligibility decisions, and modestly improves direction.
