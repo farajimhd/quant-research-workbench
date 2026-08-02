@@ -35,3 +35,14 @@ BAR_GPT_ADJUSTED_DAILY_MANIFEST_TABLE = "bar_gpt_daily_sessions_manifest_v2_mass
 BAR_GPT_ADJUSTED_1S_TABLE = "bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted"
 BAR_GPT_ADJUSTED_1S_MANIFEST_TABLE = "bar_gpt_1s_adjustment_manifest_v2_cohort_2tb"
 BAR_GPT_SPLIT_FACTOR_TABLE = "bar_gpt_split_factors_v2_cohort_2tb"
+
+# Reviewed provider-ticker validity chains for canonical cohort identities.
+# Bounds are [start, end).  This is intentionally explicit: ticker strings can
+# be reused by unrelated securities (META was an ETF before Facebook adopted
+# the symbol), so an unbounded rename is not an identity authority.
+BAR_GPT_REVIEWED_TICKER_CHAINS: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "META": (
+        ("FB", "2017-01-01", "2022-06-09"),
+        ("META", "2022-06-09", "9999-12-31"),
+    ),
+}

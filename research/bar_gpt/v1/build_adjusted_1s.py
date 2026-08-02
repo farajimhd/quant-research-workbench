@@ -27,6 +27,7 @@ from research.bar_gpt.v1.cohort import (
     BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
     BAR_GPT_COHORT_2TB_TABLE,
     BAR_GPT_SPLIT_FACTOR_TABLE,
+    BAR_GPT_REVIEWED_TICKER_CHAINS,
 )
 from research.bar_gpt.v1.schema import (
     FEATURE_NAMES,
@@ -61,6 +62,7 @@ DEFAULT_RUNTIME_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\build_adjusted_1s
 ADJUSTMENT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("adjustment_asof_date", "Date"),
     ("split_schedule_sha256", "FixedString(64)"),
+    ("source_ticker", "LowCardinality(String)"),
     ("build_method", "LowCardinality(String)"),
 )
 FACTOR_TYPES = {
@@ -104,6 +106,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--manifest-table", default=BAR_GPT_ADJUSTED_1S_MANIFEST_TABLE)
     parser.add_argument("--factor-table", default=BAR_GPT_SPLIT_FACTOR_TABLE)
     parser.add_argument("--events-table-base", default="events")
+    parser.add_argument("--index-table", default="events_ticker_day_index")
     parser.add_argument("--split-database", default=DEFAULT_SPLIT_DATABASE)
     parser.add_argument("--split-table", default=DEFAULT_SPLIT_TABLE)
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY", ""))
@@ -223,6 +226,15 @@ ORDER BY upper(provider_ticker), execution_date, split_from, split_to
     return actions, digest
 
 
+def adjustment_basis_hash(split_schedule_sha256: str, tickers: tuple[str, ...]) -> str:
+    identity = {
+        ticker: BAR_GPT_REVIEWED_TICKER_CHAINS[ticker]
+        for ticker in tickers if ticker in BAR_GPT_REVIEWED_TICKER_CHAINS
+    }
+    payload = {"split_schedule_sha256": split_schedule_sha256, "identity_chains": identity}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def factor_rows(
     tickers: tuple[str, ...], start: dt.date, end: dt.date, asof: dt.date,
     actions: dict[str, list[tuple[dt.date, float, float]]], digest: str,
@@ -288,9 +300,50 @@ def scaled_feature_expression(name: str, source: str = "s") -> str:
     return value
 
 
+def identity_alias_intervals(
+    tickers: tuple[str, ...], start: dt.date, end: dt.date
+) -> list[tuple[str, str, dt.date, dt.date]]:
+    intervals: list[tuple[str, str, dt.date, dt.date]] = []
+    for canonical in tickers:
+        for provider, left_text, right_text in BAR_GPT_REVIEWED_TICKER_CHAINS.get(canonical, ()):
+            left = max(start, dt.date.fromisoformat(left_text))
+            right = min(end, dt.date.fromisoformat(right_text))
+            if provider != canonical and left < right:
+                intervals.append((canonical, provider, left, right))
+    return intervals
+
+
+def identity_exclusion_sql(
+    intervals: list[tuple[str, str, dt.date, dt.date]], *, source_alias: str = "s"
+) -> str:
+    clauses = [
+        f"({source_alias}.ticker={sql_string(canonical)} AND "
+        f"{source_alias}.local_date>=toDate({sql_string(str(left))}) AND "
+        f"{source_alias}.local_date<toDate({sql_string(str(right))}))"
+        for canonical, _provider, left, right in intervals
+    ]
+    return " AND NOT (" + " OR ".join(clauses) + ")" if clauses else ""
+
+
+def identity_alias_days(
+    client: ClickHouseHttpClient, args: argparse.Namespace,
+    intervals: list[tuple[str, str, dt.date, dt.date]],
+) -> list[tuple[str, str, dt.date]]:
+    units: list[tuple[str, str, dt.date]] = []
+    for canonical, provider, left, right in intervals:
+        rows = _query_tsv(client, f"""SELECT source_date
+FROM {quote_ident(args.database)}.{quote_ident(args.index_table)}
+WHERE upper(ticker)={sql_string(provider)} AND source_date>=toDate({sql_string(str(left))})
+AND source_date<toDate({sql_string(str(right))}) AND event_count>0
+GROUP BY source_date ORDER BY source_date""")
+        units.extend((canonical, provider, dt.date.fromisoformat(row[0])) for row in rows)
+    return units
+
+
 def bulk_month_sql(
     args: argparse.Namespace, range_start: dt.date, range_end: dt.date,
     asof: dt.date, digest: str, tickers: tuple[str, ...],
+    identity_intervals: list[tuple[str, str, dt.date, dt.date]] | None = None,
 ) -> str:
     columns = ",\n    ".join(quote_ident(name) for name, _kind in adjusted_table_columns())
     selections = [
@@ -298,7 +351,8 @@ def bulk_month_sql(
         "s.bar_start_us", "s.bar_end_us", "s.available_at_us", "s.source_first_ordinal", "s.source_last_ordinal",
         "s.source_first_timestamp_us", "s.source_last_timestamp_us",
         *(scaled_feature_expression(name) for name in FEATURE_NAMES),
-        f"toDate({sql_string(str(asof))})", sql_string(digest), sql_string("linear_sufficient_stats"), "now64(3,'UTC')",
+        f"toDate({sql_string(str(asof))})", sql_string(digest), "s.ticker",
+        sql_string("linear_sufficient_stats"), "now64(3,'UTC')",
     ]
     select_sql = ",\n    ".join(selections)
     ticker_sql = ",".join(sql_string(value) for value in tickers)
@@ -312,7 +366,7 @@ INNER JOIN
     WHERE adjustment_asof_date=toDate({sql_string(str(asof))}) AND schedule_sha256={sql_string(digest)}
 ) AS f ON f.ticker=s.ticker AND f.local_date=s.local_date
 PREWHERE s.local_date>=toDate({sql_string(str(range_start))}) AND s.local_date<toDate({sql_string(str(range_end))})
-WHERE s.ticker IN ({ticker_sql}) AND f.split_day_action_count=0
+WHERE s.ticker IN ({ticker_sql}) AND f.split_day_action_count=0{identity_exclusion_sql(identity_intervals or [])}
 {query_settings(args)}"""
 
 
@@ -342,6 +396,7 @@ AND local_second>={SESSION_START_SECOND} AND local_second<{SESSION_END_SECOND}) 
 def split_day_sql(
     args: argparse.Namespace, day: dt.date, ticker: str, asof: dt.date, digest: str,
     reference_price: float, future_pf: float, future_sf: float, day_pf: float, day_sf: float,
+    *, output_ticker: str | None = None, build_method: str = "event_replay_split_day",
 ) -> str:
     source = _event_source(args, day)
     target = f"{quote_ident(args.database)}.{quote_ident(args.target_table)}"
@@ -370,6 +425,7 @@ def split_day_sql(
     # applies the execution-day split and is used only when it is closer in log
     # space to the robust same-day median; its paired size receives reciprocal
     # scaling.  All events then receive later-split factors.
+    canonical_ticker = output_ticker or ticker
     return f"""INSERT INTO {target} ({columns})
 WITH
 toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us,'UTC'),{sql_string(SESSION_TIMEZONE)}) AS ts_local,
@@ -391,10 +447,11 @@ if(ask_size+bid_size>0,(ask_price*bid_size+bid_price*ask_size)/(ask_size+bid_siz
 if(ask_size+bid_size>0,(bid_size-ask_size)/(bid_size+ask_size),0.0) AS queue_imbalance,
 intDiv(toUInt64(local_session_us),toUInt64({ONE_SECOND_US})) AS second_bucket_index,
 intDiv(toUInt64(sip_timestamp_us),toUInt64({ONE_SECOND_US}))*toUInt64({ONE_SECOND_US}) AS second_start_us
-SELECT toUInt16({SCHEMA_VERSION}), {sql_string(FEATURE_VERSION)}, local_date_value, upper(ticker), second_bucket_index,
+SELECT toUInt16({SCHEMA_VERSION}), {sql_string(FEATURE_VERSION)}, local_date_value, {sql_string(canonical_ticker)}, second_bucket_index,
 second_start_us, second_start_us+toUInt64({ONE_SECOND_US}), second_start_us+toUInt64({ONE_SECOND_US}),
 min(toUInt64(ordinal)),max(toUInt64(ordinal)),min(toUInt64(sip_timestamp_us)),max(toUInt64(sip_timestamp_us)),
-{aggregate_sql}, toDate({sql_string(str(asof))}), {sql_string(digest)}, {sql_string('event_replay_split_day')}, now64(3,'UTC')
+{aggregate_sql}, toDate({sql_string(str(asof))}), {sql_string(digest)}, {sql_string(ticker)},
+{sql_string(build_method)}, now64(3,'UTC')
 FROM {source}
 PREWHERE event_date>=toDate({sql_string(str(day))}) AND event_date<toDate({sql_string(str(next_day))})
 WHERE local_date_value=toDate({sql_string(str(day))}) AND upper(ticker)={sql_string(ticker)}
@@ -436,6 +493,7 @@ def scalar_stats(client: ClickHouseHttpClient, sql: str) -> tuple[int, int]:
 def source_linear_stats(
     client: ClickHouseHttpClient, args: argparse.Namespace, *, left: dt.date, right: dt.date,
     asof: dt.date, digest: str, tickers: tuple[str, ...], split_units: list[tuple[str, dt.date, float, float]],
+    identity_intervals: list[tuple[str, str, dt.date, dt.date]],
 ) -> tuple[int, int]:
     canonical = tickers == tuple(sorted(BAR_GPT_COHORT_2TB)) and args.source_table == BAR_GPT_COHORT_2TB_TABLE
     if not canonical:
@@ -446,19 +504,26 @@ FROM {quote_ident(args.database)}.{quote_ident(args.source_table)} AS s INNER JO
  WHERE adjustment_asof_date=toDate({sql_string(str(asof))}) AND schedule_sha256={sql_string(digest)}) AS f
 ON f.ticker=s.ticker AND f.local_date=s.local_date
 WHERE s.local_date>=toDate({sql_string(str(left))}) AND s.local_date<toDate({sql_string(str(right))})
-AND s.ticker IN ({ticker_sql}) AND f.split_day_action_count=0""")
+AND s.ticker IN ({ticker_sql}) AND f.split_day_action_count=0{identity_exclusion_sql(identity_intervals)}""")
     total_rows, total_events = scalar_stats(client, f"""SELECT sum(output_row_count),sum(source_event_count)
 FROM {quote_ident(args.database)}.{quote_ident(args.source_manifest_table)} FINAL
 WHERE artifact_name={sql_string(args.source_table)} AND status='complete'
 AND local_date>=toDate({sql_string(str(left))}) AND local_date<toDate({sql_string(str(right))})""")
     exclusions = [(ticker, day) for ticker, day, _pf, _sf in split_units if left <= day < right]
-    if not exclusions:
-        return total_rows, total_events
-    tuple_sql = ",".join(f"({sql_string(ticker)},toDate({sql_string(str(day))}))" for ticker, day in exclusions)
-    split_rows, split_events = scalar_stats(client, f"""SELECT count(),sum(source_event_count)
+    split_rows = split_events = 0
+    if exclusions:
+        tuple_sql = ",".join(f"({sql_string(ticker)},toDate({sql_string(str(day))}))" for ticker, day in exclusions)
+        split_rows, split_events = scalar_stats(client, f"""SELECT count(),sum(source_event_count)
 FROM {quote_ident(args.database)}.{quote_ident(args.source_table)}
 WHERE tuple(ticker,local_date) IN ({tuple_sql})""")
-    return total_rows - split_rows, total_events - split_events
+    identity_rows = identity_events = 0
+    identity_clause = identity_exclusion_sql(identity_intervals).removeprefix(" AND NOT ")
+    if identity_clause:
+        identity_rows, identity_events = scalar_stats(client, f"""SELECT count(),sum(source_event_count)
+FROM {quote_ident(args.database)}.{quote_ident(args.source_table)} AS s
+WHERE s.local_date>=toDate({sql_string(str(left))}) AND s.local_date<toDate({sql_string(str(right))})
+AND {identity_clause}""")
+    return total_rows - split_rows - identity_rows, total_events - split_events - identity_events
 
 
 def validate_existing_basis(client: ClickHouseHttpClient, args: argparse.Namespace, asof: dt.date, digest: str) -> None:
@@ -486,7 +551,8 @@ def main(argv: list[str] | None = None) -> int:
                                   timeout_seconds=300, persistent=True)
     try:
         start, end, asof = resolve_range(client, args)
-        actions, digest = load_split_actions(client, args, tickers, asof)
+        actions, split_schedule_sha256 = load_split_actions(client, args, tickers, asof)
+        digest = adjustment_basis_hash(split_schedule_sha256, tickers)
         client.execute(create_target_table_sql(args)); client.execute(create_factor_table_sql(args)); client.execute(create_manifest_table_sql(args))
         validate_table(client, args.database, args.target_table, dict(adjusted_table_columns()))
         validate_table(client, args.database, args.factor_table, FACTOR_TYPES)
@@ -494,19 +560,24 @@ def main(argv: list[str] | None = None) -> int:
         validate_existing_basis(client, args, asof, digest)
         schedule = factor_rows(tickers, start, end, asof, actions, digest)
         materialize_factor_schedule(client, args, schedule, tickers, start, end, asof, digest)
+        identity_intervals = identity_alias_intervals(tickers, start, end)
+        alias_units = identity_alias_days(client, args, identity_intervals)
+        alias_dates = {(canonical, day) for canonical, _provider, day in alias_units}
         split_units = [
             (str(row["ticker"]), dt.date.fromisoformat(str(row["local_date"])),
              float(row["split_day_price_factor"]), float(row["split_day_size_factor"]))
             for row in schedule if int(row["split_day_action_count"]) > 0
+            and (str(row["ticker"]), dt.date.fromisoformat(str(row["local_date"]))) not in alias_dates
         ]
-        total_units = len(months(start, end)) + len(split_units)
+        total_units = len(months(start, end)) + len(split_units) + len(alias_units)
         report_path = run_dir / "build.jsonl"
         done = manifest_units(client, args, asof, digest)
         with BuildReporter(report_path=report_path, total_days=total_units,
                            interactive=args.progress_layout in ("auto", "rich"),
                            title="BarGPT split-adjusted 1s build", progress_noun="units",
                            job_label="BarGPT split-adjusted one-second build") as reporter:
-            reporter.event("preflight", message=f"basis asof={asof} hash={digest} split_days={len(split_units)}",
+            reporter.event("preflight", message=(f"basis asof={asof} hash={digest} split_days={len(split_units)} "
+                                                  f"identity_alias_days={len(alias_units)}"),
                            secrets=secret_status([]), source=args.source_table, target=args.target_table)
             for month in months(start, end):
                 unit = f"linear:{month:%Y-%m}:{digest[:16]}"
@@ -517,9 +588,12 @@ def main(argv: list[str] | None = None) -> int:
                 left, right = max(start, month), min(end, next_month)
                 source_rows, source_events = source_linear_stats(
                     client, args, left=left, right=right, asof=asof, digest=digest,
-                    tickers=tickers, split_units=split_units,
+                    tickers=tickers, split_units=split_units, identity_intervals=identity_intervals,
                 )
-                began = time.perf_counter(); client.execute(bulk_month_sql(args, left, right, asof, digest, tickers), query_id=f"bargpt_adjust_linear_{month:%Y%m}_{uuid.uuid4().hex}")
+                began = time.perf_counter(); client.execute(
+                    bulk_month_sql(args, left, right, asof, digest, tickers, identity_intervals),
+                    query_id=f"bargpt_adjust_linear_{month:%Y%m}_{uuid.uuid4().hex}",
+                )
                 output_rows, _ = scalar_stats(client, f"""SELECT count(),sum(source_event_count) FROM {quote_ident(args.database)}.{quote_ident(args.target_table)} FINAL
 WHERE local_date>=toDate({sql_string(str(left))}) AND local_date<toDate({sql_string(str(right))})
 AND split_schedule_sha256={sql_string(digest)} AND build_method='linear_sufficient_stats'""")
@@ -529,6 +603,49 @@ AND split_schedule_sha256={sql_string(digest)} AND build_method='linear_sufficie
                                 digest=digest, source_rows=source_rows, source_events=source_events,
                                 output_rows=output_rows, message="Linear split scaling of v1 sufficient statistics; split days excluded")
                 reporter.record_unit_complete(output_rows=output_rows, source_events=source_events, seconds=time.perf_counter()-began)
+                reporter.completed_days += 1
+            schedule_by_key = {(str(item["ticker"]), str(item["local_date"])): item for item in schedule}
+            for canonical, provider, day in alias_units:
+                unit = f"identity:{canonical}:{provider}:{day}:{digest[:16]}"
+                reporter.update(day=str(day), unit=unit, stage="identity replay")
+                if unit in done:
+                    reporter.skipped_units += 1; reporter.completed_days += 1
+                    reporter.update(message="Already certified"); continue
+                factor = schedule_by_key[(canonical, str(day))]
+                day_pf = float(factor["split_day_price_factor"])
+                day_sf = float(factor["split_day_size_factor"])
+                reference = 1.0 if day_pf == 1.0 else split_day_reference_price(client, args, day, provider)
+                if reference is None:
+                    raise RuntimeError(f"{canonical}/{provider} {day} has no raw-event reference price")
+                began = time.perf_counter()
+                client.execute(
+                    split_day_sql(
+                        args, day, provider, asof, digest, reference,
+                        float(factor["future_price_factor"]), float(factor["future_size_factor"]),
+                        day_pf, day_sf, output_ticker=canonical,
+                        build_method="event_replay_identity_alias",
+                    ),
+                    query_id=f"bargpt_identity_{canonical}_{provider}_{day:%Y%m%d}_{uuid.uuid4().hex}",
+                )
+                rows = _query_tsv(client, f"""SELECT count(),uniqExact(bucket_index),sum(source_event_count)
+FROM {quote_ident(args.database)}.{quote_ident(args.target_table)} FINAL
+WHERE ticker={sql_string(canonical)} AND local_date=toDate({sql_string(str(day))})
+AND split_schedule_sha256={sql_string(digest)} AND build_method='event_replay_identity_alias'""")[0]
+                output_rows, unique_rows, replay_events = (int(value) for value in rows)
+                if output_rows != unique_rows or output_rows == 0 or replay_events == 0:
+                    raise RuntimeError(
+                        f"{unit} key/event audit failed rows={output_rows} unique={unique_rows} events={replay_events}"
+                    )
+                insert_manifest(
+                    client, args, unit_id=unit, month=dt.date(day.year, day.month, 1),
+                    method="event_replay_identity_alias", asof=asof, digest=digest,
+                    source_rows=output_rows, source_events=replay_events, output_rows=output_rows,
+                    message=f"Canonical {canonical} from reviewed provider ticker {provider}",
+                )
+                reporter.record_unit_complete(
+                    output_rows=output_rows, source_events=replay_events,
+                    seconds=time.perf_counter() - began,
+                )
                 reporter.completed_days += 1
             for ticker, day, day_pf, day_sf in split_units:
                 unit = f"replay:{ticker}:{day}:{digest[:16]}"; reporter.update(day=str(day), unit=unit, stage="replaying")
@@ -558,7 +675,7 @@ WHERE ticker={sql_string(ticker)} AND local_date=toDate({sql_string(str(day))}) 
                                 output_rows=output_rows, message=f"Raw-event replay; robust reference={reference:.8g}; execution factor={day_pf:.12g}")
                 reporter.record_unit_complete(output_rows=output_rows, source_events=source_events, seconds=time.perf_counter()-began)
                 reporter.completed_days += 1
-            reporter.update(stage="complete", message="All linear months and split-day replays certified")
+            reporter.update(stage="complete", message="All linear, identity-alias, and split-day units certified")
             reporter.event("complete", message=reporter.last_message, schedule_sha256=digest)
     finally:
         client.close()

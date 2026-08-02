@@ -20,12 +20,13 @@ from research.bar_gpt.v1.build_daily_context import (
     requested_tickers,
     validate_dates,
 )
-from research.bar_gpt.v1.build_adjusted_1s import load_split_actions
+from research.bar_gpt.v1.build_adjusted_1s import adjustment_basis_hash, load_split_actions
 from research.bar_gpt.v1.cohort import (
     BAR_GPT_ADJUSTED_DAILY_MANIFEST_TABLE,
     BAR_GPT_ADJUSTED_DAILY_TABLE,
     BAR_GPT_COHORT_2TB,
     BAR_GPT_COHORT_2TB_SHA256,
+    BAR_GPT_REVIEWED_TICKER_CHAINS,
 )
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
@@ -234,6 +235,42 @@ def parse_ticker_segments(
     return tuple(segments)
 
 
+def reviewed_ticker_segments(
+    canonical_ticker: str, start: dt.date, end: dt.date
+) -> tuple[tuple[str, dt.date, dt.date], ...] | None:
+    chain = BAR_GPT_REVIEWED_TICKER_CHAINS.get(canonical_ticker)
+    if chain is None:
+        return None
+    segments = []
+    for provider_ticker, left_text, right_text in chain:
+        left = max(start, dt.date.fromisoformat(left_text))
+        right = min(end, dt.date.fromisoformat(right_text))
+        if left < right:
+            segments.append((provider_ticker, left, right))
+    return tuple(segments)
+
+
+def fetch_ticker_segments(
+    canonical_ticker: str, *, start: dt.date, end: dt.date, api_base: str, api_key: str,
+    timeout: float, max_retries: int,
+) -> tuple[tuple[tuple[str, dt.date, dt.date], ...], int, int]:
+    reviewed = reviewed_ticker_segments(canonical_ticker, start, end)
+    if reviewed is not None:
+        return reviewed, 0, 0
+    try:
+        payload, retries = request_json(
+            ticker_events_url(api_base, canonical_ticker), api_key=api_key,
+            timeout=timeout, max_retries=max_retries,
+        )
+    except RuntimeError as exc:
+        # Massive returns 404 when an otherwise valid ticker has no event
+        # timeline.  Absence means no provider alias is asserted.
+        if "Massive HTTP 404" not in str(exc):
+            raise
+        return ((canonical_ticker, start, end),), 1, 0
+    return parse_ticker_segments(canonical_ticker, start, end, payload), 1, retries
+
+
 def _parse_window(ticker: str, raw: dict[str, Any], start: dt.date, end: dt.date) -> dict[str, Any] | None:
     missing = [key for key in ("t", "o", "h", "l", "c", "v") if key not in raw]
     if missing:
@@ -296,11 +333,10 @@ def fetch_ticker(
     api_base: str, api_key: str, timeout: float, max_retries: int, schedule_sha256: str,
 ) -> TickerResult:
     began = time.perf_counter()
-    events_payload, event_retries = request_json(
-        ticker_events_url(api_base, ticker), api_key=api_key, timeout=timeout, max_retries=max_retries
+    segments, requests, retries = fetch_ticker_segments(
+        ticker, start=start, end=end, api_base=api_base, api_key=api_key,
+        timeout=timeout, max_retries=max_retries,
     )
-    segments = parse_ticker_segments(ticker, start, end, events_payload)
-    requests, retries = 1, event_retries
     parsed_rows: list[dict[str, Any]] = []
     for provider_ticker, segment_start, segment_end in segments:
         url = massive_url(api_base, provider_ticker, segment_start, segment_end)
@@ -406,9 +442,11 @@ def main(argv: list[str] | None = None) -> int:
     client = ClickHouseHttpClient(args.clickhouse_url, args.clickhouse_user, args.clickhouse_password,
                                   timeout_seconds=max(args.timeout, 60), persistent=True)
     try:
-        _split_actions, schedule_sha256 = load_split_actions(client, args, tickers, asof)
+        _split_actions, split_schedule_sha256 = load_split_actions(client, args, tickers, asof)
+        schedule_sha256 = adjustment_basis_hash(split_schedule_sha256, tickers)
         if asof != provider_asof:
-            _current_actions, current_schedule_sha256 = load_split_actions(client, args, tickers, provider_asof)
+            _current_actions, current_split_schedule_sha256 = load_split_actions(client, args, tickers, provider_asof)
+            current_schedule_sha256 = adjustment_basis_hash(current_split_schedule_sha256, tickers)
             if current_schedule_sha256 != schedule_sha256:
                 raise RuntimeError(
                     f"Massive adjusted=true now uses a newer split basis ({provider_asof}); "

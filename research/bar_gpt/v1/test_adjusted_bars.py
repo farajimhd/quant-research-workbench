@@ -9,6 +9,8 @@ from research.bar_gpt.v1.build_adjusted_1s import (
     adjusted_table_columns,
     bulk_month_sql,
     factor_rows,
+    identity_alias_intervals,
+    identity_exclusion_sql,
     scaled_feature_expression,
     split_day_sql,
 )
@@ -20,7 +22,10 @@ from research.bar_gpt.v1.build_adjusted_daily_sessions import (
     create_target_table_sql as create_daily_table_sql,
     massive_url,
     parse_ticker_segments,
+    reviewed_ticker_segments,
 )
+from research.bar_gpt.v1.run_build_adjusted_1s import resolve_adjustment_asof as resolve_1s_asof
+from research.bar_gpt.v1.run_build_adjusted_daily_sessions import resolve_adjustment_asof as resolve_daily_asof
 
 
 def daily_args() -> argparse.Namespace:
@@ -86,6 +91,13 @@ class AdjustedDailyContractTest(unittest.TestCase):
         self.assertEqual(parse_ticker_segments("GOOGL", dt.date(2017, 1, 1), dt.date(2018, 1, 1), payload),
                          (("GOOGL", dt.date(2017, 1, 1), dt.date(2018, 1, 1)),))
 
+    def test_reviewed_meta_chain_overrides_ticker_reuse(self) -> None:
+        self.assertEqual(
+            reviewed_ticker_segments("META", dt.date(2019, 1, 1), dt.date(2023, 1, 1)),
+            (("FB", dt.date(2019, 1, 1), dt.date(2022, 6, 9)),
+             ("META", dt.date(2022, 6, 9), dt.date(2023, 1, 1))),
+        )
+
 
 class AdjustedOneSecondContractTest(unittest.TestCase):
     def test_multiple_future_splits_compound_only_over_applicable_period(self) -> None:
@@ -117,6 +129,7 @@ class AdjustedOneSecondContractTest(unittest.TestCase):
         self.assertIn(FEATURE_VERSION, sql)
         self.assertIn("linear_sufficient_stats", sql)
         self.assertIn("split_schedule_sha256", " ".join(name for name, _kind in adjusted_table_columns()))
+        self.assertIn("source_ticker", " ".join(name for name, _kind in adjusted_table_columns()))
 
     def test_split_day_replay_classifies_each_price_leg_and_scales_size_reciprocally(self) -> None:
         sql = split_day_sql(one_second_args(), dt.date(2020, 8, 31), "AAPL", dt.date(2026, 8, 2),
@@ -127,6 +140,26 @@ class AdjustedOneSecondContractTest(unittest.TestCase):
         self.assertIn("raw_primary*0.25", sql)
         self.assertIn("size_primary)*4", sql)
         self.assertIn("GROUP BY local_date_value,ticker,second_bucket_index,second_start_us", sql)
+
+    def test_identity_alias_interval_excludes_reused_canonical_ticker(self) -> None:
+        intervals = identity_alias_intervals(("META",), dt.date(2019, 1, 1), dt.date(2023, 1, 1))
+        self.assertEqual(intervals, [("META", "FB", dt.date(2019, 1, 1), dt.date(2022, 6, 9))])
+        clause = identity_exclusion_sql(intervals)
+        self.assertIn("s.ticker='META'", clause)
+        self.assertIn("2022-06-09", clause)
+        sql = split_day_sql(
+            one_second_args(), dt.date(2022, 6, 8), "FB", dt.date(2026, 8, 2),
+            "d" * 64, 1.0, 1.0, 1.0, 1.0, 1.0,
+            output_ticker="META", build_method="event_replay_identity_alias",
+        )
+        self.assertIn("'META', second_bucket_index", sql)
+        self.assertIn("upper(ticker)='FB'", sql)
+        self.assertIn("event_replay_identity_alias", sql)
+
+    def test_launchers_resolve_auto_asof_internally(self) -> None:
+        expected = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        self.assertIn(resolve_1s_asof("auto"), {expected, (dt.date.fromisoformat(expected) - dt.timedelta(days=1)).isoformat()})
+        self.assertEqual(resolve_daily_asof("2026-08-02"), "2026-08-02")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import os
 import subprocess
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from research.bar_gpt.v1.cohort import BAR_GPT_ADJUSTED_1S_MANIFEST_TABLE, BAR_GPT_ADJUSTED_1S_TABLE, BAR_GPT_COHORT_2TB, BAR_GPT_SPLIT_FACTOR_TABLE
 
@@ -28,6 +30,13 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     return parser.parse_known_args(argv)
 
 
+def resolve_adjustment_asof(value: str) -> str:
+    return (
+        dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        if value == "auto" else value
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args, extra = parse_args(argv)
     tickers = tuple(sorted({value.strip().upper() for value in args.tickers.split(",") if value.strip()}))
@@ -36,9 +45,10 @@ def main(argv: list[str] | None = None) -> int:
                                      args.manifest_table == BAR_GPT_ADJUSTED_1S_MANIFEST_TABLE,
                                      args.factor_table == BAR_GPT_SPLIT_FACTOR_TABLE)):
         raise SystemExit("Custom --tickers require custom target, manifest, and factor table names")
+    resolved_asof = resolve_adjustment_asof(args.adjustment_asof_date)
     command = [sys.executable, "-B", "-m", "research.bar_gpt.v1.build_adjusted_1s",
                "--start-date", args.start_date, "--end-date", args.end_date,
-               "--adjustment-asof-date", args.adjustment_asof_date, "--tickers", ",".join(tickers),
+               "--adjustment-asof-date", resolved_asof, "--tickers", ",".join(tickers),
                "--target-table", args.target_table, "--manifest-table", args.manifest_table,
                "--factor-table", args.factor_table, "--max-threads", str(args.max_threads),
                "--max-memory-usage", DEFAULTS["max_memory_usage"],

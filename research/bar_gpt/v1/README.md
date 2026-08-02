@@ -95,6 +95,14 @@ symbol used for each source interval (for example, `META` uses `FB` before
 does not match the requested ticker falls back to the literal ticker instead of
 silently mixing share classes.
 
+The same reviewed interval authority applies to one-second bars. Ticker strings
+are never renamed without bounds: pre-2022-06-09 `META` rows belong to an
+unrelated ETF and are excluded, raw `FB` events are replayed as canonical
+`META` through 2022-06-08, and native `META` rows begin on 2022-06-09. The v2
+1s table retains canonical `ticker`, explicit `source_ticker`, build method, and
+source ordinal/timestamp provenance. This prevents ticker reuse from merging
+different securities while preserving one continuous model identity.
+
 The v2 one-second builder avoids replaying billions of raw events. On every
 non-split execution date it applies cumulative future-split price and reciprocal
 size factors directly to the v1 sufficient statistics inside ClickHouse.
@@ -104,8 +112,9 @@ because old- and new-scale prints can coexist within one stored second. Replay
 normalizes each trade, bid, and ask leg with its paired size and certifies exact
 source-event and output-second counts.
 
-Both authorities store the same deduplicated corporate-action schedule hash
-and adjustment cutoff date. A Massive request made after the cutoff is accepted
+Both authorities store the same adjustment-basis hash, which binds the
+deduplicated corporate-action schedule and reviewed ticker-validity chains, plus
+the adjustment cutoff date. A Massive request made after the cutoff is accepted
 only if its applicable split schedule is unchanged. Raw SIP events, v1 one-
 second rows, and the superseded unadjusted daily table remain immutable.
 
@@ -118,6 +127,10 @@ python -B -m research.bar_gpt.v1.run_build_adjusted_daily_sessions --execute
 python -B -m research.bar_gpt.v1.run_build_adjusted_1s
 python -B -m research.bar_gpt.v1.run_build_adjusted_1s --execute
 ```
+
+Both launchers resolve `auto` to one concrete New York adjustment date inside
+the Python launcher and print it in the equivalent command; no PowerShell
+`$asof` variable is required.
 
 The destinations are `bar_gpt_daily_sessions_v2_massive_adjusted` and
 `bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted`; manifests and the compact daily
