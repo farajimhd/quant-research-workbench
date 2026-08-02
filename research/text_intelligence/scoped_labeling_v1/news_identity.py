@@ -37,6 +37,12 @@ ARTICLE_ALIAS_GROUP_RE = re.compile(
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)[ \t]*[:\-][ \t]*"
     r"(?P<ticker>[A-Z][A-Z0-9.-]{0,9})",
 )
+ANNOUNCED_TICKER_RE = re.compile(
+    r"(?:\b(?:under\s+(?:the\s+)?ticker(?:\s+symbol)?|"
+    r"(?:ticker(?:\s+symbol)?|symbol)\s+(?:(?:will|to)\s+be|under)))\s*[\"']?"
+    r"(?P<ticker>[A-Z][A-Z0-9.-]{0,9})[\"']?\b",
+    re.IGNORECASE,
+)
 WORD_RE = re.compile(r"[A-Za-z0-9]+")
 CORPORATE_SUFFIXES = {
     "co",
@@ -263,6 +269,10 @@ class NewsIssuerResolver:
             for match in EXCHANGE_TICKER_RE.finditer(text)
         }
         explicit.update(match.group(1).upper() for match in CASHTAG_RE.finditer(text))
+        explicit.update(
+            match.group("ticker").upper()
+            for match in ANNOUNCED_TICKER_RE.finditer(text)
+        )
         for ticker in linked_tickers:
             normalized = ticker.upper().strip()
             if normalized and re.search(
@@ -416,6 +426,28 @@ class NewsIssuerResolver:
                         aliases=aliases,
                     )
                 )
+        # A registration/IPO article may announce a symbol before the listing
+        # exists in the point-in-time identity graph.  This creates an
+        # article-local identity for semantic attribution only; valid_on and
+        # forecast eligibility still use the durable listing authority.
+        for match in ANNOUNCED_TICKER_RE.finditer(searchable):
+            ticker = match.group("ticker").upper()
+            prefix = searchable[max(0, match.start() - 180):match.start()]
+            names = tuple(
+                value.strip(" ,.")
+                for value in re.findall(
+                    r"([A-Z][A-Za-z0-9&'.-]*(?:\s+[A-Z][A-Za-z0-9&'.-]*){0,7}"
+                    r"\s+(?:Inc\.?|Corp\.?|Corporation|Ltd\.?|Limited|plc|Company))",
+                    prefix,
+                )
+            )
+            local.append(
+                IssuerIdentity(
+                    ticker=ticker,
+                    issuer_id=f"article:announced:{ticker}",
+                    aliases=names or (ticker,),
+                )
+            )
         if not local:
             return self
         return self._with_local_identities(local)

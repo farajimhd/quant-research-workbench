@@ -52,7 +52,11 @@ AGGREGATION_TITLE_RE = re.compile(
     r"\b\d+\s+stocks?\s+(?:moving|to watch)\b|"
     r"\bstocks?\s+moving\s+(?:in|during|today|pre[- ]market|after[- ]hours)\b|"
     r"\b(?:pre[- ]market|after[- ]hours|mid[- ]day)\s+movers?\b|"
-    r"\b(?:gainers|losers)\s+and\s+(?:decliners|movers)\b",
+    r"\b(?:gainers|losers)\s+and\s+(?:decliners|movers)\b|"
+    r"\bmarket\s+(?:wrap|update|today|recap)\b|"
+    r"\bstocks?\s+to\s+watch\b|\bdaily\s+(?:biotech\s+)?pulse\b|"
+    r"\bweekend\s+m\s*&\s*a\s+chatter\b|\bmovers?\s*&\s*shakers?\b|"
+    r"\ba\s+peek\s+into\s+the\s+markets\b",
     re.IGNORECASE,
 )
 ANALYST_ACTION_RE = re.compile(

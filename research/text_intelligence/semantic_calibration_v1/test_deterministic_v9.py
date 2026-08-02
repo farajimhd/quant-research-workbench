@@ -249,6 +249,86 @@ class DeterministicV9Tests(unittest.TestCase):
             labels["URI"]["classification"]["deterministic_direction_evidence"],
         )
 
+    def test_roundup_is_context_only_even_with_real_issuer_events(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="roundup-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="30 Stocks Moving In Friday's Pre-Market Session",
+            text=(
+                "Example Corp. (NASDAQ:EXM) shares rose after the company "
+                "reported better-than-expected earnings and raised guidance."
+            ),
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),)
+        )
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "mover_recap")
+        self.assertEqual(result.labels[0]["classification"]["semantic_direction"], "positive")
+        self.assertFalse(result.labels[0]["forecast_trigger_eligible"])
+        self.assertFalse(result.labels[0]["reaction_evaluation_eligible"])
+        self.assertTrue(result.labels[0]["issuer_history_context_eligible"])
+
+    def test_primary_endpoint_failure_overrides_positive_boilerplate(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="endpoint-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Reports Phase 3 Trial Results",
+            text=(
+                "Example Bio (NASDAQ:EXM) said the treatment was well tolerated, "
+                "but the Phase 3 study did not meet its primary endpoint."
+            ),
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("EXM", "issuer:exm", ("Example Bio",)),)
+        )
+        label = classify_news_document_v9(document, issuer_resolver=resolver).labels[0]
+        self.assertEqual(label["classification"]["semantic_direction"], "negative")
+        self.assertIn("clinical.failure", label["classification"]["event_concepts"])
+
+    def test_prelisting_symbol_is_resolved_but_not_tradable(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="ipo-v9",
+            timestamp="2014-01-02T14:00:00Z",
+            title='Example Corp Files For IPO; Ticker Will Be "EXM"',
+            text=(
+                'Example Corp. filed a registration statement for its initial public '
+                'offering and plans to list under ticker symbol "EXM".'
+            ),
+            tickers=(),
+        )
+        resolver = NewsIssuerResolver(())
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual([label["ticker"] for label in result.labels], ["EXM"])
+        self.assertIn(
+            "listing_market_structure.ipo",
+            result.labels[0]["classification"]["event_concepts"],
+        )
+        self.assertFalse(result.labels[0]["forecast_trigger_eligible"])
+
+    def test_ordinary_board_appointment_is_history_only(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="board-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Elects Two Directors To Its Board",
+            text="Example Corp. (NASDAQ:EXM) elected two directors to its board.",
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),)
+        )
+        label = classify_news_document_v9(document, issuer_resolver=resolver).labels[0]
+        self.assertEqual(label["classification"]["semantic_direction"], "neutral")
+        self.assertFalse(label["forecast_trigger_eligible"])
+        self.assertFalse(label["reaction_evaluation_eligible"])
+        self.assertTrue(label["issuer_history_context_eligible"])
+
 
 if __name__ == "__main__":
     unittest.main()

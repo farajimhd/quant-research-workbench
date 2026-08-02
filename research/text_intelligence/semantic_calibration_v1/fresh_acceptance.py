@@ -299,14 +299,33 @@ def build_combined_human_authority(
     component_contract = {
         "original_manifest_sha256": str(original_manifest["sample_manifest_sha256"]),
         "acceptance_manifest_sha256": str(acceptance_manifest["sample_manifest_sha256"]),
+        "original_annotations_sha256": stable_json_hash(sorted(
+            (item.sample_id, str(item.truth.get("annotation_sha256") or ""))
+            for item in original_items
+        )),
+        "acceptance_annotations_sha256": stable_json_hash(sorted(
+            (item.sample_id, str(item.truth.get("annotation_sha256") or ""))
+            for item in acceptance_items
+        )),
         "source_ids_sha256": stable_json_hash(sorted(source_ids)),
     }
     manifest_path = combined_root / "sample_manifest.json"
+    rebuilding_annotations = False
     if manifest_path.exists():
         existing = read_json(manifest_path)
-        if existing.get("component_contract") != component_contract:
-            raise RuntimeError("existing combined authority component drift")
-        return combined_root
+        existing_contract = existing.get("component_contract") or {}
+        if (
+            existing_contract.get("original_manifest_sha256")
+            != component_contract["original_manifest_sha256"]
+            or existing_contract.get("acceptance_manifest_sha256")
+            != component_contract["acceptance_manifest_sha256"]
+            or existing_contract.get("source_ids_sha256")
+            != component_contract["source_ids_sha256"]
+        ):
+            raise RuntimeError("existing combined authority identity/manifest drift")
+        if existing_contract == component_contract:
+            return combined_root
+        rebuilding_annotations = True
 
     annotation_target = annotation_directory(combined_root, ANNOTATION_VERSION_V3)
     original_ids = {item.sample_id for item in original_items}
@@ -321,6 +340,7 @@ def build_combined_human_authority(
             annotation_directory(source_root, ANNOTATION_VERSION_V3)
             / f"{sample_id}.json",
             annotation_target / f"{sample_id}.json",
+            allow_review_update=rebuilding_annotations,
         )
     manifest = {
         "sample_version": "news_semantic_ground_truth_1100_v1",
@@ -342,11 +362,15 @@ def build_combined_human_authority(
     return combined_root
 
 
-def _copy_exact(source: Path, target: Path) -> None:
+def _copy_exact(
+    source: Path, target: Path, *, allow_review_update: bool = False
+) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         if target.read_bytes() != source.read_bytes():
-            raise RuntimeError(f"combined authority file drift: {target}")
+            if not allow_review_update:
+                raise RuntimeError(f"combined authority file drift: {target}")
+            write_json_atomic(target, read_json(source))
         return
     shutil.copy2(source, target)
 

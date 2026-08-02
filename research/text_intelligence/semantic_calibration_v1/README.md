@@ -747,6 +747,7 @@ to 1,100 articles. Prepare, record, certify, and evaluate the set with:
 ```powershell
 python -m research.text_intelligence.semantic_calibration_v1.run_prepare_fresh_acceptance
 python -m research.text_intelligence.semantic_calibration_v1.run_record_fresh_acceptance --input-jsonl <manual-review.jsonl>
+python -m research.text_intelligence.semantic_calibration_v1.run_repair_fresh_acceptance_gold
 python -m research.text_intelligence.semantic_calibration_v1.run_finalize_fresh_acceptance
 python -m research.text_intelligence.semantic_calibration_v1.run_evaluate_fresh_acceptance
 python -m research.text_intelligence.semantic_calibration_v1.run_render_fresh_acceptance_audits `
@@ -757,15 +758,18 @@ Fresh-set results are:
 
 | Metric | V9 deterministic | V10 TF-IDF forest | V10 - V9 |
 |---|---:|---:|---:|
-| Extraction F1 | 0.880 | 0.931 | +0.052 |
-| Ticker-scope F1 | 0.466 | 0.395 | -0.070 |
-| Content-role macro F1 | 0.466 | 0.430 | -0.036 |
-| Source-origin macro F1 | 0.395 | 0.504 | +0.109 |
-| Text-sentiment macro F1 | 0.421 | 0.430 | +0.009 |
-| Forecast-direction macro F1 | 0.438 | 0.329 | -0.109 |
-| Concept-family F1 | 0.504 | 0.224 | -0.279 |
-| Forecast eligibility F1 | 0.740 | 0.849 | +0.109 |
-| Issuer-history eligibility F1 | 0.893 | 0.952 | +0.059 |
+| Extraction F1 | 0.925 | 0.950 | +0.025 |
+| Ticker-scope F1 | 0.625 | 0.559 | -0.066 |
+| Content-role macro F1 | 0.494 | 0.430 | -0.064 |
+| Source-origin macro F1 | 0.455 | 0.504 | +0.049 |
+| Text-sentiment macro F1 | 0.410 | 0.404 | -0.006 |
+| Forecast-direction macro F1 | 0.402 | 0.276 | -0.126 |
+| Concept-family F1 | 0.534 | 0.260 | -0.274 |
+| Forecast eligibility F1 | 0.731 | 0.827 | +0.096 |
+| Forecast eligibility end-to-end F1 | 0.723 | 0.632 | -0.091 |
+| Reaction eligibility end-to-end F1 | 0.723 | 0.637 | -0.086 |
+| Issuer-history eligibility F1 | 0.862 | 0.955 | +0.093 |
+| Issuer-history end-to-end F1 | 0.625 | 0.559 | -0.066 |
 
 These values incorporate the source-first N1093 review correction. The human
 authority now records a regulatory event rather than an automated summary,
@@ -820,6 +824,30 @@ end-to-end scope metrics are unchanged. The final live-authority evaluator and
 all 100 Markdown audits were regenerated from candidate 5. Article-local index
 cloning avoids rebuilding the 45,261-row issuer authority per publication; the
 final combined evaluation and audit-render run completed in 7.5 seconds.
+
+Candidate 7 replaces the calibration-wrapper sequencing with one ordered
+deterministic contract: document structure and provenance, passage scope,
+point-in-time issuer identity, event and participant state, direction
+composition, and finally independent forecast, reaction-study and
+issuer-history eligibility. Provider tickers are candidate evidence rather
+than semantic truth. Explicitly announced pre-listing symbols receive
+article-local identities, but remain non-tradable until the dated identity
+authority confirms a listing. Roundups, mover lists, previews and analyst
+actions retain issuer-specific semantic units for history while remaining
+non-trigger articles. Endpoint failure, forward guidance, financing supply,
+reverse splits, ordinary governance and completed bankruptcy reorganization
+now have explicit precedence rules.
+
+The source audit also found 16 human-reference records requiring traceable
+review: contextual issuer passages omitted from aggregation articles,
+pre-listing eligibility, and an ordinary board appointment. The repair
+launcher is idempotent, validates exact evidence spans, writes a correction
+receipt, and propagates new annotation hashes into the combined 1,100
+authority. N1035 was re-reviewed but deliberately kept as
+`no_supported_event`: its text contains price observations and stale rating
+context, not a current issuer event. The results table above is candidate 7
+against this corrected gold authority; all 100 audit documents were regenerated
+from those exact evaluator outputs.
 
 The untouched set confirms that V10's learned text representation improves
 article extraction and eligibility decisions, and modestly improves direction.

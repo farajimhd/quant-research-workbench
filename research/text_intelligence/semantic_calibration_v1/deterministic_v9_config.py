@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-DETERMINISTIC_V9_VERSION = "news_deterministic_v9_candidate_5"
-CALIBRATION_VERSION = "news_deterministic_v9_calibration_3"
+DETERMINISTIC_V9_VERSION = "news_deterministic_v9_candidate_7"
+CALIBRATION_VERSION = "news_deterministic_v9_calibration_5"
 CALIBRATION_SPLIT_SHA256 = "dd960925e6ae60a6a465847717a89b277b8f453341187db3058bca446481765f"
 
 # These otherwise teacher-supported overrides were rejected because they made
@@ -126,49 +126,42 @@ SHARED_EVENT_CONCEPT_ADDITIONS: dict[str, tuple[str, ...]] = {
 
 DENIED_UNIT_ROLES: frozenset[str] = frozenset()
 
-ELIGIBILITY_TRUE_KEYS: frozenset[str] = frozenset({
-    "regulatory_event|issuer_direct|primary_or_editorial_document|1",
-    "primary_event|issuer_direct|primary_or_editorial_document|0",
-    "editorial_analysis|editorial_original|primary_or_editorial_document|0",
-    "primary_event|issuer_direct|primary_or_editorial_document|1",
-    "primary_event|editorial_original|primary_or_editorial_document|0",
-    "regulatory_event|regulatory_primary|primary_or_editorial_document|1",
-    "regulatory_event|editorial_original|primary_or_editorial_document|1",
-    "primary_event|issuer_direct|issuer_event_document|1",
-    "primary_event|editorial_original|primary_or_editorial_document|1",
+# Article structure is resolved before issuer semantics.  These patterns are
+# format families, never source IDs or issuer-specific exceptions.
+NON_TRIGGER_ARTICLE_ROLES: frozenset[str] = frozenset({
+    "analyst_event",
+    "editorial_analysis",
+    "market_roundup",
+    "mover_recap",
+    "preview",
+    "why_moving_followup",
+    "automated_summary",
+    "automated_market_statistics",
 })
 
-ELIGIBILITY_FALSE_KEYS: frozenset[str] = frozenset({
-    "mover_recap|editorial_aggregation|ticker_market_observation|1",
-    "mover_recap|editorial_aggregation|issuer_event_document|1",
-    "mover_recap|editorial_aggregation|ticker_scoped_editorial_context|0",
-    "mover_recap|editorial_aggregation|issuer_event_document|0",
-    "preview|editorial_original|issuer_event_document|0",
-    "mover_recap|editorial_aggregation|ticker_scoped_editorial_context|1",
-    "mover_recap|editorial_aggregation|analyst_opinion|1",
-    "regulatory_event|editorial_original|analyst_opinion|0",
-    "mover_recap|editorial_aggregation|analyst_opinion|0",
-    "editorial_analysis|editorial_original|analyst_opinion|0",
-    "mover_recap|editorial_aggregation|ticker_market_observation|0",
-    "market_roundup|editorial_aggregation|analyst_opinion|0",
-    "analyst_event|analyst_research|analyst_opinion|0",
-    "market_roundup|editorial_aggregation|analyst_opinion|1",
-    "preview|editorial_original|analyst_opinion|1",
-    "market_roundup|editorial_aggregation|ticker_market_observation|0",
-    "market_roundup|editorial_aggregation|ticker_scoped_editorial_context|0",
-    "analyst_event|analyst_research|analyst_opinion|1",
-    "market_roundup|editorial_aggregation|ticker_scoped_editorial_context|1",
-    "market_roundup|editorial_aggregation|ticker_market_observation|1",
-    "analyst_event|analyst_research|ticker_scoped_editorial_context|1",
-    "market_roundup|editorial_aggregation|issuer_event_document|0",
-    "preview|editorial_original|issuer_event_document|1",
-    "market_roundup|editorial_aggregation|issuer_event_document|1",
-    "regulatory_event|issuer_direct|issuer_event_document|0",
-    "analyst_event|analyst_research|issuer_event_document|0",
-    "editorial_analysis|editorial_original|ticker_scoped_editorial_context|0",
-    "analyst_event|analyst_research|primary_or_editorial_document|1",
-    "why_moving_followup|editorial_original|analyst_opinion|1",
+CONTEXT_ONLY_UNIT_ROLES_V9: frozenset[str] = frozenset({
+    "ticker_market_observation",
+    "editorial_reaction_explanation",
+    "ticker_scoped_editorial_context",
+    "ticker_scoped_analyst_context",
 })
+
+HIGH_VALUE_TRIGGER_CONCEPT_PREFIXES: tuple[str, ...] = (
+    "capital_return",
+    "clinical",
+    "commercial",
+    "contract",
+    "credit_solvency",
+    "earnings",
+    "financing",
+    "guidance",
+    "legal",
+    "listing_market_structure",
+    "ma_transaction",
+    "management_governance",
+    "operations",
+    "regulatory",
+)
 
 DIRECTION_RULE_WEIGHTS: dict[str, float] = {
     "accretive_transaction": 0.65,
