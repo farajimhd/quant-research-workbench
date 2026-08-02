@@ -201,6 +201,19 @@ plain-language explanation inline, while the help control supplies secondary
 detail. Control boundaries use the active theme's authority accent and a
 distinct focus ring instead of a harsh dark stroke.
 
+Every catalog and enumerated field uses the shared inventory lookup interaction
+rather than a browser-native select. The trigger exposes the current human-readable
+selection, the menu is portalled above dense editors, keyboard navigation is
+preserved, and catalogs with more than seven values become searchable. This is
+the same interaction authority used by News and SEC filters, adapted to the
+configuration field hierarchy rather than reimplemented per page.
+
+Guidance is structured, not a loose paragraph. Guided questions identify the
+decision, why it matters or what changes, when it becomes effective, and how
+keeping the displayed value approves the current default. Field-level guidance
+names what each value controls; extended parameter/value notes remain available
+through the help dialog.
+
 The Configuration Workbench uses an editorial visual hierarchy derived from
 the application's white operations theme: neutral page and card surfaces,
 hairline structural rules, prominent decision headings, readable supporting
@@ -210,11 +223,13 @@ reserved for semantic state. Ordinary sections, editable fields, and action
 subsections must not introduce independent tinted backgrounds or decorative
 phase colors. Dark themes preserve the same hierarchy with tone-appropriate
 neutral surfaces rather than becoming a separate visual language.
-Expert mode is a full-width editorial workbench: each section keeps explanatory
-context beside a dense but readable control grid, while the save action remains
-available in a sticky footer. Profile libraries are supporting navigation, not
-a second page shell, and generated JSON stays visually subordinate to the
-human-readable editor.
+Expert mode is a full-width subject editor, not the legacy field inventory under
+different colors. Its leading contract map names the outcome, authority boundary,
+subjects, and release behavior for the active route. Editors are then organized
+as full-width subject sections with a readable two-column control grid; shared
+lookups and field guidance remain identical to Guided mode. The save action stays
+available in a sticky footer, profile libraries remain supporting navigation,
+and generated JSON stays visually subordinate to the human-readable editor.
 
 Recommended, inherited, customized, incomplete, invalid, and approved states
 are shown as explicit provenance/status text rather than inferred from color.

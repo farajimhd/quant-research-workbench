@@ -34,6 +34,7 @@ import { createPortal } from "react-dom";
 
 import { api } from "../api/client";
 import { readCanvasRegistry, snapshotCanvasProfile } from "../app/canvasWorkspace";
+import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
 
 export type TradingConfigurationSection =
   | "strategy"
@@ -680,11 +681,14 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         /></div>
       ) : draft ? (
         <div className="configuration-expert-workspace">
-          {section === "strategy" ? <StrategyStudio draft={draft} section={draft.strategy} onChange={(value) => updateDraft("strategy", value)} onPersist={persistStrategy} /> : null}
-          {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
-          {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
-          {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
-          {section === "accounts" ? <AccountsEditor draft={draft} onChange={(value) => updateDraft("accounts", value)} /> : null}
+          <ExpertWorkspaceGuide section={section} />
+          <div className="configuration-expert-editor">
+            {section === "strategy" ? <StrategyStudio draft={draft} section={draft.strategy} onChange={(value) => updateDraft("strategy", value)} onPersist={persistStrategy} /> : null}
+            {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
+            {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
+            {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
+            {section === "accounts" ? <AccountsEditor draft={draft} onChange={(value) => updateDraft("accounts", value)} /> : null}
+          </div>
           {["assignments", "portfolio", "oms", "accounts"].includes(section) ? <EffectiveConfigurationPreview updatedAt={draft.updated_at || ""} /> : null}
           <div className="configuration-save-bar">
             <span>{dirtySection === section ? "Unsaved draft changes" : "Draft matches saved configuration"}</span>
@@ -716,6 +720,22 @@ function ConfigurationExperienceBar({ experience, onExperienceChange, onOpenHome
       </div>
     </div>
   </div>;
+}
+
+const EXPERT_GUIDANCE: Record<Exclude<TradingConfigurationSection, "revisions">, { authority: string; outcome: string; subjects: string[] }> = {
+  strategy: { authority: "Strategy owns trading decisions. Portfolio sizes approved intent; OMS executes it.", outcome: "A reusable Strategy Profile with explicit lifecycle rules and optional capabilities.", subjects: ["Behavior and evaluation", "Entry, add, and reentry", "Exit and capabilities"] },
+  assignments: { authority: "Deployment binds reusable objects to modes and a watch universe; it does not redefine them.", outcome: "A runnable deployment with an explicit universe, profile, OMS profile, and campaign authority.", subjects: ["Watch universe", "Profile and OMS bindings", "Campaign lifecycle"] },
+  portfolio: { authority: "Portfolio is the sole authority for account allocation, capital approval, and continuous risk.", outcome: "Per-account mandates and risk limits that can approve, reduce, or reject requests.", subjects: ["Capital policy", "Account mandates", "Risk groups"] },
+  oms: { authority: "OMS may use current market data to execute approved intent; it never creates trading intent or capital.", outcome: "Versioned execution and protection policies selected by Strategy or deployment defaults.", subjects: ["OMS defaults", "Execution policies", "Protection profiles"] },
+  accounts: { authority: "IBKR remains authoritative for live and paper account state; configuration binds discovered identity and permissions.", outcome: "Mode-specific account bindings that fail closed when broker identity or capability differs.", subjects: ["Broker identity", "Mode permissions", "Safety limits"] },
+};
+
+function ExpertWorkspaceGuide({ section }: { section: Exclude<TradingConfigurationSection, "revisions"> }) {
+  const guidance = EXPERT_GUIDANCE[section];
+  return <section className="configuration-expert-guide">
+    <div><span>Expert workspace</span><h2>Edit the complete {SECTION_META[section].title.toLowerCase()} contract</h2><p>{guidance.outcome}</p></div>
+    <dl><div><dt>Authority boundary</dt><dd>{guidance.authority}</dd></div><div><dt>Work by subject</dt><dd>{guidance.subjects.map((subject) => <span key={subject}><Check size={12} />{subject}</span>)}</dd></div><div><dt>Release behavior</dt><dd>Changes affect only this draft until validation and publication.</dd></div></dl>
+  </section>;
 }
 
 function ConfigurationJourney({ active, draft, experience, onOmsStageChange }: {
@@ -1132,7 +1152,7 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, profile }: {
     <section className="guided-strategy-question">
       <header><span>{current.section} · {sectionPosition} of {sectionQuestions.length}</span><small>Question {safeIndex + 1} of {questions.length}</small></header>
       <div className="guided-question-progress"><span style={{ width: `${((safeIndex + 1) / Math.max(questions.length, 1)) * 100}%` }} /></div>
-      <div className="guided-strategy-prompt"><h2>{current.title}</h2><p>{current.description}</p><aside><CircleHelp size={17} /><span><strong>Why this matters</strong>{current.guide}</span></aside></div>
+      <div className="guided-strategy-prompt"><span className="guided-prompt-label">Decision</span><h2>{current.title}</h2><p>{current.description}</p><ConfigurationGuidance items={[{ label: "Why this matters", value: current.guide }, { label: "Default behavior", value: "Keep the displayed value to approve the current default." }, { label: "Release behavior", value: "This draft changes runtime only after publication." }]} /></div>
       <div className="guided-strategy-controls">{current.content}</div>
       <details className="guided-running-summary"><summary>Your setup so far <ChevronRight size={15} /></summary><div>{recap.map((row) => <span key={row.label}><small>{row.label}</small><strong>{row.value}</strong></span>)}</div></details>
       <footer className="guided-strategy-navigation"><button className="button" disabled={safeIndex === 0} onClick={() => setQuestionIndex(safeIndex - 1)} type="button"><ArrowLeft size={15} /> Previous</button><div>{nextSectionIndex > 0 ? <button onClick={() => setQuestionIndex(nextSectionIndex)} type="button">Keep remaining {current.section} values</button> : <span>Review each published strategy decision</span>}</div><button className="button primary" onClick={() => safeIndex < questions.length - 1 ? setQuestionIndex(safeIndex + 1) : onContinue()} type="button">{safeIndex < questions.length - 1 ? "Next question" : "Save strategy and continue"} <ArrowRight size={15} /></button></footer>
@@ -1181,7 +1201,11 @@ function strategySetupRows(profile: StrategyProfile) {
 }
 
 function GuidedQuestion({ children, description, label, status }: { children: ReactNode; description: string; label: string; status: string }) {
-  return <section className="guided-question"><header><div><span>{label}</span><p>{description}</p></div><em data-state={status.toLowerCase().replaceAll(" ", "-")}>{status}</em></header><div>{children}</div></section>;
+  return <section className="guided-question"><header><div><small>Decision</small><span>{label}</span><p>{description}</p></div><em data-state={status.toLowerCase().replaceAll(" ", "-")}>{status}</em></header><ConfigurationGuidance items={[{ label: "What changes", value: "Only the subject shown below." }, { label: "When it applies", value: "After this draft is validated and published." }, { label: "Safety", value: "Unchanged values keep their current defaults." }]} /><div>{children}</div></section>;
+}
+
+function ConfigurationGuidance({ items }: { items: Array<{ label: string; value: string }> }) {
+  return <dl className="configuration-guidance">{items.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}</dl>;
 }
 
 function DecisionOptions({ onChange, options, value }: { onChange: (value: string) => void; options: Array<{ detail: string; label: string; recommended?: boolean; value: string }>; value: string }) {
@@ -2989,24 +3013,24 @@ function CapabilityField({ definition, onChange, value }: { definition: Capabili
 }
 
 function TextField({ help, label, onChange, value }: { help: HelpContent; label: string; onChange: (value: string) => void; value: string }) {
-  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small>{fieldSummary(help)}</small><input onChange={(event) => onChange(event.target.value)} value={value} /></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><input onChange={(event) => onChange(event.target.value)} value={value} /></label>;
 }
 
 function NumberField({ help, label, maximum, minimum, onChange, step, unit, value }: { help: HelpContent; label: string; maximum?: number; minimum?: number; onChange: (value: number) => void; step: number; unit?: string; value: number }) {
   const fraction = unit === "fraction";
-  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small>{fieldSummary(help)}</small><div className="configuration-number"><input max={fraction ? 100 : maximum} min={fraction ? 0 : minimum} onChange={(event) => onChange(fraction ? Number(event.target.value) / 100 : Number(event.target.value))} step={fraction ? step * 100 : step} type="number" value={fraction ? round(value * 100) : value} />{unit ? <em>{fraction ? "%" : unit}</em> : null}</div></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><div className="configuration-number"><input max={fraction ? 100 : maximum} min={fraction ? 0 : minimum} onChange={(event) => onChange(fraction ? Number(event.target.value) / 100 : Number(event.target.value))} step={fraction ? step * 100 : step} type="number" value={fraction ? round(value * 100) : value} />{unit ? <em>{fraction ? "%" : unit}</em> : null}</div></label>;
 }
 
 function OptionalNumberField({ help, label, minimum, onChange, step, unit, value }: { help: HelpContent; label: string; minimum?: number; onChange: (value: number | null) => void; step: number; unit?: string; value: number | null }) {
-  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small>{fieldSummary(help)}</small><div className="configuration-number"><input min={minimum} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} placeholder="Automatic" step={step} type="number" value={value ?? ""} />{unit ? <em>{unit}</em> : null}</div></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><div className="configuration-number"><input min={minimum} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} placeholder="Automatic" step={step} type="number" value={value ?? ""} />{unit ? <em>{unit}</em> : null}</div></label>;
 }
 
 function SelectField({ help, label, onChange, options, value }: { help: HelpContent; label: string; onChange: (value: string) => void; options: Array<{ label: string; value: string }>; value: string }) {
-  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small>{fieldSummary(help)}</small><select onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
+  return <div className="configuration-field configuration-lookup-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><InventoryFilterSelect ariaLabel={label} className="configuration-lookup-button" onChange={onChange} options={options} searchable={options.length > 7} searchPlaceholder={`Find ${label.toLowerCase()}…`} value={value} /></div>;
 }
 
 function BooleanField({ help, label, onChange, value }: { help: HelpContent; label: string; onChange: (value: boolean) => void; value: boolean }) {
-  return <label className="configuration-field configuration-boolean" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small>{fieldSummary(help)}</small><input checked={value} onChange={(event) => onChange(event.target.checked)} type="checkbox" /></label>;
+  return <label className="configuration-field configuration-boolean" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><input checked={value} onChange={(event) => onChange(event.target.checked)} type="checkbox" /></label>;
 }
 
 function fieldSummary(help: HelpContent) {

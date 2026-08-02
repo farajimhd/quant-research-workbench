@@ -1265,7 +1265,7 @@ def capture(args: argparse.Namespace) -> int:
                     context.add_init_script(
                         "localStorage.setItem('trading-configuration-experience', "
                         + json.dumps(args.configuration_experience)
-                        + ");"
+                        + "); sessionStorage.setItem('configuration-studio-started', 'true');"
                     )
                 if args.canvas_visible_indicators:
                     canvas_settings = {
