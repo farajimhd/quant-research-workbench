@@ -718,6 +718,7 @@ python -m research.text_intelligence.semantic_calibration_v1.run_prepare_fresh_a
 python -m research.text_intelligence.semantic_calibration_v1.run_record_fresh_acceptance --input-jsonl <manual-review.jsonl>
 python -m research.text_intelligence.semantic_calibration_v1.run_finalize_fresh_acceptance
 python -m research.text_intelligence.semantic_calibration_v1.run_evaluate_fresh_acceptance
+python -m research.text_intelligence.semantic_calibration_v1.run_render_fresh_acceptance_audits
 ```
 
 Fresh-set results are:
@@ -741,3 +742,20 @@ the stronger concept authority and is still better for ticker scope and content
 role. Consequently, neither result supports replacing V9 wholesale with V10;
 V10 is suitable only as an advisory source for the dimensions on which it has
 demonstrated fresh-set gains.
+
+The final audit launcher writes one Markdown document per article plus an
+error-sorted `INDEX.md` under the configured runtime root. Each document shows
+the frozen human, V9 and V10 values for article extraction, role and origin;
+issuer ticker scope; per-issuer direction, canonical concept families and all
+three eligibility decisions; the human evidence; V9's persisted deterministic
+rule and score trace; V10's recorded score/confidence output; and the complete
+rendered article used during review. V9 has no hidden model reasoning chain,
+and V10 has no faithful natural-language explanation, so the audit never
+manufactures either one.
+
+The strict article-level audit found at least one difference in 90 of 100 V9
+articles and 95 of 100 V10 articles. This is intentionally stricter than the
+earlier `error_articles` count because it treats concept, eligibility, and each
+extra or missing issuer-unit field as independently auditable comparisons. Ten
+V9 articles and five V10 articles matched the human authority on every displayed
+comparison cell.
