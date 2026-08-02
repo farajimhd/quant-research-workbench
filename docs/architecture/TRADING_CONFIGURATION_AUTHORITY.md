@@ -193,6 +193,13 @@ every operator into the full field inventory:
 
 Guided mode is a focused decision document: it presents one question, its
 consequence and provenance, the current choices, and Previous/Continue actions.
+Each question is limited to one coherent subject, behavior, or lifecycle
+action. A complete action may group only its own trigger, capital request,
+execution response, and protection into clearly named subsections; unrelated
+settings must be separate questions. Every editable field shows a concise
+plain-language explanation inline, while the help control supplies secondary
+detail. Control boundaries use the active theme's authority accent and a
+distinct focus ring instead of a harsh dark stroke.
 Expert mode is a full-width editorial workbench: each section keeps explanatory
 context beside a dense but readable control grid, while the save action remains
 available in a sticky footer. Profile libraries are supporting navigation, not

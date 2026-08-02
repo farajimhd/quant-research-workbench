@@ -36,6 +36,8 @@
 
 /* Configuration Workbench v2: one shared hierarchy for every non-Canvas route. */
 .trading-configuration-page {
+  --configuration-control-border: color-mix(in oklab, var(--configuration-accent) 24%, var(--surface-alt));
+  --configuration-control-fill: color-mix(in oklab, var(--configuration-accent) 3%, var(--surface-alt));
   container-name: configuration-workbench;
   container-type: inline-size;
   gap: 12px;
@@ -185,9 +187,52 @@
 .configuration-field-grid { gap: 14px 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .configuration-expert-workspace .configuration-field { min-width: 0; }
 .configuration-expert-workspace .configuration-field > span { font-size: 10.5px; font-weight: 590; }
-.configuration-expert-workspace .configuration-field > small { font-size: 9.5px; line-height: 1.45; }
+.configuration-field > small {
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  font-weight: 430;
+  line-height: 1.5;
+  margin: 0;
+}
+.configuration-expert-workspace .configuration-field > small { font-size: 10px; line-height: 1.45; }
 .configuration-expert-workspace .configuration-field input:not([type="checkbox"]),
-.configuration-expert-workspace .configuration-field select { border-radius: 6px; min-height: 36px; }
+.configuration-expert-workspace .configuration-field select,
+.configuration-guided-workspace .configuration-field input:not([type="checkbox"]),
+.configuration-guided-workspace .configuration-field select {
+  background: var(--configuration-control-fill);
+  border-color: var(--configuration-control-border);
+  border-radius: 7px;
+  box-shadow: none;
+  min-height: 38px;
+}
+.configuration-expert-workspace .configuration-field:focus-within input:not([type="checkbox"]),
+.configuration-expert-workspace .configuration-field:focus-within select,
+.configuration-guided-workspace .configuration-field:focus-within input:not([type="checkbox"]),
+.configuration-guided-workspace .configuration-field:focus-within select {
+  background: color-mix(in oklab, var(--configuration-accent) 6%, var(--surface));
+  border-color: color-mix(in oklab, var(--configuration-accent) 62%, var(--surface));
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--configuration-accent) 12%, transparent);
+  outline: 0;
+}
+.configuration-expert-workspace .configuration-number em,
+.configuration-guided-workspace .configuration-number em {
+  background: var(--configuration-control-fill);
+  border-color: var(--configuration-control-border);
+}
+.configuration-expert-workspace .configuration-boolean,
+.configuration-guided-workspace .configuration-boolean {
+  background: var(--configuration-control-fill);
+  border-color: var(--configuration-control-border);
+  box-shadow: none;
+  display: grid;
+  gap: 4px 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 64px;
+  padding: 10px 12px;
+}
+.configuration-boolean > span { grid-column: 1; grid-row: 1; }
+.configuration-boolean > small { grid-column: 1; grid-row: 2; }
+.configuration-boolean > input { grid-column: 2; grid-row: 1 / span 2; }
 
 .mandate-grid,
 .account-config-grid,
@@ -222,13 +267,30 @@
 .configuration-guided-workspace .guided-question-surface,
 .configuration-guided-workspace .guided-strategy-question { border-radius: 9px; }
 .configuration-guided-workspace .guided-question-surface > header { padding: 13px 20px 11px; }
+.configuration-guided-workspace .guided-question-list > * { display: grid; }
 .configuration-guided-workspace .guided-question { min-height: 210px; padding: 20px 28px 24px; }
-.configuration-guided-workspace .guided-question > header > div > span { font-size: 18px; font-weight: 610; }
-.configuration-guided-workspace .guided-question > header p { font-size: 13px; line-height: 1.55; }
+.configuration-guided-workspace .guided-question > header > div > span { font-size: 21px; font-weight: 620; letter-spacing: -.012em; }
+.configuration-guided-workspace .guided-question > header p { font-size: 15px; line-height: 1.65; max-width: 960px; }
+.configuration-guided-workspace .guided-question > div:last-child { max-width: 980px; }
+.configuration-guided-workspace .guided-question > div:last-child > .configuration-field { max-width: 720px; }
 .configuration-guided-workspace .guided-decision-options { gap: 8px; }
 .configuration-guided-workspace .guided-decision-options > label > span { border-radius: 7px; min-height: 70px; padding: 10px 12px; }
 .configuration-guided-workspace .guided-decision-options strong { font-size: 13px; font-weight: 590; }
-.configuration-guided-workspace .guided-decision-options small { font-size: 10.5px; }
+.configuration-guided-workspace .guided-decision-options small { font-size: 12px; line-height: 1.55; }
+.guided-action-form { display: grid; gap: 12px; }
+.guided-action-form > section {
+  background: color-mix(in oklab, var(--configuration-accent) 2%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--configuration-accent) 14%, var(--surface-alt));
+  border-radius: 9px;
+  display: grid;
+  gap: 14px;
+  padding: 15px 16px 17px;
+}
+.guided-action-form > section > header { display: grid; gap: 3px; }
+.guided-action-form > section > header strong { font-size: 14px; font-weight: 620; }
+.guided-action-form > section > header p { color: var(--muted-foreground); font-size: 12px; line-height: 1.5; margin: 0; }
+.guided-action-form > section > div { display: grid; gap: 14px; }
+.guided-action-form > section > div > .configuration-field { max-width: 720px; }
 .configuration-guided-workspace .guided-navigation,
 .configuration-guided-workspace .guided-strategy-navigation { padding: 11px 14px; }
 .configuration-guided-workspace .guided-running-summary summary { min-height: 42px; padding-inline: 18px; }
@@ -764,6 +826,7 @@
 .guided-readonly-value { align-content: center; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 7px; display: grid; gap: 5px; min-height: 64px; padding: 9px 11px; }
 .guided-readonly-value span { color: var(--muted-foreground); font-size: 11px; }
 .guided-readonly-value strong { font-size: 13px; font-weight: 570; }
+.guided-readonly-value small { color: var(--muted-foreground); font-size: 10.5px; line-height: 1.45; }
 .guided-inline-note { align-items: center; color: var(--muted-foreground); display: flex; font-size: 11.5px; gap: 7px; line-height: 1.5; margin: 14px 0 0; }
 .guided-inline-note svg { color: var(--configuration-accent); flex: 0 0 auto; }
 .guided-action-list { display: grid; gap: 9px; }
