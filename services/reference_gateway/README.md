@@ -242,6 +242,9 @@ Use `--mode reconcile` to re-read every entity, `--mode rolling` for stale or
 changed entities, `--identifier META` for a targeted repair, and
 `--no-refresh-inventory` when a current inventory already exists. Run summaries
 default to `D:/TradingML/runtimes/reference_gateway/ticker_events`.
+Large fills may run as disjoint deterministic workers with the same
+`--shard-count N` and one distinct `--shard-index 0..N-1`; every entity belongs
+to exactly one shard and retains its normal durable coverage checkpoint.
 
 ## Autonomous Publication Maintenance
 

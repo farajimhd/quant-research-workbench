@@ -10,6 +10,7 @@ from services.reference_gateway.ticker_events import (
     CanonicalBinding,
     TickerEventEntity,
     build_symbol_intervals,
+    entity_shard,
     normalize_inventory,
     normalize_ticker_event_response,
     point_in_time_symbol_sql,
@@ -169,6 +170,27 @@ class TickerEventTests(unittest.TestCase):
         selected = select_entities([missing, failed], coverage, mode="historical", max_entities=1, stale_after_days=7, only_identifiers=())
 
         self.assertEqual([row.provider_entity_key for row in selected], [failed.provider_entity_key])
+
+    def test_deterministic_shards_are_disjoint_and_complete(self) -> None:
+        entities = [replace(meta_entity(), provider_entity_key=f"entity:{index}") for index in range(100)]
+        shards = [
+            select_entities(
+                entities,
+                {},
+                mode="historical",
+                max_entities=0,
+                stale_after_days=7,
+                only_identifiers=(),
+                shard_index=shard_index,
+                shard_count=4,
+            )
+            for shard_index in range(4)
+        ]
+
+        keys = [{entity.provider_entity_key for entity in shard} for shard in shards]
+        self.assertEqual(set().union(*keys), {entity.provider_entity_key for entity in entities})
+        self.assertEqual(sum(len(key_set) for key_set in keys), 100)
+        self.assertTrue(all(entity_shard(key, 4) == index for index, key_set in enumerate(keys) for key in key_set))
 
     def test_point_in_time_resolver_uses_half_open_intervals(self) -> None:
         sql = point_in_time_symbol_sql(database="q_live", ticker_expression="'FB'", date_expression="toDate('2022-06-08')")

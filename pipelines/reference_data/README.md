@@ -109,6 +109,8 @@ python pipelines\reference_data\ticker_events_historical_fill.py --database q_li
 It inventories active and inactive U.S. stock entities, resumes from durable
 per-entity coverage, writes raw normalized events, and publishes canonical
 half-open symbol intervals only for exact, non-conflicting identity mappings.
+For bounded parallel backfill, launch disjoint workers with one shared
+`--shard-count` and distinct zero-based `--shard-index` values.
 
 Dry-run mode does not create or alter tables. If the target write database has
 not been initialized, the script reports `schema_missing` and exits after

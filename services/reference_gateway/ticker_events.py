@@ -64,6 +64,8 @@ class TickerEventInventoryResult:
 class TickerEventSyncResult:
     status: str
     mode: str
+    shard_index: int
+    shard_count: int
     inventory_entities: int
     selected_entities: int
     completed_entities: int
@@ -307,6 +309,8 @@ def sync_ticker_events(
     stale_after_days: int = 7,
     request_min_interval_seconds: float = 0.12,
     only_identifiers: Iterable[str] = (),
+    shard_index: int = 0,
+    shard_count: int = 1,
     run_id: str | None = None,
     on_progress: Callable[[str, str, str, int | None], None] | None = None,
 ) -> TickerEventSyncResult:
@@ -323,6 +327,8 @@ def sync_ticker_events(
         max_entities=max_entities,
         stale_after_days=stale_after_days,
         only_identifiers=only_identifiers,
+        shard_index=shard_index,
+        shard_count=shard_count,
     )
     bindings = load_canonical_bindings(client, database=read_database or database, entities=selected)
     existing_events = load_existing_rows(client, database, TICKER_EVENT_TABLE, "ticker_event_id", selected)
@@ -429,6 +435,8 @@ def sync_ticker_events(
     return TickerEventSyncResult(
         status=status,
         mode=mode,
+        shard_index=shard_index,
+        shard_count=shard_count,
         inventory_entities=len(inventory),
         selected_entities=len(selected),
         completed_entities=completed,
@@ -661,7 +669,15 @@ def select_entities(
     max_entities: int,
     stale_after_days: int,
     only_identifiers: Iterable[str],
+    shard_index: int = 0,
+    shard_count: int = 1,
 ) -> list[TickerEventEntity]:
+    if shard_count < 1:
+        raise ValueError("shard_count must be at least 1")
+    if shard_index < 0 or shard_index >= shard_count:
+        raise ValueError("shard_index must be in [0, shard_count)")
+    if shard_count > 1:
+        inventory = [entity for entity in inventory if entity_shard(entity.provider_entity_key, shard_count) == shard_index]
     requested = {str(value).strip().upper() for value in only_identifiers if str(value).strip()}
     if requested:
         inventory = [
@@ -727,6 +743,11 @@ def select_entities(
     if max_entities > 0:
         selected = selected[:max_entities]
     return selected
+
+
+def entity_shard(provider_entity_key: str, shard_count: int) -> int:
+    digest = hashlib.sha256(provider_entity_key.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=False) % shard_count
 
 
 def load_canonical_bindings(

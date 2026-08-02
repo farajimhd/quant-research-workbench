@@ -46,6 +46,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stale-after-days", type=int, default=7)
     parser.add_argument("--request-min-interval-seconds", type=float, default=0.12)
     parser.add_argument("--identifier", action="append", default=[], help="Optional ticker or Composite FIGI restriction; repeatable.")
+    parser.add_argument("--shard-index", type=int, default=0, help="Zero-based deterministic entity shard index.")
+    parser.add_argument("--shard-count", type=int, default=1, help="Number of disjoint deterministic entity shards.")
     parser.add_argument("--refresh-inventory", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--execute", action="store_true", help="Create tables and write inventory, events, coverage, and intervals.")
     parser.add_argument(
@@ -95,6 +97,8 @@ def main() -> None:
         stale_after_days=args.stale_after_days,
         request_min_interval_seconds=args.request_min_interval_seconds,
         only_identifiers=args.identifier,
+        shard_index=args.shard_index,
+        shard_count=args.shard_count,
         run_id=run_id,
         on_progress=print_progress,
     )
