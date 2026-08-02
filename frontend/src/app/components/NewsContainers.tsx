@@ -133,7 +133,21 @@ const NEWS_ROLE_OPTIONS: InventoryFilterOption[] = [{ value: "", label: "Any rol
 const NEWS_ORIGIN_OPTIONS: InventoryFilterOption[] = [{ value: "", label: "Any origin" }, { value: "issuer", label: "Issuer" }, { value: "analyst", label: "Analyst" }, { value: "regulatory", label: "Regulatory" }, { value: "editorial", label: "Editorial" }, { value: "automated", label: "Automated" }];
 const NEWS_LIMIT_OPTIONS: InventoryFilterOption[] = [25, 50, 100, 250].map((value) => ({ value: String(value), label: `Top ${value}` }));
 const NEWS_LABEL_STATE_OPTIONS: InventoryFilterOption[] = [{ value: "", label: "Any state" }, { value: "classified", label: "Classified" }, { value: "pending", label: "Pending" }, { value: "quality", label: "Quality issue" }];
-const NEWS_SOURCE_FORMAT_OPTIONS: InventoryFilterOption[] = [{ value: "all", label: "All formats" }, { value: "company", label: "Company feed" }, { value: "regulatory", label: "Regulatory feed" }, { value: "analyst", label: "Analyst feed" }, { value: "editorial", label: "Editorial feed" }, { value: "multi", label: "Multi-company" }, { value: "ai", label: "Automated" }];
+const NEWS_ARTICLE_CLASS_LABELS: Record<NewsKindValue, string> = {
+  ai: "Automated article",
+  analyst: "Analyst article",
+  company: "Company article",
+  editorial: "Editorial article",
+  insights: "Insights article",
+  market: "Market event",
+  multi: "Multi-company article",
+  regulatory: "Regulatory article",
+  why_moving: "Why-moving article",
+};
+export const NEWS_ARTICLE_CLASS_OPTIONS: InventoryFilterOption[] = [
+  { value: "all", label: "All article classes" },
+  ...Object.entries(NEWS_ARTICLE_CLASS_LABELS).map(([value, label]) => ({ value, label })),
+];
 const NEWS_TEXT_OPTIONS: InventoryFilterOption[] = [{ value: "all", label: "All text" }, { value: "full", label: "Full text" }, { value: "title", label: "Title only" }];
 type NewsSelection = { newsId: string; publishedAt: string; queryId: string };
 
@@ -161,6 +175,15 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
     setCommittedSearch(value.trim());
     if (settings.ticker) onSettingsChange({ ticker: "" });
   };
+  const hasRefinements = Boolean(direction || role || origin || settings.ticker || eligibilityFilters.forecast || eligibilityFilters.reaction || eligibilityFilters.history || eligibilityFilters.prior || eligibilityFilters.followup || labelState || settings.kind !== "all" || settings.content !== "all");
+  const clearRefinements = () => {
+    setDirection("");
+    setRole("");
+    setOrigin("");
+    setEligibilityFilters(EMPTY_ELIGIBILITY_QUERY);
+    setLabelState("");
+    onSettingsChange({ content: "all", kind: "all", ticker: "" });
+  };
 
   return <section className="news-all" aria-label="All news">
     <form className="news-query-bar" onSubmit={(event) => { event.preventDefault(); commitSearch(search); }}>
@@ -176,8 +199,9 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
         <InventoryFilterSelect ariaLabel="Ticker" onChange={(value) => onSettingsChange({ ticker: value })} options={tickerOptions} searchable searchPlaceholder="Search tickers…" value={settings.ticker} />
         <EligibilityFilters filters={eligibilityFilters} onChange={setEligibilityFilters} prefix="News" />
         <InventoryFilterSelect ariaLabel="Label state" onChange={setLabelState} options={NEWS_LABEL_STATE_OPTIONS} value={labelState} />
-        <InventoryFilterSelect ariaLabel="Legacy source format" onChange={(value) => onSettingsChange({ kind: value })} options={NEWS_SOURCE_FORMAT_OPTIONS} value={settings.kind} />
+        <InventoryFilterSelect ariaLabel="News article class" onChange={(value) => onSettingsChange({ kind: value })} options={NEWS_ARTICLE_CLASS_OPTIONS} value={settings.kind} />
         <InventoryFilterSelect ariaLabel="News text coverage" onChange={(value) => onSettingsChange({ content: value })} options={NEWS_TEXT_OPTIONS} value={settings.content} />
+        {hasRefinements ? <button className="button secondary compact news-clear-filters" onClick={clearRefinements} type="button">Clear filters</button> : null}
         <button aria-label="Refresh news" className="toolbar-button compact" onClick={() => setRefreshKey((value) => value + 1)} title="Refresh" type="button"><RefreshCw size={13} /></button>
       </div>
       <NewsStatus inline state={state} />
