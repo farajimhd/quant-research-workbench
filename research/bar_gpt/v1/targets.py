@@ -24,12 +24,71 @@ TARGET_NAMES: tuple[str, ...] = (
     "ask_available",
     "quote_pair_available",
 )
+CONTINUOUS_TARGET_NAMES: tuple[str, ...] = TARGET_NAMES[:-4]
+AVAILABILITY_TARGET_NAMES: tuple[str, ...] = TARGET_NAMES[-4:]
+CONTINUOUS_TARGET_COUNT = len(CONTINUOUS_TARGET_NAMES)
+AVAILABILITY_TARGET_COUNT = len(AVAILABILITY_TARGET_NAMES)
 
 
 @dataclass(slots=True)
 class HorizonTargets:
     values: torch.Tensor
     mask: torch.Tensor
+
+
+def build_next_bar_targets(raw: torch.Tensor) -> HorizonTargets:
+    """Build next completed-bar targets for an arbitrary aggregated timeframe."""
+    if raw.ndim != 2:
+        raise ValueError("raw bar features must have shape [T,F]")
+    if raw.shape[0] < 2:
+        shape = (0, len(TARGET_NAMES))
+        return HorizonTargets(raw.new_zeros(shape), torch.zeros(shape, dtype=torch.bool, device=raw.device))
+    trade_present = _column(raw, "trade_present") > 0
+    quote_present = _column(raw, "quote_pair_present") > 0
+    trade_close = _column(raw, "trade_close")
+    midpoint_close = _column(raw, "midpoint_close")
+    reference_raw = torch.where(quote_present, midpoint_close, trade_close)
+    reference_valid_raw = (quote_present & (midpoint_close > 0)) | (trade_present & (trade_close > 0))
+    reference, reference_valid = _forward_fill(reference_raw, reference_valid_raw)
+    base = reference[:-1]
+    endpoint = reference[1:]
+    price_valid = reference_valid[:-1] & reference_valid[1:] & (base > 0) & (endpoint > 0)
+    endpoint_return = torch.where(price_valid, torch.log(endpoint / base), 0.0)
+    next_trade = trade_present[1:]
+    high = _column(raw, "trade_high")[1:]
+    low = _column(raw, "trade_low")[1:]
+    excursion_valid = price_valid & next_trade & (high > 0) & (low > 0)
+    upper = torch.where(excursion_valid, torch.log(high.clamp_min(1e-12) / base).clamp_min(0.0), 0.0)
+    lower = torch.where(excursion_valid, torch.log(base / low.clamp_min(1e-12)).clamp_min(0.0), 0.0)
+    quote_count = _column(raw, "quote_pair_count")[1:]
+    midpoint = torch.where(quote_present[1:], midpoint_close[1:], endpoint).clamp_min(1e-12)
+    spread_close_bps = _column(raw, "spread_close")[1:] / midpoint * 10_000.0
+    spread_mean_bps = (_column(raw, "spread_sum")[1:] / quote_count.clamp_min(1.0)) / midpoint * 10_000.0
+    qi_mean = _column(raw, "queue_imbalance_sum")[1:] / quote_count.clamp_min(1.0)
+    availability = tuple((_column(raw, f"{family}_present")[1:] > 0).float() for family in ("trade", "bid", "ask"))
+    values = torch.stack(
+        (
+            torch.asinh(endpoint_return * 100.0),
+            torch.asinh(upper * 100.0),
+            torch.asinh(lower * 100.0),
+            torch.asinh(endpoint_return.abs() * 100.0),
+            torch.log1p(_column(raw, "trade_size_sum")[1:]),
+            torch.log1p(_column(raw, "trade_event_count")[1:]),
+            torch.asinh(spread_close_bps / 10.0),
+            torch.asinh(spread_mean_bps / 10.0),
+            _column(raw, "queue_imbalance_close")[1:].clamp(-1.0, 1.0),
+            qi_mean.clamp(-1.0, 1.0),
+            *availability,
+            quote_present[1:].float(),
+        ),
+        dim=-1,
+    )
+    mask = torch.ones_like(values, dtype=torch.bool)
+    mask[:, :4] &= price_valid[:, None]
+    mask[:, 1:3] &= excursion_valid[:, None]
+    mask[:, 3] = False  # exact intrabar realized volatility is unavailable after aggregation
+    mask[:, 6:10] &= (quote_count > 0)[:, None]
+    return HorizonTargets(values=values, mask=mask)
 
 
 def _column(raw: torch.Tensor, name: str) -> torch.Tensor:
@@ -129,10 +188,10 @@ def build_physical_horizon_targets(
         quote_available = (quote_availability_prefix[ends] - quote_availability_prefix[starts] > 0).float()
         values = torch.stack(
             (
-                endpoint_return,
-                upper,
-                lower,
-                realized,
+                torch.asinh(endpoint_return * 100.0),
+                torch.asinh(upper * 100.0),
+                torch.asinh(lower * 100.0),
+                torch.asinh(realized * 100.0),
                 torch.log1p(volume),
                 torch.log1p(trade_count),
                 torch.asinh(spread_close_bps / 10.0),

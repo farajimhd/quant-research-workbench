@@ -8,13 +8,14 @@ __all__ = [
     "BarGPTOutput",
     "BarGPTV1",
     "DataConfig",
+    "ExperimentConfig",
     "TrainConfig",
 ]
 
 
 def __getattr__(name: str):
     """Keep the ClickHouse builder independent from optional training imports."""
-    if name in {"BarGPTConfig", "DataConfig", "TrainConfig"}:
+    if name in {"BarGPTConfig", "DataConfig", "ExperimentConfig", "TrainConfig"}:
         from research.bar_gpt.v1 import config
 
         return getattr(config, name)

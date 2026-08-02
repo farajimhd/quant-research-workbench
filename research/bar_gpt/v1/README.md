@@ -98,9 +98,28 @@ propagates bytecode suppression to its child process, so workstation execution
 does not create `__pycache__` under the synchronized code tree.
 
 Training reads use incremental `ArrowStream` record batches through
-`loader.py`; the response is not materialized with `read_all()`. A worker owns
-an ordered ticker/date range, retains only the current session plus the bounded
-context/target halo, and yields the previous session as soon as its key changes.
+`loader.py`; the one-second response is not materialized with `read_all()`. A
+worker owns an ordered ticker shard, retains only the current session plus
+bounded prepared examples, and yields the previous session as soon as its key
+changes. Because the daily table is time-first rather than ticker-first, each
+worker performs one bounded daily query for its complete ticker shard and
+partitions that comparatively small result in memory instead of rescanning the
+same seven-year daily range once per ticker.
+
+Sparse storage is restored to the complete 04:00–20:00 New York one-second
+clock. Empty seconds have zero availability masks; prices and activity are not
+fabricated. This retains genuinely illiquid sessions and gives every example a
+consistent session boundary. A session's exact 5-second through 1-hour rollups
+are computed once and then sliced for non-overlapping groups of origins. The
+default block encodes 2,048 context seconds and 512 origins together, with a
+3,600-second target-only right halo. It therefore does not create one copied
+input window per origin.
+
+Daily rows for held-out and training tickers remain separate from the one-second
+source. Weekly and monthly rows are computed from canonical daily sessions.
+The last weekly/monthly group for a ticker is withheld until a following period
+proves that the group closed, preventing a delisting or partial final period
+from appearing as a completed calendar bar.
 
 ## Temporal contract
 
@@ -121,16 +140,21 @@ that support; it is not visible to the origin representation.
 
 ## Model
 
-`BarGPTV1` uses:
+`BarGPTV1` is a decoder-only GPT-style model and uses:
 
 - RMSNorm and pre-normalized decoder blocks;
 - grouped-query causal self-attention;
 - rotary position embeddings;
 - SwiGLU feed-forward blocks;
-- one shared backbone for every timeframe plus learned timeframe embeddings;
+- one shared backbone for every timeframe;
+- continuous log-duration Fourier conditioning, so an unseen physical
+  timeframe is accepted without adding a new vocabulary ID;
+- microstructure (`1s`, `5s`, `30s`), intraday (`1m` through `1h`), and
+  calendar (`1D`, `1W`, `1MO`) pathway identities;
 - causal as-of fusion of coarse contextual states into fine origins;
-- a next-bar head for dense autoregressive supervision;
-- a low-rank horizon-conditioned quantile head.
+- a next-bar head for dense autoregressive supervision at every scale;
+- a low-rank horizon-conditioned monotone-quantile head for continuous targets;
+- separate availability logits for trade, bid, ask, and paired quotes.
 
 `features.py` converts the stored sufficient statistics into causal stationary
 channels: close returns, open gaps, nonnegative excursions, log activity,
@@ -142,8 +166,76 @@ The returned `embeddings` tensor is the bar-modality representation intended
 for later point-in-time integration with `packed_market_model/v2`. The existing
 packed model v1 remains unchanged.
 
-`targets.py` builds endpoint return, path excursions, realized volatility,
+`targets.py` builds scale-normalized endpoint return, path excursions, realized volatility,
 activity, spread, imbalance, and family-availability targets for every physical
 horizon from the dense right-support tensor. It uses index gathers, prefix
 differences, and GPU pooling; it does not construct or store per-origin input
 windows.
+
+## Training
+
+The canonical workstation launch is:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_train
+```
+
+The launcher prints the complete equivalent command before execution. Important
+defaults are visible in `run_train.py`: 2,048 one-second context bars, 512
+origins per block, batch size 2, four loader workers, a 384-wide eight-layer
+decoder, BF16, six physical horizons from 5 seconds through 1 hour, and 50
+million training origins. Overrides follow the printed defaults, for example:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_train `
+  --max-samples 1000000 `
+  --run-name bar-gpt-v1-pilot
+```
+
+Training refuses to start unless the one-second target, its build manifest, and
+the canonical daily table exist and the complete requested date range is
+covered by contiguous `certified_range` records. The split is both
+cross-sectional and point-in-time: a stable SHA-256 ranking holds out 15% of
+tickers, and validation for those tickers begins at the configured validation
+date. Training examples use bounded deterministic activity-regime resampling;
+loss weighting remains balanced when a small batch does not contain every
+regime.
+
+The objective combines:
+
+- dense next-bar Huber and availability losses at every scale;
+- direct multi-horizon pinball loss for continuous targets;
+- binary cross-entropy for horizon trade/bid/ask/quote availability.
+- stop-gradient next-state cosine prediction at every scale as latent-prediction
+  regularization.
+
+Checkpoints contain model, optimizer, AMP scaler, exact epoch/batch cursor,
+random states, and the model/data contract. Resume rejects a changed model or
+data contract and deterministically skips to the next unconsumed batch:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_train `
+  --resume-checkpoint D:\TradingML\runtimes\bar_gpt\v1\train\<run>\checkpoints\checkpoint_latest.pt `
+  --run-name <run>
+```
+
+Frozen embedding acceptance is a separate job, so probe gradients can never
+alter the pretrained encoder:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_linear_probe `
+  --checkpoint D:\TradingML\runtimes\bar_gpt\v1\train\<run>\checkpoints\checkpoint_best_val.pt
+```
+
+It fits ridge probes for transformed endpoint return at every configured
+horizon on non-held-out tickers and reports held-out-ticker R², MAE, and
+directional accuracy. Probe weights, normalization, metrics, and a reproduction
+manifest are stored under the linear-probe runtime root.
+
+Each run owns one directory under `D:\TradingML\runtimes\bar_gpt\v1\train`
+containing `config.json`, `run_manifest.json`, local JSONL metrics, checkpoints,
+W&B files, and `model_card.json`. No generated training artifact is written to
+the repository. The interactive Rich terminal keeps run health, current
+ticker/date work, durable checkpoint, progress, throughput, loader/GPU time,
+objective losses, and actionable messages visible. Redirected output uses
+stable text without cursor-control sequences.

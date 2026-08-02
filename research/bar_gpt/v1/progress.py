@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+import sys
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Mapping
+
+
+@dataclass(slots=True)
+class TrainingProgressState:
+    run_name: str
+    device: str
+    precision: str
+    output_dir: str
+    model_parameters: int
+    max_samples: int
+    state: str = "starting"
+    samples_seen: int = 0
+    batches_seen: int = 0
+    loss: float = 0.0
+    validation_loss: float | None = None
+    learning_rate: float = 0.0
+    origins_per_second: float = 0.0
+    loader_wait_seconds: float = 0.0
+    gpu_seconds: float = 0.0
+    active_tickers: str = "-"
+    active_dates: str = "-"
+    last_checkpoint: str = "-"
+    losses: dict[str, float] = field(default_factory=dict)
+    last_message: str = ""
+
+
+class TrainingReporter:
+    def __init__(self, state: TrainingProgressState, *, layout: str = "auto") -> None:
+        self.state = state
+        self.layout = layout
+        self.started = time.perf_counter()
+        self.messages: deque[str] = deque(maxlen=6)
+        self._live: Any | None = None
+        self._console: Any | None = None
+        self._last_text = 0.0
+
+    def __enter__(self) -> "TrainingReporter":
+        use_rich = self.layout == "rich" or (self.layout == "auto" and sys.stdout.isatty())
+        if use_rich:
+            try:
+                from rich.console import Console
+                from rich.live import Live
+
+                self._console = Console()
+                self._live = Live(self._render(), console=self._console, screen=False, transient=False, auto_refresh=False)
+                self._live.start()
+            except Exception:
+                if self.layout == "rich":
+                    raise
+        self.state.state = "running"
+        self.message("Training initialized")
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, _tb: object) -> bool:
+        if exc_type is KeyboardInterrupt:
+            self.state.state = "interrupted"
+            self.message("Interrupt received; checkpointing durable state")
+        elif exc is not None:
+            self.state.state = "failed"
+            self.message(str(exc))
+        elif self.state.state == "running":
+            self.state.state = "completed"
+        self.refresh(force=True)
+        if self._live is not None:
+            self._live.stop()
+        return False
+
+    def update(self, metrics: Mapping[str, Any], *, tickers: tuple[str, ...] = (), dates: tuple[str, ...] = ()) -> None:
+        s = self.state
+        s.samples_seen = int(metrics.get("train/samples_seen", s.samples_seen))
+        s.batches_seen = int(metrics.get("train/batches_seen", s.batches_seen))
+        s.loss = float(metrics.get("train/loss", s.loss))
+        s.learning_rate = float(metrics.get("train/learning_rate", s.learning_rate))
+        s.origins_per_second = float(metrics.get("train/origins_per_second", s.origins_per_second))
+        s.loader_wait_seconds = float(metrics.get("train/loader_wait_seconds", s.loader_wait_seconds))
+        s.gpu_seconds = float(metrics.get("train/gpu_seconds", s.gpu_seconds))
+        s.losses = {key.removeprefix("train/loss_"): float(value) for key, value in metrics.items() if key.startswith("train/loss_")}
+        if tickers:
+            s.active_tickers = ",".join(tickers)
+        if dates:
+            s.active_dates = f"{min(dates)}..{max(dates)}"
+        self.refresh()
+
+    def validation(self, loss: float) -> None:
+        self.state.validation_loss = float(loss)
+        self.message(f"Validation completed: loss={loss:.6f}")
+
+    def checkpoint(self, path: str) -> None:
+        self.state.last_checkpoint = path
+        self.message(f"Checkpoint scheduled: {path}")
+
+    def message(self, text: str) -> None:
+        self.state.last_message = str(text)
+        line = f"{time.strftime('%H:%M:%S')} {text}"
+        self.messages.append(line)
+        if self._live is not None:
+            self.refresh(force=True)
+        elif self.layout != "none":
+            print(line, flush=True)
+
+    def refresh(self, *, force: bool = False) -> None:
+        if self._live is not None:
+            self._live.update(self._render(), refresh=True)
+            return
+        if self.layout == "none":
+            return
+        now = time.monotonic()
+        if force or now - self._last_text >= 15.0:
+            self._last_text = now
+            s = self.state
+            print(
+                f"state={s.state} samples={s.samples_seen:,} batches={s.batches_seen:,} "
+                f"loss={s.loss:.6f} speed={s.origins_per_second:,.1f}/s "
+                f"active={s.active_tickers} dates={s.active_dates}",
+                flush=True,
+            )
+
+    def _render(self) -> Any:
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.progress import BarColumn, Progress, TextColumn
+        from rich.table import Table
+
+        s = self.state
+        width = self._console.size.width if self._console is not None else 120
+        elapsed = max(1e-9, time.perf_counter() - self.started)
+        remaining = max(0, s.max_samples - s.samples_seen) if s.max_samples else 0
+        eta = remaining / s.origins_per_second if remaining and s.origins_per_second > 0 else 0.0
+        progress = Progress(
+            TextColumn("[bold]origins"), BarColumn(), TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
+            TextColumn("{task.percentage:>5.1f}%"), expand=True,
+        )
+        total = max(s.max_samples, s.samples_seen, 1)
+        progress.add_task("origins", total=total, completed=min(s.samples_seen, total))
+        summary = Table.grid(expand=True, padding=(0, 2))
+        if width >= 100:
+            summary.add_column(); summary.add_column(); summary.add_column()
+            summary.add_row(f"[bold]state[/] {s.state}", f"[bold]run[/] {s.run_name}", f"[bold]device[/] {s.device} {s.precision}")
+            summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]validation[/] {s.validation_loss:.6f}" if s.validation_loss is not None else "[bold]validation[/] -", f"[bold]lr[/] {s.learning_rate:.3e}")
+            summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]elapsed[/] {_duration(elapsed)}", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
+            summary.add_row(f"[bold]loader wait[/] {s.loader_wait_seconds:.2f}s", f"[bold]GPU[/] {s.gpu_seconds:.2f}s", f"[bold]parameters[/] {s.model_parameters:,}")
+        else:
+            summary.add_column(); summary.add_column()
+            summary.add_row(f"[bold]state[/] {s.state}", f"[bold]device[/] {s.device} {s.precision}")
+            summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]lr[/] {s.learning_rate:.3e}")
+            summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
+            summary.add_row(f"[bold]batches[/] {s.batches_seen:,}", f"[bold]parameters[/] {s.model_parameters:,}")
+        active = Table.grid(expand=True, padding=(0, 2))
+        active.add_column(style="bold", no_wrap=True); active.add_column(ratio=1)
+        active.add_row("tickers", s.active_tickers)
+        active.add_row("dates", s.active_dates)
+        active.add_row("checkpoint", s.last_checkpoint)
+        active.add_row("output", s.output_dir)
+        losses = Table.grid(expand=True, padding=(0, 2))
+        losses.add_column(); losses.add_column(justify="right")
+        for key, value in list(s.losses.items())[:8]:
+            losses.add_row(key, f"{value:.6f}")
+        if not s.losses:
+            losses.add_row("waiting for first batch", "-")
+        messages = "\n".join(self.messages) if self.messages else "No messages"
+        return Group(
+            Panel(Group(progress, summary), title="BarGPT v1 training", border_style="cyan"),
+            Panel(active, title="Current work and durability", border_style="green"),
+            Panel(losses, title="Objectives", border_style="magenta"),
+            Panel(messages, title="Recent messages", border_style="yellow"),
+        )
+
+
+def _duration(value: float) -> str:
+    seconds = max(0, int(value))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:d}h {minutes:02d}m" if hours else (f"{minutes:d}m {secs:02d}s" if minutes else f"{secs:d}s")

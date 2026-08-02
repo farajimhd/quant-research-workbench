@@ -6,6 +6,8 @@ from typing import Mapping, Sequence
 import torch
 
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES, FEATURE_SPECS
+from research.bar_gpt.v1.features import project_stationary_features
+from research.bar_gpt.v1.targets import TARGET_NAMES, build_next_bar_targets, build_physical_horizon_targets
 
 
 @dataclass(slots=True)
@@ -25,6 +27,162 @@ class MultiscaleBlock:
     target_mask: torch.Tensor
 
 
+TIMEFRAME_US_BY_NAME: dict[str, int] = {
+    "1s": 1_000_000,
+    "5s": 5_000_000,
+    "30s": 30_000_000,
+    "1m": 60_000_000,
+    "5m": 300_000_000,
+    "15m": 900_000_000,
+    "1h": 3_600_000_000,
+    "1D": 86_400_000_000,
+    "1W": 604_800_000_000,
+    "1MO": 2_629_800_000_000,
+}
+PATHWAY_ID_BY_NAME: dict[str, int] = {
+    "1s": 0, "5s": 0, "30s": 0,
+    "1m": 1, "5m": 1, "15m": 1, "1h": 1,
+    "1D": 2, "1W": 2, "1MO": 2,
+}
+
+
+@dataclass(slots=True)
+class BarGPTExample:
+    ticker: str
+    local_date: str
+    raw_views: dict[str, torch.Tensor]
+    origin_indices: torch.Tensor
+    asof_indices: dict[str, torch.Tensor]
+    target_support: torch.Tensor
+    support_origin_indices: torch.Tensor
+    horizons_us: tuple[int, ...]
+    base_timeframe_us: int
+    activity_regime: int
+
+
+@dataclass(slots=True)
+class BarGPTBatch:
+    views: dict[str, torch.Tensor]
+    origin_indices: torch.Tensor
+    origin_mask: torch.Tensor
+    asof_indices: dict[str, torch.Tensor]
+    autoregressive_targets: dict[str, torch.Tensor]
+    autoregressive_mask: dict[str, torch.Tensor]
+    target_support: torch.Tensor
+    target_support_lengths: torch.Tensor
+    support_origin_indices: torch.Tensor
+    horizons_us: tuple[int, ...]
+    base_timeframe_us: int
+    horizon_targets: torch.Tensor | None
+    horizon_mask: torch.Tensor | None
+    sample_weights: torch.Tensor
+    tickers: tuple[str, ...]
+    local_dates: tuple[str, ...]
+
+    @property
+    def origin_count(self) -> int:
+        return int(self.origin_mask.sum().item())
+
+    def to(self, device: torch.device | str, *, non_blocking: bool = True) -> "BarGPTBatch":
+        def move_map(values: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+            return {key: value.to(device, non_blocking=non_blocking) for key, value in values.items()}
+        support_length_values = self.target_support_lengths.tolist()
+        origin_count_values = self.origin_mask.sum(dim=1).tolist()
+        support = self.target_support.to(device, non_blocking=non_blocking)
+        support_lengths = self.target_support_lengths.to(device, non_blocking=non_blocking)
+        support_origins = self.support_origin_indices.to(device, non_blocking=non_blocking)
+        built = [
+            build_physical_horizon_targets(
+                support[row, : int(support_length_values[row])],
+                support_origins[row, : int(origin_count_values[row])],
+                torch.as_tensor(self.horizons_us, dtype=torch.long, device=support.device),
+                base_timeframe_us=self.base_timeframe_us,
+            )
+            for row in range(support.shape[0])
+        ]
+        return BarGPTBatch(
+            views=move_map(self.views),
+            origin_indices=self.origin_indices.to(device, non_blocking=non_blocking),
+            origin_mask=self.origin_mask.to(device, non_blocking=non_blocking),
+            asof_indices=move_map(self.asof_indices),
+            autoregressive_targets=move_map(self.autoregressive_targets),
+            autoregressive_mask=move_map(self.autoregressive_mask),
+            target_support=support,
+            target_support_lengths=support_lengths,
+            support_origin_indices=support_origins,
+            horizons_us=self.horizons_us,
+            base_timeframe_us=self.base_timeframe_us,
+            horizon_targets=_pad_first_dimension([item.values for item in built]),
+            horizon_mask=_pad_first_dimension([item.mask for item in built], fill=False),
+            sample_weights=self.sample_weights.to(device, non_blocking=non_blocking),
+            tickers=self.tickers,
+            local_dates=self.local_dates,
+        )
+
+
+def _pad_first_dimension(values: list[torch.Tensor], *, fill: float | int | bool = 0) -> torch.Tensor:
+    maximum = max(value.shape[0] for value in values)
+    shape = (len(values), maximum, *values[0].shape[1:])
+    output = torch.full(shape, fill, dtype=values[0].dtype, device=values[0].device)
+    for row, value in enumerate(values):
+        output[row, : value.shape[0]] = value
+    return output
+
+
+def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regimes: bool = True) -> BarGPTBatch:
+    if not examples:
+        raise ValueError("cannot collate an empty BarGPT batch")
+    view_names = tuple(examples[0].raw_views)
+    if any(tuple(example.raw_views) != view_names for example in examples):
+        raise ValueError("all examples in a batch must expose the same ordered views")
+    if any(example.horizons_us != examples[0].horizons_us or example.base_timeframe_us != examples[0].base_timeframe_us for example in examples):
+        raise ValueError("all examples in a batch must use the same physical target contract")
+    raw_by_view = {name: [example.raw_views[name] for example in examples] for name in view_names}
+    views = {name: _pad_first_dimension([project_stationary_features(value) for value in values]) for name, values in raw_by_view.items()}
+    ar_targets: dict[str, torch.Tensor] = {}
+    ar_masks: dict[str, torch.Tensor] = {}
+    for name, values in raw_by_view.items():
+        built = [build_next_bar_targets(value) for value in values]
+        ar_targets[name] = _pad_first_dimension([item.values for item in built])
+        ar_masks[name] = _pad_first_dimension([item.mask for item in built], fill=False)
+    origin_indices = _pad_first_dimension([example.origin_indices for example in examples], fill=0)
+    origin_mask = _pad_first_dimension(
+        [torch.ones(example.origin_indices.shape[0], dtype=torch.bool) for example in examples],
+        fill=False,
+    )
+    asof = {
+        name: _pad_first_dimension([example.asof_indices[name] for example in examples], fill=-1)
+        for name in view_names if name != "1s"
+    }
+    regimes = torch.as_tensor([example.activity_regime for example in examples], dtype=torch.long)
+    weights = torch.ones(len(examples), dtype=torch.float32)
+    if balance_activity_regimes:
+        for regime in range(3):
+            selected = regimes == regime
+            count = int(selected.sum())
+            if count:
+                weights[selected] = len(examples) / (3.0 * count)
+        weights /= weights.mean().clamp_min(1e-12)
+    return BarGPTBatch(
+        views=views,
+        origin_indices=origin_indices,
+        origin_mask=origin_mask,
+        asof_indices=asof,
+        autoregressive_targets=ar_targets,
+        autoregressive_mask=ar_masks,
+        target_support=_pad_first_dimension([example.target_support for example in examples]),
+        target_support_lengths=torch.as_tensor([example.target_support.shape[0] for example in examples], dtype=torch.long),
+        support_origin_indices=_pad_first_dimension([example.support_origin_indices for example in examples], fill=0),
+        horizons_us=examples[0].horizons_us,
+        base_timeframe_us=examples[0].base_timeframe_us,
+        horizon_targets=None,
+        horizon_mask=None,
+        sample_weights=weights,
+        tickers=tuple(example.ticker for example in examples),
+        local_dates=tuple(example.local_date for example in examples),
+    )
+
+
 def causal_asof_indices(coarse_available_at_us: torch.Tensor, fine_anchor_us: torch.Tensor) -> torch.Tensor:
     """Return last coarse index with available_at <= each fine anchor."""
     if coarse_available_at_us.ndim != 1 or fine_anchor_us.ndim != 1:
@@ -32,14 +190,23 @@ def causal_asof_indices(coarse_available_at_us: torch.Tensor, fine_anchor_us: to
     return torch.searchsorted(coarse_available_at_us.contiguous(), fine_anchor_us.contiguous(), right=True) - 1
 
 
-def densify_one_second_view(sparse: BarView, *, step_us: int = 1_000_000) -> BarView:
+def densify_one_second_view(
+    sparse: BarView,
+    *,
+    step_us: int = 1_000_000,
+    clock_start_us: int | None = None,
+    clock_end_us: int | None = None,
+) -> BarView:
     """Create causal empty-clock rows for one ticker/session without fabricating family values."""
     if sparse.features.ndim != 2 or sparse.features.shape[0] == 0:
         raise ValueError("a non-empty single-session sparse view is required")
     if step_us <= 0:
         raise ValueError("step_us must be positive")
-    first = int(sparse.bar_start_us[0])
-    last = int(sparse.bar_start_us[-1])
+    first = int(sparse.bar_start_us[0]) if clock_start_us is None else int(clock_start_us)
+    exclusive_end = int(sparse.bar_start_us[-1]) + step_us if clock_end_us is None else int(clock_end_us)
+    last = exclusive_end - step_us
+    if first > int(sparse.bar_start_us[0]) or exclusive_end <= int(sparse.bar_start_us[-1]):
+        raise ValueError("requested dense clock does not contain every sparse bar")
     if last - first > 24 * 60 * 60 * 1_000_000:
         raise ValueError("densify_one_second_view accepts one ticker/session at a time")
     starts = torch.arange(first, last + step_us, step_us, device=sparse.bar_start_us.device, dtype=sparse.bar_start_us.dtype)

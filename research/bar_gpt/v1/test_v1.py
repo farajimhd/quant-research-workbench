@@ -27,7 +27,7 @@ from research.bar_gpt.v1.config import BarGPTConfig, DataConfig
 from research.bar_gpt.v1.data import BarView, causal_asof_indices, densify_one_second_view, horizon_target_indices, rollup_intraday_view
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
 from research.bar_gpt.v1.model import BarGPTV1
-from research.bar_gpt.v1.loader import ClickHouseBarStreamConfig, daily_range_query, ticker_range_query
+from research.bar_gpt.v1.loader import ClickHouseBarStreamConfig, daily_range_query, daily_tickers_range_query, ticker_range_query
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES, build_physical_horizon_targets
 from research.bar_gpt.v1.run_build_1s import main as launcher_main
@@ -129,6 +129,14 @@ class BuilderSqlTest(unittest.TestCase):
         )
         self.assertIn("PREWHERE timeframe = '1d'", daily_sql)
         self.assertNotIn("timeframe = '1w'", daily_sql)
+        batched_daily_sql = daily_tickers_range_query(
+            ClickHouseBarStreamConfig(url="http://localhost:8123", user="default", password=""),
+            tickers=("AAPL", "MSFT"),
+            start_date="2025-01-01",
+            end_date="2026-01-01",
+        )
+        self.assertIn("sym IN ('AAPL', 'MSFT')", batched_daily_sql)
+        self.assertIn("ORDER BY sym, bar_start, bar_family", batched_daily_sql)
 
 
 class BuildReporterTest(unittest.TestCase):
@@ -237,13 +245,16 @@ class TemporalContractTest(unittest.TestCase):
         self.assertEqual(dense.features[:, FEATURE_INDEX["trade_present"]].tolist(), [1, 0, 1, 0, 1])
         self.assertEqual(dense.available_at_us.tolist(), [1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000])
 
+        full_clock = densify_one_second_view(sparse, clock_start_us=0, clock_end_us=6_000_000)
+        self.assertEqual(full_clock.features.shape[0], 6)
+        self.assertEqual(full_clock.features[:, FEATURE_INDEX["trade_present"]].tolist(), [1, 0, 1, 0, 1, 0])
+
 
 class ModelContractTest(unittest.TestCase):
     def test_forward_shapes_and_future_causality(self) -> None:
         torch.manual_seed(7)
         config = BarGPTConfig(
             feature_dim=len(MODEL_FEATURE_NAMES),
-            target_dim=6,
             d_model=64,
             n_layers=2,
             n_heads=4,
@@ -257,7 +268,8 @@ class ModelContractTest(unittest.TestCase):
         origins = torch.tensor([[0, 1, 2, 3]])
         coarse_asof = torch.tensor([[-1, -1, -1, 0]])
         kwargs = {
-            "timeframe_ids": {"1s": 0, "5s": 1},
+            "timeframe_us": {"1s": 1_000_000, "5s": 5_000_000},
+            "pathway_ids": {"1s": 0, "5s": 0},
             "base_view": "1s",
             "origin_indices": origins,
             "asof_indices": {"5s": coarse_asof},
@@ -268,8 +280,24 @@ class ModelContractTest(unittest.TestCase):
         changed[:, 5:] += 100
         second = model({"1s": changed, "5s": coarse}, **kwargs)
         self.assertEqual(first.embeddings.shape, (1, 4, 64))
-        self.assertEqual(first.horizon_quantiles.shape, (1, 4, 3, 6, 3))
+        self.assertEqual(first.horizon_quantiles.shape, (1, 4, 3, 10, 3))
+        self.assertEqual(first.horizon_availability_logits.shape, (1, 4, 3, 4))
+        self.assertTrue(torch.all(first.horizon_quantiles[..., 1:] >= first.horizon_quantiles[..., :-1]))
         torch.testing.assert_close(first.embeddings, second.embeddings)
+
+    def test_continuous_timeframe_value_accepts_unseen_scale(self) -> None:
+        config = BarGPTConfig(d_model=64, n_layers=1, n_heads=4, n_kv_heads=2, horizon_rank=16)
+        model = BarGPTV1(config).eval()
+        features = torch.randn(1, 5, len(MODEL_FEATURE_NAMES))
+        output = model(
+            {"custom": features},
+            timeframe_us={"custom": 12_000_000},
+            pathway_ids={"custom": 0},
+            base_view="custom",
+            origin_indices=torch.tensor([[1, 2]]),
+            horizon_ids=torch.tensor([0]),
+        )
+        self.assertEqual(output.embeddings.shape, (1, 2, 64))
 
     def test_stationary_projection_has_no_absolute_price_channel(self) -> None:
         raw = torch.zeros((4, len(FEATURE_NAMES)))
@@ -288,6 +316,17 @@ class ModelContractTest(unittest.TestCase):
                 scaled[:, FEATURE_INDEX[f"{prefix}_{field}"]] *= 5
             scaled[:, FEATURE_INDEX[f"{prefix}_price_size_sum"]] *= 5
         torch.testing.assert_close(projected, project_stationary_features(scaled))
+
+    def test_daily_rows_without_intraday_moments_remain_neutral(self) -> None:
+        raw = torch.zeros((2, len(FEATURE_NAMES)))
+        raw[:, FEATURE_INDEX["trade_present"]] = 1
+        for field in ("open", "high", "low", "close"):
+            raw[:, FEATURE_INDEX[f"trade_{field}"]] = 100
+        raw[:, FEATURE_INDEX["trade_size_sum"]] = 1000
+        raw[:, FEATURE_INDEX["trade_event_count"]] = 10
+        projected = project_stationary_features(raw)
+        self.assertEqual(float(projected[1, MODEL_FEATURE_NAMES.index("trade_vwap_deviation_bps")]), 0.0)
+        self.assertEqual(float(projected[1, MODEL_FEATURE_NAMES.index("trade_size_cv")]), 0.0)
 
 
 if __name__ == "__main__":

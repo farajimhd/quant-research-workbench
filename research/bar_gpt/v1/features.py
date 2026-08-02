@@ -91,10 +91,14 @@ def project_stationary_features(raw_features: torch.Tensor) -> torch.Tensor:
         open_gap = _safe_log_ratio(open_price, previous_close, valid_previous)
         upper = torch.where(present & (open_price > 0) & (high >= open_price), torch.log(high.clamp_min(eps) / open_price.clamp_min(eps)), 0.0)
         lower = torch.where(present & (open_price > 0) & (low > 0) & (low <= open_price), torch.log(open_price.clamp_min(eps) / low.clamp_min(eps)), 0.0)
-        vwap = torch.where(size > 0, price_size / size.clamp_min(eps), close)
+        vwap = torch.where((size > 0) & (price_size > 0), price_size / size.clamp_min(eps), close)
         vwap_bps = torch.where(present & (close > 0), (vwap / close.clamp_min(eps) - 1.0) * 10_000.0, 0.0)
         mean_size = size / count.clamp_min(1.0)
-        variance = (size_squared / count.clamp_min(1.0) - mean_size.square()).clamp_min(0.0)
+        variance = torch.where(
+            size_squared > 0,
+            (size_squared / count.clamp_min(1.0) - mean_size.square()).clamp_min(0.0),
+            torch.zeros_like(size_squared),
+        )
         size_cv = torch.where(count > 1, variance.sqrt() / mean_size.clamp_min(eps), 0.0)
         output.extend(
             (
