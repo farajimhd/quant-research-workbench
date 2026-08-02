@@ -345,7 +345,7 @@ class HistoricalContractTests(unittest.TestCase):
                     "size_sum": 10_000.0,
                 }
             ],
-            "source": "market_sip_compact.macro_bars_by_time_symbol",
+            "source": "market_sip_compact.daily_session_bars_by_symbol_time_v1",
         }
 
         result = historical_bar_history_before(
@@ -367,7 +367,7 @@ class HistoricalContractTests(unittest.TestCase):
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_daily_chart_history_requests_exact_180_day_macro_window(self, gateway_get) -> None:
-        gateway_get.return_value = {"bars": [], "source": "market_sip_compact.macro_bars_by_time_symbol"}
+        gateway_get.return_value = {"bars": [], "source": "market_sip_compact.daily_session_bars_by_symbol_time_v1"}
 
         historical_bar_history_before(
             before=date(2026, 7, 11),

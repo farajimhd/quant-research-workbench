@@ -127,6 +127,9 @@ Environment variables:
 - `QMD_GAP_FILL_UNIVERSE_MARKET_DAYS`, default `5`
 - `QMD_HOST_ROLE`, default `auto`; use `workstation` or `laptop` to override
 - `QMD_HISTORICAL_CLICKHOUSE_DATABASE`, default `market_sip_compact`
+- `QMD_HISTORICAL_DAILY_SESSION_BARS_TABLE`, default
+  `daily_session_bars_by_symbol_time_v1`; supplies causal historical reference
+  levels and is maintained by the event updater.
 - `QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED`, default `true`
 - `QMD_HISTORICAL_FLATFILE_AUTORUN`, default `true`; effective only on the
   workstation after the active collection window closes

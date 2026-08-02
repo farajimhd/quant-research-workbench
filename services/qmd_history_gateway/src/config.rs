@@ -20,7 +20,7 @@ pub struct HistoricalGatewayConfig {
     pub clickhouse_url: String,
     pub clickhouse_user: String,
     pub max_events_per_request: usize,
-    pub macro_bars_table: String,
+    pub daily_session_bars_table: String,
     pub fetch_chunk_hours: usize,
     pub product_timeframes: Vec<String>,
     pub product_cache_max_rows_per_entry: usize,
@@ -61,9 +61,9 @@ impl HistoricalGatewayConfig {
             clickhouse_user: source.user,
             max_events_per_request: env_usize("QMD_HISTORY_MAX_EVENTS_PER_REQUEST", 10_000_000)
                 .max(1),
-            macro_bars_table: env_string(
-                "QMD_HISTORY_MACRO_BARS_TABLE",
-                "macro_bars_by_time_symbol",
+            daily_session_bars_table: env_string(
+                "QMD_HISTORY_DAILY_SESSION_BARS_TABLE",
+                "daily_session_bars_by_symbol_time_v1",
             ),
             fetch_chunk_hours: env_usize("QMD_HISTORY_FETCH_CHUNK_HOURS", 24).clamp(1, 168),
             product_timeframes: env_list(
@@ -105,8 +105,10 @@ impl HistoricalGatewayConfig {
         if !valid_identifier(&self.table_prefix) {
             return Err("QMD_HISTORY_TABLE_PREFIX must be an identifier prefix".to_string());
         }
-        if !valid_identifier(&self.macro_bars_table) {
-            return Err("QMD_HISTORY_MACRO_BARS_TABLE must be a ClickHouse identifier".to_string());
+        if !valid_identifier(&self.daily_session_bars_table) {
+            return Err(
+                "QMD_HISTORY_DAILY_SESSION_BARS_TABLE must be a ClickHouse identifier".to_string(),
+            );
         }
         if !valid_identifier(&self.structure_database) {
             return Err(

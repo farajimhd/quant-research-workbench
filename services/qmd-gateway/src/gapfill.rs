@@ -2304,9 +2304,10 @@ impl GapFillService {
             self.config.historical_pipeline_code_root
         );
         format!(
-            "python {} --database {} --events-table events --macro-bars-table macro_bars_by_time_symbol --bar-timeframes 1d --start-date {} --end-date {}",
+            "python {} --database {} --events-table events --daily-session-bars-table {} --skip-legacy-macro-bars --start-date {} --end-date {}",
             shell_arg(&script),
             shell_arg(&self.config.historical_clickhouse_database),
+            shell_arg(&self.config.historical_daily_session_bars_table),
             start_date,
             end_date,
         )

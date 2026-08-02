@@ -17,6 +17,7 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
     sql_string,
 )
+from src.backend.daily_session_bars import daily_session_trade_bars_relation_sql
 from src.backend.real_live_market_data.startup import logo_asset_url
 from src.backend.qmd_gateway_client import (
     normalize_qmd_indicator_scanner_row,
@@ -1089,7 +1090,12 @@ def _materialize_technical_snapshot(
             """
         )
     source = " UNION ALL ".join(selects)
-    session_date = snapshot_at.astimezone(NEW_YORK).date().isoformat()
+    prior_daily_bars = daily_session_trade_bars_relation_sql(
+        database=source_database,
+        start_date=snapshot_at.astimezone(NEW_YORK).date() - timedelta(days=35),
+        end_date=snapshot_at.astimezone(NEW_YORK).date(),
+        as_of=snapshot_at,
+    )
     client.execute(
         f"""
         INSERT INTO {SCANNER_TECHNICAL_TABLE}
@@ -1174,12 +1180,8 @@ def _materialize_technical_snapshot(
             SELECT sym, avg(size_sum) AS average_daily_volume
             FROM
             (
-                SELECT sym, session_date, size_sum
-                FROM {source_database}.macro_bars_by_time_symbol FINAL
-                WHERE timeframe = '1d'
-                  AND bar_family = 'trade'
-                  AND session_date < toDate({sql_string(session_date)})
-                  AND session_date >= toDate({sql_string(session_date)}) - INTERVAL 35 DAY
+                SELECT source_sym AS sym, session_date, size_sum
+                FROM ({prior_daily_bars})
                 ORDER BY session_date DESC
                 LIMIT 20 BY sym
             )

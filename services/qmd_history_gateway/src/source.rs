@@ -9,8 +9,8 @@ use qmd_core::compact_event::{
 use qmd_core::event::MarketEvent;
 use qmd_core::generic_structure::{GenericStructureEvent, GENERIC_STRUCTURE_ALGORITHM_VERSION};
 use qmd_core::indicators::{
-    market_structure_reference_sql, parse_market_structure_reference_rows,
-    MarketStructureReferenceLevels,
+    daily_session_trade_bars_sql, market_structure_reference_sql,
+    parse_market_structure_reference_rows, MarketStructureReferenceLevels,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -576,8 +576,16 @@ impl HistoricalEventSource {
         }
         let table = format!(
             "{}.{}",
-            self.config.clickhouse_database, self.config.macro_bars_table
+            self.config.clickhouse_database, self.config.daily_session_bars_table
         );
+        let daily_bars = daily_session_trade_bars_sql(
+            &self.config.clickhouse_database,
+            &self.config.daily_session_bars_table,
+            Some(&ticker),
+            window.start.date_naive(),
+            window.end.date_naive(),
+            as_of,
+        )?;
         let projection = if timeframe == "1mo" {
             r#"SELECT
                 toString(month_start) AS session_date,
@@ -593,13 +601,8 @@ impl HistoricalEventSource {
                 sum(size_sum) AS size_sum,
                 sum(event_count) AS event_count
             FROM (
-                SELECT toStartOfMonth(toDate(session_date)) AS month_start, sym, bar_family, bar_start AS source_bar_start, bar_end AS source_bar_end, open, close, high, low, size_sum, event_count
-                FROM {table} FINAL
-                WHERE timeframe = '1d'
-                  AND sym = {ticker}
-                  AND toDate(session_date) >= toDate('{start}')
-                  AND toDate(session_date) < toDate('{end}')
-                  AND bar_end <= parseDateTime64BestEffort('{as_of}')
+                SELECT toStartOfMonth(session_date) AS month_start, sym, 'trade' AS bar_family, bar_start AS source_bar_start, bar_end AS source_bar_end, open, close, high, low, size_sum, event_count
+                FROM ({daily_bars})
             )
             GROUP BY month_start, sym, bar_family
             ORDER BY bar_start, bar_family
@@ -619,23 +622,13 @@ impl HistoricalEventSource {
                 size_sum,
                 event_count
             FROM (
-                SELECT session_date, sym, bar_family, bar_start AS source_bar_start, bar_end AS source_bar_end, open, close, high, low, size_sum, event_count
-                FROM {table} FINAL
-                WHERE timeframe = '1d'
-                  AND sym = {ticker}
-                  AND toDate(session_date) >= toDate('{start}')
-                  AND toDate(session_date) < toDate('{end}')
-                  AND bar_end <= parseDateTime64BestEffort('{as_of}')
+                SELECT session_date, sym, 'trade' AS bar_family, bar_start AS source_bar_start, bar_end AS source_bar_end, open, close, high, low, size_sum, event_count
+                FROM ({daily_bars})
             )
             ORDER BY bar_start, bar_family
             FORMAT JSONEachRow"#
         };
-        let sql = projection
-            .replace("{table}", &table)
-            .replace("{ticker}", &sql_literal(&ticker))
-            .replace("{start}", &window.start.date_naive().to_string())
-            .replace("{end}", &window.end.date_naive().to_string())
-            .replace("{as_of}", &as_of.to_rfc3339());
+        let sql = projection.replace("{daily_bars}", &daily_bars);
         let text = self.query(&sql).await?;
         let bars = text
             .lines()
@@ -678,7 +671,7 @@ impl HistoricalEventSource {
         let ticker = normalize_ticker(ticker)?;
         let sql = market_structure_reference_sql(
             &self.config.clickhouse_database,
-            &self.config.macro_bars_table,
+            &self.config.daily_session_bars_table,
             Some(&ticker),
             as_of,
         )?;
@@ -694,7 +687,7 @@ impl HistoricalEventSource {
     ) -> Result<std::collections::HashMap<String, MarketStructureReferenceLevels>, String> {
         let sql = market_structure_reference_sql(
             &self.config.clickhouse_database,
-            &self.config.macro_bars_table,
+            &self.config.daily_session_bars_table,
             None,
             as_of,
         )?;

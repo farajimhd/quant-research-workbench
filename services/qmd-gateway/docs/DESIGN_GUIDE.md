@@ -129,7 +129,10 @@ is missing.
 
 Macro rows preserve the three families and the same OHLC/size/count algebra.
 Closed historical `1d`, `1w`, and `1y` rows may hydrate from
-`market_sip_compact.macro_bars_by_time_symbol` when source revision matches.
+`market_sip_compact.daily_session_bars_by_symbol_time_v1` when source revision
+matches. Historical daily and monthly chart bars and market-structure reference
+levels are derived from all three completed SIP sessions with point-in-time
+ticker identity; the legacy macro table is not an active QMD authority.
 The shared core also rolls current macro rows from cached intraday rows:
 
 - current day: closed intraday rows plus the current partial row

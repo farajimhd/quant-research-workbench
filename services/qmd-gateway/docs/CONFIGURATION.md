@@ -132,6 +132,7 @@ persistence. `QMD_INTRADAY_BAR_TIMEFRAMES` defaults to
 | `QMD_RUN_STARTED_AT_UTC` | generated | Optional run start timestamp. | Normally leave generated; used to open the live coverage row. |
 | `QMD_HOST_ROLE` | `auto` | Host role for historical update planning. | Override with `workstation` or `laptop` if auto-detection is wrong. |
 | `QMD_HISTORICAL_CLICKHOUSE_DATABASE` | `market_sip_compact` | Read-only historical event database name. | QMD never writes live rows into this database. |
+| `QMD_HISTORICAL_DAILY_SESSION_BARS_TABLE` | `daily_session_bars_by_symbol_time_v1` | Three-session SIP daily-bar authority for historical reference levels. | Only fully available premarket, regular, and after-hours session sets are aggregated. |
 | `QMD_HISTORICAL_CLICKHOUSE_URL` | falls back to q_live ClickHouse URL | Historical ClickHouse endpoint. | Use when historical data is on a different endpoint. |
 | `QMD_HISTORICAL_CLICKHOUSE_USER` | `CLICKHOUSE_WORKSTATION_USER`, then q_live user fallbacks | Historical ClickHouse read user. | Should have read access to `market_sip_compact.events_ordinal_continuity`. |
 | `QMD_HISTORICAL_CLICKHOUSE_PASSWORD` | `CLICKHOUSE_WORKSTATION_PASSWORD`, then q_live password fallbacks | Historical ClickHouse read password. | Secret presence only is exposed in `/config`. |

@@ -44,7 +44,7 @@ without a ready historical `/health` response, it stops with an actionable
 address-conflict message instead of attempting a duplicate bind.
 
 Configuration uses `QMD_HISTORY_CLICKHOUSE_URL`, `QMD_HISTORY_DATABASE`,
-`QMD_HISTORY_TABLE_PREFIX`, `QMD_HISTORY_MACRO_BARS_TABLE`, `QMD_HISTORY_CLICKHOUSE_USER`,
+`QMD_HISTORY_TABLE_PREFIX`, `QMD_HISTORY_DAILY_SESSION_BARS_TABLE`, `QMD_HISTORY_CLICKHOUSE_USER`,
 `QMD_HISTORY_CLICKHOUSE_PASSWORD`, `QMD_HISTORY_BIND`,
 `QMD_HISTORY_STRUCTURE_DATABASE`, `QMD_HISTORY_STRUCTURE_EVENTS_TABLE`,
 `QMD_HISTORY_BATCH_SIZE`, `QMD_HISTORY_MAX_EVENTS_PER_REQUEST`,
@@ -63,7 +63,10 @@ Defaults:
 - bind: `127.0.0.1:8801`
 - database: `market_sip_compact`
 - yearly-table prefix: `events_`
-- durable macro table: `macro_bars_by_time_symbol`
+- durable daily-session table: `daily_session_bars_by_symbol_time_v1`
+  (`QMD_HISTORY_DAILY_SESSION_BARS_TABLE`); QMD derives closed 1-day and
+  1-month trade bars only after all premarket, regular, and after-hours rows
+  are available.
 - generic-structure database/table: `q_live.qmd_structure_events_v2`
 - batch size: `25000`
 - maximum events in one derived calculation: `10000000`

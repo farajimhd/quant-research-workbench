@@ -6,7 +6,7 @@ import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Callable
 
 from research.mlops.clickhouse import (
@@ -16,6 +16,10 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
     quote_ident,
     sql_string,
+)
+from src.backend.daily_session_bars import (
+    DEFAULT_DAILY_SESSION_BARS_TABLE,
+    daily_session_trade_bars_relation_sql,
 )
 
 
@@ -560,12 +564,16 @@ def volume_sql(ticker: str, cutoff: datetime, database: str) -> str:
 
 
 def daily_volume_history_sql(ticker: str, cutoff: datetime, database: str, *, limit: int = HISTORY_LIMIT) -> str:
-    db = quote_ident(database)
+    daily_bars = daily_session_trade_bars_relation_sql(
+        database=database,
+        start_date=date(1970, 1, 1),
+        end_date=cutoff.date() + timedelta(days=1),
+        as_of=cutoff,
+        ticker=ticker,
+    )
     return f"""
         SELECT session_date, bar_end, close, size_sum
-        FROM {db}.macro_bars_by_time_symbol FINAL
-        WHERE sym = {sql_string(ticker)} AND timeframe = '1d' AND bar_family = 'trade'
-          AND bar_end <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
+        FROM ({daily_bars})
         ORDER BY bar_end DESC
         LIMIT {max(1, min(HISTORY_LIMIT, limit))}
         FORMAT JSONEachRow
@@ -1982,7 +1990,7 @@ def source_inventory(results: dict[str, list[dict[str, Any]]]) -> list[dict[str,
         "reg_sho": ("Reg SHO threshold", "q_live.market_reg_sho_threshold_v1"),
         "short_interest": ("Massive short interest", "q_live.market_short_interest_v1"),
         "short_volume": ("FINRA short volume", "q_live.market_short_volume_v1"),
-        "volume": ("QMD daily bars", f"{historical_database()}.macro_bars_by_time_symbol"),
+        "volume": ("QMD SIP daily-session bars", f"{historical_database()}.{DEFAULT_DAILY_SESSION_BARS_TABLE}"),
     }
     return [
         {"available": bool(results.get(key)), "label": label, "table": table}

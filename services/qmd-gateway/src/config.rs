@@ -103,6 +103,7 @@ pub struct GatewayConfig {
     pub recent_live_prior_market_days: i64,
     pub recent_live_repair_concurrency: usize,
     pub historical_clickhouse_database: String,
+    pub historical_daily_session_bars_table: String,
     pub historical_clickhouse_password_present: bool,
     pub historical_clickhouse_url: String,
     pub historical_clickhouse_user: String,
@@ -276,6 +277,10 @@ impl GatewayConfig {
             recent_live_prior_market_days: env_i64("QMD_RECENT_LIVE_PRIOR_MARKET_DAYS", 3),
             recent_live_repair_concurrency: env_usize("QMD_RECENT_LIVE_REPAIR_CONCURRENCY", 8),
             historical_clickhouse_database: historical_clickhouse.database,
+            historical_daily_session_bars_table: env_string(
+                "QMD_HISTORICAL_DAILY_SESSION_BARS_TABLE",
+                "daily_session_bars_by_symbol_time_v1",
+            ),
             historical_clickhouse_password_present: !historical_clickhouse.password.is_empty(),
             historical_clickhouse_url: historical_clickhouse.url,
             historical_clickhouse_user: historical_clickhouse.user,

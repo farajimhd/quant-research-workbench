@@ -413,7 +413,7 @@ pub async fn load_live_market_structure_references(
 ) -> Result<HashMap<String, MarketStructureReferenceLevels>, String> {
     let sql = market_structure_reference_sql(
         &config.historical_clickhouse_database,
-        "macro_bars_by_time_symbol",
+        &config.historical_daily_session_bars_table,
         None,
         as_of,
     )?;
@@ -465,10 +465,15 @@ pub fn market_structure_reference_sql(
             return Err(format!("market-structure {name} is not a valid identifier"));
         }
     }
-    let ticker_filter = ticker
-        .map(|value| format!("AND sym = '{}'", value.replace('\'', "''")))
-        .unwrap_or_default();
     let as_of_date = as_of.with_timezone(&New_York).date_naive();
+    let daily_bars = daily_session_trade_bars_sql(
+        database,
+        table,
+        ticker,
+        as_of_date - chrono::Duration::days(364),
+        as_of_date,
+        as_of,
+    )?;
     Ok(format!(
         r#"SELECT
             sym,
@@ -477,15 +482,79 @@ pub fn market_structure_reference_sql(
             ifNull(maxIf(high, toStartOfMonth(session_date) = addMonths(toStartOfMonth(toDate('{as_of_date}')), -1)), 0) AS prior_month_high,
             ifNull(minIf(low, low > 0 AND toStartOfMonth(session_date) = addMonths(toStartOfMonth(toDate('{as_of_date}')), -1)), 0) AS prior_month_low,
             ifNull(argMaxIf(close, bar_end, toStartOfMonth(session_date) = addMonths(toStartOfMonth(toDate('{as_of_date}')), -1)), 0) AS prior_month_close
-        FROM `{database}`.`{table}` FINAL
-        WHERE timeframe = '1d'
-          AND bar_family = 'trade'
-          AND session_date >= addDays(toDate('{as_of_date}'), -364)
-          AND session_date < toDate('{as_of_date}')
-          AND bar_end <= parseDateTime64BestEffort('{as_of}')
-          {ticker_filter}
+        FROM ({daily_bars})
         GROUP BY sym
         FORMAT JSONEachRow"#,
+    ))
+}
+
+/// Build fully closed daily trade bars from the three authoritative SIP session rows.
+/// Canonical identity joins ticker changes without projecting ambiguous mappings.
+pub fn daily_session_trade_bars_sql(
+    database: &str,
+    table: &str,
+    ticker: Option<&str>,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    as_of: DateTime<Utc>,
+) -> Result<String, String> {
+    for (name, value) in [("database", database), ("table", table)] {
+        if value.is_empty()
+            || !value
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err(format!("daily-session {name} is not a valid identifier"));
+        }
+    }
+    if start_date >= end_date {
+        return Err("daily-session range must have start_date before end_date".to_string());
+    }
+    let (identity_cte, ticker_filter) = ticker
+        .map(|value| {
+            let value = value.replace('\'', "''");
+            (
+                format!(
+                    r#"WITH (
+                        SELECT count()
+                        FROM `{database}`.`{table}` FINAL
+                        PREWHERE session_date >= toDate('{start_date}')
+                          AND session_date < toDate('{end_date}')
+                        WHERE canonical_ticker = '{value}'
+                          AND identity_status != 'ambiguous_source_ticker'
+                          AND available_at_us <= toUInt64(toUnixTimestamp64Micro(parseDateTime64BestEffort('{as_of}')))
+                    ) AS requested_canonical_count"#,
+                    as_of = as_of.to_rfc3339(),
+                ),
+                format!(
+                    "AND (canonical_ticker = '{value}' OR (requested_canonical_count = 0 AND source_ticker = '{value}'))"
+                ),
+            )
+        })
+        .unwrap_or_default();
+    Ok(format!(
+        r#"{identity_cte}
+        SELECT
+            ifNull(canonical_ticker, source_ticker) AS sym,
+            argMax(source_ticker, bar_end_us) AS source_sym,
+            session_date,
+            fromUnixTimestamp64Micro(toInt64(min(bar_start_us)), 'UTC') AS bar_start,
+            fromUnixTimestamp64Micro(toInt64(max(bar_end_us)), 'UTC') AS bar_end,
+            argMinIf(trade_open, tuple(bar_start_us, source_first_timestamp_us), trade_present = 1) AS open,
+            maxIf(trade_high, trade_present = 1) AS high,
+            minIf(trade_low, trade_present = 1) AS low,
+            argMaxIf(trade_close, tuple(bar_end_us, source_last_timestamp_us), trade_present = 1) AS close,
+            sum(trade_size_sum) AS size_sum,
+            sum(trade_event_count) AS event_count
+        FROM `{database}`.`{table}` FINAL
+        PREWHERE session_date >= toDate('{start_date}')
+          AND session_date < toDate('{end_date}')
+        WHERE adjusted = 0
+          AND identity_status != 'ambiguous_source_ticker'
+          AND available_at_us <= toUInt64(toUnixTimestamp64Micro(parseDateTime64BestEffort('{as_of}')))
+          {ticker_filter}
+        GROUP BY sym, session_date
+        HAVING uniqExact(session_kind) = 3 AND event_count > 0"#,
         as_of = as_of.to_rfc3339(),
     ))
 }
@@ -2589,14 +2658,17 @@ mod tests {
         let as_of = Utc.with_ymd_and_hms(2026, 7, 14, 13, 45, 0).unwrap();
         let sql = market_structure_reference_sql(
             "market_sip_compact",
-            "macro_bars_by_time_symbol",
+            "daily_session_bars_by_symbol_time_v1",
             Some("AAPL"),
             as_of,
         )
         .unwrap();
-        assert!(sql.contains("addDays(toDate('2026-07-14'), -364)"));
+        assert!(sql.contains("daily_session_bars_by_symbol_time_v1"));
         assert!(sql.contains("session_date < toDate('2026-07-14')"));
-        assert!(sql.contains("AND sym = 'AAPL'"));
+        assert!(sql.contains("canonical_ticker = 'AAPL'"));
+        assert!(sql.contains("available_at_us <="));
+        assert!(sql.contains("uniqExact(session_kind) = 3"));
+        assert!(sql.contains("identity_status != 'ambiguous_source_ticker'"));
         let rows = parse_market_structure_reference_rows(
             r#"{"sym":"AAPL","high_52_week":331.78,"low_52_week":181.46,"prior_month_high":324.09,"prior_month_low":246.63,"prior_month_close":289.0}"#,
         )
