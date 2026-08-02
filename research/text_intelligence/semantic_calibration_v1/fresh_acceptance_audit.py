@@ -606,8 +606,12 @@ def _human_evidence(human: Mapping[str, Any]) -> str:
 
 
 def _v9_trace(prediction: Mapping[str, Any]) -> str:
+    identity = prediction.get("identity_resolution") or {}
     lines = [
         f"- **Article evidence:** {_display(prediction.get('evidence') or [])}",
+        f"- **Issuer authority:** `{identity.get('authority_version') or 'not recorded'}`",
+        f"- **Resolved text subjects:** {_display(identity.get('resolved_subjects') or [])}",
+        f"- **Point-in-time issuer facts:** {_display(identity.get('point_in_time_candidates') or [])}",
         "",
     ]
     labels = prediction.get("labels") or ()

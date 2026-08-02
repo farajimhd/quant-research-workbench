@@ -4,13 +4,27 @@ import argparse
 import json
 from pathlib import Path
 
-from research.text_intelligence.scoped_labeling_v1.news_identity import IssuerIdentity, NewsIssuerResolver
+from research.mlops.clickhouse import (
+    ClickHouseHttpClient,
+    default_clickhouse_password,
+    default_clickhouse_url,
+    default_clickhouse_user,
+)
+from research.mlops.env import discover_env_files, load_env_files
+from research.text_intelligence.scoped_labeling_v1.news_identity import (
+    ISSUER_IDENTITY_AUTHORITY_VERSION,
+    NewsIssuerResolver,
+    load_news_issuer_resolver,
+)
 from research.text_intelligence.semantic_label_authority_v1.schema import SemanticDocument
 
 from .comparison import evaluate_predictions, load_collection
 from .deterministic_v9 import classify_news_document_v9
 from .run_deterministic_news_v6 import DEFAULT_FROZEN, DEFAULT_ROOT, _frozen_ids, _headline
 from .storage import assert_runtime_root, write_json_atomic
+
+
+_WORKER_ISSUER_AUTHORITY: NewsIssuerResolver | None = None
 
 
 def main() -> int:
@@ -25,8 +39,9 @@ def main() -> int:
     if len(items) != 1_000 or len(frozen_ids) != 100:
         raise RuntimeError(f"Invalid human authority: items={len(items)} frozen={len(frozen_ids)}")
     prediction_dir = output / "human_predictions"
+    issuer_resolver = load_v9_issuer_authority()
     for index, item in enumerate(items, 1):
-        result = _predict(item)
+        result = _predict(item, issuer_resolver=issuer_resolver)
         result.update({"sample_id": item.sample_id, "split": item.split, "source_id": item.blinded["source_id"]})
         write_json_atomic(prediction_dir / f"{item.sample_id}.json", result)
         if index % 100 == 0 or index == len(items):
@@ -49,19 +64,29 @@ def main() -> int:
     return 0
 
 
-def _predict(item) -> dict:
+def load_v9_issuer_authority(*, database: str = "q_live") -> NewsIssuerResolver:
+    """Load the complete point-in-time issuer reference once per V9 process."""
+    repo_root = Path(__file__).resolve().parents[3]
+    load_env_files(discover_env_files(repo_root), verbose=True)
+    client = ClickHouseHttpClient(
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+    )
+    resolver = load_news_issuer_resolver(client, database=database)
+    print(
+        "V9 ISSUER AUTHORITY "
+        f"version={ISSUER_IDENTITY_AUTHORITY_VERSION} "
+        f"identities={resolver.identity_count:,} tickers={resolver.ticker_count:,}",
+        flush=True,
+    )
+    return resolver
+
+
+def _predict(item, *, issuer_resolver: NewsIssuerResolver) -> dict:
     source = item.blinded
     publication = source["publication"]
     rendered = source["rendered_product"]
-    identities = []
-    for candidate in source.get("point_in_time_issuer_candidates") or ():
-        ticker = str(candidate.get("canonical_instrument_id") or candidate.get("ticker") or "").upper()
-        aliases = tuple(
-            evidence.split(":", 1)[1]
-            for evidence in candidate.get("identity_evidence") or ()
-            if str(evidence).startswith("issuer_alias:")
-        )
-        identities.append(IssuerIdentity(ticker=ticker, issuer_id=f"calibration:{ticker}", aliases=aliases))
     provider_tickers = tuple(str(value).upper() for value in publication.get("provider_tickers") or ())
     document = SemanticDocument(
         corpus="news",
@@ -77,15 +102,51 @@ def _predict(item) -> dict:
             "channels": publication.get("channels") or (),
             "teaser": publication.get("teaser") or "",
             "url_domain": publication.get("url_domain") or "",
-            "issuer_identities": tuple({
-                "ticker": identity.ticker, "issuer_id": identity.issuer_id, "aliases": identity.aliases,
-            } for identity in identities),
         },
     )
-    return classify_news_document_v9(
+    result = classify_news_document_v9(
         document,
-        issuer_resolver=NewsIssuerResolver(identities, article_tickers=provider_tickers),
+        issuer_resolver=issuer_resolver,
     ).as_dict()
+    combined_text = "\n".join(
+        value
+        for value in (
+            str(publication.get("title") or ""),
+            str(publication.get("teaser") or ""),
+            str(rendered.get("text") or ""),
+        )
+        if value
+    )
+    resolved = issuer_resolver.with_article_identities(combined_text).resolve(
+        combined_text,
+        timestamp=str(source["source_timestamp"]),
+        linked_tickers=provider_tickers,
+    )
+    result["identity_resolution"] = {
+        "authority_version": ISSUER_IDENTITY_AUTHORITY_VERSION,
+        "authority_identity_count": issuer_resolver.identity_count,
+        "authority_ticker_count": issuer_resolver.ticker_count,
+        "point_in_time_candidates": issuer_resolver.reference_snapshot(
+            provider_tickers,
+            timestamp=str(source["source_timestamp"]),
+        ),
+        "resolved_subjects": tuple(
+            {
+                "ticker": match.ticker,
+                "evidence": match.evidence,
+            }
+            for match in resolved
+        ),
+    }
+    return result
+
+
+def predict_with_loaded_authority(item) -> dict:
+    """Process-worker entry point that loads the reference table once per worker."""
+    global _WORKER_ISSUER_AUTHORITY
+    if _WORKER_ISSUER_AUTHORITY is None:
+        _WORKER_ISSUER_AUTHORITY = load_v9_issuer_authority()
+    return _predict(item, issuer_resolver=_WORKER_ISSUER_AUTHORITY)
 
 
 if __name__ == "__main__":

@@ -119,6 +119,80 @@ class DeterministicV9Tests(unittest.TestCase):
             result.labels[0]["classification"]["quality_flags"],
         )
 
+    def test_complete_identity_does_not_turn_index_change_into_analysis(self) -> None:
+        title = (
+            "SolarWinds To Replace SunPower In S&P SmallCap 600, Effective "
+            "Prior To The Opening Of Trading"
+        )
+        document = SemanticDocument(
+            corpus="news",
+            source_id="index-change-v9",
+            timestamp="2024-08-06T21:30:39Z",
+            title=title,
+            text=(
+                f"Title: {title}\nSunPower has filed for Chapter 11 bankruptcy "
+                "and is no longer eligible for continued inclusion."
+            ),
+            tickers=("SPWR", "SWI"),
+        )
+        resolver = NewsIssuerResolver(
+            (
+                IssuerIdentity("SPWR", "issuer:spwr", ("SunPower",)),
+                IssuerIdentity("SWI", "issuer:swi", ("SolarWinds",)),
+            )
+        )
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "primary_event")
+
+    def test_analyst_ratings_channel_remains_analyst_with_complete_identity(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="analyst-report-v9",
+            timestamp="2022-08-25T17:41:19Z",
+            title="SBEV: 2Q Results; Wholesale Wins Should Pave The Way",
+            text=(
+                "Splash Beverage Group reported results. Our price target of "
+                "$5 remains unchanged and we continue to be bullish."
+            ),
+            tickers=(),
+            metadata={"channels": ("analyst ratings",)},
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("SBEV", "issuer:sbev", ("Splash Beverage Group",)),)
+        )
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "analyst_event")
+
+    def test_shared_acquisition_keeps_transaction_concept_for_each_issuer(self) -> None:
+        title = (
+            "United Rentals To No Longer Pursue Acquisition Of H&E Equipment "
+            "Services; Plans To Restart Its Share Repurchase Program"
+        )
+        document = SemanticDocument(
+            corpus="news",
+            source_id="shared-ma-v9",
+            timestamp="2025-02-18T12:19:44Z",
+            title=title,
+            text=(
+                f"Title: {title}\nH&E Equipment Services must pay a termination "
+                "fee to United Rentals if it enters another acquisition agreement."
+            ),
+            tickers=("HEES", "HRI", "URI"),
+        )
+        resolver = NewsIssuerResolver(
+            (
+                IssuerIdentity("HEES", "issuer:hees", ("H&E Equipment Services",)),
+                IssuerIdentity("HRI", "issuer:hri", ("Herc Holdings",)),
+                IssuerIdentity("URI", "issuer:uri", ("United Rentals",)),
+            )
+        )
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual({label["ticker"] for label in result.labels}, {"HEES", "URI"})
+        for label in result.labels:
+            self.assertIn(
+                "ma_transaction", label["classification"]["event_concepts"]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

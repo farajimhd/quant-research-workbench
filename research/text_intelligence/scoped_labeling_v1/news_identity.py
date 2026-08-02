@@ -8,7 +8,8 @@ from typing import Iterable, Mapping, Sequence
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
 
 
-ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v3"
+ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v4"
+ISSUER_IDENTITY_AUTHORITY_VERSION = "news_issuer_identity_authority_v5"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?:NASDAQ|NYSE|NYSEAMERICAN|NYSE\s+AMERICAN|AMEX|OTC(?:QX|QB)?|"
     r"TSX|TSXV|CSE)\s*[:\-]\s*([A-Z][A-Z0-9.-]{0,9})\b",
@@ -70,6 +71,19 @@ class IssuerIdentity:
     aliases: tuple[str, ...]
     list_date: dt.date | None = None
     delisted_date: dt.date | None = None
+    exchange_code: str = ""
+    cik: str = ""
+    entity_type: str = ""
+    domicile_country_code: str = ""
+    state_of_incorporation: str = ""
+    sic_code: str = ""
+    sic_description: str = ""
+    sector: str = ""
+    industry: str = ""
+    website_url: str = ""
+    investor_website_url: str = ""
+    status: str = ""
+    source_authority: str = ""
 
     def valid_on(self, day: dt.date | None) -> bool:
         if day is None:
@@ -127,6 +141,55 @@ class NewsIssuerResolver:
             value.upper().strip() for value in article_tickers if value
         )
 
+    @property
+    def identity_count(self) -> int:
+        return len(self._identities)
+
+    @property
+    def ticker_count(self) -> int:
+        return len(self._ticker_entries)
+
+    def reference_snapshot(
+        self,
+        tickers: Sequence[str],
+        *,
+        timestamp: str = "",
+    ) -> tuple[dict[str, object], ...]:
+        """Return the in-memory point-in-time facts used for ticker resolution."""
+        day = _timestamp_date(timestamp)
+        rows: list[dict[str, object]] = []
+        for ticker in dict.fromkeys(
+            value.upper().strip() for value in tickers if value
+        ):
+            for identity in self._valid_ticker_entries(ticker, day):
+                rows.append(
+                    {
+                        "ticker": identity.ticker,
+                        "issuer_id": identity.issuer_id,
+                        "aliases": identity.aliases,
+                        "list_date": identity.list_date.isoformat()
+                        if identity.list_date
+                        else "",
+                        "delisted_date": identity.delisted_date.isoformat()
+                        if identity.delisted_date
+                        else "",
+                        "exchange_code": identity.exchange_code,
+                        "cik": identity.cik,
+                        "entity_type": identity.entity_type,
+                        "domicile_country_code": identity.domicile_country_code,
+                        "state_of_incorporation": identity.state_of_incorporation,
+                        "sic_code": identity.sic_code,
+                        "sic_description": identity.sic_description,
+                        "sector": identity.sector,
+                        "industry": identity.industry,
+                        "website_url": identity.website_url,
+                        "investor_website_url": identity.investor_website_url,
+                        "status": identity.status,
+                        "source_authority": identity.source_authority,
+                    }
+                )
+        return tuple(rows)
+
     @classmethod
     def from_metadata(cls, metadata: Mapping[str, object]) -> "NewsIssuerResolver":
         identities: list[IssuerIdentity] = []
@@ -144,6 +207,25 @@ class NewsIssuerResolver:
                     ),
                     list_date=_date_or_none(raw.get("list_date")),
                     delisted_date=_date_or_none(raw.get("delisted_date")),
+                    exchange_code=str(raw.get("exchange_code") or ""),
+                    cik=str(raw.get("cik") or ""),
+                    entity_type=str(raw.get("entity_type") or ""),
+                    domicile_country_code=str(
+                        raw.get("domicile_country_code") or ""
+                    ),
+                    state_of_incorporation=str(
+                        raw.get("state_of_incorporation") or ""
+                    ),
+                    sic_code=str(raw.get("sic_code") or ""),
+                    sic_description=str(raw.get("sic_description") or ""),
+                    sector=str(raw.get("sector") or ""),
+                    industry=str(raw.get("industry") or ""),
+                    website_url=str(raw.get("website_url") or ""),
+                    investor_website_url=str(
+                        raw.get("investor_website_url") or ""
+                    ),
+                    status=str(raw.get("status") or ""),
+                    source_authority=str(raw.get("source_authority") or ""),
                 )
             )
         return cls(identities)
@@ -342,7 +424,7 @@ def load_news_issuer_resolver(
 ) -> NewsIssuerResolver:
     """Load the reference identity authority once for a bounded pipeline run."""
     db = quote_ident(database)
-    rows = _json_rows(client.execute(f"""
+    canonical_rows = _json_rows(client.execute(f"""
 SELECT
  upperUTF8(sym.ticker_normalized) AS ticker,
  sec.issuer_id AS issuer_id,
@@ -351,8 +433,21 @@ SELECT
  ifNull(issuer.branding_name, '') AS branding_name,
  sec.security_name AS security_name,
  sym.display_name AS display_name,
+ listing.exchange_code AS exchange_code,
  toString(listing.list_date) AS list_date,
- toString(listing.delisted_date) AS delisted_date
+ toString(listing.delisted_date) AS delisted_date,
+ ifNull(identifier.cik, '') AS cik,
+ ifNull(issuer.entity_type, '') AS entity_type,
+ ifNull(issuer.domicile_country_code, '') AS domicile_country_code,
+ ifNull(issuer.state_of_incorporation, '') AS state_of_incorporation,
+ ifNull(issuer.sic_code, '') AS sic_code,
+ ifNull(issuer.sic_description, '') AS sic_description,
+ ifNull(issuer.sector, '') AS sector,
+ ifNull(issuer.industry, '') AS industry,
+ ifNull(issuer.website_url, '') AS website_url,
+ ifNull(issuer.investor_website_url, '') AS investor_website_url,
+ issuer.status AS status,
+ 'canonical_identity_graph' AS source_authority
 FROM {db}.id_symbol_v1 AS sym FINAL
 INNER JOIN {db}.id_listing_v1 AS listing FINAL
  ON listing.listing_id=sym.listing_id
@@ -360,17 +455,104 @@ INNER JOIN {db}.id_security_v1 AS sec FINAL
  ON sec.security_id=listing.security_id
 INNER JOIN {db}.id_issuer_v1 AS issuer FINAL
  ON issuer.issuer_id=sec.issuer_id
+LEFT JOIN
+(
+ SELECT
+  issuer_id,
+  argMax(identifier_value_normalized, inserted_at) AS cik
+ FROM {db}.id_issuer_identifier_v1 FINAL
+ WHERE identifier_kind='cik'
+ GROUP BY issuer_id
+) AS identifier ON identifier.issuer_id=issuer.issuer_id
 WHERE sym.ticker_normalized != ''
   AND sec.issuer_id != ''
   AND listing.currency_code='USD'
   AND sym.asset_type IN ('stock', 'fund', 'otc')
 FORMAT JSONEachRow
 """))
-    identities = [
-        IssuerIdentity(
-            ticker=str(row["ticker"]).upper(),
-            issuer_id=str(row["issuer_id"]),
-            aliases=tuple(dict.fromkeys(
+    fallback_rows = _json_rows(client.execute(f"""
+SELECT
+ upperUTF8(entity.current_ticker) AS ticker,
+ coalesce(nullIf(identifier.issuer_id, ''), concat('issuer:cik:', entity.cik)) AS issuer_id,
+ coalesce(nullIf(issuer.issuer_name, ''), entity.entity_name) AS issuer_name,
+ ifNull(issuer.legal_name, '') AS legal_name,
+ ifNull(issuer.branding_name, '') AS branding_name,
+ entity.entity_name AS security_name,
+ entity.entity_name AS display_name,
+ ifNull(entity.primary_exchange, '') AS exchange_code,
+ '' AS list_date,
+ substring(JSONExtractString(entity.source_payload_json, 'delisted_utc'), 1, 10) AS delisted_date,
+ entity.cik AS cik,
+ ifNull(issuer.entity_type, '') AS entity_type,
+ ifNull(issuer.domicile_country_code, '') AS domicile_country_code,
+ ifNull(issuer.state_of_incorporation, '') AS state_of_incorporation,
+ ifNull(issuer.sic_code, '') AS sic_code,
+ ifNull(issuer.sic_description, '') AS sic_description,
+ ifNull(issuer.sector, '') AS sector,
+ ifNull(issuer.industry, '') AS industry,
+ ifNull(issuer.website_url, '') AS website_url,
+ ifNull(issuer.investor_website_url, '') AS investor_website_url,
+ if(entity.active=1, 'active', 'inactive') AS status,
+ 'market_ticker_event_entity' AS source_authority
+FROM {db}.market_ticker_event_entity_v1 AS entity FINAL
+LEFT JOIN
+(
+ SELECT
+  identifier_value_normalized AS cik,
+  argMax(issuer_id, inserted_at) AS issuer_id
+ FROM {db}.id_issuer_identifier_v1 FINAL
+ WHERE identifier_kind='cik'
+ GROUP BY identifier_value_normalized
+) AS identifier ON identifier.cik=entity.cik
+LEFT JOIN {db}.id_issuer_v1 AS issuer FINAL
+ ON issuer.issuer_id=identifier.issuer_id
+WHERE entity.current_ticker != ''
+  AND entity.cik != ''
+  AND lowerUTF8(ifNull(entity.currency_name, ''))='usd'
+  AND lowerUTF8(JSONExtractString(entity.source_payload_json, 'locale'))='us'
+FORMAT JSONEachRow
+"""))
+    identities = _identity_rows(canonical_rows, fallback_rows)
+    if not identities:
+        raise RuntimeError(
+            "News issuer-resolution preflight returned no reference identities."
+        )
+    return NewsIssuerResolver(identities)
+
+
+def _identity_rows(
+    canonical_rows: Sequence[Mapping[str, object]],
+    fallback_rows: Sequence[Mapping[str, object]],
+) -> list[IssuerIdentity]:
+    """Build one complete identity table without weakening dated canonical rows."""
+    rows = list(canonical_rows)
+    canonical_keys = {
+        (str(row.get("ticker") or "").upper(), str(row.get("issuer_id") or ""))
+        for row in canonical_rows
+    }
+    rows.extend(
+        row
+        for row in fallback_rows
+        if (
+            str(row.get("ticker") or "").upper(),
+            str(row.get("issuer_id") or ""),
+        )
+        not in canonical_keys
+    )
+    identities: list[IssuerIdentity] = []
+    seen: set[tuple[str, str, dt.date | None, dt.date | None, str]] = set()
+    for row in rows:
+        ticker = str(row.get("ticker") or "").upper().strip()
+        issuer_id = str(row.get("issuer_id") or "").strip()
+        list_date = _date_or_none(row.get("list_date"))
+        delisted_date = _date_or_none(row.get("delisted_date"))
+        exchange_code = str(row.get("exchange_code") or "").strip().upper()
+        key = (ticker, issuer_id, list_date, delisted_date, exchange_code)
+        if not ticker or not issuer_id or key in seen:
+            continue
+        seen.add(key)
+        aliases = tuple(
+            dict.fromkeys(
                 str(row.get(name) or "").strip()
                 for name in (
                     "issuer_name",
@@ -380,17 +562,39 @@ FORMAT JSONEachRow
                     "display_name",
                 )
                 if str(row.get(name) or "").strip()
-            )),
-            list_date=_date_or_none(row.get("list_date")),
-            delisted_date=_date_or_none(row.get("delisted_date")),
+            )
         )
-        for row in rows
-    ]
-    if not identities:
-        raise RuntimeError(
-            "News issuer-resolution preflight returned no reference identities."
+        if not aliases:
+            continue
+        identities.append(
+            IssuerIdentity(
+                ticker=ticker,
+                issuer_id=issuer_id,
+                aliases=aliases,
+                list_date=list_date,
+                delisted_date=delisted_date,
+                exchange_code=exchange_code,
+                cik=str(row.get("cik") or ""),
+                entity_type=str(row.get("entity_type") or ""),
+                domicile_country_code=str(
+                    row.get("domicile_country_code") or ""
+                ),
+                state_of_incorporation=str(
+                    row.get("state_of_incorporation") or ""
+                ),
+                sic_code=str(row.get("sic_code") or ""),
+                sic_description=str(row.get("sic_description") or ""),
+                sector=str(row.get("sector") or ""),
+                industry=str(row.get("industry") or ""),
+                website_url=str(row.get("website_url") or ""),
+                investor_website_url=str(
+                    row.get("investor_website_url") or ""
+                ),
+                status=str(row.get("status") or ""),
+                source_authority=str(row.get("source_authority") or ""),
+            )
         )
-    return NewsIssuerResolver(identities)
+    return identities
 
 
 def normalize_issuer_alias(value: str) -> str:

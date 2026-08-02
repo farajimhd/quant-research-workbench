@@ -583,7 +583,7 @@ runtime authority is a source-controlled set of readable structural rules,
 concept additions, eligibility decisions, signed concept weights, and direction
 thresholds applied on top of V8.
 
-Candidate 2 adds role-aware issuer scoping for a dual-role exchange operator.
+Candidate 2 added role-aware issuer scoping for a dual-role exchange operator.
 In constructions such as ``Nasdaq comments on <security> trading halt``, Nasdaq
 is the venue actor rather than evidence that the event affects listed issuer
 ``NDAQ``. Provider ticker links remain candidates, but the event predicate and
@@ -592,6 +592,27 @@ venue operator and exactly one other linked instrument are present; ordinary
 Nasdaq, Inc. issuer news and ambiguous multi-security cases remain unchanged.
 V9 artifacts record both the V9 candidate and scope-extractor versions, and the
 evaluation cache requires exact version equality before reusing a prediction.
+
+Candidate 3 replaces the lossy calibration-item alias reconstruction with one
+complete, in-memory point-in-time issuer authority loaded once per process (or
+once per process worker for parallel teacher evaluation). The authority merges
+dated USD security/listing/issuer identities from the canonical reference graph
+with historical ticker-event entities that have not yet been materialized into
+that graph. Canonical rows remain authoritative; the entity table only fills a
+missing ticker/issuer pair and preserves delisting dates, CIK, exchange, legal
+and branding names, issuer type, incorporation, SIC, sector, industry, status,
+and source provenance. Provider tickers remain candidates. A label is emitted
+only when the retained text resolves a ticker symbol or an unambiguous issuer
+alias valid at publication time. Street addresses are deliberately excluded:
+they are not consistently point-in-time and are a weaker semantic identity key
+than names, symbols, CIK, exchange, and listing validity.
+
+Candidate 3 also preserves high-precision article roles when complete identity
+resolution exposes both sides of an index-constituent change or an analyst
+report, and preserves the shared M&A concept for every explicitly resolved
+participant. Every prediction records the identity-authority version, the
+point-in-time facts considered, and the subjects actually resolved from text so
+the audit renderer exposes the same evidence used by evaluation.
 
 The teacher corpus is partitioned before calibration into 7,997 development,
 1,000 validation, and 1,000 locked-test articles. Articles sharing a provider
@@ -737,14 +758,14 @@ Fresh-set results are:
 | Metric | V9 deterministic | V10 TF-IDF forest | V10 - V9 |
 |---|---:|---:|---:|
 | Extraction F1 | 0.880 | 0.931 | +0.052 |
-| Ticker-scope F1 | 0.462 | 0.395 | -0.066 |
-| Content-role macro F1 | 0.459 | 0.430 | -0.029 |
+| Ticker-scope F1 | 0.466 | 0.395 | -0.070 |
+| Content-role macro F1 | 0.466 | 0.430 | -0.036 |
 | Source-origin macro F1 | 0.395 | 0.504 | +0.109 |
-| Text-sentiment macro F1 | 0.394 | 0.424 | +0.029 |
-| Forecast-direction macro F1 | 0.398 | 0.317 | -0.081 |
-| Concept-family F1 | 0.492 | 0.221 | -0.271 |
-| Forecast eligibility F1 | 0.722 | 0.849 | +0.127 |
-| Issuer-history eligibility F1 | 0.888 | 0.952 | +0.064 |
+| Text-sentiment macro F1 | 0.399 | 0.430 | +0.031 |
+| Forecast-direction macro F1 | 0.405 | 0.329 | -0.076 |
+| Concept-family F1 | 0.496 | 0.221 | -0.275 |
+| Forecast eligibility F1 | 0.740 | 0.849 | +0.109 |
+| Issuer-history eligibility F1 | 0.893 | 0.952 | +0.059 |
 
 These values incorporate the source-first N1093 review correction. The human
 authority now records a regulatory event rather than an automated summary,
@@ -753,6 +774,16 @@ canonical trading-halt concept. Relative to the preceding frozen artifacts,
 candidate 2 changed only N1093 among the 100 semantic predictions. No metric
 regressed; ticker scope, role, origin, direction, concepts, and issuer-history
 F1 all improved, while extraction and forecast F1 were unchanged.
+
+The candidate 3 identity audit corrected N1098 after point-in-time fact
+checking: ``URI`` is United Rentals, ``HEES`` is the named H&E Equipment
+Services acquisition target, and ``HRI`` is the competing acquirer present in
+provider metadata but not named in the retained text. Relative to a runtime
+reconstruction of candidate 2 against the same corrected gold labels,
+candidate 3 improved ticker scope (0.462 to 0.466), role (0.459 to 0.466),
+direction (0.395 to 0.399), forecast direction (0.399 to 0.405), concept family
+(0.492 to 0.496), forecast eligibility (0.722 to 0.740), and issuer-history
+eligibility (0.888 to 0.893), with extraction and source origin unchanged.
 
 The untouched set confirms that V10's learned text representation improves
 article extraction and eligibility decisions, and modestly improves direction.

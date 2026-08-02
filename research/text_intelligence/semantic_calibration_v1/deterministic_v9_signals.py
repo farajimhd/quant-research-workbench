@@ -15,6 +15,10 @@ TITLE_FAMILY_PATTERNS: dict[str, str] = {
     "why_moving": r"\bwhy\b.{0,50}\b(?:moving|up|down|higher|lower)\b",
     "offering": r"\b(?:offering|private placement|registered direct|at the market)\b",
     "ma": r"\b(?:acquire|acquisition|merger|buyout)\b",
+    "index_constituent_change": (
+        r"\b(?:replace|replaces|replacing|added to|removed from)\b.{0,120}"
+        r"\b(?:index|smallcap|midcap|s&p|nasdaq)\b"
+    ),
     "clinical": r"\b(?:clinical|trial|phase <number>|topline)\b",
     "regulatory": r"\b(?:fda|sec|nasdaq|nyse|regulatory)\b",
 }

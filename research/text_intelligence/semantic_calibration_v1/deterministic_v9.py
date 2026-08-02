@@ -26,6 +26,7 @@ from .deterministic_v9_config import (
     NEGATIVE_THRESHOLD,
     POSITIVE_THRESHOLD,
     SINGLE_TICKER_CONCEPT_ADDITIONS,
+    SHARED_EVENT_CONCEPT_ADDITIONS,
     SOURCE_ORIGIN_OVERRIDES,
 )
 from .deterministic_v9_signals import article_signals_from_parts
@@ -89,6 +90,9 @@ def classify_news_document_v9(
         direction = _recalibrate_direction(classification)
         concepts = set(classification.get("event_concepts") or ())
         concepts.update(concept_additions)
+        if str(label.get("evidence_scope") or "") == "shared_relational":
+            for signal in signals:
+                concepts.update(SHARED_EVENT_CONCEPT_ADDITIONS.get(signal, ()))
         classification.update({
             "content_role": role,
             "source_origin": origin,

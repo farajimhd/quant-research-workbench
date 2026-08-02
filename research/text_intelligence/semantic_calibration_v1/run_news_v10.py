@@ -7,6 +7,10 @@ from pathlib import Path
 import joblib
 
 from research.text_intelligence.scoped_labeling_v1.schema import NEWS_EXTRACTOR_VERSION
+from research.text_intelligence.scoped_labeling_v1.news_identity import (
+    ISSUER_IDENTITY_AUTHORITY_VERSION,
+    NewsIssuerResolver,
+)
 
 from .comparison import evaluate_predictions, load_collection
 from .news_v10 import (
@@ -22,7 +26,10 @@ from .news_v10 import (
     load_teacher_articles,
 )
 from .run_deterministic_news_v6 import _headline
-from .run_deterministic_news_v9 import _predict as predict_v9
+from .run_deterministic_news_v9 import (
+    _predict as predict_v9,
+    load_v9_issuer_authority,
+)
 from .deterministic_v9_config import DETERMINISTIC_V9_VERSION
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
@@ -62,7 +69,8 @@ def main() -> int:
     v10_predictions = args.output_root / "human_predictions_v10"
     generate_human_predictions(model, items, output_dir=v10_predictions)
     v9_predictions = args.output_root / "human_predictions_v9"
-    _generate_v9(items, v9_predictions)
+    issuer_resolver = load_v9_issuer_authority()
+    _generate_v9(items, v9_predictions, issuer_resolver=issuer_resolver)
     v10_report = evaluate_predictions(
         items, prediction_dir=v10_predictions, canonical_concepts=True
     )
@@ -101,7 +109,12 @@ def main() -> int:
     return 0
 
 
-def _generate_v9(items, output_dir: Path) -> None:
+def _generate_v9(
+    items,
+    output_dir: Path,
+    *,
+    issuer_resolver: NewsIssuerResolver,
+) -> None:
     assert_runtime_root(output_dir)
     for index, item in enumerate(items, 1):
         target = output_dir / f"{item.sample_id}.json"
@@ -111,9 +124,15 @@ def _generate_v9(items, output_dir: Path) -> None:
                 str(existing.get("version") or "") == DETERMINISTIC_V9_VERSION
                 and str(existing.get("scope_extractor_version") or "")
                 == NEWS_EXTRACTOR_VERSION
+                and str(
+                    (existing.get("identity_resolution") or {}).get(
+                        "authority_version"
+                    )
+                )
+                == ISSUER_IDENTITY_AUTHORITY_VERSION
             ):
                 continue
-        result = predict_v9(item)
+        result = predict_v9(item, issuer_resolver=issuer_resolver)
         result.update({
             "sample_id": item.sample_id,
             "split": item.split,

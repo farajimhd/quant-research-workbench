@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 
-DETERMINISTIC_V9_VERSION = "news_deterministic_v9_candidate_2"
-CALIBRATION_VERSION = "news_deterministic_v9_calibration_2"
+DETERMINISTIC_V9_VERSION = "news_deterministic_v9_candidate_3"
+CALIBRATION_VERSION = "news_deterministic_v9_calibration_3"
 CALIBRATION_SPLIT_SHA256 = "dd960925e6ae60a6a465847717a89b277b8f453341187db3058bca446481765f"
 
 # These otherwise teacher-supported overrides were rejected because they made
@@ -50,6 +50,8 @@ ARTICLE_ROLE_OVERRIDES: dict[str, str] = {
     "tag:bofa securities": "analyst_event",
     "channel:treasuries": "market_roundup",
     "channel:personal finance": "editorial_analysis",
+    "channel:analyst ratings": "analyst_event",
+    "title_family:index_constituent_change": "primary_event",
 }
 
 SOURCE_ORIGIN_OVERRIDES: dict[str, str] = {
@@ -110,6 +112,14 @@ SINGLE_TICKER_CONCEPT_ADDITIONS: dict[str, tuple[str, ...]] = {
     "channel:earnings": ("earnings",),
     "tag:stifel": ("analyst_action",),
     "title_family:mover_list": ("market_reaction",),
+}
+
+# A relational title describes one shared transaction even when its clauses
+# contain issuer-specific consequences.  Preserve that event family on every
+# explicitly resolved participant; downstream issuer-scoped rules may add more
+# specific concepts without losing the shared transaction identity.
+SHARED_EVENT_CONCEPT_ADDITIONS: dict[str, tuple[str, ...]] = {
+    "title_family:ma": ("ma_transaction",),
 }
 
 DENIED_UNIT_ROLES: frozenset[str] = frozenset()

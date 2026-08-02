@@ -21,7 +21,7 @@ from .news_extractor import (
     extract_news_units,
     extract_observed_reaction,
 )
-from .news_identity import IssuerIdentity, NewsIssuerResolver
+from .news_identity import IssuerIdentity, NewsIssuerResolver, _identity_rows
 from .pipeline import classify_news_document, classify_sec_document
 from .sec_extractor import extract_sec_units
 from .persistence import (
@@ -833,6 +833,71 @@ Body:
         )
         self.assertEqual(analysis.resolved_subjects, ("VRTX",))
         self.assertEqual({unit.tickers for unit in analysis.units}, {("VRTX",)})
+
+    def test_identity_authority_fills_missing_historical_listing_from_entity_table(
+        self,
+    ) -> None:
+        canonical = (
+            {
+                "ticker": "URI",
+                "issuer_id": "issuer:cik:0001067701",
+                "issuer_name": "UNITED RENTALS, INC.",
+                "legal_name": "United Rentals, Inc.",
+                "exchange_code": "XNYS",
+                "list_date": "1997-12-18",
+                "delisted_date": "",
+                "cik": "0001067701",
+                "source_authority": "canonical_identity_graph",
+            },
+        )
+        fallback = (
+            {
+                "ticker": "URI",
+                "issuer_id": "issuer:cik:0001067701",
+                "issuer_name": "United Rentals, Inc.",
+                "exchange_code": "XNYS",
+                "delisted_date": "",
+                "source_authority": "market_ticker_event_entity",
+            },
+            {
+                "ticker": "HEES",
+                "issuer_id": "issuer:cik:0001339605",
+                "issuer_name": "H&E Equipment Services, Inc.",
+                "exchange_code": "XNAS",
+                "delisted_date": "2025-06-03",
+                "cik": "0001339605",
+                "source_authority": "market_ticker_event_entity",
+            },
+        )
+        resolver = NewsIssuerResolver(_identity_rows(canonical, fallback))
+        snapshot = resolver.reference_snapshot(
+            ("URI", "HEES"), timestamp="2025-02-18T12:19:44Z"
+        )
+        self.assertEqual(len(snapshot), 2)
+        hees = next(row for row in snapshot if row["ticker"] == "HEES")
+        self.assertEqual(hees["cik"], "0001339605")
+        self.assertEqual(hees["source_authority"], "market_ticker_event_entity")
+        self.assertFalse(
+            resolver.reference_snapshot(
+                ("HEES",), timestamp="2025-06-04T12:19:44Z"
+            )
+        )
+
+        analysis = analyze_news_scope(
+            source_id="united-rentals-withdraws",
+            title=(
+                "United Rentals To No Longer Pursue Acquisition Of "
+                "H&E Equipment Services"
+            ),
+            text=(
+                "H&E Equipment Services is required to pay a termination fee "
+                "to United Rentals if it enters another acquisition agreement."
+            ),
+            tickers=("HEES", "HRI", "URI"),
+            timestamp="2025-02-18T12:19:44Z",
+            issuer_resolver=resolver,
+        )
+        self.assertEqual(set(analysis.resolved_subjects), {"HEES", "URI"})
 
     def test_unlinked_common_single_word_alias_cannot_create_issuer(self) -> None:
         resolver = NewsIssuerResolver((

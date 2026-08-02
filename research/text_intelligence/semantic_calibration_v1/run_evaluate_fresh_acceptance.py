@@ -16,6 +16,7 @@ from .news_v10 import (
 )
 from .run_deterministic_news_v6 import _headline
 from .run_news_v10 import _delta, _generate_v9
+from .run_deterministic_news_v9 import load_v9_issuer_authority
 from .schema import ANNOTATION_VERSION_V3
 from .storage import assert_runtime_root, write_json_atomic
 
@@ -67,7 +68,8 @@ def main(argv: list[str] | None = None) -> int:
         if model.version != V10_VERSION:
             raise RuntimeError(f"unexpected V10 artifact version: {model.version}")
         generate_human_predictions(model, items, output_dir=v10_dir)
-    _generate_v9(items, v9_dir)
+    issuer_resolver = load_v9_issuer_authority()
+    _generate_v9(items, v9_dir, issuer_resolver=issuer_resolver)
     v10 = evaluate_predictions(items, prediction_dir=v10_dir, canonical_concepts=True)
     v9 = evaluate_predictions(items, prediction_dir=v9_dir, canonical_concepts=True)
     result = {

@@ -8,7 +8,7 @@ from .teacher_comparison import compare_teacher, headline
 from .teacher_paths import DEFAULT_TEACHER_ROOT
 from .run_deterministic_news_v7 import _predict as predict_v7
 from .run_deterministic_news_v8 import _predict as predict_v8
-from .run_deterministic_news_v9 import _predict as predict_v9
+from .run_deterministic_news_v9 import predict_with_loaded_authority as predict_v9
 from .teacher_split_v9 import ensure_grouped_split
 
 
