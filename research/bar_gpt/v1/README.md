@@ -138,6 +138,26 @@ Both launchers resolve `auto` to one concrete New York adjustment date inside
 the Python launcher and print it in the equivalent command; no PowerShell
 `$asof` variable is required.
 
+The complete authority build can be run as one ordered, fail-fast PowerShell
+chain. It preserves each Python builder's Rich progress display and does not
+start a downstream stage unless the preceding stage succeeds:
+
+```powershell
+# Inspect the three resolved commands without querying or writing ClickHouse.
+powershell -ExecutionPolicy Bypass -File scripts\run_bar_gpt_data_build.ps1 -CommandOnly
+
+# Preview all three builders, then execute them.
+powershell -ExecutionPolicy Bypass -File scripts\run_bar_gpt_data_build.ps1
+powershell -ExecutionPolicy Bypass -File scripts\run_bar_gpt_data_build.ps1 -Execute
+```
+
+The wrapper resolves and prints one concrete New York adjustment cutoff. After
+an interruption, wait until the child Python process returns and rerun the same
+command. Completed manifest units are skipped and only the incomplete unit is
+retried. If resuming on another date after the adjusted 1s stage has started,
+pass the originally printed cutoff with `-AdjustmentAsOfDate YYYY-MM-DD`; the
+adjusted table intentionally rejects a changed adjustment basis.
+
 The active destinations are `bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted` and
 `bar_gpt_daily_sessions_v3_sip_adjusted`; manifests and the compact daily factor
 schedule are separate versioned tables. All use
