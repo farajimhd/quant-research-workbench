@@ -29,6 +29,51 @@ views are derived in the loader. `daily_range_query`,
 `daily_family_frame_to_view`, and `calendar_period_ids` implement that path; the
 loader never reads persisted weekly or monthly rows.
 
+The SIP daily authority starts in 2019, so BarGPT has a separate versioned
+bootstrap authority for earlier calendar context:
+`market_sip_compact.bar_gpt_daily_context_v1_massive_unadjusted`. It is not
+presented as schema-equivalent to the SIP daily table. Massive supplies one
+trade OHLCV aggregate, optional VWAP, and transaction count; it does not supply
+the SIP table's bid/ask families or trade-size OHLC. The future loader adapter
+must preserve those missing families explicitly rather than filling them with
+synthetic values.
+
+## Pre-2019 daily context
+
+The downloader deliberately uses Massive's hourly Custom Bars range endpoint
+instead of issuing one Daily Ticker Summary request for every ticker-session.
+The Daily Ticker Summary and one-day Custom Bar describe the regular session,
+whereas the SIP authority spans 04:00-20:00 New York. The downloader therefore
+rolls unadjusted hourly provider bars over that exact 16-hour window. Pagination
+is followed to completion; this remains hundreds of bounded calls rather than
+roughly 75,000 daily-summary calls. The persisted source contract is
+`custom_bars_v2_1hour_0400_2000_unadjusted`; automatic split adjustment is
+rejected. Provider aggregate-eligibility rules can still make volume and trade
+count differ from the all-event SIP authority, so source identity remains an
+explicit part of the table contract.
+
+Safe plan preview:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_build_daily_context
+```
+
+Download and certify the canonical 100-ticker range `[2016-01-01, 2019-01-02)`:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_build_daily_context --execute
+```
+
+The job loads `MASSIVE_API_KEY` and ClickHouse settings through the shared
+environment discovery, requires `CLICKHOUSE_LIVE_STORAGE_POLICY`, uses
+`adjusted=false`, validates OHLC containment and source ordering, and writes a
+manifest only after each ticker's exact ClickHouse row count is certified.
+Certified ticker/range/contract units are skipped on restart. Empty pre-listing
+coverage is certified explicitly rather than fabricated. Runtime JSONL evidence
+lives under `D:\TradingML\runtimes\bar_gpt\v1\build_daily_context`; interactive
+runs retain a compact Rich display with durable ticker progress, provider
+requests/retries, row counts, current ticker, failure state, and evidence path.
+
 QMD structure decisions are not fabricated by the SQL builder. The v1 table
 contains the exact paired-event geometry that QMD and the model can consume.
 Timeframe-local structure transitions that require the shared sequential QMD
