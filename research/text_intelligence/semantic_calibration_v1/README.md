@@ -573,3 +573,74 @@ better candidate for structural classification and eligibility, but it is not
 a certified wholesale production replacement for the existing sentiment and
 source-origin authorities. The frozen weaknesses must inform a separately
 versioned future authority; they must not be tuned back into V8.
+
+## Deterministic News V9 candidate
+
+V9 uses the completed 9,997-label Sol corpus as broad weak supervision while
+keeping inference entirely deterministic. It does not call Sol, load a learned
+model, read teacher labels, or depend on calibration artifacts at runtime. Its
+runtime authority is a source-controlled set of readable structural rules,
+concept additions, eligibility decisions, signed concept weights, and direction
+thresholds applied on top of V8.
+
+The teacher corpus is partitioned before calibration into 7,997 development,
+1,000 validation, and 1,000 locked-test articles. Articles sharing a provider
+and normalized headline template remain in the same partition, which prevents
+template variants such as recurring analyst or mover headlines from leaking
+across the boundaries. The split contains 9,666 groups, its largest group has
+67 articles, and its verified cross-partition group leakage is zero. Sol remains
+weak supervision rather than acceptance truth.
+
+The calibration process is deliberately constrained:
+
+- categorical overrides require minimum support, precision, and improvement;
+- concept additions apply only to single-ticker articles;
+- signed direction weights cannot reverse a concept's defined polarity;
+- thresholds are selected on validation after weights are fitted on development;
+- teacher-supported rules that regress the 900 reviewed human development
+  articles are rejected and recorded in the runtime config; and
+- sample IDs, source IDs, and headline-specific exceptions are never runtime
+  features.
+
+Prepare the immutable grouped split and fit a fresh calibration report under
+the configured runtime root:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_prepare_deterministic_v9_split
+python -m research.text_intelligence.semantic_calibration_v1.run_fit_deterministic_news_v9 --workers 16
+```
+
+Evaluate the frozen runtime configuration against the human collection and the
+teacher partitions:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_deterministic_news_v9
+python -m research.text_intelligence.semantic_calibration_v1.run_compare_sol_teacher --authority v9 --split locked_test --workers 16
+```
+
+Locked Sol test results show improvements on every changed dimension:
+
+| Metric | V8 | V9 |
+|---|---:|---:|
+| Content-role macro F1 | 0.500 | 0.509 |
+| Source-origin macro F1 | 0.497 | 0.501 |
+| Direction macro F1 | 0.396 | 0.401 |
+| Concept-family F1 | 0.297 | 0.323 |
+| Forecast eligibility F1 | 0.803 | 0.814 |
+| Ticker-scope F1 | 0.831 | 0.831 |
+| Issuer-history eligibility F1 | 0.931 | 0.931 |
+
+The independently reviewed evidence is a guard, not an untouched acceptance
+set, because all 1,000 articles were used during earlier authority development.
+On the 900-item human development subset, V9 improves role from 0.730 to 0.735,
+origin from 0.604 to 0.613, concepts from 0.453 to 0.467, and forecast
+eligibility from 0.685 to 0.721; direction changes from 0.428 to 0.427. On the
+historical 100-item frozen subset, V9 improves role from 0.582 to 0.623, origin
+from 0.425 to 0.428, direction from 0.414 to 0.434, concepts from 0.390 to
+0.396, and forecast eligibility from 0.429 to 0.456.
+
+Direction remains the limiting dimension. On the locked teacher test, V9's
+neutral-class F1 is 0.218 and the overall direction gain comes primarily from
+better mixed-event recognition. The candidate must therefore remain outside
+production until the intended authority cutover is separately reviewed and
+approved.

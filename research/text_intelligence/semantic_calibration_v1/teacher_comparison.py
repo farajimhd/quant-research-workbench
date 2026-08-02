@@ -11,13 +11,9 @@ from typing import Any, Callable, Iterable, Mapping
 
 from .run_deterministic_news_v7 import _predict as predict_v7
 from .run_deterministic_news_v8 import _predict as predict_v8
+from .run_deterministic_news_v9 import _predict as predict_v9
 from .storage import assert_runtime_root, write_json_atomic
-
-
-DEFAULT_TEACHER_ROOT = Path(
-    r"D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1"
-    r"\sol_teacher_10000_v1"
-)
+from .teacher_paths import DEFAULT_TEACHER_ROOT
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +29,8 @@ def compare_teacher(
     predictor: Callable[[Any], dict[str, Any]] = predict_v7,
     authority_name: str = "deterministic_v7",
     workers: int | None = None,
+    included_sample_ids: set[str] | None = None,
+    output_suffix: str = "",
 ) -> dict[str, Any]:
     """Compare one deterministic authority with the independent Sol teacher.
 
@@ -41,7 +39,11 @@ def compare_teacher(
     """
     assert_runtime_root(teacher_root)
     manifest = json.loads((teacher_root / "sample_manifest.json").read_text(encoding="utf-8"))
-    sample_ids = [str(row["sample_id"]) for row in manifest.get("items") or ()]
+    sample_ids = [
+        str(row["sample_id"])
+        for row in manifest.get("items") or ()
+        if included_sample_ids is None or str(row["sample_id"]) in included_sample_ids
+    ]
     label_root = teacher_root / "sol_batch" / "labels"
     missing = [sample_id for sample_id in sample_ids if not (label_root / f"{sample_id}.json").exists()]
     valid_ids = [sample_id for sample_id in sample_ids if sample_id not in set(missing)]
@@ -62,6 +64,7 @@ def compare_teacher(
     parallel_worker = {
         predict_v7: _compare_one_v7,
         predict_v8: _compare_one_v8,
+        predict_v9: _compare_one_v9,
     }.get(predictor)
     if parallel_worker is None and worker_count > 1:
         raise ValueError("custom predictors require workers=1")
@@ -132,7 +135,7 @@ def compare_teacher(
         "disagreement_by_teacher_role": dict(Counter(row["teacher_role"] for row in disagreements)),
         "disagreements": disagreements,
     }
-    output = teacher_root / "deterministic_teacher_comparison" / f"{authority_name}.json"
+    output = teacher_root / "deterministic_teacher_comparison" / f"{authority_name}{output_suffix}.json"
     write_json_atomic(output, report)
     return report
 
@@ -166,6 +169,11 @@ def _compare_one_v7(args: tuple[Path, str]) -> tuple[TeacherExample, dict[str, A
 def _compare_one_v8(args: tuple[Path, str]) -> tuple[TeacherExample, dict[str, Any], dict[str, Any]]:
     teacher_root, sample_id = args
     return _compare_one(teacher_root, sample_id, predict_v8)
+
+
+def _compare_one_v9(args: tuple[Path, str]) -> tuple[TeacherExample, dict[str, Any], dict[str, Any]]:
+    teacher_root, sample_id = args
+    return _compare_one(teacher_root, sample_id, predict_v9)
 
 
 def _compare_one(
