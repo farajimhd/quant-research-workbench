@@ -17,6 +17,7 @@ TICKER_EVENT_ENTITY_TABLE = "market_ticker_event_entity_v1"
 TICKER_EVENT_TABLE = "market_ticker_event_v1"
 TICKER_EVENT_COVERAGE_TABLE = "market_ticker_event_entity_coverage_v1"
 SYMBOL_INTERVAL_TABLE = "id_symbol_interval_v1"
+CLICKHOUSE_KEY_BATCH_SIZE = 1_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -737,40 +738,46 @@ def load_canonical_bindings(
     identifiers = sorted({entity.provider_identifier for entity in entities if entity.provider_identifier_kind == "composite_figi"})
     if not identifiers:
         return {entity.provider_entity_key: CanonicalBinding("unmapped", reason="stable_composite_figi_missing") for entity in entities}
-    literal_list = ",".join(sql_string(value) for value in identifiers)
-    identifier_rows = query_json_each_row(
-        client,
-        f"""
-        SELECT upper(identifier_value_normalized) AS provider_identifier, security_id
-        FROM {table(database, 'id_security_identifier_v1')} FINAL
-        WHERE lower(identifier_kind) = 'composite_figi'
-          AND upper(identifier_value_normalized) IN ({literal_list})
-        """,
-    )
+    identifier_rows: list[dict[str, Any]] = []
+    for identifier_batch in batches(identifiers, CLICKHOUSE_KEY_BATCH_SIZE):
+        literal_list = ",".join(sql_string(value) for value in identifier_batch)
+        identifier_rows.extend(
+            query_json_each_row(
+                client,
+                f"""
+                SELECT upper(identifier_value_normalized) AS provider_identifier, security_id
+                FROM {table(database, 'id_security_identifier_v1')} FINAL
+                WHERE lower(identifier_kind) = 'composite_figi'
+                  AND upper(identifier_value_normalized) IN ({literal_list})
+                """,
+            )
+        )
     security_by_identifier: dict[str, set[str]] = {}
     for row in identifier_rows:
         security_by_identifier.setdefault(str(row.get("provider_identifier") or "").upper(), set()).add(str(row.get("security_id") or ""))
     security_ids = sorted({security_id for values in security_by_identifier.values() for security_id in values if security_id})
     listing_rows: list[dict[str, Any]] = []
-    if security_ids:
-        security_list = ",".join(sql_string(value) for value in security_ids)
-        listing_rows = query_json_each_row(
-            client,
-            f"""
-            SELECT
-                l.security_id AS security_id,
-                l.listing_id AS listing_id,
-                l.currency_code AS currency_code,
-                l.is_primary_listing AS is_primary_listing,
-                ifNull(ex.iso_country_code, '') AS exchange_country,
-                ifNull(sym.ticker, '') AS ticker,
-                ifNull(sym.primary_symbol_flag, 0) AS primary_symbol_flag
-            FROM {table(database, 'id_listing_v1')} l FINAL
-            LEFT JOIN {table(database, 'ref_exchange_v1')} ex FINAL ON ex.exchange_code = l.exchange_code
-            LEFT JOIN {table(database, 'id_symbol_v1')} sym FINAL ON sym.listing_id = l.listing_id AND sym.status = 'active'
-            WHERE l.security_id IN ({security_list})
-              AND l.listing_status = 'active'
-            """,
+    for security_batch in batches(security_ids, CLICKHOUSE_KEY_BATCH_SIZE):
+        security_list = ",".join(sql_string(value) for value in security_batch)
+        listing_rows.extend(
+            query_json_each_row(
+                client,
+                f"""
+                SELECT
+                    l.security_id AS security_id,
+                    l.listing_id AS listing_id,
+                    l.currency_code AS currency_code,
+                    l.is_primary_listing AS is_primary_listing,
+                    ifNull(ex.iso_country_code, '') AS exchange_country,
+                    ifNull(sym.ticker, '') AS ticker,
+                    ifNull(sym.primary_symbol_flag, 0) AS primary_symbol_flag
+                FROM {table(database, 'id_listing_v1')} l FINAL
+                LEFT JOIN {table(database, 'ref_exchange_v1')} ex FINAL ON ex.exchange_code = l.exchange_code
+                LEFT JOIN {table(database, 'id_symbol_v1')} sym FINAL ON sym.listing_id = l.listing_id AND sym.status = 'active'
+                WHERE l.security_id IN ({security_list})
+                  AND l.listing_status = 'active'
+                """,
+            )
         )
     listings_by_security: dict[str, list[dict[str, Any]]] = {}
     for row in listing_rows:
@@ -815,17 +822,30 @@ def load_existing_rows(
     entity_keys = [entity.provider_entity_key for entity in entities]
     if not entity_keys:
         return {}
-    literals = ",".join(sql_string(value) for value in entity_keys)
-    rows = query_json_each_row(
-        client,
-        f"SELECT * FROM {table(database, table_name)} FINAL WHERE provider_entity_key IN ({literals}) AND is_deleted = 0",
-    )
+    if scalar_int(client, f"SELECT count() FROM {table(database, table_name)} FINAL WHERE is_deleted = 0") == 0:
+        return {}
+    rows: list[dict[str, Any]] = []
+    for entity_batch in batches(entity_keys, CLICKHOUSE_KEY_BATCH_SIZE):
+        literals = ",".join(sql_string(value) for value in entity_batch)
+        rows.extend(
+            query_json_each_row(
+                client,
+                f"SELECT * FROM {table(database, table_name)} FINAL WHERE provider_entity_key IN ({literals}) AND is_deleted = 0",
+            )
+        )
     output: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         if not row.get(id_column):
             continue
         output.setdefault(str(row.get("provider_entity_key") or ""), []).append(row)
     return output
+
+
+def batches(values: list[str], size: int) -> Iterable[list[str]]:
+    if size <= 0:
+        raise ValueError("batch size must be positive")
+    for offset in range(0, len(values), size):
+        yield values[offset : offset + size]
 
 
 def tombstone_rows(
