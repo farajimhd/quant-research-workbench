@@ -145,15 +145,31 @@ def build_physical_horizon_targets(
         torch.log(canonical_reference / previous),
         0.0,
     ).float()
-    variance_prefix = torch.cat((returns.new_zeros(1), returns.square().cumsum(0)))
-    canonical_volume = _column(raw_one_second, "trade_size_sum") / share_factors
+    # Additive horizon statistics use float64 prefixes. Parallel float32 scans
+    # can produce adjacent, slightly non-monotone prefixes after large earlier
+    # activity; subtracting them for a zero-activity window then makes log1p NaN.
+    # The exact volume/count invariant is nonnegative, so restore that invariant
+    # after the stable prefix difference before returning model-dtype targets.
+    variance_prefix = torch.cat((returns.new_zeros(1, dtype=torch.float64), returns.square().double().cumsum(0)))
+    canonical_volume = _column(raw_one_second, "trade_size_sum").double() / share_factors.double()
     volume_prefix = torch.cat((canonical_volume.new_zeros(1), canonical_volume.cumsum(0)))
-    trade_count_prefix = torch.cat((returns.new_zeros(1), _column(raw_one_second, "trade_event_count").cumsum(0)))
+    trade_count_values = _column(raw_one_second, "trade_event_count").double()
+    trade_count_prefix = torch.cat((trade_count_values.new_zeros(1), trade_count_values.cumsum(0)))
     availability_prefix = {
-        family: torch.cat((returns.new_zeros(1), (_column(raw_one_second, f"{family}_present") > 0).float().cumsum(0)))
+        family: torch.cat(
+            (
+                torch.zeros(1, dtype=torch.int64, device=raw_one_second.device),
+                (_column(raw_one_second, f"{family}_present") > 0).to(torch.int64).cumsum(0),
+            )
+        )
         for family in ("trade", "bid", "ask")
     }
-    quote_availability_prefix = torch.cat((returns.new_zeros(1), quote_present.float().cumsum(0)))
+    quote_availability_prefix = torch.cat(
+        (
+            torch.zeros(1, dtype=torch.int64, device=raw_one_second.device),
+            quote_present.to(torch.int64).cumsum(0),
+        )
+    )
     canonical_trade_high = _column(raw_one_second, "trade_high") * share_factors
     canonical_trade_low = _column(raw_one_second, "trade_low") * share_factors
     trade_high = torch.where(trade_present, canonical_trade_high, torch.full_like(canonical_reference, -torch.inf))
@@ -185,9 +201,12 @@ def build_physical_horizon_targets(
         lower = torch.where(excursion_valid, torch.log(base_price / min_price.clamp_min(1e-12)).clamp_min(0.0), 0.0)
         starts = origin_indices + 1
         ends = safe_endpoint + 1
-        realized = (variance_prefix[ends] - variance_prefix[starts]).clamp_min(0.0).sqrt()
-        volume = (volume_prefix[ends] - volume_prefix[starts]) * share_factors[origin_indices]
-        trade_count = trade_count_prefix[ends] - trade_count_prefix[starts]
+        realized = (variance_prefix[ends] - variance_prefix[starts]).clamp_min(0.0).sqrt().to(raw_one_second.dtype)
+        volume = (
+            (volume_prefix[ends] - volume_prefix[starts]).clamp_min(0.0)
+            * share_factors[origin_indices].double()
+        ).to(raw_one_second.dtype)
+        trade_count = (trade_count_prefix[ends] - trade_count_prefix[starts]).clamp_min(0.0).to(raw_one_second.dtype)
         availability = [
             (availability_prefix[family][ends] - availability_prefix[family][starts] > 0).float()
             for family in ("trade", "bid", "ask")

@@ -230,13 +230,22 @@ The default ceiling is 6,480 units, 103,680
 blocks, and 53,084,160 origin timestamps; unavailable ticker-months can produce
 fewer blocks and are never fabricated.
 
+Progress is origin-clocked, not optimizer-step-clocked. The primary bar is the
+current epoch's planned origin budget and is labeled `epoch X/Y`; `run origins`
+is cumulative across all epochs or stops at an explicit `--max-samples`
+diagnostic cap. One origin is one supervised one-second prediction anchor. The
+default has one epoch, so its epoch and full-run budgets are identical.
+
 One microbatch contains two 512-origin blocks. Four microbatches are accumulated
-before one optimizer update, normally 4,096 origins. Bounded persistent loader
-Four persistent loader workers keep up to eight CPU batches ready, and one
-device batch transfers on a
+before one optimizer update, normally 4,096 origins. Four persistent loader
+workers keep up to eight CPU batches ready, and one device batch transfers on a
 dedicated CUDA stream while the current batch computes. Future target support
 never enters `batch.views`; it is consumed only by GPU target construction and
 the loss, so later origins or horizons in one update do not create lookahead.
+Additive horizon statistics use float64 prefixes before returning model-dtype
+targets. This preserves nonnegative volume and count semantics when a quiet
+window follows large earlier activity and prevents float32 prefix cancellation
+from creating invalid `log1p` targets.
 
 The durable resume cursor is `(worker, global ticker-month index, selected block
 offset)`. It advances only after a successful optimizer update. Ctrl+C discards

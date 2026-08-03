@@ -15,6 +15,11 @@ class TrainingProgressState:
     output_dir: str
     model_parameters: int
     max_samples: int
+    epochs_total: int = 1
+    epoch_index: int = 1
+    epoch_start_origins: int = 0
+    epoch_origin_budget: int = 0
+    epoch_origins_seen: int = 0
     state: str = "starting"
     samples_seen: int = 0
     batches_seen: int = 0
@@ -83,6 +88,7 @@ class TrainingReporter:
     def update(self, metrics: Mapping[str, Any], *, tickers: tuple[str, ...] = (), dates: tuple[str, ...] = ()) -> None:
         s = self.state
         s.samples_seen = int(metrics.get("train/samples_seen", s.samples_seen))
+        s.epoch_origins_seen = max(0, s.samples_seen - s.epoch_start_origins)
         s.batches_seen = int(metrics.get("train/batches_seen", s.batches_seen))
         s.optimizer_steps = int(metrics.get("train/optimizer_steps", s.optimizer_steps))
         s.blocks_seen = int(metrics.get("train/blocks_seen", s.blocks_seen))
@@ -99,6 +105,12 @@ class TrainingReporter:
         if dates:
             s.active_dates = f"{min(dates)}..{max(dates)}"
         self.refresh()
+
+    def epoch(self, index: int, start_origins: int) -> None:
+        self.state.epoch_index = int(index)
+        self.state.epoch_start_origins = int(start_origins)
+        self.state.epoch_origins_seen = max(0, self.state.samples_seen - self.state.epoch_start_origins)
+        self.message(f"Epoch {self.state.epoch_index}/{self.state.epochs_total} started")
 
     def validation(self, loss: float) -> None:
         self.state.validation_loss = float(loss)
@@ -128,7 +140,9 @@ class TrainingReporter:
             self._last_text = now
             s = self.state
             print(
-                f"state={s.state} origins={s.samples_seen:,} steps={s.optimizer_steps:,} "
+                f"state={s.state} epoch={s.epoch_index}/{s.epochs_total} "
+                f"epoch_origins={s.epoch_origins_seen:,}/{s.epoch_origin_budget:,} "
+                f"run_origins={s.samples_seen:,}/{s.max_samples:,} steps={s.optimizer_steps:,} "
                 f"blocks={s.blocks_seen:,}/{s.planned_blocks:,} units={s.units_seen:,}/{s.planned_units:,} "
                 f"loss={s.loss:.6f} speed={s.origins_per_second:,.1f}/s "
                 f"active={s.active_tickers} dates={s.active_dates}",
@@ -148,29 +162,29 @@ class TrainingReporter:
         remaining = max(0, s.max_samples - s.samples_seen) if s.max_samples else 0
         eta = remaining / s.origins_per_second if remaining and s.origins_per_second > 0 else 0.0
         progress = Progress(
-            TextColumn("[bold]origins"), BarColumn(), TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
+            TextColumn(f"[bold]epoch {s.epoch_index}/{s.epochs_total} origin budget"), BarColumn(), TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
             TextColumn("{task.percentage:>5.1f}%"), expand=True,
         )
-        total = max(s.max_samples, s.samples_seen, 1)
-        progress.add_task("origins", total=total, completed=min(s.samples_seen, total))
+        total = max(s.epoch_origin_budget, s.epoch_origins_seen, 1)
+        progress.add_task("epoch origins", total=total, completed=min(s.epoch_origins_seen, total))
         summary = Table.grid(expand=True, padding=(0, 2))
         if width >= 100:
             summary.add_column(); summary.add_column(); summary.add_column()
             summary.add_row(f"[bold]state[/] {s.state}", f"[bold]run[/] {s.run_name}", f"[bold]device[/] {s.device} {s.precision}")
             summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]validation[/] {s.validation_loss:.6f}" if s.validation_loss is not None else "[bold]validation[/] -", f"[bold]lr[/] {s.learning_rate:.3e}")
-            summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]elapsed[/] {_duration(elapsed)}", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
+            summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]elapsed[/] {_duration(elapsed)}", f"[bold]run ETA[/] {_duration(eta) if eta else '-'}")
             summary.add_row(f"[bold]loader wait[/] {s.loader_wait_seconds:.2f}s", f"[bold]GPU[/] {s.gpu_seconds:.2f}s", f"[bold]parameters[/] {s.model_parameters:,}")
             summary.add_row(
-                f"[bold]units[/] {s.units_seen:,}/{s.planned_units:,}",
-                f"[bold]blocks[/] {s.blocks_seen:,}/{s.planned_blocks:,}",
+                f"[bold]run origins[/] {s.samples_seen:,}/{s.max_samples:,}",
+                f"[bold]blocks[/] {s.blocks_seen:,}/{s.planned_blocks:,} planned",
                 f"[bold]updates[/] {s.optimizer_steps:,} ({s.gradient_accumulation_steps} micro/update)",
             )
         else:
             summary.add_column(); summary.add_column()
             summary.add_row(f"[bold]state[/] {s.state}", f"[bold]device[/] {s.device} {s.precision}")
             summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]lr[/] {s.learning_rate:.3e}")
-            summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
-            summary.add_row(f"[bold]updates[/] {s.optimizer_steps:,}", f"[bold]blocks[/] {s.blocks_seen:,}/{s.planned_blocks:,}")
+            summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]run ETA[/] {_duration(eta) if eta else '-'}")
+            summary.add_row(f"[bold]run origins[/] {s.samples_seen:,}/{s.max_samples:,}", f"[bold]updates[/] {s.optimizer_steps:,}")
         active = Table.grid(expand=True, padding=(0, 2))
         active.add_column(style="bold", no_wrap=True); active.add_column(ratio=1)
         active.add_row("tickers", s.active_tickers)

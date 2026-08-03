@@ -29,10 +29,10 @@ from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.linear_probe import fit_ridge_probes
-from research.bar_gpt.v1.objectives import compute_loss
+from research.bar_gpt.v1.objectives import _weighted_mean, compute_loss
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
-from research.bar_gpt.v1.targets import TARGET_NAMES
+from research.bar_gpt.v1.targets import TARGET_NAMES, build_physical_horizon_targets
 from research.bar_gpt.v1.train import _advance_cursors, _checkpoint_policy, _resume_data_contract, preflight
 from research.bar_gpt.v1.profile_train import _parse_candidates
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
@@ -231,6 +231,32 @@ class LoaderTrainerContractTest(unittest.TestCase):
         scheduler.step(1_000)
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-5)
 
+    def test_zero_activity_horizon_volume_remains_finite_after_large_prefix(self) -> None:
+        raw = session_view(64).features
+        raw[:, FEATURE_INDEX["trade_size_sum"]] = 0
+        raw[:, FEATURE_INDEX["trade_event_count"]] = 0
+        raw[0, FEATURE_INDEX["trade_size_sum"]] = 1e20
+        raw[0, FEATURE_INDEX["trade_event_count"]] = 1e10
+        targets = build_physical_horizon_targets(
+            raw,
+            torch.tensor([20, 21, 22], dtype=torch.long),
+            torch.tensor([5_000_000], dtype=torch.long),
+        )
+        volume_index = TARGET_NAMES.index("log_trade_volume")
+        count_index = TARGET_NAMES.index("log_trade_count")
+        self.assertTrue(torch.all(torch.isfinite(targets.values[targets.mask])))
+        torch.testing.assert_close(targets.values[:, 0, volume_index], torch.zeros(3))
+        torch.testing.assert_close(targets.values[:, 0, count_index], torch.zeros(3))
+
+    def test_weighted_mean_excludes_invalid_nonfinite_cells_before_multiplication(self) -> None:
+        loss = torch.tensor([[float("nan"), 2.0], [float("inf"), 4.0]])
+        mask = torch.tensor([[False, True], [False, True]])
+        value = _weighted_mean(loss, mask, torch.ones(2))
+        self.assertEqual(float(value), 3.0)
+        empty = _weighted_mean(loss, torch.zeros_like(mask), torch.ones(2))
+        self.assertTrue(torch.isfinite(empty))
+        self.assertEqual(float(empty), 0.0)
+
     def test_checkpoint_policy_selects_on_validation_not_training_loss(self) -> None:
         config = TrainConfig(checkpoint_latest_samples=123, checkpoint_archive_samples=456)
         policy = _checkpoint_policy(config)
@@ -404,7 +430,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
     def test_compact_terminal_keeps_status_current_work_and_durability(self) -> None:
         state = TrainingProgressState(
             run_name="smoke", device="cuda", precision="bf16", output_dir=r"D:\TradingML\runtimes\bar_gpt\v1\train\smoke",
-            model_parameters=12_345, max_samples=100_000, samples_seen=25_000, batches_seen=12,
+            model_parameters=12_345, max_samples=300_000, samples_seen=125_000, batches_seen=12,
+            epochs_total=3, epoch_index=2, epoch_start_origins=100_000,
+            epoch_origin_budget=100_000, epoch_origins_seen=25_000,
             state="running", loss=0.123, origins_per_second=400.0, active_tickers="AAPL,SPY", active_dates="2025-01-02..2025-01-03",
             last_checkpoint="checkpoint_latest.pt",
         )
@@ -417,7 +445,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertIn("running", rendered)
         self.assertIn("AAPL,SPY", rendered)
         self.assertIn("checkpoint_latest.pt", rendered)
+        self.assertIn("epoch 2/3 origin budget", rendered)
         self.assertIn("25,000/100,000", rendered)
+        self.assertIn("run origins 125,000/300,000", rendered)
 
         normal_output = io.StringIO()
         reporter._console = Console(file=normal_output, width=120, height=40, force_terminal=False, color_system=None)

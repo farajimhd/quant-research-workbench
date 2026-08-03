@@ -43,11 +43,10 @@ class BarGPTLoss:
 
 def _weighted_mean(loss: torch.Tensor, mask: torch.Tensor, sample_weights: torch.Tensor) -> torch.Tensor:
     weights = sample_weights.view(sample_weights.shape[0], *([1] * (loss.ndim - 1))).expand_as(loss)
-    valid_weights = torch.where(mask, weights, torch.zeros_like(weights))
-    denominator = valid_weights.sum()
-    if not bool(denominator > 0):
-        return loss.sum() * 0.0
-    return (loss * valid_weights).sum() / denominator
+    if not torch.any(mask):
+        return torch.nan_to_num(loss).sum() * 0.0
+    valid_weights = weights[mask]
+    return (loss[mask] * valid_weights).sum() / valid_weights.sum()
 
 
 def _mixed_point_loss(

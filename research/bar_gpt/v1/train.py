@@ -39,6 +39,7 @@ from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.objectives import BarGPTLoss, compute_loss
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
+from research.bar_gpt.v1.targets import TARGET_NAMES
 from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
@@ -551,6 +552,34 @@ def _forward(model: torch.nn.Module, batch: BarGPTBatch, config: ExperimentConfi
     return output, compute_loss(output, batch, config.train, config.model.quantiles)
 
 
+def _nonfinite_loss_diagnostic(result: BarGPTLoss, batch: BarGPTBatch) -> str:
+    bad_metrics = sorted(
+        key for key, value in result.metrics.items() if not bool(torch.isfinite(value).all())
+    )
+    bad_views = sorted(
+        name for name, value in batch.views.items() if not bool(torch.isfinite(value).all())
+    )
+    target_details: list[str] = []
+    if batch.horizon_targets is not None and batch.horizon_mask is not None:
+        invalid = torch.nonzero(
+            (~torch.isfinite(batch.horizon_targets)) & batch.horizon_mask,
+            as_tuple=False,
+        )[:4].detach().cpu().tolist()
+        for batch_index, origin_index, horizon_index, target_index in invalid:
+            target_details.append(
+                f"{batch.tickers[batch_index]}:{batch.local_dates[batch_index]} "
+                f"origin={origin_index} horizon={int(batch.horizons_us[horizon_index]) // 1_000_000}s "
+                f"target={TARGET_NAMES[target_index]}"
+            )
+    parts = [f"nonfinite_metrics={bad_metrics or ['unknown']}"]
+    if bad_views:
+        parts.append(f"nonfinite_views={bad_views}")
+    if target_details:
+        parts.append("nonfinite_valid_targets=" + "; ".join(target_details))
+    parts.append(f"batch={list(zip(batch.tickers, batch.local_dates, strict=True))}")
+    return " | ".join(parts)
+
+
 @torch.no_grad()
 def validate(
     model: torch.nn.Module,
@@ -588,6 +617,7 @@ def checkpoint_payload(
     units_seen: set[str],
     condition_blocks_seen: int,
     epoch: int,
+    epoch_start_samples: int,
     data_cursors: dict[int, CoverageCursor],
     plan_hash: str,
     last_latest_samples: int,
@@ -606,6 +636,7 @@ def checkpoint_payload(
         "units_seen": sorted(units_seen),
         "condition_blocks_seen": condition_blocks_seen,
         "epoch": epoch,
+        "epoch_start_samples": epoch_start_samples,
         "data_cursors": {str(worker): asdict(cursor) for worker, cursor in data_cursors.items()},
         "plan_hash": plan_hash,
         "last_latest_samples": last_latest_samples,
@@ -817,6 +848,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     resume_epoch = int(restored.get("epoch", 0))
     last_latest_samples = int(restored.get("last_latest_samples", 0))
     durable_cursors = dict(resume_cursors)
+    epoch_plan_origins = max(1, math.ceil(plan.expected_origins / config.train.epochs))
+    epoch_start_samples = int(restored.get("epoch_start_samples", resume_epoch * epoch_plan_origins))
     state = TrainingProgressState(
         run_name=run_name,
         device=str(device),
@@ -824,6 +857,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         output_dir=str(paths.run_root),
         model_parameters=int(parameter_summary(_unwrap(model))["total_parameters"]),
         max_samples=training_limit,
+        epochs_total=max(1, config.train.epochs),
+        epoch_index=min(max(1, resume_epoch + 1), max(1, config.train.epochs)),
+        epoch_start_origins=epoch_start_samples,
+        epoch_origin_budget=epoch_plan_origins,
+        epoch_origins_seen=max(0, samples_seen - epoch_start_samples),
         samples_seen=samples_seen,
         batches_seen=batches_seen,
         optimizer_steps=optimizer_steps,
@@ -839,7 +877,6 @@ def main(argv: Iterable[str] | None = None) -> int:
     next_log = samples_seen
     next_validation = samples_seen + validation_interval
     last_validation_samples = -1
-    epoch_plan_origins = max(1, math.ceil(plan.expected_origins / config.train.epochs))
     validation_runs_in_epoch = min(
         config.train.validation_runs_per_epoch - 1,
         max(0, samples_seen - resume_epoch * epoch_plan_origins) // validation_interval,
@@ -861,6 +898,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     train_loader, _unused_validation = _loaders(config, args, resume_cursors={})
                     durable_cursors = {}
                     validation_runs_in_epoch = 0
+                    epoch_start_samples = samples_seen
+                reporter.epoch(epoch + 1, epoch_start_samples)
                 if isinstance(train_loader.dataset, BarGPTIterableDataset):
                     train_loader.dataset.epoch = epoch
                 if durable_cursors:
@@ -898,7 +937,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                             _, result = _forward(model, batch, config)
                             scaled_loss = result.loss / config.train.gradient_accumulation_steps
                         if not torch.isfinite(result.loss):
-                            raise FloatingPointError(f"non-finite training loss at microbatch {batches_seen + accumulation_count + 1}")
+                            detail = _nonfinite_loss_diagnostic(result, batch)
+                            raise FloatingPointError(
+                                f"non-finite training loss at microbatch {batches_seen + accumulation_count + 1}: {detail}"
+                            )
                         if scaler.is_enabled():
                             scaler.scale(scaled_loss).backward()
                         else:
@@ -994,6 +1036,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 model, optimizer, scaler, scheduler, checkpointer, config,
                                 samples_seen=samples_seen, batches_seen=batches_seen,
                                 optimizer_steps=optimizer_steps, epoch=current_epoch,
+                                epoch_start_samples=epoch_start_samples,
                                 blocks_seen=blocks_seen, units_seen=units_seen,
                                 condition_blocks_seen=condition_blocks_seen,
                                 data_cursors=cursors, plan_hash=plan.plan_hash,
@@ -1022,6 +1065,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 if _INTERRUPTED or (training_limit > 0 and samples_seen >= training_limit):
                     break
                 current_epoch = epoch + 1
+                epoch_start_samples = samples_seen
                 durable_cursors = {}
                 if last_validation_samples != samples_seen:
                     last_val = validate(model, validation_loader, config, device)
@@ -1043,6 +1087,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     model, optimizer, scaler, scheduler, checkpointer, config,
                     samples_seen=samples_seen, batches_seen=batches_seen,
                     optimizer_steps=optimizer_steps, epoch=current_epoch,
+                    epoch_start_samples=epoch_start_samples,
                     blocks_seen=blocks_seen, units_seen=units_seen,
                     condition_blocks_seen=condition_blocks_seen,
                     data_cursors=cursors, plan_hash=plan.plan_hash,
