@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 
@@ -59,3 +60,17 @@ def test_qmd_cargo_output_is_external_and_binary_is_executed_directly() -> None:
     assert "cargo run" not in source
     assert '& $gatewayexecutable' in source
     assert "cargo output must be outside the repository" in source
+
+
+def test_frontend_invokes_npm_without_the_windows_batch_wrapper() -> None:
+    module_path = SCRIPTS / "run_frontend.py"
+    spec = importlib.util.spec_from_file_location("run_frontend_under_test", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    command = module.npm_command()
+
+    assert Path(command[0]).name.lower() == "node.exe"
+    assert Path(command[1]).name.lower() == "npm-cli.js"
+    assert all(Path(part).suffix.lower() not in {".cmd", ".bat"} for part in command)

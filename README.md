@@ -290,6 +290,9 @@ output defaults to
 `D:\TradingML\runtimes\qmd_history_gateway\cargo-target`; use
 `-CargoTargetDir` or `QMD_HISTORY_CARGO_TARGET_DIR` only for another approved
 external runtime path. Repository-local Cargo targets are rejected.
+On Windows, the frontend launcher invokes npm's JavaScript CLI through
+`node.exe` rather than `npm.cmd`, so Ctrl+C cannot block on the interactive
+`Terminate batch job (Y/N)?` prompt.
 
 The live support gateways have a separate ordered launcher:
 

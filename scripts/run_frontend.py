@@ -74,11 +74,50 @@ def lock_digest() -> str:
     return hashlib.sha256((SOURCE_ROOT / "package-lock.json").read_bytes()).hexdigest()
 
 
-def npm_executable() -> str:
+def npm_command() -> list[str]:
     executable = shutil.which("npm.cmd") or shutil.which("npm")
     if not executable:
         raise FileNotFoundError("npm was not found on PATH.")
-    return executable
+    npm_path = Path(executable).resolve()
+    if os.name != "nt" or npm_path.suffix.lower() not in {".cmd", ".bat"}:
+        return [str(npm_path)]
+
+    node = shutil.which("node.exe") or shutil.which("node")
+    if not node:
+        adjacent_node = npm_path.parent / "node.exe"
+        if adjacent_node.is_file():
+            node = str(adjacent_node)
+    if not node:
+        raise FileNotFoundError("node.exe was not found for the Windows npm CLI.")
+
+    npm_cli = npm_path.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    npm_prefix = npm_path.parent / "node_modules" / "npm" / "bin" / "npm-prefix.js"
+    if npm_prefix.is_file():
+        prefix_result = subprocess.run(
+            [node, str(npm_prefix)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if prefix_result.returncode == 0 and prefix_result.stdout.strip():
+            prefixed_cli = (
+                Path(prefix_result.stdout.strip())
+                / "node_modules"
+                / "npm"
+                / "bin"
+                / "npm-cli.js"
+            )
+            if prefixed_cli.is_file():
+                npm_cli = prefixed_cli
+    if not npm_cli.is_file():
+        raise FileNotFoundError(
+            f"npm-cli.js was not found beside the Windows npm wrapper: {npm_path}"
+        )
+    # Invoking npm.cmd would insert cmd.exe into the service tree. On Ctrl+C,
+    # that batch wrapper prompts `Terminate batch job (Y/N)?` and blocks the
+    # registered graceful shutdown. Direct Node execution preserves npm's CLI
+    # semantics without an interactive batch boundary.
+    return [str(Path(node).resolve()), str(npm_cli.resolve())]
 
 
 def ensure_dependencies(runtime_root: Path, *, force: bool = False) -> None:
@@ -87,7 +126,7 @@ def ensure_dependencies(runtime_root: Path, *, force: bool = False) -> None:
     current = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
     if not force and (runtime_root / "node_modules").is_dir() and current == expected:
         return
-    subprocess.run([npm_executable(), "ci"], cwd=runtime_root, check=True)
+    subprocess.run([*npm_command(), "ci"], cwd=runtime_root, check=True)
     marker.write_text(expected + "\n", encoding="utf-8")
 
 
@@ -109,7 +148,7 @@ def main() -> int:
         command_args = command_args[1:]
     environment = os.environ.copy()
     environment.setdefault("QW_FRONTEND_REVIEW_ROOT", str(frontend_review_root()))
-    command = [npm_executable(), "run", args.command]
+    command = [*npm_command(), "run", args.command]
     if command_args:
         command.extend(["--", *command_args])
     print("Running:", subprocess.list2cmdline(command))
