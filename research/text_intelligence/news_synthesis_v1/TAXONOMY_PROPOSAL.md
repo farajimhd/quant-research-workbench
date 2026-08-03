@@ -146,13 +146,89 @@ independent claims becomes two statements.
 
 | Field | Allowed values | Meaning |
 |---|---|---|
-| `statement_kind` | `event`, `analyst_opinion`, `forecast`, `market_observation`, `background`, `reference` | Semantic function of the statement. |
+| `statement_kind` | `event`, `assessment`, `forecast`, `market_observation`, `background`, `reference` | Semantic function of the statement. |
 | `concept_leaf` | one approved leaf in the concept registry | One normalized event or fact concept; parents are derived. |
-| `modality` | `confirmed`, `planned`, `expected`, `opinion`, `rumored` | Epistemic status. No `mixed`; split the statement instead. |
+| `epistemic_status` | `confirmed`, `planned`, `expected`, `rumored`, `conditional` | How the claim is asserted. No `mixed`; split the statement instead. |
 | `time_relation` | `historical`, `current`, `forward` | Relation to publication time. No `mixed`; split the statement instead. |
-| `language_direction` | `positive`, `negative`, `neutral` | Text-implied issuer effect. Composite `mixed` is derived across statements. |
-| `direction_strength` | integer `0..4` | Evidence strength, not probability or reaction magnitude. |
 | `evidence_span` | source field, start, end, exact quote | Mandatory trace to preserved input. |
+
+#### `statement_kind`
+
+This field classifies what one atomic proposition does. The identity of its
+author or source is represented separately.
+
+| Value | Definition | Boundary rule |
+|---|---|---|
+| `event` | States that an action, occurrence, decision, result or state change happened, exists or was announced. | Issuing guidance is an event; the future value inside that guidance is a separate forecast statement. |
+| `assessment` | Expresses an evaluation, recommendation, interpretation or judgment. | An analyst rating, management judgment or editorial valuation thesis is an assessment regardless of who authored it. |
+| `forecast` | States a projected future quantity, outcome, timing or condition. | A forecast is the projected proposition itself, not the event of publishing it. |
+| `market_observation` | Reports an already observed price, volume, volatility, halt or attention condition. | It records what the market did; it does not establish what caused the move. |
+| `background` | Supplies substantive historical or contextual information needed to understand another statement but introduces no current focal claim. | Prior-quarter performance used to contextualize current earnings is background. |
+| `reference` | Identifies or locates an entity, instrument, source, calendar item or document without making a substantive claim about it. | A ticker/company pair, source link or list heading can be reference evidence; it is not an issuer event. |
+
+Analyst is deliberately not a statement kind. An analyst's rating is an
+`assessment`; an analyst's EPS estimate is a `forecast`; the analyst or research
+firm is linked as the claim source.
+
+#### `concept_leaf`
+
+A concept leaf is a stable identifier from a versioned registry, for example
+`earnings.eps_beat`, `guidance.lowered` or
+`corporate_transaction.acquisition_announced`.
+
+Each registry entry must define:
+
+- one canonical identifier and plain-language definition;
+- exactly one parent path;
+- accepted lexical and metadata evidence patterns;
+- incompatible concepts and required typed facts, if any;
+- default direction guidance by entity participation role; and
+- registry version and deprecation aliases.
+
+One statement receives one leaf. If one sentence says EPS beat while revenue
+missed, it becomes two statements. Parent concepts such as `earnings` and
+aliases such as `ma_transaction` are derived or retained as migration
+provenance; they are not additional predicted concepts.
+
+#### `epistemic_status`
+
+This field records the assertion status, independently from statement kind and
+time.
+
+| Value | Definition | Example |
+|---|---|---|
+| `confirmed` | The source asserts that the event, condition, observation or expressed opinion is real as of the stated time. | "The board approved the buyback." |
+| `planned` | An identified actor has stated an intention, commitment or scheduled action that is not yet complete. | "The company plans to open a facility." |
+| `expected` | The proposition is an estimate, projection or probabilistic expectation rather than a committed action. | "Revenue is expected to reach $50 million." |
+| `rumored` | The proposition is explicitly unverified, anonymously sourced or presented as market speculation. | "The company is rumored to be considering a sale." |
+| `conditional` | The proposition applies only if an explicit condition or hypothetical scenario occurs. | "If approved, the transaction would close in June." |
+
+`confirmed` does not mean independently proven true; it means the source
+presents the claim as factual. Source attribution and evidence remain visible.
+
+#### `time_relation`
+
+Time is anchored to the article's publication timestamp and the statement's
+event time, not to verb tense alone.
+
+| Value | Definition |
+|---|---|
+| `historical` | The stated event or condition completed before the current focal event and is being used retrospectively or as background. |
+| `current` | The event, disclosure, active condition or observation is contemporaneous with publication or newly announced at publication. |
+| `forward` | The stated event, period, quantity or outcome lies after publication. |
+
+A current guidance announcement therefore produces at least two statements:
+the issuance event is `current`, while its projected revenue is `forward`.
+Calendar dates and time ranges are retained as typed facts so the relation can
+be audited.
+
+#### `evidence_span`
+
+Every statement must retain `source_field`, zero-based `start`, exclusive `end`
+and the exact `quote`. The quote must equal the referenced source substring.
+Normalization may add typed facts, but cannot rewrite the evidence. A statement
+without a valid span is rejected from the gold authority rather than inferred
+from an unexplained rule.
 
 Facts such as money, percentages, dates, ratings and price targets are stored as
 typed fact records linked to a statement. Analyst `rating_from`, `rating_to`,
@@ -164,39 +240,254 @@ Entities and statements are many-to-many. Participation is stated per
 statement, so a shared acquisition can have different meaning for acquirer and
 target without duplicating or discarding the source text.
 
-| Field | Allowed values |
+| Field | Allowed values | Meaning |
+|---|---|---|
+| `entity_kind` | `issuer`, `security`, `index`, `fund`, `commodity`, `currency`, `person`, `organization`, `place`, `product` | What the resolved or mentioned entity is. |
+| `semantic_role` | `affected_subject`, `acquirer`, `target`, `counterparty`, `none` | How the entity participates in the proposition. Exactly one. |
+| `discourse_role` | `claim_source`, `context_mention`, `none` | How the entity participates in the communication. Exactly one. |
+| `semantic_direction` | `positive`, `negative`, `neutral` | Text-implied effect of this statement for this entity. |
+| `direction_strength` | integer `0..4` | Entity-specific effect strength; not confidence or expected return. |
+| `identity_status` | `resolved`, `ambiguous`, `unresolved`, `not_tradable_as_of` | Point-in-time resolution outcome. |
+
+Semantic and discourse roles are separated because one entity may be both the
+affected subject and the source of a claim. Specialized transaction roles take
+precedence over generic `affected_subject`.
+
+#### `entity_kind`
+
+| Value | Definition |
 |---|---|
-| `entity_kind` | `issuer`, `security`, `index`, `fund`, `commodity`, `currency`, `person`, `organization`, `place`, `product` |
-| `participation_role` | `subject`, `acquirer`, `target`, `counterparty`, `analyst_subject`, `observer`, `context_mention` |
-| `identity_status` | `resolved`, `ambiguous`, `unresolved`, `not_tradable_as_of` |
+| `issuer` | A legal entity that issues securities or is the corporate subject of disclosures and events. |
+| `security` | A point-in-time tradable instrument issued by an issuer, including its symbol and listing interval. |
+| `index` | A defined non-issued benchmark or index measuring a market or basket. |
+| `fund` | A pooled investment vehicle such as an ETF, mutual fund or closed-end fund. |
+| `commodity` | A physical or standardized commodity referenced as an economic subject. |
+| `currency` | A fiat or digital currency pair/component referenced as a monetary asset. |
+| `person` | A natural person, such as an executive, analyst or official. |
+| `organization` | A non-issuer institution in context, such as a regulator, exchange, research firm, court or government body. |
+| `place` | A country, jurisdiction, market region or physical location. |
+| `product` | A named drug, device, service, platform or other commercial product. |
+
+An issuer and its security are distinct entities. The issuer may persist while
+its ticker, exchange or security changes over time.
+
+#### `semantic_role`
+
+| Value | Definition |
+|---|---|
+| `affected_subject` | The entity is directly evaluated, forecast, affected by or performs the proposition and no more specific transaction role applies. |
+| `acquirer` | The entity is the buyer or acquiring party in the stated transaction. |
+| `target` | The entity or asset is being acquired in the stated transaction. |
+| `counterparty` | The entity is another direct party to a contract, partnership, dispute, financing or transaction where `acquirer` and `target` do not apply. |
+| `none` | The statement does not assign the entity a substantive participation role. |
+
+Only one semantic role is allowed for one entity-statement link. If the role
+changes across claims, separate statements preserve each role.
+
+#### `discourse_role`
+
+| Value | Definition |
+|---|---|
+| `claim_source` | The entity is the attributed speaker, author or authority responsible for the proposition. |
+| `context_mention` | The entity is mentioned for comparison, identification or background but is not affected by the statement. |
+| `none` | No discourse-specific role applies. |
+
+For an analyst upgrade, the analyst and research firm are claim sources, while
+the evaluated security is the `affected_subject`. The security is not assigned
+a new issuer event merely because an opinion was published; it is attached to
+an assessment statement.
+
+#### `semantic_direction`
+
+Direction belongs to the entity-statement link because one shared statement can
+have different implications for different participants. It is not article
+tone, observed price movement or a forecast of market reaction.
+
+| Value | Definition |
+|---|---|
+| `positive` | The statement explicitly indicates a favorable outcome, improvement, benefit, reduced risk or strengthened position for this entity. |
+| `negative` | The statement explicitly indicates an adverse outcome, deterioration, cost, dilution, increased risk or weakened position for this entity. |
+| `neutral` | The statement has no defensible favorable or adverse implication for this entity, or the entity is only a claim source/context mention. |
+
+An acquisition premium may be positive for the target while financing terms
+are negative for the acquirer. An observed price increase remains a
+`market_observation`; its move direction is stored as a typed market fact, not
+as semantic direction.
+
+#### `direction_strength`
+
+| Value | Definition |
+|---:|---|
+| `0` | No directional implication; required when semantic direction is neutral. |
+| `1` | Weak, indirect, highly conditional or low-materiality implication. |
+| `2` | Clear but moderate implication supported by the statement. |
+| `3` | Strong, material implication with explicit or quantified evidence. |
+| `4` | Exceptional, potentially transformative or existential implication explicitly supported by the text. |
+
+Strength is ordinal evidence severity, not confidence, probability or expected
+return. Positive and negative entity-statement links remain separate and are
+never cancelled inside an atomic statement.
+
+#### `identity_status`
+
+| Value | Definition | Consequence |
+|---|---|---|
+| `resolved` | Evidence identifies one entity valid at the publication timestamp. | The canonical point-in-time identity may be used downstream. |
+| `ambiguous` | Evidence supports multiple plausible entities and cannot select one safely. | Preserve candidates; block ticker-specific eligibility until reviewed. |
+| `unresolved` | No authoritative identity satisfies the available evidence. | Preserve the mention and evidence without inventing a ticker. |
+| `not_tradable_as_of` | The issuer or security is identified, but the referenced security was not tradable at that publication timestamp. | Preserve semantics and history; block contemporaneous forecast/reaction use for that security. |
 
 Point-in-time identity evidence is mandatory for security resolution. Provider
-tickers are candidate evidence, never semantic truth.
+tickers are candidate evidence, never semantic truth. Each resolution stores
+the matched name/alias, symbol interval, exchange, identifier and rule used.
 
 ### 3.4 Derived document synthesis
 
-The engine derives, rather than annotates independently:
+The engine derives the products below from document-envelope fields, atomic
+statements and entity participation. They are not separately annotated labels.
 
-- affected issuers and ticker-specific issuer views;
-- parent concept families from the leaf registry;
-- composite issuer direction and conflicting evidence;
-- concise evidence-preserving structured summary and readable synthesis;
-- document patterns such as analyst report, regulatory report, market roundup,
-  mover recap, automated digest and why-moving follow-up;
-- forecast, reaction-study, issuer-history and analyst-evaluation eligibility,
-  each with a rule identifier and reason;
-- quality and unresolved-identity flags.
+#### Affected issuers and ticker-specific views
+
+An issuer is affected only when a resolved issuer/security participates with a
+non-`none` semantic role. Claim sources and context mentions do not become
+affected issuers. Each affected issuer view contains:
+
+- the applicable statement IDs and participation roles;
+- canonical issuer and point-in-time security identity;
+- leaf concepts and typed facts relevant to that issuer;
+- positive, negative and neutral evidence kept separately; and
+- unresolved conflicts and quality flags.
+
+This permits one shared article to produce different, evidence-correct views
+for an acquirer, target and counterparty.
+
+#### Concept hierarchy
+
+The engine expands each approved leaf through its single registry path. For
+example:
+
+```text
+earnings.eps_beat -> earnings.performance -> earnings
+```
+
+Only the leaf is extracted. Parents support search, filtering and aggregation.
+Aliases are provenance, not extra concepts, so evaluation cannot award or
+penalize the same meaning multiple times.
+
+#### Composite issuer direction
+
+The engine groups atomic statements by issuer and retains:
+
+- maximum positive strength and its evidence statements;
+- maximum negative strength and its evidence statements;
+- all neutral statements relevant to interpretation; and
+- whether positive and negative evidence concern the same or different facts.
+
+The derived direction is:
+
+| Result | Rule |
+|---|---|
+| `neutral` | No positive or negative statement exists. |
+| `positive` | Positive evidence exists and no negative evidence of comparable materiality exists. |
+| `negative` | Negative evidence exists and no positive evidence of comparable materiality exists. |
+| `mixed` | Both positive and negative material evidence remain after issuer scoping. |
+
+V1 will freeze the exact materiality comparison before migration. It will not
+silently subtract ordinal strengths or convert them into probabilities.
+
+#### Structured and readable synthesis
+
+The structured synthesis is assembled from evidence-backed fields in a stable
+order:
+
+1. newly reported event or primary assessment;
+2. affected entities and their roles;
+3. material quantities, dates and before/after values;
+4. forward forecasts or conditions;
+5. positive and negative implications;
+6. observed market context, explicitly separated; and
+7. conflicts, ambiguity and missing evidence.
+
+The readable synthesis is a deterministic rendering of that structure. It may
+compress wording, but every clause must cite statement IDs and no unsupported
+fact may be introduced. It is therefore auditable and can be regenerated after
+presentation changes without relabeling the document.
+
+#### Presentation facets, not another taxonomy
+
+Terms such as analyst report, regulatory report, market roundup, mover recap,
+automated digest and why-moving follow-up are readable compositions of the
+primitive fields. They are not competing stored classes. For example:
+
+```text
+multi_subject_digest + recap + editorial + automated
+-> "Automated multi-subject recap"
+```
+
+The UI may display those facets as separate badges. It must not collapse them
+back into one ambiguous `content_role` field.
+
+#### Derived eligibility
+
+Eligibility is computed per issuer and use case after synthesis:
+
+| Product | Minimum contract |
+|---|---|
+| Forecast trigger | Resolved tradable security; new current issuer event with evidence and semantic implication; not solely preview, recap, explain-move, market observation, background or reference. Analyst-origin material is excluded from the default issuer-event trigger policy and retained separately. |
+| Reaction study | All forecast-trigger causal requirements plus a trustworthy availability timestamp and no evidence that the article merely reports an already observed move or previously public event. |
+| Issuer history | Resolved issuer and at least one substantive event, assessment, forecast or material background statement. Tradability at publication is not required. |
+| Analyst evaluation | Identified analyst/research firm as claim source, resolved affected subject, evidence-backed assessment or forecast, and separate before/after values where applicable. |
+
+Each result includes `eligible`, a versioned policy rule ID, reasons and blocking
+quality flags. Changing policy can recompute eligibility without altering the
+semantic authority.
+
+#### Quality and identity flags
+
+Derived flags expose, rather than hide:
+
+- ambiguous, unresolved or non-tradable identities;
+- invalid, title-only or unrendered text;
+- unmatched or overlapping evidence spans;
+- unresolved communication-purpose ties;
+- registry concepts missing required facts;
+- conflicting issuer directions; and
+- migration records requiring human review.
+
+No quality flag deletes source evidence. It controls certification and
+downstream use.
+
+#### Worked derivation example
+
+For: "Company A agreed to acquire Company B for $15.25 per share and expects
+the transaction to be accretive next year":
+
+| Layer | Derived or extracted result |
+|---|---|
+| Document envelope | `single_subject`, `report`, `issuer`, production method from provenance, `rendered` |
+| Statement S1 | `event`, `corporate_transaction.acquisition_announced`, `confirmed`, `current` |
+| S1 participation | A=`acquirer`; B=`target`; B positive strength 3 if the premium is explicit; A neutral unless the text supplies a supported benefit or cost |
+| Statement S2 | `forecast`, `corporate_transaction.expected_accretion`, `expected`, `forward` |
+| S2 participation | A=`affected_subject`, positive strength 2; issuer representative=`claim_source` if identified |
+| Typed facts | offer price `$15.25/share`; forecast period `next year` |
+| A issuer view | acquisition event plus accretion forecast, positive unless separate negative evidence exists |
+| B issuer view | acquisition target, positive only from the evidence-backed premium/consideration terms |
+| Presentation | badges for `single subject`, `report`, `issuer origin`; no new ambiguous content-role class |
+| Eligibility | evaluated independently for A and B with policy IDs and identity/timestamp checks |
+
+The example illustrates why statements, participation and direction cannot be
+collapsed into one article-level label.
 
 ## 4. Non-overlap rules
 
 1. Automation is only a production method; it cannot be a communication
    purpose or information origin.
-2. Analyst and regulator are information origins or statement kinds; they
-   cannot be document purposes.
-3. Roundup is a derived document pattern from structure and statement
-   composition, not a competing event type.
+2. Analyst and regulator are information origins or claim-source entities; they
+   cannot be document purposes or statement kinds.
+3. Roundup is expressed by document structure and communication purpose, not a
+   competing event type or another primary class.
 4. A context mention is an entity relationship, never an issuer event.
-5. `mixed` is never a primitive modality or time value. Conflicting atomic
+5. `mixed` is never a primitive epistemic-status or time value. Conflicting atomic
    statements remain separate and produce a derived mixed result.
 6. Every statement has one concept leaf. Concept parents and aliases are
    registry-derived and cannot coexist as independent predictions.
@@ -215,11 +506,12 @@ The engine derives, rather than annotates independently:
 | `preview` | `communication_purpose=preview` | exact if evidence agrees |
 | `editorial_analysis` | `communication_purpose=analyze`; origin determined separately | rule-assisted review |
 | `primary_event` | `communication_purpose=report`; event statements split by evidence | requires decomposition |
-| `analyst_event` | analyst opinions become statement units; document purpose determined independently | requires decomposition |
+| `analyst_event` | assessments/forecasts become statement units; analyst identity becomes claim source and origin | requires decomposition |
 | `regulatory_event` | regulatory concepts/origin move to their proper dimensions | requires decomposition |
 | `automated_summary` role/origin | `production_method=automated`; other dimensions re-derived | requires decomposition |
-| `issuer_role=mentioned_subject` | entity participation `context_mention` | exact structural move |
-| `modality/time= mixed` | split into atomic statements | manual review required |
+| `issuer_role=primary_subject` or `analyst_subject` | entity semantic role `affected_subject`, scoped to its statement | rule-assisted review |
+| `issuer_role=mentioned_subject` | entity discourse role `context_mention` | exact structural move |
+| `modality/time= mixed` | split into atomic statements and map modality to epistemic status | manual review required |
 | `semantic_direction=mixed` | preserve component evidence; derive composite mixed | rule-assisted review |
 | event concepts | map aliases to one leaf registry; retain original value in provenance | registry mapping + review |
 | eligibility booleans | recompute from V1 semantics and explicit policies | never copied as truth |
@@ -241,7 +533,7 @@ Approval is requested for:
 
 1. the News Synthesis objective and exclusion of market reaction;
 2. the five document-envelope dimensions;
-3. atomic statements with no primitive `mixed` modality/time;
+3. atomic statements with no primitive `mixed` epistemic-status/time;
 4. one concept leaf per statement with derived hierarchy;
 5. entity participation separated from event semantics;
 6. eligibility as a derived policy product;
