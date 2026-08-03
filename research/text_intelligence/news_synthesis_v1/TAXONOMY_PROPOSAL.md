@@ -386,17 +386,22 @@ The engine groups atomic statements by issuer and retains:
 - all neutral statements relevant to interpretation; and
 - whether positive and negative evidence concern the same or different facts.
 
-The derived sentiment is:
+The derived sentiment is calculated from the strongest positive and negative
+primitive strengths. Opposing evidence is comparable only when both strengths
+are at least `2` and their absolute difference is at most `1`. This freezes the
+V1 materiality rule without subtracting ordinal strengths or treating them as
+probabilities:
 
 | Result | Rule |
 |---|---|
 | `neutral` | No positive or negative statement exists. |
-| `positive` | Positive evidence exists and no negative evidence of comparable materiality exists. |
-| `negative` | Negative evidence exists and no positive evidence of comparable materiality exists. |
-| `mixed` | Both positive and negative material evidence remain after issuer scoping. |
+| `positive` | Strongest positive evidence exceeds negative evidence and the opposing evidence is not comparable under the V1 rule. |
+| `negative` | Strongest negative evidence exceeds positive evidence and the opposing evidence is not comparable under the V1 rule. |
+| `mixed` | Both strongest strengths are at least `2` and differ by no more than `1`. |
 
-V1 will freeze the exact materiality comparison before migration. It will not
-silently subtract ordinal strengths or convert them into probabilities.
+Equal weak strengths (`1` and `1`) derive `neutral`: neither is material enough
+to support a document-level directional synthesis. The component evidence is
+still retained in separate positive and negative statement lists.
 
 #### Structured and readable synthesis
 

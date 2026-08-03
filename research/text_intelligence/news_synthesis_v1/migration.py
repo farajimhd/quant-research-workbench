@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,10 +15,12 @@ from research.text_intelligence.news_synthesis_v1.contracts import (
     sha256_json,
     validate_document,
 )
+from research.text_intelligence.news_synthesis_v1.facts import extract_typed_facts
 from research.text_intelligence.news_synthesis_v1.registry import ConceptRegistry
 from research.text_intelligence.news_synthesis_v1.synthesis import (
     derive_eligibility,
     derive_issuer_views,
+    derive_synthesis,
 )
 from research.text_intelligence.news_synthesis_v1.taxonomy_audit import (
     DEFAULT_COLLECTIONS,
@@ -27,11 +28,6 @@ from research.text_intelligence.news_synthesis_v1.taxonomy_audit import (
     load_json,
     sha256_file,
 )
-
-
-MONEY_RE = re.compile(r"(?<!\w)\$\s?(?P<value>\d[\d,]*(?:\.\d+)?)\s?(?P<unit>billion|million|thousand|[BMK])?\b", re.I)
-PERCENT_RE = re.compile(r"(?<!\w)(?P<value>-?\d+(?:\.\d+)?)\s*(?:%|percent)\b", re.I)
-DATE_RE = re.compile(r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}(?:,\s+\d{4})?\b", re.I)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,9 +59,9 @@ def migrate_record(
     title = str(publication.get("title", ""))
     envelope = _migrate_envelope(annotation, article, title, rendered_text, issues, quality_flags)
     candidate_by_ticker = {
-        str(row.get("ticker", "")).upper(): row
+        str(row.get("ticker") or row.get("display_symbol") or row.get("canonical_instrument_id") or "").upper(): row
         for row in article.get("point_in_time_issuer_candidates", [])
-        if isinstance(row, Mapping) and row.get("ticker")
+        if isinstance(row, Mapping) and (row.get("ticker") or row.get("display_symbol") or row.get("canonical_instrument_id"))
     }
     entities: list[dict[str, Any]] = []
     statements: list[dict[str, Any]] = []
@@ -124,7 +120,7 @@ def migrate_record(
                         "epistemic_status": epistemic,
                         "time_relation": time_relation,
                         "evidence_spans": spans,
-                        "typed_facts": _typed_facts(spans),
+                        "typed_facts": extract_typed_facts(spans),
                     }
                 )
                 semantic_role, discourse_role = _roles(unit)
@@ -156,6 +152,7 @@ def migrate_record(
     status = _migration_status(issues, quality_flags)
     document = {
         "contract_version": CONTRACT_VERSION,
+        "concept_registry_version": registry.version,
         "sample_id": str(annotation["sample_id"]),
         "source_id": str(annotation["source_id"]),
         "source_timestamp": str(annotation["source_timestamp"]),
@@ -165,6 +162,12 @@ def migrate_record(
         "statements": statements,
         "participations": participations,
         "issuer_views": issuer_views,
+        "synthesis": derive_synthesis(
+            entities=entities,
+            statements=statements,
+            participations=participations,
+            issuer_views=issuer_views,
+        ),
         "eligibility": eligibility,
         "quality_flags": sorted(quality_flags),
         "migration": {
@@ -443,19 +446,6 @@ def _statement_kind(unit: Mapping[str, Any], concept: str) -> str:
     if time_relation == "forward" and modality in {"expected", "planned"}:
         return "forecast"
     return "event"
-
-
-def _typed_facts(spans: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    facts = []
-    for span in spans:
-        quote = str(span["quote"])
-        for match in MONEY_RE.finditer(quote):
-            facts.append({"fact_kind": "money", "raw": match.group(0), "value": match.group("value"), "unit": (match.group("unit") or "currency_units").lower()})
-        for match in PERCENT_RE.finditer(quote):
-            facts.append({"fact_kind": "percentage", "raw": match.group(0), "value": match.group("value")})
-        for match in DATE_RE.finditer(quote):
-            facts.append({"fact_kind": "date", "raw": match.group(0)})
-    return facts
 
 
 def _migration_status(issues: Sequence[str], flags: set[str]) -> str:

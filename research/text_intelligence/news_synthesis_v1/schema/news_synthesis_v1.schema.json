@@ -5,13 +5,17 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "contract_version", "sample_id", "source_id", "source_timestamp",
+    "contract_version", "concept_registry_version", "sample_id", "source_id", "source_timestamp",
     "source_text_sha256", "envelope", "entities", "statements",
-    "participations", "issuer_views", "eligibility", "quality_flags",
-    "migration"
+    "participations", "issuer_views", "synthesis", "eligibility", "quality_flags"
+  ],
+  "oneOf": [
+    {"required": ["migration"], "not": {"required": ["certification"]}},
+    {"required": ["certification"], "not": {"required": ["migration"]}}
   ],
   "properties": {
     "contract_version": {"const": "news_synthesis_v1"},
+    "concept_registry_version": {"type": "string", "minLength": 1},
     "sample_id": {"type": "string", "minLength": 1},
     "source_id": {"type": "string", "minLength": 1},
     "source_timestamp": {"type": "string", "minLength": 1},
@@ -21,9 +25,11 @@
     "statements": {"type": "array", "items": {"$ref": "#/$defs/statement"}},
     "participations": {"type": "array", "items": {"$ref": "#/$defs/participation"}},
     "issuer_views": {"type": "array", "items": {"$ref": "#/$defs/issuerView"}},
+    "synthesis": {"$ref": "#/$defs/synthesis"},
     "eligibility": {"type": "array", "items": {"$ref": "#/$defs/eligibility"}},
     "quality_flags": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-    "migration": {"$ref": "#/$defs/migration"}
+    "migration": {"$ref": "#/$defs/migration"},
+    "certification": {"$ref": "#/$defs/certification"}
   },
   "$defs": {
     "evidence": {
@@ -95,13 +101,41 @@
     },
     "issuerView": {
       "type": "object", "additionalProperties": false,
-      "required": ["entity_id", "composite_sentiment", "positive_strength", "negative_strength", "statement_ids"],
+      "required": ["entity_id", "composite_sentiment", "positive_strength", "negative_strength", "statement_ids", "positive_statement_ids", "negative_statement_ids", "neutral_statement_ids"],
       "properties": {
         "entity_id": {"type": "string", "minLength": 1},
         "composite_sentiment": {"enum": ["positive", "negative", "neutral", "mixed"]},
         "positive_strength": {"type": "integer", "minimum": 0, "maximum": 4},
         "negative_strength": {"type": "integer", "minimum": 0, "maximum": 4},
-        "statement_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+        "statement_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "positive_statement_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "negative_statement_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "neutral_statement_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "synthesis": {
+      "type": "object", "additionalProperties": false,
+      "required": ["renderer_version", "document_statement_ids", "issuer_summaries"],
+      "properties": {
+        "renderer_version": {"const": "news_synthesis_renderer_v1"},
+        "document_statement_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "issuer_summaries": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["entity_id", "display_name", "composite_sentiment", "statement_ids", "positive_statement_ids", "negative_statement_ids", "neutral_statement_ids", "readable_summary"],
+            "properties": {
+              "entity_id": {"type": "string", "minLength": 1},
+              "display_name": {"type": "string"},
+              "composite_sentiment": {"enum": ["positive", "negative", "neutral", "mixed"]},
+              "statement_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+              "positive_statement_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+              "negative_statement_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+              "neutral_statement_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+              "readable_summary": {"type": "string"}
+            }
+          }
+        }
       }
     },
     "eligibility": {
@@ -123,6 +157,17 @@
         "source_contract": {"const": "news_semantic_ground_truth_annotation_v3"},
         "status": {"enum": ["exact", "rule_mapped", "review_required", "rejected"]},
         "issues": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "certification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["certification_version", "reviewer", "reviewed_at_utc", "review_notes", "status"],
+      "properties": {
+        "certification_version": {"const": "news_synthesis_v1_manual_certification_v1"},
+        "reviewer": {"type": "string", "minLength": 1},
+        "reviewed_at_utc": {"type": "string", "minLength": 1},
+        "review_notes": {"type": "string", "minLength": 1},
+        "status": {"const": "certified"}
       }
     }
   }

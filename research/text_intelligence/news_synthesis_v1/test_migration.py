@@ -53,7 +53,13 @@ class MigrationTest(unittest.TestCase):
         document, audit = migrate_record(annotation, article, ConceptRegistry.load())
         self.assertEqual(audit["status"], "review_required")
         self.assertEqual({row["semantic_sentiment"] for row in document["participations"]}, {"positive", "negative"})
-        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+        self.assertEqual(len(document["issuer_views"][0]["positive_statement_ids"]), 1)
+        self.assertEqual(len(document["issuer_views"][0]["negative_statement_ids"]), 1)
+        self.assertEqual(
+            document["synthesis"]["renderer_version"],
+            "news_synthesis_renderer_v1",
+        )
         self.assertEqual(
             document["envelope"]["production_method"]["value"], "unknown"
         )

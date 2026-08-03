@@ -5,6 +5,7 @@ from typing import Any, Iterable, Mapping
 
 
 POLICY_VERSION = "news_synthesis_eligibility_v1"
+SYNTHESIS_VERSION = "news_synthesis_renderer_v1"
 
 
 def derive_issuer_views(
@@ -21,11 +22,26 @@ def derive_issuer_views(
         rows = by_entity[entity_id]
         positive = max((int(row["sentiment_strength"]) for row in rows if row["semantic_sentiment"] == "positive"), default=0)
         negative = max((int(row["sentiment_strength"]) for row in rows if row["semantic_sentiment"] == "negative"), default=0)
-        if positive and negative:
+        positive_ids = sorted({
+            str(row["statement_id"])
+            for row in rows
+            if row["semantic_sentiment"] == "positive"
+        })
+        negative_ids = sorted({
+            str(row["statement_id"])
+            for row in rows
+            if row["semantic_sentiment"] == "negative"
+        })
+        neutral_ids = sorted({
+            str(row["statement_id"])
+            for row in rows
+            if row["semantic_sentiment"] == "neutral"
+        })
+        if positive and negative and min(positive, negative) >= 2 and abs(positive - negative) <= 1:
             sentiment = "mixed"
-        elif positive:
+        elif positive > negative:
             sentiment = "positive"
-        elif negative:
+        elif negative > positive:
             sentiment = "negative"
         else:
             sentiment = "neutral"
@@ -36,9 +52,63 @@ def derive_issuer_views(
                 "positive_strength": positive,
                 "negative_strength": negative,
                 "statement_ids": sorted({str(row["statement_id"]) for row in rows}),
+                "positive_statement_ids": positive_ids,
+                "negative_statement_ids": negative_ids,
+                "neutral_statement_ids": neutral_ids,
             }
         )
     return views
+
+
+def derive_synthesis(
+    *,
+    entities: Iterable[Mapping[str, Any]],
+    statements: Iterable[Mapping[str, Any]],
+    participations: Iterable[Mapping[str, Any]],
+    issuer_views: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Render a deterministic, evidence-preserving view of certified primitives.
+
+    The readable text is deliberately assembled from exact source quotes. It is
+    not an abstractive summary and therefore cannot introduce an unsupported
+    claim. Presentation-only compression can be changed without relabeling.
+    """
+    entity_by_id = {str(row["entity_id"]): row for row in entities}
+    statement_by_id = {str(row["statement_id"]): row for row in statements}
+    parts_by_entity: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in participations:
+        parts_by_entity[str(row["entity_id"])].append(row)
+
+    issuer_summaries: list[dict[str, Any]] = []
+    for view in issuer_views:
+        entity_id = str(view["entity_id"])
+        ordered_ids = [
+            statement_id
+            for statement_id in view["statement_ids"]
+            if statement_id in statement_by_id
+        ]
+        clauses = []
+        for statement_id in ordered_ids:
+            statement = statement_by_id[statement_id]
+            quote = str(statement["evidence_spans"][0]["quote"]).strip()
+            clauses.append(f"{statement['concept_leaf']}: {quote}")
+        issuer_summaries.append(
+            {
+                "entity_id": entity_id,
+                "display_name": str(entity_by_id.get(entity_id, {}).get("display_name", "")),
+                "composite_sentiment": str(view["composite_sentiment"]),
+                "statement_ids": ordered_ids,
+                "positive_statement_ids": list(view["positive_statement_ids"]),
+                "negative_statement_ids": list(view["negative_statement_ids"]),
+                "neutral_statement_ids": list(view["neutral_statement_ids"]),
+                "readable_summary": " | ".join(clauses),
+            }
+        )
+    return {
+        "renderer_version": SYNTHESIS_VERSION,
+        "document_statement_ids": list(statement_by_id),
+        "issuer_summaries": issuer_summaries,
+    }
 
 
 def derive_eligibility(
@@ -72,18 +142,19 @@ def derive_eligibility(
         current_event = any(row["statement_kind"] == "event" and row["time_relation"] == "current" for row in substantive)
         has_semantic_implication = any(row.get("semantic_sentiment") in {"positive", "negative"} for row in rows)
         identity_ok = entity.get("identity_status") == "resolved"
+        tradable_security = entity.get("entity_kind") == "security" and bool(str(entity.get("ticker", "")).strip())
         evidence_ok = bool(substantive) and not ({"invalid_text", "unrendered_text", "ambiguous_identity", "unresolved_identity"} & flags)
-        trigger = identity_ok and evidence_ok and current_event and has_semantic_implication and purpose == "report" and origin != "analyst"
+        trigger = tradable_security and identity_ok and evidence_ok and current_event and has_semantic_implication and purpose == "report" and origin != "analyst"
         reaction = trigger and purpose not in {"recap", "explain_move"}
         history = identity_ok and bool(substantive)
-        analyst = identity_ok and origin == "analyst" and any(row["statement_kind"] in {"assessment", "forecast"} for row in substantive)
+        analyst = tradable_security and identity_ok and origin == "analyst" and any(row["statement_kind"] in {"assessment", "forecast"} for row in substantive)
         for product, eligible in (
             ("forecast_trigger", trigger),
             ("reaction_study", reaction),
             ("issuer_history", history),
             ("analyst_evaluation", analyst),
         ):
-            reasons = _eligibility_reasons(product, eligible, identity_ok, evidence_ok, current_event, has_semantic_implication, purpose, origin)
+            reasons = _eligibility_reasons(product, eligible, identity_ok, tradable_security, evidence_ok, current_event, has_semantic_implication, purpose, origin)
             results.append(
                 {
                     "entity_id": entity_id,
@@ -101,6 +172,7 @@ def _eligibility_reasons(
     product: str,
     eligible: bool,
     identity_ok: bool,
+    tradable_security: bool,
     evidence_ok: bool,
     current_event: bool,
     implication: bool,
@@ -112,6 +184,8 @@ def _eligibility_reasons(
     reasons = []
     if not identity_ok:
         reasons.append("identity_not_resolved_as_of_publication")
+    if product in {"forecast_trigger", "reaction_study", "analyst_evaluation"} and not tradable_security:
+        reasons.append("no_resolved_tradable_security")
     if not evidence_ok:
         reasons.append("insufficient_trustworthy_evidence")
     if product in {"forecast_trigger", "reaction_study"}:

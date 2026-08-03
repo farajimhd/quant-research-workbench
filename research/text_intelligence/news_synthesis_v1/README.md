@@ -48,3 +48,14 @@ It writes only under
 `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\gold_migration_v1`.
 The existing V3 gold authority is never modified. Draft records marked
 `review_required` must be manually certified before cutover.
+
+Initialize the separate V1-only certification workspace with:
+
+```powershell
+python -m research.text_intelligence.news_synthesis_v1.run_initialize_certification
+```
+
+Review packets contain preserved source evidence and the V1 draft only. They
+exclude prior V3 label fields. Certified labels are written separately under
+`manual_certification_v1/certified_labels` and cannot contain unresolved
+quality flags.
