@@ -1,7 +1,8 @@
 # News Synthesis V1 Taxonomy Proposal
 
-Status: **approval required**. This document defines the first contract boundary;
-no gold record has been migrated.
+Status: **approved 2026-08-03**. This document defines the frozen V1 contract
+boundary. Gold migration is non-destructive and requires separate manual
+certification before cutover.
 
 ## 1. Objective
 
@@ -529,9 +530,9 @@ Every migrated record receives one status:
 No existing gold file is overwritten. Migration creates a new versioned gold
 authority plus a per-record mapping manifest.
 
-## 6. Approval decisions
+## 6. Approved decisions
 
-Approval is requested for:
+Approval covers:
 
 1. the News Synthesis objective and exclusion of market reaction;
 2. the five document-envelope dimensions;

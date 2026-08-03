@@ -21,7 +21,13 @@ This package starts fresh and does not import prior semantic-labeling or
 classification versions. Verified V9 behavior and reviewed regression cases are
 requirements, not an architecture dependency.
 
-The first runnable stage is read-only:
+The approved V1 contract is frozen in:
+
+- `schema/news_synthesis_v1.schema.json`;
+- `concept_registry.json`; and
+- `TAXONOMY_PROPOSAL.md`.
+
+The taxonomy audit remains read-only:
 
 ```powershell
 python -m research.text_intelligence.news_synthesis_v1.run_taxonomy_audit
@@ -32,5 +38,13 @@ contradictions, and writes generated evidence under
 `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1`. It does not change
 the existing gold authority.
 
-The replacement schema and gold migration remain blocked on explicit approval
-of `TAXONOMY_PROPOSAL.md`.
+After taxonomy approval, the non-destructive draft migration is run with:
+
+```powershell
+python -m research.text_intelligence.news_synthesis_v1.run_migrate_gold
+```
+
+It writes only under
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\gold_migration_v1`.
+The existing V3 gold authority is never modified. Draft records marked
+`review_required` must be manually certified before cutover.
