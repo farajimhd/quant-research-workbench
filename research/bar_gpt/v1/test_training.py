@@ -8,13 +8,15 @@ from rich.console import Console
 
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, TrainConfig
 from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarView, collate_examples
-from research.bar_gpt.v1.loader import balanced_regime_stream, build_session_examples, held_out_tickers
+from research.bar_gpt.v1.loader import balanced_regime_stream, build_session_examples, held_out_tickers, month_units
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.linear_probe import fit_ridge_probes
 from research.bar_gpt.v1.objectives import compute_loss
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
+from research.bar_gpt.v1.targets import TARGET_NAMES
 from research.bar_gpt.v1.train import preflight
+from research.mlops.schedulers import SampleWarmupCosineScheduler
 
 
 def session_view(length: int = 24) -> BarView:
@@ -67,13 +69,51 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(first.asof_indices["5s"].tolist(), [0, 0, 0])
         self.assertTrue(torch.all(first.asof_indices["1h"] == -1))
 
+    def test_prior_session_halo_enables_first_premarket_origins_without_overlap(self) -> None:
+        prior = session_view(8)
+        current = session_view(12)
+        offset = 86_400_000_000
+        current = BarView(
+            current.features,
+            current.bar_start_us + offset,
+            current.bar_end_us + offset,
+            current.available_at_us + offset,
+        )
+        examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-03", session=current, prior_session=prior,
+            daily=None, split_actions=(), config=self.data_config(),
+        ))
+        self.assertTrue(examples)
+        self.assertEqual(examples[0].origin_indices.tolist(), [4, 5, 6])
+        self.assertLess(int(prior.available_at_us[-1]), int(current.bar_start_us[0]))
+
+    def test_epoch_units_are_month_major_with_deterministic_ticker_shuffle(self) -> None:
+        first = month_units("2025-01-15", "2025-03-02", ("AAA", "BBB", "CCC"), seed=17)
+        second = month_units("2025-01-15", "2025-03-02", ("AAA", "BBB", "CCC"), seed=17)
+        self.assertEqual(first, second)
+        self.assertEqual([(unit.start_date, unit.end_date) for unit in first[::3]], [
+            ("2025-01-15", "2025-02-01"), ("2025-02-01", "2025-03-01"), ("2025-03-01", "2025-03-02"),
+        ])
+
+    def test_sample_scheduler_warms_then_decays_and_resumes(self) -> None:
+        parameter = torch.nn.Parameter(torch.tensor(1.0))
+        optimizer = torch.optim.AdamW([parameter], lr=3e-4)
+        scheduler = SampleWarmupCosineScheduler(
+            optimizer, warmup_samples=100, total_samples=1_000, minimum_lr=3e-5,
+        )
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-5)
+        scheduler.step(100)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-4)
+        scheduler.step(1_000)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-5)
+
     def test_collated_batch_runs_complete_mixed_objective(self) -> None:
         examples = list(build_session_examples(
             ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
             split_actions=(), config=self.data_config()
         ))[:2]
         batch = collate_examples(examples).to("cpu")
-        self.assertEqual(batch.horizon_targets.shape, (2, 3, 2, 14))
+        self.assertEqual(batch.horizon_targets.shape, (2, 3, 2, len(TARGET_NAMES)))
         model_config = BarGPTConfig(d_model=32, n_layers=1, n_heads=4, n_kv_heads=2, horizon_rank=8)
         model = BarGPTV1(model_config)
         output = model(
@@ -122,11 +162,17 @@ class LoaderTrainerContractTest(unittest.TestCase):
                         "bar_gpt_1s_build_manifest_v1_identity_aliases\n"
                         "daily_session_bars_by_symbol_time_v1\n"
                         "daily_session_bars_manifest_v1\n"
+                        "intraday_condition_bars_by_time_ticker\n"
+                        "intraday_bar_build_status\n"
                     )
                 if "system.columns" in query:
                     return "local_date\n"
                 if "daily_session_bars_manifest_v1" in query:
                     return "2019-01-01\t2020-03-01\n"
+                if "current_ticker" in query:
+                    return ""
+                if "intraday_bar_build_status" in query:
+                    return "60\n"
                 return self.messages
 
         config = self.data_config()

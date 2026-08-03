@@ -9,7 +9,7 @@ from research.bar_gpt.v1.train import main
 
 DEFAULT_ARGS: dict[str, str] = {
     "--start-date": "2020-01-01",
-    "--end-date": "2027-01-01",
+    "--end-date": "2026-08-01",
     "--validation-start-date": "2026-01-01",
     "--context-bars-1s": "2048",
     "--origin-bars-1s": "512",
@@ -21,6 +21,12 @@ DEFAULT_ARGS: dict[str, str] = {
     "--n-heads": "8",
     "--n-kv-heads": "4",
     "--max-samples": "50000000",
+    "--learning-rate": "0.0003",
+    "--warmup-samples": "1048576",
+    "--minimum-learning-rate": "0.00003",
+    "--validation-interval-samples": "2097152",
+    "--validation-batches": "8",
+    "--condition-positive-weight": "32",
     "--amp-dtype": "bf16",
     "--progress-layout": "auto",
 }

@@ -55,6 +55,7 @@ def _mixed_point_loss(
     target: torch.Tensor,
     mask: torch.Tensor,
     sample_weights: torch.Tensor,
+    condition_positive_weight: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     continuous_error = torch.nn.functional.huber_loss(
         prediction[..., :CONTINUOUS_TARGET_COUNT],
@@ -62,10 +63,13 @@ def _mixed_point_loss(
         reduction="none",
     )
     continuous = _weighted_mean(continuous_error, mask[..., :CONTINUOUS_TARGET_COUNT], sample_weights)
+    positive_weights = prediction.new_ones(prediction.shape[-1] - CONTINUOUS_TARGET_COUNT)
+    positive_weights[-4:] = float(condition_positive_weight)
     availability_error = torch.nn.functional.binary_cross_entropy_with_logits(
         prediction[..., CONTINUOUS_TARGET_COUNT:],
         target[..., CONTINUOUS_TARGET_COUNT:].to(prediction.dtype),
         reduction="none",
+        pos_weight=positive_weights,
     )
     availability = _weighted_mean(availability_error, mask[..., CONTINUOUS_TARGET_COUNT:], sample_weights)
     return continuous, availability
@@ -81,7 +85,9 @@ def compute_loss(output: BarGPTOutput, batch: BarGPTBatch, config: TrainConfig, 
     for name, prediction in output.autoregressive.items():
         target = batch.autoregressive_targets[name][:, : prediction.shape[1]]
         mask = batch.autoregressive_mask[name][:, : prediction.shape[1]]
-        continuous, availability = _mixed_point_loss(prediction, target, mask, batch.sample_weights)
+        continuous, availability = _mixed_point_loss(
+            prediction, target, mask, batch.sample_weights, config.condition_positive_weight
+        )
         ar_continuous.append(continuous)
         ar_availability.append(availability)
         metrics[f"train/loss_ar_{name}"] = (continuous + config.availability_weight * availability).detach()
@@ -107,10 +113,15 @@ def compute_loss(output: BarGPTOutput, batch: BarGPTBatch, config: TrainConfig, 
     if output.horizon_availability_logits is not None:
         target = batch.horizon_targets[..., CONTINUOUS_TARGET_COUNT:]
         mask = batch.horizon_mask[..., CONTINUOUS_TARGET_COUNT:] & batch.origin_mask[:, :, None, None]
+        positive_weights = output.horizon_availability_logits.new_ones(
+            output.horizon_availability_logits.shape[-1]
+        )
+        positive_weights[-4:] = float(config.condition_positive_weight)
         bce = torch.nn.functional.binary_cross_entropy_with_logits(
             output.horizon_availability_logits,
             target.to(output.horizon_availability_logits.dtype),
             reduction="none",
+            pos_weight=positive_weights,
         )
         horizon_avail = _weighted_mean(bce, mask, batch.sample_weights)
     ar_loss = ar_cont + config.availability_weight * ar_avail

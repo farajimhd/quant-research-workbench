@@ -40,6 +40,10 @@ MODEL_FEATURE_NAMES: tuple[str, ...] = (
     "crossed_quote_fraction",
     "log_condition_count",
     "log_source_event_count",
+    "log_elapsed_wall_ratio",
+    "sequence_boundary",
+    "session_progress_sin",
+    "session_progress_cos",
 )
 
 
@@ -67,7 +71,12 @@ def _safe_log_ratio(numerator: torch.Tensor, denominator: torch.Tensor, valid: t
     return result
 
 
-def project_stationary_features(raw_features: torch.Tensor) -> torch.Tensor:
+def project_stationary_features(
+    raw_features: torch.Tensor,
+    bar_start_us: torch.Tensor | None = None,
+    *,
+    timeframe_us: int | None = None,
+) -> torch.Tensor:
     """Convert raw composable bar statistics to causal scale-stable model channels."""
     squeeze = raw_features.ndim == 2
     raw = raw_features.unsqueeze(0) if squeeze else raw_features
@@ -149,5 +158,24 @@ def project_stationary_features(raw_features: torch.Tensor) -> torch.Tensor:
             torch.log1p(_column(raw, "source_event_count")),
         )
     )
+    duration = max(1, int(timeframe_us or 1_000_000))
+    if bar_start_us is None:
+        starts = torch.zeros(raw.shape[:2], dtype=torch.long, device=raw.device)
+        elapsed_ratio = torch.ones(raw.shape[:2], dtype=torch.float32, device=raw.device)
+        boundary = torch.zeros_like(elapsed_ratio)
+    else:
+        starts = bar_start_us.unsqueeze(0) if bar_start_us.ndim == 1 else bar_start_us
+        if starts.shape != raw.shape[:2]:
+            raise ValueError("bar_start_us must align with raw [T] or [B,T]")
+        elapsed = torch.cat((torch.full_like(starts[:, :1], duration), starts[:, 1:] - starts[:, :-1]), dim=1)
+        elapsed_ratio = elapsed.float().clamp_min(0) / float(duration)
+        boundary = (elapsed_ratio > 1.5).float()
+    increments = torch.where(boundary > 0, torch.zeros_like(elapsed_ratio), elapsed_ratio)
+    cumulative = increments.cumsum(dim=1)
+    boundary_baseline = torch.where(boundary > 0, cumulative, torch.zeros_like(cumulative)).cummax(dim=1).values
+    progress = cumulative - boundary_baseline
+    progress_seconds = progress * (float(duration) / 1_000_000.0)
+    phase = progress_seconds / 57_600.0 * (2.0 * torch.pi)
+    output.extend((torch.log1p(elapsed_ratio), boundary, torch.sin(phase), torch.cos(phase)))
     projected = torch.stack(output, dim=-1)
     return projected.squeeze(0) if squeeze else projected

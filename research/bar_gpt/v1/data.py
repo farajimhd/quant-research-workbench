@@ -51,10 +51,12 @@ class BarGPTExample:
     ticker: str
     local_date: str
     raw_views: dict[str, torch.Tensor]
+    raw_view_start_us: dict[str, torch.Tensor]
     origin_indices: torch.Tensor
     asof_indices: dict[str, torch.Tensor]
     target_support: torch.Tensor
     target_share_factors: torch.Tensor
+    target_condition_flags: torch.Tensor
     support_origin_indices: torch.Tensor
     horizons_us: tuple[int, ...]
     base_timeframe_us: int
@@ -72,6 +74,7 @@ class BarGPTBatch:
     target_support: torch.Tensor
     target_support_lengths: torch.Tensor
     target_share_factors: torch.Tensor
+    target_condition_flags: torch.Tensor
     support_origin_indices: torch.Tensor
     horizons_us: tuple[int, ...]
     base_timeframe_us: int
@@ -92,6 +95,7 @@ class BarGPTBatch:
         origin_count_values = self.origin_mask.sum(dim=1).tolist()
         support = self.target_support.to(device, non_blocking=non_blocking)
         share_factors = self.target_share_factors.to(device, non_blocking=non_blocking)
+        condition_flags = self.target_condition_flags.to(device, non_blocking=non_blocking)
         support_lengths = self.target_support_lengths.to(device, non_blocking=non_blocking)
         support_origins = self.support_origin_indices.to(device, non_blocking=non_blocking)
         built = [
@@ -101,6 +105,7 @@ class BarGPTBatch:
                 torch.as_tensor(self.horizons_us, dtype=torch.long, device=support.device),
                 base_timeframe_us=self.base_timeframe_us,
                 share_factors=share_factors[row, : int(support_length_values[row])],
+                condition_flags=condition_flags[row, : int(support_length_values[row])],
             )
             for row in range(support.shape[0])
         ]
@@ -114,6 +119,7 @@ class BarGPTBatch:
             target_support=support,
             target_support_lengths=support_lengths,
             target_share_factors=share_factors,
+            target_condition_flags=condition_flags,
             support_origin_indices=support_origins,
             horizons_us=self.horizons_us,
             base_timeframe_us=self.base_timeframe_us,
@@ -143,7 +149,13 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
     if any(example.horizons_us != examples[0].horizons_us or example.base_timeframe_us != examples[0].base_timeframe_us for example in examples):
         raise ValueError("all examples in a batch must use the same physical target contract")
     raw_by_view = {name: [example.raw_views[name] for example in examples] for name in view_names}
-    views = {name: _pad_first_dimension([project_stationary_features(value) for value in values]) for name, values in raw_by_view.items()}
+    views = {
+        name: _pad_first_dimension([
+            project_stationary_features(value, example.raw_view_start_us[name], timeframe_us=TIMEFRAME_US_BY_NAME[name])
+            for value, example in zip(values, examples, strict=True)
+        ])
+        for name, values in raw_by_view.items()
+    }
     ar_targets: dict[str, torch.Tensor] = {}
     ar_masks: dict[str, torch.Tensor] = {}
     for name, values in raw_by_view.items():
@@ -178,6 +190,7 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
         target_support=_pad_first_dimension([example.target_support for example in examples]),
         target_support_lengths=torch.as_tensor([example.target_support.shape[0] for example in examples], dtype=torch.long),
         target_share_factors=_pad_first_dimension([example.target_share_factors for example in examples], fill=1.0),
+        target_condition_flags=_pad_first_dimension([example.target_condition_flags for example in examples]),
         support_origin_indices=_pad_first_dimension([example.support_origin_indices for example in examples], fill=0),
         horizons_us=examples[0].horizons_us,
         base_timeframe_us=examples[0].base_timeframe_us,

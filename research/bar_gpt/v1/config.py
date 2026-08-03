@@ -11,6 +11,7 @@ from research.bar_gpt.v1.cohort import (
     BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE,
     BAR_GPT_SIP_DAILY_SESSION_TABLE,
     BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE,
+    BAR_GPT_VALIDATION_SLICES_2026,
 )
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES
@@ -74,6 +75,8 @@ class DataConfig:
     alias_manifest_table: str = BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE
     daily_table: str = BAR_GPT_SIP_DAILY_SESSION_TABLE
     daily_manifest_table: str = BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE
+    condition_table: str = "intraday_condition_bars_by_time_ticker"
+    condition_status_table: str = "intraday_bar_build_status"
     identity_database: str = "q_live"
     identity_interval_table: str = "id_symbol_interval_v1"
     identity_entity_table: str = "market_ticker_event_entity_v1"
@@ -86,10 +89,12 @@ class DataConfig:
     horizons_us: tuple[int, ...] = DEFAULT_HORIZONS_US
     tickers: tuple[str, ...] = BAR_GPT_TRAINING_TICKERS
     start_date: str = "2020-01-01"
-    end_date: str = "2027-01-01"
+    end_date: str = "2026-08-01"
     validation_start_date: str = "2026-01-01"
     daily_history_start_date: str = "2019-01-01"
-    validation_ticker_fraction: float = 0.15
+    validation_slices: tuple[tuple[str, str, str], ...] = BAR_GPT_VALIDATION_SLICES_2026
+    validation_blocks_per_slice: int = 1
+    prior_session_halo: bool = True
     context_bars_1s: int = 2_048
     origin_bars_1s: int = 512
     daily_context_bars: int = 512
@@ -126,8 +131,14 @@ class DataConfig:
             raise ValueError("horizons_us must be unique and strictly increasing")
         if any(value <= 0 or value % self.base_timeframe_us for value in self.horizons_us):
             raise ValueError("every horizon must be a positive integral multiple of the base timeframe")
-        if not 0.0 < self.validation_ticker_fraction < 1.0:
-            raise ValueError("validation_ticker_fraction must be between zero and one")
+        validation_tickers = {ticker for ticker, _start, _end in self.validation_slices}
+        if not validation_tickers <= set(self.tickers):
+            raise ValueError("fixed validation tickers must belong to the configured cohort")
+        for ticker, start, end in self.validation_slices:
+            if ticker not in self.tickers or not self.validation_start_date <= start < end <= self.end_date:
+                raise ValueError(f"invalid validation slice: {(ticker, start, end)}")
+        if self.validation_blocks_per_slice <= 0:
+            raise ValueError("validation_blocks_per_slice must be positive")
         if not self.start_date <= self.validation_start_date <= self.end_date:
             raise ValueError("validation_start_date must lie inside the requested date range")
         if self.daily_history_start_date > self.start_date:
@@ -154,14 +165,17 @@ class TrainConfig:
     wandb_mode: str = "auto"
     wandb_init_timeout: int = 120
     logging_samples: int = 65_536
-    validation_samples: int = 262_144
-    validation_batches: int = 32
+    validation_batches: int = 8
+    validation_interval_samples: int = 2_097_152
+    warmup_samples: int = 1_048_576
+    minimum_learning_rate: float = 3e-5
     checkpoint_latest_samples: int = 1_048_576
     checkpoint_archive_samples: int = 16_777_216
     progress_layout: str = "auto"
     autoregressive_weight: float = 0.35
     horizon_weight: float = 1.0
     availability_weight: float = 0.25
+    condition_positive_weight: float = 32.0
     latent_prediction_weight: float = 0.05
 
 

@@ -340,6 +340,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--condition-token-reference-table", default=DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE)
     parser.add_argument("--ticker-day-index-table", default=DEFAULT_TICKER_DAY_INDEX_TABLE)
     parser.add_argument("--status-table", default=DEFAULT_STATUS_TABLE)
+    parser.add_argument(
+        "--artifact-mode",
+        choices=("base-and-conditions", "conditions-only"),
+        default="base-and-conditions",
+        help="Build both reusable bars or only the sparse exact condition-label sidecar.",
+    )
     parser.add_argument("--start-date", default="", help="Inclusive New York local session date, YYYY-MM-DD.")
     parser.add_argument("--end-date", default="", help="Exclusive New York local session date, YYYY-MM-DD.")
     parser.add_argument("--date", default="", help="Build one New York local session date, YYYY-MM-DD.")
@@ -388,7 +394,8 @@ def main(argv: list[str] | None = None) -> int:
             reporter.message(f"loaded_env_files={[str(path) for path in loaded_env]}")
             reporter.message(f"secret_status={secret_status(['CLICKHOUSE_URL', 'REAL_LIVE_CLICKHOUSE_WRITE_URL', 'CLICKHOUSE_WORKSTATION_USER', 'CLICKHOUSE_WORKSTATION_PASSWORD', 'CLICKHOUSE_USER', 'CLICKHOUSE_PASSWORD'])}")
             if not args.dry_run:
-                execute_profiled(client, "intraday_base_bars_create", create_intraday_base_bars_table_sql(args), "", reporter)
+                if args.artifact_mode == "base-and-conditions":
+                    execute_profiled(client, "intraday_base_bars_create", create_intraday_base_bars_table_sql(args), "", reporter)
                 execute_profiled(client, "intraday_condition_bars_create", create_intraday_condition_bars_table_sql(args), "", reporter)
                 execute_profiled(client, "intraday_base_bars_status_create", create_status_table_sql(args), "", reporter)
             for chunk in _date_chunks(local_dates, args):
@@ -439,9 +446,10 @@ def build_date_chunk(
     reporter.chunk_start(label)
     started = time.perf_counter()
     if args.dry_run:
-        bars_sql = insert_intraday_base_bars_sql(args=args, dates=dates, resolutions_us=resolutions_us)
         condition_sql = insert_intraday_condition_bars_sql(args=args, dates=dates, resolutions_us=resolutions_us)
-        append_jsonl(report_path, {"event": "dry_run_sql", "chunk": label, "artifact": "intraday_base_bars", "sql": bars_sql})
+        if args.artifact_mode == "base-and-conditions":
+            bars_sql = insert_intraday_base_bars_sql(args=args, dates=dates, resolutions_us=resolutions_us)
+            append_jsonl(report_path, {"event": "dry_run_sql", "chunk": label, "artifact": "intraday_base_bars", "sql": bars_sql})
         append_jsonl(report_path, {"event": "dry_run_sql", "chunk": label, "artifact": "intraday_condition_bars", "sql": condition_sql})
         reporter.message(f"dry-run SQL generated for {label}; written to report JSONL")
         results = [DayBuildResult(local_date=day.isoformat(), status="dry_run") for day in dates]
@@ -478,10 +486,12 @@ def build_date_chunk(
         reporter.message(f"chunk skip {label} complete={len(complete_days):,} adopted={len(adopted):,}")
         return [*adopted, *skipped]
     if args.replace_existing:
-        execute_profiled(client, f"intraday_base_bars_delete_{label}", delete_intraday_base_bars_sql(args=args, dates=pending_dates), query_settings(args, extra={"mutations_sync": 2}), reporter)
+        if args.artifact_mode == "base-and-conditions":
+            execute_profiled(client, f"intraday_base_bars_delete_{label}", delete_intraday_base_bars_sql(args=args, dates=pending_dates), query_settings(args, extra={"mutations_sync": 2}), reporter)
         execute_profiled(client, f"intraday_condition_bars_delete_{label}", delete_intraday_condition_bars_sql(args=args, dates=pending_dates), query_settings(args, extra={"mutations_sync": 2}), reporter)
     event_count = query_source_event_count(client=client, args=args, dates=pending_dates, reporter=reporter)
-    execute_profiled(client, f"intraday_base_bars_insert_{label}", insert_intraday_base_bars_sql(args=args, dates=pending_dates, resolutions_us=resolutions_us), query_settings(args), reporter)
+    if args.artifact_mode == "base-and-conditions":
+        execute_profiled(client, f"intraday_base_bars_insert_{label}", insert_intraday_base_bars_sql(args=args, dates=pending_dates, resolutions_us=resolutions_us), query_settings(args), reporter)
     execute_profiled(client, f"intraday_condition_bars_insert_{label}", insert_intraday_condition_bars_sql(args=args, dates=pending_dates, resolutions_us=resolutions_us), query_settings(args), reporter)
     results: list[DayBuildResult] = list(adopted)
     for day in pending_dates:
@@ -570,7 +580,8 @@ def build_date_chunk_ticker_batched(
         return [*results, *skipped]
 
     if args.replace_existing:
-        execute_profiled(client, f"intraday_base_bars_delete_{label}", delete_intraday_base_bars_sql(args=args, dates=pending_dates), query_settings(args, extra={"mutations_sync": 2}), reporter)
+        if args.artifact_mode == "base-and-conditions":
+            execute_profiled(client, f"intraday_base_bars_delete_{label}", delete_intraday_base_bars_sql(args=args, dates=pending_dates), query_settings(args, extra={"mutations_sync": 2}), reporter)
         execute_profiled(client, f"intraday_condition_bars_delete_{label}", delete_intraday_condition_bars_sql(args=args, dates=pending_dates), query_settings(args, extra={"mutations_sync": 2}), reporter)
 
     event_count = query_index_event_count(client=client, args=args, dates=pending_dates, reporter=reporter)
@@ -596,7 +607,8 @@ def build_date_chunk_ticker_batched(
         batch_label = f"{label}_batch_{batch.index:04d}_tickers_{len(batch.tickers)}_events_{batch.event_count}"
         reporter.current_chunk = batch_label
         reporter.message(f"batch start {batch.index:,}/{len(batches):,} tickers={len(batch.tickers):,} events={batch.event_count:,}")
-        execute_profiled(client, f"intraday_base_bars_insert_{batch_label}", insert_intraday_base_bars_sql(args=batch_args, dates=pending_dates, resolutions_us=resolutions_us), query_settings(args), reporter)
+        if args.artifact_mode == "base-and-conditions":
+            execute_profiled(client, f"intraday_base_bars_insert_{batch_label}", insert_intraday_base_bars_sql(args=batch_args, dates=pending_dates, resolutions_us=resolutions_us), query_settings(args), reporter)
         execute_profiled(client, f"intraday_condition_bars_insert_{batch_label}", insert_intraday_condition_bars_sql(args=batch_args, dates=pending_dates, resolutions_us=resolutions_us), query_settings(args), reporter)
         reporter.message(f"batch done {batch.index:,}/{len(batches):,}")
 
@@ -957,27 +969,26 @@ def query_existing_day_state(
 ) -> dict[dt.date, dict[str, object]]:
     local_date_filter = ", ".join(f"toDate({sql_string(day.isoformat())})" for day in dates)
     ticker_filter = ticker_filter_sql(args, column="ticker")
+    row_sources = [f"""
+    SELECT local_date, count() AS rows
+    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_condition_bars_table)}
+    WHERE local_date IN ({local_date_filter}) {ticker_filter}
+    GROUP BY local_date
+    """]
+    if args.artifact_mode == "base-and-conditions":
+        row_sources.insert(0, f"""
+        SELECT local_date, count() AS rows
+        FROM {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
+        WHERE local_date IN ({local_date_filter}) {ticker_filter}
+        GROUP BY local_date
+        """)
     rows_sql = f"""
 SELECT
     local_date,
     sum(rows) AS rows
 FROM
 (
-    SELECT
-        local_date,
-        count() AS rows
-    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
-    WHERE local_date IN ({local_date_filter})
-      {ticker_filter}
-    GROUP BY local_date
-    UNION ALL
-    SELECT
-        local_date,
-        count() AS rows
-    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_condition_bars_table)}
-    WHERE local_date IN ({local_date_filter})
-      {ticker_filter}
-    GROUP BY local_date
+    {' UNION ALL '.join(row_sources)}
 )
 GROUP BY local_date
 FORMAT TSV
@@ -1062,12 +1073,14 @@ FORMAT TSV
 
 def plan_ticker_batches(*, client: ClickHouseHttpClient, args: argparse.Namespace, dates: list[dt.date], reporter: IntradayBarBuildReporter) -> list[TickerBatch]:
     date_filter = ", ".join(f"toDate({sql_string(day.isoformat())})" for day in dates)
+    ticker_filter = ticker_filter_sql(args)
     sql = f"""
 SELECT
     upper(ticker) AS ticker,
     sum(event_count) AS rows
 FROM {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_table)}
 WHERE source_date IN ({date_filter})
+  {ticker_filter}
 GROUP BY ticker
 HAVING rows > 0
 ORDER BY rows DESC, ticker ASC
@@ -1102,48 +1115,16 @@ FORMAT TSV
 
 def audit_day(*, client: ClickHouseHttpClient, args: argparse.Namespace, day: dt.date, audit: bool, reporter: IntradayBarBuildReporter) -> dict[str, int]:
     ticker_filter = ticker_filter_sql(args, column="ticker")
-    if audit:
-        sql = f"""
-SELECT
-    sum(rows) AS rows,
-    sum(duplicate_keys) AS duplicate_keys
-FROM
-(
-    SELECT
-        count() AS rows,
-        rows - uniqExact(tuple(ticker, local_date, label_resolution_us, bucket_index, bar_family)) AS duplicate_keys
-    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
-    WHERE local_date = toDate({sql_string(day.isoformat())})
-      {ticker_filter}
-    UNION ALL
-    SELECT
-        count() AS rows,
-        rows - uniqExact(tuple(ticker, local_date, label_resolution_us, bucket_index)) AS duplicate_keys
-    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_condition_bars_table)}
-    WHERE local_date = toDate({sql_string(day.isoformat())})
-      {ticker_filter}
-)
-FORMAT TSV
-"""
-    else:
-        sql = f"""
-SELECT
-    sum(rows) AS rows,
-    0 AS duplicate_keys
-FROM
-(
-    SELECT count() AS rows
-    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
-    WHERE local_date = toDate({sql_string(day.isoformat())})
-      {ticker_filter}
-    UNION ALL
-    SELECT count() AS rows
-    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_condition_bars_table)}
-    WHERE local_date = toDate({sql_string(day.isoformat())})
-      {ticker_filter}
-)
-FORMAT TSV
-"""
+    condition_duplicate = "rows - uniqExact(tuple(ticker, local_date, label_resolution_us, bucket_index))" if audit else "0"
+    sources = [f"""SELECT count() AS rows, {condition_duplicate} AS duplicate_keys
+        FROM {quote_ident(args.database)}.{quote_ident(args.intraday_condition_bars_table)}
+        WHERE local_date=toDate({sql_string(day.isoformat())}) {ticker_filter}"""]
+    if args.artifact_mode == "base-and-conditions":
+        base_duplicate = "rows - uniqExact(tuple(ticker, local_date, label_resolution_us, bucket_index, bar_family))" if audit else "0"
+        sources.insert(0, f"""SELECT count() AS rows, {base_duplicate} AS duplicate_keys
+            FROM {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
+            WHERE local_date=toDate({sql_string(day.isoformat())}) {ticker_filter}""")
+    sql = f"SELECT sum(rows), sum(duplicate_keys) FROM ({' UNION ALL '.join(sources)}) FORMAT TSV"
     first = next((line for line in execute_query_tsv(client, f"intraday_base_bars_audit_{day.isoformat()}", sql, reporter).splitlines() if line.strip()), "0\t0")
     rows, duplicate_keys = (first.split("\t") + ["0"])[:2]
     return {"row_count": int(rows), "duplicate_keys": int(duplicate_keys)}
@@ -1404,7 +1385,11 @@ def condition_event_select_sql() -> str:
 
 def artifact_name(args: argparse.Namespace) -> str:
     tickers = sorted({item.strip().upper() for item in str(args.tickers).split(",") if item.strip()})
-    base = f"{args.intraday_base_bars_table}+{args.intraday_condition_bars_table}"
+    base = (
+        args.intraday_condition_bars_table
+        if args.artifact_mode == "conditions-only"
+        else f"{args.intraday_base_bars_table}+{args.intraday_condition_bars_table}"
+    )
     if not tickers:
         return base
     return base + ":tickers=" + ",".join(tickers)

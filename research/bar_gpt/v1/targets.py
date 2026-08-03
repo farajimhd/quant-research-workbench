@@ -23,9 +23,15 @@ TARGET_NAMES: tuple[str, ...] = (
     "bid_available",
     "ask_available",
     "quote_pair_available",
+    "halt_pause_within_horizon",
+    "resume_within_horizon",
+    "news_risk_within_horizon",
+    "luld_limit_state_within_horizon",
 )
-CONTINUOUS_TARGET_NAMES: tuple[str, ...] = TARGET_NAMES[:-4]
-AVAILABILITY_TARGET_NAMES: tuple[str, ...] = TARGET_NAMES[-4:]
+CONDITION_TARGET_NAMES: tuple[str, ...] = TARGET_NAMES[-4:]
+BINARY_TARGET_NAMES: tuple[str, ...] = TARGET_NAMES[-8:]
+CONTINUOUS_TARGET_NAMES: tuple[str, ...] = TARGET_NAMES[:-8]
+AVAILABILITY_TARGET_NAMES: tuple[str, ...] = BINARY_TARGET_NAMES
 CONTINUOUS_TARGET_COUNT = len(CONTINUOUS_TARGET_NAMES)
 AVAILABILITY_TARGET_COUNT = len(AVAILABILITY_TARGET_NAMES)
 
@@ -80,6 +86,7 @@ def build_next_bar_targets(raw: torch.Tensor) -> HorizonTargets:
             qi_mean.clamp(-1.0, 1.0),
             *availability,
             quote_present[1:].float(),
+            *raw.new_zeros((4, raw.shape[0] - 1)),
         ),
         dim=-1,
     )
@@ -88,6 +95,7 @@ def build_next_bar_targets(raw: torch.Tensor) -> HorizonTargets:
     mask[:, 1:3] &= excursion_valid[:, None]
     mask[:, 3] = False  # exact intrabar realized volatility is unavailable after aggregation
     mask[:, 6:10] &= (quote_count > 0)[:, None]
+    mask[:, -4:] = False  # exact event conditions are supervised only by physical-horizon sidecars
     return HorizonTargets(values=values, mask=mask)
 
 
@@ -115,6 +123,7 @@ def build_physical_horizon_targets(
     *,
     base_timeframe_us: int = 1_000_000,
     share_factors: torch.Tensor | None = None,
+    condition_flags: torch.Tensor | None = None,
 ) -> HorizonTargets:
     """Build direct horizons in each origin's share basis without copied windows."""
     if raw_one_second.ndim != 2 or origin_indices.ndim != 1 or horizons_us.ndim != 1:
@@ -128,6 +137,14 @@ def build_physical_horizon_targets(
     if torch.any(~torch.isfinite(share_factors)) or torch.any(share_factors <= 0):
         raise ValueError("share_factors must be finite and positive")
     share_factors = share_factors.to(device=raw_one_second.device, dtype=raw_one_second.dtype)
+    if condition_flags is None:
+        condition_flags = torch.zeros((raw_one_second.shape[0], 4), dtype=torch.float32, device=raw_one_second.device)
+        condition_authoritative = False
+    else:
+        if condition_flags.shape != (raw_one_second.shape[0], 4):
+            raise ValueError("condition_flags must have shape [T,4] aligned to raw rows")
+        condition_flags = condition_flags.to(device=raw_one_second.device, dtype=torch.float32)
+        condition_authoritative = True
     trade_present = _column(raw_one_second, "trade_present") > 0
     quote_present = _column(raw_one_second, "quote_pair_present") > 0
     trade_close = _column(raw_one_second, "trade_close")
@@ -204,6 +221,15 @@ def build_physical_horizon_targets(
             for family in ("trade", "bid", "ask")
         ]
         quote_available = (quote_availability_prefix[ends] - quote_availability_prefix[starts] > 0).float()
+        condition_window = torch.stack(
+            [
+                _window_max(condition_flags[:, column], steps)[origin_indices.clamp(max=max(total - steps - 1, 0))]
+                if total > steps else torch.zeros_like(origin_indices, dtype=torch.float32)
+                for column in range(4)
+            ],
+            dim=-1,
+        )
+        condition_window = torch.where(in_range[:, None], condition_window, torch.zeros_like(condition_window))
         values = torch.stack(
             (
                 torch.asinh(endpoint_return * 100.0),
@@ -218,6 +244,7 @@ def build_physical_horizon_targets(
                 qi_mean.clamp(-1.0, 1.0),
                 *availability,
                 quote_available,
+                *condition_window.unbind(dim=-1),
             ),
             dim=-1,
         )
@@ -225,6 +252,7 @@ def build_physical_horizon_targets(
         masks[:, :4] &= price_valid[:, None]
         masks[:, 1:3] &= excursion_valid[:, None]
         masks[:, 6:10] &= (quote_count > 0)[:, None]
+        masks[:, -4:] &= condition_authoritative
         horizon_values.append(values)
         horizon_masks.append(masks)
     return HorizonTargets(values=torch.stack(horizon_values, dim=1), mask=torch.stack(horizon_masks, dim=1))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import math
 import os
@@ -22,13 +23,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.bar_gpt.v1 import MODEL_FAMILY, MODEL_VERSION
+from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig, to_dict
 from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarGPTBatch, BarGPTExample, BarView, collate_examples
 from research.bar_gpt.v1.loader import (
     BarGPTIterableDataset,
     ClickHouseBarStreamConfig,
     build_session_examples,
-    held_out_tickers,
     make_dataloader,
 )
 from research.bar_gpt.v1.model import BarGPTV1
@@ -48,7 +49,10 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
+from research.mlops.model_artifacts import parameter_summary, write_model_card
 from research.mlops.paths import RunPaths, default_run_root
+from research.mlops.schedulers import SampleWarmupCosineScheduler
+from research.mlops.seeds import set_seed
 from research.mlops.wandb_utils import init_wandb
 
 
@@ -78,6 +82,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--alias-manifest-table", default=data.alias_manifest_table)
     parser.add_argument("--daily-table", default=data.daily_table)
     parser.add_argument("--daily-manifest-table", default=data.daily_manifest_table)
+    parser.add_argument("--condition-table", default=data.condition_table)
+    parser.add_argument("--condition-status-table", default=data.condition_status_table)
     parser.add_argument("--identity-database", default=data.identity_database)
     parser.add_argument("--identity-interval-table", default=data.identity_interval_table)
     parser.add_argument("--identity-entity-table", default=data.identity_entity_table)
@@ -89,7 +95,6 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--end-date", default=data.end_date)
     parser.add_argument("--validation-start-date", default=data.validation_start_date)
     parser.add_argument("--daily-history-start-date", default=data.daily_history_start_date)
-    parser.add_argument("--validation-ticker-fraction", type=float, default=data.validation_ticker_fraction)
     parser.add_argument("--horizons-us", default=",".join(str(value) for value in data.horizons_us))
     parser.add_argument("--context-bars-1s", type=int, default=data.context_bars_1s)
     parser.add_argument("--origin-bars-1s", type=int, default=data.origin_bars_1s)
@@ -117,14 +122,17 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--amp-dtype", choices=("bf16", "fp16", "float32"), default=train.amp_dtype)
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=train.compile_model)
     parser.add_argument("--logging-samples", type=int, default=train.logging_samples)
-    parser.add_argument("--validation-samples", type=int, default=train.validation_samples)
+    parser.add_argument("--validation-interval-samples", type=int, default=train.validation_interval_samples)
     parser.add_argument("--validation-batches", type=int, default=train.validation_batches)
+    parser.add_argument("--warmup-samples", type=int, default=train.warmup_samples)
+    parser.add_argument("--minimum-learning-rate", type=float, default=train.minimum_learning_rate)
     parser.add_argument("--checkpoint-latest-samples", type=int, default=train.checkpoint_latest_samples)
     parser.add_argument("--checkpoint-archive-samples", type=int, default=train.checkpoint_archive_samples)
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=train.progress_layout)
     parser.add_argument("--autoregressive-weight", type=float, default=train.autoregressive_weight)
     parser.add_argument("--horizon-weight", type=float, default=train.horizon_weight)
     parser.add_argument("--availability-weight", type=float, default=train.availability_weight)
+    parser.add_argument("--condition-positive-weight", type=float, default=train.condition_positive_weight)
     parser.add_argument("--latent-prediction-weight", type=float, default=train.latent_prediction_weight)
     parser.add_argument("--wandb-project", default=train.wandb_project)
     parser.add_argument("--wandb-entity", default=train.wandb_entity)
@@ -145,6 +153,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         alias_manifest_table=str(args.alias_manifest_table),
         daily_table=str(args.daily_table),
         daily_manifest_table=str(args.daily_manifest_table),
+        condition_table=str(args.condition_table),
+        condition_status_table=str(args.condition_status_table),
         identity_database=str(args.identity_database),
         identity_interval_table=str(args.identity_interval_table),
         identity_entity_table=str(args.identity_entity_table),
@@ -156,7 +166,6 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         end_date=str(args.end_date),
         validation_start_date=str(args.validation_start_date),
         daily_history_start_date=str(args.daily_history_start_date),
-        validation_ticker_fraction=float(args.validation_ticker_fraction),
         horizons_us=horizons,
         context_bars_1s=int(args.context_bars_1s),
         origin_bars_1s=int(args.origin_bars_1s),
@@ -196,14 +205,17 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         wandb_mode=str(args.wandb_mode),
         wandb_init_timeout=int(args.wandb_init_timeout),
         logging_samples=int(args.logging_samples),
-        validation_samples=int(args.validation_samples),
+        validation_interval_samples=int(args.validation_interval_samples),
         validation_batches=int(args.validation_batches),
+        warmup_samples=int(args.warmup_samples),
+        minimum_learning_rate=float(args.minimum_learning_rate),
         checkpoint_latest_samples=int(args.checkpoint_latest_samples),
         checkpoint_archive_samples=int(args.checkpoint_archive_samples),
         progress_layout=str(args.progress_layout),
         autoregressive_weight=float(args.autoregressive_weight),
         horizon_weight=float(args.horizon_weight),
         availability_weight=float(args.availability_weight),
+        condition_positive_weight=float(args.condition_positive_weight),
         latent_prediction_weight=float(args.latent_prediction_weight),
     )
     return ExperimentConfig(model=model, data=data, train=train)
@@ -216,9 +228,10 @@ def preflight(client: ClickHouseHttpClient, config: DataConfig) -> dict[str, str
     required = {
         config.one_second_table,
         config.manifest_table,
-        config.alias_manifest_table,
         config.daily_table,
         config.daily_manifest_table,
+        config.condition_table,
+        config.condition_status_table,
     }
     missing = sorted(required - tables)
     if missing:
@@ -278,7 +291,61 @@ FORMAT TSVRaw
         return cursor, intervals
 
     cursor, intervals = certified_raw_ranges(config.manifest_table)
-    alias_cursor, alias_intervals = certified_raw_ranges(config.alias_manifest_table)
+    alias_cursor = "identity_interval_audited"
+    alias_intervals: list[tuple[str, str]] = []
+    if config.alias_manifest_table in tables:
+        alias_sql = f"""
+SELECT message
+FROM {quote_ident(config.database)}.{quote_ident(config.alias_manifest_table)} FINAL
+WHERE artifact_name={sql_string(config.one_second_table)} AND status='certified_range'
+FORMAT TSVRaw
+"""
+        for line in client.query_tsv(alias_sql).splitlines():
+            match = re.search(r"certified (?:empty )?range \[(\d{4}-\d{2}-\d{2}),(\d{4}-\d{2}-\d{2})\)", line)
+            if match:
+                alias_intervals.append((match.group(1), match.group(2)))
+    alias_mapping_sql = f"""
+SELECT upper(e.current_ticker), upper(i.ticker_normalized), toString(i.valid_from_date),
+       toString(ifNull(i.valid_to_date_exclusive,toDate('9999-12-31')))
+FROM (SELECT provider_entity_key,current_ticker,is_deleted FROM {quote_ident(config.identity_database)}.{quote_ident(config.identity_entity_table)} FINAL) AS e
+INNER JOIN (SELECT provider_entity_key,ticker_normalized,valid_from_date,valid_to_date_exclusive,is_deleted,mapping_status
+            FROM {quote_ident(config.identity_database)}.{quote_ident(config.identity_interval_table)} FINAL) AS i USING provider_entity_key
+WHERE e.is_deleted=0 AND i.is_deleted=0 AND i.mapping_status='mapped'
+  AND upper(e.current_ticker) IN ({', '.join(sql_string(ticker) for ticker in config.tickers)})
+  AND upper(e.current_ticker) != upper(i.ticker_normalized)
+FORMAT TSVRaw
+"""
+    alias_checks = 0
+    for line in client.query_tsv(alias_mapping_sql).splitlines():
+        canonical, source, valid_from, valid_to = line.split("\t")[:4]
+        left, right = max(config.start_date, valid_from), min(config.end_date, valid_to)
+        if left >= right:
+            continue
+        missing_sql = f"""
+SELECT count()
+FROM
+(
+    SELECT DISTINCT session_date
+    FROM {quote_ident(config.database)}.{quote_ident(config.daily_table)} FINAL
+    WHERE source_ticker={sql_string(source)} AND session_kind='regular'
+      AND session_date>=toDate({sql_string(left)}) AND session_date<toDate({sql_string(right)})
+) AS d
+LEFT ANTI JOIN
+(
+    SELECT DISTINCT local_date
+    FROM {quote_ident(config.database)}.{quote_ident(config.one_second_table)}
+    WHERE ticker={sql_string(source)}
+      AND local_date>=toDate({sql_string(left)}) AND local_date<toDate({sql_string(right)})
+) AS b ON d.session_date=b.local_date
+FORMAT TSVRaw
+"""
+        missing_days = int(client.query_tsv(missing_sql).strip() or "0")
+        if missing_days:
+            raise RuntimeError(
+                f"raw identity alias {source}->{canonical} is missing one-second coverage for "
+                f"{missing_days} daily sessions in [{left},{right})"
+            )
+        alias_checks += 1
     daily_sql = f"""
 SELECT chunk_start, chunk_end
 FROM {quote_ident(config.database)}.{quote_ident(config.daily_manifest_table)} FINAL
@@ -304,14 +371,39 @@ FORMAT TSVRaw
             f"requested daily-session range [{config.daily_history_start_date},{config.end_date}) is not continuously certified; "
             f"certified coverage reaches only {daily_cursor}"
         )
+    certified_condition_tickers = (
+        BAR_GPT_TRAINING_TICKERS
+        if set(config.tickers) <= set(BAR_GPT_TRAINING_TICKERS)
+        else config.tickers
+    )
+    condition_artifact = config.condition_table + ":tickers=" + ",".join(sorted(certified_condition_tickers))
+    expected_condition_days = (dt.date.fromisoformat(config.end_date) - dt.date.fromisoformat(config.start_date)).days
+    condition_sql = f"""
+SELECT count()
+FROM {quote_ident(config.database)}.{quote_ident(config.condition_status_table)} FINAL
+WHERE artifact_name={sql_string(condition_artifact)}
+  AND status='complete'
+  AND local_date>=toDate({sql_string(config.start_date)})
+  AND local_date<toDate({sql_string(config.end_date)})
+FORMAT TSVRaw
+"""
+    condition_days = int(client.query_tsv(condition_sql).strip() or "0")
+    if condition_days != expected_condition_days:
+        raise RuntimeError(
+            f"exact condition-label sidecar is not certified for the requested range: "
+            f"{condition_days}/{expected_condition_days} calendar days; run "
+            "python -B -m research.bar_gpt.v1.run_build_conditions_1s"
+        )
     return {
         "certified_start": config.start_date,
         "certified_end": cursor,
         "certified_ranges": str(len(intervals)),
         "alias_certified_end": alias_cursor,
         "alias_certified_ranges": str(len(alias_intervals)),
+        "alias_identity_ranges_checked": str(alias_checks),
         "daily_certified_end": daily_cursor,
         "daily_certified_ranges": str(daily_ranges),
+        "condition_certified_days": str(condition_days),
     }
 
 
@@ -363,7 +455,14 @@ def _dummy_example(data: DataConfig) -> BarGPTExample:
     raw[:, FEATURE_INDEX["source_event_count"]] = 3
     starts = 1_700_000_000_000_000 + torch.arange(length, dtype=torch.long) * 1_000_000
     session = BarView(raw, starts, starts + 1_000_000, starts + 1_000_000)
-    return next(build_session_examples(ticker="DUMMY", local_date="2026-01-02", session=session, calendar_views={}, config=data))
+    return next(build_session_examples(
+        ticker="DUMMY",
+        local_date="2026-01-02",
+        session=session,
+        daily=None,
+        split_actions=(),
+        config=data,
+    ))
 
 
 def _loaders(config: ExperimentConfig, args: argparse.Namespace) -> tuple[DataLoader[Any], DataLoader[Any]]:
@@ -404,30 +503,32 @@ def _forward(model: torch.nn.Module, batch: BarGPTBatch, config: ExperimentConfi
 def validate(
     model: torch.nn.Module,
     loader: DataLoader[Any],
-    iterator: Iterator[BarGPTBatch],
     config: ExperimentConfig,
     device: torch.device,
-) -> tuple[float, Iterator[BarGPTBatch]]:
+) -> float:
     model.eval()
     losses: list[float] = []
+    iterator = iter(loader)
     for _ in range(max(1, config.train.validation_batches)):
         try:
             raw_batch = next(iterator)
         except StopIteration:
-            iterator = iter(loader)
-            raw_batch = next(iterator)
+            break
         batch = raw_batch.to(device)
         with torch.autocast(device_type=device.type, dtype=_amp_dtype(config.train.amp_dtype), enabled=config.train.amp and device.type == "cuda"):
             _, result = _forward(model, batch, config)
         losses.append(float(result.loss))
     model.train()
-    return float(sum(losses) / len(losses)), iterator
+    if not losses:
+        raise RuntimeError("fixed validation panel produced no batches")
+    return float(sum(losses) / len(losses))
 
 
 def checkpoint_payload(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
+    scheduler: SampleWarmupCosineScheduler,
     checkpointer: AsyncCheckpointManager,
     config: ExperimentConfig,
     *,
@@ -441,6 +542,7 @@ def checkpoint_payload(
         "model": _unwrap(model).state_dict(),
         "optimizer": optimizer.state_dict(),
         "scaler": scaler.state_dict(),
+        "scheduler": scheduler.state_dict(),
         "checkpointer": checkpointer.state_dict(),
         "config": to_dict(config),
         "samples_seen": samples_seen,
@@ -457,6 +559,7 @@ def restore_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
+    scheduler: SampleWarmupCosineScheduler,
     device: torch.device,
     config: ExperimentConfig,
 ) -> dict[str, Any]:
@@ -470,6 +573,7 @@ def restore_checkpoint(
     _unwrap(model).load_state_dict(payload["model"])
     optimizer.load_state_dict(payload["optimizer"])
     scaler.load_state_dict(payload.get("scaler", {}))
+    scheduler.load_state_dict(payload.get("scheduler"))
     rng = payload.get("rng", {})
     if rng:
         random.setstate(rng["python"]); np.random.set_state(rng["numpy"]); torch.set_rng_state(rng["torch"])
@@ -485,7 +589,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     load_env_files(discover_clickhouse_env_files(), verbose=True)
     args = parse_args(argv)
     config = build_config(args)
-    random.seed(config.train.seed); np.random.seed(config.train.seed); torch.manual_seed(config.train.seed)
+    set_seed(config.train.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cuda":
         torch.cuda.manual_seed_all(config.train.seed)
@@ -502,10 +606,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     if config.train.compile_model and hasattr(torch, "compile"):
         model = torch.compile(model, dynamic=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay, foreach=device.type == "cuda")
+    scheduler = SampleWarmupCosineScheduler(
+        optimizer,
+        warmup_samples=min(config.train.warmup_samples, max(0, config.train.max_samples - 1)),
+        total_samples=config.train.max_samples,
+        minimum_lr=config.train.minimum_learning_rate,
+    )
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and config.train.amp_dtype == "fp16" and device.type == "cuda")
-    restored = restore_checkpoint(args.resume_checkpoint, model, optimizer, scaler, device, config)
+    restored = restore_checkpoint(args.resume_checkpoint, model, optimizer, scaler, scheduler, device, config)
     train_loader, validation_loader = _loaders(config, args)
-    validation_iterator = iter(validation_loader)
     wandb_run = init_wandb(
         entity=config.train.wandb_entity,
         project=config.train.wandb_project,
@@ -516,7 +625,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         timeout_seconds=config.train.wandb_init_timeout,
     )
     metrics_logger = JsonlMetricLogger(paths.metrics_path, wandb_run)
-    holdout = held_out_tickers(config.data.tickers, config.data.validation_ticker_fraction, config.train.seed)
+    holdout = tuple(sorted({ticker for ticker, _start, _end in config.data.validation_slices}))
     write_run_manifest(
         paths.manifest_path,
         repo_root=REPO_ROOT,
@@ -565,14 +674,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         device=str(device),
         precision=config.train.amp_dtype if config.train.amp else "float32",
         output_dir=str(paths.run_root),
-        model_parameters=sum(parameter.numel() for parameter in _unwrap(model).parameters()),
+        model_parameters=int(parameter_summary(_unwrap(model))["total_parameters"]),
         max_samples=config.train.max_samples,
         samples_seen=samples_seen,
         batches_seen=batches_seen,
     )
     reporter = TrainingReporter(state, layout=config.train.progress_layout)
     next_log = samples_seen
-    next_validation = samples_seen + max(1, config.train.validation_samples)
+    next_validation = samples_seen + max(1, config.train.validation_interval_samples)
     last_metrics: dict[str, float] = {"train/loss": math.inf}
     last_val: dict[str, float] = {}
     current_epoch = resume_epoch
@@ -583,6 +692,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             reporter.message(f"Certified source: {evidence}; held-out tickers={len(holdout)}")
             for epoch in range(resume_epoch, max(1, config.train.epochs)):
                 current_epoch = epoch
+                if isinstance(train_loader.dataset, BarGPTIterableDataset):
+                    train_loader.dataset.epoch = epoch
                 iterator = iter(train_loader)
                 skip = resume_batches if epoch == resume_epoch else 0
                 if skip:
@@ -620,12 +731,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                     gpu_seconds = time.perf_counter() - gpu_started
                     origins = batch.origin_count
                     samples_seen += origins
+                    scheduler.step(samples_seen)
                     batches_seen += 1
                     batches_in_epoch += 1
-                    progress = min(1.0, samples_seen / max(1, config.train.max_samples)) if config.train.max_samples > 0 else 0.0
-                    learning_rate = config.train.learning_rate * 0.5 * (1.0 + math.cos(math.pi * progress))
-                    for group in optimizer.param_groups:
-                        group["lr"] = max(config.train.learning_rate * 0.01, learning_rate)
                     metrics = {key: float(value) for key, value in result.metrics.items()}
                     metrics.update(
                         {
@@ -643,17 +751,17 @@ def main(argv: Iterable[str] | None = None) -> int:
                         metrics_logger.log(metrics, samples_seen)
                         next_log = samples_seen + max(1, config.train.logging_samples)
                     if samples_seen >= next_validation:
-                        val_loss, validation_iterator = validate(model, validation_loader, validation_iterator, config, device)
+                        val_loss = validate(model, validation_loader, config, device)
                         last_val = {"val/loss": val_loss}
                         metrics_logger.log(last_val, samples_seen)
                         reporter.validation(val_loss)
-                        next_validation = samples_seen + max(1, config.train.validation_samples)
+                        next_validation = samples_seen + max(1, config.train.validation_interval_samples)
                     latest_due = samples_seen // max(1, config.train.checkpoint_latest_samples) > checkpointer.last_latest_bucket
                     payload_latest_samples = samples_seen if latest_due else last_latest_samples
                     checkpointer.maybe_save(
                         step=samples_seen,
                         payload_factory=lambda: checkpoint_payload(
-                            model, optimizer, scaler, checkpointer, config,
+                            model, optimizer, scaler, scheduler, checkpointer, config,
                             samples_seen=samples_seen, batches_seen=batches_seen,
                             epoch=current_epoch, batches_in_epoch=batches_in_epoch,
                             last_latest_samples=payload_latest_samples,
@@ -672,7 +780,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 checkpointer.maybe_save(
                     step=samples_seen,
                     payload_factory=lambda: checkpoint_payload(
-                        model, optimizer, scaler, checkpointer, config,
+                        model, optimizer, scaler, scheduler, checkpointer, config,
                         samples_seen=samples_seen, batches_seen=batches_seen,
                         epoch=current_epoch, batches_in_epoch=batches_in_epoch,
                         last_latest_samples=samples_seen,
@@ -688,9 +796,17 @@ def main(argv: Iterable[str] | None = None) -> int:
                 wandb_run.finish()
             except Exception:
                 pass
-    (paths.run_root / "model_card.json").write_text(
-        json.dumps({"model_family": MODEL_FAMILY, "version": MODEL_VERSION, "run_name": run_name, "samples_seen": samples_seen, "batches_seen": batches_seen, "validation_tickers": holdout}, indent=2),
-        encoding="utf-8",
+    write_model_card(
+        paths.run_root / "model_card.json",
+        {
+            "model_family": MODEL_FAMILY,
+            "version": MODEL_VERSION,
+            "run_name": run_name,
+            "samples_seen": samples_seen,
+            "batches_seen": batches_seen,
+            "validation_tickers": holdout,
+            "parameters": parameter_summary(_unwrap(model)),
+        },
     )
     return 130 if _INTERRUPTED else 0
 

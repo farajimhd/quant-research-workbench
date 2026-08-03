@@ -21,6 +21,19 @@ The table does not store redundant 5-second through 1-hour rows or forecast
 targets. The loader restores the 04:00-20:00 New York one-second clock with
 explicit availability masks and builds the larger intraday bars online.
 
+Exact halt/pause, resume, news-risk, and LULD-state events live in the sparse
+`intraday_condition_bars_by_time_ticker` sidecar. Build and certify its 1-second
+cohort coverage independently, without rebuilding the already complete base
+bars:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_build_conditions_1s
+```
+
+Add `--replace-existing` only when intentionally replacing a partially built
+condition partition. Zero-event dates are still certified in the status table,
+so an absent sparse row means a real negative label rather than missing data.
+
 The daily authority is
 `market_sip_compact.daily_session_bars_by_symbol_time_v1`. It is built directly
 from ordered SIP events and maintained by `download_update_events`. Each
@@ -122,10 +135,18 @@ generated artifact is written into the repository.
 
 ## Loader and temporal contract
 
-Training uses incremental ArrowStream record batches. A worker owns an ordered
-canonical-ticker shard and queries each point-in-time source-symbol interval.
-The comparatively small daily range is fetched once for the worker's ticker
-shard and partitioned in memory.
+Training uses incremental ArrowStream record batches. The durable work unit is
+one canonical ticker over one calendar month. Months remain chronological for
+partition locality; ticker order is deterministically shuffled inside each
+month and units are then divided among workers. A unit fetches its one-second
+range and prior-session halo once, produces every training block from that
+resident data, and releases it before advancing. Daily history is cached once
+per ticker per worker.
+
+The prior completed session contributes up to 2,048 one-second context rows to
+the first premarket origins. No overnight seconds are fabricated: timestamps
+and `available_at_us` retain the real wall-clock boundary, while targets remain
+inside the target session.
 
 For simultaneous 1s and 5s inputs, the global origin clock moves one second and
 the 5s encoder advances only after its bar closes:
@@ -158,7 +179,8 @@ following period proves it closed.
 - causal as-of fusion of coarse contextual states into fine origins;
 - dense next-bar supervision at every scale;
 - low-rank horizon-conditioned monotone quantiles;
-- separate trade, bid, ask, and paired-quote availability logits.
+- separate trade, bid, ask, paired-quote, halt/pause, resume, news-risk, and
+  LULD-state probability logits.
 
 `features.py` projects raw sufficient statistics into stationary channels:
 returns, opening gaps, excursions, log activity, VWAP deviation, size
@@ -182,12 +204,30 @@ The canonical workstation training command is:
 python -B -m research.bar_gpt.v1.run_train
 ```
 
-Training uses `[2020-01-01, 2026-01-01)` and validation uses 2026 onward. It
-refuses to start unless canonical one-second, alias one-second, and daily
-coverage are continuously certified and the q_live identity and split
-authorities exist. Defaults are a
+Training uses `[2020-01-01, 2026-01-01)`. One epoch is one deterministic pass
+over all eligible ticker-month units. One step is one optimizer update from a
+collated batch; with the default batch size of two and 512-origin blocks, it is
+normally 1,024 origin timestamps. The sample clock—not batch count—drives
+logging, validation, checkpoints, and learning rate.
+
+Validation is a fixed eight-ticker, eight-week panel spanning liquid,
+high-volatility, sector, event-driven, and illiquid names in 2026. Those
+identities are held out of training. Each slice contributes one fixed block,
+every validation run restarts the same panel, at most eight batches are
+evaluated, and validation runs every 2,097,152 training origins.
+
+Training refuses to start unless canonical one-second, daily, exact condition,
+and point-in-time alias coverage are certified and the q_live identity and
+split authorities exist. Defaults are a
 384-wide eight-layer decoder, BF16, six horizons from 5 seconds through 1 hour,
 and 50 million training origins.
+
+AdamW starts with a `3e-4` peak learning rate and `0.1` weight decay. A shared
+MLOps sample-clock scheduler linearly warms from `3e-5` to `3e-4` over the first
+1,048,576 origins, then performs one monotonic cosine decay to `3e-5` at 50
+million origins. Scheduler state is part of every resumable checkpoint.
+Rare condition positives receive a configurable 32x BCE positive weight; the
+four ordinary market-family availability labels remain unweighted.
 
 The objective combines dense next-bar Huber and availability losses, direct
 multi-horizon pinball loss, horizon availability BCE, and stop-gradient

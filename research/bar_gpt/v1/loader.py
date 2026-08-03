@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import math
+import multiprocessing as mp
 import random
 import re
 import uuid
@@ -41,6 +42,14 @@ from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES, SESSION_END
 from research.mlops.clickhouse import quote_ident, sql_string
 
 
+CONDITION_COLUMNS: tuple[str, ...] = (
+    "condition_halt_pause_flag",
+    "condition_resume_flag",
+    "condition_news_risk_flag",
+    "condition_luld_limit_state_flag",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ClickHouseBarStreamConfig:
     url: str
@@ -59,6 +68,29 @@ class TickerInterval:
     source_ticker: str
     valid_from: str
     valid_to_exclusive: str
+
+
+@dataclass(frozen=True, slots=True)
+class TickerDateUnit:
+    ticker: str
+    start_date: str
+    end_date: str
+
+
+def month_units(start_date: str, end_date: str, tickers: tuple[str, ...], *, seed: int) -> list[TickerDateUnit]:
+    """Return chronological months with a deterministic ticker shuffle inside each month."""
+    start = dt.date.fromisoformat(start_date)
+    end = dt.date.fromisoformat(end_date)
+    units: list[TickerDateUnit] = []
+    cursor = start
+    while cursor < end:
+        next_month = (cursor.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+        right = min(end, next_month)
+        selected = list(tickers)
+        random.Random(f"{seed}:{cursor:%Y-%m}").shuffle(selected)
+        units.extend(TickerDateUnit(ticker, cursor.isoformat(), right.isoformat()) for ticker in selected)
+        cursor = right
+    return units
 
 
 def provider_timeline_intervals(
@@ -134,6 +166,36 @@ SETTINGS
     max_threads = {max(1, int(config.max_threads))},
     max_block_size = {max(1, int(config.max_block_size))},
     max_memory_usage = {max(1, int(config.max_memory_usage))}
+FORMAT ArrowStream
+"""
+
+
+def condition_range_query(
+    config: ClickHouseBarStreamConfig,
+    *,
+    ticker: str,
+    start_date: str,
+    end_date: str,
+    condition_table: str,
+    source_intervals: tuple[TickerInterval, ...],
+) -> str:
+    predicates: list[str] = []
+    for interval in source_intervals:
+        left = max(start_date, interval.valid_from)
+        right = min(end_date, interval.valid_to_exclusive)
+        if left < right:
+            predicates.append(
+                f"(ticker={sql_string(interval.source_ticker)} AND local_date>=toDate({sql_string(left)}) "
+                f"AND local_date<toDate({sql_string(right)}))"
+            )
+    if not predicates:
+        raise ValueError(f"no condition source interval covers {ticker} in [{start_date},{end_date})")
+    return f"""
+SELECT local_date, bucket_index, {', '.join(CONDITION_COLUMNS)}
+FROM {quote_ident(config.database)}.{quote_ident(condition_table)}
+PREWHERE ({' OR '.join(predicates)}) AND label_resolution_us=1000000
+ORDER BY local_date, bucket_index
+SETTINGS max_threads={max(1, int(config.max_threads))}, max_block_size={max(1, int(config.max_block_size))}
 FORMAT ArrowStream
 """
 
@@ -411,6 +473,46 @@ class ArrowStreamClient:
                     current_frames.append(part)
         if current_frames:
             yield current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)
+
+    def read_condition_views(
+        self,
+        *,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+        condition_table: str,
+        source_intervals: tuple[TickerInterval, ...],
+        device: torch.device | str = "cpu",
+    ) -> dict[str, torch.Tensor]:
+        result: dict[str, torch.Tensor] = {}
+        query = condition_range_query(
+            self.config,
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            condition_table=condition_table,
+            source_intervals=source_intervals,
+        )
+        with self.record_batches(query) as batches:
+            for batch in batches:
+                frame = pl.from_arrow(batch)
+                for part in frame.partition_by("local_date", maintain_order=True):
+                    day = str(part["local_date"][0])
+                    dense = result.setdefault(
+                        day,
+                        torch.zeros((SESSION_END_SECOND - SESSION_START_SECOND, len(CONDITION_COLUMNS)), dtype=torch.float32, device=device),
+                    )
+                    indices = torch.as_tensor(
+                        np.array(part["bucket_index"].to_numpy(), copy=True), dtype=torch.long, device=device
+                    ) - SESSION_START_SECOND
+                    valid = (indices >= 0) & (indices < dense.shape[0])
+                    if torch.any(valid):
+                        values = torch.as_tensor(
+                            np.array(part.select(list(CONDITION_COLUMNS)).to_numpy(), dtype=np.float32, copy=True),
+                            device=device,
+                        )
+                        dense[indices[valid]] = torch.maximum(dense[indices[valid]], values[valid])
+        return result
 
     def read_daily_view(
         self,
@@ -771,6 +873,20 @@ def _dummy_raw() -> torch.Tensor:
     return torch.zeros((1, len(FEATURE_NAMES)), dtype=torch.float32)
 
 
+def concatenate_views(left: BarView | None, right: BarView, *, left_rows: int) -> tuple[BarView, int]:
+    if left is None or left.features.shape[0] == 0 or left_rows <= 0:
+        return right, 0
+    count = min(int(left_rows), int(left.features.shape[0]))
+    if int(left.available_at_us[-1]) >= int(right.bar_start_us[0]):
+        raise ValueError("prior-session halo must end before the target session starts")
+    return BarView(
+        features=torch.cat((left.features[-count:], right.features), dim=0),
+        bar_start_us=torch.cat((left.bar_start_us[-count:], right.bar_start_us), dim=0),
+        bar_end_us=torch.cat((left.bar_end_us[-count:], right.bar_end_us), dim=0),
+        available_at_us=torch.cat((left.available_at_us[-count:], right.available_at_us), dim=0),
+    ), count
+
+
 def build_session_examples(
     *,
     ticker: str,
@@ -779,24 +895,43 @@ def build_session_examples(
     daily: tuple[list[str], BarView] | None,
     split_actions: tuple[SplitAction, ...],
     config: DataConfig,
+    prior_session: BarView | None = None,
+    session_conditions: torch.Tensor | None = None,
+    prior_conditions: torch.Tensor | None = None,
 ) -> Iterator[BarGPTExample]:
     """Yield non-overlapping origins while sharing one exact session rollup and target support."""
     context = int(config.context_bars_1s)
     right = int(config.right_support_bars_1s)
     maximum_origin = session.features.shape[0] - right
-    if maximum_origin - context < int(config.min_origins_per_block):
+    combined, halo_count = concatenate_views(
+        prior_session if config.prior_session_halo else None,
+        session,
+        left_rows=context,
+    )
+    if session_conditions is None:
+        session_conditions = torch.zeros((session.features.shape[0], 4), dtype=torch.float32)
+    if session_conditions.shape != (session.features.shape[0], 4):
+        raise ValueError("session conditions must align to the dense one-second session")
+    if halo_count:
+        if prior_conditions is None:
+            prior_conditions = torch.zeros((prior_session.features.shape[0], 4), dtype=torch.float32)
+        combined_conditions = torch.cat((prior_conditions[-halo_count:], session_conditions), dim=0)
+    else:
+        combined_conditions = session_conditions
+    first_origin = max(0, context - halo_count)
+    if maximum_origin - first_origin < int(config.min_origins_per_block):
         return
     session_anchor = int(session.available_at_us[-1])
     normalized_session = BarView(
         features=normalize_features_to_anchor(
-            session.features,
-            session.bar_start_us,
+            combined.features,
+            combined.bar_start_us,
             anchor_us=session_anchor,
             actions=split_actions,
         ),
-        bar_start_us=session.bar_start_us,
-        bar_end_us=session.bar_end_us,
-        available_at_us=session.available_at_us,
+        bar_start_us=combined.bar_start_us,
+        bar_end_us=combined.bar_end_us,
+        available_at_us=combined.available_at_us,
     )
     calendar_views = _calendar_views(
         daily,
@@ -815,22 +950,25 @@ def build_session_examples(
     for timeframe_us in config.intraday_timeframes_us:
         if int(timeframe_us) > int(config.base_timeframe_us):
             full_views[scale_names[int(timeframe_us)]] = rollup_intraday_view(normalized_session, int(timeframe_us))
-    for origin_start in range(context, maximum_origin, int(config.origin_bars_1s)):
+    for origin_start in range(first_origin, maximum_origin, int(config.origin_bars_1s)):
         origin_count = min(int(config.origin_bars_1s), maximum_origin - origin_start)
         if origin_count < int(config.min_origins_per_block):
             continue
-        input_start = origin_start - context
-        input_end = origin_start + origin_count
+        combined_origin_start = halo_count + origin_start
+        input_start = combined_origin_start - context
+        input_end = combined_origin_start + origin_count
         support_end = input_end + right
-        support = session.features[input_start:support_end]
+        support = combined.features[input_start:support_end]
+        support_conditions = combined_conditions[input_start:support_end]
         support_share_factors = cumulative_share_factors(
-            session.bar_start_us[input_start:support_end], split_actions
-        ).to(session.features.dtype)
+            combined.bar_start_us[input_start:support_end], split_actions
+        ).to(combined.features.dtype)
         base_raw = normalized_session.features[input_start:input_end]
         origins = torch.arange(context, context + origin_count, dtype=torch.long)
-        anchors = session.available_at_us[input_start:input_end][origins]
+        anchors = combined.available_at_us[input_start:input_end][origins]
         last_anchor = int(anchors[-1])
         raw_views: dict[str, torch.Tensor] = {"1s": base_raw}
+        raw_view_start_us: dict[str, torch.Tensor] = {"1s": normalized_session.bar_start_us[input_start:input_end]}
         asof: dict[str, torch.Tensor] = {}
         for name in ("5s", "30s", "1m", "5m", "15m", "1h"):
             view = full_views[name]
@@ -839,9 +977,11 @@ def build_session_examples(
             prefix = _view_prefix(view, last_available_us=last_anchor, max_rows=rows)
             if prefix is None:
                 raw_views[name] = _dummy_raw()
+                raw_view_start_us[name] = torch.zeros(1, dtype=torch.long)
                 asof[name] = torch.full((origin_count,), -1, dtype=torch.long)
             else:
                 raw_views[name] = prefix.features
+                raw_view_start_us[name] = prefix.bar_start_us
                 asof[name] = causal_asof_indices(prefix.available_at_us, anchors)
         for name in ("1D", "1W", "1MO"):
             view = calendar_views.get(name)
@@ -849,9 +989,11 @@ def build_session_examples(
             prefix = _view_prefix(view, last_available_us=last_anchor, max_rows=max_rows) if view is not None else None
             if prefix is None:
                 raw_views[name] = _dummy_raw()
+                raw_view_start_us[name] = torch.zeros(1, dtype=torch.long)
                 asof[name] = torch.full((origin_count,), -1, dtype=torch.long)
             else:
                 raw_views[name] = prefix.features
+                raw_view_start_us[name] = prefix.bar_start_us
                 asof[name] = causal_asof_indices(prefix.available_at_us, anchors)
         activity = float(base_raw[origins, FEATURE_INDEX["source_event_count"]].float().mean())
         regime = 0 if activity < config.activity_regime_low else (2 if activity >= config.activity_regime_high else 1)
@@ -859,10 +1001,12 @@ def build_session_examples(
             ticker=ticker,
             local_date=local_date,
             raw_views=raw_views,
+            raw_view_start_us=raw_view_start_us,
             origin_indices=origins,
             asof_indices=asof,
             target_support=support,
             target_share_factors=support_share_factors,
+            target_condition_flags=support_conditions,
             support_origin_indices=origins,
             horizons_us=config.horizons_us,
             base_timeframe_us=config.base_timeframe_us,
@@ -960,12 +1104,29 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         self.stream_config = stream_config
         self.split = split
         self.seed = int(seed)
-        self.epoch = int(epoch)
+        self._epoch = mp.Value("q", int(epoch))
 
-    def _tickers(self) -> list[str]:
-        held_out = set(held_out_tickers(self.data_config.tickers, self.data_config.validation_ticker_fraction, self.seed))
-        selected = [ticker for ticker in self.data_config.tickers if (ticker in held_out) == (self.split == "validation")]
-        selected.sort(key=lambda ticker: hashlib.sha256(f"{self.seed + self.epoch}:{ticker}".encode()).digest())
+    @property
+    def epoch(self) -> int:
+        return int(self._epoch.value)
+
+    @epoch.setter
+    def epoch(self, value: int) -> None:
+        with self._epoch.get_lock():
+            self._epoch.value = int(value)
+
+    def _units(self) -> list[TickerDateUnit]:
+        validation_tickers = {ticker for ticker, _start, _end in self.data_config.validation_slices}
+        if self.split == "validation":
+            selected = [TickerDateUnit(*values) for values in self.data_config.validation_slices]
+        else:
+            tickers = tuple(ticker for ticker in self.data_config.tickers if ticker not in validation_tickers)
+            selected = month_units(
+                self.data_config.start_date,
+                self.data_config.validation_start_date,
+                tickers,
+                seed=self.seed + self.epoch,
+            )
         worker = get_worker_info()
         if worker is not None:
             selected = selected[worker.id :: worker.num_workers]
@@ -973,12 +1134,13 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
 
     def __iter__(self) -> Iterator[BarGPTExample]:
         client = ArrowStreamClient(self.stream_config)
-        start_date = self.data_config.validation_start_date if self.split == "validation" else self.data_config.start_date
-        end_date = self.data_config.end_date if self.split == "validation" else self.data_config.validation_start_date
+        units = self._units()
+        tickers = tuple(sorted({unit.ticker for unit in units}))
+        start_date = min((unit.start_date for unit in units), default=self.data_config.start_date)
+        end_date = max((unit.end_date for unit in units), default=self.data_config.end_date)
         lookback_days = max(730, int(self.data_config.daily_context_bars * 2.2))
         daily_start = (dt.date.fromisoformat(start_date) - dt.timedelta(days=lookback_days)).isoformat()
         def raw_examples() -> Iterator[BarGPTExample]:
-            tickers = tuple(self._tickers())
             intervals_by_ticker = client.read_identity_intervals(
                 tickers,
                 identity_database=self.data_config.identity_database,
@@ -994,32 +1156,69 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                 split_database=self.data_config.split_database,
                 split_table=self.data_config.split_table,
             )
-            daily_by_ticker = client.read_daily_views(
-                tickers=tickers,
-                start_date=daily_start,
-                end_date=end_date,
-                daily_table=self.data_config.daily_table,
-                intervals_by_ticker=intervals_by_ticker,
-            ) if tickers else {}
-            for ticker in tickers:
+            daily_by_ticker: dict[str, tuple[list[str], BarView] | None] = {}
+            for unit in units:
+                ticker = unit.ticker
                 split_actions = actions_by_ticker.get(ticker, ())
                 excluded_dates = split_execution_dates(split_actions)
+                if ticker not in daily_by_ticker:
+                    daily_by_ticker[ticker] = client.read_daily_view(
+                        ticker=ticker,
+                        start_date=daily_start,
+                        end_date=end_date,
+                        daily_table=self.data_config.daily_table,
+                        source_intervals=intervals_by_ticker[ticker],
+                    )
+                # A bounded query halo provides the prior completed session once per
+                # ticker-month unit; no context query is repeated for each origin.
+                fetch_start = (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=14)).isoformat()
+                prior_session: BarView | None = None
+                prior_conditions: torch.Tensor | None = None
+                conditions_by_date = client.read_condition_views(
+                    ticker=ticker,
+                    start_date=fetch_start,
+                    end_date=unit.end_date,
+                    condition_table=self.data_config.condition_table,
+                    source_intervals=intervals_by_ticker[ticker],
+                )
+                unit_examples = 0
+                unit_complete = False
                 for local_date, session in client.iter_session_views(
                     ticker=ticker,
-                    start_date=start_date,
-                    end_date=end_date,
+                    start_date=fetch_start,
+                    end_date=unit.end_date,
                     source_intervals=intervals_by_ticker[ticker],
                 ):
                     if local_date in excluded_dates:
                         continue
-                    yield from build_session_examples(
-                        ticker=ticker,
-                        local_date=local_date,
-                        session=session,
-                        daily=daily_by_ticker.get(ticker),
-                        split_actions=split_actions,
-                        config=self.data_config,
+                    session_conditions = conditions_by_date.get(
+                        local_date,
+                        torch.zeros((session.features.shape[0], 4), dtype=torch.float32),
                     )
+                    if unit.start_date <= local_date < unit.end_date:
+                        for example in build_session_examples(
+                            ticker=ticker,
+                            local_date=local_date,
+                            session=session,
+                            prior_session=prior_session,
+                            session_conditions=session_conditions,
+                            prior_conditions=prior_conditions,
+                            daily=daily_by_ticker.get(ticker),
+                            split_actions=split_actions,
+                            config=self.data_config,
+                        ):
+                            yield example
+                            unit_examples += 1
+                            if (
+                                self.split == "validation"
+                                and unit_examples >= self.data_config.validation_blocks_per_slice
+                            ):
+                                unit_complete = True
+                                break
+                    prior_session = session
+                    prior_conditions = session_conditions
+                    if unit_complete:
+                        break
         source = raw_examples()
         if self.data_config.balance_activity_regimes and self.split == "train":
             worker = get_worker_info()

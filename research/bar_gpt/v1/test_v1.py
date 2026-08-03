@@ -315,8 +315,13 @@ class TemporalContractTest(unittest.TestCase):
             raw,
             torch.tensor([0, 1, 3]),
             torch.tensor([1_000_000, 2_000_000]),
+            condition_flags=torch.tensor(
+                [[0, 0, 0, 0], [0, 0, 0, 0], [1, 0, 1, 0], [0, 0, 0, 0], [0, 1, 0, 1]],
+                dtype=torch.float32,
+            ),
         )
         self.assertEqual(targets.values.shape, (3, 2, len(TARGET_NAMES)))
+        self.assertEqual(targets.values[0, 2 - 1, -4:].tolist(), [1.0, 0.0, 1.0, 0.0])
         self.assertFalse(bool(targets.mask[2, 1].any()))
 
     def test_sparse_storage_densifies_without_fabricating_families(self) -> None:
@@ -368,7 +373,7 @@ class ModelContractTest(unittest.TestCase):
         second = model({"1s": changed, "5s": coarse}, **kwargs)
         self.assertEqual(first.embeddings.shape, (1, 4, 64))
         self.assertEqual(first.horizon_quantiles.shape, (1, 4, 3, 10, 3))
-        self.assertEqual(first.horizon_availability_logits.shape, (1, 4, 3, 4))
+        self.assertEqual(first.horizon_availability_logits.shape, (1, 4, 3, 8))
         self.assertTrue(torch.all(first.horizon_quantiles[..., 1:] >= first.horizon_quantiles[..., :-1]))
         torch.testing.assert_close(first.embeddings, second.embeddings)
 
