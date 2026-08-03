@@ -9,6 +9,55 @@ from research.text_intelligence.news_synthesis_v1.review_spec import (
 
 
 class ReviewSpecTest(unittest.TestCase):
+    def test_observed_market_moves_expand_to_neutral_atomic_statements(self) -> None:
+        article, spec = self._mover_fixture()
+        spec["observed_market_moves"] = [
+            {
+                "ticker": "ACME",
+                "evidence": "Acme (NASDAQ:ACME) shares rose 8% to $4.20.",
+            }
+        ]
+
+        document = compile_review_spec(article, spec)
+
+        self.assertEqual(document["statements"][0]["statement_kind"], "market_observation")
+        self.assertEqual(document["statements"][0]["concept_leaf"], "market.price_move_observed")
+        self.assertEqual(document["participations"][0]["semantic_sentiment"], "neutral")
+        self.assertEqual(document["participations"][0]["sentiment_strength"], 0)
+
+    def test_observed_market_moves_reject_extra_semantic_overrides(self) -> None:
+        article, spec = self._mover_fixture()
+        spec["observed_market_moves"] = [
+            {"ticker": "ACME", "evidence": "Acme rose.", "semantic_sentiment": "positive"}
+        ]
+        with self.assertRaisesRegex(RuntimeError, "only ticker and evidence"):
+            compile_review_spec(article, spec)
+
+    @staticmethod
+    def _mover_fixture() -> tuple[dict, dict]:
+        article = {
+            "sample_id": "N1", "source_id": "source",
+            "source_timestamp": "2026-01-01T12:00:00Z",
+            "source_text_sha256": "e" * 64,
+            "rendered_product": {"text": "Acme (NASDAQ:ACME) shares rose 8% to $4.20."},
+            "point_in_time_issuer_candidates": [{
+                "ticker": "ACME", "identity_evidence": ["issuer_alias:acme", "symbol:ACME"],
+            }],
+        }
+        spec = {
+            "sample_id": "N1", "review_notes": "Reviewed.",
+            "envelope": {
+                "document_structure": "multi_subject_digest",
+                "communication_purpose": "recap",
+                "information_origin": "editorial",
+                "production_method": "automated",
+                "text_availability": "rendered",
+            },
+            "entities": [{"ticker": "ACME"}],
+            "statements": [],
+        }
+        return article, spec
+
     def test_compact_scalar_envelope_decisions_compile(self) -> None:
         article = {
             "sample_id": "N1", "source_id": "source",

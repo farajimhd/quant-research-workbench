@@ -31,9 +31,11 @@ def compile_review_spec(article: Mapping[str, Any], spec: Mapping[str, Any]) -> 
         for row in entities
         if row.get("ticker")
     }
+    statement_sources = list(spec.get("statements", []))
+    statement_sources.extend(_compile_observed_market_move_sources(spec))
     statements: list[dict[str, Any]] = []
     participations: list[dict[str, Any]] = []
-    for index, source in enumerate(spec.get("statements", []), start=1):
+    for index, source in enumerate(statement_sources, start=1):
         statement_id = str(source.get("statement_id") or f"S{index:04d}")
         concept = str(source["concept_leaf"])
         if not registry.contains(concept):
@@ -110,6 +112,42 @@ def compile_review_spec(article: Mapping[str, Any], spec: Mapping[str, Any]) -> 
     if not validation.valid:
         raise RuntimeError(f"Invalid V1 review specification for {sample_id}: {validation.issues}")
     return document
+
+
+def _compile_observed_market_move_sources(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Expand manually selected mover rows into ordinary V1 statements.
+
+    This is review ergonomics, not semantic inference. The reviewer must supply
+    both the ticker and exact source evidence. The expansion is deliberately
+    fixed to a confirmed, current, neutral market observation so an already
+    observed gain or loss cannot leak into issuer semantic sentiment.
+    """
+    sources: list[dict[str, Any]] = []
+    for row in spec.get("observed_market_moves", []):
+        if not isinstance(row, Mapping) or set(row) != {"ticker", "evidence"}:
+            raise RuntimeError(
+                "Each observed_market_moves row must contain only ticker and evidence"
+            )
+        evidence = row["evidence"]
+        sources.append(
+            {
+                "statement_kind": "market_observation",
+                "concept_leaf": "market.price_move_observed",
+                "epistemic_status": "confirmed",
+                "time_relation": "current",
+                "evidence": evidence if isinstance(evidence, list) else [evidence],
+                "participations": [
+                    {
+                        "ticker": str(row["ticker"]),
+                        "semantic_role": "affected_subject",
+                        "discourse_role": "none",
+                        "semantic_sentiment": "neutral",
+                        "sentiment_strength": 0,
+                    }
+                ],
+            }
+        )
+    return sources
 
 
 def _compile_envelope_decision(
