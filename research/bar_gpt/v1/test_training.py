@@ -33,7 +33,7 @@ from research.bar_gpt.v1.objectives import compute_loss
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES
-from research.bar_gpt.v1.train import _advance_cursors, preflight
+from research.bar_gpt.v1.train import _advance_cursors, _checkpoint_policy, _resume_data_contract, preflight
 from research.bar_gpt.v1.profile_train import _parse_candidates
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
 from research.mlops.schedulers import SampleWarmupCosineScheduler
@@ -230,6 +230,30 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-4)
         scheduler.step(1_000)
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-5)
+
+    def test_checkpoint_policy_selects_on_validation_not_training_loss(self) -> None:
+        config = TrainConfig(checkpoint_latest_samples=123, checkpoint_archive_samples=456)
+        policy = _checkpoint_policy(config)
+        self.assertFalse(policy.save_best_train)
+        self.assertTrue(policy.save_best_val)
+        self.assertEqual(policy.latest_steps, 123)
+        self.assertEqual(policy.archive_steps, 456)
+
+    def test_resume_contract_allows_loader_tuning_but_not_sampling_changes(self) -> None:
+        base = {
+            "loader_workers": 2,
+            "ready_queue_blocks": 2,
+            "clickhouse_max_threads_per_worker": 2,
+            "pin_memory": True,
+            "persistent_workers": True,
+            "origin_fetch_candidate_blocks": 4,
+            "origin_emit_blocks_per_chunk": 2,
+            "context_bars_1s": 2048,
+        }
+        tuned = {**base, "loader_workers": 4, "ready_queue_blocks": 8}
+        self.assertEqual(_resume_data_contract(base), _resume_data_contract(tuned))
+        changed_sampling = {**base, "origin_fetch_candidate_blocks": 8}
+        self.assertNotEqual(_resume_data_contract(base), _resume_data_contract(changed_sampling))
 
     def test_exchange_clock_encoding_is_absolute_not_window_relative(self) -> None:
         raw = session_view(3).features

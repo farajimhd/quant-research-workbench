@@ -57,8 +57,8 @@ def coverage_plan_summary(
     origin_bars: int,
     epochs: int,
     seed: int,
-    fetch_candidate_blocks: int = 4,
-    emit_blocks_per_chunk: int = 2,
+    fetch_candidate_blocks: int = 16,
+    emit_blocks_per_chunk: int = 8,
 ) -> CoveragePlanSummary:
     start = dt.date.fromisoformat(start_date)
     end = dt.date.fromisoformat(end_date)

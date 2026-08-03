@@ -100,8 +100,8 @@ class DataConfig:
     daily_context_bars: int = 512
     batch_size: int = 2
     maximum_target_horizon_us: int = 3_600_000_000
-    loader_workers: int = 2
-    ready_queue_blocks: int = 2
+    loader_workers: int = 4
+    ready_queue_blocks: int = 8
     clickhouse_max_threads_per_worker: int = 2
     clickhouse_max_block_size: int = 65_536
     clickhouse_max_memory_usage: int = 8 * 1024**3
@@ -109,8 +109,8 @@ class DataConfig:
     clickhouse_max_bytes_before_external_sort: int = 1024**3
     min_origins_per_block: int = 64
     coverage_blocks_per_unit: int = 16
-    origin_fetch_candidate_blocks: int = 4
-    origin_emit_blocks_per_chunk: int = 2
+    origin_fetch_candidate_blocks: int = 16
+    origin_emit_blocks_per_chunk: int = 8
     pin_memory: bool = True
     persistent_workers: bool = True
     balance_activity_regimes: bool = True

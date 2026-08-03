@@ -61,6 +61,19 @@ from research.mlops.wandb_utils import init_wandb
 
 JOB_TYPE = "train"
 _INTERRUPTED = False
+_RESUME_RUNTIME_DATA_FIELDS = frozenset(
+    {
+        "loader_workers",
+        "ready_queue_blocks",
+        "clickhouse_max_threads_per_worker",
+        "clickhouse_max_block_size",
+        "clickhouse_max_memory_usage",
+        "clickhouse_query_days",
+        "clickhouse_max_bytes_before_external_sort",
+        "pin_memory",
+        "persistent_workers",
+    }
+)
 
 
 def _handle_interrupt(_signum: int, _frame: Any) -> None:
@@ -624,7 +637,9 @@ def restore_checkpoint(
     payload = torch.load(path, map_location=device, weights_only=False)
     saved_config = payload.get("config", {})
     current = to_dict(config)
-    if saved_config.get("model") != current.get("model") or saved_config.get("data") != current.get("data"):
+    saved_data = _resume_data_contract(saved_config.get("data", {}))
+    current_data = _resume_data_contract(current.get("data", {}))
+    if saved_config.get("model") != current.get("model") or saved_data != current_data:
         raise RuntimeError("resume checkpoint model/data contract does not match the requested run")
     if payload.get("plan_hash") != plan_hash:
         raise RuntimeError("resume checkpoint coverage plan does not match the requested run")
@@ -645,6 +660,10 @@ def restore_checkpoint(
     return payload
 
 
+def _resume_data_contract(data: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in data.items() if key not in _RESUME_RUNTIME_DATA_FIELDS}
+
+
 def _cursor_map(values: dict[str, Any] | None) -> dict[int, CoverageCursor]:
     return {
         int(worker): CoverageCursor(unit_index=int(cursor["unit_index"]), block_offset=int(cursor["block_offset"]))
@@ -660,6 +679,27 @@ def _advance_cursors(cursors: dict[int, CoverageCursor], batch: BarGPTBatch) -> 
         if current is None or (candidate.unit_index, candidate.block_offset) > (current.unit_index, current.block_offset):
             updated[int(worker)] = candidate
     return updated
+
+
+def _checkpoint_policy(config: TrainConfig) -> CheckpointPolicy:
+    return CheckpointPolicy(
+        latest_steps=max(1, config.checkpoint_latest_samples),
+        archive_steps=max(0, config.checkpoint_archive_samples),
+        # Training loss is non-stationary across ticker and session regimes and
+        # is not a valid selection criterion. Saving every new minimum also
+        # synchronously clones the full state out of the training thread.
+        save_best_train=False,
+        save_best_val=True,
+        monitor_train_key="train/loss",
+        monitor_val_key="val/loss",
+        threshold_intervals=True,
+        # The final forced save must queue behind an in-flight best/latest save;
+        # skipping it would lose the newest durable data cursor on shutdown.
+        skip_latest_if_busy=False,
+        clock_name="origin",
+        archive_prefix="checkpoint_origin",
+        archive_on_force=False,
+    )
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -765,19 +805,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     checkpointer = AsyncCheckpointManager(
         paths.checkpoints_dir,
         paths.checkpoint_manifest_path,
-        CheckpointPolicy(
-            latest_steps=max(1, config.train.checkpoint_latest_samples),
-            archive_steps=max(0, config.train.checkpoint_archive_samples),
-            monitor_train_key="train/loss",
-            monitor_val_key="val/loss",
-            threshold_intervals=True,
-            # The final forced save must queue behind an in-flight best/latest save;
-            # skipping it would lose the newest durable data cursor on shutdown.
-            skip_latest_if_busy=False,
-            clock_name="origin",
-            archive_prefix="checkpoint_origin",
-            archive_on_force=False,
-        ),
+        _checkpoint_policy(config.train),
     )
     checkpointer.load_state_dict(restored.get("checkpointer"))
     samples_seen = int(restored.get("samples_seen", 0))
