@@ -15,8 +15,14 @@ def main(argv: list[str] | None = None) -> int:
         "--acceptance-root", type=Path,
         default=runtime / "text_intelligence" / "semantic_calibration_v1" / "news_acceptance_100_v3",
     )
+    parser.add_argument(
+        "--review-manifest", type=Path, required=True,
+        help="Reviewer-authored JSON manifest outside the source repository.",
+    )
     args = parser.parse_args(argv)
-    result = record_fresh_acceptance_v3_reviews(args.acceptance_root)
+    result = record_fresh_acceptance_v3_reviews(
+        args.acceptance_root, args.review_manifest
+    )
     state = result["state"]
     print(
         f"COMPLETED | reviewed={state['reviewed_count']} "

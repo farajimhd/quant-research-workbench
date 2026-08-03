@@ -800,6 +800,54 @@ class DeterministicV9Tests(unittest.TestCase):
         self.assertFalse(label["reaction_evaluation_eligible"])
         self.assertTrue(label["issuer_history_context_eligible"])
 
+    def test_no_security_content_is_not_identity_failure(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="macro-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Continuing Jobless Claims Match Consensus",
+            text="Continuing jobless claims were 2.87 million versus 2.87 million expected.",
+            tickers=(),
+        )
+        result = classify_news_document_v9(document)
+        self.assertEqual(result.extraction_decision, "non_issuer_market_content")
+
+    def test_observed_price_move_does_not_define_event_direction(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="reaction-separation-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Reports Earnings Miss As Shares Rise",
+            text=(
+                "Example Corp. (NASDAQ:EXM) reported EPS of $0.20 versus $0.30 "
+                "expected. Shares rose 12% after hours."
+            ),
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),)
+        )
+        label = classify_news_document_v9(document, issuer_resolver=resolver).labels[0]
+        self.assertEqual(label["classification"]["semantic_direction"], "negative")
+
+    def test_related_link_does_not_contaminate_current_event(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="related-link-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Reports Customer Growth",
+            text=(
+                "Example Corp. (NASDAQ:EXM) reported customers grew 20%.\n"
+                "Related Link: Other Company Announces Dilutive Public Offering"
+            ),
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),)
+        )
+        label = classify_news_document_v9(document, issuer_resolver=resolver).labels[0]
+        self.assertNotIn("financing", label["classification"]["event_concepts"])
+
 
 if __name__ == "__main__":
     unittest.main()

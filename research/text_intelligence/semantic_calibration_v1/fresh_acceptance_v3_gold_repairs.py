@@ -13,8 +13,8 @@ from .storage import (
 )
 
 
-REPAIR_CONTRACT = "news_fresh_acceptance_v3_gold_repairs_v1"
-REPAIR_NOTE = "Third fresh-100 exhaustive post-prediction audit correction v1."
+REPAIR_CONTRACT = "news_fresh_acceptance_v3_gold_repairs_v2"
+REPAIR_NOTE = "Third fresh-100 exhaustive post-prediction audit correction v2."
 
 
 ARTICLE_REPAIRS: dict[str, dict[str, str]] = {
@@ -29,6 +29,38 @@ ARTICLE_REPAIRS: dict[str, dict[str, str]] = {
     # Suspension of an airline's flights is an issuer operating event, not a
     # regulatory document. No supported US issuer unit was present.
     "N1255": {"content_role": "primary_event"},
+    "N1263": {
+        "content_role": "why_moving_followup",
+        "source_origin": "editorial_aggregation",
+    },
+    "N1268": {
+        "content_role": "why_moving_followup",
+        "source_origin": "editorial_aggregation",
+    },
+    "N1300": {"content_role": "primary_event"},
+}
+
+UNIT_REPAIRS: dict[str, dict[str, dict[str, Any]]] = {
+    "N1268": {"WTRG": {"semantic_direction": "neutral", "positive_evidence_level": 0}},
+    "N1271": {"CPB": {"remove_concepts": ("guidance",)}},
+    "N1284": {"WFT": {"remove_concepts": ("guidance",)}},
+    "N1288": {"GCI": {"issuer_role": "acquirer"}},
+    "N1290": {
+        "CNQR": {"issuer_role": "acquirer"},
+        "PPL": {"semantic_direction": "neutral", "positive_evidence_level": 0},
+    },
+    "N1293": {"HOOD": {"remove_concepts": ("earnings",)}},
+}
+
+DISPOSITION_REPAIRS: dict[str, dict[str, str]] = {
+    "N1266": {"AAPL": "incidental_context"},
+    "N1282": {
+        "CQB": "incidental_context", "FDP": "incidental_context",
+        "IWM": "incidental_context", "PBJ": "incidental_context",
+        "SDD": "incidental_context", "SKK": "incidental_context",
+        "TZA": "incidental_context", "VB": "incidental_context",
+    },
+    "N1295": {"FXI": "incidental_context"},
 }
 
 
@@ -40,7 +72,7 @@ def repair_fresh_acceptance_v3_gold(
     emit = report or (lambda _message: None)
     annotations = root / "annotations_v3"
     changes: list[dict[str, Any]] = []
-    targets = sorted({*ARTICLE_REPAIRS, "N1258"})
+    targets = sorted({*ARTICLE_REPAIRS, *UNIT_REPAIRS, *DISPOSITION_REPAIRS, "N1258"})
     for index, sample_id in enumerate(targets, 1):
         emit(f"GOLD REPAIR {index}/{len(targets)} {sample_id}")
         path = annotations / f"{sample_id}.json"
@@ -52,6 +84,28 @@ def repair_fresh_acceptance_v3_gold(
         old_hash = str(record.pop("annotation_sha256", ""))
         for key, value in ARTICLE_REPAIRS.get(sample_id, {}).items():
             record[key] = value
+        for unit in record.get("issuer_units") or ():
+            unit_patch = UNIT_REPAIRS.get(sample_id, {}).get(str(unit.get("ticker") or "").upper())
+            if not unit_patch:
+                continue
+            remove_concepts = set(unit_patch.get("remove_concepts") or ())
+            if remove_concepts:
+                unit["event_concepts"] = [
+                    value for value in unit.get("event_concepts") or ()
+                    if value not in remove_concepts
+                ]
+            for key, value in unit_patch.items():
+                if key != "remove_concepts":
+                    unit[key] = value
+        for disposition in record.get("ticker_dispositions") or ():
+            ticker = str(disposition.get("ticker") or "").upper()
+            replacement = DISPOSITION_REPAIRS.get(sample_id, {}).get(ticker)
+            if replacement:
+                disposition.update({
+                    "disposition": replacement,
+                    "rationale": "Manual exhaustive review found explicit contextual instrument evidence.",
+                    "review_basis": "manual_exhaustive_source_audit",
+                })
         if sample_id == "N1246":
             for unit in record.get("issuer_units") or ():
                 unit.update({
@@ -103,6 +157,11 @@ def _rename_point_in_time_ticker(record: dict[str, Any], *, old: str, new: str) 
         if str(unit.get("ticker") or "").upper() == old:
             unit["ticker"] = new
             matched += 1
+    if matched == 0 and any(
+        str(unit.get("ticker") or "").upper() == new
+        for unit in record.get("issuer_units") or ()
+    ):
+        return
     if matched != 1:
         raise ValueError(f"expected one {old} issuer unit, found {matched}")
     record["candidate_tickers"] = sorted({

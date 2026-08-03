@@ -87,6 +87,7 @@ def classify_news_document_v9(
     are then composed only from each unit's scoped evidence and event role.
     """
     sanitized_text, _rejected_sources = sanitize_packed_news_text(document.text)
+    sanitized_text = _remove_nonsemantic_link_blocks(sanitized_text)
     if sanitized_text != document.text:
         document = replace(document, text=sanitized_text)
     raw_labels = classify_news_document(document, issuer_resolver=issuer_resolver)
@@ -477,6 +478,16 @@ def _normalize_provider_ticker(value: str) -> str:
     return raw
 
 
+_NONSEMANTIC_LINK_LINE_RE = re.compile(
+    r"(?im)^\s*(?:related\s+link|see\s+also|check\s+this\s+out|read\s+next)\s*:.*$"
+)
+
+
+def _remove_nonsemantic_link_blocks(text: str) -> str:
+    """Remove navigation teasers without discarding later article sections."""
+    return re.sub(r"\n{3,}", "\n\n", _NONSEMANTIC_LINK_LINE_RE.sub("", text)).strip()
+
+
 def _retain_unit_v9(label: dict[str, Any], *, provider_tickers: set[str]) -> bool:
     """Retain fact-checked issuer passages even when provider links omit them.
 
@@ -630,10 +641,15 @@ def _refine_event_concepts(
         output.add("commercial")
     if re.search(r"\b(?:public\s+offering|registered\s+direct|private\s+placement|at-the-market)\b", text, re.I):
         output.add("financing")
-    if re.search(r"\b(?:guidance|outlook|forecast)\b", text, re.I):
+    if re.search(r"\b(?:guidance|outlook|forecast)\b|\b(?:sees?|guides?)\b.{0,100}\bvs\.?\b", text, re.I | re.S):
         output.add("guidance")
     if re.search(r"\b(?:earnings|eps|revenue|sales|profit|loss|bookings|quarterly\s+results?)\b", text, re.I):
         output.add("earnings")
+    if re.search(r"\b(?:sees?|guides?|expects?|forecasts?|projects?)\b", text, re.I) and re.search(
+        r"\b(?:vs\.?|versus)\b.{0,30}\b(?:est\.?|estimate|consensus)\b", text, re.I | re.S
+    ) and not re.search(r"\b(?:reported|reports?|actual|came\s+in|quarterly\s+results?)\b", text, re.I):
+        output.discard("earnings")
+        output.add("guidance")
     if re.search(r"\b(?:fda|usda|regulator|regulatory|approval|clearance|clinical\s+hold)\b", text, re.I):
         output.add("regulatory")
     if re.search(r"\b(?:vaccine|drug|treatment|product|platform|software|service)\b.{0,100}"
@@ -643,13 +659,26 @@ def _refine_event_concepts(
         output.add("product_commercial")
     if re.search(r"\b(?:trial|clinical|endpoint|patient|study\s+data)\b", text, re.I):
         output.add("clinical")
-    if re.search(r"\b(?:acquir|acquisition|merger|takeover|buyout)\w*\b", text, re.I):
+    if re.search(
+        r"\b(?:agree[sd]?\s+to\s+acquire|acquisition\s+(?:agreement|offer|proposal)|"
+        r"merger\s+agreement|offer\s+to\s+acquire|to\s+be\s+acquired|takeover\s+(?:offer|bid))\b",
+        text,
+        re.I,
+    ):
         output.add("ma_transaction")
     if re.search(r"\b(?:settlement|lawsuit|litigation|legal\s+action|patent\s+infringement)\b", text, re.I):
         output.add("legal")
     if re.search(r"\b(?:stake|ownership|beneficial\s+owner|takes?\s+a\s+position)\b", text, re.I):
         output.add("ownership")
-    if re.search(r"\b(?:launch|commercializ|customer|demand|shipment|store|facility|flight|production|operations?)\w*\b", text, re.I):
+    if re.search(
+        r"\b(?:launch(?:es|ed|ing)?|commercializ\w*|demand\s+(?:rose|grew|fell|declined|weakened)|"
+        r"shipments?\s+(?:rose|grew|fell|declined)|opens?|closes?|suspends?|resumes?|restarts?)\b"
+        r".{0,80}\b(?:product|service|store|facility|flight|production|operations?)\b|"
+        r"\b(?:store|facility|flight|production|operations?)\b.{0,80}"
+        r"\b(?:open|close|suspend|resume|restart|expand|reduce)\w*\b",
+        text,
+        re.I | re.S,
+    ):
         output.add("operations")
     if re.search(r"\b(?:shares?|stock)\b.{0,70}\b(?:rose|gained|climbed|jumped|surged|fell|dropped|declined|slid|plunged|tumbled)\b|"
                  r"\b(?:rose|gained|climbed|jumped|surged|fell|dropped|declined|slid|plunged|tumbled)\b.{0,70}\b(?:shares?|stock)\b", text, re.I | re.S):
@@ -696,25 +725,40 @@ def _compose_direction_v9(
         forced, basis = "positive", "ma_target_consideration"
     # Explicit analyst state change is the semantic action; surrounding thesis
     # language cannot reverse it.
-    if re.search(r"\b(?:downgrade[sd]?|lowers?|cuts?)\b.{0,90}\b(?:rating|price\s+target|to\s+(?:hold|sell|neutral|equal[- ]weight|underperform|underweight))\b", text, re.I | re.S):
+    if re.search(r"\b(?:downgrade[sd]?|lowers?|cuts?)\b.{0,90}\b(?:rating|(?:price\s+)?target|to\s+(?:hold|sell|neutral|equal[- ]weight|underperform|underweight))\b", text, re.I | re.S):
         forced, basis = "negative", "explicit_analyst_negative_action"
-    elif re.search(r"\b(?:upgrade[sd]?|raises?)\b.{0,90}\b(?:rating|price\s+target|to\s+(?:buy|outperform|overweight))\b", text, re.I | re.S):
+    elif re.search(r"\b(?:upgrade[sd]?|raises?)\b.{0,90}\b(?:rating|(?:price\s+)?target|to\s+(?:buy|outperform|overweight))\b", text, re.I | re.S):
         forced, basis = "positive", "explicit_analyst_positive_action"
+    if re.search(r"\b(?:maintain(?:s|ed)?|reiterate[sd]?)\b.{0,80}\b(?:sell|underperform|underweight)\b", text, re.I | re.S):
+        forced, basis = "negative", "maintained_negative_analyst_rating"
+    elif re.search(r"\b(?:maintain(?:s|ed)?|reiterate[sd]?)\b.{0,80}\b(?:buy|outperform|overweight)\b", text, re.I | re.S):
+        forced, basis = "positive", "maintained_positive_analyst_rating"
     if _PRIMARY_ENDPOINT_FAILURE_RE.search(text):
         forced, basis = "negative", "primary_endpoint_failure_precedence"
+    result_text = " ".join(
+        clause for clause in re.split(r"(?<=[.!?])\s+|\n+", text)
+        if not re.search(
+            r"\b(?:shares?|stock)\b.{0,80}\b(?:rose|gained|climbed|jumped|surged|"
+            r"rallied|fell|dropped|declined|slid|plunged|tumbled)\b|"
+            r"\b(?:rose|gained|climbed|jumped|surged|rallied|fell|dropped|declined|"
+            r"slid|plunged|tumbled)\b.{0,80}\b(?:shares?|stock)\b",
+            clause,
+            re.I | re.S,
+        )
+    )
     current_result_positive = bool(re.search(
         r"\b(?:eps|earnings|revenue|sales|profit|bookings)\b.{0,100}"
         r"\b(?:up\s+from|increase[sd]?\s+(?:over|from)|rose|grew|beat(?:s|ing)?|above)\b|"
         r"\b(?:beat(?:s|ing)?|above|up\s+from|increase[sd]?\s+(?:over|from))\b.{0,100}"
         r"\b(?:eps|earnings|revenue|sales|profit|bookings)\b",
-        text, re.I | re.S,
+        result_text, re.I | re.S,
     ))
     current_result_negative = bool(re.search(
         r"\b(?:eps|earnings|revenue|sales|profit|bookings)\b.{0,100}"
         r"\b(?:down\s+from|decrease[sd]?\s+(?:from|versus)|fell|declined|miss(?:es|ed)?|below)\b|"
         r"\b(?:miss(?:es|ed)?|below|down\s+from|decrease[sd]?\s+(?:from|versus))\b.{0,100}"
         r"\b(?:eps|earnings|revenue|sales|profit|bookings)\b",
-        text, re.I | re.S,
+        result_text, re.I | re.S,
     ))
     if current_result_positive and current_result_negative:
         forced, basis = "mixed", "current_results_mixed"
@@ -780,12 +824,8 @@ def _compose_direction_v9(
         forced, basis = "positive", "listing_or_trading_restoration"
     if re.search(r"\b(?:noncompliance|delist(?:ed|ing)?|listing\s+suspension)\b", text, re.I):
         forced, basis = "negative", "adverse_listing_state"
-    if re.search(r"\b(?:shares?|stock)\b.{0,70}\b(?:rose|gained|climbed|jumped|surged|rallied)\b|"
-                 r"\b(?:rose|gained|climbed|jumped|surged|rallied)\b.{0,70}\b(?:shares?|stock)\b", text, re.I | re.S):
-        forced, basis = "positive", "reported_positive_market_move"
-    if re.search(r"\b(?:shares?|stock)\b.{0,70}\b(?:fell|dropped|declined|slid|plunged|tumbled)\b|"
-                 r"\b(?:fell|dropped|declined|slid|plunged|tumbled)\b.{0,70}\b(?:shares?|stock)\b", text, re.I | re.S):
-        forced, basis = "negative", "reported_negative_market_move"
+    # Observed price action is retained as reaction evidence by the scoped
+    # extractor, but it never defines the semantic direction of the catalyst.
     if re.search(r"\b(?:weak|declining|lower)\b.{0,70}\b(?:demand|sales|orders?|shipments?)\b|"
                  r"\b(?:shutdown|closure|suspend(?:s|ed)?\s+(?:flights?|operations?|production)|layoffs?)\b", text, re.I | re.S):
         forced, basis = "negative", "adverse_operating_state"
@@ -841,6 +881,12 @@ def _compose_direction_v9(
         forced, basis = "mixed", "selling_holder_overhang_with_buyback"
     elif subsidiary_ipo:
         forced, basis = "positive", "subsidiary_ipo_parent_value_realization"
+    if issuer_supply and re.search(
+        r"\b(?:completed|completion\s+of)\b.{0,100}\b(?:offering|at-the-market)\b",
+        text,
+        re.I | re.S,
+    ) and re.search(r"\b(?:gross|net)\s+proceeds\b", text, re.I):
+        forced, basis = "mixed", "completed_offering_dilution_and_cash"
     if issuer_role == "plaintiff" and re.search(r"\b(?:sue[sd]?|lawsuit|patent\s+infringement)\b", text, re.I):
         forced, basis = "neutral", "plaintiff_legal_role"
     if re.search(

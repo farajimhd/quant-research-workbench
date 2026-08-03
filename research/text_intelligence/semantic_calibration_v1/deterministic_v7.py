@@ -206,7 +206,9 @@ def _extraction_decision(
         return "non_issuer_market_content"
     if document.tickers:
         return "no_supported_event"
-    return "identity_not_found"
+    # No supplied or text-asserted security is ordinary non-issuer content,
+    # not an identity-resolution failure.
+    return "non_issuer_market_content"
 
 
 def _majority(values: Iterable[str]) -> str:
