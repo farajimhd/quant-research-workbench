@@ -10,7 +10,18 @@ from rich.console import Console
 
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, TrainConfig
 from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarView, collate_examples
-from research.bar_gpt.v1.loader import balanced_regime_stream, build_session_examples, held_out_tickers, month_units
+from research.bar_gpt.v1.loader import (
+    ClickHouseBarStreamConfig,
+    OriginWindow,
+    TickerInterval,
+    balanced_regime_stream,
+    build_session_examples,
+    frame_to_dense_window,
+    held_out_tickers,
+    month_units,
+    origin_window_schedule,
+    origin_windows_query,
+)
 from research.bar_gpt.v1.sampling import CoverageCursor, SESSION_PHASES, coverage_plan_summary, select_stratified_examples
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
 from research.bar_gpt.v1.integration import PackedBarEmbeddingAdapter
@@ -53,6 +64,79 @@ def session_view(length: int = 24) -> BarView:
 
 
 class LoaderTrainerContractTest(unittest.TestCase):
+    def test_origin_schedule_is_bounded_phase_spread_and_condition_first(self) -> None:
+        dates = ["2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07"]
+        flags = torch.zeros((16 * 3600, 4), dtype=torch.float32)
+        flags[5 * 3600, 0] = 1
+        windows = origin_window_schedule(
+            dates=dates,
+            start_date="2025-01-02",
+            end_date="2025-02-01",
+            count=16,
+            context_bars=2048,
+            origin_bars=512,
+            right_support_bars=3600,
+            conditions_by_date={"2025-01-03": flags},
+            seed=17,
+        )
+        self.assertEqual(len(windows), 16)
+        self.assertEqual(windows[0].local_date, "2025-01-03")
+        self.assertEqual(len({(item.local_date, item.origin_bucket) for item in windows}), 16)
+        self.assertTrue(all(4 * 3600 <= item.origin_bucket <= 18 * 3600 + 51 * 60 + 28 for item in windows))
+
+    def test_origin_query_reads_only_context_origin_and_target_support(self) -> None:
+        config = ClickHouseBarStreamConfig("http://localhost:8123", "", "")
+        sql = origin_windows_query(
+            config,
+            ticker="META",
+            windows=(OriginWindow("2025-01-03", 4 * 3600, "2025-01-02"),),
+            source_intervals=(TickerInterval("META", "META", "2020-01-01", "9999-12-31"),),
+            context_bars=2048,
+            origin_bars=512,
+            right_support_bars=3600,
+        )
+        self.assertIn("bucket_index>=14400 AND bucket_index<18512", sql)
+        self.assertIn("bucket_index>=69952 AND bucket_index<72000", sql)
+        self.assertNotIn("local_date>=", sql)
+
+    def test_bounded_window_builds_exactly_one_causal_example(self) -> None:
+        config = DataConfig(
+            tickers=("AAPL", "MSFT"),
+            validation_slices=(("MSFT", "2026-01-01", "2026-01-02"),),
+        )
+        prior = frame_to_dense_window(
+            None,
+            ticker="AAPL",
+            local_date="2025-01-02",
+            clock_start_second=72000 - config.context_bars_1s,
+            clock_end_second=72000,
+        )
+        session = frame_to_dense_window(
+            None,
+            ticker="AAPL",
+            local_date="2025-01-03",
+            clock_start_second=14400,
+            clock_end_second=14400 + config.origin_bars_1s + config.right_support_bars_1s,
+        )
+        examples = list(
+            build_session_examples(
+                ticker="AAPL",
+                local_date="2025-01-03",
+                session=session,
+                prior_session=prior,
+                session_conditions=torch.zeros((session.features.shape[0], 4)),
+                prior_conditions=torch.zeros((prior.features.shape[0], 4)),
+                daily=None,
+                split_actions=(),
+                config=config,
+            )
+        )
+        self.assertEqual(len(examples), 1)
+        self.assertEqual(examples[0].origin_indices.numel(), config.origin_bars_1s)
+        self.assertEqual(
+            examples[0].target_support.shape[0],
+            config.context_bars_1s + config.origin_bars_1s + config.right_support_bars_1s,
+        )
     def data_config(self) -> DataConfig:
         return DataConfig(
             tickers=("AAA", "BBB", "CCC"),

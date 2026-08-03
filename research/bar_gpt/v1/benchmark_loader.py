@@ -78,6 +78,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--context-bars-1s", type=int, default=defaults.context_bars_1s)
     parser.add_argument("--origin-bars-1s", type=int, default=defaults.origin_bars_1s)
     parser.add_argument("--coverage-blocks-per-unit", type=int, default=defaults.coverage_blocks_per_unit)
+    parser.add_argument("--origin-fetch-candidate-blocks", type=int, default=defaults.origin_fetch_candidate_blocks)
+    parser.add_argument("--origin-emit-blocks-per-chunk", type=int, default=defaults.origin_emit_blocks_per_chunk)
     parser.add_argument("--daily-context-bars", type=int, default=defaults.daily_context_bars)
     parser.add_argument("--batch-size", type=int, default=defaults.batch_size)
     parser.add_argument("--loader-workers", type=int, default=defaults.loader_workers)
@@ -238,6 +240,8 @@ def _make_data_config(args: argparse.Namespace) -> DataConfig:
         context_bars_1s=int(args.context_bars_1s),
         origin_bars_1s=int(args.origin_bars_1s),
         coverage_blocks_per_unit=int(args.coverage_blocks_per_unit),
+        origin_fetch_candidate_blocks=int(args.origin_fetch_candidate_blocks),
+        origin_emit_blocks_per_chunk=int(args.origin_emit_blocks_per_chunk),
         validation_blocks_per_slice=max(
             defaults.validation_blocks_per_slice,
             math.ceil((int(args.warmup_batches) + int(args.measured_batches)) * int(args.batch_size) / max(1, len(tickers))),

@@ -80,6 +80,13 @@ class TickerDateUnit:
     end_date: str
 
 
+@dataclass(frozen=True, slots=True)
+class OriginWindow:
+    local_date: str
+    origin_bucket: int
+    prior_date: str | None
+
+
 def month_units(start_date: str, end_date: str, tickers: tuple[str, ...], *, seed: int) -> list[TickerDateUnit]:
     """Return chronological months with a deterministic ticker shuffle inside each month."""
     start = dt.date.fromisoformat(start_date)
@@ -94,6 +101,77 @@ def month_units(start_date: str, end_date: str, tickers: tuple[str, ...], *, see
         units.extend(TickerDateUnit(ticker, cursor.isoformat(), right.isoformat()) for ticker in selected)
         cursor = right
     return units
+
+
+def origin_window_schedule(
+    *,
+    dates: list[str],
+    start_date: str,
+    end_date: str,
+    count: int,
+    context_bars: int,
+    origin_bars: int,
+    right_support_bars: int,
+    conditions_by_date: Mapping[str, torch.Tensor],
+    seed: int,
+) -> tuple[OriginWindow, ...]:
+    """Create deterministic, phase-spread bounded origin windows without scanning a ticker-month."""
+    ordered = sorted(dict.fromkeys(dates))
+    eligible = [day for day in ordered if start_date <= day < end_date]
+    if count <= 0 or not eligible:
+        return ()
+    previous = {day: ordered[index - 1] if index else None for index, day in enumerate(ordered)}
+    maximum_start = SESSION_END_SECOND - int(origin_bars) - int(right_support_bars)
+    if maximum_start < SESSION_START_SECOND:
+        raise ValueError("origin and target support do not fit inside the exchange session")
+
+    phase_ranges = (
+        (SESSION_START_SECOND, 9 * 3600 + 30 * 60 - 1),
+        (9 * 3600 + 30 * 60, 10 * 3600 + 30 * 60 - 1),
+        (10 * 3600 + 30 * 60, 15 * 3600 - 1),
+        (15 * 3600, 16 * 3600 - 1),
+        (16 * 3600, maximum_start),
+    )
+    selected: list[OriginWindow] = []
+    seen: set[tuple[str, int]] = set()
+
+    def add(day: str, bucket: int) -> None:
+        bucket = min(maximum_start, max(SESSION_START_SECOND, int(bucket)))
+        if SESSION_START_SECOND < bucket < SESSION_START_SECOND + int(context_bars):
+            bucket = SESSION_START_SECOND
+        key = (day, bucket)
+        if key not in seen and len(selected) < count:
+            seen.add(key)
+            selected.append(OriginWindow(day, bucket, previous.get(day)))
+
+    # Rare condition windows are deliberately scheduled before ordinary phase coverage.
+    for day in eligible:
+        flags = conditions_by_date.get(day)
+        if flags is None or not bool(torch.any(flags > 0)):
+            continue
+        indices = torch.nonzero(flags.gt(0).any(dim=-1), as_tuple=False).flatten()
+        for index in indices.tolist():
+            condition_bucket = SESSION_START_SECOND + int(index)
+            add(day, condition_bucket - int(origin_bars) - min(5, int(right_support_bars)))
+
+    attempt = 0
+    maximum_attempts = max(count * 8, len(eligible) * len(phase_ranges) * 2)
+    while len(selected) < count and attempt < maximum_attempts:
+        slot = attempt
+        day_index = min(len(eligible) - 1, ((2 * slot + 1) * len(eligible)) // max(2, 2 * count))
+        day = eligible[day_index]
+        phase_index = slot % len(phase_ranges)
+        left, right = phase_ranges[phase_index]
+        left = min(left, maximum_start)
+        right = min(right, maximum_start)
+        if right < left:
+            attempt += 1
+            continue
+        digest = hashlib.sha256(f"{seed}:{day}:{phase_index}:{attempt}".encode("utf-8")).digest()
+        width = right - left + 1
+        add(day, left + int.from_bytes(digest[:8], "big") % max(1, width))
+        attempt += 1
+    return tuple(selected)
 
 
 def provider_timeline_intervals(
@@ -170,6 +248,81 @@ SETTINGS
     max_block_size = {max(1, int(config.max_block_size))},
     max_memory_usage = {max(1, int(config.max_memory_usage))},
     max_bytes_before_external_sort = {max(1, int(config.max_bytes_before_external_sort))},
+    optimize_read_in_order = 1
+FORMAT ArrowStream
+"""
+
+
+def origin_windows_query(
+    config: ClickHouseBarStreamConfig,
+    *,
+    ticker: str,
+    windows: tuple[OriginWindow, ...],
+    source_intervals: tuple[TickerInterval, ...],
+    context_bars: int,
+    origin_bars: int,
+    right_support_bars: int,
+) -> str:
+    """Read only causal context, visible origins, and target-only support for bounded windows."""
+    if not windows:
+        raise ValueError("at least one origin window is required")
+
+    def source_for(day: str) -> str:
+        matches = {
+            interval.source_ticker
+            for interval in source_intervals
+            if interval.valid_from <= day < interval.valid_to_exclusive
+        }
+        if len(matches) != 1:
+            raise RuntimeError(f"point-in-time source identity for {ticker} on {day} is {sorted(matches)}")
+        return next(iter(matches))
+
+    ranges: set[tuple[str, str, int, int]] = set()
+    for window in windows:
+        elapsed = int(window.origin_bucket) - SESSION_START_SECOND
+        prior_rows = max(0, int(context_bars) - elapsed)
+        target_start = max(SESSION_START_SECOND, int(window.origin_bucket) - int(context_bars))
+        target_end = int(window.origin_bucket) + int(origin_bars) + int(right_support_bars)
+        if target_end > SESSION_END_SECOND:
+            raise ValueError(f"origin window exceeds the session: {window}")
+        ranges.add((source_for(window.local_date), window.local_date, target_start, target_end))
+        if prior_rows:
+            if window.prior_date is None:
+                continue
+            ranges.add(
+                (
+                    source_for(window.prior_date),
+                    window.prior_date,
+                    SESSION_END_SECOND - prior_rows,
+                    SESSION_END_SECOND,
+                )
+            )
+    predicates = [
+        f"(ticker={sql_string(source)} AND local_date=toDate({sql_string(day)}) "
+        f"AND bucket_index>={left} AND bucket_index<{right})"
+        for source, day, left, right in sorted(ranges)
+    ]
+    columns = ",\n    ".join(
+        (
+            "local_date",
+            f"{sql_string(ticker.upper())} AS ticker",
+            "bucket_index",
+            "bar_start_us",
+            "bar_end_us",
+            "available_at_us",
+            *FEATURE_NAMES,
+        )
+    )
+    return f"""
+SELECT
+    {columns}
+FROM {quote_ident(config.database)}.{quote_ident(config.table)}
+PREWHERE {' OR '.join(predicates)}
+ORDER BY ticker, local_date, bucket_index
+SETTINGS
+    max_threads = {max(1, int(config.max_threads))},
+    max_block_size = {max(1, int(config.max_block_size))},
+    max_memory_usage = {max(1, int(config.max_memory_usage))},
     optimize_read_in_order = 1
 FORMAT ArrowStream
 """
@@ -484,6 +637,68 @@ class ArrowStreamClient:
                 yield current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)
             cursor = right
 
+    def read_origin_windows(
+        self,
+        *,
+        ticker: str,
+        windows: tuple[OriginWindow, ...],
+        source_intervals: tuple[TickerInterval, ...],
+        context_bars: int,
+        origin_bars: int,
+        right_support_bars: int,
+        device: torch.device | str = "cpu",
+    ) -> list[tuple[BarView, BarView | None]]:
+        query = origin_windows_query(
+            self.config,
+            ticker=ticker,
+            windows=windows,
+            source_intervals=source_intervals,
+            context_bars=context_bars,
+            origin_bars=origin_bars,
+            right_support_bars=right_support_bars,
+        )
+        frames: list[pl.DataFrame] = []
+        with self.record_batches(query) as batches:
+            for batch in batches:
+                frame = pl.from_arrow(batch)
+                if not frame.is_empty():
+                    frames.append(frame)
+        combined = pl.concat(frames, how="vertical") if frames else None
+
+        def window_view(day: str, left: int, right: int) -> BarView:
+            selected = None
+            if combined is not None:
+                selected = combined.filter(
+                    (pl.col("local_date").cast(pl.String) == day)
+                    & (pl.col("bucket_index") >= left)
+                    & (pl.col("bucket_index") < right)
+                )
+            return frame_to_dense_window(
+                selected,
+                ticker=ticker,
+                local_date=day,
+                clock_start_second=left,
+                clock_end_second=right,
+                device=device,
+            )
+
+        result: list[tuple[BarView, BarView | None]] = []
+        for window in windows:
+            elapsed = int(window.origin_bucket) - SESSION_START_SECOND
+            prior_rows = max(0, int(context_bars) - elapsed)
+            target_start = max(SESSION_START_SECOND, int(window.origin_bucket) - int(context_bars))
+            target_end = int(window.origin_bucket) + int(origin_bars) + int(right_support_bars)
+            target = window_view(window.local_date, target_start, target_end)
+            prior = None
+            if prior_rows and window.prior_date is not None:
+                prior = window_view(
+                    window.prior_date,
+                    SESSION_END_SECOND - prior_rows,
+                    SESSION_END_SECOND,
+                )
+            result.append((target, prior))
+        return result
+
     def read_condition_views(
         self,
         *,
@@ -739,6 +954,48 @@ def frame_to_dense_view(frame: pl.DataFrame, *, device: torch.device | str = "cp
     midnight = dt.datetime.combine(local_date, dt.time(), tzinfo=ZoneInfo(SESSION_TIMEZONE))
     clock_start_us = int((midnight + dt.timedelta(seconds=SESSION_START_SECOND)).timestamp() * 1_000_000)
     clock_end_us = int((midnight + dt.timedelta(seconds=SESSION_END_SECOND)).timestamp() * 1_000_000)
+    return densify_one_second_view(sparse, clock_start_us=clock_start_us, clock_end_us=clock_end_us)
+
+
+def frame_to_dense_window(
+    frame: pl.DataFrame | None,
+    *,
+    ticker: str,
+    local_date: str,
+    clock_start_second: int,
+    clock_end_second: int,
+    device: torch.device | str = "cpu",
+) -> BarView:
+    """Densify one bounded exchange-session window, including windows with no source events."""
+    if not SESSION_START_SECOND <= clock_start_second < clock_end_second <= SESSION_END_SECOND:
+        raise ValueError("dense origin window must stay inside the configured exchange session")
+    day = dt.date.fromisoformat(local_date)
+    midnight = dt.datetime.combine(day, dt.time(), tzinfo=ZoneInfo(SESSION_TIMEZONE))
+    clock_start_us = int((midnight + dt.timedelta(seconds=int(clock_start_second))).timestamp() * 1_000_000)
+    clock_end_us = int((midnight + dt.timedelta(seconds=int(clock_end_second))).timestamp() * 1_000_000)
+    if frame is None or frame.is_empty():
+        starts = torch.arange(
+            clock_start_us,
+            clock_end_us,
+            1_000_000,
+            dtype=torch.long,
+            device=device,
+        )
+        return BarView(
+            features=torch.zeros((starts.numel(), len(FEATURE_NAMES)), dtype=torch.float32, device=device),
+            bar_start_us=starts,
+            bar_end_us=starts + 1_000_000,
+            available_at_us=starts + 1_000_000,
+        )
+    if frame["ticker"].n_unique() != 1 or str(frame["ticker"][0]).upper() != ticker.upper():
+        raise ValueError("origin-window frame has an unexpected ticker identity")
+    feature_array = np.array(frame.select(list(FEATURE_NAMES)).to_numpy(), dtype=np.float32, copy=True)
+    sparse = BarView(
+        features=torch.as_tensor(feature_array, device=device),
+        bar_start_us=torch.as_tensor(np.array(frame["bar_start_us"].to_numpy(), copy=True), dtype=torch.long, device=device),
+        bar_end_us=torch.as_tensor(np.array(frame["bar_end_us"].to_numpy(), copy=True), dtype=torch.long, device=device),
+        available_at_us=torch.as_tensor(np.array(frame["available_at_us"].to_numpy(), copy=True), dtype=torch.long, device=device),
+    )
     return densify_one_second_view(sparse, clock_start_us=clock_start_us, clock_end_us=clock_end_us)
 
 
@@ -1188,11 +1445,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                         daily_table=self.data_config.daily_table,
                         source_intervals=intervals_by_ticker[ticker],
                     )
-                # A bounded query halo provides the prior completed session once per
-                # ticker-month unit; no context query is repeated for each origin.
                 fetch_start = (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=14)).isoformat()
-                prior_session: BarView | None = None
-                prior_conditions: torch.Tensor | None = None
                 conditions_by_date = client.read_condition_views(
                     ticker=ticker,
                     start_date=fetch_start,
@@ -1200,57 +1453,103 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     condition_table=self.data_config.condition_table,
                     source_intervals=intervals_by_ticker[ticker],
                 )
-                def candidates() -> Iterator[BarGPTExample]:
-                    nonlocal prior_session, prior_conditions
-                    for local_date, session in client.iter_session_views(
-                        ticker=ticker,
-                        start_date=fetch_start,
-                        end_date=unit.end_date,
-                        source_intervals=intervals_by_ticker[ticker],
-                    ):
-                        if local_date in excluded_dates:
-                            continue
-                        session_conditions = conditions_by_date.get(
-                            local_date,
-                            torch.zeros((session.features.shape[0], 4), dtype=torch.float32),
-                        )
-                        if unit.start_date <= local_date < unit.end_date:
-                            yield from build_session_examples(
-                                ticker=ticker,
-                                local_date=local_date,
-                                session=session,
-                                prior_session=prior_session,
-                                session_conditions=session_conditions,
-                                prior_conditions=prior_conditions,
-                                daily=daily_by_ticker.get(ticker),
-                                split_actions=split_actions,
-                                config=self.data_config,
-                            )
-                        prior_session = session
-                        prior_conditions = session_conditions
-
                 limit = (
                     self.data_config.validation_blocks_per_slice
                     if self.split == "validation"
                     else self.data_config.coverage_blocks_per_unit
                 )
-                selected = select_stratified_examples(
-                    candidates(),
-                    limit=limit,
+                daily_value = daily_by_ticker.get(ticker)
+                daily_dates = daily_value[0] if daily_value is not None else []
+                fetch_blocks = int(self.data_config.origin_fetch_candidate_blocks)
+                emit_blocks = int(self.data_config.origin_emit_blocks_per_chunk)
+                candidate_count = math.ceil(limit / emit_blocks) * fetch_blocks
+                schedule = origin_window_schedule(
+                    dates=[day for day in daily_dates if day not in excluded_dates],
+                    start_date=unit.start_date,
+                    end_date=unit.end_date,
+                    count=candidate_count,
+                    context_bars=self.data_config.context_bars_1s,
+                    origin_bars=self.data_config.origin_bars_1s,
+                    right_support_bars=self.data_config.right_support_bars_1s,
+                    conditions_by_date=conditions_by_date,
                     seed=self.seed + self.epoch * 1_000_003 + unit_index,
-                    balance_activity_regimes=self.data_config.balance_activity_regimes,
                 )
-                for block_offset, example in enumerate(selected):
-                    if (
-                        resume is not None
-                        and unit_index == resume.unit_index
-                        and block_offset <= resume.block_offset
-                    ):
-                        continue
-                    example.worker_id = worker_id
-                    example.unit_index = unit_index
-                    example.block_offset = block_offset
-                    yield example
+                emitted = 0
+                for chunk_index in range(0, len(schedule), fetch_blocks):
+                    if emitted >= limit:
+                        break
+                    windows = schedule[chunk_index : chunk_index + fetch_blocks]
+                    fetched = client.read_origin_windows(
+                        ticker=ticker,
+                        windows=windows,
+                        source_intervals=intervals_by_ticker[ticker],
+                        context_bars=self.data_config.context_bars_1s,
+                        origin_bars=self.data_config.origin_bars_1s,
+                        right_support_bars=self.data_config.right_support_bars_1s,
+                    )
+                    candidates: list[BarGPTExample] = []
+                    for window, (session, prior_session) in zip(windows, fetched, strict=True):
+                        target_start = max(
+                            SESSION_START_SECOND,
+                            int(window.origin_bucket) - int(self.data_config.context_bars_1s),
+                        )
+                        target_end = (
+                            int(window.origin_bucket)
+                            + int(self.data_config.origin_bars_1s)
+                            + int(self.data_config.right_support_bars_1s)
+                        )
+                        dense_conditions = conditions_by_date.get(window.local_date)
+                        session_conditions = (
+                            dense_conditions[
+                                target_start - SESSION_START_SECOND : target_end - SESSION_START_SECOND
+                            ]
+                            if dense_conditions is not None
+                            else torch.zeros((target_end - target_start, 4), dtype=torch.float32)
+                        )
+                        prior_conditions = None
+                        if prior_session is not None and window.prior_date is not None:
+                            dense_prior = conditions_by_date.get(window.prior_date)
+                            prior_rows = int(prior_session.features.shape[0])
+                            prior_conditions = (
+                                dense_prior[-prior_rows:]
+                                if dense_prior is not None
+                                else torch.zeros((prior_rows, 4), dtype=torch.float32)
+                            )
+                        built = list(
+                            build_session_examples(
+                                ticker=ticker,
+                                local_date=window.local_date,
+                                session=session,
+                                prior_session=prior_session,
+                                session_conditions=session_conditions,
+                                prior_conditions=prior_conditions,
+                                daily=daily_value,
+                                split_actions=split_actions,
+                                config=self.data_config,
+                            )
+                        )
+                        if len(built) > 1:
+                            raise RuntimeError("one bounded origin window produced multiple training blocks")
+                        candidates.extend(built)
+                    selected = select_stratified_examples(
+                        candidates,
+                        limit=min(emit_blocks, limit - emitted),
+                        seed=self.seed + self.epoch * 1_000_003 + unit_index * 4099 + chunk_index,
+                        balance_activity_regimes=self.data_config.balance_activity_regimes,
+                    ) if candidates else []
+                    for example in selected:
+                        block_offset = emitted
+                        emitted += 1
+                        if (
+                            resume is not None
+                            and unit_index == resume.unit_index
+                            and block_offset <= resume.block_offset
+                        ):
+                            continue
+                        example.worker_id = worker_id
+                        example.unit_index = unit_index
+                        example.block_offset = block_offset
+                        yield example
         yield from raw_examples()
 
 

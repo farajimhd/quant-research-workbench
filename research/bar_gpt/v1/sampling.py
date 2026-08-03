@@ -36,6 +36,8 @@ class CoveragePlanSummary:
     months: int
     units: int
     blocks_per_unit: int
+    fetch_candidate_blocks: int
+    emit_blocks_per_chunk: int
     origin_bars: int
     epochs: int
     expected_blocks: int
@@ -55,6 +57,8 @@ def coverage_plan_summary(
     origin_bars: int,
     epochs: int,
     seed: int,
+    fetch_candidate_blocks: int = 4,
+    emit_blocks_per_chunk: int = 2,
 ) -> CoveragePlanSummary:
     start = dt.date.fromisoformat(start_date)
     end = dt.date.fromisoformat(end_date)
@@ -66,11 +70,13 @@ def coverage_plan_summary(
     units = months * len(training_tickers)
     expected_blocks = units * int(blocks_per_unit) * int(epochs)
     payload = {
-        "version": 1,
+        "version": 2,
         "start_date": start_date,
         "end_date": end_date,
         "training_tickers": training_tickers,
         "blocks_per_unit": int(blocks_per_unit),
+        "fetch_candidate_blocks": int(fetch_candidate_blocks),
+        "emit_blocks_per_chunk": int(emit_blocks_per_chunk),
         "origin_bars": int(origin_bars),
         "epochs": int(epochs),
         "seed": int(seed),
@@ -83,6 +89,8 @@ def coverage_plan_summary(
         months=months,
         units=units,
         blocks_per_unit=int(blocks_per_unit),
+        fetch_candidate_blocks=int(fetch_candidate_blocks),
+        emit_blocks_per_chunk=int(emit_blocks_per_chunk),
         origin_bars=int(origin_bars),
         epochs=int(epochs),
         expected_blocks=expected_blocks,

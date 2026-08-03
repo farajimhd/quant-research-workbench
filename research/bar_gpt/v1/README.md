@@ -143,13 +143,14 @@ generated artifact is written into the repository.
 Training uses incremental ArrowStream record batches. The durable work unit is
 one canonical ticker over one calendar month. Months remain chronological for
 partition locality; ticker order is deterministically shuffled inside each
-month and units are then divided among workers. A unit fetches its one-second
-range in ordered seven-day ClickHouse subranges and carries context continuously
-across those subranges. This bounds server-side sort memory without changing
-the ticker-month lifecycle or refetching model context. External sort spills at
-1 GiB instead of allowing a wide Arrow query to approach its 8 GiB hard limit.
-The unit produces every training block from resident session data and releases
-it before advancing. Daily history is cached once per ticker per worker.
+month and units are then divided among workers. The month is an ordering and
+resume boundary, not a materialization boundary. A query fetches four bounded
+candidate windows, where each window contains only the prior context, 512
+visible origins, and 3,600 seconds of target-only support. Two phase/activity/
+condition-stratified blocks are emitted immediately, while workers fetch the
+next window group and the CUDA stream transfers the next collated batch. This
+avoids scanning unused ticker-month seconds. Daily history is cached once per
+ticker per worker.
 
 The prior completed session contributes up to 2,048 one-second context rows to
 the first premarket origins. No overnight seconds are fabricated: timestamps
@@ -222,10 +223,10 @@ python -B -m research.bar_gpt.v1.run_train
 
 Training uses `[2020-01-01, 2026-01-01)`. One coverage epoch is one
 deterministic pass over 72 month partitions and the 90 non-validation tickers.
-Each ticker-month is fetched once and deterministically reduced to at most 16
-blocks while retaining session-phase, activity-regime, and rare-condition
-coverage. Selected blocks are copied out of their full-session Arrow buffers
-before the unit is released. The default ceiling is 6,480 units, 103,680
+Each ticker-month contributes at most 16 blocks through bounded groups of four
+candidate windows and two immediate emissions, retaining session-phase,
+activity-regime, and rare-condition coverage without reading the full month.
+The default ceiling is 6,480 units, 103,680
 blocks, and 53,084,160 origin timestamps; unavailable ticker-months can produce
 fewer blocks and are never fabricated.
 
@@ -240,7 +241,8 @@ The durable resume cursor is `(worker, global ticker-month index, selected block
 offset)`. It advances only after a successful optimizer update. Ctrl+C discards
 an incomplete accumulation group and replays it; resume jumps over completed
 units rather than reading and discarding them. A coverage-plan hash binds the
-population, dates, ordering seed, block quota, origin count, and epochs.
+population, dates, ordering seed, block quota, origin count, fetch/emit chunk
+shape, and epochs.
 
 Validation is a fixed eight-ticker, eight-week panel spanning liquid,
 high-volatility, sector, event-driven, and illiquid names in 2026. Those

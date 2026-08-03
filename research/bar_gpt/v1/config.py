@@ -109,6 +109,8 @@ class DataConfig:
     clickhouse_max_bytes_before_external_sort: int = 1024**3
     min_origins_per_block: int = 64
     coverage_blocks_per_unit: int = 16
+    origin_fetch_candidate_blocks: int = 4
+    origin_emit_blocks_per_chunk: int = 2
     pin_memory: bool = True
     persistent_workers: bool = True
     balance_activity_regimes: bool = True
@@ -135,6 +137,10 @@ class DataConfig:
             raise ValueError("context and origin bars must be positive")
         if self.coverage_blocks_per_unit <= 0:
             raise ValueError("coverage_blocks_per_unit must be positive")
+        if self.origin_fetch_candidate_blocks <= 0 or self.origin_emit_blocks_per_chunk <= 0:
+            raise ValueError("origin fetch and emit chunk sizes must be positive")
+        if self.origin_emit_blocks_per_chunk > self.origin_fetch_candidate_blocks:
+            raise ValueError("origin emit blocks cannot exceed fetched candidate blocks")
         if self.maximum_target_horizon_us < max(self.horizons_us):
             raise ValueError("maximum_target_horizon_us must cover every configured horizon")
         if tuple(sorted(set(self.horizons_us))) != self.horizons_us:

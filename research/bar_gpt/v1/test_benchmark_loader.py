@@ -16,7 +16,10 @@ class LoaderBenchmarkContractTest(unittest.TestCase):
     def test_launcher_defaults_are_bounded_and_production_shaped(self) -> None:
         self.assertEqual(DEFAULT_ARGS["--start-date"], "2025-10-01")
         self.assertEqual(DEFAULT_ARGS["--end-date"], "2026-01-01")
-        self.assertEqual(DEFAULT_ARGS["--loader-workers"], "4")
+        self.assertEqual(DEFAULT_ARGS["--loader-workers"], "2")
+        self.assertEqual(DEFAULT_ARGS["--ready-queue-blocks"], "2")
+        self.assertEqual(DEFAULT_ARGS["--origin-fetch-candidate-blocks"], "4")
+        self.assertEqual(DEFAULT_ARGS["--origin-emit-blocks-per-chunk"], "2")
         self.assertEqual(DEFAULT_ARGS["--batch-size"], "2")
         self.assertGreater(int(DEFAULT_ARGS["--measured-batches"]), int(DEFAULT_ARGS["--warmup-batches"]))
 

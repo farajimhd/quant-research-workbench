@@ -103,6 +103,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--origin-bars-1s", type=int, default=data.origin_bars_1s)
     parser.add_argument("--min-origins-per-block", type=int, default=data.min_origins_per_block)
     parser.add_argument("--coverage-blocks-per-unit", type=int, default=data.coverage_blocks_per_unit)
+    parser.add_argument("--origin-fetch-candidate-blocks", type=int, default=data.origin_fetch_candidate_blocks)
+    parser.add_argument("--origin-emit-blocks-per-chunk", type=int, default=data.origin_emit_blocks_per_chunk)
     parser.add_argument("--validation-blocks-per-slice", type=int, default=data.validation_blocks_per_slice)
     parser.add_argument("--daily-context-bars", type=int, default=data.daily_context_bars)
     parser.add_argument("--batch-size", type=int, default=data.batch_size)
@@ -185,6 +187,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         origin_bars_1s=int(args.origin_bars_1s),
         min_origins_per_block=int(args.min_origins_per_block),
         coverage_blocks_per_unit=int(args.coverage_blocks_per_unit),
+        origin_fetch_candidate_blocks=int(args.origin_fetch_candidate_blocks),
+        origin_emit_blocks_per_chunk=int(args.origin_emit_blocks_per_chunk),
         validation_blocks_per_slice=int(args.validation_blocks_per_slice),
         daily_context_bars=int(args.daily_context_bars),
         batch_size=int(args.batch_size),
@@ -688,6 +692,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         origin_bars=config.data.origin_bars_1s,
         epochs=config.train.epochs,
         seed=config.train.seed,
+        fetch_candidate_blocks=config.data.origin_fetch_candidate_blocks,
+        emit_blocks_per_chunk=config.data.origin_emit_blocks_per_chunk,
     )
     planned_samples = plan.expected_origins
     if args.dummy_data and config.train.max_samples == 0:
