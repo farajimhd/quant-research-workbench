@@ -738,6 +738,15 @@ def _subject_matches(
     *,
     linked_tickers: tuple[str, ...],
 ) -> tuple[IssuerMatch, ...]:
+    # Some provider feeds mechanically turn financial acronyms into exchange
+    # pairs, e.g. ``economic net income (NYSE: ENI)``.  An explicit exchange
+    # token is normally strong evidence, but not when it is exactly the
+    # initialism of an adjacent lowercase noun phrase and has no issuer-alias
+    # support in that passage.
+    matches = tuple(
+        match for match in matches
+        if not _is_expanded_financial_acronym(text, match)
+    )
     article_pairs = tuple(
         (
             normalize_issuer_alias(match.group("name")),
@@ -781,6 +790,24 @@ def _subject_matches(
             or _issuer_is_event_subject(text, match)
         )
     )
+
+
+def _is_expanded_financial_acronym(text: str, match: IssuerMatch) -> bool:
+    symbol_only = bool(match.evidence) and all(
+        value.startswith("symbol:") for value in match.evidence
+    )
+    ticker = match.ticker.upper()
+    if not symbol_only or len(ticker) < 2:
+        return False
+    pair = re.search(
+        rf"(?P<phrase>(?:\b[a-z][a-z-]*\s+){{{len(ticker) - 1}}}"
+        rf"\b[a-z][a-z-]*)\s*\([^)]*:\s*{re.escape(ticker)}\)",
+        text,
+    )
+    if pair is None:
+        return False
+    words = re.findall(r"[a-z]+", pair.group("phrase"))
+    return "".join(word[0] for word in words).upper() == ticker
 
 
 _NASDAQ_VENUE_HALT_ACTOR_RE = re.compile(
@@ -919,8 +946,37 @@ def _issuer_role(
         }
         position = positions.get(ticker, -1)
         if position >= 0:
-            return "acquirer" if position < acquisition.start() else "target"
+            return _acquisition_role_for_position(
+                relational.text,
+                position=position,
+                acquisition=acquisition,
+            )
     return "affected_participant"
+
+
+def _acquisition_role_for_position(
+    text: str,
+    *,
+    position: int,
+    acquisition: re.Match[str],
+) -> str:
+    """Resolve buyer/target from grammatical voice, not mention order alone."""
+    after = text[acquisition.end():]
+    by_match = re.match(r"\s+by\b", after, re.I)
+    passive = bool(
+        by_match
+        or re.search(
+            r"\b(?:to\s+be|being|was|were|is|are)\s+acquired\s+by\b",
+            text[max(0, acquisition.start() - 30):acquisition.end() + 20],
+            re.I,
+        )
+    )
+    if passive:
+        by_position = text.casefold().find(" by ", acquisition.end() - 1)
+        if by_position >= 0:
+            return "target" if position < acquisition.start() else "acquirer"
+    # ``Y acquisition of X`` and ordinary ``Y acquired X`` are active voice.
+    return "acquirer" if position < acquisition.start() else "target"
 
 
 def _relational_lead_subject(fragment: _Fragment) -> str:

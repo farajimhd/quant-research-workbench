@@ -928,3 +928,49 @@ Every source-text section starts with the exact publication title and teaser,
 then lists every preserved source lane in ordinal order. Some legacy headline
 wires retain no separate source-body lane; those audits state that limitation
 explicitly and do not invent missing body text.
+
+## Second session-balanced fresh acceptance set
+
+The second acceptance authority is an immutable, disjoint 100-article sample
+spanning 2010 through 2026 with 25 premarket, 40 regular-session, 25
+after-hours and 10 overnight publications. All labels were written blind to V9
+and then every generated audit was reviewed twice: once to identify gold and
+generic rule defects, and once after the repairs to bind each review to the
+final gold, prediction and Markdown hashes.
+
+Final deterministic authority versions are
+`news_deterministic_v9_candidate_17` and
+`news_deterministic_v9_calibration_15`. Candidate 17 fixes a contract
+contradiction in which a current primary or regulatory article could establish
+a valid event but remain ineligible solely because the lower-level passage
+extractor had conservatively named its unit `ticker_scoped_editorial_context`.
+The lower-level role remains auditable; it ceases to be a blocker only when the
+article authority, event time, concept, direction and point-in-time tradability
+checks independently pass.
+
+| Metric | Candidate 17 |
+|---|---:|
+| Extraction F1 | 0.979167 |
+| Ticker-scope F1 | 0.904943 |
+| Content-role macro F1 | 0.946476 |
+| Source-origin macro F1 | 0.760880 |
+| Text-sentiment macro F1 | 0.491815 |
+| Forecast-direction macro F1 | 0.805433 |
+| Concept-family F1 | 0.616179 |
+| Forecast eligibility F1 | 0.838710 |
+| Forecast eligibility end-to-end F1 | 0.838710 |
+| Reaction eligibility end-to-end F1 | 0.838710 |
+| Issuer-history eligibility F1 | 0.950100 |
+| Issuer-history end-to-end F1 | 0.904943 |
+
+The post-fix review deliberately retains residual differences rather than
+encoding source IDs, exact titles or ticker-specific exceptions. The largest
+remaining generic limitations are issuer passage segmentation in long market
+roundups, complete concept recall, clause-level mixed/neutral direction, and
+source provenance that cannot be inferred reliably from prose alone. The
+runtime audit index and all 100 Markdown files were regenerated from candidate
+17. The earlier N101-N1100 acceptance audits were also regenerated so cases
+such as N1068 no longer display stale V9 predictions: its exact retained bot
+challenge remains provenance, its semantic input rejects that transport lane,
+and both gold and V9 classify the Zacks Analyst Blog as syndicated editorial
+analysis.

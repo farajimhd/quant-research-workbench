@@ -8,7 +8,7 @@ from typing import Iterable, Mapping, Sequence
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
 
 
-ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v5"
+ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v6"
 ISSUER_IDENTITY_AUTHORITY_VERSION = "news_issuer_identity_authority_v5"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?:NASDAQ|NYSE|NYSEAMERICAN|NYSE\s+AMERICAN|AMEX|OTC(?:QX|QB)?|"
@@ -40,7 +40,9 @@ ARTICLE_ALIAS_GROUP_RE = re.compile(
 ANNOUNCED_TICKER_RE = re.compile(
     r"(?:\b(?:under\s+(?:the\s+)?ticker(?:\s+symbol)?|"
     r"(?:ticker(?:\s+symbol)?|symbol)\s+(?:(?:will|to)\s+be|under)))\s*[\"']?"
-    r"(?P<ticker>[A-Z][A-Z0-9.-]{0,9})[\"']?\b",
+    r"(?P<ticker>[A-Z][A-Z0-9.-]{0,9})[\"']?\b|"
+    r"\b(?:shares?|units?)\s+(?:will\s+|to\s+)?trade\s+on\s+"
+    r"(?:NASDAQ|NYSE|AMEX)\s+under\s+[\"']?(?P<trade_ticker>[A-Z][A-Z0-9.-]{0,9})[\"']?\b",
     re.IGNORECASE,
 )
 WORD_RE = re.compile(r"[A-Za-z0-9]+")
@@ -142,6 +144,16 @@ class NewsIssuerResolver:
                     (identity, raw_alias)
                 )
                 max_alias_tokens = max(max_alias_tokens, len(alias.split()))
+                leading = alias.split()[0] if alias else ""
+                if (
+                    len(alias.split()) >= 2
+                    and len(leading) >= 6
+                    and leading not in UNSAFE_SINGLE_TOKEN_ALIASES
+                ):
+                    alias_entries.setdefault(leading, []).append(identity)
+                    raw_alias_entries.setdefault(leading, []).append(
+                        (identity, raw_alias)
+                    )
             for raw_alias in identity.article_local_aliases:
                 alias = normalize_issuer_alias(raw_alias)
                 if not is_safe_article_local_alias(alias):
@@ -269,20 +281,25 @@ class NewsIssuerResolver:
             for match in EXCHANGE_TICKER_RE.finditer(text)
         }
         explicit.update(match.group(1).upper() for match in CASHTAG_RE.finditer(text))
-        explicit.update(
-            match.group("ticker").upper()
+        announced = {
+            (match.group("ticker") or match.group("trade_ticker")).upper()
             for match in ANNOUNCED_TICKER_RE.finditer(text)
-        )
+        }
+        explicit.update(announced)
         for ticker in linked_tickers:
             normalized = ticker.upper().strip()
-            if normalized and re.search(
+            if len(normalized) >= 2 and re.search(
                 rf"(?<![A-Z0-9]){re.escape(normalized)}(?![A-Z0-9])",
                 text,
             ):
                 explicit.add(normalized)
         for ticker in explicit:
             entries = self._valid_ticker_entries(ticker, day)
-            if entries or ticker in {value.upper() for value in linked_tickers}:
+            if (
+                entries
+                or ticker in {value.upper() for value in linked_tickers}
+                or ticker in announced
+            ):
                 evidence.setdefault(ticker, set()).add(f"symbol:{ticker}")
 
         words = [value.casefold() for value in WORD_RE.findall(text)]
@@ -431,7 +448,7 @@ class NewsIssuerResolver:
         # article-local identity for semantic attribution only; valid_on and
         # forecast eligibility still use the durable listing authority.
         for match in ANNOUNCED_TICKER_RE.finditer(searchable):
-            ticker = match.group("ticker").upper()
+            ticker = (match.group("ticker") or match.group("trade_ticker")).upper()
             prefix = searchable[max(0, match.start() - 180):match.start()]
             names = tuple(
                 value.strip(" ,.")

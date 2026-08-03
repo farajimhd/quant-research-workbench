@@ -65,6 +65,51 @@ def process_worker_probe() -> tuple[int, str, bool]:
 
 
 class ScopedLabelingTests(unittest.TestCase):
+    def test_financial_acronym_exchange_pair_is_not_an_issuer(self) -> None:
+        text = (
+            "Blackstone (NYSE:BX) reported second-quarter economic net income "
+            "(NYSE:ENI) of $1.15 per share."
+        )
+        resolver = NewsIssuerResolver(
+            (
+                IssuerIdentity("BX", "issuer:bx", ("Blackstone",)),
+                IssuerIdentity("ENI", "issuer:eni", ("Eni S.p.A.",)),
+            ),
+            article_tickers=("BX", "ENI"),
+        )
+        analysis = analyze_news_scope(
+            source_id="acronym",
+            title="Blackstone Reports Results",
+            text=text,
+            tickers=("BX", "ENI"),
+            timestamp="2014-07-24T12:00:00Z",
+            issuer_resolver=resolver,
+        )
+        self.assertEqual([unit.tickers[0] for unit in analysis.units], ["BX"])
+
+    def test_passive_acquisition_assigns_target_and_acquirer(self) -> None:
+        text = (
+            "NPS Pharmaceuticals (NASDAQ:NPSP) announced it was being acquired "
+            "by Shire plc (NASDAQ:SHPG) for $5.2 billion."
+        )
+        resolver = NewsIssuerResolver(
+            (
+                IssuerIdentity("NPSP", "issuer:npsp", ("NPS Pharmaceuticals",)),
+                IssuerIdentity("SHPG", "issuer:shpg", ("Shire plc",)),
+            ),
+            article_tickers=("NPSP", "SHPG"),
+        )
+        units = extract_news_units(
+            source_id="passive-ma",
+            title="Shire To Acquire NPS Pharmaceuticals",
+            text=text,
+            tickers=("NPSP", "SHPG"),
+            timestamp="2015-01-12T12:00:00Z",
+            issuer_resolver=resolver,
+        )
+        roles = {unit.tickers[0]: unit.issuer_role for unit in units}
+        self.assertEqual(roles, {"NPSP": "target", "SHPG": "acquirer"})
+
     @staticmethod
     def issuer_resolver() -> NewsIssuerResolver:
         return NewsIssuerResolver(

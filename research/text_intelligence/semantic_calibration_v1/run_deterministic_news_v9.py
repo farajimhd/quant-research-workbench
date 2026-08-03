@@ -16,12 +16,16 @@ from research.text_intelligence.scoped_labeling_v1.news_identity import (
     NewsIssuerResolver,
     load_news_issuer_resolver,
 )
+from research.text_intelligence.scoped_labeling_v1.news_extractor import (
+    NEWS_EXTRACTOR_VERSION,
+)
 from research.text_intelligence.semantic_label_authority_v1.schema import SemanticDocument
 
 from .comparison import evaluate_predictions, load_collection
 from .deterministic_v9 import classify_news_document_v9
+from .deterministic_v9_config import DETERMINISTIC_V9_VERSION
 from .run_deterministic_news_v6 import DEFAULT_FROZEN, DEFAULT_ROOT, _frozen_ids, _headline
-from .storage import assert_runtime_root, write_json_atomic
+from .storage import assert_runtime_root, read_json, write_json_atomic
 
 
 _WORKER_ISSUER_AUTHORITY: NewsIssuerResolver | None = None
@@ -147,6 +151,36 @@ def predict_with_loaded_authority(item) -> dict:
     if _WORKER_ISSUER_AUTHORITY is None:
         _WORKER_ISSUER_AUTHORITY = load_v9_issuer_authority()
     return _predict(item, issuer_resolver=_WORKER_ISSUER_AUTHORITY)
+
+
+def generate_v9_predictions(
+    items,
+    output_dir: Path,
+    *,
+    issuer_resolver: NewsIssuerResolver,
+) -> None:
+    """Generate resumable V9 predictions without importing optional V10 ML deps."""
+    assert_runtime_root(output_dir)
+    for index, item in enumerate(items, 1):
+        target = output_dir / f"{item.sample_id}.json"
+        if target.exists():
+            existing = read_json(target)
+            if (
+                str(existing.get("version") or "") == DETERMINISTIC_V9_VERSION
+                and str(existing.get("scope_extractor_version") or "") == NEWS_EXTRACTOR_VERSION
+                and str((existing.get("identity_resolution") or {}).get("authority_version"))
+                == ISSUER_IDENTITY_AUTHORITY_VERSION
+            ):
+                continue
+        result = _predict(item, issuer_resolver=issuer_resolver)
+        result.update({
+            "sample_id": item.sample_id,
+            "split": item.split,
+            "source_id": item.blinded["source_id"],
+        })
+        write_json_atomic(target, result)
+        if index % 100 == 0 or index == len(items):
+            print(f"V9 HUMAN {index:,}/{len(items):,}", flush=True)
 
 
 if __name__ == "__main__":

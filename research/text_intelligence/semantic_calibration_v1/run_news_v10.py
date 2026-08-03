@@ -6,9 +6,7 @@ from pathlib import Path
 
 import joblib
 
-from research.text_intelligence.scoped_labeling_v1.schema import NEWS_EXTRACTOR_VERSION
 from research.text_intelligence.scoped_labeling_v1.news_identity import (
-    ISSUER_IDENTITY_AUTHORITY_VERSION,
     NewsIssuerResolver,
 )
 
@@ -27,11 +25,10 @@ from .news_v10 import (
 )
 from .run_deterministic_news_v6 import _headline
 from .run_deterministic_news_v9 import (
-    _predict as predict_v9,
+    generate_v9_predictions,
     load_v9_issuer_authority,
 )
-from .deterministic_v9_config import DETERMINISTIC_V9_VERSION
-from .storage import assert_runtime_root, read_json, write_json_atomic
+from .storage import assert_runtime_root, write_json_atomic
 
 
 def main() -> int:
@@ -115,32 +112,7 @@ def _generate_v9(
     *,
     issuer_resolver: NewsIssuerResolver,
 ) -> None:
-    assert_runtime_root(output_dir)
-    for index, item in enumerate(items, 1):
-        target = output_dir / f"{item.sample_id}.json"
-        if target.exists():
-            existing = read_json(target)
-            if (
-                str(existing.get("version") or "") == DETERMINISTIC_V9_VERSION
-                and str(existing.get("scope_extractor_version") or "")
-                == NEWS_EXTRACTOR_VERSION
-                and str(
-                    (existing.get("identity_resolution") or {}).get(
-                        "authority_version"
-                    )
-                )
-                == ISSUER_IDENTITY_AUTHORITY_VERSION
-            ):
-                continue
-        result = predict_v9(item, issuer_resolver=issuer_resolver)
-        result.update({
-            "sample_id": item.sample_id,
-            "split": item.split,
-            "source_id": item.blinded["source_id"],
-        })
-        write_json_atomic(target, result)
-        if index % 100 == 0:
-            print(f"V9 HUMAN {index:,}", flush=True)
+    generate_v9_predictions(items, output_dir, issuer_resolver=issuer_resolver)
 
 
 def _delta(left: dict, right: dict) -> dict[str, float]:

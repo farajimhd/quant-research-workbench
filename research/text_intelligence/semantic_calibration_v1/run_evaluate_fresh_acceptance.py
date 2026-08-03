@@ -9,14 +9,8 @@ from research.mlops.paths import MLOpsPathConfig
 from .annotation_audit import audit_annotations
 from .audit import audit_sample
 from .comparison import evaluate_predictions, load_collection
-from .news_v10 import (
-    V10_VERSION,
-    generate_human_predictions,
-    human_prediction_cache_complete,
-)
 from .run_deterministic_news_v6 import _headline
-from .run_news_v10 import _delta, _generate_v9
-from .run_deterministic_news_v9 import load_v9_issuer_authority
+from .run_deterministic_news_v9 import generate_v9_predictions, load_v9_issuer_authority
 from .schema import ANNOTATION_VERSION_V3
 from .storage import assert_runtime_root, write_json_atomic
 
@@ -37,6 +31,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--output-root", type=Path, default=base / "news_acceptance_100_v1" / "evaluation"
+    )
+    parser.add_argument(
+        "--v9-only",
+        action="store_true",
+        help="Refresh V9 while reusing the already persisted V10 predictions.",
     )
     args = parser.parse_args(argv)
     assert_runtime_root(args.output_root)
@@ -59,17 +58,30 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError("fresh acceptance identity or split contract drift")
     v10_dir = args.output_root / "v10_predictions"
     v9_dir = args.output_root / "v9_predictions"
-    if human_prediction_cache_complete(items, output_dir=v10_dir):
-        print(f"V10 reusing {len(items):,} identity-verified predictions", flush=True)
+    if args.v9_only:
+        missing = [item.sample_id for item in items if not (v10_dir / f"{item.sample_id}.json").is_file()]
+        if missing:
+            raise RuntimeError(
+                f"--v9-only requires complete persisted V10 predictions; missing={missing[:5]}"
+            )
+        print(f"V10 reusing {len(items):,} persisted predictions", flush=True)
     else:
-        import joblib
+        from .news_v10 import (
+            V10_VERSION,
+            generate_human_predictions,
+            human_prediction_cache_complete,
+        )
+        if human_prediction_cache_complete(items, output_dir=v10_dir):
+            print(f"V10 reusing {len(items):,} identity-verified predictions", flush=True)
+        else:
+            import joblib
 
-        model = joblib.load(args.v10_artifact)
-        if model.version != V10_VERSION:
-            raise RuntimeError(f"unexpected V10 artifact version: {model.version}")
-        generate_human_predictions(model, items, output_dir=v10_dir)
+            model = joblib.load(args.v10_artifact)
+            if model.version != V10_VERSION:
+                raise RuntimeError(f"unexpected V10 artifact version: {model.version}")
+            generate_human_predictions(model, items, output_dir=v10_dir)
     issuer_resolver = load_v9_issuer_authority()
-    _generate_v9(items, v9_dir, issuer_resolver=issuer_resolver)
+    generate_v9_predictions(items, v9_dir, issuer_resolver=issuer_resolver)
     v10 = evaluate_predictions(items, prediction_dir=v10_dir, canonical_concepts=True)
     v9 = evaluate_predictions(items, prediction_dir=v9_dir, canonical_concepts=True)
     result = {
@@ -88,6 +100,14 @@ def main(argv: list[str] | None = None) -> int:
     write_json_atomic(args.output_root / "evaluation.json", result)
     print(json.dumps(result["headline"], indent=2), flush=True)
     return 0
+
+
+def _delta(left: dict, right: dict) -> dict[str, float]:
+    return {
+        key: round(float(left[key]) - float(right[key]), 6)
+        for key in left
+        if key != "sample_count" and key in right
+    }
 
 
 if __name__ == "__main__":

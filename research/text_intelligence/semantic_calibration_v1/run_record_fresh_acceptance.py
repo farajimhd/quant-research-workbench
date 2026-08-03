@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
 from pathlib import Path
@@ -31,15 +32,25 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Optional reviewer-authored JSON/compact input file; stdin is used when omitted.",
     )
+    parser.add_argument(
+        "--input-base64",
+        help=(
+            "Optional UTF-8 reviewer payload encoded as base64. This avoids "
+            "PowerShell pipe/BOM drift without creating an intermediate file."
+        ),
+    )
     args = parser.parse_args(argv)
     assert_runtime_root(args.runtime_root)
     # Windows PowerShell 5.1 prepends a UTF-8 BOM when piping text to a native
     # process. Accept that transport without weakening JSON validation.
-    body = (
-        args.input_jsonl.read_text(encoding="utf-8-sig")
-        if args.input_jsonl is not None
-        else sys.stdin.read().lstrip("\ufeff")
-    )
+    if args.input_jsonl is not None and args.input_base64 is not None:
+        parser.error("--input-jsonl and --input-base64 are mutually exclusive")
+    if args.input_base64 is not None:
+        body = base64.b64decode(args.input_base64, validate=True).decode("utf-8")
+    elif args.input_jsonl is not None:
+        body = args.input_jsonl.read_text(encoding="utf-8-sig")
+    else:
+        body = sys.stdin.read().lstrip("\ufeff")
     payload = (
         json.loads(body)
         if body.lstrip().startswith(("[", "{"))
@@ -59,7 +70,7 @@ def _parse_compact_rows(body: str) -> list[dict[str, object]]:
     """Parse reviewer-authored pipe rows without inferring semantic labels.
 
     Format: sample|role|origin|decision|default_disposition|unit[;unit...]
-    Unit: ticker~issuer_role~concept[,concept...]~direction~pos~neg~FEH
+    Unit: ticker~issuer_role~concept[,concept...]~direction~pos~neg~FEH[~evidence]
     where FEH is three explicit 0/1 eligibility flags.
     """
     specs: list[dict[str, object]] = []
@@ -93,11 +104,11 @@ def _parse_compact_rows(body: str) -> list[dict[str, object]]:
         units: list[dict[str, object]] = []
         for raw_unit in filter(None, unit_text.split(";")):
             values = raw_unit.split("~")
-            if len(values) != 7:
+            if len(values) not in {7, 8}:
                 raise ValueError(
-                    f"compact review line {line_number} issuer unit must have 7 fields"
+                    f"compact review line {line_number} issuer unit must have 7 or 8 fields"
                 )
-            ticker, issuer_role, concepts, direction, positive, negative, flags = values
+            ticker, issuer_role, concepts, direction, positive, negative, flags = values[:7]
             issuer_role = {
                 "p": "primary_subject", "a": "analyst_subject",
                 "m": "mentioned_subject", "t": "target",
@@ -106,7 +117,7 @@ def _parse_compact_rows(body: str) -> list[dict[str, object]]:
             direction = {"+": "positive", "-": "negative", "0": "neutral", "x": "mixed"}.get(direction, direction)
             if len(flags) != 3 or any(value not in "01" for value in flags):
                 raise ValueError(f"compact review line {line_number} FEH flags are invalid")
-            units.append({
+            unit = {
                 "t": ticker,
                 "r": issuer_role,
                 "c": [value for value in concepts.split(",") if value],
@@ -116,7 +127,10 @@ def _parse_compact_rows(body: str) -> list[dict[str, object]]:
                 "f": flags[0] == "1",
                 "e": flags[1] == "1",
                 "h": flags[2] == "1",
-            })
+            }
+            if len(values) == 8 and values[7].strip():
+                unit["q"] = [values[7].strip()]
+            units.append(unit)
         spec: dict[str, object] = {
             "sample_id": sample_id,
             "role": role,
