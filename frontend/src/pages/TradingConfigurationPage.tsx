@@ -946,7 +946,7 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
 }) {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [startMode, setStartMode] = useState<"create" | "clone" | null>(null);
-  const [cloneSourceId, setCloneSourceId] = useState(profile.profile_id);
+  const [cloneSourceId, setCloneSourceId] = useState("");
   const [profileName, setProfileName] = useState("");
   const definition = draft.strategy.definitions.find((row) => row.strategy_id === profile.definition_id);
   const supportedSides = definition?.supported_sides?.length ? definition.supported_sides : ["long" as const];
@@ -978,9 +978,8 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     setStartMode(mode);
     if (mode === "create") setProfileName(uniqueProfileName("Untitled Strategy", draft.strategy.profiles));
     else {
-      const source = draft.strategy.profiles.find((row) => row.profile_id === cloneSourceId) ?? profile;
-      setCloneSourceId(source.profile_id);
-      setProfileName(uniqueProfileName(`${source.name} copy`, draft.strategy.profiles));
+      setCloneSourceId("");
+      setProfileName("");
     }
   }
   function chooseCloneSource(profileId: string) {
@@ -1199,8 +1198,8 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     <section className="guided-strategy-question">
       <header><span>{current.section} · {sectionPosition} of {sectionQuestions.length}</span><small>Question {safeIndex + 1} of {questions.length}</small></header>
       <div className="guided-question-progress"><span style={{ width: `${((safeIndex + 1) / Math.max(questions.length, 1)) * 100}%` }} /></div>
-      <section className="guided-strategy-prompt guided-question-prompt"><span className="guided-prompt-label">Decision</span><h2>{current.title}</h2><p>{current.description}</p><ConfigurationGuidance items={guidanceItems} /></section>
-      <section className="guided-answer-surface"><header><span>Your answer</span><strong>{current.id === "profile" ? "Choose how to begin" : "Choose or configure one response"}</strong><small>{current.id === "profile" ? "The selected path creates a new editable Strategy Profile; it does not modify an existing source." : "Only this decision is being edited. You can return to it before publication."}</small></header><div className="guided-strategy-controls guided-answer-content">{current.content}</div></section>
+      <section className="guided-strategy-prompt guided-question-prompt"><h2>{current.title}</h2><p>{current.description}</p><ConfigurationGuidance items={guidanceItems} /></section>
+      <section className="guided-answer-surface"><header><strong>{current.id === "profile" ? "Choose how to begin" : "Choose or configure one response"}</strong><small>{current.id === "profile" ? "The selected path creates a new editable Strategy Profile; it does not modify an existing source." : "Only this decision is being edited. You can return to it before publication."}</small></header><div className="guided-strategy-controls guided-answer-content">{current.content}</div></section>
       <details className="guided-running-summary"><summary>Your setup so far <ChevronRight size={15} /></summary><div>{recap.map((row) => <span key={row.label}><small>{row.label}</small><strong>{row.value}</strong></span>)}</div></details>
       <footer className="guided-strategy-navigation"><button className="button" disabled={safeIndex === 0} onClick={() => setQuestionIndex(safeIndex - 1)} type="button"><ArrowLeft size={15} /> Previous</button><div>{nextSectionIndex > 0 ? <button onClick={() => setQuestionIndex(nextSectionIndex)} type="button">Keep remaining {current.section} values</button> : <span>Review each published strategy decision</span>}</div><button className="button primary" disabled={safeIndex === 0} onClick={() => safeIndex < questions.length - 1 ? setQuestionIndex(safeIndex + 1) : onContinue()} type="button">{safeIndex === 0 ? "Choose a path above" : safeIndex < questions.length - 1 ? "Next question" : "Save strategy and continue"} <ArrowRight size={15} /></button></footer>
     </section>
@@ -1219,34 +1218,70 @@ function StrategyStartWorkflow({ cloneSourceId, mode, name, onClone, onCloneSour
   profiles: StrategyProfile[];
   section: StrategySection;
 }) {
-  const source = profiles.find((row) => row.profile_id === cloneSourceId) ?? profiles[0];
+  const source = profiles.find((row) => row.profile_id === cloneSourceId);
   const normalizedName = name.trim().toLocaleLowerCase();
   const nameConflict = Boolean(normalizedName) && profiles.some((row) => row.name.trim().toLocaleLowerCase() === normalizedName);
-  const invalidName = !normalizedName || nameConflict;
+  const invalidName = !source || !normalizedName || nameConflict;
   return <div className="strategy-start-workflow">
     <div className="strategy-start-paths">
       <button aria-pressed={mode === "create"} onClick={() => onModeChange("create")} type="button"><span className="strategy-start-icon"><Plus size={18} /></span><span><small>Build from zero</small><strong>Create new strategy</strong><em>Begin with no active trading decisions. The guide will ask about identity, entries, adds, reentry, exits, protection, and capabilities.</em></span><ChevronRight size={17} /></button>
       <button aria-pressed={mode === "clone"} onClick={() => onModeChange("clone")} type="button"><span className="strategy-start-icon"><Clipboard size={18} /></span><span><small>Reuse proven structure</small><strong>Clone an existing strategy</strong><em>Inspect its behavior and capabilities first, then create an independent copy with a new name.</em></span><ChevronRight size={17} /></button>
     </div>
-    {mode === "create" ? <section className="strategy-start-builder">
-      <header><span>New strategy</span><strong>Start with a clean decision set</strong><p>This begins as an incomplete local draft with nothing enabled for trading. Complete the required lifecycle questions before it can be saved or published.</p></header>
+    {mode === "create" ? <section className="strategy-create-workflow">
+      <header><span>New strategy</span><strong>Start with a clean decision set</strong><p>Nothing is enabled for trading. Complete the required lifecycle questions before this draft can be saved or published.</p></header>
       <div className="strategy-blank-summary">
         <span><Check size={15} /><span><strong>No active entry logic</strong><small>Opportunity, confirmation, and blocker rules begin empty.</small></span></span>
         <span><Check size={15} /><span><strong>No position management</strong><small>Adds, reentry, strategic exits, and optional capabilities begin disabled.</small></span></span>
         <span><Check size={15} /><span><strong>Safe draft only</strong><small>The protected system fallback remains unchanged until this strategy is complete and published.</small></span></span>
       </div>
-      <div className="strategy-start-name"><TextField help={nameConflict ? "Choose a name not already used by another Strategy Profile." : "Use a distinct operator-facing name. You can refine it in the next question."} label="New strategy name" onChange={onNameChange} value={name} />{nameConflict ? <span role="alert">A strategy with this name already exists.</span> : null}</div>
-      <footer><button className="button primary" disabled={invalidName} onClick={onCreate} type="button">Create blank strategy <ArrowRight size={15} /></button></footer>
+      <NextActionArea active description="Give the blank draft a distinct operator-facing name." focusKey="create-name" title="Name the new strategy">
+        <div className="strategy-start-name"><TextField help={nameConflict ? "Choose a name not already used by another Strategy Profile." : "You can refine this name in the next question."} label="Strategy name" nextAction onChange={onNameChange} value={name} />{nameConflict ? <span role="alert">A strategy with this name already exists.</span> : null}</div>
+        <footer><button className="button primary" disabled={!normalizedName || nameConflict} onClick={onCreate} type="button">Create blank strategy <ArrowRight size={15} /></button></footer>
+      </NextActionArea>
     </section> : null}
-    {mode === "clone" && source ? <section className="strategy-start-builder strategy-clone-builder">
-      <header><span>Clone existing</span><strong>Review before copying</strong><p>Select a source to compare its trading behavior, lifecycle actions, execution choices, and enabled capabilities. The copy receives a new identity.</p></header>
+    {mode === "clone" ? <section className="strategy-clone-workflow">
+      <header><span>Clone existing</span><strong>Choose, inspect, then name the copy</strong><p>The source remains unchanged. The new strategy receives its own identity and can be revised in every following question.</p></header>
       <div className="strategy-clone-layout">
-        <nav aria-label="Strategies available to clone">{profiles.map((row) => <button aria-current={row.profile_id === source.profile_id ? "true" : undefined} key={row.profile_id} onClick={() => onCloneSourceChange(row.profile_id)} type="button"><span><strong>{row.name}</strong><small>{row.protected ? "Protected system strategy" : "Editable strategy"}</small></span><ChevronRight size={14} /></button>)}</nav>
-        <div className="strategy-clone-preview"><StrategyProfileFeaturePreview profile={source} section={section} /><div className="strategy-start-name"><TextField help={nameConflict ? "Choose a name not already used by another Strategy Profile." : "The source strategy keeps its current name and configuration."} label="Name for the clone" onChange={onNameChange} value={name} />{nameConflict ? <span role="alert">A strategy with this name already exists.</span> : null}</div></div>
+        <NextActionArea active={!source} className="strategy-clone-source-step" description="Choose one strategy to reveal its behavior, lifecycle, execution, and capabilities." focusKey="clone-source" title="Select a source strategy">
+          <nav aria-label="Strategies available to clone">{profiles.map((row, index) => { const summary = strategySourceSummary(row); return <button aria-current={row.profile_id === source?.profile_id ? "true" : undefined} data-next-action-control={!source && index === 0 ? "true" : undefined} key={row.profile_id} onClick={() => onCloneSourceChange(row.profile_id)} type="button"><span><strong>{row.name}</strong><small>{row.protected ? "Protected system strategy" : "Editable strategy"}</small><em>{summary}</em></span><ChevronRight size={15} /></button>; })}</nav>
+        </NextActionArea>
+        <div className="strategy-clone-review">{source ? <>
+          <StrategyProfileFeaturePreview profile={source} section={section} />
+          <NextActionArea active description="Use a distinct name for the independent copy." focusKey={`clone-name-${source.profile_id}`} title="Name the cloned strategy">
+            <div className="strategy-start-name"><TextField help={nameConflict ? "Choose a name not already used by another Strategy Profile." : "The source keeps its current name and configuration."} label="Clone name" nextAction onChange={onNameChange} value={name} />{nameConflict ? <span role="alert">A strategy with this name already exists.</span> : null}</div>
+            <footer><span><LockKeyhole size={14} /> Source remains unchanged</span><button className="button primary" disabled={invalidName} onClick={onClone} type="button">Clone and configure <ArrowRight size={15} /></button></footer>
+          </NextActionArea>
+        </> : <div className="strategy-clone-empty"><Clipboard size={22} /><strong>No source selected</strong><p>Choose a strategy on the left. Its complete configuration summary will appear here before you create the copy.</p></div>}</div>
       </div>
-      <footer><span><LockKeyhole size={14} /> Source remains unchanged</span><button className="button primary" disabled={invalidName} onClick={onClone} type="button">Clone and configure <ArrowRight size={15} /></button></footer>
     </section> : null}
   </div>;
+}
+
+function NextActionArea({ active, children, className = "", description, focusKey, title }: { active: boolean; children: ReactNode; className?: string; description: string; focusKey: string; title: string }) {
+  const regionRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!active) return;
+    const frame = window.requestAnimationFrame(() => {
+      const control = regionRef.current?.querySelector<HTMLElement>("[data-next-action-control]");
+      if (!control) return;
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      regionRef.current?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "nearest" });
+      control.focus({ preventScroll: true });
+      if (control instanceof HTMLInputElement && control.type === "text") control.select();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [active, focusKey]);
+  return <section aria-label={`${active ? "Next action" : "Completed step"}: ${title}`} className={`guided-action-step${active ? " is-next" : ""}${className ? ` ${className}` : ""}`} ref={regionRef}>
+    <header><span>{active ? "Next action" : "Source selected"}</span><strong>{title}</strong><p>{description}</p></header>
+    {children}
+  </section>;
+}
+
+function strategySourceSummary(profile: StrategyProfile) {
+  const capabilities = profile.capabilities.filter((row) => row.enabled).length;
+  const adds = profile.lifecycle.initial_entry.add_steps.filter((row) => row.enabled).length;
+  const exits = profile.lifecycle.exit.rule_sets.filter((row) => row.enabled).length;
+  return `${readableLabel(profile.lifecycle.trading_behavior.side)} · ${capabilities} capabilities · ${adds} adds · ${exits} exits`;
 }
 
 function StrategyProfileFeaturePreview({ profile, section }: { profile: StrategyProfile; section: StrategySection }) {
@@ -1352,7 +1387,7 @@ function uniqueProfileName(base: string, existing: StrategyProfile[]) {
 }
 
 function GuidedQuestion({ children, description, label, status }: { children: ReactNode; description: string; label: string; status: string }) {
-  return <section className="guided-question"><section className="guided-question-prompt"><header><div><small>Decision</small><span>{label}</span><p>{description}</p></div><em data-state={status.toLowerCase().replaceAll(" ", "-")}>{status}</em></header><ConfigurationGuidance items={[{ label: "What changes", value: "Only the subject shown below." }, { label: "Using the default", value: "Leave the displayed answer unchanged to approve the current default." }, { label: "Runtime effect", value: "The answer applies only after this draft is validated and published." }]} /></section><section className="guided-answer-surface"><header><span>Your answer</span><strong>Choose or configure one response</strong><small>Complete only the fields needed for this decision.</small></header><div className="guided-answer-content">{children}</div></section></section>;
+  return <section className="guided-question"><section className="guided-question-prompt"><header><div><span>{label}</span><p>{description}</p></div><em data-state={status.toLowerCase().replaceAll(" ", "-")}>{status}</em></header><ConfigurationGuidance items={[{ label: "What changes", value: "Only the subject shown below." }, { label: "Using the default", value: "Leave the displayed answer unchanged to approve the current default." }, { label: "Runtime effect", value: "The answer applies only after this draft is validated and published." }]} /></section><section className="guided-answer-surface"><header><strong>Choose or configure one response</strong><small>Complete only the fields needed for this question.</small></header><div className="guided-answer-content">{children}</div></section></section>;
 }
 
 function ConfigurationGuidance({ items }: { items: Array<{ label: string; value: string }> }) {
@@ -3164,8 +3199,8 @@ function CapabilityField({ definition, onChange, value }: { definition: Capabili
   return <NumberField help={definition.help} label={definition.label} maximum={definition.maximum} minimum={definition.minimum} onChange={onChange} step={definition.step ?? 0.01} unit={definition.display === "fraction" ? "fraction" : definition.unit} value={Number(value)} />;
 }
 
-function TextField({ help, label, onChange, value }: { help: HelpContent; label: string; onChange: (value: string) => void; value: string }) {
-  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><input onChange={(event) => onChange(event.target.value)} value={value} /></label>;
+function TextField({ help, label, nextAction = false, onChange, value }: { help: HelpContent; label: string; nextAction?: boolean; onChange: (value: string) => void; value: string }) {
+  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><input data-next-action-control={nextAction ? "true" : undefined} onChange={(event) => onChange(event.target.value)} value={value} /></label>;
 }
 
 function NumberField({ help, label, maximum, minimum, onChange, step, unit, value }: { help: HelpContent; label: string; maximum?: number; minimum?: number; onChange: (value: number) => void; step: number; unit?: string; value: number }) {
