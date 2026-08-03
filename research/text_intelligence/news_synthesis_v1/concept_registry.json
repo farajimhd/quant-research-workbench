@@ -1,5 +1,5 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_18",
+  "registry_version": "news_synthesis_concepts_v1_19",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
@@ -38,11 +38,13 @@
     {"id": "financial.credit_quality", "parent": "financial", "definition": "A reported or expected change or condition in delinquencies, charge-offs, defaults or comparable issuer credit-performance measures.", "aliases": ["credit_quality", "delinquencies", "charge_offs", "write_offs", "default_rate"]},
     {"id": "estimate.revision", "parent": "estimate", "definition": "A change in an estimate that is distinct from formal issuer guidance.", "aliases": ["estimate.revisions_lower", "estimate.revision_down_small"]},
     {"id": "ownership.position_change", "parent": "ownership", "definition": "An insider, institutional or other ownership-position change.", "aliases": ["ownership", "ownership.insider_purchase", "ownership.insider_sale", "ownership.institutional_stake", "ownership.secondary_share_sale"]},
+    {"id": "ownership.position", "parent": "ownership", "definition": "A reported current or historical ownership stake without an asserted change.", "aliases": ["ownership_stake", "ownership_position"]},
     {"id": "capital.structure", "parent": "capital", "definition": "A non-financing capital-structure change.", "aliases": ["capital_structure", "warrants.issued"]},
     {"id": "credit.solvency", "parent": "credit", "definition": "A material credit, default, bankruptcy or solvency condition.", "aliases": ["credit_solvency"]},
     {"id": "index.membership", "parent": "index", "definition": "Addition to or removal from an index.", "aliases": ["index.addition", "index.inclusion", "index.removal"]},
     {"id": "operations.cost_efficiency", "parent": "operations", "definition": "A cost-saving, expense or efficiency change.", "aliases": ["cost_reduction", "cost_savings.expected", "operating_expenses.increase"]},
     {"id": "operations.capacity_change", "parent": "operations", "definition": "A material capacity expansion or contraction.", "aliases": ["capacity.expansion"]},
+    {"id": "operations.workforce", "parent": "operations", "definition": "A reported current, historical or expected workforce size or employment footprint.", "aliases": ["workforce", "employee_count", "employment_footprint"]},
     {"id": "strategy.strategic_alternatives", "parent": "strategy", "definition": "A review or pursuit of strategic alternatives, investments or asset sales.", "aliases": ["strategic_alternatives.review", "strategic_investment", "investment", "asset_sale_considered"]},
     {"id": "analyst.short_thesis", "parent": "analyst.assessment", "definition": "A published short thesis or adverse research assessment.", "aliases": ["short_report"]},
     {"id": "analyst.issuer_assessment", "parent": "analyst.assessment", "definition": "An analyst's issuer-specific assessment or defense that is not itself a rating or price-target action.", "aliases": ["analyst_commentary", "analyst_defense", "analyst_issuer_view"]},
