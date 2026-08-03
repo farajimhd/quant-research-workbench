@@ -61,6 +61,7 @@ class ConceptRegistry:
             ({"target", "price"}, "analyst.price_target_action"),
             ({"earnings", "eps", "revenue", "quarter"}, "earnings.performance"),
             ({"guidance", "outlook", "forecast"}, "guidance.issued"),
+            ({"asset", "sale", "divestiture", "disposal"}, "corporate_transaction.asset_sale"),
             ({"acquisition", "merger", "takeover", "transaction"}, "corporate_transaction.acquisition"),
             ({"offering", "financing", "placement", "debt", "dilution"}, "capital.financing"),
             ({"buyback", "repurchase", "dividend"}, "capital.return"),

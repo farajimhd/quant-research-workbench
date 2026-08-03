@@ -1,5 +1,5 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_27",
+  "registry_version": "news_synthesis_concepts_v1_28",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
@@ -12,6 +12,7 @@
     {"id": "earnings.restatement", "parent": "earnings", "definition": "An issuer announces, files or completes a correction or restatement of previously reported financial results.", "aliases": ["financial_restatement", "accounting_restatement", "results_restatement"]},
     {"id": "guidance.issued", "parent": "guidance", "definition": "The issuer issues, raises, lowers, reaffirms or withdraws guidance.", "aliases": ["guidance", "outlook", "forecast_update"]},
     {"id": "corporate_transaction.acquisition", "parent": "corporate_transaction", "definition": "An acquisition, merger or takeover event.", "aliases": ["ma_transaction", "acquisition", "merger"]},
+    {"id": "corporate_transaction.asset_sale", "parent": "corporate_transaction", "definition": "A definitive sale, divestiture or disposal of an issuer business, asset or operating interest.", "aliases": ["asset_sale", "divestiture", "business_disposal"]},
     {"id": "capital.financing", "parent": "capital", "definition": "Debt, equity or other financing activity.", "aliases": ["financing", "offering", "capital_raise", "private_placement"]},
     {"id": "capital.return", "parent": "capital", "definition": "Dividend, repurchase or other return of capital.", "aliases": ["capital_return", "buyback", "share_repurchase", "dividend"]},
     {"id": "capital.deleveraging", "parent": "capital", "definition": "A confirmed, planned or prioritized reduction in debt, leverage or comparable balance-sheet obligations.", "aliases": ["deleveraging", "debt_reduction", "reduce_leverage", "pay_down_debt"]},

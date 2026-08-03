@@ -107,6 +107,10 @@ class MigrationTest(unittest.TestCase):
     def test_registry_reports_resolution_provenance(self) -> None:
         registry = ConceptRegistry.load()
         self.assertEqual(
+            registry.resolve("completed asset sale"),
+            ("corporate_transaction.asset_sale", "heuristic"),
+        )
+        self.assertEqual(
             registry.resolve("listing.minimum_bid_deficiency"),
             ("listing.market_structure", "exact_alias"),
         )
