@@ -9,6 +9,7 @@ from .fresh_acceptance_v2 import (
     select_session_balanced_candidates,
 )
 from .fresh_acceptance_v4 import SESSION_QUOTAS as V4_SESSION_QUOTAS
+from .fresh_acceptance_v5 import SESSION_QUOTAS as V5_SESSION_QUOTAS
 
 
 def _utc(local_hour: int, local_minute: int = 0) -> str:
@@ -80,6 +81,32 @@ def test_selection_supports_explicit_200_article_contract() -> None:
         for session in hours
     } == dict(V4_SESSION_QUOTAS)
     assert sum(sum(values.values()) for values in allocation.values()) == 200
+
+
+def test_selection_supports_explicit_500_article_contract() -> None:
+    hours = {"premarket": 8, "regular": 12, "after_hours": 18, "overnight": 2}
+    rows = []
+    for year in range(2010, 2027):
+        for session, hour in hours.items():
+            for index in range(50):
+                rows.append({
+                    "source_id": f"v5-{year}-{session}-{index}",
+                    "source_timestamp": _utc_for_year(year, hour),
+                    "event": {"title": f"{session} item {index}", "tickers": ["ABC"]},
+                    "v5_units": [],
+                })
+    selected, allocation = select_session_balanced_candidates(
+        rows,
+        sample_size=500,
+        session_quotas=dict(V5_SESSION_QUOTAS),
+        sampling_seed="fresh-500-test",
+    )
+    assert len(selected) == 500
+    assert {
+        session: sum(market_session(row["source_timestamp"]) == session for row in selected)
+        for session in hours
+    } == dict(V5_SESSION_QUOTAS)
+    assert sum(sum(values.values()) for values in allocation.values()) == 500
 
 
 def _utc_for_year(year: int, local_hour: int) -> str:

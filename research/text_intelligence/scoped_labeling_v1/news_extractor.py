@@ -218,10 +218,18 @@ def analyze_news_scope(
     aggregation = bool(AGGREGATION_TITLE_RE.search(title))
     title_matches = _subject_matches(
         title,
-        resolver.resolve(
-            title,
-            timestamp=timestamp,
-            linked_tickers=linked,
+        (
+            *resolver.resolve(
+                title,
+                timestamp=timestamp,
+                linked_tickers=linked,
+                allow_linked_bare_symbols=True,
+            ),
+            *resolver.resolve_title_lead_subjects(
+                title,
+                timestamp=timestamp,
+                linked_tickers=linked,
+            ),
         ),
         linked_tickers=linked,
     )
@@ -500,6 +508,7 @@ def _fragments(
                     block.text,
                     timestamp=timestamp,
                     linked_tickers=linked_tickers,
+                    allow_linked_bare_symbols=True,
                 ),
                 linked_tickers=linked_tickers,
             )
@@ -572,9 +581,19 @@ def _include_title_fragment(
     """
     compact = re.sub(r"\s+", " ", title).strip()
     normalized_body = re.sub(r"\s+", " ", clean_text).casefold()
+    title_tickers = {match.ticker for match in title_matches}
+    body_tickers = {
+        match.ticker
+        for fragment in fragments
+        for match in fragment.matches
+    }
+    title_already_scoped = bool(title_tickers) and title_tickers <= body_tickers
     if (
         not compact
-        or compact.casefold() in normalized_body
+        or (
+            compact.casefold() in normalized_body
+            and title_already_scoped
+        )
         or not _has_event_evidence(compact)
         or not title_matches
     ):

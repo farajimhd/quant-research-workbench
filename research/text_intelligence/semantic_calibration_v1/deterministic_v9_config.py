@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-DETERMINISTIC_V9_VERSION = "news_deterministic_v9_candidate_21"
-CALIBRATION_VERSION = "news_deterministic_v9_calibration_22"
+DETERMINISTIC_V9_VERSION = "news_deterministic_v9_candidate_44"
+CALIBRATION_VERSION = "news_deterministic_v9_calibration_45"
 CALIBRATION_SPLIT_SHA256 = "dd960925e6ae60a6a465847717a89b277b8f453341187db3058bca446481765f"
 
 # These otherwise teacher-supported overrides were rejected because they made
@@ -130,12 +130,12 @@ DENIED_UNIT_ROLES: frozenset[str] = frozenset()
 # format families, never source IDs or issuer-specific exceptions.
 NON_TRIGGER_ARTICLE_ROLES: frozenset[str] = frozenset({
     "analyst_event",
+    "automated_summary",
     "editorial_analysis",
     "market_roundup",
     "mover_recap",
     "preview",
     "why_moving_followup",
-    "automated_summary",
     "automated_market_statistics",
 })
 

@@ -101,6 +101,12 @@ def render_v9_acceptance_audits(
         "articles_with_any_v9_mismatch": sum(row.mismatches > 0 for row in articles),
         "v9_mismatch_cells": sum(row.mismatches for row in articles),
         "v9_scored_cells": sum(row.scored_cells for row in articles),
+        "gateway_source_available": sum(
+            value.source_authority_available for value in gateway_evidence.values()
+        ),
+        "gateway_source_unavailable": sum(
+            not value.source_authority_available for value in gateway_evidence.values()
+        ),
         "evaluation_report_sha256": str(
             (evaluation.get("v9") or {}).get("report_sha256") or ""
         ),

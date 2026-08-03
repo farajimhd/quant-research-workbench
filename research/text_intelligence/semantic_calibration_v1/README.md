@@ -1053,3 +1053,52 @@ The complete 200-case review records, reviewed gold, evaluations and Markdown
 audits are runtime products. The final audit index reports 181 articles with at
 least one residual field mismatch. Those residuals are retained as evidence;
 they were not converted into sample-specific rules.
+
+## Fifth session-balanced fresh acceptance set and Candidate 44
+
+N1501-N2000 is a disjoint 500-article authority spanning 2010-2026 with 125
+premarket, 200 regular-session, 125 after-hours and 50 overnight articles. It
+excludes the prior 1,300 human cases, N1301-N1500, and the 10,000-item Sol
+teacher corpus. All 500 annotations were completed prediction-blind and frozen
+before the untouched V9 baseline was generated.
+
+Every frozen comparison Markdown was manually read. That review produced 500
+individual review records and 67 traceable gold repairs; incomplete roundup
+units were transcribed only after the underlying passages had been reviewed.
+The resulting reviewed authority is separate from the immutable untouched
+authority. Candidate development never rewrote the untouched baseline.
+
+Candidate 44 contains only generic deterministic repairs. They cover article
+structure precedence, macro and automated summaries, current regulatory and
+operating events, analyst-action syntax, title-lead identity backed by the
+point-in-time issuer authority, safe plural and concatenated-brand aliases,
+product-acronym collisions, and unlinked crypto/equity alias collisions. It
+contains no source-ID, exact-headline, or ticker-specific output exception.
+
+| Metric | Untouched 500 | Reviewed 500 | Reviewed 200 | Prior 1,300 |
+|---|---:|---:|---:|---:|
+| Extraction F1 | 0.907912 | 0.936869 | 0.941538 | 0.972995 |
+| Ticker-scope F1 | 0.648327 | 0.873991 | 0.883402 | 0.834343 |
+| Content-role macro F1 | 0.669890 | 0.671817 | 0.782001 | 0.713604 |
+| Source-origin macro F1 | 0.535094 | 0.537069 | 0.620870 | 0.577059 |
+| Text-sentiment macro F1 | 0.396871 | 0.565809 | 0.477113 | 0.483519 |
+| Forecast-direction macro F1 | 0.310520 | 0.310520 | 0.364434 | 0.371535 |
+| Concept-family F1 | 0.408901 | 0.646117 | 0.638249 | 0.582389 |
+| Forecast eligibility F1 | 0.580913 | 0.569106 | 0.604652 | 0.696789 |
+| Forecast/reaction end-to-end F1 | 0.564516 | 0.566802 | 0.600000 | 0.674338 |
+| Issuer-history F1 | 0.877264 | 0.921466 | 0.922636 | 0.880852 |
+| Issuer-history end-to-end F1 | 0.648327 | 0.873991 | 0.883402 | 0.833769 |
+
+The final audit was closed by semantic equivalence, not by assuming regenerated
+files were correct. Relative to the already fully read Candidate-41 packets,
+471/500 reviewed-V5 predictions and 191/200 reviewed-V4 predictions were
+semantically unchanged. Every one of the remaining 29 and 9 final Candidate-44
+Markdown packets was re-read after regeneration. The final directories contain
+exactly 500 and 200 Markdown files, and every prediction declares
+`news_deterministic_v9_candidate_44`.
+
+Generated authorities and evidence remain under `D:\TradingML\runtimes`:
+
+- reviewed 500: `text_intelligence/semantic_calibration_v1/news_acceptance_500_v5_reviewed`
+- reviewed 200: `text_intelligence/semantic_calibration_v1/news_acceptance_200_v4_reviewed_v2`
+- prior regression: `text_intelligence/semantic_calibration_v1/news_1300_v1/candidate44_evaluation`

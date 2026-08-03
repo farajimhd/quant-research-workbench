@@ -38,6 +38,14 @@ def main(argv: list[str] | None = None) -> int:
         default=base / "news_acceptance_100_v2" / "article_audits",
     )
     parser.add_argument("--raw-path-map", action="append", default=[])
+    parser.add_argument(
+        "--allow-missing-gateway-source",
+        action="store_true",
+        help=(
+            "Render an explicit unavailable-source section when a frozen item no "
+            "longer has a retained gateway row; frozen source lanes remain present."
+        ),
+    )
     args = parser.parse_args(argv)
 
     repo = Path(__file__).resolve().parents[3]
@@ -53,7 +61,12 @@ def main(argv: list[str] | None = None) -> int:
         timeout_seconds=120,
     )
     path_maps = [_parse_path_map(value) for value in args.raw_path_map]
-    evidence = load_gateway_source_evidence(client, items, raw_path_maps=path_maps)
+    evidence = load_gateway_source_evidence(
+        client,
+        items,
+        raw_path_maps=path_maps,
+        allow_missing=args.allow_missing_gateway_source,
+    )
     manifest = render_v9_acceptance_audits(
         items,
         prediction_dir=args.evaluation_root / "v9_predictions",

@@ -21,6 +21,43 @@ from .teacher_split_v9 import normalized_headline_template
 
 
 class DeterministicV9Tests(unittest.TestCase):
+    def test_compact_earnings_wire_is_automated_summary(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="automated-results-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Q3 EPS $0.33 Beats $0.12 Estimate, Sales $1.1B Miss $1.2B Estimate",
+            text="", tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("EXM", "issuer:exm", ("Example",)),))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "automated_summary")
+        self.assertEqual(result.source_origin, "automated_summary")
+
+    def test_macro_stat_wire_is_market_roundup(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="macro-stat-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="US January Durable Goods Orders (4.0%) vs (1.0%) Est",
+            text="", tickers=(),
+        )
+        result = classify_news_document_v9(document)
+        self.assertEqual(result.content_role, "market_roundup")
+        self.assertEqual(result.extraction_decision, "non_issuer_market_content")
+
+    def test_regulatory_filing_title_precedes_editorial_fallback(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="regulatory-title-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example 8-K Shows Company Received SEC Inquiry Letter",
+            text="Example Corp. (NASDAQ:EXM) received an SEC inquiry letter.",
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),))
+        self.assertEqual(
+            classify_news_document_v9(document, issuer_resolver=resolver).content_role,
+            "regulatory_event",
+        )
+
     def test_cached_prediction_requires_current_calibration(self) -> None:
         prediction = {
             "version": DETERMINISTIC_V9_VERSION,
@@ -128,7 +165,7 @@ class DeterministicV9Tests(unittest.TestCase):
         labels = classify_news_document_v9(document, issuer_resolver=resolver).labels
         self.assertEqual({label["ticker"] for label in labels}, {"GOOG", "GOOGL"})
 
-    def test_compact_positive_earnings_headline_is_directional_and_eligible(self) -> None:
+    def test_compact_positive_earnings_wire_remains_trigger_eligible(self) -> None:
         document = SemanticDocument(
             corpus="news", source_id="compact-results-v9",
             timestamp="2026-01-02T14:00:00Z",
@@ -140,7 +177,7 @@ class DeterministicV9Tests(unittest.TestCase):
             article_tickers=("EXM",),
         )
         result = classify_news_document_v9(document, issuer_resolver=resolver)
-        self.assertEqual(result.content_role, "primary_event")
+        self.assertEqual(result.content_role, "automated_summary")
         self.assertTrue(result.labels)
         self.assertEqual(result.labels[0]["classification"]["semantic_direction"], "positive")
         self.assertTrue(result.labels[0]["forecast_trigger_eligible"])
@@ -945,6 +982,211 @@ class DeterministicV9Tests(unittest.TestCase):
         )
         label = classify_news_document_v9(document, issuer_resolver=resolver).labels[0]
         self.assertNotIn("financing", label["classification"]["event_concepts"])
+
+    def test_generated_benzinga_neuro_disclosure_sets_automated_role(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="neuro-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Fund Buys Example Shares After Results",
+            text=(
+                "Example Corp. (NASDAQ:EXM) reported quarterly results. "
+                "This story was generated using Benzinga Neuro and edited by Staff."
+            ),
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),)
+        )
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "automated_summary")
+        self.assertEqual(result.source_origin, "automated_summary")
+
+    def test_explicit_analyst_action_precedes_price_followup_wording(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="analyst-price-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Shares Plummet After Broker Downgrades Stock To Sell",
+            text="Broker downgraded Example Corp. (NASDAQ:EXM) to Sell.",
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),)
+        )
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "analyst_event")
+
+    def test_successful_virologic_response_is_positive_clinical_event(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="clinical-response-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Announces Phase 3 Results",
+            text=(
+                "Example Bio (NASDAQ:EXM) announced Phase 3 trial results. "
+                "Ninety-five percent of patients achieved sustained virologic response."
+            ),
+            tickers=("EXM",),
+            metadata={"channels": ("press releases",)},
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("EXM", "issuer:exm", ("Example Bio",)),)
+        )
+        label = classify_news_document_v9(document, issuer_resolver=resolver).labels[0]
+        self.assertEqual(label["classification"]["semantic_direction"], "positive")
+        self.assertTrue(label["forecast_trigger_eligible"])
+
+    def test_buyback_authorization_is_primary_not_regulatory(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="buyback-authorization-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Board Authorizes $500M Share Repurchase",
+            text="Example Corp. (NASDAQ:EXM) authorized a $500 million share repurchase.",
+            tickers=("EXM",), metadata={"channels": ("press releases",)},
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "primary_event")
+        self.assertEqual(result.labels[0]["classification"]["semantic_direction"], "positive")
+
+    def test_guidance_only_wire_is_primary_not_automated_result(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="guidance-only-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Sees Q4 Sales $270M-$295M Vs $290M Est",
+            text="Example Corp. (NASDAQ:EXM) sees Q4 sales of $270M-$295M versus $290M estimate.",
+            tickers=("EXM",), metadata={"author": "Benzinga Newsdesk"},
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "primary_event")
+
+    def test_macro_stat_with_provider_etf_is_nonissuer_market_content(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="macro-etf-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="EIA Crude Oil Inventories Fell 2M Barrels Vs 1M Est",
+            text="EIA crude oil inventories fell by 2 million barrels.",
+            tickers=("USO",),
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("USO", "issuer:uso", ("United States Oil Fund",)),))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "market_roundup")
+        self.assertEqual(result.extraction_decision, "non_issuer_market_content")
+        self.assertEqual(result.labels, ())
+
+    def test_mover_row_without_catalyst_detail_is_context_only(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="mover-row-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="12 Stocks Moving In Thursday's After-Market Session",
+            text="Example Corp. (NASDAQ:EXM) shares declined 3%. The company's Q4 earnings came out today.",
+            tickers=("EXM",), metadata={"author": "Benzinga Insights"},
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "mover_recap")
+        self.assertFalse(result.labels[0]["forecast_trigger_eligible"])
+        self.assertTrue(result.labels[0]["issuer_history_context_eligible"])
+
+    def test_product_acronym_does_not_become_linked_issuer(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="product-acronym-v9",
+            timestamp="2011-01-07T14:00:00Z",
+            title="Goodrich Delivers Sonar Composite Dome",
+            text="Goodrich Corporation (NYSE:GR) delivered its Sonar Composite Dome (SCD) for the Navy.",
+            tickers=("GR", "SCD"),
+        )
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("GR", "issuer:gr", ("Goodrich Corporation",)),
+            IssuerIdentity("SCD", "issuer:scd", ("LMP Capital and Income Fund",)),
+        ))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual([row["ticker"] for row in result.labels], ["GR"])
+
+    def test_title_lead_plural_trade_name_resolves_provider_issuer(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="title-plural-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Havertys September Comp Sales Up 10%",
+            text="Havertys September comp sales rose 10%.",
+            tickers=("HVT",),
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("HVT", "issuer:hvt", ("Haverty Furniture Companies",)),))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual([row["ticker"] for row in result.labels], ["HVT"])
+
+    def test_filing_title_uses_regulatory_primary_origin(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="filing-origin-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Files Form 8-K Regarding Credit Agreement",
+            text="Example Corp. (NASDAQ:EXM) filed a Form 8-K regarding its credit agreement.",
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "regulatory_event")
+        self.assertEqual(result.source_origin, "regulatory_primary")
+
+    def test_unlinked_crypto_name_does_not_resolve_listed_issuer_alias(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="crypto-alias-v9",
+            timestamp="2021-08-04T23:04:17Z",
+            title="Dogecoin Won't Be Put Down If It Can Regain This Key Level",
+            text=("Dogecoin was trading higher while Bitcoin held support. "
+                  "A senator expects a cryptocurrency bill to pass."),
+            tickers=(),
+        )
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("DOGP", "issuer:dogp", ("Dogecoin Cash Inc", "Dogecoin")),
+        ))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.extraction_decision, "non_issuer_market_content")
+        self.assertEqual(result.content_role, "editorial_analysis")
+        self.assertEqual(result.labels, ())
+
+    def test_concatenated_group_legal_name_supports_title_brand(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="group-brand-v9",
+            timestamp="2024-10-24T21:05:48Z",
+            title="Aptar's Board Authorized A $500M Common Stock Repurchase",
+            text="Aptar's board authorized the repurchase of common stock.",
+            tickers=("ATR",),
+        )
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("ATR", "issuer:atr", ("AptarGroup Inc",)),
+        ))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual([row["ticker"] for row in result.labels], ["ATR"])
+        self.assertEqual(result.content_role, "primary_event")
+
+    def test_pt_abbreviation_is_an_explicit_analyst_action(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="pt-abbreviation-v9",
+            timestamp="2013-01-30T14:12:36Z",
+            title="BMO Capital Markets Raises PT to $59 on Graco Following Earnings",
+            text="BMO reiterated its Market Perform rating and raised its price target.",
+            tickers=("GGG",), metadata={"channels": ("analyst color",)},
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("GGG", "issuer:ggg", ("Graco",)),))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "analyst_event")
+        self.assertFalse(result.labels[0]["forecast_trigger_eligible"])
+
+    def test_government_terrestrial_authorization_is_regulatory(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="terrestrial-auth-v9",
+            timestamp="2023-02-27T22:44:54Z",
+            title="Spain Grants Globalstar Terrestrial Authorization",
+            text="Spain grants Globalstar terrestrial authorization.",
+            tickers=("GSAT",),
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("GSAT", "issuer:gsat", ("Globalstar",)),))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "regulatory_event")
+        self.assertEqual([row["ticker"] for row in result.labels], ["GSAT"])
 
 
 if __name__ == "__main__":

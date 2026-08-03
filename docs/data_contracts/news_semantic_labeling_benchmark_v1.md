@@ -578,3 +578,33 @@ Runtime evidence is intentionally outside the repository:
 - Local model results: `\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\text_intelligence\semantic_calibration_v1\oss_gold_100_v3\models`
 
 The report values were recomputed or read from those authorities on 2026-08-01. Generated predictions, logs, manifests, metrics, and model artifacts remain in runtime storage; only this requested durable interpretation is stored in the source repository.
+
+## Deterministic V9 Candidate 44 certification
+
+Candidate 44 is the final rule-only authority from the N1301-N2000 audit
+program. N1301-N1500 contributes 200 session-balanced cases and N1501-N2000
+contributes a separately sampled 500 cases with 125 premarket, 200 regular,
+125 after-hours and 50 overnight publications. The 500 labels were frozen
+before its untouched V9 baseline was opened. Manual comparison review repaired
+36 gold records in the 200 set and 67 in the 500 set without modifying either
+frozen source population.
+
+| Evaluation authority | Extraction F1 | Ticker F1 | Role F1 | Origin F1 | Direction F1 | Concepts F1 | Forecast E2E F1 | History E2E F1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Untouched N1501-N2000 | 0.907912 | 0.648327 | 0.669890 | 0.535094 | 0.396871 | 0.408901 | 0.564516 | 0.648327 |
+| Reviewed N1501-N2000 | 0.936869 | 0.873991 | 0.671817 | 0.537069 | 0.565809 | 0.646117 | 0.566802 | 0.873991 |
+| Reviewed N1301-N1500 | 0.941538 | 0.883402 | 0.782001 | 0.620870 | 0.477113 | 0.638249 | 0.600000 | 0.883402 |
+| Prior N0001-N1300 regression | 0.972995 | 0.834343 | 0.713604 | 0.577059 | 0.483519 | 0.582389 | 0.674338 | 0.833769 |
+
+All 700 final audit documents were certified. The first complete manual pass
+read every Candidate-41 comparison. Candidate 44 was then closed by proving
+semantic equivalence for 471/500 and 191/200 packets and manually re-reading
+all 29 and 9 changed packets. This avoids pretending that file regeneration is
+manual review while also avoiding redundant rereading of byte-different but
+semantically identical evidence.
+
+The remaining limitations are visible in the table: textual direction and
+fine concept recall remain substantially weaker than identity extraction, and
+forecast eligibility does not improve merely by repairing incomplete gold.
+Candidate 44 is therefore a certified deterministic baseline and routing
+authority, not evidence that news sentiment or reaction forecasting is solved.

@@ -8,7 +8,7 @@ from typing import Iterable, Mapping, Sequence
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
 
 
-ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v7"
+ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v9"
 ISSUER_IDENTITY_AUTHORITY_VERSION = "news_issuer_identity_authority_v5"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?:NASDAQ|NYSE|NYSEAMERICAN|NYSE\s+AMERICAN|AMEX|OTC(?:QX|QB)?|"
@@ -57,6 +57,20 @@ CORPORATE_SUFFIXES = {
     "ltd",
     "plc",
 }
+TITLE_TRAILING_DESCRIPTORS = {
+    "ag",
+    "bancorp",
+    "bdc",
+    "group",
+    "holdings",
+    "holding",
+    "nv",
+    "partners",
+    "properties",
+    "sa",
+    "se",
+    "trust",
+}
 UNSAFE_SINGLE_TOKEN_ALIASES = {
     "american",
     "capital",
@@ -71,7 +85,9 @@ UNSAFE_SINGLE_TOKEN_ALIASES = {
     "united",
 }
 UNSAFE_TITLE_LEAD_ALIASES = {
+    "blockchain",
     "medical marijuana",
+    "option",
 }
 
 
@@ -147,6 +163,22 @@ class NewsIssuerResolver:
                     and alias not in UNSAFE_TITLE_LEAD_ALIASES
                 ):
                     title_alias_entries.setdefault(alias, []).append(identity)
+                    shortened = _safe_title_short_alias(alias)
+                    if shortened:
+                        title_alias_entries.setdefault(shortened, []).append(identity)
+                    # Headlines routinely use a durable issuer's distinctive
+                    # first trade-name token (``Haverty Furniture`` ->
+                    # ``Havertys``). Admit it only in the title-lead index;
+                    # resolution still requires a unique point-in-time issuer
+                    # and prefers the provider-linked candidate set.
+                    leading = alias.split()[0] if alias else ""
+                    if (
+                        len(alias.split()) >= 2
+                        and len(leading) >= 6
+                        and leading not in UNSAFE_SINGLE_TOKEN_ALIASES
+                        and leading not in UNSAFE_TITLE_LEAD_ALIASES
+                    ):
+                        title_alias_entries.setdefault(leading, []).append(identity)
                 if not is_safe_alias(alias, ticker):
                     continue
                 alias_entries.setdefault(alias, []).append(identity)
@@ -242,6 +274,7 @@ class NewsIssuerResolver:
         title: str,
         *,
         timestamp: str = "",
+        linked_tickers: Sequence[str] = (),
     ) -> tuple[IssuerMatch, ...]:
         """Resolve a unique issuer alias that grammatically leads a headline.
 
@@ -259,6 +292,9 @@ class NewsIssuerResolver:
         matches: list[IssuerMatch] = []
         for width in range(min(self._max_alias_tokens, len(words)), 0, -1):
             alias = " ".join(words[:width])
+            aliases = (alias,)
+            if width == 1 and alias.endswith("s") and len(alias) >= 7:
+                aliases = (alias, alias[:-1])
             if len(alias) < 5 or alias in UNSAFE_SINGLE_TOKEN_ALIASES:
                 continue
             # The general authority also indexes a generated leading token for
@@ -271,10 +307,17 @@ class NewsIssuerResolver:
                 continue
             entries = tuple(
                 entry
-                for entry in self._title_alias_entries.get(alias, ())
+                for candidate in aliases
+                for entry in self._title_alias_entries.get(candidate, ())
                 if entry.valid_on(day)
             )
             tickers = {entry.ticker for entry in entries}
+            linked = {
+                value.upper().strip() for value in linked_tickers if value
+            }
+            preferred = tickers & linked
+            if len(preferred) == 1:
+                tickers = preferred
             if len(tickers) != 1:
                 continue
             ticker = next(iter(tickers))
@@ -333,6 +376,7 @@ class NewsIssuerResolver:
         *,
         timestamp: str = "",
         linked_tickers: Sequence[str] = (),
+        allow_linked_bare_symbols: bool = True,
     ) -> tuple[IssuerMatch, ...]:
         day = _timestamp_date(timestamp)
         linked = {
@@ -349,13 +393,23 @@ class NewsIssuerResolver:
             for match in ANNOUNCED_TICKER_RE.finditer(text)
         }
         explicit.update(announced)
-        for ticker in linked_tickers:
-            normalized = ticker.upper().strip()
-            if len(normalized) >= 2 and re.search(
-                rf"(?<![A-Z0-9]){re.escape(normalized)}(?![A-Z0-9])",
-                text,
-            ):
-                explicit.add(normalized)
+        if allow_linked_bare_symbols:
+            for ticker in linked_tickers:
+                normalized = ticker.upper().strip()
+                occurrence = re.search(
+                    rf"(?<![A-Z0-9]){re.escape(normalized)}(?![A-Z0-9])",
+                    text,
+                )
+                if (
+                    len(normalized) >= 2
+                    and occurrence
+                    and self._linked_bare_symbol_is_corroborated(
+                        normalized,
+                        text,
+                        day=day,
+                    )
+                ):
+                    explicit.add(normalized)
         for ticker in explicit:
             entries = self._valid_ticker_entries(ticker, day)
             if (
@@ -412,6 +466,68 @@ class NewsIssuerResolver:
             IssuerMatch(ticker=ticker, evidence=tuple(sorted(values)))
             for ticker, values in sorted(evidence.items())
         )
+
+    def _linked_bare_symbol_is_corroborated(
+        self,
+        ticker: str,
+        text: str,
+        *,
+        day: dt.date | None,
+    ) -> bool:
+        """Reject product acronyms that collide with provider-linked symbols.
+
+        A bare linked symbol remains useful evidence. The unsafe case is a
+        symbol appearing only as a parenthesized acronym while none of that
+        security's point-in-time issuer aliases occurs in the same passage.
+        """
+        matches = tuple(re.finditer(
+            rf"(?<![A-Z0-9]){re.escape(ticker)}(?![A-Z0-9])",
+            text,
+        ))
+        if not matches:
+            return False
+        parenthesized_only = all(
+            re.fullmatch(
+                rf"\(\s*{re.escape(ticker)}\s*\)",
+                text[max(0, match.start() - 2):match.end() + 2].strip(),
+                re.I,
+            )
+            is not None
+            for match in matches
+        )
+        if not parenthesized_only:
+            return True
+        first = matches[0]
+        prefix = text[max(0, first.start() - 100):first.start()]
+        named_prefix = re.search(
+            r"([A-Z][A-Za-z0-9&'.-]*(?:\s+[A-Z][A-Za-z0-9&'.-]*){1,5})\s*\($",
+            prefix,
+        )
+        # A parenthesized provider symbol without a preceding proper-name
+        # phrase remains valid weak evidence. The collision case is a named
+        # product/acronym that can be checked against the issuer authority.
+        if named_prefix is None:
+            return True
+        normalized_prefix = normalize_issuer_alias(named_prefix.group(1))
+        prefix_tokens = set(normalized_prefix.split())
+        acronym = "".join(token[0] for token in normalized_prefix.split() if token)
+        if acronym.casefold() != ticker.casefold():
+            return True
+        normalized_text = normalize_issuer_alias(text)
+        for identity in self._valid_ticker_entries(ticker, day):
+            if any(
+                (alias := normalize_issuer_alias(raw_alias))
+                and len(alias) >= 5
+                and re.search(rf"\b{re.escape(alias)}\b", normalized_text)
+                for raw_alias in identity.aliases
+            ):
+                return True
+            if any(
+                prefix_tokens & set(normalize_issuer_alias(raw_alias).split())
+                for raw_alias in identity.aliases
+            ):
+                return True
+        return False
 
     def with_article_identities(self, text: str) -> "NewsIssuerResolver":
         """Add exact identities and conservative article-local short names.
@@ -550,6 +666,7 @@ class NewsIssuerResolver:
         ticker_entries = dict(self._ticker_entries)
         alias_entries = dict(self._alias_entries)
         raw_alias_entries = dict(self._raw_alias_entries)
+        title_alias_entries = dict(self._title_alias_entries)
         max_alias_tokens = self._max_alias_tokens
         for identity in local:
             ticker = identity.ticker.upper().strip()
@@ -558,6 +675,21 @@ class NewsIssuerResolver:
             ticker_entries[ticker] = (*ticker_entries.get(ticker, ()), identity)
             for raw_alias in identity.aliases:
                 alias = normalize_issuer_alias(raw_alias)
+                if (
+                    len(alias) >= 5
+                    and alias not in UNSAFE_SINGLE_TOKEN_ALIASES
+                    and alias not in UNSAFE_TITLE_LEAD_ALIASES
+                ):
+                    title_alias_entries[alias] = (
+                        *title_alias_entries.get(alias, ()),
+                        identity,
+                    )
+                    shortened = _safe_title_short_alias(alias)
+                    if shortened:
+                        title_alias_entries[shortened] = (
+                            *title_alias_entries.get(shortened, ()),
+                            identity,
+                        )
                 if not is_safe_alias(alias, ticker):
                     continue
                 alias_entries[alias] = (*alias_entries.get(alias, ()), identity)
@@ -575,6 +707,7 @@ class NewsIssuerResolver:
         resolver._ticker_entries = ticker_entries
         resolver._alias_entries = alias_entries
         resolver._raw_alias_entries = raw_alias_entries
+        resolver._title_alias_entries = title_alias_entries
         resolver._max_alias_tokens = min(max_alias_tokens, 10)
         resolver._identities = (*self._identities, *local)
         resolver._article_tickers = frozenset((
@@ -877,6 +1010,28 @@ def is_safe_article_local_alias(alias: str) -> bool:
         and any(len(token) == 1 for token in tokens)
         and all(token.isalnum() for token in tokens)
     )
+
+
+def _safe_title_short_alias(alias: str) -> str:
+    """Return a conservative issuer-name variant for title-lead matching.
+
+    News headlines often omit a final legal/business descriptor (for example,
+    ``Golub Capital BDC`` becomes ``Golub Capital``). The shortened alias is
+    admitted only at the grammatical title lead and still must resolve to one
+    point-in-time issuer in ``resolve_title_lead_subjects``.
+    """
+    tokens = alias.split()
+    # Some canonical legal names concatenate a distinctive operating brand
+    # with ``Group`` (for example ``AptarGroup``), while publisher headlines
+    # use only the brand.  Admit that variant only in the title-lead index;
+    # global uniqueness and point-in-time validity are still enforced later.
+    if len(tokens) == 1 and tokens[0].endswith("group"):
+        brand = tokens[0][:-5]
+        return brand if len(brand) >= 5 else ""
+    if len(tokens) < 3 or tokens[-1] not in TITLE_TRAILING_DESCRIPTORS:
+        return ""
+    shortened = " ".join(tokens[:-1])
+    return shortened if len(shortened) >= 5 and len(tokens[:-1]) >= 2 else ""
 
 
 def _derived_article_short_aliases(alias: str) -> tuple[str, ...]:

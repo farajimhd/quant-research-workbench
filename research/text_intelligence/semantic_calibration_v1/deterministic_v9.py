@@ -88,18 +88,26 @@ def classify_news_document_v9(
     """
     sanitized_text, _rejected_sources = sanitize_packed_news_text(document.text)
     sanitized_text = _remove_nonsemantic_link_blocks(sanitized_text)
+    sanitized_text = _remove_generic_methodology_blocks(sanitized_text)
     if sanitized_text != document.text:
         document = replace(document, text=sanitized_text)
     title_subjects = ()
-    if issuer_resolver is not None and (
+    unlinked_crypto_context = not document.tickers and bool(re.search(
+        r"\b(?:CRYPTO\s*:|bitcoin|dogecoin|ethereum|xrp|cryptocurrenc(?:y|ies))\b",
+        f"{document.title}\n{document.text[:1000]}",
+        re.I,
+    ))
+    if issuer_resolver is not None and not unlinked_crypto_context and (
         _PRIMARY_RESULT_TITLE_RE.search(document.title or "")
         or _PRIMARY_OPERATION_TITLE_RE.search(document.title or "")
+        or _PRIMARY_EVENT_TITLE_RE.search(document.title or "")
         or _REGULATORY_CURRENT_RE.search(document.title or "")
         or _SUPPORTED_EVENT_EVIDENCE_RE.search(document.title or "")
     ):
         title_subjects = issuer_resolver.resolve_title_lead_subjects(
             document.title,
             timestamp=document.timestamp,
+            linked_tickers=document.tickers,
         )
     if title_subjects:
         document = replace(
@@ -113,7 +121,12 @@ def classify_news_document_v9(
                 "derived_title_subjects": tuple(match.ticker for match in title_subjects),
             },
         )
-    raw_labels = classify_news_document(document, issuer_resolver=issuer_resolver)
+    # Crypto instruments are not equity issuers.  When the provider supplies no
+    # equity ticker, do not let a coincidentally named listed company enter via
+    # the issuer-alias authority. Explicit exchange:ticker syntax remains
+    # available to the structural extractor without alias resolution.
+    scope_resolver = None if unlinked_crypto_context else issuer_resolver
+    raw_labels = classify_news_document(document, issuer_resolver=scope_resolver)
     base_role, base_role_rule = _classify_role_v8(document, raw_labels)
     base_origin, base_origin_rule = _classify_origin_v8(
         document, base_role, raw_labels
@@ -128,6 +141,8 @@ def classify_news_document_v9(
     role, role_signal = _classify_article_role_v9(
         document, base_role=base_role, signals=signals
     )
+    if unlinked_crypto_context and role == "primary_event":
+        role, role_signal = "editorial_analysis", "unlinked_crypto_editorial"
     origin, origin_signal = _classify_source_origin_v9(
         document, role=role, base_origin=base_origin, signals=signals
     )
@@ -148,7 +163,12 @@ def classify_news_document_v9(
         source = raw_source.as_dict()
         if str(source.get("unit_role") or "") in DENIED_UNIT_ROLES:
             continue
-        if not _retain_unit_v9(source, provider_tickers=provider_tickers):
+        if not _retain_unit_v9(
+            source,
+            provider_tickers=provider_tickers,
+            content_role=role,
+            article_title=document.title,
+        ):
             continue
         label = dict(source)
         classification = dict(label.get("classification") or {})
@@ -170,6 +190,8 @@ def classify_news_document_v9(
             concepts,
             evidence_text=evidence_text,
             issuer_role=issuer_role,
+            content_role=role,
+            unit_role=str(label.get("unit_role") or ""),
         )
         direction = _recalibrate_direction(
             classification,
@@ -181,11 +203,13 @@ def classify_news_document_v9(
             evidence_text=evidence_text,
             issuer_role=issuer_role,
             concepts=concepts,
+            content_role=role,
         )
         concepts.update(concept_additions)
         if str(label.get("evidence_scope") or "") == "shared_relational":
             for signal in signals:
                 concepts.update(SHARED_EVENT_CONCEPT_ADDITIONS.get(signal, ()))
+        concepts.discard("market_reaction")
         classification.update({
             "content_role": role,
             "source_origin": origin,
@@ -230,6 +254,13 @@ def classify_news_document_v9(
         labels.append(label)
     labels = _deduplicate_labels(labels)
     decision = _extraction_decision(document, role, labels)
+    if not labels and (
+        _NON_ISSUER_MARKET_TEXT_RE.search(f"{document.title}\n{document.text[:1600]}")
+        or _MACRO_ROUNDUP_TITLE_RE.search(document.title or "")
+        or _AUTOMATED_PRICE_CHECK_TITLE_RE.search(document.title or "")
+        or role in {"market_roundup", "mover_recap"}
+    ):
+        decision = "non_issuer_market_content"
     return DeterministicNewsResultV9(
         version=DETERMINISTIC_V9_VERSION,
         calibration_version=CALIBRATION_VERSION,
@@ -256,7 +287,9 @@ def _override(current: str, signals: tuple[str, ...], table: dict[str, str]) -> 
 _MOVER_ARTICLE_RE = re.compile(
     r"\b(?:\d+\s+)?stocks?\s+moving\b|\b(?:biggest|top)\s+(?:stock\s+)?"
     r"(?:movers|gainers|losers)\b|\b(?:pre[- ]?market|after[- ]?hours|mid[- ]?day)"
-    r"\s+(?:session\s+)?(?:movers|gainers|losers)\b",
+    r"\s+(?:session\s+)?(?:movers|gainers|losers)\b|"
+    r"\bstocks?\s+(?:making|stage)\b.{0,80}\b(?:rally|selloff)\b|"
+    r"\b(?:sector|industry)[- ]wide\s+price\s+action\b",
     re.I,
 )
 _ROUNDUP_ARTICLE_RE = re.compile(
@@ -291,16 +324,19 @@ _EDITORIAL_ANALYSIS_TITLE_RE = re.compile(
 )
 _PRICE_REACTION_FOLLOWUP_RE = re.compile(
     r"\b(?:crash|plummet|fall|drop|sink|slide|tumble)[a-z]*\b.{0,100}"
-    r"\b(?:after|following|on)\b|"
+    r"\b(?:after|following)\b|"
     r"\b(?:shares?|stock)\s+(?:crash|plummet|fall|drop|sink|slide|tumble|"
-    r"rise|jump|surge|soar)[a-z]*\b.{0,100}\b(?:after|following|on)\b|"
+    r"rise|jump|surge|soar)[a-z]*\b.{0,100}\b(?:after|following)\b|"
     r"\b(?:shares?|stock)\s+trading\s+(?:up|down)\b.{0,140}\bafter\b.{0,160}\bannounc|"
-    r"\bwhy\b.{0,90}\b(?:shares?|stock)\b",
+    r"\b(?:shares?|stock)\s+(?:move|trade)[a-z]*\s+(?:to\s+session\s+high|higher|lower)\b",
     re.I | re.S,
 )
 _DIRECT_ISSUER_TEXT_RE = re.compile(
-    r"\b(?:PRNewswire|Business\s+Wire|Globe\s+Newswire)\b",
-    re.I,
+    r"\b(?:PRNewswire|Business\s+Wire|Globe\s+Newswire)\b|"
+    r"\b(?:the\s+company|[A-Z][A-Za-z0-9&.' -]{2,80})\s+today\s+"
+    r"(?:announced|reported|declared|entered|completed|launched|appointed|named|received|secured)\b|"
+    r"\b(?:announces?|reports?|provides?)\s+(?:a\s+)?(?:business|corporate|clinical|financial)\s+update\b",
+    re.I | re.S,
 )
 _PRIMARY_REGULATORY_SOURCE_RE = re.compile(
     r"^\s*(?:the\s+)?(?:nasdaq(?:\s+stock\s+market)?|nyse|sec|fda)\s+"
@@ -314,7 +350,10 @@ _DIRECT_ANALYST_RESEARCH_RE = re.compile(
     re.I | re.S,
 )
 _WHY_MOVING_RE = re.compile(
-    r"\bwhy\s+(?:is|are|did)\b.{0,80}\bmoving\b|^\s*here(?:'s|\s+is)\s+why\b",
+    r"^\s*why\b.{0,120}\b(?:shares?|stock)\b.{0,80}"
+    r"\b(?:moving|ripping|rallying|rocketing|surging|soaring|sinking|plunging|"
+    r"falling|dropping|getting\s+(?:crushed|hit)|trading\s+(?:higher|lower))\b|"
+    r"^\s*here(?:'s|\s+is)\s+why\b",
     re.I,
 )
 _REPORTED_EARLIER_RE = re.compile(
@@ -331,7 +370,8 @@ _EXPLICIT_ANALYST_ACTION_RE = re.compile(
     r"\b(?:upgrade[sd]?|downgrade[sd]?|maintain(?:s|ed)?|reiterate[sd]?|"
     r"initiate[sd]?|resume[sd]?)\b.{0,100}"
     r"\b(?:buy|sell|hold|overweight|underweight|outperform|underperform|neutral)\b|"
-    r"\b(?:raises?|lowers?|cuts?)\s+(?:the\s+)?price\s+target\b|"
+    r"\b(?:raises?|lowers?|cuts?)\s+(?:the\s+)?(?:price\s+target|PT)\b|"
+    r"\breiterate[sd]?\b.{0,80}\brating\b|"
     r"\bsays?\s+(?:this\s+)?analyst\b",
     re.I | re.S,
 )
@@ -339,15 +379,64 @@ _REGULATORY_CURRENT_RE = re.compile(
     r"\b(?:fda|usda|sec|nasdaq|nyse)\b.{0,100}\b(?:approv|clear|subpoena|halt|resume|"
     r"noncompliance|fil(?:e|ing)|registration|investigat)|"
     r"\b(?:form\s+8-k|form\s+4|regulatory\s+approval|clinical\s+hold|"
-    r"fast\s+track\s+designation|suspends?\s+trading|trading\s+halt|"
+    r"fast\s+track\s+designation|"
+    r"grants?\b.{0,80}\b(?:terrestrial|marketing|operating)\s+(?:authorization|approval)|"
+    r"suspends?\s+trading|trading\s+halt|"
     r"(?:shares?|stock)\s+(?:is|are|remains?)?\s*halted|circuit\s+breaker\s+halt|"
-    r"patent\s+infringement\s+lawsuit)\b|"
+    r"patent\s+infringement\s+lawsuit|trading\s+halted|halted\s+on\s+code\s+news\s+pending)\b|"
     r"^\s*fed(?:eral\s+reserve)?(?:'s)?\b.{0,80}\b(?:says?|remarks?|announces?)\b",
     re.I | re.S,
 )
 _AUTOMATED_ARTICLE_RE = re.compile(
     r"\bthis\s+article\s+was\s+generated\s+by\s+benzinga(?:'s)?\s+automated\s+"
-    r"content\s+engine\b",
+    r"content\s+engine\b|\bthis\s+story\s+was\s+generated\s+using\s+benzinga\s+neuro\b",
+    re.I,
+)
+_AUTOMATED_RESULT_TITLE_RE = re.compile(
+    r"^(?:UPDATE:\s*)?.{1,110}\b(?:Q[1-4]|FY\d{2}|FQ[1-4])\b.{0,120}"
+    r"\b(?:EPS|FFO|sales|revenue|profit|net\s+income)\b.{0,140}"
+    r"\b(?:\$\(?\d|vs\.?|beats?|miss(?:es)?|inline|up\s+from|down\s+from|YoY|estimate)\b|"
+    r"^.{1,110}\b(?:reports?|reported)\b.{0,90}\b(?:EPS|FFO|revenues?|sales|profit|net\s+income)\b"
+    r".{0,100}\b(?:vs\.?|beats?|miss(?:es)?|up\s+from|down\s+from|YoY|estimate)\b|"
+    r"^.{1,100}\b(?:EPS|FFO)\b.{0,100}\b(?:beats?|miss(?:es)?|inline|up\s+from|down\s+from)\b",
+    re.I | re.S,
+)
+_GUIDANCE_ONLY_TITLE_RE = re.compile(
+    r"^.{1,120}\b(?:sees?|guides?|expects?|forecasts?|projects?)\b.{0,180}"
+    r"\b(?:EPS|FFO|sales|revenue|profit|net\s+income|guidance|outlook)\b",
+    re.I | re.S,
+)
+_AUTOMATED_MARKET_STAT_TITLE_RE = re.compile(
+    r"\bBenzinga\s+Pro\b.{0,80}\b(?:price\s+check|sector\s+ETFs?|crypto)\b|"
+    r"^\s*(?:Option\s+Alert|.{1,80}\s+Option\s+Alert):|"
+    r"\bnew\s+52[- ]week\s+highs?\b",
+    re.I,
+)
+_AUTOMATED_PRICE_CHECK_TITLE_RE = re.compile(
+    r"\bBenzinga\s+Pro\b.{0,100}\b(?:price\s+check|sector\s+ETFs?|crypto)\b",
+    re.I,
+)
+_STRONG_MACRO_ROUNDUP_TITLE_RE = re.compile(
+    r"\b(?:durable\s+goods|nonfarm\s+payrolls?|wholesale\s+inventories|"
+    r"pending\s+home\s+sales|EIA\s+(?:crude\s+oil|gasoline)\s+inventories|"
+    r"commercial\s+bank\s+deposits?|job\s+cuts?|government\s+bond\s+yield|"
+    r"natural\s+gas\s+futures|cotton\s+is\s+trading|sugar\s+futures|"
+    r"live\s+cattle\s+futures|crude\s+futures|EUR/USD|AUD/USD|GBP/USD)\b|"
+    r"\b(?:morning|afternoon|evening|European)\s+(?:market\s+)?wrap\b",
+    re.I,
+)
+_GENERIC_MACRO_STAT_TITLE_RE = re.compile(
+    r"\b(?:futures?|inventories|orders?|sales|payrolls?|yield)\b.{0,90}\bvs\.?\b.{0,40}\b(?:est|prior)\b",
+    re.I,
+)
+_MACRO_ROUNDUP_TITLE_RE = re.compile(
+    rf"(?:{_STRONG_MACRO_ROUNDUP_TITLE_RE.pattern})|(?:{_GENERIC_MACRO_STAT_TITLE_RE.pattern})",
+    re.I,
+)
+_REGULATORY_OR_FILING_TITLE_RE = re.compile(
+    r"\b(?:13[DF]|13F|8-K|10-[KQ]|Form\s+483|SEC\s+(?:letter|inquiry|filing)|"
+    r"files?\s+for\s+(?:stock\s+)?shelf|patent|ticker\s+change|"
+    r"TARP\s+funds?|FCC\s+(?:auction|authorization))\b",
     re.I,
 )
 _PRIMARY_RESULT_TITLE_RE = re.compile(
@@ -362,9 +451,44 @@ _PRIMARY_OPERATION_TITLE_RE = re.compile(
     r"\b(?:appoints?|names?|hires?)\b.{0,100}\b(?:president|officer|director|chief)\b|"
     r"\b(?:suspends?|resumes?|restarts?|halts?|closes?|shuts?\s+down)\b.{0,100}"
     r"\b(?:flights?|operations?|production|facility|service|trading)\b|"
-    r"\b(?:launches?|receives?\s+(?:fda|usda)|wins?|secures?|awarded)\b|"
-    r"\b(?:sees?\s+)?clos(?:e|es|ing)\b.{0,100}\binvestment\b",
+    r"\b(?:launches?|introduces?|selects?|delivers?|receives?\s+(?:fda|usda)|wins?|secures?|awarded)\b|"
+    r"\b(?:expands?|opens?)\b.{0,100}\b(?:facility|plant|store|operations?|capacity|jobs?)\b|"
+    r"\b(?:dies?|passes?\s+away|death)\b.{0,100}\b(?:chief|officer|director|chairman|partner|founder)\b|"
+    r"\b(?:sees?\s+)?clos(?:e|es|ing)\b.{0,100}\binvestment\b|"
+    r"\b(?:combines?|collaborates?|partners?)\b.{0,100}\b(?:with|agreement|platform|company)\b|"
+    r"\b(?:comp(?:arable)?\s+sales|same[- ]store\s+sales)\b.{0,80}\b(?:up|down|rise|fall|increase|decrease)\b|"
+    r"\b(?:repays?|redeems?|retires?)\b.{0,100}\b(?:debt|notes?|facility)\b|"
+    r"\b(?:expands?|increases?|acquires?)\b.{0,100}\b(?:stake|ownership|holding)\b|"
+    r"\b(?:publishes?|presents?|announces?)\b.{0,100}\b(?:study|trial|clinical)\s+(?:results?|data)\b",
     re.I | re.S,
+)
+_PRIMARY_EVENT_TITLE_RE = re.compile(
+    r"\b(?:prices?|launches?|commences?|closes?|completes?|files?|announces?|"
+    r"enters?|signs?|receives?|wins?|secures?|awarded|acquires?|to\s+acquire|"
+    r"merges?|settles?|sues?|appoints?|resigns?|authoriz(?:e[sd]?|ing)|restarts?|"
+    r"extends?|increases?|consolidates?|delists?|changes?|suspends?|resumes?)\b.{0,140}"
+    r"\b(?:offering|placement|shares?|notes?|warrants?|license|licensing|"
+    r"agreement|transaction|acquisition|merger|contract|order|grant|"
+    r"settlement|lawsuit|trial|study|dividend|repurchase|buyback|operations?|"
+    r"chief|officer|director|guidance|outlook|forecast|facility|loan|debt|"
+    r"ticker|symbol|share\s+consolidation|reverse\s+split)\b|"
+    r"\b(?:reaffirms?|raises?|cuts?|lowers?)\b.{0,100}\b(?:guidance|outlook|forecast)\b|"
+    r"\b(?:offering|private\s+placement|registered\s+direct|at-the-market|"
+    r"acquisition|merger|license|licensing|contract|settlement|lawsuit|"
+    r"dividend|repurchase|buyback)\b.{0,140}"
+    r"\b(?:priced?|announc|sign|close|complete|receive|award|win|secure|"
+    r"acquire|settle|authoriz|restart)\w*\b",
+    re.I | re.S,
+)
+_NON_ISSUER_MARKET_TEXT_RE = re.compile(
+    r"\b(?:federal\s+reserve|central\s+bank|interest\s+rates?|treasur(?:y|ies)|"
+    r"bond\s+market|yield\s+curve|inflation|consumer\s+prices?|unemployment|"
+    r"gross\s+domestic\s+product|global\s+economy|world\s+economy|"
+    r"international\s+monetary\s+fund|geopolitical|sanctions?|crude\s+oil|"
+    r"gold\s+prices?|foreign\s+exchange|forex|cryptocurrency\s+market|"
+    r"market\s+(?:breadth|sentiment|volatility)|recession|economic\s+growth|"
+    r"sovereign\s+debt|national\s+debt)\b",
+    re.I,
 )
 _ISSUER_DIRECT_CHANNELS = {"press releases", "press release", "company news"}
 
@@ -397,20 +521,60 @@ def _classify_article_role_v9(
         return "mover_recap", "structural_mover_title"
     if _ROUNDUP_ARTICLE_RE.search(title):
         return "market_roundup", "structural_roundup_title"
-    if _is_verified_automated(document):
+    if _STRONG_MACRO_ROUNDUP_TITLE_RE.search(title) or (
+        _GENERIC_MACRO_STAT_TITLE_RE.search(title) and not document.tickers
+    ):
+        return "market_roundup", "structural_macro_or_market_stat_title"
+    if title.count(";") >= 1 and len(re.findall(
+        r"\b(?:rise|surge|jump|gain|fall|drop|decline|slide|plunge|tumble)\w*\b",
+        title,
+        re.I,
+    )) >= 2:
+        return "market_roundup", "structural_multi_company_move_roundup"
+    if _GUIDANCE_ONLY_TITLE_RE.search(title) and not _is_verified_automated(document):
+        return "primary_event", "substantive_current_guidance_title"
+    if _is_verified_automated(document) or _AUTOMATED_RESULT_TITLE_RE.search(title):
         return "automated_summary", "verified_automated_product"
-    if _WHY_MOVING_RE.search(title):
-        return "why_moving_followup", "structural_why_moving_title"
-    if _EXPLICIT_ANALYST_ACTION_RE.search(title) or (
+    if _AUTOMATED_MARKET_STAT_TITLE_RE.search(title):
+        return "automated_summary", "structural_automated_market_stat"
+    # A concrete rating/target action remains an analyst event even when the
+    # headline also describes the contemporaneous share-price response.
+    if _EXPLICIT_ANALYST_ACTION_RE.search(title):
+        return "analyst_event", "explicit_analyst_action_title"
+    if re.match(r"^\s*here(?:'s|\s+is)\s+why\b", title, re.I):
+        return "why_moving_followup", "structural_here_is_why_title"
+    if re.search(r":\s*why\b.{0,100}\b(?:shares?|stock)\b", title, re.I):
+        return "editorial_analysis", "structural_analysis_question_suffix"
+    if _PREVIEW_ARTICLE_RE.search(title):
+        return "preview", "structural_preview_title"
+    if _WHY_MOVING_RE.search(title) or _PRICE_REACTION_FOLLOWUP_RE.search(title):
+        return "why_moving_followup", "structural_price_reaction_followup"
+    if _ANALYST_BLOG_RE.search(title):
+        return "editorial_analysis", "structural_analyst_blog_title"
+    if _EDITORIAL_ANALYSIS_TITLE_RE.search(title):
+        return "editorial_analysis", "structural_editorial_analysis_title"
+    if _REGULATORY_CURRENT_RE.search(title) or _REGULATORY_OR_FILING_TITLE_RE.search(title):
+        return "regulatory_event", "explicit_current_regulatory_title"
+    analyst_channel_evidence = bool(
         channels & {"analyst color", "analyst ratings", "downgrades", "upgrades"}
         and re.search(
-            r"\b(?:wall\s+street|analyst|research|outlook|trend|price\s+target|"
-            r"our\s+(?:rating|target|estimates?)|we\s+(?:rate|maintain|expect))\b",
+            r"\b(?:our\s+(?:rating|price\s+target|target|estimates?)|"
+            r"we\s+(?:rate|maintain|reiterate|expect|believe)|research\s+note|"
+            r"analysts?\s+(?:said|wrote|believes?|expects?|praise|weigh)|"
+            r"analysts?\s+(?:still\s+)?(?:bullish|bearish)|"
+            r"(?:bank|capital|securities)\s+comments?\s+on)\b",
             f"{title}\n{document.text[:1200]}",
             re.I,
         )
-    ):
+    )
+    if analyst_channel_evidence:
         return "analyst_event", "explicit_analyst_action_title"
+    if _PRIMARY_RESULT_TITLE_RE.search(title):
+        return "primary_event", "substantive_current_result_title"
+    if _PRIMARY_OPERATION_TITLE_RE.search(title):
+        return "primary_event", "substantive_current_operating_title"
+    if _PRIMARY_EVENT_TITLE_RE.search(title):
+        return "primary_event", "substantive_current_event_title"
     if re.search(
         r"\b(?:investor|managing\s+partner)\b.{0,260}"
         r"\b(?:social\s+media|took\s+to\s+X|wrote\s+on\s+X|post(?:ed)?\s+on\s+X)\b|"
@@ -422,20 +586,6 @@ def _classify_article_role_v9(
         return "editorial_analysis", "reported_investor_social_commentary"
     if re.search(r"\bZacks\s+Investment\s+Research\b", document.text, re.I):
         return "editorial_analysis", "structural_syndicated_zacks_editorial"
-    if _PRIMARY_RESULT_TITLE_RE.search(title):
-        return "primary_event", "substantive_current_result_title"
-    if _PRIMARY_OPERATION_TITLE_RE.search(title):
-        return "primary_event", "substantive_current_operating_title"
-    if _PRICE_REACTION_FOLLOWUP_RE.search(title):
-        return "why_moving_followup", "structural_price_reaction_followup"
-    if _PREVIEW_ARTICLE_RE.search(title):
-        return "preview", "structural_preview_title"
-    if _ANALYST_BLOG_RE.search(title):
-        return "editorial_analysis", "structural_analyst_blog_title"
-    if _EDITORIAL_ANALYSIS_TITLE_RE.search(title):
-        return "editorial_analysis", "structural_editorial_analysis_title"
-    if _REGULATORY_CURRENT_RE.search(title):
-        return "regulatory_event", "explicit_current_regulatory_title"
     if base_role == "automated_summary":
         # Older rules matched any byline containing "Insights", including the
         # human-authored "Benzinga EV Insights" desk. Only the explicit
@@ -456,7 +606,7 @@ def _classify_source_origin_v9(
     }
     title = document.title or ""
     complete_text = f"{title}\n{document.text[:1200]}"
-    if role == "automated_summary":
+    if role == "automated_summary" or _is_verified_automated(document):
         return "automated_summary", "verified_automated_product"
     if role in {"market_roundup", "mover_recap", "preview"}:
         return "editorial_aggregation", "aggregation_role"
@@ -471,11 +621,20 @@ def _classify_source_origin_v9(
         return "editorial_original", "syndicated_analyst_blog"
     if re.search(r"\bZacks\s+Investment\s+Research\b", document.text, re.I):
         return "editorial_aggregation", "syndicated_zacks_editorial"
-    if role == "analyst_event" and _DIRECT_ANALYST_RESEARCH_RE.search(complete_text):
+    if role == "analyst_event" and (
+        _DIRECT_ANALYST_RESEARCH_RE.search(complete_text)
+        or _EXPLICIT_ANALYST_ACTION_RE.search(title)
+        or channels & {"analyst color", "analyst ratings", "price target", "upgrades", "downgrades", "initiation", "reiteration"}
+    ):
         return "analyst_research", "direct_analyst_research_evidence"
-    if role == "regulatory_event" and _PRIMARY_REGULATORY_SOURCE_RE.search(complete_text):
+    if role == "regulatory_event" and (
+        _PRIMARY_REGULATORY_SOURCE_RE.search(complete_text)
+        or _REGULATORY_OR_FILING_TITLE_RE.search(title)
+    ):
         return "regulatory_primary", "regulatory_primary_title"
-    if channels & _ISSUER_DIRECT_CHANNELS or _DIRECT_ISSUER_TEXT_RE.search(complete_text):
+    if channels & _ISSUER_DIRECT_CHANNELS or (
+        role == "primary_event" and _DIRECT_ISSUER_TEXT_RE.search(complete_text)
+    ):
         return "issuer_direct", "issuer_distribution_evidence"
     if role == "analyst_event":
         return "editorial_original", "reported_analyst_commentary"
@@ -530,7 +689,31 @@ def _remove_nonsemantic_link_blocks(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", _NONSEMANTIC_LINK_LINE_RE.sub("", text)).strip()
 
 
-def _retain_unit_v9(label: dict[str, Any], *, provider_tickers: set[str]) -> bool:
+_GENERIC_METHODOLOGY_SECTION_RE = re.compile(
+    r"(?ims)^\s*(?:How\s+Are\s+Analyst\s+Ratings\s+Determined\?|"
+    r"How\s+Do\s+Analyst\s+Ratings\s+Work\?|Important\s+Disclosures?)\s*$.*\Z"
+)
+_EXTERNAL_ERROR_LINE_RE = re.compile(
+    r"(?im)^\s*(?:upstream\s+connect\s+error|connection\s+reset|access\s+denied|"
+    r"service\s+unavailable|request\s+blocked|internal\s+server\s+error|"
+    r"error\s+reference\s+number)\b.*$"
+)
+
+
+def _remove_generic_methodology_blocks(text: str) -> str:
+    """Exclude publisher boilerplate and failed external fetches from semantics."""
+    clean = _GENERIC_METHODOLOGY_SECTION_RE.sub("", text)
+    clean = _EXTERNAL_ERROR_LINE_RE.sub("", clean)
+    return re.sub(r"\n{3,}", "\n\n", clean).strip()
+
+
+def _retain_unit_v9(
+    label: dict[str, Any],
+    *,
+    provider_tickers: set[str],
+    content_role: str,
+    article_title: str,
+) -> bool:
     """Retain fact-checked issuer passages even when provider links omit them.
 
     Provider tickers are candidate evidence, not the semantic universe.  The
@@ -543,6 +726,13 @@ def _retain_unit_v9(label: dict[str, Any], *, provider_tickers: set[str]) -> boo
     evidence = str(label.get("semantic_evidence_text") or "").strip()
     concepts = set(classification.get("event_concepts") or ())
     event_supported = bool(concepts) or _SUPPORTED_EVENT_EVIDENCE_RE.search(evidence)
+    if _AUTOMATED_PRICE_CHECK_TITLE_RE.search(article_title) and not re.search(
+        r"\b(?:after|following|because)\b.{0,180}\b(?:announc|report|file|approv|"
+        r"offer|acquir|contract|trial|guidance|upgrade|downgrade)\w*\b",
+        evidence,
+        re.I | re.S,
+    ):
+        return False
     # Pure price tables, peer lists, fund holdings and incidental issuer names
     # are context, not issuer semantic units. Provider links do not override
     # the absence of an issuer event predicate.
@@ -565,9 +755,9 @@ def _retain_unit_v9(label: dict[str, Any], *, provider_tickers: set[str]) -> boo
     )
     scope = str(label.get("evidence_scope") or "")
     return (
-        "passage_explicit_issuer" in flags
+        bool({"passage_explicit_issuer", "document_single_resolved_issuer"} & flags)
         and scope in {"ticker_specific", "shared_relational", "shared_ambiguous"}
-        and len(evidence.split()) >= 8
+        and len(evidence.split()) >= 5
         and str(label.get("unit_role") or "") not in DENIED_UNIT_ROLES
         and event_supported
     )
@@ -576,10 +766,12 @@ def _retain_unit_v9(label: dict[str, Any], *, provider_tickers: set[str]) -> boo
 _SUPPORTED_EVENT_EVIDENCE_RE = re.compile(
     r"\b(?:announc|report|file|submit|approv|accept|clear|designat|award|win|secure|"
     r"acquir|merge|partner|collaborat|settle|sue|investigat|halt|delist|bankrupt|"
-    r"restructur|offer|placement|convertible|buyback|repurchase|dividend|guidance|"
+    r"restructur|offer|placement|convertible|buyback|repurchase|dividend|guidance|authoriz|"
     r"outlook|forecast|earnings|eps|revenue|sales|profit|loss|bookings|margin|trial|"
-    r"endpoint|contract|order|appoint|resign|launch|deploy|recall|split|compliance|"
-    r"noncompliance|resume|suspend|shutdown|closure|layoff|stake|ownership|usda)\w*\b",
+    r"endpoint|contract|order|appoint|resign|launch|deliver|deploy|recall|split|compliance|"
+    r"noncompliance|resume|suspend|shutdown|closure|layoff|stake|ownership|usda)\w*\b|"
+    r"\bprices\b\s+(?:approximately\s+)?(?:\d|<financial_share_count>)"
+    r".{0,60}\b(?:shares?|notes?|warrants?|securities)\b",
     re.I,
 )
 
@@ -621,6 +813,8 @@ def _refine_event_concepts(
     *,
     evidence_text: str,
     issuer_role: str,
+    content_role: str,
+    unit_role: str,
 ) -> set[str]:
     """Apply event-local state and instrument semantics before direction."""
     text = evidence_text
@@ -681,8 +875,17 @@ def _refine_event_concepts(
         output.add("capital_return")
     if re.search(r"\b(?:partner(?:ship|ed)?|collaborat(?:ion|ed)?)\b", text, re.I):
         output.add("commercial")
+    if re.search(r"\b(?:license|licensing)\s+agreement\b|\bcommercial\s+license\b", text, re.I):
+        output.update(("commercial", "contract"))
     if re.search(r"\b(?:public\s+offering|registered\s+direct|private\s+placement|at-the-market)\b", text, re.I):
         output.add("financing")
+    if re.search(
+        r"\bprices\b\s+(?:approximately\s+)?(?:\d|<financial_share_count>)"
+        r".{0,60}\b(?:shares?|notes?|warrants?|securities)\b",
+        text,
+        re.I | re.S,
+    ):
+        output.add("financing.public_offering")
     if re.search(r"\b(?:guidance|outlook|forecast)\b|\b(?:sees?|guides?)\b.{0,100}\bvs\.?\b", text, re.I | re.S):
         output.add("guidance")
     if re.search(r"\b(?:earnings|eps|revenue|sales|profit|loss|bookings|quarterly\s+results?)\b", text, re.I):
@@ -692,7 +895,23 @@ def _refine_event_concepts(
     ) and not re.search(r"\b(?:reported|reports?|actual|came\s+in|quarterly\s+results?)\b", text, re.I):
         output.discard("earnings")
         output.add("guidance")
-    if re.search(r"\b(?:fda|usda|regulator|regulatory|approval|clearance|clinical\s+hold)\b", text, re.I):
+    if re.search(
+        r"\b(?:fda|usda|regulator|regulatory|approval|clearance|clinical\s+hold)\b",
+        text,
+        re.I,
+    ) and not (
+        content_role in {"editorial_analysis", "market_roundup", "preview"}
+        and not re.search(
+            r"\b(?:receiv(?:e|es|ed)|obtain(?:s|ed)?|grant(?:s|ed)?|approv(?:e|es|ed)|"
+            r"clear(?:s|ed)?|reject(?:s|ed)?|den(?:y|ies|ied)|impos(?:e|es|ed))\b"
+            r".{0,100}\b(?:approval|clearance|designation|clinical\s+hold)\b|"
+            r"\b(?:approval|clearance|designation|clinical\s+hold)\b.{0,100}"
+            r"\b(?:receiv(?:e|es|ed)|obtain(?:s|ed)?|grant(?:s|ed)?|approv(?:e|es|ed)|"
+            r"clear(?:s|ed)?|reject(?:s|ed)?|den(?:y|ies|ied)|impos(?:e|es|ed))\b",
+            text,
+            re.I | re.S,
+        )
+    ):
         output.add("regulatory")
     if re.search(r"\b(?:vaccine|drug|treatment|product|platform|software|service)\b.{0,100}"
                  r"\b(?:approv|launch|sell|commercializ|clear)\w*\b|"
@@ -710,6 +929,8 @@ def _refine_event_concepts(
         output.add("ma_transaction")
     if re.search(r"\b(?:settlement|lawsuit|litigation|legal\s+action|patent\s+infringement)\b", text, re.I):
         output.add("legal")
+    if re.search(r"\b(?:trading\s+halt(?:ed)?|halted\s+on\s+code\s+news\s+pending|circuit\s+breaker)\b", text, re.I):
+        output.add("listing_market_structure")
     if re.search(r"\b(?:stake|ownership|beneficial\s+owner|takes?\s+a\s+position)\b", text, re.I):
         output.add("ownership")
     if re.search(
@@ -727,6 +948,10 @@ def _refine_event_concepts(
         output.add("market_reaction")
     if re.search(r"\b(?:delist(?:ed|ing)?|continued\s+listing|listing\s+compliance|noncompliance)\b", text, re.I):
         output.add("listing_market_structure")
+    if re.search(r"\b(?:dies?|passes?\s+away|death)\b", text, re.I) and re.search(
+        r"\b(?:chief|officer|director|chairman|partner|founder)\b", text, re.I
+    ):
+        output.add("management_governance")
     if _PRIMARY_ENDPOINT_FAILURE_RE.search(text):
         output = {value for value in output if "success" not in value and "positive_data" not in value}
         output.add("clinical.failure")
@@ -738,6 +963,30 @@ def _refine_event_concepts(
         output.add("management_governance.appointment")
     if issuer_role in {"lender", "financing_provider"}:
         output.discard("financing.dilutive")
+    # Observed price movement is a context feature, not a causal event family.
+    # Keep it only for recap/follow-up passages whose purpose is to describe
+    # the observed move. This prevents a price-action suffix from contaminating
+    # a current issuer announcement.
+    # Observed price movement is persisted as ``observed_reaction`` on the
+    # scoped unit.  It is never a semantic event concept; keeping it here made
+    # recap articles appear to contain a causal ``market_reaction`` event.
+    output.discard("market_reaction")
+    # Analyst-methodology and thesis prose frequently mentions earnings,
+    # financing, guidance, products, or operations without announcing those
+    # events. Preserve the analyst action and explicit valuation context only.
+    # Automation is provenance/format, not analyst methodology. A compact
+    # automated earnings or financing wire still carries the same issuer event
+    # concepts as a human-written wire and must not be stripped to analyst-only
+    # concepts merely because its prose was generated.
+    if content_role == "analyst_event" or unit_role == "ticker_scoped_analyst_context":
+        analyst_concepts = {
+            value for value in output
+            if value == "analyst_action"
+            or value.startswith("analyst.")
+            or value in {"strategy_valuation", "market_reaction"}
+        }
+        if analyst_concepts:
+            output = analyst_concepts
     return output
 
 
@@ -747,12 +996,31 @@ def _compose_direction_v9(
     evidence_text: str,
     issuer_role: str,
     concepts: set[str],
+    content_role: str,
 ) -> dict[str, Any]:
     """Apply deterministic precedence after scoped component scoring."""
     text = evidence_text
     forced = ""
     basis = ""
     initial_direction = str(direction.get("direction") or "neutral")
+    if content_role == "automated_summary":
+        rating_counts = {
+            key.casefold(): int(value)
+            for key, value in re.findall(
+                r"\b(Bullish|Somewhat\s+Bullish|Indifferent|Somewhat\s+Bearish|Bearish)\s*=\s*(\d+)",
+                text,
+                re.I,
+            )
+        }
+        if rating_counts:
+            positive_count = rating_counts.get("bullish", 0) + rating_counts.get("somewhat bullish", 0)
+            negative_count = rating_counts.get("bearish", 0) + rating_counts.get("somewhat bearish", 0)
+            if positive_count > negative_count:
+                forced, basis = "positive", "automated_rating_summary_positive"
+            elif negative_count > positive_count:
+                forced, basis = "negative", "automated_rating_summary_negative"
+            else:
+                forced, basis = "neutral", "automated_rating_summary_balanced"
     # Transaction roles dominate generic financing/debt language.  A target
     # receiving a stated cash/share premium is positive even when the buyer
     # finances the deal with debt; that financing belongs to the acquirer.
@@ -775,6 +1043,14 @@ def _compose_direction_v9(
         forced, basis = "negative", "maintained_negative_analyst_rating"
     elif re.search(r"\b(?:maintain(?:s|ed)?|reiterate[sd]?)\b.{0,80}\b(?:buy|outperform|overweight)\b", text, re.I | re.S):
         forced, basis = "positive", "maintained_positive_analyst_rating"
+    elif content_role == "analyst_event" and re.search(
+        r"\b(?:excellent\s+entry\s+point|compelling\s+(?:entry|opportunity)|"
+        r"bullish|positive\s+outlook|upside\s+potential|growth\s+rate|"
+        r"market\s+share\s+gains?)\b",
+        text,
+        re.I,
+    ) and not re.search(r"\b(?:downgrade|sell|underperform|underweight)\b", text, re.I):
+        forced, basis = "positive", "explicit_positive_analyst_thesis"
     if (
         re.search(r"\b(?:maintain(?:s|ed)?|reiterate[sd]?)\b.{0,80}\b(?:buy|outperform|overweight)\b", text, re.I | re.S)
         and re.search(r"\b(?:lowers?|cuts?|reduces?)\b.{0,60}\bprice\s+target\b|\bprice\s+target\b.{0,80}\bfrom\s+\$?\d+(?:\.\d+)?\s+to\s+\$?\d+(?:\.\d+)?", text, re.I | re.S)
@@ -784,6 +1060,14 @@ def _compose_direction_v9(
             forced, basis = "mixed", "positive_rating_with_price_target_cut"
     if _PRIMARY_ENDPOINT_FAILURE_RE.search(text):
         forced, basis = "negative", "primary_endpoint_failure_precedence"
+    elif re.search(
+        r"\b(?:primary\s+endpoint\s+(?:was\s+)?met|met\s+(?:the\s+)?primary\s+endpoint|"
+        r"statistically\s+significant|virologic\s+cure|complete\s+response|"
+        r"positive\s+(?:topline\s+)?results?|achieved\s+sustained\s+virologic\s+response)\b",
+        text,
+        re.I,
+    ) and re.search(r"\b(?:trial|study|phase\s+[123]|endpoint|patients?)\b", text, re.I):
+        forced, basis = "positive", "successful_clinical_outcome"
     result_text = " ".join(
         clause for clause in re.split(r"(?<=[.!?])\s+|\n+", text)
         if not re.search(
@@ -809,6 +1093,20 @@ def _compose_direction_v9(
         r"\b(?:eps|earnings|revenue|sales|profit|bookings)\b",
         result_text, re.I | re.S,
     ))
+    swing_to_profit = bool(re.search(
+        r"\b(?:profit|net\s+income|earnings)\b.{0,100}\b(?:versus|vs\.?|from)\b"
+        r".{0,80}\b(?:loss|negative)\b|\b(?:swings?|returns?)\s+to\s+(?:a\s+)?profit\b",
+        result_text,
+        re.I | re.S,
+    ))
+    swing_to_loss = bool(re.search(
+        r"\b(?:loss|net\s+loss)\b.{0,100}\b(?:versus|vs\.?|from)\b"
+        r".{0,80}\b(?:profit|income)\b|\b(?:swings?|falls?)\s+to\s+(?:a\s+)?loss\b",
+        result_text,
+        re.I | re.S,
+    ))
+    current_result_positive = current_result_positive or swing_to_profit
+    current_result_negative = current_result_negative or swing_to_loss
     if current_result_positive and current_result_negative:
         forced, basis = "mixed", "current_results_mixed"
     elif current_result_positive:
@@ -852,6 +1150,10 @@ def _compose_direction_v9(
         forced, basis = "neutral", "ordinary_management_appointment"
     if re.search(r"\b(?:reverse\s+stock\s+split|1-for-\d+\s+(?:reverse\s+)?split)\b", text, re.I):
         forced, basis = "negative", "reverse_split_state"
+    if re.search(r"\b(?:dies?|passes?\s+away|death)\b", text, re.I) and re.search(
+        r"\b(?:chief|officer|director|chairman|partner|founder)\b", text, re.I
+    ):
+        forced, basis = "negative", "material_management_death"
     if re.search(
         r"\b(?:announc(?:e[sd]?|ement)|authoriz(?:e[sd]?|ation)|restart(?:s|ed)?|"
         r"resume[sd]?|increase[sd]?)\b"
@@ -878,6 +1180,32 @@ def _compose_direction_v9(
     if re.search(r"\b(?:weak|declining|lower)\b.{0,70}\b(?:demand|sales|orders?|shipments?)\b|"
                  r"\b(?:shutdown|closure|suspend(?:s|ed)?\s+(?:flights?|operations?|production)|layoffs?)\b", text, re.I | re.S):
         forced, basis = "negative", "adverse_operating_state"
+    if re.search(
+        r"\b(?:expand(?:s|ed|ing)?|open(?:s|ed|ing)?)\b.{0,100}"
+        r"\b(?:facility|plant|store|operations?|capacity)\b|"
+        r"\bcreate(?:s|d|ing)?\b.{0,40}\bnew\s+jobs?\b",
+        text,
+        re.I | re.S,
+    ):
+        forced, basis = "positive", "operating_expansion"
+    if re.search(r"\b(?:signs?|enters?\s+into)\b.{0,100}\b(?:commercial\s+)?license\s+agreement\b", text, re.I | re.S):
+        forced, basis = "positive", "commercial_license_signed"
+    if re.search(r"\b(?:reaffirms?|maintains?)\b.{0,80}\b(?:guidance|outlook|forecast)\b", text, re.I | re.S):
+        forced, basis = "positive", "guidance_reaffirmed"
+    explicit_estimate_comparison = bool(re.search(
+        r"\b(?:beat(?:s|ing)?|miss(?:es|ed|ing)?|above|below|ahead\s+of|"
+        r"short\s+of)\b.{0,100}\b(?:estimate|consensus|expectation)s?\b|"
+        r"\b(?:estimate|consensus|expectation)s?\b.{0,100}"
+        r"\b(?:beat(?:s|ing)?|miss(?:es|ed|ing)?|above|below)\b",
+        text,
+        re.I | re.S,
+    ))
+    if (
+        not explicit_estimate_comparison
+        and re.search(r"\b(?:eps|earnings)\b\s*\$?\s*\(?-?\d+(?:\.\d+)?\)?", text, re.I)
+        and re.search(r"\$\s*\(\s*\d+(?:\.\d+)?\s*\)|\b(?:loss|negative)\b", text, re.I)
+    ):
+        forced, basis = "negative", "compact_negative_eps"
     if re.search(r"\b(?:settle[sd]?|settlement)\b", text, re.I) and not re.search(
         r"\b(?:pay|payment|charge|expense|cost|fine|penalty|admit(?:s|ted)?\s+wrongdoing)\b",
         text,
@@ -900,7 +1228,12 @@ def _compose_direction_v9(
             text,
             re.I | re.S,
         )
-    )
+    ) or bool(re.search(
+        r"\bprices\b\s+(?:approximately\s+)?(?:\d|<financial_share_count>)"
+        r".{0,60}\b(?:shares?|notes?|warrants?|securities)\b",
+        text,
+        re.I | re.S,
+    ))
     selling_holder_secondary = bool(re.search(
         r"\bsecondary\s+(?:public\s+)?offering\b.{0,140}"
         r"\b(?:selling\s+stockholder|existing\s+shareholder)s?\b|"
@@ -1097,7 +1430,10 @@ def _eligibility_v9(
         # general, but an explicitly announced pre-listing symbol is.
         snapshot = issuer_resolver.reference_snapshot((ticker,), timestamp=document.timestamp) if issuer_resolver else ()
         tradable = bool(snapshot)
-    if role in NON_TRIGGER_ARTICLE_ROLES:
+    automated_current_result = bool(
+        role == "automated_summary" and _AUTOMATED_RESULT_TITLE_RE.search(document.title or "")
+    )
+    if role in NON_TRIGGER_ARTICLE_ROLES and not automated_current_result:
         reasons.append(f"non_trigger_article_role:{role}")
     # Scoped extraction may conservatively call a title-only or parent-company
     # passage editorial context.  Once the article authority establishes a

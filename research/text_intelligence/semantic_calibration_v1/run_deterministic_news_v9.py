@@ -129,6 +129,7 @@ def _predict(item, *, issuer_resolver: NewsIssuerResolver) -> dict:
     title_resolved = issuer_resolver.resolve_title_lead_subjects(
         str(publication.get("title") or ""),
         timestamp=str(source["source_timestamp"]),
+        linked_tickers=provider_tickers,
     )
     resolved_by_ticker = {
         match.ticker: match for match in (*resolved, *title_resolved)

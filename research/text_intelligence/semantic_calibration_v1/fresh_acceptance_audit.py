@@ -72,6 +72,8 @@ class GatewaySourceEvidence:
     retained_payload_hash: str
     raw_artifact_byte_hash: str
     hash_verification_method: str
+    source_authority_available: bool = True
+    unavailable_reason: str = ""
 
 
 def load_gateway_source_evidence(
@@ -79,6 +81,7 @@ def load_gateway_source_evidence(
     items: Sequence[CollectionItem],
     *,
     raw_path_maps: Sequence[tuple[str, str]] = (),
+    allow_missing: bool = False,
 ) -> dict[str, GatewaySourceEvidence]:
     """Load and verify the exact News Gateway source authority for each item."""
     expected = {
@@ -100,7 +103,7 @@ FORMAT JSONEachRow
         for row in _json_each_rows(client.execute(sql))
     }
     missing = sorted(set(expected) - set(records))
-    if missing:
+    if missing and not allow_missing:
         raise RuntimeError(
             f"News Gateway retained record missing for {len(missing)} audits; "
             f"first={missing[:5]}"
@@ -151,6 +154,35 @@ FORMAT JSONEachRow
             raw_artifact_byte_hash=raw_byte_hash,
             hash_verification_method=verification_method,
         )
+    if missing:
+        by_source_id = {
+            str(item.blinded["source_id"]): item.blinded for item in items
+        }
+        for source_id in missing:
+            blinded = by_source_id[source_id]
+            output[source_id] = GatewaySourceEvidence(
+                retained_record={
+                    "canonical_news_id": source_id,
+                    "audit_availability": "missing_gateway_retained_record",
+                    "source_timestamp": blinded.get("source_timestamp"),
+                },
+                raw_payload={
+                    "audit_availability": "missing_gateway_retained_record",
+                    "note": (
+                        "The exact retained provider payload is unavailable. "
+                        "The frozen source lanes remain visible below."
+                    ),
+                },
+                resolved_raw_artifact_path="",
+                retained_payload_hash="",
+                raw_artifact_byte_hash="",
+                hash_verification_method="unavailable_missing_gateway_retained_record",
+                source_authority_available=False,
+                unavailable_reason=(
+                    "No q_live.benzinga_news_normalized_v1 row matched this frozen "
+                    "source identity and publication date."
+                ),
+            )
     return output
 
 
@@ -688,6 +720,12 @@ def _metadata_section(article: Mapping[str, Any]) -> str:
 
 
 def _raw_provider_payload_section(evidence: GatewaySourceEvidence) -> str:
+    if not evidence.source_authority_available:
+        return (
+            "**Unavailable:** "
+            + _escape_text(evidence.unavailable_reason)
+            + " The frozen source-lane text is retained later in this audit."
+        )
     return "\n".join(
         [
             "<details open><summary>Exact downloaded provider JSON</summary>",
@@ -709,6 +747,10 @@ def _raw_provider_payload_section(evidence: GatewaySourceEvidence) -> str:
 
 
 def _gateway_provenance_section(evidence: GatewaySourceEvidence) -> str:
+    if not evidence.source_authority_available:
+        return "- **Gateway source authority:** `unavailable`\n- **Reason:** " + _escape_text(
+            evidence.unavailable_reason
+        )
     record = evidence.retained_record
     return "\n".join(
         [
