@@ -5,10 +5,12 @@ MODEL_VERSION = "v1"
 
 __all__ = [
     "BarGPTConfig",
+    "BarGPTEncoder",
     "BarGPTOutput",
     "BarGPTV1",
     "DataConfig",
     "ExperimentConfig",
+    "PackedBarEmbeddingAdapter",
     "TrainConfig",
 ]
 
@@ -23,4 +25,12 @@ def __getattr__(name: str):
         from research.bar_gpt.v1 import model
 
         return getattr(model, name)
+    if name == "BarGPTEncoder":
+        from research.bar_gpt.v1.inference import BarGPTEncoder
+
+        return BarGPTEncoder
+    if name == "PackedBarEmbeddingAdapter":
+        from research.bar_gpt.v1.integration import PackedBarEmbeddingAdapter
+
+        return PackedBarEmbeddingAdapter
     raise AttributeError(name)

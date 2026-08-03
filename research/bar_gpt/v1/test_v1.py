@@ -42,7 +42,12 @@ from research.bar_gpt.v1.loader import (
     ticker_range_query,
 )
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
-from research.bar_gpt.v1.targets import TARGET_NAMES, build_physical_horizon_targets
+from research.bar_gpt.v1.targets import (
+    AVAILABILITY_TARGET_COUNT,
+    CONTINUOUS_TARGET_COUNT,
+    TARGET_NAMES,
+    build_physical_horizon_targets,
+)
 from pipelines.market_sip.events.clickhouse_build_intraday_base_bars import insert_intraday_condition_bars_sql, parse_args as parse_intraday_args
 from research.bar_gpt.v1.run_build_1s import main as launcher_main
 from research.bar_gpt.v1.run_build_1s import parse_args as parse_launcher_args
@@ -156,6 +161,8 @@ class BuilderSqlTest(unittest.TestCase):
         )
         self.assertIn("ticker = 'AAPL'", sql)
         self.assertIn("ORDER BY ticker, local_date, bucket_index", sql)
+        self.assertIn("max_bytes_before_external_sort = 1073741824", sql)
+        self.assertIn("optimize_read_in_order = 1", sql)
         self.assertTrue(sql.strip().endswith("FORMAT ArrowStream"))
         daily_sql = daily_range_query(
             ClickHouseBarStreamConfig(url="http://localhost:8123", user="default", password=""),
@@ -386,8 +393,8 @@ class ModelContractTest(unittest.TestCase):
         changed[:, 5:] += 100
         second = model({"1s": changed, "5s": coarse}, **kwargs)
         self.assertEqual(first.embeddings.shape, (1, 4, 64))
-        self.assertEqual(first.horizon_quantiles.shape, (1, 4, 3, 10, 3))
-        self.assertEqual(first.horizon_availability_logits.shape, (1, 4, 3, 8))
+        self.assertEqual(first.horizon_quantiles.shape, (1, 4, 3, CONTINUOUS_TARGET_COUNT, 3))
+        self.assertEqual(first.horizon_availability_logits.shape, (1, 4, 3, AVAILABILITY_TARGET_COUNT))
         self.assertTrue(torch.all(first.horizon_quantiles[..., 1:] >= first.horizon_quantiles[..., :-1]))
         torch.testing.assert_close(first.embeddings, second.embeddings)
 

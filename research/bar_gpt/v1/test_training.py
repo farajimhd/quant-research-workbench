@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import datetime as dt
 import unittest
+from copy import deepcopy
 
 import torch
 from rich.console import Console
@@ -9,13 +11,19 @@ from rich.console import Console
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, TrainConfig
 from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarView, collate_examples
 from research.bar_gpt.v1.loader import balanced_regime_stream, build_session_examples, held_out_tickers, month_units
+from research.bar_gpt.v1.sampling import CoverageCursor, SESSION_PHASES, coverage_plan_summary, select_stratified_examples
+from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
+from research.bar_gpt.v1.integration import PackedBarEmbeddingAdapter
+from research.bar_gpt.v1.metrics import ValidationAccumulator
+from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.linear_probe import fit_ridge_probes
 from research.bar_gpt.v1.objectives import compute_loss
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES
-from research.bar_gpt.v1.train import preflight
+from research.bar_gpt.v1.train import _advance_cursors, preflight
+from research.bar_gpt.v1.profile_train import _parse_candidates
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
 from research.mlops.schedulers import SampleWarmupCosineScheduler
 
@@ -96,6 +104,37 @@ class LoaderTrainerContractTest(unittest.TestCase):
             ("2025-01-15", "2025-02-01"), ("2025-02-01", "2025-03-01"), ("2025-03-01", "2025-03-02"),
         ])
 
+    def test_coverage_plan_is_one_complete_sampled_epoch(self) -> None:
+        plan = coverage_plan_summary(
+            start_date="2020-01-01", end_date="2026-01-01",
+            training_tickers=tuple(f"T{index}" for index in range(90)),
+            blocks_per_unit=16, origin_bars=512, epochs=1, seed=17,
+        )
+        self.assertEqual(plan.months, 72)
+        self.assertEqual(plan.units, 6_480)
+        self.assertEqual(plan.expected_blocks, 103_680)
+        self.assertEqual(plan.expected_origins, 53_084_160)
+
+    def test_stratified_selector_covers_phases_and_keeps_condition_block(self) -> None:
+        base = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-02", session=session_view(80), daily=None,
+            split_actions=(), config=self.data_config(),
+        ))[:5]
+        hours = (13, 15, 18, 20, 22)  # UTC winter hours map to the five New York phases.
+        examples = []
+        for index, (example, hour) in enumerate(zip(base, hours, strict=True)):
+            item = deepcopy(example)
+            timestamp = int(dt.datetime(2026, 1, 2, hour, tzinfo=dt.timezone.utc).timestamp() * 1_000_000)
+            item.origin_timestamps_us[:] = timestamp
+            item.activity_regime = index % 3
+            examples.append(item)
+        examples[-1].target_condition_flags[6, 0] = 1
+        first = select_stratified_examples(examples, limit=5, seed=7, balance_activity_regimes=True)
+        second = select_stratified_examples(examples, limit=5, seed=7, balance_activity_regimes=True)
+        self.assertEqual([item.local_date + item.session_phase for item in first], [item.local_date + item.session_phase for item in second])
+        self.assertEqual(set(item.session_phase for item in first), set(SESSION_PHASES))
+        self.assertTrue(any(item.has_condition_target for item in first))
+
     def test_sample_scheduler_warms_then_decays_and_resumes(self) -> None:
         parameter = torch.nn.Parameter(torch.tensor(1.0))
         optimizer = torch.optim.AdamW([parameter], lr=3e-4)
@@ -107,6 +146,24 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-4)
         scheduler.step(1_000)
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-5)
+
+    def test_exchange_clock_encoding_is_absolute_not_window_relative(self) -> None:
+        raw = session_view(3).features
+        timestamps = torch.as_tensor(
+            [
+                int(dt.datetime(2026, 1, 2, 9, tzinfo=dt.timezone.utc).timestamp() * 1_000_000),
+                int(dt.datetime(2026, 1, 2, 17, tzinfo=dt.timezone.utc).timestamp() * 1_000_000),
+                int(dt.datetime(2026, 1, 3, 1, tzinfo=dt.timezone.utc).timestamp() * 1_000_000),
+            ],
+            dtype=torch.long,
+        )
+        projected = project_stationary_features(raw, timestamps, timeframe_us=1_000_000)
+        sine = projected[:, MODEL_FEATURE_NAMES.index("session_progress_sin")]
+        cosine = projected[:, MODEL_FEATURE_NAMES.index("session_progress_cos")]
+        self.assertTrue(torch.allclose(sine, torch.zeros_like(sine), atol=1e-5))
+        self.assertTrue(torch.allclose(cosine, torch.tensor([1.0, -1.0, 1.0]), atol=1e-5))
+        midday_only = project_stationary_features(raw[1:2], timestamps[1:2], timeframe_us=1_000_000)
+        self.assertAlmostEqual(float(midday_only[0, MODEL_FEATURE_NAMES.index("session_progress_cos")]), -1.0, places=5)
 
     def test_condition_builder_is_sparse_resumable_and_uses_runtime_authority(self) -> None:
         args = condition_builder_argv()
@@ -138,6 +195,44 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(loss.loss))
         loss.loss.backward()
         self.assertGreater(float(sum(parameter.grad.abs().sum() for parameter in model.parameters() if parameter.grad is not None)), 0.0)
+        accumulator = ValidationAccumulator(self.data_config().horizons_us, model_config.quantiles)
+        accumulator.update(output, batch, loss)
+        validation = accumulator.finalize()
+        self.assertEqual(validation["val/origins"], 6.0)
+        self.assertIn("val/horizon_1s_median_mae", validation)
+        self.assertEqual(validation["val/horizon_1s_halt_pause_within_horizon_positives"], 0.0)
+
+    def test_cursor_advances_per_worker_only_after_consumed_batch(self) -> None:
+        examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=self.data_config()
+        ))[:2]
+        examples[0].worker_id = examples[1].worker_id = 2
+        examples[0].unit_index = examples[1].unit_index = 11
+        examples[0].block_offset, examples[1].block_offset = 3, 4
+        batch = collate_examples(examples)
+        cursors = _advance_cursors({2: CoverageCursor(10, 15)}, batch)
+        self.assertEqual(cursors[2], CoverageCursor(11, 4))
+
+    def test_cpu_prefetch_and_packed_adapter_preserve_contract(self) -> None:
+        examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=self.data_config()
+        ))[:2]
+        loader = torch.utils.data.DataLoader(examples, batch_size=2, collate_fn=collate_examples)
+        batch, _wait = DeviceBatchPrefetcher(loader, torch.device("cpu"), enabled=True).next()
+        self.assertEqual(batch.origin_count, 6)
+        adapter = PackedBarEmbeddingAdapter(8, 5)
+        values, valid = adapter(torch.randn(2, 3, 8), torch.tensor([[True, True, False], [True, False, False]]))
+        self.assertEqual(values.shape, (2, 3, 5))
+        self.assertTrue(torch.equal(valid, torch.tensor([[True, True, False], [True, False, False]])))
+
+    def test_profiler_candidate_contract_is_explicit(self) -> None:
+        candidates = _parse_candidates("256:1:8:4:1,512:2:4:4:0:1")
+        self.assertEqual(candidates[0].origin_bars, 256)
+        self.assertTrue(candidates[0].cuda_prefetch)
+        self.assertFalse(candidates[1].cuda_prefetch)
+        self.assertTrue(candidates[1].compile_model)
 
     def test_holdout_and_regime_resampling_are_deterministic(self) -> None:
         tickers = tuple(f"T{index:02d}" for index in range(20))
@@ -215,6 +310,19 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertIn("AAPL,SPY", rendered)
         self.assertIn("checkpoint_latest.pt", rendered)
         self.assertIn("25,000/100,000", rendered)
+
+        normal_output = io.StringIO()
+        reporter._console = Console(file=normal_output, width=120, height=40, force_terminal=False, color_system=None)
+        reporter._console.print(reporter._render())
+        self.assertIn("Objectives", normal_output.getvalue())
+        self.assertIn("Current work and durability", normal_output.getvalue())
+
+        short_output = io.StringIO()
+        reporter._console = Console(file=short_output, width=72, height=18, force_terminal=False, color_system=None)
+        reporter._console.print(reporter._render())
+        short_rendered = " ".join(short_output.getvalue().split())
+        self.assertIn("running", short_rendered)
+        self.assertIn("source certified", short_rendered)
 
         failed = TrainingReporter(state, layout="none")
         failed.__exit__(RuntimeError, RuntimeError("CUDA out of memory"), None)

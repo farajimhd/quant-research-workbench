@@ -93,19 +93,22 @@ class DataConfig:
     validation_start_date: str = "2026-01-01"
     daily_history_start_date: str = "2019-01-01"
     validation_slices: tuple[tuple[str, str, str], ...] = BAR_GPT_VALIDATION_SLICES_2026
-    validation_blocks_per_slice: int = 1
+    validation_blocks_per_slice: int = 4
     prior_session_halo: bool = True
     context_bars_1s: int = 2_048
     origin_bars_1s: int = 512
     daily_context_bars: int = 512
     batch_size: int = 2
     maximum_target_horizon_us: int = 3_600_000_000
-    loader_workers: int = 4
-    ready_queue_blocks: int = 4
+    loader_workers: int = 2
+    ready_queue_blocks: int = 2
     clickhouse_max_threads_per_worker: int = 2
     clickhouse_max_block_size: int = 65_536
     clickhouse_max_memory_usage: int = 8 * 1024**3
+    clickhouse_query_days: int = 7
+    clickhouse_max_bytes_before_external_sort: int = 1024**3
     min_origins_per_block: int = 64
+    coverage_blocks_per_unit: int = 16
     pin_memory: bool = True
     persistent_workers: bool = True
     balance_activity_regimes: bool = True
@@ -116,6 +119,11 @@ class DataConfig:
     def right_support_bars_1s(self) -> int:
         return (self.maximum_target_horizon_us + self.base_timeframe_us - 1) // self.base_timeframe_us
 
+    @property
+    def training_tickers(self) -> tuple[str, ...]:
+        validation = {ticker for ticker, _start, _end in self.validation_slices}
+        return tuple(ticker for ticker in self.tickers if ticker not in validation)
+
     def validate(self) -> None:
         if "split_adjusted" in self.one_second_table or self.daily_table.endswith("_adjusted"):
             raise ValueError("globally adjusted bar authorities are retired; use raw bars with causal split metadata")
@@ -125,6 +133,8 @@ class DataConfig:
             raise ValueError("at least one prediction horizon is required")
         if self.context_bars_1s <= 0 or self.origin_bars_1s <= 0:
             raise ValueError("context and origin bars must be positive")
+        if self.coverage_blocks_per_unit <= 0:
+            raise ValueError("coverage_blocks_per_unit must be positive")
         if self.maximum_target_horizon_us < max(self.horizons_us):
             raise ValueError("maximum_target_horizon_us must cover every configured horizon")
         if tuple(sorted(set(self.horizons_us))) != self.horizons_us:
@@ -145,6 +155,8 @@ class DataConfig:
             raise ValueError("daily_history_start_date cannot be later than the training start")
         if self.batch_size <= 0 or self.loader_workers < 0:
             raise ValueError("batch_size must be positive and loader_workers cannot be negative")
+        if self.clickhouse_query_days <= 0 or self.clickhouse_max_bytes_before_external_sort <= 0:
+            raise ValueError("ClickHouse query days and external-sort threshold must be positive")
 
 
 @dataclass(slots=True)
@@ -152,12 +164,14 @@ class TrainConfig:
     output_root: Path = Path(r"D:\TradingML\runtimes\bar_gpt\v1\train")
     run_name: str = "bar-gpt-v1"
     epochs: int = 1
-    max_samples: int = 50_000_000
+    max_samples: int = 0
     learning_rate: float = 3e-4
     weight_decay: float = 0.1
     grad_clip_norm: float = 1.0
     amp_dtype: str = "bf16"
     compile_model: bool = False
+    gradient_accumulation_steps: int = 4
+    cuda_prefetch: bool = True
     amp: bool = True
     seed: int = 17
     wandb_project: str = "bar-gpt-v1"
@@ -165,8 +179,9 @@ class TrainConfig:
     wandb_mode: str = "auto"
     wandb_init_timeout: int = 120
     logging_samples: int = 65_536
-    validation_batches: int = 8
-    validation_interval_samples: int = 2_097_152
+    validation_batches: int = 16
+    validation_runs_per_epoch: int = 4
+    validation_interval_samples: int = 0
     warmup_samples: int = 1_048_576
     minimum_learning_rate: float = 3e-5
     checkpoint_latest_samples: int = 1_048_576
@@ -177,6 +192,22 @@ class TrainConfig:
     availability_weight: float = 0.25
     condition_positive_weight: float = 32.0
     latent_prediction_weight: float = 0.05
+
+    def validate(self) -> None:
+        if self.epochs <= 0:
+            raise ValueError("epochs must be positive")
+        if self.max_samples < 0:
+            raise ValueError("max_samples cannot be negative")
+        if self.gradient_accumulation_steps <= 0:
+            raise ValueError("gradient_accumulation_steps must be positive")
+        if self.validation_runs_per_epoch <= 0 or self.validation_batches <= 0:
+            raise ValueError("validation runs and batches must be positive")
+        if self.validation_interval_samples < 0 or self.warmup_samples < 0:
+            raise ValueError("validation interval and warmup samples cannot be negative")
+        if self.learning_rate <= 0 or not 0 < self.minimum_learning_rate <= self.learning_rate:
+            raise ValueError("learning rates must satisfy 0 < minimum <= peak")
+        if self.grad_clip_norm <= 0:
+            raise ValueError("grad_clip_norm must be positive")
 
 
 @dataclass(slots=True)

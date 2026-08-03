@@ -13,30 +13,37 @@ DEFAULT_ARGS: dict[str, str] = {
     "--validation-start-date": "2026-01-01",
     "--context-bars-1s": "2048",
     "--origin-bars-1s": "512",
+    "--coverage-blocks-per-unit": "16",
+    "--validation-blocks-per-slice": "4",
     "--batch-size": "2",
-    "--loader-workers": "4",
-    "--ready-queue-blocks": "4",
+    "--loader-workers": "2",
+    "--ready-queue-blocks": "2",
+    "--clickhouse-query-days": "7",
+    "--clickhouse-max-bytes-before-external-sort": "1073741824",
     "--d-model": "384",
     "--n-layers": "8",
     "--n-heads": "8",
     "--n-kv-heads": "4",
-    "--max-samples": "50000000",
+    "--max-samples": "0",
+    "--gradient-accumulation-steps": "4",
     "--learning-rate": "0.0003",
     "--warmup-samples": "1048576",
     "--minimum-learning-rate": "0.00003",
-    "--validation-interval-samples": "2097152",
-    "--validation-batches": "8",
+    "--validation-interval-samples": "0",
+    "--validation-runs-per-epoch": "4",
+    "--validation-batches": "16",
     "--condition-positive-weight": "32",
     "--amp-dtype": "bf16",
     "--progress-layout": "auto",
 }
+DEFAULT_FLAGS: tuple[str, ...] = ("--amp", "--cuda-prefetch", "--no-compile-model")
 
 
 def default_argv() -> list[str]:
     argv: list[str] = []
     for key, value in DEFAULT_ARGS.items():
         argv.extend((key, value))
-    return argv
+    return [*argv, *DEFAULT_FLAGS]
 
 
 if __name__ == "__main__":

@@ -71,6 +71,8 @@ def _stream(data: DataConfig) -> ClickHouseBarStreamConfig:
         max_threads=data.clickhouse_max_threads_per_worker,
         max_block_size=data.clickhouse_max_block_size,
         max_memory_usage=data.clickhouse_max_memory_usage,
+        query_days=data.clickhouse_query_days,
+        max_bytes_before_external_sort=data.clickhouse_max_bytes_before_external_sort,
     )
 
 

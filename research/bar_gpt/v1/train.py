@@ -32,7 +32,10 @@ from research.bar_gpt.v1.loader import (
     build_session_examples,
     make_dataloader,
 )
+from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
+from research.bar_gpt.v1.sampling import CoverageCursor, coverage_plan_summary
 from research.bar_gpt.v1.model import BarGPTV1
+from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.objectives import BarGPTLoss, compute_loss
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
@@ -99,12 +102,20 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--context-bars-1s", type=int, default=data.context_bars_1s)
     parser.add_argument("--origin-bars-1s", type=int, default=data.origin_bars_1s)
     parser.add_argument("--min-origins-per-block", type=int, default=data.min_origins_per_block)
+    parser.add_argument("--coverage-blocks-per-unit", type=int, default=data.coverage_blocks_per_unit)
+    parser.add_argument("--validation-blocks-per-slice", type=int, default=data.validation_blocks_per_slice)
     parser.add_argument("--daily-context-bars", type=int, default=data.daily_context_bars)
     parser.add_argument("--batch-size", type=int, default=data.batch_size)
     parser.add_argument("--loader-workers", type=int, default=data.loader_workers)
     parser.add_argument("--ready-queue-blocks", type=int, default=data.ready_queue_blocks)
     parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=data.clickhouse_max_threads_per_worker)
     parser.add_argument("--clickhouse-max-memory-usage", type=int, default=data.clickhouse_max_memory_usage)
+    parser.add_argument("--clickhouse-query-days", type=int, default=data.clickhouse_query_days)
+    parser.add_argument(
+        "--clickhouse-max-bytes-before-external-sort",
+        type=int,
+        default=data.clickhouse_max_bytes_before_external_sort,
+    )
     parser.add_argument("--balance-activity-regimes", action=argparse.BooleanOptionalAction, default=data.balance_activity_regimes)
     parser.add_argument("--d-model", type=int, default=model.d_model)
     parser.add_argument("--n-layers", type=int, default=model.n_layers)
@@ -121,9 +132,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=train.amp)
     parser.add_argument("--amp-dtype", choices=("bf16", "fp16", "float32"), default=train.amp_dtype)
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=train.compile_model)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=train.gradient_accumulation_steps)
+    parser.add_argument("--cuda-prefetch", action=argparse.BooleanOptionalAction, default=train.cuda_prefetch)
     parser.add_argument("--logging-samples", type=int, default=train.logging_samples)
     parser.add_argument("--validation-interval-samples", type=int, default=train.validation_interval_samples)
     parser.add_argument("--validation-batches", type=int, default=train.validation_batches)
+    parser.add_argument("--validation-runs-per-epoch", type=int, default=train.validation_runs_per_epoch)
     parser.add_argument("--warmup-samples", type=int, default=train.warmup_samples)
     parser.add_argument("--minimum-learning-rate", type=float, default=train.minimum_learning_rate)
     parser.add_argument("--checkpoint-latest-samples", type=int, default=train.checkpoint_latest_samples)
@@ -170,6 +184,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         context_bars_1s=int(args.context_bars_1s),
         origin_bars_1s=int(args.origin_bars_1s),
         min_origins_per_block=int(args.min_origins_per_block),
+        coverage_blocks_per_unit=int(args.coverage_blocks_per_unit),
+        validation_blocks_per_slice=int(args.validation_blocks_per_slice),
         daily_context_bars=int(args.daily_context_bars),
         batch_size=int(args.batch_size),
         maximum_target_horizon_us=max(horizons),
@@ -177,6 +193,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         ready_queue_blocks=int(args.ready_queue_blocks),
         clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_worker),
         clickhouse_max_memory_usage=int(args.clickhouse_max_memory_usage),
+        clickhouse_query_days=int(args.clickhouse_query_days),
+        clickhouse_max_bytes_before_external_sort=int(args.clickhouse_max_bytes_before_external_sort),
         balance_activity_regimes=bool(args.balance_activity_regimes),
     )
     data.validate()
@@ -199,6 +217,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         amp=bool(args.amp),
         amp_dtype=str(args.amp_dtype),
         compile_model=bool(args.compile_model),
+        gradient_accumulation_steps=int(args.gradient_accumulation_steps),
+        cuda_prefetch=bool(args.cuda_prefetch),
         seed=int(args.seed),
         wandb_project=str(args.wandb_project),
         wandb_entity=str(args.wandb_entity),
@@ -207,6 +227,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         logging_samples=int(args.logging_samples),
         validation_interval_samples=int(args.validation_interval_samples),
         validation_batches=int(args.validation_batches),
+        validation_runs_per_epoch=int(args.validation_runs_per_epoch),
         warmup_samples=int(args.warmup_samples),
         minimum_learning_rate=float(args.minimum_learning_rate),
         checkpoint_latest_samples=int(args.checkpoint_latest_samples),
@@ -218,6 +239,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         condition_positive_weight=float(args.condition_positive_weight),
         latent_prediction_weight=float(args.latent_prediction_weight),
     )
+    train.validate()
     return ExperimentConfig(model=model, data=data, train=train)
 
 
@@ -417,6 +439,8 @@ def _stream_config(data: DataConfig) -> ClickHouseBarStreamConfig:
         max_threads=data.clickhouse_max_threads_per_worker,
         max_block_size=data.clickhouse_max_block_size,
         max_memory_usage=data.clickhouse_max_memory_usage,
+        query_days=data.clickhouse_query_days,
+        max_bytes_before_external_sort=data.clickhouse_max_bytes_before_external_sort,
     )
 
 
@@ -465,7 +489,12 @@ def _dummy_example(data: DataConfig) -> BarGPTExample:
     ))
 
 
-def _loaders(config: ExperimentConfig, args: argparse.Namespace) -> tuple[DataLoader[Any], DataLoader[Any]]:
+def _loaders(
+    config: ExperimentConfig,
+    args: argparse.Namespace,
+    *,
+    resume_cursors: dict[int, CoverageCursor] | None = None,
+) -> tuple[DataLoader[Any], DataLoader[Any]]:
     if args.dummy_data:
         example = _dummy_example(config.data)
         train_dataset = _DummyDataset(example)
@@ -473,7 +502,13 @@ def _loaders(config: ExperimentConfig, args: argparse.Namespace) -> tuple[DataLo
         common = dict(batch_size=config.data.batch_size, num_workers=0, collate_fn=collate_examples)
         return DataLoader(train_dataset, **common), DataLoader(validation_dataset, **common)
     stream = _stream_config(config.data)
-    train_dataset = BarGPTIterableDataset(data_config=config.data, stream_config=stream, split="train", seed=config.train.seed)
+    train_dataset = BarGPTIterableDataset(
+        data_config=config.data,
+        stream_config=stream,
+        split="train",
+        seed=config.train.seed,
+        resume_cursors=resume_cursors,
+    )
     validation_dataset = BarGPTIterableDataset(data_config=config.data, stream_config=stream, split="validation", seed=config.train.seed)
     return make_dataloader(train_dataset, config.data, drop_last=True), make_dataloader(validation_dataset, config.data, drop_last=False)
 
@@ -505,23 +540,20 @@ def validate(
     loader: DataLoader[Any],
     config: ExperimentConfig,
     device: torch.device,
-) -> float:
+) -> dict[str, float]:
     model.eval()
-    losses: list[float] = []
-    iterator = iter(loader)
+    accumulator = ValidationAccumulator(config.data.horizons_us, config.model.quantiles)
+    iterator = DeviceBatchPrefetcher(loader, device, enabled=config.train.cuda_prefetch)
     for _ in range(max(1, config.train.validation_batches)):
         try:
-            raw_batch = next(iterator)
+            batch = next(iterator)
         except StopIteration:
             break
-        batch = raw_batch.to(device)
         with torch.autocast(device_type=device.type, dtype=_amp_dtype(config.train.amp_dtype), enabled=config.train.amp and device.type == "cuda"):
-            _, result = _forward(model, batch, config)
-        losses.append(float(result.loss))
+            output, result = _forward(model, batch, config)
+        accumulator.update(output, batch, result)
     model.train()
-    if not losses:
-        raise RuntimeError("fixed validation panel produced no batches")
-    return float(sum(losses) / len(losses))
+    return accumulator.finalize()
 
 
 def checkpoint_payload(
@@ -534,8 +566,13 @@ def checkpoint_payload(
     *,
     samples_seen: int,
     batches_seen: int,
+    optimizer_steps: int,
+    blocks_seen: int,
+    units_seen: set[str],
+    condition_blocks_seen: int,
     epoch: int,
-    batches_in_epoch: int,
+    data_cursors: dict[int, CoverageCursor],
+    plan_hash: str,
     last_latest_samples: int,
 ) -> dict[str, Any]:
     return {
@@ -547,10 +584,20 @@ def checkpoint_payload(
         "config": to_dict(config),
         "samples_seen": samples_seen,
         "batches_seen": batches_seen,
+        "optimizer_steps": optimizer_steps,
+        "blocks_seen": blocks_seen,
+        "units_seen": sorted(units_seen),
+        "condition_blocks_seen": condition_blocks_seen,
         "epoch": epoch,
-        "batches_in_epoch": batches_in_epoch,
+        "data_cursors": {str(worker): asdict(cursor) for worker, cursor in data_cursors.items()},
+        "plan_hash": plan_hash,
         "last_latest_samples": last_latest_samples,
-        "rng": {"python": random.getstate(), "numpy": np.random.get_state(), "torch": torch.get_rng_state()},
+        "rng": {
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+        },
     }
 
 
@@ -562,22 +609,53 @@ def restore_checkpoint(
     scheduler: SampleWarmupCosineScheduler,
     device: torch.device,
     config: ExperimentConfig,
+    plan_hash: str,
 ) -> dict[str, Any]:
     if not path:
-        return {"samples_seen": 0, "batches_seen": 0, "epoch": 0, "batches_in_epoch": 0, "checkpointer": {}}
+        return {
+            "samples_seen": 0, "batches_seen": 0, "optimizer_steps": 0,
+            "blocks_seen": 0, "units_seen": [], "condition_blocks_seen": 0,
+            "epoch": 0, "data_cursors": {}, "checkpointer": {},
+        }
     payload = torch.load(path, map_location=device, weights_only=False)
     saved_config = payload.get("config", {})
     current = to_dict(config)
     if saved_config.get("model") != current.get("model") or saved_config.get("data") != current.get("data"):
         raise RuntimeError("resume checkpoint model/data contract does not match the requested run")
+    if payload.get("plan_hash") != plan_hash:
+        raise RuntimeError("resume checkpoint coverage plan does not match the requested run")
     _unwrap(model).load_state_dict(payload["model"])
     optimizer.load_state_dict(payload["optimizer"])
     scaler.load_state_dict(payload.get("scaler", {}))
     scheduler.load_state_dict(payload.get("scheduler"))
     rng = payload.get("rng", {})
     if rng:
-        random.setstate(rng["python"]); np.random.set_state(rng["numpy"]); torch.set_rng_state(rng["torch"])
+        random.setstate(rng["python"])
+        np.random.set_state(rng["numpy"])
+        cpu_rng = rng["torch"].detach().to(device="cpu", dtype=torch.uint8).contiguous()
+        torch.set_rng_state(cpu_rng)
+        if torch.cuda.is_available() and rng.get("cuda"):
+            torch.cuda.set_rng_state_all(
+                [value.detach().to(device="cpu", dtype=torch.uint8).contiguous() for value in rng["cuda"]]
+            )
     return payload
+
+
+def _cursor_map(values: dict[str, Any] | None) -> dict[int, CoverageCursor]:
+    return {
+        int(worker): CoverageCursor(unit_index=int(cursor["unit_index"]), block_offset=int(cursor["block_offset"]))
+        for worker, cursor in (values or {}).items()
+    }
+
+
+def _advance_cursors(cursors: dict[int, CoverageCursor], batch: BarGPTBatch) -> dict[int, CoverageCursor]:
+    updated = dict(cursors)
+    for worker, unit, block in zip(batch.worker_ids, batch.unit_indices, batch.block_offsets, strict=True):
+        candidate = CoverageCursor(int(unit), int(block))
+        current = updated.get(int(worker))
+        if current is None or (candidate.unit_index, candidate.block_offset) > (current.unit_index, current.block_offset):
+            updated[int(worker)] = candidate
+    return updated
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -601,20 +679,43 @@ def main(argv: Iterable[str] | None = None) -> int:
     config.train.run_name = run_name
     run_root = Path(config.train.output_root) / run_name if args.output_root else default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, run_name)
     paths = RunPaths.create(run_root)
+    holdout = tuple(sorted({ticker for ticker, _start, _end in config.data.validation_slices}))
+    plan = coverage_plan_summary(
+        start_date=config.data.start_date,
+        end_date=config.data.validation_start_date,
+        training_tickers=config.data.training_tickers,
+        blocks_per_unit=config.data.coverage_blocks_per_unit,
+        origin_bars=config.data.origin_bars_1s,
+        epochs=config.train.epochs,
+        seed=config.train.seed,
+    )
+    planned_samples = plan.expected_origins
+    if args.dummy_data and config.train.max_samples == 0:
+        planned_samples = config.data.batch_size * config.data.origin_bars_1s * config.train.gradient_accumulation_steps
+    training_limit = config.train.max_samples if config.train.max_samples > 0 else planned_samples
+    # A diagnostic/safety cap must not shorten the epoch learning-rate curve.
+    schedule_samples = max(2, training_limit if args.dummy_data else planned_samples)
+    validation_interval = (
+        config.train.validation_interval_samples
+        if config.train.validation_interval_samples > 0
+        else max(1, math.ceil(plan.expected_origins / config.train.epochs / config.train.validation_runs_per_epoch))
+    )
     (paths.run_root / "config.json").write_text(json.dumps(to_dict(config), indent=2, default=str), encoding="utf-8")
+    (paths.run_root / "coverage_plan.json").write_text(json.dumps(plan.to_dict(), indent=2), encoding="utf-8")
     model: torch.nn.Module = BarGPTV1(config.model).to(device)
     if config.train.compile_model and hasattr(torch, "compile"):
         model = torch.compile(model, dynamic=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay, foreach=device.type == "cuda")
     scheduler = SampleWarmupCosineScheduler(
         optimizer,
-        warmup_samples=min(config.train.warmup_samples, max(0, config.train.max_samples - 1)),
-        total_samples=config.train.max_samples,
+        warmup_samples=min(config.train.warmup_samples, schedule_samples - 1),
+        total_samples=schedule_samples,
         minimum_lr=config.train.minimum_learning_rate,
     )
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and config.train.amp_dtype == "fp16" and device.type == "cuda")
-    restored = restore_checkpoint(args.resume_checkpoint, model, optimizer, scaler, scheduler, device, config)
-    train_loader, validation_loader = _loaders(config, args)
+    restored = restore_checkpoint(args.resume_checkpoint, model, optimizer, scaler, scheduler, device, config, plan.plan_hash)
+    resume_cursors = _cursor_map(restored.get("data_cursors"))
+    train_loader, validation_loader = _loaders(config, args, resume_cursors=resume_cursors)
     wandb_run = init_wandb(
         entity=config.train.wandb_entity,
         project=config.train.wandb_project,
@@ -625,7 +726,6 @@ def main(argv: Iterable[str] | None = None) -> int:
         timeout_seconds=config.train.wandb_init_timeout,
     )
     metrics_logger = JsonlMetricLogger(paths.metrics_path, wandb_run)
-    holdout = tuple(sorted({ticker for ticker, _start, _end in config.data.validation_slices}))
     write_run_manifest(
         paths.manifest_path,
         repo_root=REPO_ROOT,
@@ -634,7 +734,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         job_type=JOB_TYPE,
         run_name=run_name,
         args=vars(args),
-        config={**to_dict(config), "data_evidence": evidence, "validation_tickers": holdout},
+        config={
+            **to_dict(config),
+            "data_evidence": evidence,
+            "validation_tickers": holdout,
+            "coverage_plan": plan.to_dict(),
+            "resolved_training_limit": training_limit,
+            "resolved_validation_interval": validation_interval,
+        },
         data_roots={
             "clickhouse": default_clickhouse_url(),
             "database": config.data.database,
@@ -658,6 +765,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             monitor_train_key="train/loss",
             monitor_val_key="val/loss",
             threshold_intervals=True,
+            # The final forced save must queue behind an in-flight best/latest save;
+            # skipping it would lose the newest durable data cursor on shutdown.
+            skip_latest_if_busy=False,
             clock_name="origin",
             archive_prefix="checkpoint_origin",
             archive_on_force=False,
@@ -666,129 +776,248 @@ def main(argv: Iterable[str] | None = None) -> int:
     checkpointer.load_state_dict(restored.get("checkpointer"))
     samples_seen = int(restored.get("samples_seen", 0))
     batches_seen = int(restored.get("batches_seen", 0))
+    optimizer_steps = int(restored.get("optimizer_steps", 0))
+    blocks_seen = int(restored.get("blocks_seen", 0))
+    units_seen = set(str(value) for value in restored.get("units_seen", []))
+    condition_blocks_seen = int(restored.get("condition_blocks_seen", 0))
     resume_epoch = int(restored.get("epoch", 0))
-    resume_batches = int(restored.get("batches_in_epoch", 0))
     last_latest_samples = int(restored.get("last_latest_samples", 0))
+    durable_cursors = dict(resume_cursors)
     state = TrainingProgressState(
         run_name=run_name,
         device=str(device),
         precision=config.train.amp_dtype if config.train.amp else "float32",
         output_dir=str(paths.run_root),
         model_parameters=int(parameter_summary(_unwrap(model))["total_parameters"]),
-        max_samples=config.train.max_samples,
+        max_samples=training_limit,
         samples_seen=samples_seen,
         batches_seen=batches_seen,
+        optimizer_steps=optimizer_steps,
+        blocks_seen=blocks_seen,
+        units_seen=len(units_seen),
+        condition_blocks_seen=condition_blocks_seen,
+        planned_units=plan.units * config.train.epochs,
+        planned_blocks=plan.expected_blocks,
+        gradient_accumulation_steps=config.train.gradient_accumulation_steps,
+        cuda_prefetch=config.train.cuda_prefetch and device.type == "cuda",
     )
     reporter = TrainingReporter(state, layout=config.train.progress_layout)
     next_log = samples_seen
-    next_validation = samples_seen + max(1, config.train.validation_interval_samples)
+    next_validation = samples_seen + validation_interval
+    last_validation_samples = -1
+    epoch_plan_origins = max(1, math.ceil(plan.expected_origins / config.train.epochs))
+    validation_runs_in_epoch = min(
+        config.train.validation_runs_per_epoch - 1,
+        max(0, samples_seen - resume_epoch * epoch_plan_origins) // validation_interval,
+    )
     last_metrics: dict[str, float] = {"train/loss": math.inf}
     last_val: dict[str, float] = {}
     current_epoch = resume_epoch
-    batches_in_epoch = resume_batches
+    completed_normally = False
     try:
         with reporter:
             checkpointer.set_message_callback(reporter.message)
-            reporter.message(f"Certified source: {evidence}; held-out tickers={len(holdout)}")
+            reporter.message(
+                f"Certified source; plan={plan.plan_hash[:12]} units={plan.units:,} "
+                f"blocks={plan.expected_blocks:,}; held-out tickers={len(holdout)}"
+            )
             for epoch in range(resume_epoch, max(1, config.train.epochs)):
                 current_epoch = epoch
+                if epoch != resume_epoch:
+                    train_loader, _unused_validation = _loaders(config, args, resume_cursors={})
+                    durable_cursors = {}
+                    validation_runs_in_epoch = 0
                 if isinstance(train_loader.dataset, BarGPTIterableDataset):
                     train_loader.dataset.epoch = epoch
-                iterator = iter(train_loader)
-                skip = resume_batches if epoch == resume_epoch else 0
-                if skip:
-                    reporter.message(f"Restoring exact data cursor by skipping {skip:,} deterministic batches")
-                    for _ in range(skip):
-                        next(iterator)
-                batches_in_epoch = skip
-                while not _INTERRUPTED:
-                    if config.train.max_samples > 0 and samples_seen >= config.train.max_samples:
+                if durable_cursors:
+                    reporter.message(
+                        "Resuming directly from "
+                        + ", ".join(
+                            f"worker {worker}: unit {cursor.unit_index:,}/block {cursor.block_offset}"
+                            for worker, cursor in sorted(durable_cursors.items())
+                        )
+                    )
+                iterator = DeviceBatchPrefetcher(train_loader, device, enabled=config.train.cuda_prefetch)
+                optimizer.zero_grad(set_to_none=True)
+                accumulation_count = 0
+                accumulated_origins = 0
+                accumulated_loader_wait = 0.0
+                accumulated_gpu_seconds = 0.0
+                accumulated_metrics: dict[str, float] = {}
+                accumulated_blocks = 0
+                accumulated_units: set[str] = set()
+                accumulated_condition_blocks = 0
+                pending_cursors = dict(durable_cursors)
+                exhausted = False
+                while True:
+                    if training_limit > 0 and samples_seen >= training_limit:
                         break
-                    loader_started = time.perf_counter()
                     try:
-                        raw_batch = next(iterator)
+                        batch, loader_wait = iterator.next()
                     except StopIteration:
-                        break
-                    loader_wait = time.perf_counter() - loader_started
-                    batch = raw_batch.to(device)
-                    optimizer.zero_grad(set_to_none=True)
-                    gpu_started = time.perf_counter()
-                    with torch.autocast(device_type=device.type, dtype=_amp_dtype(config.train.amp_dtype), enabled=config.train.amp and device.type == "cuda"):
-                        _, result = _forward(model, batch, config)
-                    if not torch.isfinite(result.loss):
-                        raise FloatingPointError(f"non-finite training loss at batch {batches_seen + 1}: {float(result.loss)}")
-                    if scaler.is_enabled():
-                        scaler.scale(result.loss).backward()
-                        scaler.unscale_(optimizer)
+                        exhausted = True
+                        batch = None
+                        loader_wait = 0.0
+                    if batch is not None:
+                        gpu_started = time.perf_counter()
+                        with torch.autocast(device_type=device.type, dtype=_amp_dtype(config.train.amp_dtype), enabled=config.train.amp and device.type == "cuda"):
+                            _, result = _forward(model, batch, config)
+                            scaled_loss = result.loss / config.train.gradient_accumulation_steps
+                        if not torch.isfinite(result.loss):
+                            raise FloatingPointError(f"non-finite training loss at microbatch {batches_seen + accumulation_count + 1}")
+                        if scaler.is_enabled():
+                            scaler.scale(scaled_loss).backward()
+                        else:
+                            scaled_loss.backward()
+                        if device.type == "cuda":
+                            torch.cuda.synchronize()
+                        micro_gpu_seconds = time.perf_counter() - gpu_started
+                        origins = batch.origin_count
+                        accumulation_count += 1
+                        accumulated_origins += origins
+                        accumulated_loader_wait += loader_wait
+                        accumulated_gpu_seconds += micro_gpu_seconds
+                        accumulated_blocks += len(batch.tickers)
+                        accumulated_units.update(f"{epoch}:{unit}" for unit in batch.unit_indices)
+                        accumulated_condition_blocks += sum(batch.condition_blocks)
+                        pending_cursors = _advance_cursors(pending_cursors, batch)
+                        for key, value in result.metrics.items():
+                            accumulated_metrics[key] = accumulated_metrics.get(key, 0.0) + float(value) * origins
+
+                    full_update = accumulation_count == config.train.gradient_accumulation_steps
+                    partial_final_update = exhausted and accumulation_count > 0 and not _INTERRUPTED
+                    if full_update or partial_final_update:
+                        step_started = time.perf_counter()
+                        if scaler.is_enabled():
+                            previous_scale = scaler.get_scale()
+                            scaler.unscale_(optimizer)
+                        if partial_final_update:
+                            correction = config.train.gradient_accumulation_steps / accumulation_count
+                            for parameter in model.parameters():
+                                if parameter.grad is not None:
+                                    parameter.grad.mul_(correction)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
-                        scaler.step(optimizer); scaler.update()
-                    else:
-                        result.loss.backward()
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
-                        optimizer.step()
-                    if device.type == "cuda":
-                        torch.cuda.synchronize()
-                    gpu_seconds = time.perf_counter() - gpu_started
-                    origins = batch.origin_count
-                    samples_seen += origins
-                    scheduler.step(samples_seen)
-                    batches_seen += 1
-                    batches_in_epoch += 1
-                    metrics = {key: float(value) for key, value in result.metrics.items()}
-                    metrics.update(
-                        {
-                            "train/samples_seen": float(samples_seen),
-                            "train/batches_seen": float(batches_seen),
-                            "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
-                            "train/loader_wait_seconds": loader_wait,
-                            "train/gpu_seconds": gpu_seconds,
-                            "train/origins_per_second": origins / max(loader_wait + gpu_seconds, 1e-9),
+                        if scaler.is_enabled():
+                            scaler.step(optimizer)
+                            scaler.update()
+                            if scaler.get_scale() < previous_scale:
+                                raise FloatingPointError("FP16 optimizer step overflowed; durable cursor was not advanced")
+                        else:
+                            optimizer.step()
+                        optimizer.zero_grad(set_to_none=True)
+                        if device.type == "cuda":
+                            torch.cuda.synchronize()
+                        accumulated_gpu_seconds += time.perf_counter() - step_started
+                        samples_seen += accumulated_origins
+                        batches_seen += accumulation_count
+                        optimizer_steps += 1
+                        blocks_seen += accumulated_blocks
+                        units_seen.update(accumulated_units)
+                        condition_blocks_seen += accumulated_condition_blocks
+                        durable_cursors = dict(pending_cursors)
+                        scheduler.step(samples_seen)
+                        metrics = {
+                            key: value / max(1, accumulated_origins)
+                            for key, value in accumulated_metrics.items()
                         }
-                    )
-                    last_metrics = metrics
-                    reporter.update(metrics, tickers=batch.tickers, dates=batch.local_dates)
-                    if samples_seen >= next_log or batches_seen == 1:
-                        metrics_logger.log(metrics, samples_seen)
-                        next_log = samples_seen + max(1, config.train.logging_samples)
-                    if samples_seen >= next_validation:
-                        val_loss = validate(model, validation_loader, config, device)
-                        last_val = {"val/loss": val_loss}
-                        metrics_logger.log(last_val, samples_seen)
-                        reporter.validation(val_loss)
-                        next_validation = samples_seen + max(1, config.train.validation_interval_samples)
-                    latest_due = samples_seen // max(1, config.train.checkpoint_latest_samples) > checkpointer.last_latest_bucket
-                    payload_latest_samples = samples_seen if latest_due else last_latest_samples
-                    checkpointer.maybe_save(
-                        step=samples_seen,
-                        payload_factory=lambda: checkpoint_payload(
-                            model, optimizer, scaler, scheduler, checkpointer, config,
-                            samples_seen=samples_seen, batches_seen=batches_seen,
-                            epoch=current_epoch, batches_in_epoch=batches_in_epoch,
-                            last_latest_samples=payload_latest_samples,
-                        ),
-                        train_metrics=last_metrics,
-                        val_metrics=last_val,
-                    )
-                    if latest_due:
-                        last_latest_samples = samples_seen
-                resume_batches = 0
-                if _INTERRUPTED or (config.train.max_samples > 0 and samples_seen >= config.train.max_samples):
+                        metrics.update(
+                            {
+                                "train/samples_seen": float(samples_seen),
+                                "train/batches_seen": float(batches_seen),
+                                "train/optimizer_steps": float(optimizer_steps),
+                                "train/blocks_seen": float(blocks_seen),
+                                "train/units_seen": float(len(units_seen)),
+                                "train/condition_blocks_seen": float(condition_blocks_seen),
+                                "train/accumulation_microbatches": float(accumulation_count),
+                                "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
+                                "train/loader_wait_seconds": accumulated_loader_wait,
+                                "train/gpu_seconds": accumulated_gpu_seconds,
+                                "train/origins_per_second": accumulated_origins / max(accumulated_loader_wait + accumulated_gpu_seconds, 1e-9),
+                            }
+                        )
+                        last_metrics = metrics
+                        assert batch is not None or exhausted
+                        reporter.update(metrics, tickers=batch.tickers if batch is not None else (), dates=batch.local_dates if batch is not None else ())
+                        if samples_seen >= next_log or optimizer_steps == 1:
+                            metrics_logger.log(metrics, samples_seen)
+                            next_log = samples_seen + max(1, config.train.logging_samples)
+                        if (
+                            samples_seen >= next_validation
+                            and validation_runs_in_epoch < config.train.validation_runs_per_epoch - 1
+                        ):
+                            last_val = validate(model, validation_loader, config, device)
+                            metrics_logger.log(last_val, samples_seen)
+                            reporter.validation(last_val["val/loss"])
+                            last_validation_samples = samples_seen
+                            validation_runs_in_epoch += 1
+                            next_validation = samples_seen + validation_interval
+                        latest_due = samples_seen // max(1, config.train.checkpoint_latest_samples) > checkpointer.last_latest_bucket
+                        payload_latest_samples = samples_seen if latest_due else last_latest_samples
+                        snapshot_cursors = dict(durable_cursors)
+                        checkpointer.maybe_save(
+                            step=samples_seen,
+                            payload_factory=lambda cursors=snapshot_cursors, latest=payload_latest_samples: checkpoint_payload(
+                                model, optimizer, scaler, scheduler, checkpointer, config,
+                                samples_seen=samples_seen, batches_seen=batches_seen,
+                                optimizer_steps=optimizer_steps, epoch=current_epoch,
+                                blocks_seen=blocks_seen, units_seen=units_seen,
+                                condition_blocks_seen=condition_blocks_seen,
+                                data_cursors=cursors, plan_hash=plan.plan_hash,
+                                last_latest_samples=latest,
+                            ),
+                            train_metrics=last_metrics,
+                            val_metrics=last_val,
+                        )
+                        if latest_due:
+                            last_latest_samples = samples_seen
+                        accumulation_count = 0
+                        accumulated_origins = 0
+                        accumulated_loader_wait = 0.0
+                        accumulated_gpu_seconds = 0.0
+                        accumulated_metrics = {}
+                        accumulated_blocks = 0
+                        accumulated_units = set()
+                        accumulated_condition_blocks = 0
+                    if exhausted or _INTERRUPTED or (training_limit > 0 and samples_seen >= training_limit):
+                        if _INTERRUPTED and accumulation_count:
+                            optimizer.zero_grad(set_to_none=True)
+                            reporter.message(
+                                f"Discarded {accumulation_count} incomplete accumulation microbatches; they will replay on resume"
+                            )
+                        break
+                if _INTERRUPTED or (training_limit > 0 and samples_seen >= training_limit):
                     break
-            reporter.state.state = "interrupted" if _INTERRUPTED else "completed"
+                current_epoch = epoch + 1
+                durable_cursors = {}
+                if last_validation_samples != samples_seen:
+                    last_val = validate(model, validation_loader, config, device)
+                    metrics_logger.log(last_val, samples_seen)
+                    reporter.validation(last_val["val/loss"])
+                    last_validation_samples = samples_seen
+            if optimizer_steps == 0:
+                raise RuntimeError("coverage epoch produced no optimizer updates")
+            stopped_at_limit = training_limit < planned_samples and samples_seen >= training_limit
+            completed_normally = not _INTERRUPTED and not stopped_at_limit
+            reporter.state.state = (
+                "interrupted" if _INTERRUPTED else ("stopped_at_limit" if stopped_at_limit else "completed")
+            )
             reporter.message("Saving final resumable checkpoint")
-            if last_latest_samples != samples_seen:
-                checkpointer.maybe_save(
-                    step=samples_seen,
-                    payload_factory=lambda: checkpoint_payload(
-                        model, optimizer, scaler, scheduler, checkpointer, config,
-                        samples_seen=samples_seen, batches_seen=batches_seen,
-                        epoch=current_epoch, batches_in_epoch=batches_in_epoch,
-                        last_latest_samples=samples_seen,
-                    ),
-                    train_metrics=last_metrics,
-                    val_metrics=last_val,
-                    force=True,
-                )
+            snapshot_cursors = dict(durable_cursors)
+            checkpointer.maybe_save(
+                step=samples_seen,
+                payload_factory=lambda cursors=snapshot_cursors: checkpoint_payload(
+                    model, optimizer, scaler, scheduler, checkpointer, config,
+                    samples_seen=samples_seen, batches_seen=batches_seen,
+                    optimizer_steps=optimizer_steps, epoch=current_epoch,
+                    blocks_seen=blocks_seen, units_seen=units_seen,
+                    condition_blocks_seen=condition_blocks_seen,
+                    data_cursors=cursors, plan_hash=plan.plan_hash,
+                    last_latest_samples=samples_seen,
+                ),
+                train_metrics=last_metrics,
+                val_metrics=last_val,
+                force=True,
+            )
     finally:
         checkpointer.close(wait=True, timeout=300)
         if wandb_run is not None:
@@ -804,6 +1033,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             "run_name": run_name,
             "samples_seen": samples_seen,
             "batches_seen": batches_seen,
+            "optimizer_steps": optimizer_steps,
+            "blocks_seen": blocks_seen,
+            "units_seen": len(units_seen),
+            "condition_blocks_seen": condition_blocks_seen,
+            "coverage_plan": plan.to_dict(),
+            "completed_normally": completed_normally,
+            "stopped_at_limit": training_limit < planned_samples and samples_seen >= training_limit,
             "validation_tickers": holdout,
             "parameters": parameter_summary(_unwrap(model)),
         },

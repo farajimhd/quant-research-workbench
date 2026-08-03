@@ -15,10 +15,6 @@ TARGET_NAMES: tuple[str, ...] = (
     "realized_volatility",
     "log_trade_volume",
     "log_trade_count",
-    "spread_close_bps",
-    "spread_mean_bps",
-    "queue_imbalance_close",
-    "queue_imbalance_mean",
     "trade_available",
     "bid_available",
     "ask_available",
@@ -66,11 +62,6 @@ def build_next_bar_targets(raw: torch.Tensor) -> HorizonTargets:
     excursion_valid = price_valid & next_trade & (high > 0) & (low > 0)
     upper = torch.where(excursion_valid, torch.log(high.clamp_min(1e-12) / base).clamp_min(0.0), 0.0)
     lower = torch.where(excursion_valid, torch.log(base / low.clamp_min(1e-12)).clamp_min(0.0), 0.0)
-    quote_count = _column(raw, "quote_pair_count")[1:]
-    midpoint = torch.where(quote_present[1:], midpoint_close[1:], endpoint).clamp_min(1e-12)
-    spread_close_bps = _column(raw, "spread_close")[1:] / midpoint * 10_000.0
-    spread_mean_bps = (_column(raw, "spread_sum")[1:] / quote_count.clamp_min(1.0)) / midpoint * 10_000.0
-    qi_mean = _column(raw, "queue_imbalance_sum")[1:] / quote_count.clamp_min(1.0)
     availability = tuple((_column(raw, f"{family}_present")[1:] > 0).float() for family in ("trade", "bid", "ask"))
     values = torch.stack(
         (
@@ -80,10 +71,6 @@ def build_next_bar_targets(raw: torch.Tensor) -> HorizonTargets:
             torch.asinh(endpoint_return.abs() * 100.0),
             torch.log1p(_column(raw, "trade_size_sum")[1:]),
             torch.log1p(_column(raw, "trade_event_count")[1:]),
-            torch.asinh(spread_close_bps / 10.0),
-            torch.asinh(spread_mean_bps / 10.0),
-            _column(raw, "queue_imbalance_close")[1:].clamp(-1.0, 1.0),
-            qi_mean.clamp(-1.0, 1.0),
             *availability,
             quote_present[1:].float(),
             *raw.new_zeros((4, raw.shape[0] - 1)),
@@ -94,7 +81,6 @@ def build_next_bar_targets(raw: torch.Tensor) -> HorizonTargets:
     mask[:, :4] &= price_valid[:, None]
     mask[:, 1:3] &= excursion_valid[:, None]
     mask[:, 3] = False  # exact intrabar realized volatility is unavailable after aggregation
-    mask[:, 6:10] &= (quote_count > 0)[:, None]
     mask[:, -4:] = False  # exact event conditions are supervised only by physical-horizon sidecars
     return HorizonTargets(values=values, mask=mask)
 
@@ -153,9 +139,6 @@ def build_physical_horizon_targets(
     reference_valid_raw = (quote_present & (midpoint_close > 0)) | (trade_present & (trade_close > 0))
     reference, reference_valid = _forward_fill(reference_raw, reference_valid_raw)
     canonical_reference = reference * share_factors
-    spread_close_filled, _ = _forward_fill(_column(raw_one_second, "spread_close"), quote_present)
-    midpoint_close_filled, _ = _forward_fill(midpoint_close, quote_present)
-    qi_close_filled, _ = _forward_fill(_column(raw_one_second, "queue_imbalance_close"), quote_present)
     previous = torch.cat((canonical_reference[:1], canonical_reference[:-1]))
     returns = torch.where(
         reference_valid & (canonical_reference > 0) & (previous > 0),
@@ -166,10 +149,6 @@ def build_physical_horizon_targets(
     canonical_volume = _column(raw_one_second, "trade_size_sum") / share_factors
     volume_prefix = torch.cat((canonical_volume.new_zeros(1), canonical_volume.cumsum(0)))
     trade_count_prefix = torch.cat((returns.new_zeros(1), _column(raw_one_second, "trade_event_count").cumsum(0)))
-    canonical_spread_sum = _column(raw_one_second, "spread_sum") * share_factors
-    spread_sum_prefix = torch.cat((canonical_spread_sum.new_zeros(1), canonical_spread_sum.cumsum(0)))
-    quote_count_prefix = torch.cat((returns.new_zeros(1), _column(raw_one_second, "quote_pair_count").cumsum(0)))
-    qi_sum_prefix = torch.cat((returns.new_zeros(1), _column(raw_one_second, "queue_imbalance_sum").cumsum(0)))
     availability_prefix = {
         family: torch.cat((returns.new_zeros(1), (_column(raw_one_second, f"{family}_present") > 0).float().cumsum(0)))
         for family in ("trade", "bid", "ask")
@@ -209,13 +188,6 @@ def build_physical_horizon_targets(
         realized = (variance_prefix[ends] - variance_prefix[starts]).clamp_min(0.0).sqrt()
         volume = (volume_prefix[ends] - volume_prefix[starts]) * share_factors[origin_indices]
         trade_count = trade_count_prefix[ends] - trade_count_prefix[starts]
-        quote_count = quote_count_prefix[ends] - quote_count_prefix[starts]
-        spread_mean = (spread_sum_prefix[ends] - spread_sum_prefix[starts]) / quote_count.clamp_min(1.0)
-        qi_mean = (qi_sum_prefix[ends] - qi_sum_prefix[starts]) / quote_count.clamp_min(1.0)
-        endpoint_factor = share_factors[safe_endpoint]
-        midpoint = (midpoint_close_filled[safe_endpoint] * endpoint_factor).clamp_min(1e-12)
-        spread_close_bps = (spread_close_filled[safe_endpoint] * endpoint_factor) / midpoint * 10_000.0
-        spread_mean_bps = spread_mean / midpoint * 10_000.0
         availability = [
             (availability_prefix[family][ends] - availability_prefix[family][starts] > 0).float()
             for family in ("trade", "bid", "ask")
@@ -238,10 +210,6 @@ def build_physical_horizon_targets(
                 torch.asinh(realized * 100.0),
                 torch.log1p(volume),
                 torch.log1p(trade_count),
-                torch.asinh(spread_close_bps / 10.0),
-                torch.asinh(spread_mean_bps / 10.0),
-                qi_close_filled[safe_endpoint].clamp(-1.0, 1.0),
-                qi_mean.clamp(-1.0, 1.0),
                 *availability,
                 quote_available,
                 *condition_window.unbind(dim=-1),
@@ -251,7 +219,6 @@ def build_physical_horizon_targets(
         masks = in_range[:, None].expand(-1, len(TARGET_NAMES)).clone()
         masks[:, :4] &= price_valid[:, None]
         masks[:, 1:3] &= excursion_valid[:, None]
-        masks[:, 6:10] &= (quote_count > 0)[:, None]
         masks[:, -4:] &= condition_authoritative
         horizon_values.append(values)
         horizon_masks.append(masks)

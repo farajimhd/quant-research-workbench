@@ -1,22 +1,32 @@
 from __future__ import annotations
 
+import datetime as dt
+from zoneinfo import ZoneInfo
+
 import torch
 
-from research.bar_gpt.v1.schema import FEATURE_INDEX
+from research.bar_gpt.v1.schema import FEATURE_INDEX, SESSION_TIMEZONE
+
+
+_SESSION_OPEN_SECONDS = 4 * 60 * 60
+_SESSION_LENGTH_SECONDS = 16 * 60 * 60
+_SESSION_ZONE = ZoneInfo(SESSION_TIMEZONE)
 
 
 def _family_names(prefix: str) -> tuple[str, ...]:
-    return (
+    names = (
         f"{prefix}_present",
         f"{prefix}_close_return",
         f"{prefix}_open_gap",
         f"{prefix}_upper_excursion",
         f"{prefix}_lower_excursion",
         f"{prefix}_log_size",
-        f"{prefix}_log_count",
         f"{prefix}_vwap_deviation_bps",
         f"{prefix}_size_cv",
     )
+    if prefix == "trade":
+        return (*names[:6], "trade_log_count", *names[6:])
+    return names
 
 
 MODEL_FEATURE_NAMES: tuple[str, ...] = (
@@ -71,6 +81,21 @@ def _safe_log_ratio(numerator: torch.Tensor, denominator: torch.Tensor, valid: t
     return result
 
 
+def _session_progress_seconds(starts_us: torch.Tensor) -> torch.Tensor:
+    """Vectorized New York wall-clock position; only unique UTC dates cross Python."""
+    seconds = torch.div(starts_us, 1_000_000, rounding_mode="floor")
+    utc_days = torch.div(seconds, 86_400, rounding_mode="floor")
+    unique_days, inverse = torch.unique(utc_days, sorted=True, return_inverse=True)
+    offsets = []
+    for day in unique_days.detach().cpu().tolist():
+        instant = dt.datetime.fromtimestamp(int(day) * 86_400, tz=dt.timezone.utc)
+        offset = instant.astimezone(_SESSION_ZONE).utcoffset()
+        offsets.append(int(offset.total_seconds()) if offset is not None else 0)
+    offset_tensor = torch.as_tensor(offsets, dtype=seconds.dtype, device=seconds.device)
+    local_seconds = torch.remainder(seconds + offset_tensor[inverse], 86_400)
+    return (local_seconds - _SESSION_OPEN_SECONDS).clamp(0, _SESSION_LENGTH_SECONDS).float()
+
+
 def project_stationary_features(
     raw_features: torch.Tensor,
     bar_start_us: torch.Tensor | None = None,
@@ -109,19 +134,18 @@ def project_stationary_features(
             torch.zeros_like(size_squared),
         )
         size_cv = torch.where(count > 1, variance.sqrt() / mean_size.clamp_min(eps), 0.0)
-        output.extend(
-            (
-                present.float(),
-                torch.asinh(close_return * 100.0),
-                torch.asinh(open_gap * 100.0),
-                torch.asinh(upper * 100.0),
-                torch.asinh(lower * 100.0),
-                torch.log1p(size),
-                torch.log1p(count),
-                torch.asinh(vwap_bps / 10.0),
-                torch.asinh(size_cv),
-            )
-        )
+        family_output = [
+            present.float(),
+            torch.asinh(close_return * 100.0),
+            torch.asinh(open_gap * 100.0),
+            torch.asinh(upper * 100.0),
+            torch.asinh(lower * 100.0),
+            torch.log1p(size),
+        ]
+        if prefix == "trade":
+            family_output.append(torch.log1p(count))
+        family_output.extend((torch.asinh(vwap_bps / 10.0), torch.asinh(size_cv)))
+        output.extend(family_output)
     quote_present = _column(raw, "quote_pair_present") > 0
     quote_count = _column(raw, "quote_pair_count")
     midpoint_close = _column(raw, "midpoint_close")
@@ -163,6 +187,7 @@ def project_stationary_features(
         starts = torch.zeros(raw.shape[:2], dtype=torch.long, device=raw.device)
         elapsed_ratio = torch.ones(raw.shape[:2], dtype=torch.float32, device=raw.device)
         boundary = torch.zeros_like(elapsed_ratio)
+        progress_seconds = torch.zeros_like(elapsed_ratio)
     else:
         starts = bar_start_us.unsqueeze(0) if bar_start_us.ndim == 1 else bar_start_us
         if starts.shape != raw.shape[:2]:
@@ -170,12 +195,8 @@ def project_stationary_features(
         elapsed = torch.cat((torch.full_like(starts[:, :1], duration), starts[:, 1:] - starts[:, :-1]), dim=1)
         elapsed_ratio = elapsed.float().clamp_min(0) / float(duration)
         boundary = (elapsed_ratio > 1.5).float()
-    increments = torch.where(boundary > 0, torch.zeros_like(elapsed_ratio), elapsed_ratio)
-    cumulative = increments.cumsum(dim=1)
-    boundary_baseline = torch.where(boundary > 0, cumulative, torch.zeros_like(cumulative)).cummax(dim=1).values
-    progress = cumulative - boundary_baseline
-    progress_seconds = progress * (float(duration) / 1_000_000.0)
-    phase = progress_seconds / 57_600.0 * (2.0 * torch.pi)
+        progress_seconds = _session_progress_seconds(starts)
+    phase = progress_seconds / float(_SESSION_LENGTH_SECONDS) * (2.0 * torch.pi)
     output.extend((torch.log1p(elapsed_ratio), boundary, torch.sin(phase), torch.cos(phase)))
     projected = torch.stack(output, dim=-1)
     return projected.squeeze(0) if squeeze else projected

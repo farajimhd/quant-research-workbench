@@ -144,14 +144,19 @@ Training uses incremental ArrowStream record batches. The durable work unit is
 one canonical ticker over one calendar month. Months remain chronological for
 partition locality; ticker order is deterministically shuffled inside each
 month and units are then divided among workers. A unit fetches its one-second
-range and prior-session halo once, produces every training block from that
-resident data, and releases it before advancing. Daily history is cached once
-per ticker per worker.
+range in ordered seven-day ClickHouse subranges and carries context continuously
+across those subranges. This bounds server-side sort memory without changing
+the ticker-month lifecycle or refetching model context. External sort spills at
+1 GiB instead of allowing a wide Arrow query to approach its 8 GiB hard limit.
+The unit produces every training block from resident session data and releases
+it before advancing. Daily history is cached once per ticker per worker.
 
 The prior completed session contributes up to 2,048 one-second context rows to
 the first premarket origins. No overnight seconds are fabricated: timestamps
 and `available_at_us` retain the real wall-clock boundary, while targets remain
-inside the target session.
+inside the target session. Model time channels encode the actual New York
+session-clock position from every bar timestamp, elapsed wall-clock ratio, and
+an explicit sequence-boundary flag; they are not relative to the sampled window.
 
 For simultaneous 1s and 5s inputs, the global origin clock moves one second and
 the 5s encoder advances only after its bar closes:
@@ -184,8 +189,14 @@ following period proves it closed.
 - causal as-of fusion of coarse contextual states into fine origins;
 - dense next-bar supervision at every scale;
 - low-rank horizon-conditioned monotone quantiles;
+- horizon quantiles for endpoint return, upper/lower excursion, realized
+  volatility, trade volume, and trade count;
 - separate trade, bid, ask, paired-quote, halt/pause, resume, news-risk, and
   LULD-state probability logits.
+
+Spread and queue imbalance remain informative causal inputs but are not direct
+forecast heads; the lower-value redundant liquidity heads were replaced by the
+four exact condition-risk targets.
 
 `features.py` projects raw sufficient statistics into stationary channels:
 returns, opening gaps, excursions, log activity, VWAP deviation, size
@@ -209,30 +220,76 @@ The canonical workstation training command is:
 python -B -m research.bar_gpt.v1.run_train
 ```
 
-Training uses `[2020-01-01, 2026-01-01)`. One epoch is one deterministic pass
-over all eligible ticker-month units. One step is one optimizer update from a
-collated batch; with the default batch size of two and 512-origin blocks, it is
-normally 1,024 origin timestamps. The sample clock—not batch count—drives
-logging, validation, checkpoints, and learning rate.
+Training uses `[2020-01-01, 2026-01-01)`. One coverage epoch is one
+deterministic pass over 72 month partitions and the 90 non-validation tickers.
+Each ticker-month is fetched once and deterministically reduced to at most 16
+blocks while retaining session-phase, activity-regime, and rare-condition
+coverage. Selected blocks are copied out of their full-session Arrow buffers
+before the unit is released. The default ceiling is 6,480 units, 103,680
+blocks, and 53,084,160 origin timestamps; unavailable ticker-months can produce
+fewer blocks and are never fabricated.
+
+One microbatch contains two 512-origin blocks. Four microbatches are accumulated
+before one optimizer update, normally 4,096 origins. Bounded persistent loader
+workers prepare the next CPU batch, and one device batch transfers on a
+dedicated CUDA stream while the current batch computes. Future target support
+never enters `batch.views`; it is consumed only by GPU target construction and
+the loss, so later origins or horizons in one update do not create lookahead.
+
+The durable resume cursor is `(worker, global ticker-month index, selected block
+offset)`. It advances only after a successful optimizer update. Ctrl+C discards
+an incomplete accumulation group and replays it; resume jumps over completed
+units rather than reading and discarding them. A coverage-plan hash binds the
+population, dates, ordering seed, block quota, origin count, and epochs.
 
 Validation is a fixed eight-ticker, eight-week panel spanning liquid,
 high-volatility, sector, event-driven, and illiquid names in 2026. Those
-identities are held out of training. Each slice contributes one fixed block,
-every validation run restarts the same panel, at most eight batches are
-evaluated, and validation runs every 2,097,152 training origins.
+identities are excluded from training. Each slice contributes four fixed
+stratified blocks, at most 16 batches are evaluated, and validation runs four
+times per coverage epoch with the final run at completion. It reports loss,
+per-horizon median MAE, return-sign accuracy, binary Brier score, quantile
+coverage, and rare-condition average precision.
 
 Training refuses to start unless canonical one-second, daily, exact condition,
 and point-in-time alias coverage are certified and the q_live identity and
-split authorities exist. Defaults are a
-384-wide eight-layer decoder, BF16, six horizons from 5 seconds through 1 hour,
-and 50 million training origins.
+split authorities exist. Defaults are a 384-wide eight-layer decoder, BF16,
+and six horizons from 5 seconds through 1 hour. `--max-samples 0` means the
+complete coverage epoch; a positive value is an operator safety or diagnostic
+cap and does not shorten the full-epoch learning-rate curve.
 
 AdamW starts with a `3e-4` peak learning rate and `0.1` weight decay. A shared
 MLOps sample-clock scheduler linearly warms from `3e-5` to `3e-4` over the first
-1,048,576 origins, then performs one monotonic cosine decay to `3e-5` at 50
-million origins. Scheduler state is part of every resumable checkpoint.
+1,048,576 origins, then performs one monotonic cosine decay to `3e-5` at the
+coverage-plan ceiling. Scheduler, optimizer, scaler, RNG, plan, and logical data
+cursors are part of every resumable checkpoint.
 Rare condition positives receive a configurable 32x BCE positive weight; the
 four ordinary market-family availability labels remain unweighted.
+
+Profile the complete Arrow-to-optimizer path before the first full run:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_profile_train
+```
+
+The candidate sweep measures loader wait, GPU time, origins/second, encoded
+tokens/second, and peak device memory. OOM candidates fail independently; only
+candidates at or below 90% reserved memory are eligible. `torch.compile` remains an
+explicit opt-in candidate because Windows compilation can stall before the first measured
+update; it is not part of the bounded default sweep. The default two workers keep
+Arrow HTTP concurrency within Windows socket limits. Eight measured updates cross
+the initial worker/unit buffer so results include
+ticker-month turnover rather than only warm-queue throughput. Promote the selected profile
+into launcher defaults only after measuring it on the training workstation.
+
+Audit the actual fetched feature and target contract before training:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_audit_contract
+```
+
+The audit reports near-constant and zero feature channels, strongest absolute
+correlations, target valid fractions, and retained condition blocks. Profiler
+and audit evidence stays under `D:\TradingML\runtimes\bar_gpt\v1`.
 
 The objective combines dense next-bar Huber and availability losses, direct
 multi-horizon pinball loss, horizon availability BCE, and stop-gradient
@@ -248,3 +305,16 @@ Checkpoints bind the exact model and data contract. Resume rejects a changed
 contract. Runs own one directory under
 `D:\TradingML\runtimes\bar_gpt\v1\train` containing manifests, metrics,
 checkpoints, W&B files, and the model card.
+
+After accepting a checkpoint, export causal embeddings with:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_export_embeddings `
+  --checkpoint D:\TradingML\runtimes\bar_gpt\v1\train\<run>\checkpoints\checkpoint_best_val.pt
+```
+
+`BarGPTEncoder` restores the checkpoint contract and returns embeddings,
+validity, origin timestamps, ticker identities, and dates.
+`PackedBarEmbeddingAdapter` projects them into the packed model modality width
+while preserving the point-in-time validity mask. The packed model is not
+coupled to an unaccepted BarGPT checkpoint.

@@ -23,6 +23,7 @@ class MultiscaleBlock:
     views: dict[str, BarView]
     asof_indices: dict[str, torch.Tensor]
     origin_indices: torch.Tensor
+    origin_timestamps_us: torch.Tensor
     target_indices: torch.Tensor
     target_mask: torch.Tensor
 
@@ -53,6 +54,7 @@ class BarGPTExample:
     raw_views: dict[str, torch.Tensor]
     raw_view_start_us: dict[str, torch.Tensor]
     origin_indices: torch.Tensor
+    origin_timestamps_us: torch.Tensor
     asof_indices: dict[str, torch.Tensor]
     target_support: torch.Tensor
     target_share_factors: torch.Tensor
@@ -61,12 +63,18 @@ class BarGPTExample:
     horizons_us: tuple[int, ...]
     base_timeframe_us: int
     activity_regime: int
+    worker_id: int = 0
+    unit_index: int = -1
+    block_offset: int = -1
+    session_phase: str = "unknown"
+    has_condition_target: bool = False
 
 
 @dataclass(slots=True)
 class BarGPTBatch:
     views: dict[str, torch.Tensor]
     origin_indices: torch.Tensor
+    origin_timestamps_us: torch.Tensor
     origin_mask: torch.Tensor
     asof_indices: dict[str, torch.Tensor]
     autoregressive_targets: dict[str, torch.Tensor]
@@ -83,6 +91,11 @@ class BarGPTBatch:
     sample_weights: torch.Tensor
     tickers: tuple[str, ...]
     local_dates: tuple[str, ...]
+    worker_ids: tuple[int, ...]
+    unit_indices: tuple[int, ...]
+    block_offsets: tuple[int, ...]
+    session_phases: tuple[str, ...]
+    condition_blocks: tuple[bool, ...]
 
     @property
     def origin_count(self) -> int:
@@ -112,6 +125,7 @@ class BarGPTBatch:
         return BarGPTBatch(
             views=move_map(self.views),
             origin_indices=self.origin_indices.to(device, non_blocking=non_blocking),
+            origin_timestamps_us=self.origin_timestamps_us.to(device, non_blocking=non_blocking),
             origin_mask=self.origin_mask.to(device, non_blocking=non_blocking),
             asof_indices=move_map(self.asof_indices),
             autoregressive_targets=move_map(self.autoregressive_targets),
@@ -128,6 +142,11 @@ class BarGPTBatch:
             sample_weights=self.sample_weights.to(device, non_blocking=non_blocking),
             tickers=self.tickers,
             local_dates=self.local_dates,
+            worker_ids=self.worker_ids,
+            unit_indices=self.unit_indices,
+            block_offsets=self.block_offsets,
+            session_phases=self.session_phases,
+            condition_blocks=self.condition_blocks,
         )
 
 
@@ -163,6 +182,7 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
         ar_targets[name] = _pad_first_dimension([item.values for item in built])
         ar_masks[name] = _pad_first_dimension([item.mask for item in built], fill=False)
     origin_indices = _pad_first_dimension([example.origin_indices for example in examples], fill=0)
+    origin_timestamps_us = _pad_first_dimension([example.origin_timestamps_us for example in examples], fill=0)
     origin_mask = _pad_first_dimension(
         [torch.ones(example.origin_indices.shape[0], dtype=torch.bool) for example in examples],
         fill=False,
@@ -183,6 +203,7 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
     return BarGPTBatch(
         views=views,
         origin_indices=origin_indices,
+        origin_timestamps_us=origin_timestamps_us,
         origin_mask=origin_mask,
         asof_indices=asof,
         autoregressive_targets=ar_targets,
@@ -199,6 +220,11 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
         sample_weights=weights,
         tickers=tuple(example.ticker for example in examples),
         local_dates=tuple(example.local_date for example in examples),
+        worker_ids=tuple(example.worker_id for example in examples),
+        unit_indices=tuple(example.unit_index for example in examples),
+        block_offsets=tuple(example.block_offset for example in examples),
+        session_phases=tuple(example.session_phase for example in examples),
+        condition_blocks=tuple(example.has_condition_target for example in examples),
     )
 
 
@@ -390,6 +416,7 @@ def build_multiscale_block(
         views=views,
         asof_indices=asof,
         origin_indices=origin_indices,
+        origin_timestamps_us=anchors,
         target_indices=target_indices,
         target_mask=target_mask,
     )

@@ -77,6 +77,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--split-table", default=defaults.split_table)
     parser.add_argument("--context-bars-1s", type=int, default=defaults.context_bars_1s)
     parser.add_argument("--origin-bars-1s", type=int, default=defaults.origin_bars_1s)
+    parser.add_argument("--coverage-blocks-per-unit", type=int, default=defaults.coverage_blocks_per_unit)
     parser.add_argument("--daily-context-bars", type=int, default=defaults.daily_context_bars)
     parser.add_argument("--batch-size", type=int, default=defaults.batch_size)
     parser.add_argument("--loader-workers", type=int, default=defaults.loader_workers)
@@ -84,6 +85,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=defaults.clickhouse_max_threads_per_worker)
     parser.add_argument("--clickhouse-max-block-size", type=int, default=defaults.clickhouse_max_block_size)
     parser.add_argument("--clickhouse-max-memory-usage", type=int, default=defaults.clickhouse_max_memory_usage)
+    parser.add_argument("--clickhouse-query-days", type=int, default=defaults.clickhouse_query_days)
+    parser.add_argument(
+        "--clickhouse-max-bytes-before-external-sort",
+        type=int,
+        default=defaults.clickhouse_max_bytes_before_external_sort,
+    )
     parser.add_argument(
         "--balance-activity-regimes",
         action=argparse.BooleanOptionalAction,
@@ -203,6 +210,7 @@ class BenchmarkReporter:
 
 
 def _make_data_config(args: argparse.Namespace) -> DataConfig:
+    defaults = DataConfig()
     tickers = _csv(args.tickers)
     validation_tickers = tickers if args.split == "validation" else ()
     validation_slices = tuple((ticker, str(args.start_date), str(args.end_date)) for ticker in validation_tickers)
@@ -229,6 +237,11 @@ def _make_data_config(args: argparse.Namespace) -> DataConfig:
         validation_slices=validation_slices,
         context_bars_1s=int(args.context_bars_1s),
         origin_bars_1s=int(args.origin_bars_1s),
+        coverage_blocks_per_unit=int(args.coverage_blocks_per_unit),
+        validation_blocks_per_slice=max(
+            defaults.validation_blocks_per_slice,
+            math.ceil((int(args.warmup_batches) + int(args.measured_batches)) * int(args.batch_size) / max(1, len(tickers))),
+        ),
         daily_context_bars=int(args.daily_context_bars),
         batch_size=int(args.batch_size),
         loader_workers=int(args.loader_workers),
@@ -236,6 +249,8 @@ def _make_data_config(args: argparse.Namespace) -> DataConfig:
         clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_worker),
         clickhouse_max_block_size=int(args.clickhouse_max_block_size),
         clickhouse_max_memory_usage=int(args.clickhouse_max_memory_usage),
+        clickhouse_query_days=int(args.clickhouse_query_days),
+        clickhouse_max_bytes_before_external_sort=int(args.clickhouse_max_bytes_before_external_sort),
         pin_memory=bool(args.pin_memory),
         persistent_workers=bool(args.persistent_workers),
         balance_activity_regimes=bool(args.balance_activity_regimes),
@@ -263,6 +278,8 @@ def run_benchmark(args: argparse.Namespace) -> LoaderBenchmarkResult:
         max_threads=data.clickhouse_max_threads_per_worker,
         max_block_size=data.clickhouse_max_block_size,
         max_memory_usage=data.clickhouse_max_memory_usage,
+        query_days=data.clickhouse_query_days,
+        max_bytes_before_external_sort=data.clickhouse_max_bytes_before_external_sort,
     )
     dataset = BarGPTIterableDataset(data_config=data, stream_config=stream, split=str(args.split), seed=int(args.seed))
     loader = make_dataloader(dataset, data, drop_last=True)

@@ -18,6 +18,14 @@ class TrainingProgressState:
     state: str = "starting"
     samples_seen: int = 0
     batches_seen: int = 0
+    optimizer_steps: int = 0
+    blocks_seen: int = 0
+    units_seen: int = 0
+    condition_blocks_seen: int = 0
+    planned_units: int = 0
+    planned_blocks: int = 0
+    gradient_accumulation_steps: int = 1
+    cuda_prefetch: bool = False
     loss: float = 0.0
     validation_loss: float | None = None
     learning_rate: float = 0.0
@@ -76,6 +84,10 @@ class TrainingReporter:
         s = self.state
         s.samples_seen = int(metrics.get("train/samples_seen", s.samples_seen))
         s.batches_seen = int(metrics.get("train/batches_seen", s.batches_seen))
+        s.optimizer_steps = int(metrics.get("train/optimizer_steps", s.optimizer_steps))
+        s.blocks_seen = int(metrics.get("train/blocks_seen", s.blocks_seen))
+        s.units_seen = int(metrics.get("train/units_seen", s.units_seen))
+        s.condition_blocks_seen = int(metrics.get("train/condition_blocks_seen", s.condition_blocks_seen))
         s.loss = float(metrics.get("train/loss", s.loss))
         s.learning_rate = float(metrics.get("train/learning_rate", s.learning_rate))
         s.origins_per_second = float(metrics.get("train/origins_per_second", s.origins_per_second))
@@ -116,7 +128,8 @@ class TrainingReporter:
             self._last_text = now
             s = self.state
             print(
-                f"state={s.state} samples={s.samples_seen:,} batches={s.batches_seen:,} "
+                f"state={s.state} origins={s.samples_seen:,} steps={s.optimizer_steps:,} "
+                f"blocks={s.blocks_seen:,}/{s.planned_blocks:,} units={s.units_seen:,}/{s.planned_units:,} "
                 f"loss={s.loss:.6f} speed={s.origins_per_second:,.1f}/s "
                 f"active={s.active_tickers} dates={s.active_dates}",
                 flush=True,
@@ -130,6 +143,7 @@ class TrainingReporter:
 
         s = self.state
         width = self._console.size.width if self._console is not None else 120
+        height = self._console.size.height if self._console is not None else 40
         elapsed = max(1e-9, time.perf_counter() - self.started)
         remaining = max(0, s.max_samples - s.samples_seen) if s.max_samples else 0
         eta = remaining / s.origins_per_second if remaining and s.origins_per_second > 0 else 0.0
@@ -146,16 +160,23 @@ class TrainingReporter:
             summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]validation[/] {s.validation_loss:.6f}" if s.validation_loss is not None else "[bold]validation[/] -", f"[bold]lr[/] {s.learning_rate:.3e}")
             summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]elapsed[/] {_duration(elapsed)}", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
             summary.add_row(f"[bold]loader wait[/] {s.loader_wait_seconds:.2f}s", f"[bold]GPU[/] {s.gpu_seconds:.2f}s", f"[bold]parameters[/] {s.model_parameters:,}")
+            summary.add_row(
+                f"[bold]units[/] {s.units_seen:,}/{s.planned_units:,}",
+                f"[bold]blocks[/] {s.blocks_seen:,}/{s.planned_blocks:,}",
+                f"[bold]updates[/] {s.optimizer_steps:,} ({s.gradient_accumulation_steps} micro/update)",
+            )
         else:
             summary.add_column(); summary.add_column()
             summary.add_row(f"[bold]state[/] {s.state}", f"[bold]device[/] {s.device} {s.precision}")
             summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]lr[/] {s.learning_rate:.3e}")
             summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
-            summary.add_row(f"[bold]batches[/] {s.batches_seen:,}", f"[bold]parameters[/] {s.model_parameters:,}")
+            summary.add_row(f"[bold]updates[/] {s.optimizer_steps:,}", f"[bold]blocks[/] {s.blocks_seen:,}/{s.planned_blocks:,}")
         active = Table.grid(expand=True, padding=(0, 2))
         active.add_column(style="bold", no_wrap=True); active.add_column(ratio=1)
         active.add_row("tickers", s.active_tickers)
         active.add_row("dates", s.active_dates)
+        active.add_row("pipeline", f"CPU queue + {'CUDA prefetch' if s.cuda_prefetch else 'synchronous device handoff'}")
+        active.add_row("condition blocks", f"{s.condition_blocks_seen:,}")
         active.add_row("checkpoint", s.last_checkpoint)
         active.add_row("output", s.output_dir)
         losses = Table.grid(expand=True, padding=(0, 2))
@@ -164,12 +185,20 @@ class TrainingReporter:
             losses.add_row(key, f"{value:.6f}")
         if not s.losses:
             losses.add_row("waiting for first batch", "-")
-        messages = "\n".join(self.messages) if self.messages else "No messages"
+        message_limit = 1 if height < 22 else (3 if height < 30 else 6)
+        messages = "\n".join(list(self.messages)[-message_limit:]) if self.messages else "No messages"
+        primary = Panel(Group(progress, summary), title="BarGPT v1 training", border_style="cyan")
+        current = Panel(active, title="Current work and durability", border_style="green")
+        recent = Panel(messages, title="Recent messages", border_style="yellow")
+        if height < 22:
+            return Group(primary, recent)
+        if height < 30:
+            return Group(primary, current, recent)
         return Group(
-            Panel(Group(progress, summary), title="BarGPT v1 training", border_style="cyan"),
-            Panel(active, title="Current work and durability", border_style="green"),
+            primary,
+            current,
             Panel(losses, title="Objectives", border_style="magenta"),
-            Panel(messages, title="Recent messages", border_style="yellow"),
+            recent,
         )
 
 

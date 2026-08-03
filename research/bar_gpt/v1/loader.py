@@ -39,6 +39,7 @@ from research.bar_gpt.v1.data import (
 )
 from research.bar_gpt.v1.features import project_stationary_features
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES, SESSION_END_SECOND, SESSION_START_SECOND, SESSION_TIMEZONE
+from research.bar_gpt.v1.sampling import CoverageCursor, select_stratified_examples
 from research.mlops.clickhouse import quote_ident, sql_string
 
 
@@ -60,6 +61,8 @@ class ClickHouseBarStreamConfig:
     max_threads: int = 4
     max_block_size: int = 65_536
     max_memory_usage: int = 8 * 1024**3
+    query_days: int = 7
+    max_bytes_before_external_sort: int = 1024**3
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +168,9 @@ ORDER BY ticker, local_date, bucket_index
 SETTINGS
     max_threads = {max(1, int(config.max_threads))},
     max_block_size = {max(1, int(config.max_block_size))},
-    max_memory_usage = {max(1, int(config.max_memory_usage))}
+    max_memory_usage = {max(1, int(config.max_memory_usage))},
+    max_bytes_before_external_sort = {max(1, int(config.max_bytes_before_external_sort))},
+    optimize_read_in_order = 1
 FORMAT ArrowStream
 """
 
@@ -450,29 +455,34 @@ class ArrowStreamClient:
         source_intervals: tuple[TickerInterval, ...] = (),
         device: torch.device | str = "cpu",
     ) -> Iterator[tuple[str, BarView]]:
-        query = ticker_range_query(
-            self.config,
-            ticker=ticker,
-            start_date=start_date,
-            end_date=end_date,
-            source_intervals=source_intervals,
-        )
-        current_date = ""
-        current_frames: list[pl.DataFrame] = []
-        with self.record_batches(query) as batches:
-            for batch in batches:
-                frame = pl.from_arrow(batch)
-                if frame.is_empty():
-                    continue
-                for part in frame.partition_by("local_date", maintain_order=True):
-                    date_value = str(part["local_date"][0])
-                    if current_date and date_value != current_date:
-                        yield current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)
-                        current_frames = []
-                    current_date = date_value
-                    current_frames.append(part)
-        if current_frames:
-            yield current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)
+        cursor = dt.date.fromisoformat(start_date)
+        end = dt.date.fromisoformat(end_date)
+        while cursor < end:
+            right = min(end, cursor + dt.timedelta(days=max(1, int(self.config.query_days))))
+            query = ticker_range_query(
+                self.config,
+                ticker=ticker,
+                start_date=cursor.isoformat(),
+                end_date=right.isoformat(),
+                source_intervals=source_intervals,
+            )
+            current_date = ""
+            current_frames: list[pl.DataFrame] = []
+            with self.record_batches(query) as batches:
+                for batch in batches:
+                    frame = pl.from_arrow(batch)
+                    if frame.is_empty():
+                        continue
+                    for part in frame.partition_by("local_date", maintain_order=True):
+                        date_value = str(part["local_date"][0])
+                        if current_date and date_value != current_date:
+                            yield current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)
+                            current_frames = []
+                        current_date = date_value
+                        current_frames.append(part)
+            if current_frames:
+                yield current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)
+            cursor = right
 
     def read_condition_views(
         self,
@@ -1003,6 +1013,7 @@ def build_session_examples(
             raw_views=raw_views,
             raw_view_start_us=raw_view_start_us,
             origin_indices=origins,
+            origin_timestamps_us=anchors,
             asof_indices=asof,
             target_support=support,
             target_share_factors=support_share_factors,
@@ -1095,6 +1106,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         split: str,
         seed: int,
         epoch: int = 0,
+        resume_cursors: Mapping[int, CoverageCursor] | None = None,
     ) -> None:
         super().__init__()
         if split not in {"train", "validation"}:
@@ -1105,6 +1117,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         self.split = split
         self.seed = int(seed)
         self._epoch = mp.Value("q", int(epoch))
+        self.resume_cursors = dict(resume_cursors or {})
 
     @property
     def epoch(self) -> int:
@@ -1115,7 +1128,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         with self._epoch.get_lock():
             self._epoch.value = int(value)
 
-    def _units(self) -> list[TickerDateUnit]:
+    def _units(self) -> list[tuple[int, TickerDateUnit]]:
         validation_tickers = {ticker for ticker, _start, _end in self.data_config.validation_slices}
         if self.split == "validation":
             selected = [TickerDateUnit(*values) for values in self.data_config.validation_slices]
@@ -1127,17 +1140,18 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                 tickers,
                 seed=self.seed + self.epoch,
             )
+        indexed = list(enumerate(selected))
         worker = get_worker_info()
         if worker is not None:
-            selected = selected[worker.id :: worker.num_workers]
-        return selected
+            indexed = indexed[worker.id :: worker.num_workers]
+        return indexed
 
     def __iter__(self) -> Iterator[BarGPTExample]:
         client = ArrowStreamClient(self.stream_config)
         units = self._units()
-        tickers = tuple(sorted({unit.ticker for unit in units}))
-        start_date = min((unit.start_date for unit in units), default=self.data_config.start_date)
-        end_date = max((unit.end_date for unit in units), default=self.data_config.end_date)
+        tickers = tuple(sorted({unit.ticker for _index, unit in units}))
+        start_date = min((unit.start_date for _index, unit in units), default=self.data_config.start_date)
+        end_date = max((unit.end_date for _index, unit in units), default=self.data_config.end_date)
         lookback_days = max(730, int(self.data_config.daily_context_bars * 2.2))
         daily_start = (dt.date.fromisoformat(start_date) - dt.timedelta(days=lookback_days)).isoformat()
         def raw_examples() -> Iterator[BarGPTExample]:
@@ -1157,7 +1171,12 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                 split_table=self.data_config.split_table,
             )
             daily_by_ticker: dict[str, tuple[list[str], BarView] | None] = {}
-            for unit in units:
+            worker = get_worker_info()
+            worker_id = worker.id if worker is not None else 0
+            resume = self.resume_cursors.get(worker_id)
+            for unit_index, unit in units:
+                if resume is not None and unit_index < resume.unit_index:
+                    continue
                 ticker = unit.ticker
                 split_actions = actions_by_ticker.get(ticker, ())
                 excluded_dates = split_execution_dates(split_actions)
@@ -1181,55 +1200,58 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     condition_table=self.data_config.condition_table,
                     source_intervals=intervals_by_ticker[ticker],
                 )
-                unit_examples = 0
-                unit_complete = False
-                for local_date, session in client.iter_session_views(
-                    ticker=ticker,
-                    start_date=fetch_start,
-                    end_date=unit.end_date,
-                    source_intervals=intervals_by_ticker[ticker],
-                ):
-                    if local_date in excluded_dates:
+                def candidates() -> Iterator[BarGPTExample]:
+                    nonlocal prior_session, prior_conditions
+                    for local_date, session in client.iter_session_views(
+                        ticker=ticker,
+                        start_date=fetch_start,
+                        end_date=unit.end_date,
+                        source_intervals=intervals_by_ticker[ticker],
+                    ):
+                        if local_date in excluded_dates:
+                            continue
+                        session_conditions = conditions_by_date.get(
+                            local_date,
+                            torch.zeros((session.features.shape[0], 4), dtype=torch.float32),
+                        )
+                        if unit.start_date <= local_date < unit.end_date:
+                            yield from build_session_examples(
+                                ticker=ticker,
+                                local_date=local_date,
+                                session=session,
+                                prior_session=prior_session,
+                                session_conditions=session_conditions,
+                                prior_conditions=prior_conditions,
+                                daily=daily_by_ticker.get(ticker),
+                                split_actions=split_actions,
+                                config=self.data_config,
+                            )
+                        prior_session = session
+                        prior_conditions = session_conditions
+
+                limit = (
+                    self.data_config.validation_blocks_per_slice
+                    if self.split == "validation"
+                    else self.data_config.coverage_blocks_per_unit
+                )
+                selected = select_stratified_examples(
+                    candidates(),
+                    limit=limit,
+                    seed=self.seed + self.epoch * 1_000_003 + unit_index,
+                    balance_activity_regimes=self.data_config.balance_activity_regimes,
+                )
+                for block_offset, example in enumerate(selected):
+                    if (
+                        resume is not None
+                        and unit_index == resume.unit_index
+                        and block_offset <= resume.block_offset
+                    ):
                         continue
-                    session_conditions = conditions_by_date.get(
-                        local_date,
-                        torch.zeros((session.features.shape[0], 4), dtype=torch.float32),
-                    )
-                    if unit.start_date <= local_date < unit.end_date:
-                        for example in build_session_examples(
-                            ticker=ticker,
-                            local_date=local_date,
-                            session=session,
-                            prior_session=prior_session,
-                            session_conditions=session_conditions,
-                            prior_conditions=prior_conditions,
-                            daily=daily_by_ticker.get(ticker),
-                            split_actions=split_actions,
-                            config=self.data_config,
-                        ):
-                            yield example
-                            unit_examples += 1
-                            if (
-                                self.split == "validation"
-                                and unit_examples >= self.data_config.validation_blocks_per_slice
-                            ):
-                                unit_complete = True
-                                break
-                    prior_session = session
-                    prior_conditions = session_conditions
-                    if unit_complete:
-                        break
-        source = raw_examples()
-        if self.data_config.balance_activity_regimes and self.split == "train":
-            worker = get_worker_info()
-            worker_id = worker.id if worker is not None else 0
-            yield from balanced_regime_stream(
-                source,
-                buffer_size=max(3, self.data_config.ready_queue_blocks * self.data_config.batch_size * 3),
-                seed=self.seed + self.epoch * 10_000 + worker_id,
-            )
-        else:
-            yield from source
+                    example.worker_id = worker_id
+                    example.unit_index = unit_index
+                    example.block_offset = block_offset
+                    yield example
+        yield from raw_examples()
 
 
 def make_dataloader(
