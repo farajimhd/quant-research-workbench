@@ -1,5 +1,5 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_19",
+  "registry_version": "news_synthesis_concepts_v1_21",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
@@ -58,6 +58,7 @@
     {"id": "macro.household_credit", "parent": "macro", "definition": "A household debt, credit, loan or consumer-balance condition.", "aliases": ["household_debt", "credit_card_debt", "consumer_credit", "student_loans", "mortgage_balances"]},
     {"id": "macro.economic_outlook", "parent": "macro", "definition": "An assessment or forecast of broad economic growth, recession or economic conditions.", "aliases": ["economic_outlook", "recession_outlook", "economic_growth"]},
     {"id": "macro.trade_activity", "parent": "macro", "definition": "A reported or expected import, export or cross-border trade condition.", "aliases": ["exports", "imports", "trade_activity"]},
+    {"id": "macro.foreign_investment", "parent": "macro", "definition": "A reported, expected or assessed cross-border direct-investment inflow or outflow condition.", "aliases": ["foreign_investment", "foreign_direct_investment", "fdi"]},
     {"id": "macro.policy_outlook", "parent": "macro", "definition": "A reported or expected fiscal, monetary or government-policy action or condition.", "aliases": ["government_stimulus", "monetary_policy", "fiscal_policy", "policy_outlook"]},
     {"id": "macro.consumer_confidence", "parent": "macro", "definition": "A reported, expected or historical consumer-confidence or consumer-sentiment reading.", "aliases": ["consumer_confidence", "consumer_sentiment"]},
     {"id": "macro.consumer_spending", "parent": "macro", "definition": "A reported, expected or assessed consumer-spending or retail-demand condition.", "aliases": ["consumer_spending", "retail_spending", "household_spending"]},
@@ -93,6 +94,8 @@
     {"id": "governance.legislation", "parent": "governance", "definition": "A legislature enacts, amends or repeals a law or statutory governance requirement.", "aliases": ["legislation", "statute", "law_enacted"]},
     {"id": "geopolitical.military_event", "parent": "geopolitical", "definition": "A confirmed historical or current battle, military defeat or comparable armed-force event.", "aliases": ["battle", "military_event", "naval_defeat"]},
     {"id": "financial.interest_rate", "parent": "financial", "definition": "A reported, expected or historical interest-rate level or change.", "aliases": ["interest_rate", "borrowing_rate"]},
-    {"id": "financial.monetary_system", "parent": "financial", "definition": "A historical or current monetary-system, note-issuance, gold-standard or central-bank institutional condition.", "aliases": ["monetary_system", "gold_standard", "bank_note_issuance", "central_bank_system"]}
+    {"id": "financial.monetary_system", "parent": "financial", "definition": "A historical or current monetary-system, note-issuance, gold-standard or central-bank institutional condition.", "aliases": ["monetary_system", "gold_standard", "bank_note_issuance", "central_bank_system"]},
+    {"id": "politics.campaign", "parent": "politics", "definition": "A political candidate announces, launches, ends or materially updates an election campaign.", "aliases": ["campaign_launch", "presidential_campaign", "election_campaign"]},
+    {"id": "politics.policy_assessment", "parent": "politics", "definition": "A political figure, party or external source assesses a proposed or enacted public policy.", "aliases": ["policy_assessment", "political_policy_view"]}
   ]
 }
