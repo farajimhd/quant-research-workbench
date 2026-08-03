@@ -10,6 +10,10 @@ from research.text_intelligence.news_synthesis_v1.review_spec import (
 
 
 class ReviewSpecTest(unittest.TestCase):
+    def test_capital_deleveraging_is_registered(self) -> None:
+        registry = ConceptRegistry.load(REGISTRY_PATH)
+        self.assertTrue(registry.contains("capital.deleveraging"))
+
     def test_registry_includes_executive_compensation_without_overloading_management_change(self) -> None:
         registry = ConceptRegistry.load(REGISTRY_PATH)
         self.assertTrue(registry.contains("governance.executive_compensation"))

@@ -1,5 +1,5 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_22",
+  "registry_version": "news_synthesis_concepts_v1_23",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
@@ -14,6 +14,7 @@
     {"id": "corporate_transaction.acquisition", "parent": "corporate_transaction", "definition": "An acquisition, merger or takeover event.", "aliases": ["ma_transaction", "acquisition", "merger"]},
     {"id": "capital.financing", "parent": "capital", "definition": "Debt, equity or other financing activity.", "aliases": ["financing", "offering", "capital_raise", "private_placement"]},
     {"id": "capital.return", "parent": "capital", "definition": "Dividend, repurchase or other return of capital.", "aliases": ["capital_return", "buyback", "share_repurchase", "dividend"]},
+    {"id": "capital.deleveraging", "parent": "capital", "definition": "A confirmed, planned or prioritized reduction in debt, leverage or comparable balance-sheet obligations.", "aliases": ["deleveraging", "debt_reduction", "reduce_leverage", "pay_down_debt"]},
     {"id": "regulatory.action", "parent": "regulatory", "definition": "A regulator or exchange takes or announces an official action.", "aliases": ["regulatory_event", "regulatory_action", "trading_halt"]},
     {"id": "legal.proceeding", "parent": "legal", "definition": "A lawsuit, investigation, settlement or other legal proceeding.", "aliases": ["legal", "lawsuit", "investigation", "litigation", "settlement"]},
     {"id": "clinical.regulatory_milestone", "parent": "clinical", "definition": "A clinical or medical regulatory milestone or decision.", "aliases": ["fda_approval", "regulatory.fda_approval", "clinical_trial", "trial_results"]},
