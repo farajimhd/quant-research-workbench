@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from research.text_intelligence.news_synthesis_v1.registry import ConceptRegistry, REGISTRY_PATH
 from research.text_intelligence.news_synthesis_v1.review_spec import (
     compile_approved_draft,
     compile_review_spec,
@@ -9,6 +10,14 @@ from research.text_intelligence.news_synthesis_v1.review_spec import (
 
 
 class ReviewSpecTest(unittest.TestCase):
+    def test_registry_includes_executive_compensation_without_overloading_management_change(self) -> None:
+        registry = ConceptRegistry.load(REGISTRY_PATH)
+        self.assertTrue(registry.contains("governance.executive_compensation"))
+        self.assertNotEqual(
+            registry.resolve("executive_compensation")[0],
+            "governance.management_change",
+        )
+
     def test_observed_market_moves_expand_to_neutral_atomic_statements(self) -> None:
         article, spec = self._mover_fixture()
         spec["observed_market_moves"] = [

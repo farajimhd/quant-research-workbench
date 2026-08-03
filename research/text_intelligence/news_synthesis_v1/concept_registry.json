@@ -1,5 +1,5 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_21",
+  "registry_version": "news_synthesis_concepts_v1_22",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
@@ -20,6 +20,7 @@
     {"id": "commercial.contract", "parent": "commercial", "definition": "A material customer contract, order, award or cancellation.", "aliases": ["contract", "order", "contract_award"]},
     {"id": "product.milestone", "parent": "product", "definition": "A product launch, delay, recall or discontinuation.", "aliases": ["product_launch", "product_update", "recall"]},
     {"id": "governance.management_change", "parent": "governance", "definition": "A material executive, director or governance change.", "aliases": ["management_change", "executive_change", "board_change"]},
+    {"id": "governance.executive_compensation", "parent": "governance", "definition": "A reported, approved or changed executive or director compensation amount or arrangement.", "aliases": ["executive_compensation", "director_compensation", "ceo_pay"]},
     {"id": "governance.shareholder_vote", "parent": "governance", "definition": "A shareholder meeting, election, proposal or ratification vote and its reported outcome.", "aliases": ["shareholder_vote", "annual_meeting_vote", "proposal_vote", "auditor_ratification"]},
     {"id": "operations.business_update", "parent": "operations", "definition": "A material operating expansion, disruption, restructuring or business update.", "aliases": ["business_update", "operations_update", "restructuring", "operations"]},
     {"id": "market.context", "parent": "market", "definition": "Market, sector or macro context that is not an issuer event.", "aliases": ["market_context", "historical_performance"]},
