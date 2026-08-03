@@ -21,11 +21,7 @@ def compile_review_spec(article: Mapping[str, Any], spec: Mapping[str, Any]) -> 
     text = str(article.get("rendered_product", {}).get("text", ""))
     registry = ConceptRegistry.load()
     envelope = {
-        field: {
-            "value": str(decision["value"]),
-            "rule_id": "manual_review_v1",
-            "evidence": [_resolve_evidence(article, value) for value in decision.get("evidence", [])],
-        }
+        field: _compile_envelope_decision(article, decision)
         for field, decision in spec["envelope"].items()
     }
     entities = [_expand_entity(article, row) for row in spec.get("entities", [])]
@@ -114,6 +110,29 @@ def compile_review_spec(article: Mapping[str, Any], spec: Mapping[str, Any]) -> 
     if not validation.valid:
         raise RuntimeError(f"Invalid V1 review specification for {sample_id}: {validation.issues}")
     return document
+
+
+def _compile_envelope_decision(
+    article: Mapping[str, Any],
+    decision: Mapping[str, Any] | str,
+) -> dict[str, Any]:
+    """Compile the compact manual-review envelope DSL.
+
+    Reviewers usually need only select an approved taxonomy value. A mapping
+    remains available when exact source evidence is needed for an ambiguous
+    envelope decision.
+    """
+    if isinstance(decision, Mapping):
+        value = str(decision["value"])
+        evidence = decision.get("evidence", [])
+    else:
+        value = str(decision)
+        evidence = []
+    return {
+        "value": value,
+        "rule_id": "manual_review_v1",
+        "evidence": [_resolve_evidence(article, item) for item in evidence],
+    }
 
 
 def compile_approved_draft(

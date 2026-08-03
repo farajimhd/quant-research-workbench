@@ -1,5 +1,5 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_15",
+  "registry_version": "news_synthesis_concepts_v1_18",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
@@ -8,6 +8,7 @@
     {"id": "analyst.rating_action", "parent": "analyst.assessment", "definition": "An analyst initiates, maintains, upgrades or downgrades a rating.", "aliases": ["analyst_action", "rating_action", "analyst_rating"]},
     {"id": "analyst.price_target_action", "parent": "analyst.assessment", "definition": "An analyst establishes or changes a price target.", "aliases": ["price_target", "target_change"]},
     {"id": "earnings.performance", "parent": "earnings", "definition": "Reported earnings or operating performance.", "aliases": ["earnings", "earnings_results", "quarterly_results"]},
+    {"id": "earnings.release_schedule", "parent": "earnings", "definition": "An issuer schedules or announces the timing of an earnings or financial-results release.", "aliases": ["earnings_release_schedule", "results_release_schedule"]},
     {"id": "earnings.restatement", "parent": "earnings", "definition": "An issuer announces, files or completes a correction or restatement of previously reported financial results.", "aliases": ["financial_restatement", "accounting_restatement", "results_restatement"]},
     {"id": "guidance.issued", "parent": "guidance", "definition": "The issuer issues, raises, lowers, reaffirms or withdraws guidance.", "aliases": ["guidance", "outlook", "forecast_update"]},
     {"id": "corporate_transaction.acquisition", "parent": "corporate_transaction", "definition": "An acquisition, merger or takeover event.", "aliases": ["ma_transaction", "acquisition", "merger"]},
@@ -84,6 +85,12 @@
     {"id": "geopolitical.defense_action", "parent": "geopolitical", "definition": "A confirmed or planned troop deployment, defense commitment or other non-combat military posture action.", "aliases": ["troop_deployment", "defense_commitment", "military_posture"]},
     {"id": "technology.nuclear_incident", "parent": "technology", "definition": "A reported or assessed nuclear-facility accident, reactor failure or radiological release.", "aliases": ["nuclear_incident", "reactor_meltdown", "radioactive_fallout"]},
     {"id": "media.coverage_assessment", "parent": "media", "definition": "An assessment of media coverage, disclosure, suppression or reporting conduct.", "aliases": ["media_blackout", "coverage_assessment", "reporting_conduct"]},
-    {"id": "strategy.portfolio_assessment", "parent": "strategy", "definition": "An editorial or professional assessment about portfolio allocation, hedging or risk positioning.", "aliases": ["portfolio_allocation", "hedging_recommendation", "risk_positioning"]}
+    {"id": "strategy.portfolio_assessment", "parent": "strategy", "definition": "An editorial or professional assessment about portfolio allocation, hedging or risk positioning.", "aliases": ["portfolio_allocation", "hedging_recommendation", "risk_positioning"]},
+    {"id": "strategy.operational_priority", "parent": "strategy", "definition": "An issuer states a material operating, financial or execution priority or objective that is not quantified formal guidance.", "aliases": ["operational_priority", "execution_priority", "management_priority"]},
+    {"id": "organization.founding", "parent": "organization", "definition": "The founding, incorporation or formal establishment of an organization or institution.", "aliases": ["organization_founding", "institution_founding"]},
+    {"id": "governance.legislation", "parent": "governance", "definition": "A legislature enacts, amends or repeals a law or statutory governance requirement.", "aliases": ["legislation", "statute", "law_enacted"]},
+    {"id": "geopolitical.military_event", "parent": "geopolitical", "definition": "A confirmed historical or current battle, military defeat or comparable armed-force event.", "aliases": ["battle", "military_event", "naval_defeat"]},
+    {"id": "financial.interest_rate", "parent": "financial", "definition": "A reported, expected or historical interest-rate level or change.", "aliases": ["interest_rate", "borrowing_rate"]},
+    {"id": "financial.monetary_system", "parent": "financial", "definition": "A historical or current monetary-system, note-issuance, gold-standard or central-bank institutional condition.", "aliases": ["monetary_system", "gold_standard", "bank_note_issuance", "central_bank_system"]}
   ]
 }

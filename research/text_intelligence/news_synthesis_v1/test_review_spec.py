@@ -9,6 +9,43 @@ from research.text_intelligence.news_synthesis_v1.review_spec import (
 
 
 class ReviewSpecTest(unittest.TestCase):
+    def test_compact_scalar_envelope_decisions_compile(self) -> None:
+        article = {
+            "sample_id": "N1", "source_id": "source",
+            "source_timestamp": "2026-01-01T12:00:00Z",
+            "source_text_sha256": "f" * 64,
+            "rendered_product": {"text": "ABC issued guidance."},
+            "point_in_time_issuer_candidates": [{
+                "entity_id": "security:ABC", "entity_kind": "security",
+                "display_name": "ABC", "ticker": "ABC",
+                "identity_status": "resolved", "identity_evidence": ["ABC"],
+            }],
+        }
+        spec = {
+            "sample_id": "N1", "review_notes": "Reviewed.",
+            "envelope": {
+                "document_structure": "single_subject",
+                "communication_purpose": "report",
+                "information_origin": "issuer",
+                "production_method": "original",
+                "text_availability": "rendered",
+            },
+            "entities": [{"ticker": "ABC"}],
+            "statements": [{
+                "statement_kind": "event", "concept_leaf": "guidance.issued",
+                "epistemic_status": "confirmed", "time_relation": "current",
+                "evidence": ["ABC issued guidance."],
+                "participations": [{
+                    "entity_id": "security:ABC", "semantic_role": "affected_subject",
+                    "discourse_role": "none", "semantic_sentiment": "neutral",
+                    "sentiment_strength": 0,
+                }],
+            }],
+        }
+        document = compile_review_spec(article, spec)
+        self.assertEqual(document["envelope"]["information_origin"]["value"], "issuer")
+        self.assertEqual(document["envelope"]["information_origin"]["evidence"], [])
+
     def test_duplicate_envelope_quote_binds_first_exact_occurrence(self) -> None:
         article = {
             "sample_id": "N1", "source_id": "s", "source_timestamp": "t",
