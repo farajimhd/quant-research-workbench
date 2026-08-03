@@ -989,7 +989,7 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, profile }: {
       id: "profile", section: "Behavior", title: "Which trading plan are you configuring?",
       description: "Choose the reusable plan whose complete lifecycle you want to review.",
       guide: "The protected profile is a safe starting point. Selecting a profile changes the draft default; it does not publish or start trading.",
-      content: <DecisionOptions onChange={(profile_id) => onChange("strategy", { ...draft.strategy, default_profile_id: profile_id })} options={draft.strategy.profiles.map((row) => ({ detail: row.description || `${readableLabel(row.origin)} profile`, label: row.name, recommended: row.protected, value: row.profile_id }))} value={profile.profile_id} />,
+      content: <DecisionOptions onChange={(profile_id) => onChange("strategy", { ...draft.strategy, default_profile_id: profile_id })} options={draft.strategy.profiles.map((row) => ({ detail: strategyProfileChoiceDetail(row), label: row.name, recommended: row.protected, value: row.profile_id }))} value={profile.profile_id} />,
     },
     {
       id: "identity", section: "Behavior", title: "How should this plan be identified?",
@@ -1152,8 +1152,8 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, profile }: {
     <section className="guided-strategy-question">
       <header><span>{current.section} · {sectionPosition} of {sectionQuestions.length}</span><small>Question {safeIndex + 1} of {questions.length}</small></header>
       <div className="guided-question-progress"><span style={{ width: `${((safeIndex + 1) / Math.max(questions.length, 1)) * 100}%` }} /></div>
-      <div className="guided-strategy-prompt"><span className="guided-prompt-label">Decision</span><h2>{current.title}</h2><p>{current.description}</p><ConfigurationGuidance items={[{ label: "Why this matters", value: current.guide }, { label: "Default behavior", value: "Keep the displayed value to approve the current default." }, { label: "Release behavior", value: "This draft changes runtime only after publication." }]} /></div>
-      <div className="guided-strategy-controls">{current.content}</div>
+      <section className="guided-strategy-prompt guided-question-prompt"><span className="guided-prompt-label">Decision</span><h2>{current.title}</h2><p>{current.description}</p><ConfigurationGuidance items={[{ label: "Why this matters", value: current.guide }, { label: "Using the default", value: "Leave the displayed answer unchanged to approve the current default." }, { label: "Runtime effect", value: "This answer remains a draft until the configuration is published." }]} /></section>
+      <section className="guided-answer-surface"><header><span>Your answer</span><strong>Choose or configure one response</strong><small>Only this decision is being edited. You can return to it before publication.</small></header><div className="guided-strategy-controls guided-answer-content">{current.content}</div></section>
       <details className="guided-running-summary"><summary>Your setup so far <ChevronRight size={15} /></summary><div>{recap.map((row) => <span key={row.label}><small>{row.label}</small><strong>{row.value}</strong></span>)}</div></details>
       <footer className="guided-strategy-navigation"><button className="button" disabled={safeIndex === 0} onClick={() => setQuestionIndex(safeIndex - 1)} type="button"><ArrowLeft size={15} /> Previous</button><div>{nextSectionIndex > 0 ? <button onClick={() => setQuestionIndex(nextSectionIndex)} type="button">Keep remaining {current.section} values</button> : <span>Review each published strategy decision</span>}</div><button className="button primary" onClick={() => safeIndex < questions.length - 1 ? setQuestionIndex(safeIndex + 1) : onContinue()} type="button">{safeIndex < questions.length - 1 ? "Next question" : "Save strategy and continue"} <ArrowRight size={15} /></button></footer>
     </section>
@@ -1200,8 +1200,18 @@ function strategySetupRows(profile: StrategyProfile) {
   ];
 }
 
+function strategyProfileChoiceDetail(profile: StrategyProfile) {
+  const behavior = profile.lifecycle.trading_behavior;
+  const sessions = behavior.eligible_sessions.length > 0 ? behavior.eligible_sessions.map(readableLabel).join(", ") : "no entry sessions";
+  const addCount = profile.lifecycle.initial_entry.add_steps.filter((row) => row.enabled).length;
+  const exitCount = profile.lifecycle.exit.rule_sets.filter((row) => row.enabled).length;
+  const ownership = profile.protected ? "Protected system starting point" : "Editable configured plan";
+  const reentry = profile.lifecycle.reentry.enabled ? `reentry allowed up to ${profile.lifecycle.reentry.maximum_attempts} times` : "reentry disabled";
+  return `${ownership}. ${readableLabel(behavior.side)} entries during ${sessions}; ${addCount} add ${addCount === 1 ? "action" : "actions"}, ${exitCount} strategic ${exitCount === 1 ? "exit" : "exits"}, and ${reentry}.`;
+}
+
 function GuidedQuestion({ children, description, label, status }: { children: ReactNode; description: string; label: string; status: string }) {
-  return <section className="guided-question"><header><div><small>Decision</small><span>{label}</span><p>{description}</p></div><em data-state={status.toLowerCase().replaceAll(" ", "-")}>{status}</em></header><ConfigurationGuidance items={[{ label: "What changes", value: "Only the subject shown below." }, { label: "When it applies", value: "After this draft is validated and published." }, { label: "Safety", value: "Unchanged values keep their current defaults." }]} /><div>{children}</div></section>;
+  return <section className="guided-question"><section className="guided-question-prompt"><header><div><small>Decision</small><span>{label}</span><p>{description}</p></div><em data-state={status.toLowerCase().replaceAll(" ", "-")}>{status}</em></header><ConfigurationGuidance items={[{ label: "What changes", value: "Only the subject shown below." }, { label: "Using the default", value: "Leave the displayed answer unchanged to approve the current default." }, { label: "Runtime effect", value: "The answer applies only after this draft is validated and published." }]} /></section><section className="guided-answer-surface"><header><span>Your answer</span><strong>Choose or configure one response</strong><small>Complete only the fields needed for this decision.</small></header><div className="guided-answer-content">{children}</div></section></section>;
 }
 
 function ConfigurationGuidance({ items }: { items: Array<{ label: string; value: string }> }) {
@@ -1210,7 +1220,7 @@ function ConfigurationGuidance({ items }: { items: Array<{ label: string; value:
 
 function DecisionOptions({ onChange, options, value }: { onChange: (value: string) => void; options: Array<{ detail: string; label: string; recommended?: boolean; value: string }>; value: string }) {
   const name = useId();
-  return <div className="guided-decision-options">{options.map((option) => <label key={option.value}><input checked={value === option.value} name={name} onChange={() => onChange(option.value)} type="radio" /><span><span><strong>{option.label}</strong>{option.recommended ? <em>Recommended</em> : null}</span><small>{option.detail}</small></span></label>)}</div>;
+  return <div className="guided-decision-options">{options.map((option) => <label key={option.value}><input checked={value === option.value} name={name} onChange={() => onChange(option.value)} type="radio" /><span className="guided-choice-card"><span className="guided-choice-copy"><span className="guided-choice-title"><strong>{option.label}</strong>{option.recommended ? <em>Recommended</em> : null}</span><small>{option.detail}</small></span><span aria-hidden="true" className="guided-choice-marker">{value === option.value ? <Check size={14} /> : null}</span></span></label>)}</div>;
 }
 
 function ModeChoices({ onChange, options, values }: { onChange: (values: string[]) => void; options: string[]; values: string[] }) {

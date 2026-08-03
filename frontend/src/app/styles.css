@@ -21664,7 +21664,7 @@ button {
 .configuration-journey a:last-child { border-right: 0; }
 .configuration-journey a:hover { background: var(--surface-alt); color: var(--foreground); }
 .configuration-journey a[aria-current="step"] { background: color-mix(in oklab, var(--primary) 8%, var(--surface)); color: var(--foreground); }
-.configuration-journey a > span {
+.configuration-journey a > span:first-child {
   align-items: center;
   background: var(--surface-alt);
   border: 1px solid var(--border);
@@ -21678,7 +21678,7 @@ button {
   letter-spacing: 0;
   width: 22px;
 }
-.configuration-journey a[data-ready="true"] > span { background: var(--badge-success-bg); border-color: var(--badge-success-border); color: var(--success); }
+.configuration-journey a[data-ready="true"] > span:first-child { background: var(--badge-success-bg); border-color: var(--badge-success-border); color: var(--success); }
 .configuration-journey a > strong { font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .configuration-journey a > svg { margin-left: auto; }
 
