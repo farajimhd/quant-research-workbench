@@ -18,6 +18,10 @@ class ReviewSpecTest(unittest.TestCase):
         registry = ConceptRegistry.load(REGISTRY_PATH)
         self.assertTrue(registry.contains("financial.tax_expense"))
 
+    def test_technical_analysis_is_registered(self) -> None:
+        registry = ConceptRegistry.load(REGISTRY_PATH)
+        self.assertTrue(registry.contains("market.technical_analysis"))
+
     def test_registry_includes_executive_compensation_without_overloading_management_change(self) -> None:
         registry = ConceptRegistry.load(REGISTRY_PATH)
         self.assertTrue(registry.contains("governance.executive_compensation"))
