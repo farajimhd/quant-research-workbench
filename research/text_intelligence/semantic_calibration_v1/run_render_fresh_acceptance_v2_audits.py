@@ -22,7 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     runtime = MLOpsPathConfig.from_env().runtimes_root
     base = runtime / "text_intelligence" / "semantic_calibration_v1"
     parser = argparse.ArgumentParser(
-        description="Render 100 evaluator-authoritative human/V9 Markdown audits."
+        description="Render evaluator-authoritative human/V9 Markdown audits."
     )
     parser.add_argument(
         "--acceptance-root", type=Path, default=base / "news_acceptance_100_v2"

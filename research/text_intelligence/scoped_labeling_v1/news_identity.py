@@ -70,6 +70,9 @@ UNSAFE_SINGLE_TOKEN_ALIASES = {
     "one",
     "united",
 }
+UNSAFE_TITLE_LEAD_ALIASES = {
+    "medical marijuana",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +132,7 @@ class NewsIssuerResolver:
         ticker_entries: dict[str, list[IssuerIdentity]] = {}
         alias_entries: dict[str, list[IssuerIdentity]] = {}
         raw_alias_entries: dict[str, list[tuple[IssuerIdentity, str]]] = {}
+        title_alias_entries: dict[str, list[IssuerIdentity]] = {}
         max_alias_tokens = 1
         for identity in identity_rows:
             ticker = identity.ticker.upper().strip()
@@ -137,6 +141,12 @@ class NewsIssuerResolver:
             ticker_entries.setdefault(ticker, []).append(identity)
             for raw_alias in identity.aliases:
                 alias = normalize_issuer_alias(raw_alias)
+                if (
+                    len(alias) >= 5
+                    and alias not in UNSAFE_SINGLE_TOKEN_ALIASES
+                    and alias not in UNSAFE_TITLE_LEAD_ALIASES
+                ):
+                    title_alias_entries.setdefault(alias, []).append(identity)
                 if not is_safe_alias(alias, ticker):
                     continue
                 alias_entries.setdefault(alias, []).append(identity)
@@ -168,6 +178,9 @@ class NewsIssuerResolver:
         }
         self._raw_alias_entries = {
             key: tuple(value) for key, value in raw_alias_entries.items()
+        }
+        self._title_alias_entries = {
+            key: tuple(value) for key, value in title_alias_entries.items()
         }
         self._max_alias_tokens = min(max_alias_tokens, 10)
         self._identities = identity_rows
@@ -223,6 +236,56 @@ class NewsIssuerResolver:
                     }
                 )
         return tuple(rows)
+
+    def resolve_title_lead_subjects(
+        self,
+        title: str,
+        *,
+        timestamp: str = "",
+    ) -> tuple[IssuerMatch, ...]:
+        """Resolve a unique issuer alias that grammatically leads a headline.
+
+        Free-standing one-word aliases remain forbidden in ordinary body text.
+        A title lead is stronger evidence: it must start with the exact alias,
+        the alias must be globally unambiguous on the publication date, and it
+        must be at least five characters.  Event-predicate gating remains the
+        caller's responsibility.  This recovers title-only wires such as
+        ``Verint Sees ...`` without turning incidental body words into issuers.
+        """
+        day = _timestamp_date(timestamp)
+        words = [value.casefold() for value in WORD_RE.findall(title)]
+        if not words:
+            return ()
+        matches: list[IssuerMatch] = []
+        for width in range(min(self._max_alias_tokens, len(words)), 0, -1):
+            alias = " ".join(words[:width])
+            if len(alias) < 5 or alias in UNSAFE_SINGLE_TOKEN_ALIASES:
+                continue
+            # The general authority also indexes a generated leading token for
+            # multiword aliases (for example ``Option Care`` -> ``option``).
+            # That shortcut is useful only after stronger passage evidence and
+            # is unsafe at the title boundary.  A title lead must be an exact
+            # normalized durable alias, never a generated prefix or a generic
+            # industry phrase.
+            if alias in UNSAFE_TITLE_LEAD_ALIASES:
+                continue
+            entries = tuple(
+                entry
+                for entry in self._title_alias_entries.get(alias, ())
+                if entry.valid_on(day)
+            )
+            tickers = {entry.ticker for entry in entries}
+            if len(tickers) != 1:
+                continue
+            ticker = next(iter(tickers))
+            matches.append(
+                IssuerMatch(
+                    ticker=ticker,
+                    evidence=(f"title_lead_issuer_alias:{alias}",),
+                )
+            )
+            break
+        return tuple(matches)
 
     @classmethod
     def from_metadata(cls, metadata: Mapping[str, object]) -> "NewsIssuerResolver":

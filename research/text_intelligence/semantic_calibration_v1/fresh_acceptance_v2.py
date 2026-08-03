@@ -68,6 +68,7 @@ class AcceptanceRoundContract:
     teacher_root: Path
     teacher_expected: int = 10_000
     sample_size: int = DEFAULT_SAMPLE_SIZE
+    session_quotas: tuple[tuple[str, int], ...] = tuple(SESSION_QUOTAS.items())
 
 
 def v2_round_contract(*, human_root: Path, teacher_root: Path) -> AcceptanceRoundContract:
@@ -132,8 +133,13 @@ def build_acceptance_round(
     """Build one immutable prediction-blind acceptance round from an explicit contract."""
     emit = report or (lambda _message: None)
     assert_runtime_root(root)
-    if contract.sample_size != DEFAULT_SAMPLE_SIZE:
-        raise ValueError("fresh acceptance rounds are frozen at exactly 100 articles")
+    session_quotas = dict(contract.session_quotas)
+    if tuple(session_quotas) != SESSION_ORDER:
+        raise ValueError(f"session quota keys must be ordered as {SESSION_ORDER}")
+    if sum(session_quotas.values()) != contract.sample_size:
+        raise ValueError("session quotas must sum to the acceptance sample size")
+    if any(value < 0 for value in session_quotas.values()):
+        raise ValueError("session quotas cannot be negative")
     exclusions, exclusion_contract = load_supervision_exclusion(
         human_authorities=contract.prior_human_authorities,
         teacher_root=contract.teacher_root,
@@ -175,7 +181,10 @@ def build_acceptance_round(
         and str(row["source_id"]) not in exclusions
     ]
     selected, allocation = select_session_balanced_candidates(
-        eligible, sampling_seed=contract.sampling_seed
+        eligible,
+        sample_size=contract.sample_size,
+        session_quotas=session_quotas,
+        sampling_seed=contract.sampling_seed,
     )
     selected_ids = {str(row["source_id"]) for row in selected}
     if selected_ids & exclusions:
@@ -250,7 +259,7 @@ def build_acceptance_round(
         ),
         "selection_sha256": stable_json_hash(selection_ids),
         "prior_supervision_exclusion": exclusion_contract,
-        "required_session_distribution_et": dict(SESSION_QUOTAS),
+        "required_session_distribution_et": session_quotas,
         "year_session_allocation": allocation,
         "distribution": {
             **teacher_distribution(selected),
@@ -280,7 +289,9 @@ def build_acceptance_round(
         "sample_version": SAMPLE_VERSION,
         "collection_version": contract.collection_version,
         "selection_sha256": manifest["selection_sha256"],
-        "warning": "Do not open before all 100 manual annotations are frozen.",
+        "warning": (
+            f"Do not open before all {contract.sample_size} manual annotations are frozen."
+        ),
         "items": sealed_items,
     }
     sealed["sealed_comparison_sha256"] = stable_json_hash(sealed)
@@ -298,7 +309,7 @@ def build_acceptance_round(
     )
     emit(
         f"READY | {contract.locked_split}={contract.sample_size:,} excluded={len(exclusions):,} overlap=0 "
-        f"sessions={dict(SESSION_QUOTAS)}"
+        f"sessions={session_quotas}"
     )
     return AcceptanceBuildResult(
         root=root,
@@ -311,19 +322,21 @@ def build_acceptance_round(
 def select_session_balanced_candidates(
     candidates: Sequence[dict[str, Any]],
     *,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
+    session_quotas: Mapping[str, int] = SESSION_QUOTAS,
     sampling_seed: str = ACCEPTANCE_SEED,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, int]]]:
     years = tuple(range(START_YEAR, END_YEAR + 1))
     year_quotas = {
         int(key): value
         for key, value in distribute_quota(
-            DEFAULT_SAMPLE_SIZE, tuple(str(year) for year in years)
+            sample_size, tuple(str(year) for year in years)
         ).items()
     }
     cells: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
     for row in candidates:
         cells[(source_year(row), market_session(str(row["source_timestamp"])))].append(row)
-    allocation = _allocate_year_session(year_quotas, SESSION_QUOTAS, cells)
+    allocation = _allocate_year_session(year_quotas, session_quotas, cells)
     selected: list[dict[str, Any]] = []
     for year in years:
         for session in SESSION_ORDER:
@@ -337,7 +350,7 @@ def select_session_balanced_candidates(
                     sampling_seed=f"{sampling_seed}|{year}|{session}",
                 )
             )
-    if len(selected) != DEFAULT_SAMPLE_SIZE:
+    if len(selected) != sample_size:
         raise RuntimeError(f"session-balanced selection returned {len(selected)} rows")
     return selected, {str(year): dict(allocation[year]) for year in years}
 
@@ -504,7 +517,6 @@ def load_supervision_exclusion(
     teacher_ids = _manifest_source_ids(
         teacher, expected=teacher_expected, name="Sol teacher"
     )
-    teacher_ids = _manifest_source_ids(teacher, expected=10_000, name="Sol teacher")
     overlap = human_ids & teacher_ids
     if overlap:
         raise RuntimeError(f"existing human and teacher authorities overlap: {len(overlap):,}")
@@ -552,7 +564,7 @@ def _validate_manifest(
     ):
         raise RuntimeError("existing fresh acceptance exclusion drift")
     actual = manifest.get("distribution", {}).get("publication_session_et")
-    if actual != dict(SESSION_QUOTAS):
+    if actual != dict(contract.session_quotas):
         raise RuntimeError("existing fresh acceptance v2 session distribution drift")
     ids = [str(row.get("source_id") or "") for row in manifest.get("items") or ()]
     if len(ids) != contract.sample_size or len(set(ids)) != contract.sample_size:

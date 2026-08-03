@@ -148,6 +148,16 @@ class FreshAcceptanceTests(unittest.TestCase):
         self.assertEqual(rows[0]["sample_id"], "N1001")
         self.assertEqual(rows[0]["units"][0]["d"], "positive")
 
+    def test_compact_review_parser_accepts_pipe_separated_issuer_units(self) -> None:
+        rows = _parse_compact_rows(
+            "N1001|P|I|L|i|"
+            "ABC~p~commercial.contract_award~+~3~0~111~Awarded contract|"
+            "XYZ~c~commercial.contract_award~+~2~0~111~Selected supplier"
+        )
+        self.assertEqual([unit["t"] for unit in rows[0]["units"]], ["ABC", "XYZ"])
+        self.assertEqual(rows[0]["units"][1]["because"], "Selected supplier")
+        self.assertNotIn("q", rows[0]["units"][1])
+
 
 if __name__ == "__main__":
     unittest.main()

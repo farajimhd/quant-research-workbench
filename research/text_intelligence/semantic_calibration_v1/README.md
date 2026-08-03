@@ -1017,3 +1017,39 @@ fresh Markdown audits.
 materializes the disjoint 1,300-item human authority at `news_1300_v1` under
 the configured runtime root. Generated gold, predictions, audits and combined
 authorities never belong in the repository.
+
+## Fourth session-balanced fresh acceptance set
+
+N1301-N1500 is a frozen, disjoint 200-article authority spanning 2010-2026
+with 50 premarket, 80 regular-session, 50 after-hours and 20 overnight
+publications. It excludes the prior 1,300 human cases and the Sol teacher
+corpus. Candidate 20 was evaluated and persisted before any comparison was
+opened. Every article was then reviewed manually; 36 traceable gold defects
+were corrected without modifying the frozen source authority.
+
+Candidate 21 adds generic title-lead issuer recovery from the point-in-time
+identity authority, targeted halt/circuit-breaker classification, social
+investor commentary handling and narrow direction rules for conflicting
+analyst, M&A, subsidiary IPO and convertible-investment evidence. It contains
+no source IDs, exact headlines or ticker-specific label exceptions. Cached V9
+predictions are now reusable only when the deterministic, calibration,
+extractor and issuer-identity authority versions all match.
+
+| Metric | Candidate 21, reviewed 200 | Candidate 20, prior 1,300 | Candidate 21, prior 1,300 |
+|---|---:|---:|---:|
+| Extraction F1 | 0.903846 | 0.963885 | 0.965174 |
+| Ticker-scope F1 | 0.866760 | 0.829991 | 0.830242 |
+| Content-role macro F1 | 0.730532 | 0.717800 | 0.717800 |
+| Source-origin macro F1 | 0.563131 | 0.543928 | 0.543813 |
+| Text-sentiment macro F1 | 0.456947 | 0.481993 | 0.483222 |
+| Forecast-direction macro F1 | 0.333732 | 0.355821 | 0.359090 |
+| Concept-family F1 | 0.550396 | 0.558038 | 0.558129 |
+| Forecast eligibility F1 | 0.500000 | 0.678876 | 0.680488 |
+| Forecast/reaction end-to-end F1 | 0.500000 | 0.658768 | 0.659575 |
+| Issuer-history F1 | 0.906158 | 0.875643 | 0.875977 |
+| Issuer-history end-to-end F1 | 0.866760 | 0.829410 | 0.829662 |
+
+The complete 200-case review records, reviewed gold, evaluations and Markdown
+audits are runtime products. The final audit index reports 181 articles with at
+least one residual field mismatch. Those residuals are retained as evidence;
+they were not converted into sample-specific rules.

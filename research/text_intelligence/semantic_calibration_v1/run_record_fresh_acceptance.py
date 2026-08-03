@@ -3,13 +3,21 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import sys
 from pathlib import Path
 
 from research.mlops.paths import MLOpsPathConfig
 
 from .manual_acceptance_review import build_manual_annotation
-from .storage import append_annotation, assert_runtime_root, read_json
+from .schema import stable_json_hash, validate_annotation
+from .storage import (
+    annotation_directory,
+    append_annotation,
+    assert_runtime_root,
+    materialize_evidence_spans,
+    read_json,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,10 +65,32 @@ def main(argv: list[str] | None = None) -> int:
         else _parse_compact_rows(body)
     )
     specs = payload if isinstance(payload, list) else [payload]
+    prepared: list[tuple[str, dict[str, object]]] = []
     for spec in specs:
         sample_id = str(spec["sample_id"])
         item = read_json(args.runtime_root / "blinded_articles" / f"{sample_id}.json")
         annotation = build_manual_annotation(item, spec)
+        record = materialize_evidence_spans(dict(annotation), item)
+        record.pop("annotation_sha256", None)
+        result = validate_annotation(record, expected_item=item)
+        if not result.valid:
+            raise ValueError(
+                f"invalid annotation {sample_id}: " + ", ".join(result.errors)
+            )
+        record["annotation_sha256"] = stable_json_hash(record)
+        target = (
+            annotation_directory(args.runtime_root, str(record["annotation_version"]))
+            / f"{sample_id}.json"
+        )
+        if target.exists() and read_json(target) != record:
+            raise FileExistsError(
+                f"annotation already exists for {sample_id}; revisions require a new review round"
+            )
+        prepared.append((sample_id, annotation))
+    # Validate the entire batch, including immutable-file conflicts, before the
+    # first write.  A malformed later row must not leave a partially recorded
+    # human authority.
+    for sample_id, annotation in prepared:
         digest = append_annotation(args.runtime_root, annotation)
         print(f"RECORDED {sample_id} sha256={digest}", flush=True)
     return 0
@@ -70,7 +100,7 @@ def _parse_compact_rows(body: str) -> list[dict[str, object]]:
     """Parse reviewer-authored pipe rows without inferring semantic labels.
 
     Format: sample|role|origin|decision|default_disposition|unit[;unit...]
-    Unit: ticker~issuer_role~concept[,concept...]~direction~pos~neg~FEH[~evidence]
+    Unit: ticker~issuer_role~concept[,concept...]~direction~pos~neg~FEH[~rationale]
     where FEH is three explicit 0/1 eligibility flags.
     """
     specs: list[dict[str, object]] = []
@@ -102,7 +132,12 @@ def _parse_compact_rows(body: str) -> list[dict[str, object]]:
             "a": "analyst_context", "d": "identity_error",
         }.get(default_disposition, default_disposition)
         units: list[dict[str, object]] = []
-        for raw_unit in filter(None, unit_text.split(";")):
+        # The first five article fields are pipe-delimited.  After that split,
+        # compact issuer units may use either semicolons (the original form) or
+        # pipes (the visually consistent review form).  Both are unambiguous
+        # because evidence text is carried inside a unit and must not contain a
+        # raw unit delimiter.
+        for raw_unit in filter(None, re.split(r"[;|]", unit_text)):
             values = raw_unit.split("~")
             if len(values) not in {7, 8}:
                 raise ValueError(
@@ -129,7 +164,11 @@ def _parse_compact_rows(body: str) -> list[dict[str, object]]:
                 "h": flags[2] == "1",
             }
             if len(values) == 8 and values[7].strip():
-                unit["q"] = [values[7].strip()]
+                # The optional eighth compact field is the reviewer's semantic
+                # rationale, not a verbatim quote.  Evidence defaults to the
+                # exact article title unless explicit structured JSON supplies
+                # source-exact quotes.
+                unit["because"] = values[7].strip()
             units.append(unit)
         spec: dict[str, object] = {
             "sample_id": sample_id,

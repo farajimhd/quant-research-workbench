@@ -90,6 +90,29 @@ def classify_news_document_v9(
     sanitized_text = _remove_nonsemantic_link_blocks(sanitized_text)
     if sanitized_text != document.text:
         document = replace(document, text=sanitized_text)
+    title_subjects = ()
+    if issuer_resolver is not None and (
+        _PRIMARY_RESULT_TITLE_RE.search(document.title or "")
+        or _PRIMARY_OPERATION_TITLE_RE.search(document.title or "")
+        or _REGULATORY_CURRENT_RE.search(document.title or "")
+        or _SUPPORTED_EVENT_EVIDENCE_RE.search(document.title or "")
+    ):
+        title_subjects = issuer_resolver.resolve_title_lead_subjects(
+            document.title,
+            timestamp=document.timestamp,
+        )
+    if title_subjects:
+        document = replace(
+            document,
+            tickers=tuple(dict.fromkeys((
+                *document.tickers,
+                *(match.ticker for match in title_subjects),
+            ))),
+            metadata={
+                **document.metadata,
+                "derived_title_subjects": tuple(match.ticker for match in title_subjects),
+            },
+        )
     raw_labels = classify_news_document(document, issuer_resolver=issuer_resolver)
     base_role, base_role_rule = _classify_role_v8(document, raw_labels)
     base_origin, base_origin_rule = _classify_origin_v8(
@@ -316,7 +339,9 @@ _REGULATORY_CURRENT_RE = re.compile(
     r"\b(?:fda|usda|sec|nasdaq|nyse)\b.{0,100}\b(?:approv|clear|subpoena|halt|resume|"
     r"noncompliance|fil(?:e|ing)|registration|investigat)|"
     r"\b(?:form\s+8-k|form\s+4|regulatory\s+approval|clinical\s+hold|"
-    r"fast\s+track\s+designation|suspends?\s+trading|patent\s+infringement\s+lawsuit)\b|"
+    r"fast\s+track\s+designation|suspends?\s+trading|trading\s+halt|"
+    r"(?:shares?|stock)\s+(?:is|are|remains?)?\s*halted|circuit\s+breaker\s+halt|"
+    r"patent\s+infringement\s+lawsuit)\b|"
     r"^\s*fed(?:eral\s+reserve)?(?:'s)?\b.{0,80}\b(?:says?|remarks?|announces?)\b",
     re.I | re.S,
 )
@@ -337,7 +362,8 @@ _PRIMARY_OPERATION_TITLE_RE = re.compile(
     r"\b(?:appoints?|names?|hires?)\b.{0,100}\b(?:president|officer|director|chief)\b|"
     r"\b(?:suspends?|resumes?|restarts?|halts?|closes?|shuts?\s+down)\b.{0,100}"
     r"\b(?:flights?|operations?|production|facility|service|trading)\b|"
-    r"\b(?:launches?|receives?\s+(?:fda|usda)|wins?|secures?|awarded)\b",
+    r"\b(?:launches?|receives?\s+(?:fda|usda)|wins?|secures?|awarded)\b|"
+    r"\b(?:sees?\s+)?clos(?:e|es|ing)\b.{0,100}\binvestment\b",
     re.I | re.S,
 )
 _ISSUER_DIRECT_CHANNELS = {"press releases", "press release", "company news"}
@@ -385,6 +411,15 @@ def _classify_article_role_v9(
         )
     ):
         return "analyst_event", "explicit_analyst_action_title"
+    if re.search(
+        r"\b(?:investor|managing\s+partner)\b.{0,260}"
+        r"\b(?:social\s+media|took\s+to\s+X|wrote\s+on\s+X|post(?:ed)?\s+on\s+X)\b|"
+        r"\b(?:social\s+media|took\s+to\s+X|wrote\s+on\s+X|post(?:ed)?\s+on\s+X)\b"
+        r".{0,260}\b(?:investor|managing\s+partner)\b",
+        document.text[:1600],
+        re.I | re.S,
+    ):
+        return "editorial_analysis", "reported_investor_social_commentary"
     if re.search(r"\bZacks\s+Investment\s+Research\b", document.text, re.I):
         return "editorial_analysis", "structural_syndicated_zacks_editorial"
     if _PRIMARY_RESULT_TITLE_RE.search(title):
@@ -444,6 +479,13 @@ def _classify_source_origin_v9(
         return "issuer_direct", "issuer_distribution_evidence"
     if role == "analyst_event":
         return "editorial_original", "reported_analyst_commentary"
+    if role == "regulatory_event" and re.search(
+        r"\b(?:trading\s+halt|(?:shares?|stock)\s+(?:is|are|remains?)?\s*halted|"
+        r"circuit\s+breaker\s+halt|news\s+pending)\b",
+        f"{document.title}\n{document.text[:1200]}",
+        re.I,
+    ) and base_origin != "regulatory_primary":
+        return "editorial_aggregation", "reported_trading_halt"
     if re.search(r"(?im)^\s*-?\s*Reuters\s*$", document.text):
         return "editorial_aggregation", "cited_wire_republication"
     if base_origin == "automated_summary" and not _is_verified_automated(document):
@@ -733,6 +775,13 @@ def _compose_direction_v9(
         forced, basis = "negative", "maintained_negative_analyst_rating"
     elif re.search(r"\b(?:maintain(?:s|ed)?|reiterate[sd]?)\b.{0,80}\b(?:buy|outperform|overweight)\b", text, re.I | re.S):
         forced, basis = "positive", "maintained_positive_analyst_rating"
+    if (
+        re.search(r"\b(?:maintain(?:s|ed)?|reiterate[sd]?)\b.{0,80}\b(?:buy|outperform|overweight)\b", text, re.I | re.S)
+        and re.search(r"\b(?:lowers?|cuts?|reduces?)\b.{0,60}\bprice\s+target\b|\bprice\s+target\b.{0,80}\bfrom\s+\$?\d+(?:\.\d+)?\s+to\s+\$?\d+(?:\.\d+)?", text, re.I | re.S)
+    ):
+        target_change = re.search(r"\bfrom\s+\$?(\d+(?:\.\d+)?)\s+to\s+\$?(\d+(?:\.\d+)?)", text, re.I)
+        if target_change is None or float(target_change.group(2)) < float(target_change.group(1)):
+            forced, basis = "mixed", "positive_rating_with_price_target_cut"
     if _PRIMARY_ENDPOINT_FAILURE_RE.search(text):
         forced, basis = "negative", "primary_endpoint_failure_precedence"
     result_text = " ".join(
@@ -880,7 +929,13 @@ def _compose_direction_v9(
     ):
         forced, basis = "mixed", "selling_holder_overhang_with_buyback"
     elif subsidiary_ipo:
-        forced, basis = "positive", "subsidiary_ipo_parent_value_realization"
+        forced, basis = "mixed", "subsidiary_ipo_value_realization_and_exposure_reduction"
+    if re.search(r"\b(?:merger|acquisition|takeover)\s+talks?\b", text, re.I) and not re.search(
+        r"\b(?:\$\s*\d|per\s+share|premium|definitive\s+agreement|agreed\s+to|offer(?:ed)?\s+\$)\b",
+        text,
+        re.I,
+    ):
+        forced, basis = "neutral", "transaction_talks_without_terms"
     if issuer_supply and re.search(
         r"\b(?:completed|completion\s+of)\b.{0,100}\b(?:offering|at-the-market)\b",
         text,
@@ -914,6 +969,12 @@ def _compose_direction_v9(
         re.I | re.S,
     ):
         forced, basis = "mixed", "strategic_investment_governance_mix"
+    elif re.search(r"\binvestment\b", text, re.I) and re.search(
+        r"\b(?:conversion\s+price|convertible|preferred\s+(?:shares?|stock))\b",
+        text,
+        re.I,
+    ):
+        forced, basis = "mixed", "investment_capital_and_conversion_mix"
     if forced == "negative" and re.search(
         r"\b(?:regulatory\s+clearance|fda\b.{0,30}\bclearance|regain(?:s|ed)?\s+compliance|"
         r"convert(?:s|ed)?\s+(?:its\s+)?debt)\b",

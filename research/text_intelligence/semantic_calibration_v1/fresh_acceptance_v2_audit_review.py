@@ -24,6 +24,9 @@ def record_audit_reviews(
     *,
     review_name: str = "manual_audit_review_v1",
     contract: str = REVIEW_CONTRACT,
+    prediction_root: Path | None = None,
+    audit_root: Path | None = None,
+    item_root: Path | None = None,
 ) -> dict[str, Any]:
     """Persist reviewer-authored audit decisions without inferring judgments."""
     if not specs:
@@ -33,7 +36,14 @@ def record_audit_reviews(
     output.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
     for raw in specs:
-        record = _build_record(root, raw, contract=contract)
+        record = _build_record(
+            root,
+            raw,
+            contract=contract,
+            prediction_root=prediction_root,
+            audit_root=audit_root,
+            item_root=item_root,
+        )
         sample_id = record["sample_id"]
         write_json_atomic(output / f"{sample_id}.json", record)
         written.append(sample_id)
@@ -85,15 +95,27 @@ def refresh_audit_review_state(
 
 
 def _build_record(
-    root: Path, raw: Mapping[str, Any], *, contract: str = REVIEW_CONTRACT
+    root: Path,
+    raw: Mapping[str, Any],
+    *,
+    contract: str = REVIEW_CONTRACT,
+    prediction_root: Path | None = None,
+    audit_root: Path | None = None,
+    item_root: Path | None = None,
 ) -> dict[str, Any]:
     sample_id = str(raw.get("sample_id") or "").upper()
     if not sample_id.startswith("N"):
         raise ValueError(f"invalid sample_id: {sample_id!r}")
-    item_path = root / "blinded_articles" / f"{sample_id}.json"
+    item_path = (item_root or root / "blinded_articles") / f"{sample_id}.json"
     annotation_path = root / "annotations_v3" / f"{sample_id}.json"
-    prediction_path = root / "evaluation" / "v9_predictions" / f"{sample_id}.json"
-    audit_paths = sorted((root / "article_audits" / "articles").glob(f"{sample_id}_*.md"))
+    prediction_path = (
+        prediction_root or root / "evaluation" / "v9_predictions"
+    ) / f"{sample_id}.json"
+    audit_paths = sorted(
+        (audit_root or root / "article_audits" / "articles").glob(
+            f"{sample_id}_*.md"
+        )
+    )
     if not item_path.is_file() or not annotation_path.is_file() or not prediction_path.is_file():
         raise FileNotFoundError(f"incomplete audit inputs for {sample_id}")
     if len(audit_paths) != 1:

@@ -2,16 +2,114 @@ from __future__ import annotations
 
 import unittest
 
-from research.text_intelligence.scoped_labeling_v1.news_identity import IssuerIdentity, NewsIssuerResolver
+from research.text_intelligence.scoped_labeling_v1.news_identity import (
+    ISSUER_IDENTITY_AUTHORITY_VERSION,
+    IssuerIdentity,
+    NewsIssuerResolver,
+)
 from research.text_intelligence.scoped_labeling_v1.schema import NEWS_EXTRACTOR_VERSION
 from research.text_intelligence.semantic_label_authority_v1.schema import SemanticDocument
 
 from .deterministic_v9 import _recalibrate_direction, classify_news_document_v9
-from .deterministic_v9_config import CALIBRATION_SPLIT_SHA256, CALIBRATION_VERSION
+from .deterministic_v9_config import (
+    CALIBRATION_SPLIT_SHA256,
+    CALIBRATION_VERSION,
+    DETERMINISTIC_V9_VERSION,
+)
+from .run_deterministic_news_v9 import prediction_is_current
 from .teacher_split_v9 import normalized_headline_template
 
 
 class DeterministicV9Tests(unittest.TestCase):
+    def test_cached_prediction_requires_current_calibration(self) -> None:
+        prediction = {
+            "version": DETERMINISTIC_V9_VERSION,
+            "calibration_version": CALIBRATION_VERSION,
+            "scope_extractor_version": NEWS_EXTRACTOR_VERSION,
+            "identity_resolution": {
+                "authority_version": ISSUER_IDENTITY_AUTHORITY_VERSION,
+            },
+        }
+        self.assertTrue(prediction_is_current(prediction))
+        stale = dict(prediction, calibration_version="stale-calibration")
+        self.assertFalse(prediction_is_current(stale))
+
+    def test_unique_title_lead_alias_recovers_title_only_event(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="title-lead-v9",
+            timestamp="2021-04-05T20:01:43Z",
+            title="Verint Sees Closing $200M Investment From Funds Advised By Apax",
+            text="Title: Verint Sees Closing $200M Investment From Funds Advised By Apax",
+            tickers=(),
+        )
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("VRNT", "issuer:vrnt", ("Verint Systems Inc", "Verint")),
+        ))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual([label["ticker"] for label in result.labels], ["VRNT"])
+
+    def test_generated_title_prefix_is_not_an_issuer_subject(self) -> None:
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("OPCH", "issuer:opch", ("Option Care Health Inc",)),
+            IssuerIdentity("BBLC", "issuer:bblc", ("Blockchain Loyalty Corp",)),
+        ))
+        self.assertEqual(
+            resolver.resolve_title_lead_subjects("Option Alert: Large Call Block"),
+            (),
+        )
+        self.assertEqual(
+            resolver.resolve_title_lead_subjects("Blockchain Meets The Stratosphere"),
+            (),
+        )
+
+    def test_generic_industry_title_is_not_an_issuer_subject(self) -> None:
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("MJNA", "issuer:mjna", ("Medical Marijuana Inc",)),
+        ))
+        self.assertEqual(
+            resolver.resolve_title_lead_subjects("Medical Marijuana Sales Begin"),
+            (),
+        )
+
+    def test_unverified_regulatory_story_is_editorial_aggregation(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="reported-halt-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Shares Halted On Circuit Breaker",
+            text="Benzinga reports Example Corp. (NASDAQ:EXM) remains halted.",
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.source_origin, "editorial_aggregation")
+
+    def test_positive_rating_with_large_target_cut_is_mixed(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="rating-target-conflict-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Broker Maintains Overweight on Example, Lowers Price Target to $42",
+            text=("Broker maintains Example Corp. (NASDAQ:EXM) at Overweight and "
+                  "lowers the price target from $102 to $42."),
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),))
+        label = classify_news_document_v9(document, issuer_resolver=resolver).labels[0]
+        self.assertEqual(label["classification"]["semantic_direction"], "mixed")
+
+    def test_investor_social_commentary_is_editorial_analysis(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="investor-commentary-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Fund Manager Warns Investors About Example Demand",
+            text=("Investor Jane Doe of Future Fund took to X and said Example Corp. "
+                  "(NASDAQ:EXM) demand remains weak."),
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver((IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),))
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "editorial_analysis")
+        self.assertEqual(result.source_origin, "editorial_original")
+
     def test_same_issuer_share_classes_are_emitted_from_one_resolved_event(self) -> None:
         document = SemanticDocument(
             corpus="news", source_id="share-classes-v9",

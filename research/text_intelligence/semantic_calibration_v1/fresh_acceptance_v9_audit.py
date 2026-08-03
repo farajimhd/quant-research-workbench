@@ -56,8 +56,14 @@ def render_v9_acceptance_audits(
 ) -> dict[str, Any]:
     assert_runtime_root(output_root)
     evaluation = read_json(evaluation_path)
-    if len(items) != 100 or int(evaluation.get("articles") or 0) != 100:
-        raise RuntimeError("V9 acceptance audit requires exactly 100 articles")
+    expected_count = len(items)
+    if expected_count <= 0:
+        raise RuntimeError("V9 acceptance audit requires at least one article")
+    if int(evaluation.get("articles") or 0) != expected_count:
+        raise RuntimeError(
+            "V9 acceptance audit item/evaluation count mismatch: "
+            f"items={expected_count} evaluation={evaluation.get('articles')}"
+        )
     articles: list[V9ArticleAudit] = []
     for item in items:
         source_id = str(item.blinded["source_id"])
@@ -72,7 +78,7 @@ def render_v9_acceptance_audits(
                 gateway_evidence=evidence,
             )
         )
-    if len({row.sample_id for row in articles}) != 100:
+    if len({row.sample_id for row in articles}) != expected_count:
         raise RuntimeError("V9 acceptance audit contains duplicate sample identities")
 
     article_root = output_root / "articles"
@@ -264,7 +270,7 @@ def _render_index(
 ) -> str:
     headline = (evaluation.get("headline") or {}).get("v9") or {}
     lines = [
-        "# Fresh 100 News V9 audit index",
+        f"# Fresh {len(articles)} News V9 audit index",
         "",
         "All human labels were frozen before V9 predictions were generated. "
         "Articles are ordered by evaluator mismatch count.",

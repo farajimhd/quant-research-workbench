@@ -52,6 +52,7 @@ def evaluate_acceptance(
     output_root: Path,
     contract: str,
     split: str,
+    gold_authority_sha256: str | None = None,
 ) -> int:
     """Evaluate a frozen, prediction-blind acceptance round with V9."""
     assert_runtime_root(output_root)
@@ -64,14 +65,17 @@ def evaluate_acceptance(
     )
     if sample_audit["status"] != "pass" or annotation_audit["status"] != "pass":
         raise RuntimeError("fresh acceptance must pass sample and annotation audits")
-    if annotation_audit["completed"] != 100 or annotation_audit["remaining_collection"]:
-        raise RuntimeError("all 100 manual annotations must be frozen before V9")
+    sample_count = int(sample_audit["sample_count"])
+    if annotation_audit["completed"] != sample_count or annotation_audit["remaining_collection"]:
+        raise RuntimeError(
+            f"all {sample_count} manual annotations must be frozen before V9"
+        )
 
     items = load_collection(
         acceptance_root,
         annotation_version=ANNOTATION_VERSION_V3,
     )
-    if len(items) != 100 or {item.split for item in items} != {split}:
+    if len(items) != sample_count or {item.split for item in items} != {split}:
         raise RuntimeError("fresh-acceptance identity or split contract drift")
 
     v9_dir = output_root / "v9_predictions"
@@ -84,6 +88,7 @@ def evaluate_acceptance(
         "split": split,
         "training_overlap": 0,
         "human_annotations_frozen_before_prediction": True,
+        "gold_authority_sha256": gold_authority_sha256,
         "sample_manifest_sha256": sample_audit["sample_manifest_sha256"],
         "session_counts": dict(
             sorted(

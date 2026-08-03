@@ -23,7 +23,7 @@ from research.text_intelligence.semantic_label_authority_v1.schema import Semant
 
 from .comparison import evaluate_predictions, load_collection
 from .deterministic_v9 import classify_news_document_v9
-from .deterministic_v9_config import DETERMINISTIC_V9_VERSION
+from .deterministic_v9_config import CALIBRATION_VERSION, DETERMINISTIC_V9_VERSION
 from .run_deterministic_news_v6 import DEFAULT_FROZEN, DEFAULT_ROOT, _frozen_ids, _headline
 from .storage import assert_runtime_root, read_json, write_json_atomic
 
@@ -126,6 +126,13 @@ def _predict(item, *, issuer_resolver: NewsIssuerResolver) -> dict:
         timestamp=str(source["source_timestamp"]),
         linked_tickers=provider_tickers,
     )
+    title_resolved = issuer_resolver.resolve_title_lead_subjects(
+        str(publication.get("title") or ""),
+        timestamp=str(source["source_timestamp"]),
+    )
+    resolved_by_ticker = {
+        match.ticker: match for match in (*resolved, *title_resolved)
+    }
     result["identity_resolution"] = {
         "authority_version": ISSUER_IDENTITY_AUTHORITY_VERSION,
         "authority_identity_count": issuer_resolver.identity_count,
@@ -139,7 +146,7 @@ def _predict(item, *, issuer_resolver: NewsIssuerResolver) -> dict:
                 "ticker": match.ticker,
                 "evidence": match.evidence,
             }
-            for match in resolved
+            for match in resolved_by_ticker.values()
         ),
     }
     return result
@@ -151,6 +158,17 @@ def predict_with_loaded_authority(item) -> dict:
     if _WORKER_ISSUER_AUTHORITY is None:
         _WORKER_ISSUER_AUTHORITY = load_v9_issuer_authority()
     return _predict(item, issuer_resolver=_WORKER_ISSUER_AUTHORITY)
+
+
+def prediction_is_current(existing: dict) -> bool:
+    """Return whether a cached prediction matches every semantic authority."""
+    return (
+        str(existing.get("version") or "") == DETERMINISTIC_V9_VERSION
+        and str(existing.get("calibration_version") or "") == CALIBRATION_VERSION
+        and str(existing.get("scope_extractor_version") or "") == NEWS_EXTRACTOR_VERSION
+        and str((existing.get("identity_resolution") or {}).get("authority_version"))
+        == ISSUER_IDENTITY_AUTHORITY_VERSION
+    )
 
 
 def generate_v9_predictions(
@@ -165,12 +183,7 @@ def generate_v9_predictions(
         target = output_dir / f"{item.sample_id}.json"
         if target.exists():
             existing = read_json(target)
-            if (
-                str(existing.get("version") or "") == DETERMINISTIC_V9_VERSION
-                and str(existing.get("scope_extractor_version") or "") == NEWS_EXTRACTOR_VERSION
-                and str((existing.get("identity_resolution") or {}).get("authority_version"))
-                == ISSUER_IDENTITY_AUTHORITY_VERSION
-            ):
+            if prediction_is_current(existing):
                 continue
         result = _predict(item, issuer_resolver=issuer_resolver)
         result.update({
