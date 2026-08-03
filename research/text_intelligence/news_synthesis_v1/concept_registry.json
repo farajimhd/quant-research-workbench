@@ -1,5 +1,5 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_23",
+  "registry_version": "news_synthesis_concepts_v1_24",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
@@ -37,6 +37,7 @@
     {"id": "financial.cash_flow", "parent": "financial", "definition": "A reported or expected cash-flow condition.", "aliases": ["cash_flow.strong"]},
     {"id": "financial.liquidity", "parent": "financial", "definition": "A cash, liquidity or proceeds condition.", "aliases": ["liquidity.cash_balance", "liquidity.sale_proceeds"]},
     {"id": "financial.loss_exposure", "parent": "financial", "definition": "A confirmed, estimated or potential financial loss, charge, impairment or comparable adverse exposure.", "aliases": ["additional_loss", "loss_exposure", "financial_charge", "impairment"]},
+    {"id": "financial.tax_expense", "parent": "financial", "definition": "A reported, expected or changed current or deferred income-tax expense, benefit, rate impact or comparable tax provision.", "aliases": ["tax_expense", "tax_benefit", "tax_charge", "deferred_tax", "income_tax_provision"]},
     {"id": "financial.credit_quality", "parent": "financial", "definition": "A reported or expected change or condition in delinquencies, charge-offs, defaults or comparable issuer credit-performance measures.", "aliases": ["credit_quality", "delinquencies", "charge_offs", "write_offs", "default_rate"]},
     {"id": "estimate.revision", "parent": "estimate", "definition": "A change in an estimate that is distinct from formal issuer guidance.", "aliases": ["estimate.revisions_lower", "estimate.revision_down_small"]},
     {"id": "ownership.position_change", "parent": "ownership", "definition": "An insider, institutional or other ownership-position change.", "aliases": ["ownership", "ownership.insider_purchase", "ownership.insider_sale", "ownership.institutional_stake", "ownership.secondary_share_sale"]},
