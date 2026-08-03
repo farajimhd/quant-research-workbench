@@ -18,6 +18,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Compile and certify manually authored V1-only review specifications.")
     parser.add_argument("input", nargs="?", type=Path, help="JSONL rows containing sample_id, review_notes, envelope, entities and atomic statements. Reads stdin when omitted.")
     parser.add_argument("--reviewer", default="Codex manual review")
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help=(
+            "Certify independently valid rows and report every rejected row. "
+            "Rejected specifications are never persisted."
+        ),
+    )
     args = parser.parse_args()
     config = default_certification_config()
     articles = {
@@ -45,20 +53,31 @@ def main() -> int:
             source_specs = [json.loads(line) for line in payload.splitlines() if line.strip()]
     if not source_specs:
         raise RuntimeError("No review specifications were provided.")
+    rejected: list[tuple[str, str]] = []
     for spec in source_specs:
         if not isinstance(spec, dict):
             raise RuntimeError("Each review specification must be a JSON object.")
+        sample_id = str(spec.get("sample_id", "<missing>"))
+        try:
+            if sample_id not in articles:
+                raise RuntimeError(f"Unknown sample_id: {sample_id}")
+            document = compile_review_spec(articles[sample_id], spec)
+        except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+            if not args.continue_on_error:
+                raise
+            rejected.append((sample_id, str(exc)))
+            continue
         specs.append(spec)
-        sample_id = str(spec["sample_id"])
-        if sample_id not in articles:
-            raise RuntimeError(f"Unknown sample_id: {sample_id}")
         reviews.append(
             {
                 "sample_id": sample_id,
                 "review_notes": str(spec["review_notes"]),
-                "document": compile_review_spec(articles[sample_id], spec),
+                "document": document,
             }
         )
+    if not reviews:
+        details = "; ".join(f"{sample_id}: {reason}" for sample_id, reason in rejected)
+        raise RuntimeError(f"No valid review specifications were provided. {details}")
     outputs = certify_documents(config, reviews, reviewer=args.reviewer)
     spec_root = config.output_root / "reviewed_specs"
     spec_root.mkdir(parents=True, exist_ok=True)
@@ -77,8 +96,10 @@ def main() -> int:
             encoding="utf-8",
         )
         temporary.replace(target)
-    print(f"CERTIFIED REVIEW SPECS | records={len(outputs):,}")
-    return 0
+    print(f"CERTIFIED REVIEW SPECS | records={len(outputs):,} rejected={len(rejected):,}")
+    for sample_id, reason in rejected:
+        print(f"REJECTED {sample_id} | {reason}", file=sys.stderr)
+    return 1 if rejected else 0
 
 
 if __name__ == "__main__":
