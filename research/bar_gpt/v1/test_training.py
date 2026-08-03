@@ -16,6 +16,7 @@ from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES
 from research.bar_gpt.v1.train import preflight
+from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
 from research.mlops.schedulers import SampleWarmupCosineScheduler
 
 
@@ -107,6 +108,14 @@ class LoaderTrainerContractTest(unittest.TestCase):
         scheduler.step(1_000)
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-5)
 
+    def test_condition_builder_is_sparse_resumable_and_uses_runtime_authority(self) -> None:
+        args = condition_builder_argv()
+        self.assertIn("conditions-only", args)
+        self.assertIn("--replace-existing", args)
+        output_index = args.index("--output-root") + 1
+        self.assertEqual(args[output_index], r"D:\TradingML\runtimes\bar_gpt\v1\build_conditions_1s")
+        self.assertEqual(DataConfig().condition_status_table, "intraday_base_bars_build_status")
+
     def test_collated_batch_runs_complete_mixed_objective(self) -> None:
         examples = list(build_session_examples(
             ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
@@ -163,7 +172,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
                         "daily_session_bars_by_symbol_time_v1\n"
                         "daily_session_bars_manifest_v1\n"
                         "intraday_condition_bars_by_time_ticker\n"
-                        "intraday_bar_build_status\n"
+                        "intraday_base_bars_build_status\n"
                     )
                 if "system.columns" in query:
                     return "local_date\n"
@@ -171,7 +180,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
                     return "2019-01-01\t2020-03-01\n"
                 if "current_ticker" in query:
                     return ""
-                if "intraday_bar_build_status" in query:
+                if "intraday_base_bars_build_status" in query:
                     return "60\n"
                 return self.messages
 

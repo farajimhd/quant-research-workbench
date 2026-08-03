@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import io
 import unittest
 from pathlib import Path
@@ -42,6 +43,7 @@ from research.bar_gpt.v1.loader import (
 )
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES, build_physical_horizon_targets
+from pipelines.market_sip.events.clickhouse_build_intraday_base_bars import insert_intraday_condition_bars_sql, parse_args as parse_intraday_args
 from research.bar_gpt.v1.run_build_1s import main as launcher_main
 from research.bar_gpt.v1.run_build_1s import parse_args as parse_launcher_args
 from research.bar_gpt.v1.run_build_1s_aliases import parse_args as parse_alias_launcher_args
@@ -60,6 +62,18 @@ def builder_args() -> argparse.Namespace:
 
 
 class BuilderSqlTest(unittest.TestCase):
+    def test_condition_sidecar_materializes_only_flagged_event_seconds(self) -> None:
+        args = parse_intraday_args([
+            "--date", "2020-01-02", "--artifact-mode", "conditions-only",
+            "--resolutions", "1s", "--tickers", "AAPL",
+        ])
+        sql = insert_intraday_condition_bars_sql(
+            args=args, dates=[dt.date(2020, 1, 2)], resolutions_us=(1_000_000,)
+        )
+        self.assertIn("WHERE `condition_halt_pause_flag_event` > 0 OR", sql)
+        self.assertNotIn("WITH FILL", sql.upper())
+        self.assertNotIn("numbers(", sql)
+
     def test_canonical_two_tb_cohort_is_unique_and_fingerprinted(self) -> None:
         self.assertEqual(len(BAR_GPT_COHORT_2TB), 100)
         self.assertEqual(len(set(BAR_GPT_COHORT_2TB)), 100)

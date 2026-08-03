@@ -76,7 +76,7 @@ class DataConfig:
     daily_table: str = BAR_GPT_SIP_DAILY_SESSION_TABLE
     daily_manifest_table: str = BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE
     condition_table: str = "intraday_condition_bars_by_time_ticker"
-    condition_status_table: str = "intraday_bar_build_status"
+    condition_status_table: str = "intraday_base_bars_build_status"
     identity_database: str = "q_live"
     identity_interval_table: str = "id_symbol_interval_v1"
     identity_entity_table: str = "market_ticker_event_entity_v1"

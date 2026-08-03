@@ -33,6 +33,11 @@ python -B -m research.bar_gpt.v1.run_build_conditions_1s
 Add `--replace-existing` only when intentionally replacing a partially built
 condition partition. Zero-event dates are still certified in the status table,
 so an absent sparse row means a real negative label rather than missing data.
+The BarGPT launcher enables that repair mode by default: certified dates are
+never touched, while rows from an interrupted uncertified date are deleted and
+rebuilt before its certification advances. The condition table itself contains
+only seconds with at least one exact condition flag; zero and unchanged clock
+seconds are never materialized.
 
 The daily authority is
 `market_sip_compact.daily_session_bars_by_symbol_time_v1`. It is built directly

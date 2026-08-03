@@ -19,12 +19,15 @@ DEFAULT_ARGS: dict[str, str] = {
     "--ticker-batch-max-tickers": "256",
     "--max-threads": "8",
     "--max-memory-usage": "48G",
+    "--output-root": r"D:\TradingML\runtimes\bar_gpt\v1\build_conditions_1s",
     "--progress-layout": "auto",
 }
 
+DEFAULT_FLAGS: tuple[str, ...] = ("--replace-existing",)
+
 
 def default_argv() -> list[str]:
-    return [item for pair in DEFAULT_ARGS.items() for item in pair]
+    return [item for pair in DEFAULT_ARGS.items() for item in pair] + list(DEFAULT_FLAGS)
 
 
 if __name__ == "__main__":
