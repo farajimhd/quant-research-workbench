@@ -1,5 +1,5 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_26",
+  "registry_version": "news_synthesis_concepts_v1_27",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
@@ -23,6 +23,7 @@
     {"id": "governance.management_change", "parent": "governance", "definition": "A material executive, director or governance change.", "aliases": ["management_change", "executive_change", "board_change"]},
     {"id": "governance.executive_compensation", "parent": "governance", "definition": "A reported, approved or changed executive or director compensation amount or arrangement.", "aliases": ["executive_compensation", "director_compensation", "ceo_pay"]},
     {"id": "governance.shareholder_vote", "parent": "governance", "definition": "A shareholder meeting, election, proposal or ratification vote and its reported outcome.", "aliases": ["shareholder_vote", "annual_meeting_vote", "proposal_vote", "auditor_ratification"]},
+    {"id": "governance.auditor_change", "parent": "governance", "definition": "An issuer appoints, dismisses or changes its independent registered public accounting firm.", "aliases": ["auditor_change", "accounting_firm_change", "auditor_dismissal", "auditor_appointment"]},
     {"id": "governance.conflict_of_interest", "parent": "governance", "definition": "A reported or assessed conflict between a public, fiduciary or organizational duty and a private financial interest.", "aliases": ["conflict_of_interest", "official_stock_trading", "public_official_financial_conflict", "fiduciary_conflict"]},
     {"id": "operations.business_update", "parent": "operations", "definition": "A material operating expansion, disruption, restructuring or business update.", "aliases": ["business_update", "operations_update", "restructuring", "operations"]},
     {"id": "market.context", "parent": "market", "definition": "Market, sector or macro context that is not an issuer event.", "aliases": ["market_context", "historical_performance"]},
@@ -40,6 +41,7 @@
     {"id": "financial.liquidity", "parent": "financial", "definition": "A cash, liquidity or proceeds condition.", "aliases": ["liquidity.cash_balance", "liquidity.sale_proceeds"]},
     {"id": "financial.loss_exposure", "parent": "financial", "definition": "A confirmed, estimated or potential financial loss, charge, impairment or comparable adverse exposure.", "aliases": ["additional_loss", "loss_exposure", "financial_charge", "impairment"]},
     {"id": "financial.tax_expense", "parent": "financial", "definition": "A reported, expected or changed current or deferred income-tax expense, benefit, rate impact or comparable tax provision.", "aliases": ["tax_expense", "tax_benefit", "tax_charge", "deferred_tax", "income_tax_provision"]},
+    {"id": "financial.internal_control", "parent": "financial", "definition": "A reported material weakness, significant deficiency, remediation status or comparable condition in internal control over financial reporting.", "aliases": ["internal_control", "material_weakness", "control_deficiency", "internal_control_remediation"]},
     {"id": "financial.credit_quality", "parent": "financial", "definition": "A reported or expected change or condition in delinquencies, charge-offs, defaults or comparable issuer credit-performance measures.", "aliases": ["credit_quality", "delinquencies", "charge_offs", "write_offs", "default_rate"]},
     {"id": "estimate.revision", "parent": "estimate", "definition": "A change in an estimate that is distinct from formal issuer guidance.", "aliases": ["estimate.revisions_lower", "estimate.revision_down_small"]},
     {"id": "ownership.position_change", "parent": "ownership", "definition": "An insider, institutional or other ownership-position change.", "aliases": ["ownership", "ownership.insider_purchase", "ownership.insider_sale", "ownership.institutional_stake", "ownership.secondary_share_sale"]},
