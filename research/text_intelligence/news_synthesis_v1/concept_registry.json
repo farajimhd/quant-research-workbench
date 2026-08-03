@@ -1,5 +1,5 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_13",
+  "registry_version": "news_synthesis_concepts_v1_15",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
@@ -34,6 +34,7 @@
     {"id": "financial.cash_flow", "parent": "financial", "definition": "A reported or expected cash-flow condition.", "aliases": ["cash_flow.strong"]},
     {"id": "financial.liquidity", "parent": "financial", "definition": "A cash, liquidity or proceeds condition.", "aliases": ["liquidity.cash_balance", "liquidity.sale_proceeds"]},
     {"id": "financial.loss_exposure", "parent": "financial", "definition": "A confirmed, estimated or potential financial loss, charge, impairment or comparable adverse exposure.", "aliases": ["additional_loss", "loss_exposure", "financial_charge", "impairment"]},
+    {"id": "financial.credit_quality", "parent": "financial", "definition": "A reported or expected change or condition in delinquencies, charge-offs, defaults or comparable issuer credit-performance measures.", "aliases": ["credit_quality", "delinquencies", "charge_offs", "write_offs", "default_rate"]},
     {"id": "estimate.revision", "parent": "estimate", "definition": "A change in an estimate that is distinct from formal issuer guidance.", "aliases": ["estimate.revisions_lower", "estimate.revision_down_small"]},
     {"id": "ownership.position_change", "parent": "ownership", "definition": "An insider, institutional or other ownership-position change.", "aliases": ["ownership", "ownership.insider_purchase", "ownership.insider_sale", "ownership.institutional_stake", "ownership.secondary_share_sale"]},
     {"id": "capital.structure", "parent": "capital", "definition": "A non-financing capital-structure change.", "aliases": ["capital_structure", "warrants.issued"]},
@@ -56,6 +57,8 @@
     {"id": "macro.trade_activity", "parent": "macro", "definition": "A reported or expected import, export or cross-border trade condition.", "aliases": ["exports", "imports", "trade_activity"]},
     {"id": "macro.policy_outlook", "parent": "macro", "definition": "A reported or expected fiscal, monetary or government-policy action or condition.", "aliases": ["government_stimulus", "monetary_policy", "fiscal_policy", "policy_outlook"]},
     {"id": "macro.consumer_confidence", "parent": "macro", "definition": "A reported, expected or historical consumer-confidence or consumer-sentiment reading.", "aliases": ["consumer_confidence", "consumer_sentiment"]},
+    {"id": "macro.consumer_spending", "parent": "macro", "definition": "A reported, expected or assessed consumer-spending or retail-demand condition.", "aliases": ["consumer_spending", "retail_spending", "household_spending"]},
+    {"id": "macro.personal_income", "parent": "macro", "definition": "A reported, expected or assessed household personal-income or disposable-income condition.", "aliases": ["personal_income", "disposable_income", "household_income"]},
     {"id": "macro.employment", "parent": "macro", "definition": "A reported, expected or assessed employment, payroll, unemployment or workforce condition.", "aliases": ["employment", "payrolls", "unemployment", "jobs"]},
     {"id": "macro.growth", "parent": "macro", "definition": "A reported, expected or assessed GDP or broad economic-output condition.", "aliases": ["gdp", "economic_output", "economic_growth_reading"]},
     {"id": "regulatory.rulemaking", "parent": "regulatory", "definition": "A regulator schedules, proposes, adopts or changes a rule or formal policy proceeding.", "aliases": ["rulemaking", "proposed_rule", "regulatory_meeting"]},

@@ -142,11 +142,7 @@ def compile_approved_draft(
         if concept == registry.fallback_leaf or not registry.contains(concept):
             raise RuntimeError(f"Approved draft has unresolved concept: {concept}")
         statement["evidence_spans"] = [
-            _resolve_evidence(
-                article,
-                {"quote": str(span.get("quote", ""))},
-                statement=True,
-            )
+            _rebind_existing_statement_evidence(article, span)
             for span in statement.get("evidence_spans", [])
         ]
         statement["typed_facts"] = extract_typed_facts(
@@ -174,6 +170,61 @@ def compile_approved_draft(
     if not validation.valid:
         raise RuntimeError(f"Invalid manually approved V1 draft for {draft.get('sample_id')}: {validation.issues}")
     return document
+
+
+def _rebind_existing_statement_evidence(
+    article: Mapping[str, Any],
+    span: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Verify an existing rendered-text span without losing its occurrence.
+
+    Rendered products commonly repeat the same provider sentence in the teaser
+    and body. The stored offset is therefore authoritative only after the
+    quote is verified against the current source text and source hash.
+    """
+    quote = str(span.get("quote", ""))
+    source_field = str(span.get("source_field", "rendered_text"))
+    rendered_text = _source_value(article, "rendered_text")
+    start = int(span.get("start", -1))
+    if source_field == "rendered_text":
+        source_text = rendered_text
+        rendered_start = start
+    else:
+        legacy_field = (
+            source_field
+            if source_field.startswith("publication.")
+            else f"publication.{source_field}"
+        )
+        source_text = _source_value(article, legacy_field)
+        rendered_matches = [
+            match.start() for match in re.finditer(re.escape(quote), rendered_text)
+        ]
+        if not rendered_matches:
+            raise RuntimeError(
+                "Stored statement evidence no longer matches: it is absent from rendered text; "
+                f"source_field={source_field} quote={quote[:120]!r}"
+            )
+        # The verified source-field offset disambiguates repeated teaser/body
+        # evidence. Identical rendered occurrences carry the same evidence;
+        # use the first occurrence deterministically.
+        rendered_start = rendered_matches[0]
+    source_matches = start >= 0 and source_text[start:start + len(quote)] == quote
+    if not source_matches and source_field != "rendered_text" and len(rendered_matches) == 1:
+        # Some draft migrations carried stale legacy field coordinates even
+        # though the evidence quote remained uniquely bound in the immutable
+        # rendered product. The unique rendered occurrence is sufficient.
+        source_matches = True
+    if not source_matches:
+        raise RuntimeError(
+            "Stored statement evidence no longer matches its source field; "
+            f"source_field={source_field} start={start} quote={quote[:120]!r}"
+        )
+    return {
+        "source_field": "rendered_text",
+        "start": rendered_start,
+        "end": rendered_start + len(quote),
+        "quote": quote,
+    }
 
 
 def _expand_entity(article: Mapping[str, Any], source: Mapping[str, Any] | str) -> dict[str, Any]:

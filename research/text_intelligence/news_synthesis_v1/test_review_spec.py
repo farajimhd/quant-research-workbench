@@ -293,6 +293,97 @@ class ReviewSpecTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unresolved concept"):
             compile_approved_draft(article, draft)
 
+    def test_approved_draft_preserves_exact_repeated_evidence_occurrence(self) -> None:
+        article = {
+            "sample_id": "N1", "source_id": "source",
+            "source_timestamp": "2026-01-01T12:00:00Z",
+            "source_text_sha256": "f" * 64,
+            "rendered_product": {"text": "Repeated claim.\nRepeated claim."},
+        }
+        spec = {
+            "sample_id": "N1", "review_notes": "Reviewed.",
+            "envelope": {
+                field: {"value": value, "evidence": []}
+                for field, value in {
+                    "document_structure": "single_subject",
+                    "communication_purpose": "report",
+                    "information_origin": "issuer",
+                    "production_method": "original",
+                    "text_availability": "rendered",
+                }.items()
+            },
+            "entities": [{
+                "entity_id": "issuer:abc", "entity_kind": "issuer",
+                "display_name": "ABC", "identity_status": "resolved",
+                "identity_evidence": ["ABC"],
+            }],
+            "statements": [{
+                "statement_kind": "event", "concept_leaf": "guidance.issued",
+                "epistemic_status": "confirmed", "time_relation": "current",
+                "evidence": [{"quote": "Repeated claim.", "occurrence": 2}],
+                "participations": [{
+                    "entity_id": "issuer:abc", "semantic_role": "affected_subject",
+                    "discourse_role": "none", "semantic_sentiment": "neutral",
+                    "sentiment_strength": 0,
+                }],
+            }],
+        }
+        draft = compile_review_spec(article, spec)
+        approved = compile_approved_draft(article, draft)
+        span = approved["statements"][0]["evidence_spans"][0]
+        self.assertEqual(span["start"], len("Repeated claim.\n"))
+        self.assertEqual(span["quote"], "Repeated claim.")
+
+        draft["statements"][0]["evidence_spans"][0]["start"] = 0
+        draft["statements"][0]["evidence_spans"][0]["quote"] = "Missing"
+        with self.assertRaisesRegex(RuntimeError, "no longer matches"):
+            compile_approved_draft(article, draft)
+
+    def test_approved_draft_rebinds_verified_legacy_teaser_evidence(self) -> None:
+        article = {
+            "sample_id": "N1", "source_id": "source",
+            "source_timestamp": "2026-01-01T12:00:00Z",
+            "source_text_sha256": "f" * 64,
+            "publication": {"teaser": "Repeated claim."},
+            "rendered_product": {"text": "Repeated claim.\nRepeated claim."},
+        }
+        spec = {
+            "sample_id": "N1", "review_notes": "Reviewed.",
+            "envelope": {
+                field: {"value": value, "evidence": []}
+                for field, value in {
+                    "document_structure": "single_subject",
+                    "communication_purpose": "report",
+                    "information_origin": "issuer",
+                    "production_method": "original",
+                    "text_availability": "rendered",
+                }.items()
+            },
+            "entities": [{
+                "entity_id": "issuer:abc", "entity_kind": "issuer",
+                "display_name": "ABC", "identity_status": "resolved",
+                "identity_evidence": ["ABC"],
+            }],
+            "statements": [{
+                "statement_kind": "event", "concept_leaf": "guidance.issued",
+                "epistemic_status": "confirmed", "time_relation": "current",
+                "evidence": [{"quote": "Repeated claim.", "occurrence": 2}],
+                "participations": [{
+                    "entity_id": "issuer:abc", "semantic_role": "affected_subject",
+                    "discourse_role": "none", "semantic_sentiment": "neutral",
+                    "sentiment_strength": 0,
+                }],
+            }],
+        }
+        draft = compile_review_spec(article, spec)
+        draft["statements"][0]["evidence_spans"][0].update({
+            "source_field": "teaser", "start": 0, "end": len("Repeated claim."),
+        })
+        approved = compile_approved_draft(article, draft)
+        span = approved["statements"][0]["evidence_spans"][0]
+        self.assertEqual(span["source_field"], "rendered_text")
+        self.assertEqual(span["start"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
