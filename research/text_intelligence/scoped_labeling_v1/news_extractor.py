@@ -100,11 +100,14 @@ COORDINATED_PREDICATE_BOUNDARY_RE = re.compile(
 EVENT_EVIDENCE_RE = re.compile(
     r"\b(?:clinical\s+(?:trial|study|update|data)|"
     r"interim\s+(?:analysis|data)|enrollment|primary\s+endpoint|"
-    r"topline\s+data|fda|guidance|earnings|revenue|margin|offering|"
+    r"topline\s+data|fda|usda|guidance|outlook|forecast|earnings|eps|revenue|"
+    r"sales|profit|loss|bookings|margin|offering|"
     r"financing|acqui(?:re|sition)|merger|partner(?:ship|ed)?|"
     r"collaborat(?:ion|ed)?|contract|order|upgrade[sd]?|downgrade[sd]?|"
     r"price\s+target|lawsuit|litigation|settlement|bankruptcy|"
-    r"restructuring|dividend|buyback|stock\s+split|share\s+split)\b",
+    r"restructuring|dividend|buyback|stock\s+split|share\s+split|"
+    r"listing\s+compliance|noncompliance|trading\s+(?:halt|resume)|"
+    r"appoint(?:s|ed|ment)?|names?\s+.{0,40}\b(?:officer|president|director)\b)\b",
     re.IGNORECASE,
 )
 ACQUISITION_RE = re.compile(
@@ -260,9 +263,15 @@ def analyze_news_scope(
         and not unresolved_company
     ):
         subject = resolved_subjects[0]
+        event_subjects = resolver.provider_tickers_for_same_issuer(
+            subject,
+            linked,
+            timestamp=timestamp,
+        )
         semantic = "\n".join(
             fragment.text for fragment in primary_fragments
         ).strip()
+        semantic = _include_distinct_title_evidence(title, semantic)
         if not semantic:
             return _empty_analysis(
                 linked,
@@ -291,10 +300,10 @@ def analyze_news_scope(
             semantic_text=semantic,
             start=min((fragment.start for fragment in primary_fragments), default=0),
             end=max((fragment.end for fragment in primary_fragments), default=len(clean)),
-            tickers=(subject,),
+            tickers=event_subjects,
             shared_context=False,
             event_id=_event_id(source_id, semantic),
-            event_tickers=(subject,),
+            event_tickers=event_subjects,
             issuer_role="primary_subject",
             evidence_scope="ticker_specific",
             trigger_candidate=not aggregation and _has_event_evidence(semantic),
@@ -358,6 +367,12 @@ def analyze_news_scope(
             aggregation=False,
         )
 
+    fragments = _include_title_fragment(
+        fragments,
+        title=title,
+        title_matches=title_matches,
+        clean_text=clean,
+    )
     assignments, passages = _resolve_passages(
         fragments,
         title_matches=title_matches,
@@ -530,6 +545,52 @@ def _fragments(
             )
             cursor += len(sentence)
     return tuple(output)
+
+
+def _include_distinct_title_evidence(title: str, semantic: str) -> str:
+    """Keep title-only/current headline evidence without duplicating rendered titles."""
+    compact_title = re.sub(r"\s+", " ", title).strip()
+    compact_semantic = re.sub(r"\s+", " ", semantic).strip()
+    if not compact_title or compact_title.casefold() in compact_semantic.casefold():
+        return semantic
+    return f"{compact_title}\n{semantic}".strip()
+
+
+def _include_title_fragment(
+    fragments: tuple[_Fragment, ...],
+    *,
+    title: str,
+    title_matches: tuple[IssuerMatch, ...],
+    clean_text: str,
+) -> tuple[_Fragment, ...]:
+    """Represent an event-bearing title in the same scoped passage contract.
+
+    Provider bodies frequently omit or paraphrase compact wire headlines. The
+    title is publication evidence, but it is added only when its normalized
+    text is absent from the rendered body and it contains supported event
+    evidence. It therefore cannot create a unit from an issuer name alone.
+    """
+    compact = re.sub(r"\s+", " ", title).strip()
+    normalized_body = re.sub(r"\s+", " ", clean_text).casefold()
+    if (
+        not compact
+        or compact.casefold() in normalized_body
+        or not _has_event_evidence(compact)
+        or not title_matches
+    ):
+        return fragments
+    title_fragment = _Fragment(
+        ordinal=0,
+        text=compact,
+        start=0,
+        end=len(compact),
+        block_index=-1,
+        source_lane="article_header",
+        heading_matches=(),
+        matches=title_matches,
+        unresolved_company_mention=False,
+    )
+    return (title_fragment, *fragments)
 
 
 def _resolve_passages(

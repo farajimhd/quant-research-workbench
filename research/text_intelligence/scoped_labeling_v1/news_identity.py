@@ -8,7 +8,7 @@ from typing import Iterable, Mapping, Sequence
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
 
 
-ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v6"
+ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v7"
 ISSUER_IDENTITY_AUTHORITY_VERSION = "news_issuer_identity_authority_v5"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?:NASDAQ|NYSE|NYSEAMERICAN|NYSE\s+AMERICAN|AMEX|OTC(?:QX|QB)?|"
@@ -316,9 +316,16 @@ class NewsIssuerResolver:
                     linked | self._article_tickers | explicit
                 )
                 if len(preferred) == 1:
-                    ticker = next(iter(preferred))
+                    resolved_tickers = preferred
+                elif len(preferred) > 1 and self.issuer_group_count(
+                    tuple(preferred), timestamp=timestamp
+                ) == 1:
+                    # Multiple listed share classes can carry the same issuer
+                    # alias. Preserve every exact provider-linked class and let
+                    # the scoped event authority emit the event for each.
+                    resolved_tickers = preferred
                 elif len(tickers) == 1:
-                    ticker = next(iter(tickers))
+                    resolved_tickers = tickers
                 else:
                     continue
                 # A free-standing single word is too weak to introduce an
@@ -328,14 +335,16 @@ class NewsIssuerResolver:
                 # marijuana/MAJI without weakening explicit identities.
                 if (
                     len(alias.split()) == 1
-                    and ticker not in linked
-                    and ticker not in self._article_tickers
-                    and ticker not in explicit
+                    and not (
+                        resolved_tickers
+                        & (linked | self._article_tickers | explicit)
+                    )
                 ):
                     continue
-                evidence.setdefault(ticker, set()).add(
-                    f"issuer_alias:{alias}"
-                )
+                for ticker in resolved_tickers:
+                    evidence.setdefault(ticker, set()).add(
+                        f"issuer_alias:{alias}"
+                    )
         return tuple(
             IssuerMatch(ticker=ticker, evidence=tuple(sorted(values)))
             for ticker, values in sorted(evidence.items())
@@ -552,6 +561,42 @@ class NewsIssuerResolver:
             (subject_ticker, *linked),
             timestamp=timestamp,
         ) == 1
+
+    def provider_tickers_for_same_issuer(
+        self,
+        subject_ticker: str,
+        linked_tickers: Sequence[str],
+        *,
+        timestamp: str = "",
+    ) -> tuple[str, ...]:
+        """Return point-in-time provider symbols representing one issuer.
+
+        Dual-class and renamed securities are separate symbols but can carry
+        the same issuer event.  This method expands only through an exact
+        issuer-id intersection in the dated identity authority; it never uses
+        provider order or fuzzy company-name similarity.
+        """
+        day = _timestamp_date(timestamp)
+        subject_ids = {
+            entry.issuer_id
+            for entry in self._valid_ticker_entries(subject_ticker, day)
+            if entry.issuer_id
+        }
+        if not subject_ids:
+            return (subject_ticker,)
+        output = [subject_ticker]
+        for raw in linked_tickers:
+            ticker = raw.upper().strip()
+            if not ticker or ticker in output:
+                continue
+            linked_ids = {
+                entry.issuer_id
+                for entry in self._valid_ticker_entries(ticker, day)
+                if entry.issuer_id
+            }
+            if subject_ids & linked_ids:
+                output.append(ticker)
+        return tuple(output)
 
     def _valid_ticker_entries(
         self,

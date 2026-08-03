@@ -12,6 +12,66 @@ from .teacher_split_v9 import normalized_headline_template
 
 
 class DeterministicV9Tests(unittest.TestCase):
+    def test_same_issuer_share_classes_are_emitted_from_one_resolved_event(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="share-classes-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Alphabet Reports Quarterly Revenue Growth",
+            text="Alphabet Inc. reported quarterly revenue growth.",
+            tickers=("GOOG", "GOOGL"),
+        )
+        resolver = NewsIssuerResolver(
+            (
+                IssuerIdentity("GOOG", "issuer:alphabet", ("Alphabet Inc",)),
+                IssuerIdentity("GOOGL", "issuer:alphabet", ("Alphabet Inc",)),
+            ),
+            article_tickers=("GOOG", "GOOGL"),
+        )
+        labels = classify_news_document_v9(document, issuer_resolver=resolver).labels
+        self.assertEqual({label["ticker"] for label in labels}, {"GOOG", "GOOGL"})
+
+    def test_compact_positive_earnings_headline_is_directional_and_eligible(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="compact-results-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="Example Reports Q4 EPS Beat, Revenue Rises 24%",
+            text="", tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("EXM", "issuer:exm", ("Example",)),),
+            article_tickers=("EXM",),
+        )
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.content_role, "primary_event")
+        self.assertTrue(result.labels)
+        self.assertEqual(result.labels[0]["classification"]["semantic_direction"], "positive")
+        self.assertTrue(result.labels[0]["forecast_trigger_eligible"])
+
+    def test_usda_approval_is_positive_regulatory_event(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="usda-v9",
+            timestamp="2026-01-02T14:00:00Z",
+            title="USDA Approves Example Crop Treatment",
+            text="The USDA approved Example Corp. crop treatment.",
+            tickers=("EXM",),
+        )
+        resolver = NewsIssuerResolver(
+            (IssuerIdentity("EXM", "issuer:exm", ("Example Corp",)),),
+            article_tickers=("EXM",),
+        )
+        result = classify_news_document_v9(document, issuer_resolver=resolver)
+        self.assertEqual(result.labels[0]["classification"]["semantic_direction"], "positive")
+        self.assertIn("regulatory", result.labels[0]["classification"]["event_concepts"])
+
+    def test_economic_calendar_is_preview(self) -> None:
+        document = SemanticDocument(
+            corpus="news", source_id="calendar-v9",
+            timestamp="2026-01-02T12:00:00Z",
+            title="Economic Calendar For Friday",
+            text="Economic releases scheduled for Friday.", tickers=(),
+        )
+        self.assertEqual(classify_news_document_v9(document).content_role, "preview")
+
     def test_reported_earlier_offering_is_followup_and_not_trigger(self) -> None:
         document = SemanticDocument(
             corpus="news",

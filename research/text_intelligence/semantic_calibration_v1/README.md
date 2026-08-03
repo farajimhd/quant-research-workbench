@@ -974,3 +974,37 @@ such as N1068 no longer display stale V9 predictions: its exact retained bot
 challenge remains provenance, its semantic input rejects that transport lane,
 and both gold and V9 classify the Zacks Analyst Blog as syndicated editorial
 analysis.
+
+## Third session-balanced fresh acceptance set
+
+N1201-N1300 is a third disjoint 2010-2026 authority with 25 premarket, 40
+regular, 25 after-hours and 10 overnight articles. All 100 were labeled without
+V9 output, then reviewed against original provider metadata, raw and rendered
+text, point-in-time identity evidence and the complete V9 comparison. Four
+traceable gold corrections were applied before the final evaluation. The final
+100 review records and Markdown files are bound to their gold and prediction
+hashes under the runtime authority.
+
+Candidate 19 adds only generic rules: supported compact-title evidence,
+same-issuer share-class expansion through exact dated issuer IDs, current versus
+republished event structure, compact earnings/guidance comparison, regulatory
+approval and listing state, operating and legal state, observed market moves,
+event concepts, and cited-wire provenance. No source ID, exact headline or
+ticker-specific prediction exception is present.
+
+| Metric | First pass | Candidate 19 |
+|---|---:|---:|
+| Extraction F1 | 0.942675 | 0.942675 |
+| Ticker-scope F1 | 0.902357 | 0.923588 |
+| Content-role macro F1 | 0.625101 | 0.652586 |
+| Source-origin macro F1 | 0.388854 | 0.513266 |
+| Text-sentiment macro F1 | 0.389836 | 0.414585 |
+| Forecast-direction macro F1 | 0.378571 | 0.450000 |
+| Concept-family F1 | 0.555891 | 0.611494 |
+| Forecast/reaction end-to-end F1 | 0.529412 | 0.857143 |
+| Issuer-history end-to-end F1 | 0.902357 | 0.923588 |
+
+`run_finalize_fresh_acceptance_v3` audits all three fresh authorities and
+materializes the disjoint 1,300-item human authority at `news_1300_v1` under
+the configured runtime root. Generated gold, predictions, audits and combined
+authorities never belong in the repository.

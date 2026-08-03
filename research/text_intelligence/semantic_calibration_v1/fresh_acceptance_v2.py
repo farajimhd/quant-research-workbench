@@ -57,6 +57,31 @@ class AcceptanceBuildResult:
     manifest_hash: str
 
 
+@dataclass(frozen=True, slots=True)
+class AcceptanceRoundContract:
+    collection_version: str
+    sampling_seed: str
+    sample_id_start: int
+    locked_split: str
+    reviewer_label: str
+    prior_human_authorities: tuple[tuple[Path, int, str], ...]
+    teacher_root: Path
+    teacher_expected: int = 10_000
+    sample_size: int = DEFAULT_SAMPLE_SIZE
+
+
+def v2_round_contract(*, human_root: Path, teacher_root: Path) -> AcceptanceRoundContract:
+    return AcceptanceRoundContract(
+        collection_version=ACCEPTANCE_VERSION,
+        sampling_seed=ACCEPTANCE_SEED,
+        sample_id_start=DEFAULT_SAMPLE_ID_START,
+        locked_split="fresh_acceptance_v2",
+        reviewer_label="Second fresh acceptance review",
+        prior_human_authorities=((human_root, 1_100, "human-1100"),),
+        teacher_root=teacher_root,
+    )
+
+
 def market_session(timestamp: str) -> str:
     value = timestamp.strip().replace(" ", "T", 1)
     parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -89,18 +114,37 @@ def build_acceptance_sample(
     point-in-time issuer candidates, but no deterministic/model label or price
     reaction until every annotation is frozen.
     """
+    return build_acceptance_round(
+        client,
+        root,
+        contract=v2_round_contract(human_root=human_root, teacher_root=teacher_root),
+        report=report,
+    )
+
+
+def build_acceptance_round(
+    client: ClickHouseHttpClient,
+    root: Path,
+    *,
+    contract: AcceptanceRoundContract,
+    report: Callable[[str], None] | None = None,
+) -> AcceptanceBuildResult:
+    """Build one immutable prediction-blind acceptance round from an explicit contract."""
     emit = report or (lambda _message: None)
     assert_runtime_root(root)
-    exclusions, exclusion_contract = load_prior_supervision_exclusion(
-        human_root=human_root,
-        teacher_root=teacher_root,
+    if contract.sample_size != DEFAULT_SAMPLE_SIZE:
+        raise ValueError("fresh acceptance rounds are frozen at exactly 100 articles")
+    exclusions, exclusion_contract = load_supervision_exclusion(
+        human_authorities=contract.prior_human_authorities,
+        teacher_root=contract.teacher_root,
+        teacher_expected=contract.teacher_expected,
     )
     manifest_path = root / "sample_manifest.json"
     if manifest_path.exists():
         manifest = read_json(manifest_path)
         _validate_manifest(
             manifest,
-            sample_size=sample_size,
+            contract=contract,
             exclusion_contract=exclusion_contract,
         )
         return AcceptanceBuildResult(
@@ -109,11 +153,8 @@ def build_acceptance_sample(
             excluded_count=int(manifest["prior_supervision_exclusion"]["source_count"]),
             manifest_hash=str(manifest["sample_manifest_sha256"]),
         )
-    if sample_size != DEFAULT_SAMPLE_SIZE:
-        raise ValueError("fresh acceptance v2 is frozen at exactly 100 articles")
-
     emit("CANDIDATES | reading bounded year/session-diverse canonical pool")
-    baseline = fetch_session_candidates(client)
+    baseline = fetch_session_candidates(client, sampling_seed=contract.sampling_seed)
     candidates = merge_candidates((), baseline)
     for source_id in exclusions:
         candidates.pop(source_id, None)
@@ -133,12 +174,14 @@ def build_acceptance_sample(
         and START_YEAR <= source_year(row) <= END_YEAR
         and str(row["source_id"]) not in exclusions
     ]
-    selected, allocation = select_session_balanced_candidates(eligible)
+    selected, allocation = select_session_balanced_candidates(
+        eligible, sampling_seed=contract.sampling_seed
+    )
     selected_ids = {str(row["source_id"]) for row in selected}
     if selected_ids & exclusions:
-        raise RuntimeError("fresh acceptance v2 overlaps prior supervision")
-    if len(selected_ids) != sample_size:
-        raise RuntimeError("fresh acceptance v2 identities are missing or duplicated")
+        raise RuntimeError("fresh acceptance round overlaps prior supervision")
+    if len(selected_ids) != contract.sample_size:
+        raise RuntimeError("fresh acceptance identities are missing or duplicated")
 
     emit(f"SELECTED | articles={len(selected):,}; loading complete text products")
     hydrate_text_products(client, selected, report=emit)
@@ -147,17 +190,17 @@ def build_acceptance_sample(
     ordered = sorted(
         selected,
         key=lambda row: stable_json_hash(
-            [ACCEPTANCE_SEED, "review-order", row["source_id"]]
+            [contract.sampling_seed, "review-order", row["source_id"]]
         ),
     )
     manifest_items: list[dict[str, Any]] = []
     sealed_items: list[dict[str, Any]] = []
     for offset, row in enumerate(ordered):
-        sample_id = f"N{DEFAULT_SAMPLE_ID_START + offset:04d}"
+        sample_id = f"N{contract.sample_id_start + offset:04d}"
         blinded = build_blinded_item(sample_id, row, resolver=resolver, pilot=False)
         blinded["sample_version"] = SAMPLE_VERSION
         blinded["reviewer_warning"] = (
-            "Second fresh acceptance review: do not consult V5/V9/V10/Sol output, "
+            f"{contract.reviewer_label}: do not consult V5/V9/V10/Sol output, "
             "subsequent reaction, or sealed selection metadata before locking."
         )
         blinded_hash = stable_json_hash(blinded)
@@ -183,7 +226,7 @@ def build_acceptance_sample(
             {
                 "sample_id": sample_id,
                 "source_id": row["source_id"],
-                "locked_split": "fresh_acceptance_v2",
+                "locked_split": contract.locked_split,
                 "selection_year": source_year(row),
                 "publication_session_et": session,
                 "selection_stratum": teacher_selection_stratum(row),
@@ -191,15 +234,15 @@ def build_acceptance_sample(
             }
         )
         if (offset + 1) % 20 == 0:
-            emit(f"WRITE | fresh-v2 blinded items={offset + 1:,}/{sample_size:,}")
+            emit(f"WRITE | {contract.locked_split} blinded items={offset + 1:,}/{contract.sample_size:,}")
 
     selection_ids = [str(row["source_id"]) for row in ordered]
     manifest = {
         "sample_version": SAMPLE_VERSION,
-        "collection_version": ACCEPTANCE_VERSION,
-        "sampling_seed": ACCEPTANCE_SEED,
+        "collection_version": contract.collection_version,
+        "sampling_seed": contract.sampling_seed,
         "created_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "sample_count": sample_size,
+        "sample_count": contract.sample_size,
         "pilot_count": 0,
         "selection_method": (
             "exact_bipartite_year_by_et_session_quota_then_deterministic_"
@@ -235,7 +278,7 @@ def build_acceptance_sample(
     write_json_atomic(manifest_path, manifest)
     sealed = {
         "sample_version": SAMPLE_VERSION,
-        "collection_version": ACCEPTANCE_VERSION,
+        "collection_version": contract.collection_version,
         "selection_sha256": manifest["selection_sha256"],
         "warning": "Do not open before all 100 manual annotations are frozen.",
         "items": sealed_items,
@@ -247,19 +290,19 @@ def build_acceptance_sample(
         {
             "annotation_version": ANNOTATION_VERSION_V3,
             "sample_manifest_sha256": manifest["sample_manifest_sha256"],
-            "expected": sample_size,
+            "expected": contract.sample_size,
             "completed": 0,
-            "remaining": sample_size,
+            "remaining": contract.sample_size,
             "unexpected": [],
         },
     )
     emit(
-        f"READY | fresh-v2={sample_size:,} excluded={len(exclusions):,} overlap=0 "
+        f"READY | {contract.locked_split}={contract.sample_size:,} excluded={len(exclusions):,} overlap=0 "
         f"sessions={dict(SESSION_QUOTAS)}"
     )
     return AcceptanceBuildResult(
         root=root,
-        sample_count=sample_size,
+        sample_count=contract.sample_size,
         excluded_count=len(exclusions),
         manifest_hash=str(manifest["sample_manifest_sha256"]),
     )
@@ -267,6 +310,8 @@ def build_acceptance_sample(
 
 def select_session_balanced_candidates(
     candidates: Sequence[dict[str, Any]],
+    *,
+    sampling_seed: str = ACCEPTANCE_SEED,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, int]]]:
     years = tuple(range(START_YEAR, END_YEAR + 1))
     year_quotas = {
@@ -289,7 +334,7 @@ def select_session_balanced_candidates(
                 round_robin_teacher_strata(
                     cells[(year, session)],
                     target=target,
-                    sampling_seed=f"{ACCEPTANCE_SEED}|{year}|{session}",
+                    sampling_seed=f"{sampling_seed}|{year}|{session}",
                 )
             )
     if len(selected) != DEFAULT_SAMPLE_SIZE:
@@ -301,6 +346,7 @@ def fetch_session_candidates(
     client: ClickHouseHttpClient,
     *,
     per_year_session_limit: int = 96,
+    sampling_seed: str = ACCEPTANCE_SEED,
 ) -> list[dict[str, Any]]:
     """Fetch a small canonical pool with explicit DST-aware ET session lanes."""
     local_minutes = (
@@ -335,7 +381,7 @@ SELECT
 FROM q_live.benzinga_news_event_v2 FINAL
 WHERE published_at_utc >= toDateTime64('2010-01-01 00:00:00', 9, 'UTC')
   AND published_at_utc < toDateTime64('2027-01-01 00:00:00', 9, 'UTC')
-ORDER BY cityHash64(concat(canonical_news_id, '{ACCEPTANCE_SEED}'))
+ORDER BY cityHash64(concat(canonical_news_id, '{sampling_seed}'))
 LIMIT {int(per_year_session_limit)} BY
  toYear(published_at_utc), publication_session_et
 FORMAT JSONEachRow
@@ -427,16 +473,44 @@ def _allocate_year_session(
 def load_prior_supervision_exclusion(
     *, human_root: Path, teacher_root: Path
 ) -> tuple[set[str], dict[str, Any]]:
-    human = read_json(human_root / "sample_manifest.json")
+    return load_supervision_exclusion(
+        human_authorities=((human_root, 1_100, "human-1100"),),
+        teacher_root=teacher_root,
+        teacher_expected=10_000,
+    )
+
+
+def load_supervision_exclusion(
+    *,
+    human_authorities: Sequence[tuple[Path, int, str]],
+    teacher_root: Path,
+    teacher_expected: int,
+) -> tuple[set[str], dict[str, Any]]:
+    human_ids: set[str] = set()
+    human_contracts: list[dict[str, Any]] = []
+    for root, expected, name in human_authorities:
+        manifest = read_json(root / "sample_manifest.json")
+        values = _manifest_source_ids(manifest, expected=expected, name=name)
+        overlap = human_ids & values
+        if overlap:
+            raise RuntimeError(f"human authorities overlap at {name}: {len(overlap):,}")
+        human_ids |= values
+        human_contracts.append({
+            "name": name,
+            "manifest_sha256": str(manifest.get("sample_manifest_sha256") or ""),
+            "source_count": len(values),
+        })
     teacher = read_json(teacher_root / "sample_manifest.json")
-    human_ids = _manifest_source_ids(human, expected=1_100, name="human")
+    teacher_ids = _manifest_source_ids(
+        teacher, expected=teacher_expected, name="Sol teacher"
+    )
     teacher_ids = _manifest_source_ids(teacher, expected=10_000, name="Sol teacher")
     overlap = human_ids & teacher_ids
     if overlap:
         raise RuntimeError(f"existing human and teacher authorities overlap: {len(overlap):,}")
     source_ids = human_ids | teacher_ids
     return source_ids, {
-        "human_manifest_sha256": str(human.get("sample_manifest_sha256") or ""),
+        "human_authorities": human_contracts,
         "human_source_count": len(human_ids),
         "teacher_manifest_sha256": str(teacher.get("sample_manifest_sha256") or ""),
         "teacher_source_count": len(teacher_ids),
@@ -461,23 +535,47 @@ def _manifest_source_ids(
 def _validate_manifest(
     manifest: Mapping[str, Any],
     *,
-    sample_size: int,
+    contract: AcceptanceRoundContract,
     exclusion_contract: Mapping[str, Any],
 ) -> None:
     if manifest.get("sample_version") != SAMPLE_VERSION:
         raise RuntimeError("existing fresh acceptance v2 sample-contract drift")
-    if manifest.get("collection_version") != ACCEPTANCE_VERSION:
-        raise RuntimeError("existing fresh acceptance v2 collection drift")
-    if int(manifest.get("sample_count") or 0) != sample_size:
-        raise RuntimeError("existing fresh acceptance v2 sample-size drift")
-    if manifest.get("prior_supervision_exclusion") != exclusion_contract:
-        raise RuntimeError("existing fresh acceptance v2 exclusion drift")
+    if manifest.get("collection_version") != contract.collection_version:
+        raise RuntimeError("existing fresh acceptance collection drift")
+    if manifest.get("sampling_seed") != contract.sampling_seed:
+        raise RuntimeError("existing fresh acceptance sampling-seed drift")
+    if int(manifest.get("sample_count") or 0) != contract.sample_size:
+        raise RuntimeError("existing fresh acceptance sample-size drift")
+    actual_exclusion = manifest.get("prior_supervision_exclusion")
+    if actual_exclusion != exclusion_contract and not _legacy_v2_exclusion_matches(
+        actual_exclusion, exclusion_contract
+    ):
+        raise RuntimeError("existing fresh acceptance exclusion drift")
     actual = manifest.get("distribution", {}).get("publication_session_et")
     if actual != dict(SESSION_QUOTAS):
         raise RuntimeError("existing fresh acceptance v2 session distribution drift")
     ids = [str(row.get("source_id") or "") for row in manifest.get("items") or ()]
-    if len(ids) != sample_size or len(set(ids)) != sample_size:
+    if len(ids) != contract.sample_size or len(set(ids)) != contract.sample_size:
         raise RuntimeError("existing fresh acceptance v2 identities are missing or duplicated")
+
+
+def _legacy_v2_exclusion_matches(actual: Any, expected: Mapping[str, Any]) -> bool:
+    """Accept the already-certified V2 manifest after the authority-list refactor."""
+    authorities = expected.get("human_authorities") or ()
+    if not isinstance(actual, Mapping) or len(authorities) != 1:
+        return False
+    authority = authorities[0]
+    return all(
+        (
+            actual.get("human_manifest_sha256") == authority.get("manifest_sha256"),
+            actual.get("human_source_count") == authority.get("source_count"),
+            actual.get("teacher_manifest_sha256") == expected.get("teacher_manifest_sha256"),
+            actual.get("teacher_source_count") == expected.get("teacher_source_count"),
+            actual.get("source_count") == expected.get("source_count"),
+            actual.get("source_ids_sha256") == expected.get("source_ids_sha256"),
+            actual.get("overlap_allowed") is False,
+        )
+    )
 
 
 def _counts(values: Iterable[str]) -> dict[str, int]:

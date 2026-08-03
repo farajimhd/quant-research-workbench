@@ -247,7 +247,9 @@ _ROUNDUP_ARTICLE_RE = re.compile(
 _PREVIEW_ARTICLE_RE = re.compile(
     r"\b(?:earnings|results?)\s+preview\b|\bwhat\s+to\s+expect\b|"
     r"\bahead\s+of\s+(?:its\s+)?(?:earnings|results?)\b|"
-    r"\bETFs?\s+for\s+.{0,80}\bearnings\s+season\b",
+    r"\bETFs?\s+for\s+.{0,80}\bearnings\s+season\b|"
+    r"\b(?:economic|earnings)\s+calendar\b|\bcalendar\s+of\s+economic\s+events\b|"
+    r"\b(?:reports?|earnings)\s+(?:due|expected|scheduled)\b",
     re.I,
 )
 _STOCKS_TO_WATCH_PREVIEW_RE = re.compile(
@@ -310,7 +312,7 @@ _EXPLICIT_ANALYST_ACTION_RE = re.compile(
     re.I | re.S,
 )
 _REGULATORY_CURRENT_RE = re.compile(
-    r"\b(?:fda|sec|nasdaq|nyse)\b.{0,100}\b(?:approv|clear|subpoena|halt|"
+    r"\b(?:fda|usda|sec|nasdaq|nyse)\b.{0,100}\b(?:approv|clear|subpoena|halt|resume|"
     r"noncompliance|fil(?:e|ing)|registration|investigat)|"
     r"\b(?:form\s+8-k|form\s+4|regulatory\s+approval|clinical\s+hold|"
     r"fast\s+track\s+designation|suspends?\s+trading|patent\s+infringement\s+lawsuit)\b|"
@@ -323,8 +325,18 @@ _AUTOMATED_ARTICLE_RE = re.compile(
     re.I,
 )
 _PRIMARY_RESULT_TITLE_RE = re.compile(
-    r"\b(?:revenue|earnings|eps)\s+beat\b|\breports?\b.{0,80}\b(?:results?|earnings)\b|"
-    r"\b(?:results?|earnings)\b.{0,100}\b(?:beat|miss|guid(?:e|es|ance)|buyback)\b",
+    r"\b(?:revenue|earnings|eps|sales|bookings)\s+(?:beat|miss)\b|"
+    r"\breports?\b.{0,100}\b(?:results?|earnings|eps|revenue|sales|profit|loss|bookings)\b|"
+    r"\b(?:results?|earnings|eps|revenue|sales|profit|loss|bookings)\b.{0,100}"
+    r"\b(?:beat|miss|guid(?:e|es|ance)|buyback|increase|decrease|rise|fall)\b|"
+    r"\bsees?\b.{0,100}\b(?:eps|revenue|sales|profit|loss|guidance|outlook)\b",
+    re.I | re.S,
+)
+_PRIMARY_OPERATION_TITLE_RE = re.compile(
+    r"\b(?:appoints?|names?|hires?)\b.{0,100}\b(?:president|officer|director|chief)\b|"
+    r"\b(?:suspends?|resumes?|restarts?|halts?|closes?|shuts?\s+down)\b.{0,100}"
+    r"\b(?:flights?|operations?|production|facility|service|trading)\b|"
+    r"\b(?:launches?|receives?\s+(?:fda|usda)|wins?|secures?|awarded)\b",
     re.I | re.S,
 )
 _ISSUER_DIRECT_CHANNELS = {"press releases", "press release", "company news"}
@@ -345,6 +357,8 @@ def _classify_article_role_v9(
     # not a new causal trigger at this article timestamp.
     if _REPORTED_EARLIER_RE.search(title):
         return "why_moving_followup", "structural_reported_earlier_title"
+    if re.search(r"\b(?:from\s+earlier|earlier\s+announced|previously\s+announced)\b", title, re.I):
+        return "why_moving_followup", "structural_prior_event_republication"
     if _STOCKS_TO_WATCH_PREVIEW_RE.search(title):
         return "preview", "structural_stocks_to_watch_preview"
     if re.search(r"\bmarket\s+primer\b", title, re.I) and (
@@ -362,13 +376,20 @@ def _classify_article_role_v9(
         return "why_moving_followup", "structural_why_moving_title"
     if _EXPLICIT_ANALYST_ACTION_RE.search(title) or (
         channels & {"analyst color", "analyst ratings", "downgrades", "upgrades"}
-        and re.search(r"\b(?:wall\s+street|analyst|research|outlook|trend)\b", title, re.I)
+        and re.search(
+            r"\b(?:wall\s+street|analyst|research|outlook|trend|price\s+target|"
+            r"our\s+(?:rating|target|estimates?)|we\s+(?:rate|maintain|expect))\b",
+            f"{title}\n{document.text[:1200]}",
+            re.I,
+        )
     ):
         return "analyst_event", "explicit_analyst_action_title"
     if re.search(r"\bZacks\s+Investment\s+Research\b", document.text, re.I):
         return "editorial_analysis", "structural_syndicated_zacks_editorial"
     if _PRIMARY_RESULT_TITLE_RE.search(title):
         return "primary_event", "substantive_current_result_title"
+    if _PRIMARY_OPERATION_TITLE_RE.search(title):
+        return "primary_event", "substantive_current_operating_title"
     if _PRICE_REACTION_FOLLOWUP_RE.search(title):
         return "why_moving_followup", "structural_price_reaction_followup"
     if _PREVIEW_ARTICLE_RE.search(title):
@@ -422,6 +443,8 @@ def _classify_source_origin_v9(
         return "issuer_direct", "issuer_distribution_evidence"
     if role == "analyst_event":
         return "editorial_original", "reported_analyst_commentary"
+    if re.search(r"(?im)^\s*-?\s*Reuters\s*$", document.text):
+        return "editorial_aggregation", "cited_wire_republication"
     if base_origin == "automated_summary" and not _is_verified_automated(document):
         return "editorial_original", "unverified_automated_origin_rejected"
     # Fall back only to the pre-existing metadata/source authority. Content
@@ -501,8 +524,9 @@ _SUPPORTED_EVENT_EVIDENCE_RE = re.compile(
     r"\b(?:announc|report|file|submit|approv|accept|clear|designat|award|win|secure|"
     r"acquir|merge|partner|collaborat|settle|sue|investigat|halt|delist|bankrupt|"
     r"restructur|offer|placement|convertible|buyback|repurchase|dividend|guidance|"
-    r"outlook|forecast|earnings|revenue|profit|loss|trial|endpoint|contract|order|"
-    r"appoint|resign|launch|deploy|recall|split|compliance)\w*\b",
+    r"outlook|forecast|earnings|eps|revenue|sales|profit|loss|bookings|margin|trial|"
+    r"endpoint|contract|order|appoint|resign|launch|deploy|recall|split|compliance|"
+    r"noncompliance|resume|suspend|shutdown|closure|layoff|stake|ownership|usda)\w*\b",
     re.I,
 )
 
@@ -608,6 +632,28 @@ def _refine_event_concepts(
         output.add("financing")
     if re.search(r"\b(?:guidance|outlook|forecast)\b", text, re.I):
         output.add("guidance")
+    if re.search(r"\b(?:earnings|eps|revenue|sales|profit|loss|bookings|quarterly\s+results?)\b", text, re.I):
+        output.add("earnings")
+    if re.search(r"\b(?:fda|usda|regulator|regulatory|approval|clearance|clinical\s+hold)\b", text, re.I):
+        output.add("regulatory")
+    if re.search(r"\b(?:vaccine|drug|treatment|product|platform|software|service)\b.{0,100}"
+                 r"\b(?:approv|launch|sell|commercializ|clear)\w*\b|"
+                 r"\b(?:approv|launch|sell|commercializ|clear)\w*\b.{0,100}"
+                 r"\b(?:vaccine|drug|treatment|product|platform|software|service)\b", text, re.I | re.S):
+        output.add("product_commercial")
+    if re.search(r"\b(?:trial|clinical|endpoint|patient|study\s+data)\b", text, re.I):
+        output.add("clinical")
+    if re.search(r"\b(?:acquir|acquisition|merger|takeover|buyout)\w*\b", text, re.I):
+        output.add("ma_transaction")
+    if re.search(r"\b(?:settlement|lawsuit|litigation|legal\s+action|patent\s+infringement)\b", text, re.I):
+        output.add("legal")
+    if re.search(r"\b(?:stake|ownership|beneficial\s+owner|takes?\s+a\s+position)\b", text, re.I):
+        output.add("ownership")
+    if re.search(r"\b(?:launch|commercializ|customer|demand|shipment|store|facility|flight|production|operations?)\w*\b", text, re.I):
+        output.add("operations")
+    if re.search(r"\b(?:shares?|stock)\b.{0,70}\b(?:rose|gained|climbed|jumped|surged|fell|dropped|declined|slid|plunged|tumbled)\b|"
+                 r"\b(?:rose|gained|climbed|jumped|surged|fell|dropped|declined|slid|plunged|tumbled)\b.{0,70}\b(?:shares?|stock)\b", text, re.I | re.S):
+        output.add("market_reaction")
     if re.search(r"\b(?:delist(?:ed|ing)?|continued\s+listing|listing\s+compliance|noncompliance)\b", text, re.I):
         output.add("listing_market_structure")
     if _PRIMARY_ENDPOINT_FAILURE_RE.search(text):
@@ -616,7 +662,8 @@ def _refine_event_concepts(
     if re.search(r"\b(?:plan\s+to\s+exit|emerg(?:e|ed|ing)\s+from|exit)\b.{0,80}\b(?:chapter\s+11|bankruptcy)\b|\b(?:court\s+)?approved\b.{0,100}\b(?:reorganization|bankruptcy)\s+plan\b", text, re.I | re.S):
         output.discard("credit_solvency.bankruptcy")
         output.add("credit_solvency.reorganization_approved")
-    if re.search(r"\b(?:board|director|officer|chief\s+\w+\s+officer)\b.{0,100}\b(?:appoint|elect|name[sd]?|hire[sd]?)\b", text, re.I | re.S):
+    if re.search(r"\b(?:board|director|officer|president|chief\s+\w+\s+officer)\b.{0,100}\b(?:appoint|elect|name[sd]?|hire[sd]?)\b|"
+                 r"\b(?:appoint|elect|name[sd]?|hire[sd]?)\b.{0,100}\b(?:board|director|officer|president|chief\s+\w+\s+officer)\b", text, re.I | re.S):
         output.add("management_governance.appointment")
     if issuer_role in {"lender", "financing_provider"}:
         output.discard("financing.dilutive")
@@ -655,6 +702,26 @@ def _compose_direction_v9(
         forced, basis = "positive", "explicit_analyst_positive_action"
     if _PRIMARY_ENDPOINT_FAILURE_RE.search(text):
         forced, basis = "negative", "primary_endpoint_failure_precedence"
+    current_result_positive = bool(re.search(
+        r"\b(?:eps|earnings|revenue|sales|profit|bookings)\b.{0,100}"
+        r"\b(?:up\s+from|increase[sd]?\s+(?:over|from)|rose|grew|beat(?:s|ing)?|above)\b|"
+        r"\b(?:beat(?:s|ing)?|above|up\s+from|increase[sd]?\s+(?:over|from))\b.{0,100}"
+        r"\b(?:eps|earnings|revenue|sales|profit|bookings)\b",
+        text, re.I | re.S,
+    ))
+    current_result_negative = bool(re.search(
+        r"\b(?:eps|earnings|revenue|sales|profit|bookings)\b.{0,100}"
+        r"\b(?:down\s+from|decrease[sd]?\s+(?:from|versus)|fell|declined|miss(?:es|ed)?|below)\b|"
+        r"\b(?:miss(?:es|ed)?|below|down\s+from|decrease[sd]?\s+(?:from|versus))\b.{0,100}"
+        r"\b(?:eps|earnings|revenue|sales|profit|bookings)\b",
+        text, re.I | re.S,
+    ))
+    if current_result_positive and current_result_negative:
+        forced, basis = "mixed", "current_results_mixed"
+    elif current_result_positive:
+        forced, basis = "positive", "current_results_positive"
+    elif current_result_negative:
+        forced, basis = "negative", "current_results_negative"
     if re.search(r"\b(?:guidance|outlook|forecast)\b.{0,120}\b(?:below|lower|cut|miss(?:es|ed)?)\b.{0,80}\b(?:estimate|consensus|prior|expectation)?", text, re.I | re.S):
         forced, basis = "negative", "forward_guidance_negative_precedence"
     if re.search(r"\b(?:guidance|outlook|forecast)\b.{0,120}\b(?:above|raise[sd]?|strong|better)\b.{0,80}\b(?:estimate|consensus|prior|expectation)?", text, re.I | re.S):
@@ -705,6 +772,29 @@ def _compose_direction_v9(
         basis = "buyback_offset" if forced == "mixed" else "buyback_positive"
     if re.search(r"\b(?:awarded|won|secured)\b.{0,100}\b(?:contract|order|grant)\b", text, re.I | re.S):
         forced, basis = "positive", "contract_award"
+    if re.search(r"\b(?:fda|usda|regulator)\b.{0,100}\b(?:approv|clear|accept|designat)\w*\b|"
+                 r"\b(?:approv|clear|accept|designat)\w*\b.{0,100}\b(?:fda|usda|regulator)\b", text, re.I | re.S):
+        forced, basis = "positive", "regulatory_approval"
+    if re.search(r"\b(?:regain(?:s|ed)?|receive[sd]?)\b.{0,80}\b(?:listing\s+)?compliance\b|"
+                 r"\btrading\s+(?:will\s+)?resume[sd]?\b", text, re.I | re.S):
+        forced, basis = "positive", "listing_or_trading_restoration"
+    if re.search(r"\b(?:noncompliance|delist(?:ed|ing)?|listing\s+suspension)\b", text, re.I):
+        forced, basis = "negative", "adverse_listing_state"
+    if re.search(r"\b(?:shares?|stock)\b.{0,70}\b(?:rose|gained|climbed|jumped|surged|rallied)\b|"
+                 r"\b(?:rose|gained|climbed|jumped|surged|rallied)\b.{0,70}\b(?:shares?|stock)\b", text, re.I | re.S):
+        forced, basis = "positive", "reported_positive_market_move"
+    if re.search(r"\b(?:shares?|stock)\b.{0,70}\b(?:fell|dropped|declined|slid|plunged|tumbled)\b|"
+                 r"\b(?:fell|dropped|declined|slid|plunged|tumbled)\b.{0,70}\b(?:shares?|stock)\b", text, re.I | re.S):
+        forced, basis = "negative", "reported_negative_market_move"
+    if re.search(r"\b(?:weak|declining|lower)\b.{0,70}\b(?:demand|sales|orders?|shipments?)\b|"
+                 r"\b(?:shutdown|closure|suspend(?:s|ed)?\s+(?:flights?|operations?|production)|layoffs?)\b", text, re.I | re.S):
+        forced, basis = "negative", "adverse_operating_state"
+    if re.search(r"\b(?:settle[sd]?|settlement)\b", text, re.I) and not re.search(
+        r"\b(?:pay|payment|charge|expense|cost|fine|penalty|admit(?:s|ted)?\s+wrongdoing)\b",
+        text,
+        re.I,
+    ):
+        forced, basis = "positive", "legal_uncertainty_resolved"
     if re.search(r"\b(?:increase[sd]?|raise[sd]?)\b.{0,60}\bdividend\b|\bdividend\b.{0,60}\b(?:increase[sd]?|raise[sd]?)\b", text, re.I | re.S):
         forced = "mixed" if initial_direction in {"negative", "mixed"} else "positive"
         basis = "dividend_increase_offset" if forced == "mixed" else "dividend_increase"
@@ -813,9 +903,9 @@ def _compose_direction_v9(
 _FORECAST_RANGE_VS_ESTIMATE_RE = re.compile(
     r"\b(?:sees?|guides?|expects?|forecasts?|projects?)\b"
     r"(?P<context>.{0,120}?)"
-    r"(?P<low>\$?\d+(?:\.\d+)?)\s*(?:-|to)?\s*"
-    r"(?P<high>\$?\d+(?:\.\d+)?)?\s*"
-    r"(?:vs\.?|versus)\s*\$?(?P<estimate>\d+(?:\.\d+)?)\s*"
+    r"(?P<low>\$?\d+(?:\.\d+)?)\s*(?:[MBK%]|million|billion)?\s*(?:-|to)?\s*"
+    r"(?P<high>\$?\d+(?:\.\d+)?)?\s*(?:[MBK%]|million|billion)?\s*"
+    r"(?:vs\.?|versus)\s*\$?(?P<estimate>\d+(?:\.\d+)?)\s*(?:[MBK%]|million|billion)?\s*"
     r"(?:est\.?|estimate|consensus)",
     re.I | re.S,
 )

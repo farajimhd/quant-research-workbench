@@ -264,7 +264,7 @@ def _render_index(
 ) -> str:
     headline = (evaluation.get("headline") or {}).get("v9") or {}
     lines = [
-        "# Second fresh 100 News V9 audit index",
+        "# Fresh 100 News V9 audit index",
         "",
         "All human labels were frozen before V9 predictions were generated. "
         "Articles are ordered by evaluator mismatch count.",
