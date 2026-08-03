@@ -58,6 +58,87 @@ eligibility are derived deterministically from them.
 `subject_scope` is derived from resolved entities and document structure; it is
 not separately annotated.
 
+#### `document_structure`
+
+This field describes the organization of the document, not the number of
+tickers in its metadata.
+
+| Value | Definition | Boundary example |
+|---|---|---|
+| `single_subject` | One coherent narrative about one event, decision, thesis or closely related event chain. It may involve several issuers playing different roles. | An acquisition article covering both acquirer and target is still one subject. |
+| `multi_subject_digest` | Two or more independent issuer or event items assembled into one document. Each item remains meaningful if removed from the others. | "Ten stocks moving after earnings" with a separate paragraph for each issuer. |
+| `market_overview` | A market-, sector-, macro- or cross-asset-level narrative whose main subject is collective conditions rather than a list of independent issuer events. Tickers may appear as examples. | A discussion of inflation, rates and index weakness that cites several stocks. |
+| `reference_list` | A primarily enumerative calendar, ranking, screening result or factual lookup list with little connecting narrative. | An earnings calendar or analyst-rating table. |
+
+`single_subject` is determined by narrative unity, not by issuer count.
+`multi_subject_digest` requires separable item blocks. `market_overview` requires
+one collective market thesis. `reference_list` requires enumeration to be the
+document's main utility.
+
+#### `communication_purpose`
+
+This field describes the document's primary communicative job. Exactly one
+value is selected from the headline, lead and dominant substantive statements.
+
+| Value | Definition | Excludes |
+|---|---|---|
+| `report` | Introduces a newly disclosed event, decision, result, action or other concrete information as the main point. | A later story whose main purpose is explaining a move caused by already-public information. |
+| `analyze` | Interprets known evidence, compares alternatives, argues a thesis or evaluates implications without a new event being the main point. | A chronological summary of what already happened. |
+| `preview` | Describes expectations, scenarios or preparation before a scheduled or possible future event occurs. | Forward guidance newly issued by a company; that is a reported event containing a forecast statement. |
+| `recap` | Summarizes events or market activity after a defined period or sequence has completed. | An argument about why those events matter; that is analysis if interpretation dominates. |
+| `explain_move` | Starts from an already observed price, volume or attention move and primarily explains its possible catalyst or context. | A primary catalyst report that merely appends a price-action sentence. |
+
+When purposes coexist, the new-information test is applied first: a genuinely
+new event that anchors the headline and lead is `report`. Otherwise the dominant
+function decides. A tie is recorded as a quality-review issue; it is not
+silently converted to another semantic dimension.
+
+#### `information_origin`
+
+This field identifies where the document's main substantive claim originated.
+It does not identify the website that published the article.
+
+| Value | Definition | Important boundary |
+|---|---|---|
+| `issuer` | The principal claim originated from an issuer, its authorized representative or an issuer-filed disclosure. | An issuer-filed 8-K is `issuer`, not `regulator`; the regulator is only the filing venue. |
+| `regulator` | The principal claim originated from a regulator, exchange or government authority acting in its official capacity. | An SEC enforcement action is regulatory; an issuer's SEC filing is not. |
+| `analyst` | The principal claim is an identifiable analyst or research firm's rating, target, estimate, thesis or recommendation. | Editorial commentary about an analyst industry trend is not analyst-origin unless a specific research claim anchors it. |
+| `editorial` | The principal claim or synthesis was produced by the publisher's reporting or analysis rather than by an issuer, regulator or analyst authority. | Quoting an issuer does not make the origin `issuer` when the article's own investigation is the substantive claim. |
+| `mixed` | Two or more distinct origin classes provide indispensable co-primary claims and none dominates. | Use only when removing either origin changes the document's main meaning, not merely because several sources are quoted. |
+| `unknown` | Available evidence cannot reliably identify the substantive claim's origin. | This is an explicit evidence limitation, not a default for difficult documents. |
+
+Multiple issuers in a shared event still have the single origin `issuer`.
+Origin is selected from claim provenance, not provider tags alone.
+
+#### `production_method`
+
+This field describes how the published document was assembled. It is
+independent from information origin and communication purpose.
+
+| Value | Definition | Important boundary |
+|---|---|---|
+| `original` | The publisher authored the document's current narrative or reporting. It may quote external sources. | Original reporting about an issuer announcement remains `original`; origin may still be `issuer`. |
+| `aggregated` | The publisher combined or rewrote material from multiple prior items or sources into a new composite document. | Requires synthesis of multiple inputs, not a substantially unchanged reprint. |
+| `syndicated` | One external article, release or research item was republished substantially intact, with only formatting or minor editorial changes. | A press release copied nearly verbatim is syndicated even when the provider hosts it. |
+| `automated` | A template or software process generated the document from structured inputs with no material human-authored narrative. | The word "automated" inside the subject matter is not evidence of automated production. |
+| `unknown` | Metadata and text structure do not support a reliable production determination. | Prefer `unknown` over guessing from writing style. |
+
+#### `text_availability`
+
+This field records whether the semantic compiler received trustworthy content.
+It does not describe writing quality.
+
+| Value | Definition | Processing consequence |
+|---|---|---|
+| `rendered` | The available source content was successfully converted into readable semantic text, with provenance retained. | Full synthesis is permitted. |
+| `title_only` | The source legitimately contains a usable title but no substantive body. | Synthesis is restricted to title evidence and explicitly marked title-only. |
+| `unrendered` | Source metadata indicates that substantive content exists or should exist, but it was not retrieved or rendered successfully. | Preserve the document, expose the missing-text state and do not treat it as genuinely title-only. |
+| `invalid` | The available payload is corrupted, transport/server text, unrelated content or otherwise not valid news evidence. | Reject semantic synthesis while preserving the failure reason and source provenance. |
+
+Each envelope decision must retain its evidence and rule identifier. Envelope
+fields describe the document only; ticker-specific meaning belongs exclusively
+to atomic statements and entity participation.
+
 ### 3.2 Atomic statement
 
 Every evidence span belongs to one atomic statement. A sentence containing two
