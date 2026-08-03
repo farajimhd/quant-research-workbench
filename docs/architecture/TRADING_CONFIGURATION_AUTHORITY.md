@@ -223,6 +223,13 @@ reserved for semantic state. Ordinary sections, editable fields, and action
 subsections must not introduce independent tinted backgrounds or decorative
 phase colors. Dark themes preserve the same hierarchy with tone-appropriate
 neutral surfaces rather than becoming a separate visual language.
+
+Page and decision titles are short operational labels, not explanatory
+sentences. At wide workbench viewports, the page description and Configuration
+Studio introduction remain single-line orientation copy; narrower layouts may
+wrap them naturally without reducing type size. Runtime publication authority
+is a prominent semantic status card that distinguishes a draft-only state from
+an approved release and tells the operator whether publication is required.
 Expert mode is a full-width subject editor, not the legacy field inventory under
 different colors. Its leading contract map names the outcome, authority boundary,
 subjects, and release behavior for the active route. Editors are then organized

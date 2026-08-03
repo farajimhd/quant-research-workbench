@@ -404,37 +404,37 @@ const SECTION_META = {
     eyebrow: "Step 1 · Define behavior",
     icon: GitBranch,
     title: "Strategy Studio",
-    description: "Create or adapt a Strategy Profile, tune its most-used behavior, then attach configurable capabilities. Profiles describe decisions; they do not own account capital or broker execution.",
+    description: "Configure reusable strategy behavior, lifecycle rules, and capabilities.",
   },
   assignments: {
     eyebrow: "Step 2 · Make it usable",
     icon: Network,
     title: "Strategy Deployments",
-    description: "Turn a published Strategy Profile into a usable deployment by selecting its OMS profile, runtime modes, and account mandates. Ticker assignments remain run-local operational state.",
+    description: "Bind a Strategy Profile to its universe, OMS profile, runtime modes, and accounts.",
   },
   portfolio: {
     eyebrow: "Step 3 · Allocate capital",
     icon: BriefcaseBusiness,
     title: "Portfolio & Risk",
-    description: "Set stable account safety policies, then define exactly how much of each account a deployment may use and whether it may propose replacing another position.",
+    description: "Define account risk limits, capital mandates, and replacement permissions.",
   },
   oms: {
     eyebrow: "Shared execution authority",
     icon: ShieldCheck,
     title: "OMS & Protection",
-    description: "Create reusable execution and protection profiles. Strategies select a profile; the shared OMS owns order tactics, broker lifecycle, partial fills, and protection.",
+    description: "Define reusable execution tactics, partial-fill behavior, and position protection.",
   },
   accounts: {
     eyebrow: "Stable runtime boundaries",
     icon: Boxes,
     title: "Accounts & Sessions",
-    description: "Define stable application accounts and map them to broker or simulated sessions. Account capabilities and risk policy remain independent from any single strategy.",
+    description: "Bind application accounts to broker or simulated sessions and permissions.",
   },
   revisions: {
     eyebrow: "Final publication gate",
     icon: BookOpenCheck,
     title: "Approved Releases",
-    description: "Validate and publish one immutable release. New Replay runs pin the complete release, including Strategy Deployments, policies, OMS profiles, accounts, and every configured Canvas.",
+    description: "Validate and publish the immutable configuration used by new runs.",
   },
 } as const;
 
@@ -733,7 +733,7 @@ const EXPERT_GUIDANCE: Record<Exclude<TradingConfigurationSection, "revisions">,
 function ExpertWorkspaceGuide({ section }: { section: Exclude<TradingConfigurationSection, "revisions"> }) {
   const guidance = EXPERT_GUIDANCE[section];
   return <section className="configuration-expert-guide">
-    <div><span>Expert workspace</span><h2>Edit the complete {SECTION_META[section].title.toLowerCase()} contract</h2><p>{guidance.outcome}</p></div>
+    <div><span>Expert workspace</span><h2>{SECTION_META[section].title} contract</h2><p>{guidance.outcome}</p></div>
     <dl><div><dt>Authority boundary</dt><dd>{guidance.authority}</dd></div><div><dt>Work by subject</dt><dd>{guidance.subjects.map((subject) => <span key={subject}><Check size={12} />{subject}</span>)}</dd></div><div><dt>Release behavior</dt><dd>Changes affect only this draft until validation and publication.</dd></div></dl>
   </section>;
 }
@@ -782,7 +782,7 @@ function ConfigurationStudioHome({ approved, draft, onApplyRecommended, onCloneA
   const recommended = recommendedDraft(draft);
   return <section className="configuration-studio-home">
     <header>
-      <div><span>Choose how to begin</span><h2>Set up a complete trading configuration without losing the details</h2><p>Every path edits the same schema-v{draft.schema_version} draft. Nothing becomes executable until the final release is reviewed and published.</p></div>
+      <div><span>Choose how to begin</span><h2>Choose your starting point</h2><p>Every option edits the same schema-v{draft.schema_version} draft; publication is required before runtime.</p></div>
       <div className="configuration-home-authority"><ShieldCheck size={18} /><span><strong>One authority</strong><small>Guided choices become canonical draft patches</small></span></div>
     </header>
     <div className="configuration-start-paths">
@@ -1046,13 +1046,13 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, profile }: {
       content: <GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceInitial({ ...initial, order_intent })} segment="execution" value={initial.order_intent} />,
     },
     {
-      id: "initial-partial-fill", section: "Initial entry", title: "What should OMS do after a partial first-entry fill?",
+      id: "initial-partial-fill", section: "Initial entry", title: "How should OMS handle a partial first fill?",
       description: "The broker may fill only part of the approved quantity. This choice applies only to the reconciled remainder and never recreates already filled shares.",
       guide: "OMS reads broker-confirmed cumulative fills before any cancel or replace action, preventing an over-order during fast partial-fill events.",
       content: <GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceInitial({ ...initial, order_intent })} segment="partial-fill" value={initial.order_intent} />,
     },
     {
-      id: "initial-protection", section: "Initial entry", title: "Which broker-held protection should follow a first-entry fill?",
+      id: "initial-protection", section: "Initial entry", title: "Which protection follows the first fill?",
       description: "Protection is a separate order intent applied after confirmed fills. It remains independent of normal strategic exits.",
       guide: "Choose a published protection profile that defines stop slices, catastrophic backstop behavior, and any later trailing transition.",
       content: <GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceInitial({ ...initial, order_intent })} segment="protection" value={initial.order_intent} />,
@@ -1087,11 +1087,11 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, profile }: {
       content: <BooleanField help="Permit this ticker campaign to request another flat-to-open entry after a confirmed complete exit." label="Enable reentry" onChange={(enabled) => replaceReentry({ ...reentry, enabled })} value={reentry.enabled} />,
     },
     ...(reentry.enabled ? [{
-      id: "reentry-guardrails", section: "Reentry", title: "What prevents a reentry from happening too soon or too often?", description: "These campaign-level guardrails control evidence freshness, minimum waiting time, and the maximum number of successful reentries.", guide: "A rejected or unfilled request does not consume an attempt. Fresh confirmation prevents evidence from the prior entry from being silently reused.", content: <div className="guided-form-grid"><BooleanField help="Require confirmation evidence with a timestamp newer than the previous confirmed entry." label="Require fresh confirmation" onChange={(require_new_confirmation) => replaceReentry({ ...reentry, require_new_confirmation })} value={reentry.require_new_confirmation} /><NumberField help="Set the minimum elapsed time after a confirmed full exit before another reentry may become eligible." label="Cooldown" minimum={0} onChange={(cooldown_ms) => replaceReentry({ ...reentry, cooldown_ms })} step={100} unit="ms" value={reentry.cooldown_ms} /><NumberField help="Set the maximum number of confirmed reentry fills allowed during one ticker campaign." label="Maximum attempts" minimum={0} onChange={(maximum_attempts) => replaceReentry({ ...reentry, maximum_attempts })} step={1} unit="entries" value={reentry.maximum_attempts} /></div>,
+      id: "reentry-guardrails", section: "Reentry", title: "What limits reentry timing and frequency?", description: "These campaign-level guardrails control evidence freshness, minimum waiting time, and the maximum number of successful reentries.", guide: "A rejected or unfilled request does not consume an attempt. Fresh confirmation prevents evidence from the prior entry from being silently reused.", content: <div className="guided-form-grid"><BooleanField help="Require confirmation evidence with a timestamp newer than the previous confirmed entry." label="Require fresh confirmation" onChange={(require_new_confirmation) => replaceReentry({ ...reentry, require_new_confirmation })} value={reentry.require_new_confirmation} /><NumberField help="Set the minimum elapsed time after a confirmed full exit before another reentry may become eligible." label="Cooldown" minimum={0} onChange={(cooldown_ms) => replaceReentry({ ...reentry, cooldown_ms })} step={100} unit="ms" value={reentry.cooldown_ms} /><NumberField help="Set the maximum number of confirmed reentry fills allowed during one ticker campaign." label="Maximum attempts" minimum={0} onChange={(maximum_attempts) => replaceReentry({ ...reentry, maximum_attempts })} step={1} unit="entries" value={reentry.maximum_attempts} /></div>,
     }, {
       id: "reentry-capital", section: "Reentry", title: "How much capital should a reentry request?", description: "Choose only the reentry sizing method and amount. Reentry owns a request independent from the first entry.", guide: "Portfolio recalculates capacity from current synchronized account state; the previous position size is never reused automatically.", content: <GuidedCapitalRequestFields onChange={(capital_request) => replaceReentry({ ...reentry, capital_request })} segment="amount" value={reentry.capital_request} />,
     }, {
-      id: "reentry-priority", section: "Reentry", title: "How should a reentry compete for constrained capital?", description: "Set only its request priority and whether a replacement proposal is allowed.", guide: "These settings order or reshape proposals; they cannot bypass Portfolio risk, account, or protection limits.", content: <GuidedCapitalRequestFields onChange={(capital_request) => replaceReentry({ ...reentry, capital_request })} segment="priority" value={reentry.capital_request} />,
+      id: "reentry-priority", section: "Reentry", title: "How should reentry compete for capital?", description: "Set only its request priority and whether a replacement proposal is allowed.", guide: "These settings order or reshape proposals; they cannot bypass Portfolio risk, account, or protection limits.", content: <GuidedCapitalRequestFields onChange={(capital_request) => replaceReentry({ ...reentry, capital_request })} segment="priority" value={reentry.capital_request} />,
     }, {
       id: "reentry-execution", section: "Reentry", title: "How should OMS execute an approved reentry?", description: "Choose only the execution policy and deadline for the new approved quantity.", guide: "A reentry may use a different pace from the first entry, but OMS still stays inside the same broker and quote-freshness safety contracts.", content: <GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceReentry({ ...reentry, order_intent })} segment="execution" value={reentry.order_intent} />,
     }, {
@@ -2805,7 +2805,8 @@ function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: A
 }
 
 function RevisionBadge({ approved }: { approved: Revision | null }) {
-  return <div className="configuration-revision-badge" data-approved={approved ? "true" : "false"}><small>Runtime authority</small><strong>{approved ? `Release ${approved.revision}` : "Not published"}</strong><span>{approved ? approved.label : "Replay is gated"}</span></div>;
+  const Icon = approved ? BadgeCheck : LockKeyhole;
+  return <div className="configuration-revision-badge" data-approved={approved ? "true" : "false"}><span className="configuration-revision-icon"><Icon aria-hidden="true" size={16} /></span><span className="configuration-revision-copy"><small>Runtime authority</small><strong>{approved ? `Release ${approved.revision}` : "Draft only"}</strong><span>{approved ? approved.label : "Publish to activate"}</span></span></div>;
 }
 
 function RevisionPublisher({ approved, draft, guided = false, label, onLabelChange, onPublish, publishing, revisions }: {

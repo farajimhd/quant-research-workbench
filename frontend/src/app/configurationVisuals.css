@@ -1669,3 +1669,54 @@
 @media (max-width: 1100px) {
   .shell-body > .main { grid-column: 1; }
 }
+
+/* v5: concise page copy and a visible publication-status authority. */
+.configuration-revision-badge {
+  align-items: center;
+  background: color-mix(in oklab, var(--warning) 8%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--warning) 34%, var(--border));
+  border-radius: 9px;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 176px;
+  padding: 8px 10px;
+}
+.configuration-revision-badge[data-approved="true"] {
+  background: color-mix(in oklab, var(--success) 8%, var(--surface));
+  border-color: color-mix(in oklab, var(--success) 34%, var(--border));
+}
+.configuration-revision-icon {
+  align-items: center;
+  background: color-mix(in oklab, var(--warning) 14%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--warning) 28%, var(--border));
+  border-radius: 7px;
+  color: var(--warning);
+  display: flex;
+  height: 30px;
+  justify-content: center;
+  width: 30px;
+}
+.configuration-revision-badge[data-approved="true"] .configuration-revision-icon {
+  background: color-mix(in oklab, var(--success) 14%, var(--surface));
+  border-color: color-mix(in oklab, var(--success) 28%, var(--border));
+  color: var(--success);
+}
+.configuration-revision-copy { display: grid; gap: 1px; min-width: 0; }
+.configuration-revision-copy small {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.configuration-revision-copy strong { color: var(--foreground); font-size: 12.5px; font-weight: 700; line-height: 1.2; }
+.configuration-revision-copy > span { color: var(--muted-foreground); font-size: 9.5px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (min-width: 1301px) {
+  .configuration-page-heading p,
+  .configuration-studio-home h2,
+  .configuration-studio-home > header p { max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .configuration-studio-home > header > div:first-child { flex: 1 1 auto; max-width: none; min-width: 0; }
+}
