@@ -54,6 +54,7 @@ class BarGPTExample:
     origin_indices: torch.Tensor
     asof_indices: dict[str, torch.Tensor]
     target_support: torch.Tensor
+    target_share_factors: torch.Tensor
     support_origin_indices: torch.Tensor
     horizons_us: tuple[int, ...]
     base_timeframe_us: int
@@ -70,6 +71,7 @@ class BarGPTBatch:
     autoregressive_mask: dict[str, torch.Tensor]
     target_support: torch.Tensor
     target_support_lengths: torch.Tensor
+    target_share_factors: torch.Tensor
     support_origin_indices: torch.Tensor
     horizons_us: tuple[int, ...]
     base_timeframe_us: int
@@ -89,6 +91,7 @@ class BarGPTBatch:
         support_length_values = self.target_support_lengths.tolist()
         origin_count_values = self.origin_mask.sum(dim=1).tolist()
         support = self.target_support.to(device, non_blocking=non_blocking)
+        share_factors = self.target_share_factors.to(device, non_blocking=non_blocking)
         support_lengths = self.target_support_lengths.to(device, non_blocking=non_blocking)
         support_origins = self.support_origin_indices.to(device, non_blocking=non_blocking)
         built = [
@@ -97,6 +100,7 @@ class BarGPTBatch:
                 support_origins[row, : int(origin_count_values[row])],
                 torch.as_tensor(self.horizons_us, dtype=torch.long, device=support.device),
                 base_timeframe_us=self.base_timeframe_us,
+                share_factors=share_factors[row, : int(support_length_values[row])],
             )
             for row in range(support.shape[0])
         ]
@@ -109,6 +113,7 @@ class BarGPTBatch:
             autoregressive_mask=move_map(self.autoregressive_mask),
             target_support=support,
             target_support_lengths=support_lengths,
+            target_share_factors=share_factors,
             support_origin_indices=support_origins,
             horizons_us=self.horizons_us,
             base_timeframe_us=self.base_timeframe_us,
@@ -172,6 +177,7 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
         autoregressive_mask=ar_masks,
         target_support=_pad_first_dimension([example.target_support for example in examples]),
         target_support_lengths=torch.as_tensor([example.target_support.shape[0] for example in examples], dtype=torch.long),
+        target_share_factors=_pad_first_dimension([example.target_share_factors for example in examples], fill=1.0),
         support_origin_indices=_pad_first_dimension([example.support_origin_indices for example in examples], fill=0),
         horizons_us=examples[0].horizons_us,
         base_timeframe_us=examples[0].base_timeframe_us,

@@ -25,28 +25,11 @@ BAR_GPT_COHORT_2TB_SHA256 = hashlib.sha256(
 ).hexdigest()
 BAR_GPT_COHORT_2TB_TABLE = "bar_gpt_1s_bars_v1_cohort_2tb"
 BAR_GPT_COHORT_2TB_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v1_cohort_2tb"
-BAR_GPT_DAILY_BOOTSTRAP_TABLE = "bar_gpt_daily_context_v1_massive_unadjusted"
-BAR_GPT_DAILY_BOOTSTRAP_MANIFEST_TABLE = "bar_gpt_daily_context_manifest_v1_massive_unadjusted"
+BAR_GPT_SOURCE_ALIAS_TICKERS: tuple[str, ...] = ("FB",)
+BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v1_identity_aliases"
+BAR_GPT_IDENTITY_QUARANTINE: tuple[str, ...] = ("GOOGL", "MOGO")
+BAR_GPT_TRAINING_TICKERS: tuple[str, ...] = tuple(
+    ticker for ticker in BAR_GPT_COHORT_2TB if ticker not in BAR_GPT_IDENTITY_QUARANTINE
+)
 BAR_GPT_SIP_DAILY_SESSION_TABLE = "daily_session_bars_by_symbol_time_v1"
 BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE = "daily_session_bars_manifest_v1"
-
-# Split-adjusted v2 authorities.  The v1 tables remain immutable evidence; these
-# names deliberately require an explicit cutover after certification.
-BAR_GPT_ADJUSTED_DAILY_TABLE = "bar_gpt_daily_sessions_v2_massive_adjusted"
-BAR_GPT_ADJUSTED_DAILY_MANIFEST_TABLE = "bar_gpt_daily_sessions_manifest_v2_massive_adjusted"
-BAR_GPT_ADJUSTED_SIP_DAILY_TABLE = "bar_gpt_daily_sessions_v3_sip_adjusted"
-BAR_GPT_ADJUSTED_SIP_DAILY_MANIFEST_TABLE = "bar_gpt_daily_sessions_manifest_v3_sip_adjusted"
-BAR_GPT_ADJUSTED_1S_TABLE = "bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted"
-BAR_GPT_ADJUSTED_1S_MANIFEST_TABLE = "bar_gpt_1s_adjustment_manifest_v2_cohort_2tb"
-BAR_GPT_SPLIT_FACTOR_TABLE = "bar_gpt_split_factors_v2_cohort_2tb"
-
-# Reviewed provider-ticker validity chains for canonical cohort identities.
-# Bounds are [start, end).  This is intentionally explicit: ticker strings can
-# be reused by unrelated securities (META was an ETF before Facebook adopted
-# the symbol), so an unbounded rename is not an identity authority.
-BAR_GPT_REVIEWED_TICKER_CHAINS: dict[str, tuple[tuple[str, str, str], ...]] = {
-    "META": (
-        ("FB", "2017-01-01", "2022-06-09"),
-        ("META", "2022-06-09", "9999-12-31"),
-    ),
-}

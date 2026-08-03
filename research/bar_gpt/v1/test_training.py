@@ -56,7 +56,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_session_rollup_and_targets_are_causal_and_nonredundant(self) -> None:
         examples = list(build_session_examples(
-            ticker="AAA", local_date="2026-01-02", session=session_view(), calendar_views={}, config=self.data_config()
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=self.data_config()
         ))
         self.assertGreater(len(examples), 1)
         first = examples[0]
@@ -68,7 +69,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_collated_batch_runs_complete_mixed_objective(self) -> None:
         examples = list(build_session_examples(
-            ticker="AAA", local_date="2026-01-02", session=session_view(), calendar_views={}, config=self.data_config()
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=self.data_config()
         ))[:2]
         batch = collate_examples(examples).to("cpu")
         self.assertEqual(batch.horizon_targets.shape, (2, 3, 2, 14))
@@ -93,7 +95,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(held_out_tickers(tickers, 0.2, 17), held_out_tickers(tickers, 0.2, 17))
         self.assertEqual(len(held_out_tickers(tickers, 0.2, 17)), 4)
         examples = list(build_session_examples(
-            ticker="AAA", local_date="2026-01-02", session=session_view(), calendar_views={}, config=self.data_config()
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=self.data_config()
         ))
         for index, example in enumerate(examples):
             example.activity_regime = index % 3
@@ -109,16 +112,20 @@ class LoaderTrainerContractTest(unittest.TestCase):
             def query_tsv(self, query: str) -> str:
                 if "system.tables" in query:
                     if "q_live" in query:
-                        return "id_symbol_interval_v1\nmarket_ticker_event_entity_v1\n"
+                        return (
+                            "id_symbol_interval_v1\nmarket_ticker_event_entity_v1\nmarket_ticker_event_v1\n"
+                            "market_stock_split_v1\n"
+                        )
                     return (
-                        "bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted\n"
-                        "bar_gpt_1s_adjustment_manifest_v2_cohort_2tb\n"
-                        "bar_gpt_daily_sessions_v3_sip_adjusted\n"
-                        "bar_gpt_daily_sessions_manifest_v3_sip_adjusted\n"
+                        "bar_gpt_1s_bars_v1_cohort_2tb\n"
+                        "bar_gpt_1s_build_manifest_v1_cohort_2tb\n"
+                        "bar_gpt_1s_build_manifest_v1_identity_aliases\n"
+                        "daily_session_bars_by_symbol_time_v1\n"
+                        "daily_session_bars_manifest_v1\n"
                     )
                 if "system.columns" in query:
                     return "local_date\n"
-                if "daily_sessions_manifest_v3" in query:
+                if "daily_session_bars_manifest_v1" in query:
                     return "2019-01-01\t2020-03-01\n"
                 return self.messages
 

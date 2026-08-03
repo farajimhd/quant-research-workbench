@@ -23,7 +23,10 @@ from research.bar_gpt.v1.cohort import (
     BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
     BAR_GPT_COHORT_2TB_SHA256,
     BAR_GPT_COHORT_2TB_TABLE,
-    BAR_GPT_ADJUSTED_1S_TABLE,
+    BAR_GPT_IDENTITY_QUARANTINE,
+    BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE,
+    BAR_GPT_SOURCE_ALIAS_TICKERS,
+    BAR_GPT_TRAINING_TICKERS,
 )
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig
 from research.bar_gpt.v1.data import BarView, causal_asof_indices, densify_one_second_view, horizon_target_indices, rollup_intraday_view
@@ -40,6 +43,7 @@ from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES, build_physical_horizon_targets
 from research.bar_gpt.v1.run_build_1s import main as launcher_main
 from research.bar_gpt.v1.run_build_1s import parse_args as parse_launcher_args
+from research.bar_gpt.v1.run_build_1s_aliases import parse_args as parse_alias_launcher_args
 
 
 def builder_args() -> argparse.Namespace:
@@ -69,11 +73,20 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertEqual(tuple(args.tickers.split(",")), BAR_GPT_COHORT_2TB)
         self.assertEqual(args.target_table, BAR_GPT_COHORT_2TB_TABLE)
         self.assertEqual(args.manifest_table, BAR_GPT_COHORT_2TB_MANIFEST_TABLE)
-        self.assertEqual(DataConfig().one_second_table, BAR_GPT_ADJUSTED_1S_TABLE)
+        self.assertEqual(DataConfig().one_second_table, BAR_GPT_COHORT_2TB_TABLE)
+        self.assertEqual(DataConfig().tickers, BAR_GPT_TRAINING_TICKERS)
+        self.assertEqual(BAR_GPT_IDENTITY_QUARANTINE, ("GOOGL", "MOGO"))
 
     def test_custom_tickers_cannot_contaminate_canonical_tables(self) -> None:
         with self.assertRaisesRegex(SystemExit, "Custom --tickers require custom"):
             launcher_main(["--tickers", "AAPL"])
+
+    def test_alias_builder_has_separate_manifest_and_raw_source_tickers(self) -> None:
+        args, extra = parse_alias_launcher_args([])
+        self.assertFalse(extra)
+        self.assertEqual(args.start_date, "2019-01-01")
+        self.assertEqual(BAR_GPT_SOURCE_ALIAS_TICKERS, ("FB",))
+        self.assertEqual(DataConfig().alias_manifest_table, BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE)
 
     def test_metadata_queries_use_unescaped_tsv(self) -> None:
         class FakeClient:
@@ -126,7 +139,7 @@ class BuilderSqlTest(unittest.TestCase):
             start_date="2026-07-01",
             end_date="2026-08-01",
         )
-        self.assertIn("PREWHERE ticker = 'AAPL'", sql)
+        self.assertIn("ticker = 'AAPL'", sql)
         self.assertIn("ORDER BY ticker, local_date, bucket_index", sql)
         self.assertTrue(sql.strip().endswith("FORMAT ArrowStream"))
         daily_sql = daily_range_query(

@@ -14,14 +14,12 @@ from pipelines.market_sip.events.clickhouse_build_daily_session_bars import (
     SessionBuildReporter,
 )
 from pipelines.market_sip.events.session_bar_contract import FEATURE_NAMES, session_table_columns
-from research.bar_gpt.v1.build_daily_sessions_from_adjusted_1s import insert_sql as adjusted_rollup_sql
 
 
 def args(**overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "database": "market_sip_compact",
         "events_table_base": "events",
-        "source_table": "bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted",
         "target_table": "daily_session_bars_by_symbol_time_v1",
         "identity_database": "q_live",
         "symbol_interval_table": "id_symbol_interval_v1",
@@ -59,16 +57,6 @@ class DailySessionContractTest(unittest.TestCase):
         self.assertIn("argMax(provider_entity_key", sql)
         self.assertIn("ambiguous_source_ticker", sql)
         self.assertEqual(sql.count("FROM `market_sip_compact`.`events_2026`"), 1)
-
-    def test_model_daily_rollup_uses_adjusted_one_second_authority(self) -> None:
-        sql = adjusted_rollup_sql(args(target_table="bar_gpt_daily_sessions_v3_sip_adjusted"), dt.date(2026, 7, 1), dt.date(2026, 8, 1))
-        self.assertIn("bar_gpt_1s_bars_v2_cohort_2tb_split_adjusted", sql)
-        self.assertIn("bar_gpt_1s_split_adjusted_v2_rollup", sql)
-        self.assertIn("toUInt8(1) AS adjusted", sql)
-        self.assertIn("any(split_schedule_sha256)", sql)
-        self.assertIn("any(adjustment_asof_date)", sql)
-        self.assertIn("ASOF LEFT JOIN identity_starts", sql)
-        self.assertIn("ambiguous_source_ticker", sql)
 
     def test_compact_terminal_retains_state_progress_and_evidence(self) -> None:
         reporter = SessionBuildReporter(

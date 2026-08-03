@@ -5,11 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from research.bar_gpt.v1.cohort import (
-    BAR_GPT_COHORT_2TB,
-    BAR_GPT_ADJUSTED_1S_TABLE,
-    BAR_GPT_ADJUSTED_1S_MANIFEST_TABLE,
-    BAR_GPT_ADJUSTED_SIP_DAILY_TABLE,
-    BAR_GPT_ADJUSTED_SIP_DAILY_MANIFEST_TABLE,
+    BAR_GPT_TRAINING_TICKERS,
+    BAR_GPT_COHORT_2TB_TABLE,
+    BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
+    BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE,
+    BAR_GPT_SIP_DAILY_SESSION_TABLE,
+    BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE,
 )
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES
@@ -68,18 +69,22 @@ class BarGPTConfig:
 @dataclass(slots=True)
 class DataConfig:
     database: str = "market_sip_compact"
-    one_second_table: str = BAR_GPT_ADJUSTED_1S_TABLE
-    manifest_table: str = BAR_GPT_ADJUSTED_1S_MANIFEST_TABLE
-    daily_table: str = BAR_GPT_ADJUSTED_SIP_DAILY_TABLE
-    daily_manifest_table: str = BAR_GPT_ADJUSTED_SIP_DAILY_MANIFEST_TABLE
+    one_second_table: str = BAR_GPT_COHORT_2TB_TABLE
+    manifest_table: str = BAR_GPT_COHORT_2TB_MANIFEST_TABLE
+    alias_manifest_table: str = BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE
+    daily_table: str = BAR_GPT_SIP_DAILY_SESSION_TABLE
+    daily_manifest_table: str = BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE
     identity_database: str = "q_live"
     identity_interval_table: str = "id_symbol_interval_v1"
     identity_entity_table: str = "market_ticker_event_entity_v1"
+    identity_event_table: str = "market_ticker_event_v1"
+    split_database: str = "q_live"
+    split_table: str = "market_stock_split_v1"
     base_timeframe_us: int = 1_000_000
     intraday_timeframes_us: tuple[int, ...] = INTRADAY_TIMEFRAMES_US
     calendar_timeframes: tuple[str, ...] = CALENDAR_TIMEFRAMES
     horizons_us: tuple[int, ...] = DEFAULT_HORIZONS_US
-    tickers: tuple[str, ...] = BAR_GPT_COHORT_2TB
+    tickers: tuple[str, ...] = BAR_GPT_TRAINING_TICKERS
     start_date: str = "2020-01-01"
     end_date: str = "2027-01-01"
     validation_start_date: str = "2026-01-01"
@@ -107,6 +112,8 @@ class DataConfig:
         return (self.maximum_target_horizon_us + self.base_timeframe_us - 1) // self.base_timeframe_us
 
     def validate(self) -> None:
+        if "split_adjusted" in self.one_second_table or self.daily_table.endswith("_adjusted"):
+            raise ValueError("globally adjusted bar authorities are retired; use raw bars with causal split metadata")
         if len(self.tickers) < 2:
             raise ValueError("at least two tickers are required for disjoint train/validation populations")
         if not self.horizons_us:

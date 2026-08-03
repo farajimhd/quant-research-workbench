@@ -11,7 +11,6 @@ from urllib.parse import urlsplit
 
 import torch
 
-from research.bar_gpt.v1.cohort import BAR_GPT_COHORT_2TB
 from research.bar_gpt.v1.config import DataConfig
 from research.bar_gpt.v1.loader import BarGPTIterableDataset, ClickHouseBarStreamConfig, make_dataloader
 from research.bar_gpt.v1.train import preflight
@@ -61,15 +60,19 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--split", choices=("train", "validation"), default="train")
     parser.add_argument("--start-date", default="2025-10-01")
     parser.add_argument("--end-date", default="2026-01-01")
-    parser.add_argument("--tickers", default=",".join(BAR_GPT_COHORT_2TB))
+    parser.add_argument("--tickers", default=",".join(defaults.tickers))
     parser.add_argument("--database", default=defaults.database)
     parser.add_argument("--one-second-table", default=defaults.one_second_table)
     parser.add_argument("--manifest-table", default=defaults.manifest_table)
+    parser.add_argument("--alias-manifest-table", default=defaults.alias_manifest_table)
     parser.add_argument("--daily-table", default=defaults.daily_table)
     parser.add_argument("--daily-manifest-table", default=defaults.daily_manifest_table)
     parser.add_argument("--identity-database", default=defaults.identity_database)
     parser.add_argument("--identity-interval-table", default=defaults.identity_interval_table)
     parser.add_argument("--identity-entity-table", default=defaults.identity_entity_table)
+    parser.add_argument("--identity-event-table", default=defaults.identity_event_table)
+    parser.add_argument("--split-database", default=defaults.split_database)
+    parser.add_argument("--split-table", default=defaults.split_table)
     parser.add_argument("--validation-ticker-fraction", type=float, default=defaults.validation_ticker_fraction)
     parser.add_argument("--context-bars-1s", type=int, default=defaults.context_bars_1s)
     parser.add_argument("--origin-bars-1s", type=int, default=defaults.origin_bars_1s)
@@ -203,11 +206,15 @@ def _make_data_config(args: argparse.Namespace) -> DataConfig:
         database=str(args.database),
         one_second_table=str(args.one_second_table),
         manifest_table=str(args.manifest_table),
+        alias_manifest_table=str(args.alias_manifest_table),
         daily_table=str(args.daily_table),
         daily_manifest_table=str(args.daily_manifest_table),
         identity_database=str(args.identity_database),
         identity_interval_table=str(args.identity_interval_table),
         identity_entity_table=str(args.identity_entity_table),
+        identity_event_table=str(args.identity_event_table),
+        split_database=str(args.split_database),
+        split_table=str(args.split_table),
         daily_history_start_date="2019-01-01",
         tickers=_csv(args.tickers),
         start_date=str(args.start_date),

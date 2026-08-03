@@ -19,6 +19,12 @@ import torch
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 from research.bar_gpt.v1.config import DataConfig
+from research.bar_gpt.v1.corporate_actions import (
+    SplitAction,
+    cumulative_share_factors,
+    normalize_features_to_anchor,
+    split_execution_dates,
+)
 from research.bar_gpt.v1.data import (
     PATHWAY_ID_BY_NAME,
     TIMEFRAME_US_BY_NAME,
@@ -47,17 +53,71 @@ class ClickHouseBarStreamConfig:
     max_memory_usage: int = 8 * 1024**3
 
 
+@dataclass(frozen=True, slots=True)
+class TickerInterval:
+    canonical_ticker: str
+    source_ticker: str
+    valid_from: str
+    valid_to_exclusive: str
+
+
+def provider_timeline_intervals(
+    canonical_ticker: str,
+    rows: list[tuple[str, str, str]],
+    *,
+    coverage_start: str,
+) -> tuple[TickerInterval, ...]:
+    canonical = canonical_ticker.upper()
+    if len({row[0] for row in rows}) != 1:
+        return ()
+    events_by_date: dict[str, set[str]] = {}
+    for _entity_key, event_date, source in rows:
+        if event_date and source:
+            events_by_date.setdefault(event_date, set()).add(source.upper())
+    if any(len(sources) != 1 for sources in events_by_date.values()):
+        raise RuntimeError(f"conflicting provider ticker events for {canonical}")
+    timeline = sorted((day, next(iter(sources))) for day, sources in events_by_date.items())
+    if not timeline:
+        timeline = [(coverage_start, canonical)]
+    if timeline[-1][1] != canonical:
+        raise RuntimeError(f"provider ticker timeline for {canonical} ends at {timeline[-1][1]}")
+    return tuple(
+        TickerInterval(
+            canonical,
+            source,
+            left,
+            timeline[index + 1][0] if index + 1 < len(timeline) else "9999-12-31",
+        )
+        for index, (left, source) in enumerate(timeline)
+    )
+
+
 def ticker_range_query(
     config: ClickHouseBarStreamConfig,
     *,
     ticker: str,
     start_date: str,
     end_date: str,
+    source_intervals: tuple[TickerInterval, ...] = (),
 ) -> str:
+    intervals = source_intervals or (
+        TickerInterval(ticker.upper(), ticker.upper(), start_date, end_date),
+    )
+    predicates = []
+    for interval in intervals:
+        left = max(start_date, interval.valid_from)
+        right = min(end_date, interval.valid_to_exclusive)
+        if left < right:
+            predicates.append(
+                f"(ticker = {sql_string(interval.source_ticker)} AND "
+                f"local_date >= toDate({sql_string(left)}) AND local_date < toDate({sql_string(right)}))"
+            )
+    if not predicates:
+        raise ValueError(f"no point-in-time source interval covers {ticker} in [{start_date},{end_date})")
     columns = ",\n    ".join(
         (
             "local_date",
-            "ticker",
+            f"{sql_string(ticker.upper())} AS ticker",
             "bar_start_us",
             "bar_end_us",
             "available_at_us",
@@ -68,14 +128,85 @@ def ticker_range_query(
 SELECT
     {columns}
 FROM {quote_ident(config.database)}.{quote_ident(config.table)}
-PREWHERE ticker = {sql_string(ticker.upper())}
-  AND local_date >= toDate({sql_string(start_date)})
-  AND local_date < toDate({sql_string(end_date)})
+PREWHERE {' OR '.join(predicates)}
 ORDER BY ticker, local_date, bucket_index
 SETTINGS
     max_threads = {max(1, int(config.max_threads))},
     max_block_size = {max(1, int(config.max_block_size))},
     max_memory_usage = {max(1, int(config.max_memory_usage))}
+FORMAT ArrowStream
+"""
+
+
+def identity_intervals_query(
+    *,
+    tickers: tuple[str, ...],
+    identity_database: str,
+    interval_table: str,
+    entity_table: str,
+) -> str:
+    selected = ", ".join(sql_string(ticker.upper()) for ticker in tickers)
+    return f"""
+SELECT upper(e.current_ticker) AS canonical_ticker,
+       upper(i.ticker_normalized) AS source_ticker,
+       toString(i.valid_from_date) AS valid_from,
+       toString(ifNull(i.valid_to_date_exclusive, toDate('9999-12-31'))) AS valid_to_exclusive
+FROM (SELECT provider_entity_key,current_ticker
+      FROM {quote_ident(identity_database)}.{quote_ident(entity_table)} FINAL
+      WHERE is_deleted=0 AND upper(current_ticker) IN ({selected})) AS e
+INNER JOIN (SELECT provider_entity_key,ticker_normalized,valid_from_date,valid_to_date_exclusive
+            FROM {quote_ident(identity_database)}.{quote_ident(interval_table)} FINAL
+            WHERE is_deleted=0 AND mapping_status='mapped') AS i USING provider_entity_key
+ORDER BY canonical_ticker, valid_from, source_ticker
+FORMAT ArrowStream
+"""
+
+
+def split_actions_query(
+    *,
+    source_tickers: tuple[str, ...],
+    start_date: str,
+    end_date: str,
+    split_database: str,
+    split_table: str,
+) -> str:
+    selected = ", ".join(sql_string(ticker.upper()) for ticker in source_tickers)
+    return f"""
+SELECT DISTINCT upper(s.provider_ticker) AS source_ticker,
+       toString(s.execution_date) AS execution_date,
+       toFloat64(s.split_from) AS split_from,
+       toFloat64(s.split_to) AS split_to
+FROM {quote_ident(split_database)}.{quote_ident(split_table)} AS s FINAL
+WHERE upper(s.provider_ticker) IN ({selected})
+  AND s.execution_date >= toDate({sql_string(start_date)})
+  AND s.execution_date < toDate({sql_string(end_date)})
+  AND s.split_from > 0 AND s.split_to > 0 AND s.split_from != s.split_to
+ORDER BY source_ticker, execution_date, split_from, split_to
+FORMAT ArrowStream
+"""
+
+
+def provider_ticker_intervals_query(
+    *,
+    tickers: tuple[str, ...],
+    identity_database: str,
+    entity_table: str,
+    event_table: str,
+) -> str:
+    selected = ", ".join(sql_string(ticker.upper()) for ticker in tickers)
+    return f"""
+SELECT upper(e.current_ticker) AS canonical_ticker,
+       e.provider_entity_key,
+       ifNull(toString(v.event_date), '') AS event_date,
+       upper(ifNull(v.ticker, '')) AS source_ticker
+FROM (SELECT provider_entity_key,current_ticker
+      FROM {quote_ident(identity_database)}.{quote_ident(entity_table)} FINAL
+      WHERE is_deleted=0 AND upper(current_ticker) IN ({selected})) AS e
+LEFT JOIN (SELECT provider_entity_key,event_date,ticker
+           FROM {quote_ident(identity_database)}.{quote_ident(event_table)} FINAL
+           WHERE is_deleted=0) AS v USING provider_entity_key
+ORDER BY canonical_ticker, event_date, source_ticker
+SETTINGS join_use_nulls=1
 FORMAT ArrowStream
 """
 
@@ -224,9 +355,16 @@ class ArrowStreamClient:
         ticker: str,
         start_date: str,
         end_date: str,
+        source_intervals: tuple[TickerInterval, ...] = (),
         device: torch.device | str = "cpu",
     ) -> Iterator[tuple[str, BarView]]:
-        query = ticker_range_query(self.config, ticker=ticker, start_date=start_date, end_date=end_date)
+        query = ticker_range_query(
+            self.config,
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            source_intervals=source_intervals,
+        )
         current_date = ""
         current_frames: list[pl.DataFrame] = []
         with self.record_batches(query) as batches:
@@ -344,6 +482,142 @@ class ArrowStreamClient:
                 if not frame.is_empty():
                     values.update(str(value).upper() for value in frame["ticker"].to_list())
         return frozenset(values)
+
+    def read_identity_intervals(
+        self,
+        tickers: tuple[str, ...],
+        *,
+        identity_database: str,
+        interval_table: str,
+        entity_table: str,
+        event_table: str = "market_ticker_event_v1",
+        coverage_start: str = "0001-01-01",
+    ) -> dict[str, tuple[TickerInterval, ...]]:
+        if not tickers:
+            return {}
+        query = identity_intervals_query(
+            tickers=tickers,
+            identity_database=identity_database,
+            interval_table=interval_table,
+            entity_table=entity_table,
+        )
+        values: dict[str, list[TickerInterval]] = {ticker.upper(): [] for ticker in tickers}
+        with self.record_batches(query) as batches:
+            for batch in batches:
+                frame = pl.from_arrow(batch)
+                for row in frame.iter_rows(named=True):
+                    interval = TickerInterval(
+                        canonical_ticker=str(row["canonical_ticker"]).upper(),
+                        source_ticker=str(row["source_ticker"]).upper(),
+                        valid_from=str(row["valid_from"]),
+                        valid_to_exclusive=str(row["valid_to_exclusive"]),
+                    )
+                    values.setdefault(interval.canonical_ticker, []).append(interval)
+        missing = tuple(sorted(ticker.upper() for ticker in tickers if not values.get(ticker.upper())))
+        if missing:
+            fallback_query = provider_ticker_intervals_query(
+                tickers=missing,
+                identity_database=identity_database,
+                entity_table=entity_table,
+                event_table=event_table,
+            )
+            provider_rows: dict[str, list[tuple[str, str, str]]] = {}
+            with self.record_batches(fallback_query) as batches:
+                for batch in batches:
+                    frame = pl.from_arrow(batch)
+                    for row in frame.iter_rows(named=True):
+                        canonical = str(row["canonical_ticker"]).upper()
+                        provider_rows.setdefault(canonical, []).append(
+                            (str(row["provider_entity_key"]), str(row["event_date"]), str(row["source_ticker"]).upper())
+                        )
+            for canonical in missing:
+                rows = provider_rows.get(canonical, [])
+                values[canonical].extend(
+                    provider_timeline_intervals(canonical, rows, coverage_start=coverage_start)
+                )
+
+        result: dict[str, tuple[TickerInterval, ...]] = {}
+        missing_final: list[str] = []
+        for ticker in tickers:
+            canonical = ticker.upper()
+            intervals = sorted(values.get(canonical, []), key=lambda item: (item.valid_from, item.source_ticker))
+            if not intervals:
+                missing_final.append(canonical)
+                continue
+            if intervals[0].source_ticker == canonical and intervals[0].valid_from > coverage_start:
+                first = intervals[0]
+                intervals[0] = TickerInterval(canonical, canonical, coverage_start, first.valid_to_exclusive)
+            for previous, current in zip(intervals, intervals[1:]):
+                if previous.valid_to_exclusive > current.valid_from:
+                    raise RuntimeError(f"overlapping point-in-time ticker intervals for {canonical}")
+            result[canonical] = tuple(intervals)
+        if missing_final:
+            raise RuntimeError(f"missing point-in-time identity intervals for canonical tickers: {','.join(missing_final)}")
+        return result
+
+    def read_split_actions(
+        self,
+        intervals_by_ticker: Mapping[str, tuple[TickerInterval, ...]],
+        *,
+        start_date: str,
+        end_date: str,
+        split_database: str,
+        split_table: str,
+    ) -> dict[str, tuple[SplitAction, ...]]:
+        source_tickers = tuple(sorted({item.source_ticker for values in intervals_by_ticker.values() for item in values}))
+        if not source_tickers:
+            return {ticker: () for ticker in intervals_by_ticker}
+        source_map: dict[str, list[TickerInterval]] = {}
+        for values in intervals_by_ticker.values():
+            for interval in values:
+                source_map.setdefault(interval.source_ticker, []).append(interval)
+        query = split_actions_query(
+            source_tickers=source_tickers,
+            start_date=start_date,
+            end_date=end_date,
+            split_database=split_database,
+            split_table=split_table,
+        )
+        records: dict[tuple[str, str], set[tuple[float, str]]] = {}
+        with self.record_batches(query) as batches:
+            for batch in batches:
+                frame = pl.from_arrow(batch)
+                for row in frame.iter_rows(named=True):
+                    source = str(row["source_ticker"]).upper()
+                    execution_date = str(row["execution_date"])
+                    matches = [
+                        item
+                        for item in source_map.get(source, [])
+                        if item.valid_from <= execution_date < item.valid_to_exclusive
+                    ]
+                    canonical = sorted({item.canonical_ticker for item in matches})
+                    if len(canonical) != 1:
+                        raise RuntimeError(
+                            f"split identity is not unique for {source} on {execution_date}: {canonical or 'unmapped'}"
+                        )
+                    factor = float(row["split_to"]) / float(row["split_from"])
+                    records.setdefault((canonical[0], execution_date), set()).add((factor, source))
+        result: dict[str, list[SplitAction]] = {ticker: [] for ticker in intervals_by_ticker}
+        timezone = ZoneInfo(SESSION_TIMEZONE)
+        for (canonical, execution_date), values in sorted(records.items()):
+            factors = {round(item[0], 12) for item in values}
+            if len(factors) != 1:
+                raise RuntimeError(f"conflicting split ratios for {canonical} on {execution_date}: {sorted(factors)}")
+            day = dt.date.fromisoformat(execution_date)
+            effective = dt.datetime.combine(
+                day,
+                dt.time(hour=SESSION_START_SECOND // 3600),
+                tzinfo=timezone,
+            )
+            result[canonical].append(
+                SplitAction(
+                    effective_at_us=int(effective.timestamp() * 1_000_000),
+                    share_factor=next(iter(factors)),
+                    execution_date=execution_date,
+                    source_ticker=sorted(item[1] for item in values)[0],
+                )
+            )
+        return {ticker: tuple(values) for ticker, values in result.items()}
 
 
 def frame_to_dense_view(frame: pl.DataFrame, *, device: torch.device | str = "cpu") -> BarView:
@@ -512,7 +786,8 @@ def build_session_examples(
     ticker: str,
     local_date: str,
     session: BarView,
-    calendar_views: Mapping[str, BarView],
+    daily: tuple[list[str], BarView] | None,
+    split_actions: tuple[SplitAction, ...],
     config: DataConfig,
 ) -> Iterator[BarGPTExample]:
     """Yield non-overlapping origins while sharing one exact session rollup and target support."""
@@ -521,7 +796,24 @@ def build_session_examples(
     maximum_origin = session.features.shape[0] - right
     if maximum_origin - context < int(config.min_origins_per_block):
         return
-    full_views: dict[str, BarView] = {"1s": session}
+    session_anchor = int(session.available_at_us[-1])
+    normalized_session = BarView(
+        features=normalize_features_to_anchor(
+            session.features,
+            session.bar_start_us,
+            anchor_us=session_anchor,
+            actions=split_actions,
+        ),
+        bar_start_us=session.bar_start_us,
+        bar_end_us=session.bar_end_us,
+        available_at_us=session.available_at_us,
+    )
+    calendar_views = _calendar_views(
+        daily,
+        anchor_us=session_anchor,
+        split_actions=split_actions,
+    )
+    full_views: dict[str, BarView] = {"1s": normalized_session}
     scale_names = {
         5_000_000: "5s",
         30_000_000: "30s",
@@ -532,7 +824,7 @@ def build_session_examples(
     }
     for timeframe_us in config.intraday_timeframes_us:
         if int(timeframe_us) > int(config.base_timeframe_us):
-            full_views[scale_names[int(timeframe_us)]] = rollup_intraday_view(session, int(timeframe_us))
+            full_views[scale_names[int(timeframe_us)]] = rollup_intraday_view(normalized_session, int(timeframe_us))
     for origin_start in range(context, maximum_origin, int(config.origin_bars_1s)):
         origin_count = min(int(config.origin_bars_1s), maximum_origin - origin_start)
         if origin_count < int(config.min_origins_per_block):
@@ -541,7 +833,10 @@ def build_session_examples(
         input_end = origin_start + origin_count
         support_end = input_end + right
         support = session.features[input_start:support_end]
-        base_raw = session.features[input_start:input_end]
+        support_share_factors = cumulative_share_factors(
+            session.bar_start_us[input_start:support_end], split_actions
+        ).to(session.features.dtype)
+        base_raw = normalized_session.features[input_start:input_end]
         origins = torch.arange(context, context + origin_count, dtype=torch.long)
         anchors = session.available_at_us[input_start:input_end][origins]
         last_anchor = int(anchors[-1])
@@ -577,6 +872,7 @@ def build_session_examples(
             origin_indices=origins,
             asof_indices=asof,
             target_support=support,
+            target_share_factors=support_share_factors,
             support_origin_indices=origins,
             horizons_us=config.horizons_us,
             base_timeframe_us=config.base_timeframe_us,
@@ -584,13 +880,34 @@ def build_session_examples(
         )
 
 
-def _calendar_views(daily: tuple[list[str], BarView] | None) -> dict[str, BarView]:
+def _calendar_views(
+    daily: tuple[list[str], BarView] | None,
+    *,
+    anchor_us: int,
+    split_actions: tuple[SplitAction, ...],
+) -> dict[str, BarView]:
     if daily is None:
         return {}
     dates, daily_view = daily
-    result = {"1D": daily_view}
+    excluded = split_execution_dates(split_actions)
+    keep = torch.as_tensor([value not in excluded for value in dates], dtype=torch.bool, device=daily_view.features.device)
+    filtered_dates = [value for value in dates if value not in excluded]
+    if not filtered_dates:
+        return {}
+    normalized_daily = BarView(
+        features=normalize_features_to_anchor(
+            daily_view.features[keep],
+            daily_view.bar_start_us[keep],
+            anchor_us=anchor_us,
+            actions=split_actions,
+        ),
+        bar_start_us=daily_view.bar_start_us[keep],
+        bar_end_us=daily_view.bar_end_us[keep],
+        available_at_us=daily_view.available_at_us[keep],
+    )
+    result = {"1D": normalized_daily}
     for name in ("1W", "1MO"):
-        rolled = rollup_calendar_view(daily_view, calendar_period_ids(dates, name))
+        rolled = rollup_calendar_view(normalized_daily, calendar_period_ids(filtered_dates, name))
         # A final calendar group has no following period proving that it closed; omit it
         # rather than leaking an incomplete lifecycle week/month as a completed bar.
         if rolled.features.shape[0] > 0:
@@ -672,6 +989,21 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         daily_start = (dt.date.fromisoformat(start_date) - dt.timedelta(days=lookback_days)).isoformat()
         def raw_examples() -> Iterator[BarGPTExample]:
             tickers = tuple(self._tickers())
+            intervals_by_ticker = client.read_identity_intervals(
+                tickers,
+                identity_database=self.data_config.identity_database,
+                interval_table=self.data_config.identity_interval_table,
+                entity_table=self.data_config.identity_entity_table,
+                event_table=self.data_config.identity_event_table,
+                coverage_start=daily_start,
+            )
+            actions_by_ticker = client.read_split_actions(
+                intervals_by_ticker,
+                start_date=daily_start,
+                end_date=end_date,
+                split_database=self.data_config.split_database,
+                split_table=self.data_config.split_table,
+            )
             daily_by_ticker = client.read_daily_views(
                 tickers=tickers,
                 start_date=daily_start,
@@ -682,13 +1014,22 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                 identity_entity_table=self.data_config.identity_entity_table,
             ) if tickers else {}
             for ticker in tickers:
-                calendars = _calendar_views(daily_by_ticker.get(ticker))
-                for local_date, session in client.iter_session_views(ticker=ticker, start_date=start_date, end_date=end_date):
+                split_actions = actions_by_ticker.get(ticker, ())
+                excluded_dates = split_execution_dates(split_actions)
+                for local_date, session in client.iter_session_views(
+                    ticker=ticker,
+                    start_date=start_date,
+                    end_date=end_date,
+                    source_intervals=intervals_by_ticker[ticker],
+                ):
+                    if local_date in excluded_dates:
+                        continue
                     yield from build_session_examples(
                         ticker=ticker,
                         local_date=local_date,
                         session=session,
-                        calendar_views=calendars,
+                        daily=daily_by_ticker.get(ticker),
+                        split_actions=split_actions,
                         config=self.data_config,
                     )
         source = raw_examples()

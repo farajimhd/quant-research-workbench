@@ -22,7 +22,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.bar_gpt.v1 import MODEL_FAMILY, MODEL_VERSION
-from research.bar_gpt.v1.cohort import BAR_GPT_COHORT_2TB
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig, to_dict
 from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarGPTBatch, BarGPTExample, BarView, collate_examples
 from research.bar_gpt.v1.loader import (
@@ -76,11 +75,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database", default=data.database)
     parser.add_argument("--one-second-table", default=data.one_second_table)
     parser.add_argument("--manifest-table", default=data.manifest_table)
+    parser.add_argument("--alias-manifest-table", default=data.alias_manifest_table)
     parser.add_argument("--daily-table", default=data.daily_table)
     parser.add_argument("--daily-manifest-table", default=data.daily_manifest_table)
     parser.add_argument("--identity-database", default=data.identity_database)
     parser.add_argument("--identity-interval-table", default=data.identity_interval_table)
     parser.add_argument("--identity-entity-table", default=data.identity_entity_table)
+    parser.add_argument("--identity-event-table", default=data.identity_event_table)
+    parser.add_argument("--split-database", default=data.split_database)
+    parser.add_argument("--split-table", default=data.split_table)
     parser.add_argument("--tickers", default=",".join(data.tickers))
     parser.add_argument("--start-date", default=data.start_date)
     parser.add_argument("--end-date", default=data.end_date)
@@ -139,11 +142,15 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         database=str(args.database),
         one_second_table=str(args.one_second_table),
         manifest_table=str(args.manifest_table),
+        alias_manifest_table=str(args.alias_manifest_table),
         daily_table=str(args.daily_table),
         daily_manifest_table=str(args.daily_manifest_table),
         identity_database=str(args.identity_database),
         identity_interval_table=str(args.identity_interval_table),
         identity_entity_table=str(args.identity_entity_table),
+        identity_event_table=str(args.identity_event_table),
+        split_database=str(args.split_database),
+        split_table=str(args.split_table),
         tickers=_csv(args.tickers),
         start_date=str(args.start_date),
         end_date=str(args.end_date),
@@ -206,59 +213,72 @@ def preflight(client: ClickHouseHttpClient, config: DataConfig) -> dict[str, str
     tables = {row.split("\t")[0] for row in client.query_tsv(
         f"SELECT name FROM system.tables WHERE database = {sql_string(config.database)} FORMAT TSVRaw"
     ).splitlines() if row}
-    required = {config.one_second_table, config.manifest_table, config.daily_table, config.daily_manifest_table}
+    required = {
+        config.one_second_table,
+        config.manifest_table,
+        config.alias_manifest_table,
+        config.daily_table,
+        config.daily_manifest_table,
+    }
     missing = sorted(required - tables)
     if missing:
         raise RuntimeError(f"missing required ClickHouse tables in {config.database}: {missing}")
     identity_tables = {row.split("\t")[0] for row in client.query_tsv(
         f"SELECT name FROM system.tables WHERE database = {sql_string(config.identity_database)} FORMAT TSVRaw"
     ).splitlines() if row}
-    identity_required = {config.identity_interval_table, config.identity_entity_table}
+    identity_required = {
+        config.identity_interval_table,
+        config.identity_entity_table,
+        config.identity_event_table,
+    }
+    if config.split_database == config.identity_database:
+        identity_required.add(config.split_table)
     identity_missing = sorted(identity_required - identity_tables)
     if identity_missing:
         raise RuntimeError(f"missing required identity tables in {config.identity_database}: {identity_missing}")
-    manifest_columns = {row.split("\t")[0] for row in client.query_tsv(
-        f"SELECT name FROM system.columns WHERE database={sql_string(config.database)} "
-        f"AND table={sql_string(config.manifest_table)} FORMAT TSVRaw"
-    ).splitlines() if row}
-    intervals: list[tuple[str, str]] = []
-    if "local_date" in manifest_columns:
+    if config.split_database != config.identity_database:
+        split_tables = {row.split("\t")[0] for row in client.query_tsv(
+            f"SELECT name FROM system.tables WHERE database = {sql_string(config.split_database)} FORMAT TSVRaw"
+        ).splitlines() if row}
+        if config.split_table not in split_tables:
+            raise RuntimeError(f"missing split authority {config.split_database}.{config.split_table}")
+    def certified_raw_ranges(manifest_table: str) -> tuple[str, list[tuple[str, str]]]:
+        manifest_columns = {row.split("\t")[0] for row in client.query_tsv(
+            f"SELECT name FROM system.columns WHERE database={sql_string(config.database)} "
+            f"AND table={sql_string(manifest_table)} FORMAT TSVRaw"
+        ).splitlines() if row}
+        if "local_date" not in manifest_columns:
+            raise RuntimeError(f"{config.database}.{manifest_table} is not a raw one-second manifest")
         sql = f"""
 SELECT message
-FROM {quote_ident(config.database)}.{quote_ident(config.manifest_table)} FINAL
+FROM {quote_ident(config.database)}.{quote_ident(manifest_table)} FINAL
 WHERE artifact_name = {sql_string(config.one_second_table)} AND status = 'certified_range'
 ORDER BY local_date, unit_id
 FORMAT TSVRaw
 """
+        intervals: list[tuple[str, str]] = []
         for line in client.query_tsv(sql).splitlines():
-            match = re.search(r"certified range \[(\d{4}-\d{2}-\d{2}),(\d{4}-\d{2}-\d{2})\)", line)
+            match = re.search(r"certified (?:empty )?range \[(\d{4}-\d{2}-\d{2}),(\d{4}-\d{2}-\d{2})\)", line)
             if match:
                 intervals.append((match.group(1), match.group(2)))
-    elif "partition_month" in manifest_columns:
-        sql = f"""
-SELECT toString(min(partition_month)), toString(addMonths(max(partition_month), 1)),
-       uniqExact(tuple(adjustment_asof_date, schedule_sha256))
-FROM {quote_ident(config.database)}.{quote_ident(config.manifest_table)} FINAL
-WHERE artifact_name={sql_string(config.one_second_table)} AND status='certified'
-FORMAT TSVRaw
-"""
-        rows = [line.split("\t") for line in client.query_tsv(sql).splitlines() if line]
-        if rows and len(rows[0]) == 3 and int(rows[0][2] or 0) == 1:
-            intervals.append((rows[0][0], rows[0][1]))
-    if not intervals:
-        raise RuntimeError(f"{config.database}.{config.one_second_table} has no single-basis certified training range")
-    cursor = config.start_date
-    for start, end in sorted(intervals):
-        if end <= cursor or start > cursor:
-            continue
-        cursor = max(cursor, end)
-        if cursor >= config.end_date:
-            break
-    if cursor < config.end_date:
-        raise RuntimeError(
-            f"requested training range [{config.start_date},{config.end_date}) is not continuously certified; "
-            f"certified coverage reaches only {cursor}"
-        )
+        if not intervals:
+            raise RuntimeError(f"{config.database}.{manifest_table} has no certified raw training range")
+        cursor = config.start_date
+        for start, end in sorted(intervals):
+            if end <= cursor or start > cursor:
+                continue
+            cursor = max(cursor, end)
+            if cursor >= config.end_date:
+                break
+        if cursor < config.end_date:
+            raise RuntimeError(
+                f"requested training range [{config.start_date},{config.end_date}) is not continuously certified "
+                f"by {manifest_table}; certified coverage reaches only {cursor}"
+            )
+        return cursor, intervals
+
+    cursor, intervals = certified_raw_ranges(config.manifest_table)
+    alias_cursor, alias_intervals = certified_raw_ranges(config.alias_manifest_table)
     daily_sql = f"""
 SELECT chunk_start, chunk_end
 FROM {quote_ident(config.database)}.{quote_ident(config.daily_manifest_table)} FINAL
@@ -288,6 +308,8 @@ FORMAT TSVRaw
         "certified_start": config.start_date,
         "certified_end": cursor,
         "certified_ranges": str(len(intervals)),
+        "alias_certified_end": alias_cursor,
+        "alias_certified_ranges": str(len(alias_intervals)),
         "daily_certified_end": daily_cursor,
         "daily_certified_ranges": str(daily_ranges),
     }

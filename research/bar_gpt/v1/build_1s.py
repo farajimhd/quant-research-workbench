@@ -609,17 +609,34 @@ def certify_month(
     )
     audit_start = max(month_start, requested_start)
     audit_end = min(month_end, requested_end)
+    requested_tickers = _requested_tickers(args)
+    ticker_filter = (
+        "\n  AND upper(ticker) IN (" + ", ".join(sql_string(value) for value in requested_tickers) + ")"
+        if requested_tickers
+        else ""
+    )
     rows = _query_tsv(
         client,
         f"""
 SELECT count(), uniqExact(tuple(ticker, local_date, bucket_index)), countIf(available_at_us != bar_end_us), min(schema_version), max(schema_version), sum(source_event_count)
 FROM {quote_ident(args.database)}.{quote_ident(args.target_table)}
 WHERE local_date >= toDate({sql_string(audit_start.isoformat())})
-  AND local_date < toDate({sql_string(audit_end.isoformat())})
+  AND local_date < toDate({sql_string(audit_end.isoformat())}){ticker_filter}
 """,
     )
     total, unique, bad_availability, min_schema, max_schema, source_events = (int(value) for value in rows[0])
     if not planned_units:
+        insert_manifest(
+            client,
+            args,
+            day=month_start,
+            unit_id=f"__range__{audit_start.isoformat()}__{audit_end.isoformat()}",
+            status="certified_range",
+            ticker_count=0,
+            source_events=0,
+            output_rows=0,
+            message=f"certified empty range [{audit_start},{audit_end})",
+        )
         reporter.event("month_no_source", month=month, start=audit_start, end=audit_end)
         return
     unit_filter = ", ".join(

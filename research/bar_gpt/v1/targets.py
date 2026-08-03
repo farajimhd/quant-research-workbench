@@ -114,12 +114,20 @@ def build_physical_horizon_targets(
     horizons_us: torch.Tensor,
     *,
     base_timeframe_us: int = 1_000_000,
+    share_factors: torch.Tensor | None = None,
 ) -> HorizonTargets:
-    """Build all direct horizons from one dense support tensor without copied input windows."""
+    """Build direct horizons in each origin's share basis without copied windows."""
     if raw_one_second.ndim != 2 or origin_indices.ndim != 1 or horizons_us.ndim != 1:
         raise ValueError("expected raw [T,F], origins [N], and horizons [H]")
     if torch.any(horizons_us % int(base_timeframe_us) != 0):
         raise ValueError("physical horizons must be integral multiples of the base timeframe")
+    if share_factors is None:
+        share_factors = torch.ones(raw_one_second.shape[0], dtype=torch.float64, device=raw_one_second.device)
+    if share_factors.ndim != 1 or share_factors.shape[0] != raw_one_second.shape[0]:
+        raise ValueError("share_factors must align one-to-one with raw rows")
+    if torch.any(~torch.isfinite(share_factors)) or torch.any(share_factors <= 0):
+        raise ValueError("share_factors must be finite and positive")
+    share_factors = share_factors.to(device=raw_one_second.device, dtype=raw_one_second.dtype)
     trade_present = _column(raw_one_second, "trade_present") > 0
     quote_present = _column(raw_one_second, "quote_pair_present") > 0
     trade_close = _column(raw_one_second, "trade_close")
@@ -127,15 +135,22 @@ def build_physical_horizon_targets(
     reference_raw = torch.where(quote_present, midpoint_close, trade_close)
     reference_valid_raw = (quote_present & (midpoint_close > 0)) | (trade_present & (trade_close > 0))
     reference, reference_valid = _forward_fill(reference_raw, reference_valid_raw)
+    canonical_reference = reference * share_factors
     spread_close_filled, _ = _forward_fill(_column(raw_one_second, "spread_close"), quote_present)
     midpoint_close_filled, _ = _forward_fill(midpoint_close, quote_present)
     qi_close_filled, _ = _forward_fill(_column(raw_one_second, "queue_imbalance_close"), quote_present)
-    previous = torch.cat((reference[:1], reference[:-1]))
-    returns = torch.where(reference_valid & (reference > 0) & (previous > 0), torch.log(reference / previous), 0.0)
+    previous = torch.cat((canonical_reference[:1], canonical_reference[:-1]))
+    returns = torch.where(
+        reference_valid & (canonical_reference > 0) & (previous > 0),
+        torch.log(canonical_reference / previous),
+        0.0,
+    ).float()
     variance_prefix = torch.cat((returns.new_zeros(1), returns.square().cumsum(0)))
-    volume_prefix = torch.cat((returns.new_zeros(1), _column(raw_one_second, "trade_size_sum").cumsum(0)))
+    canonical_volume = _column(raw_one_second, "trade_size_sum") / share_factors
+    volume_prefix = torch.cat((canonical_volume.new_zeros(1), canonical_volume.cumsum(0)))
     trade_count_prefix = torch.cat((returns.new_zeros(1), _column(raw_one_second, "trade_event_count").cumsum(0)))
-    spread_sum_prefix = torch.cat((returns.new_zeros(1), _column(raw_one_second, "spread_sum").cumsum(0)))
+    canonical_spread_sum = _column(raw_one_second, "spread_sum") * share_factors
+    spread_sum_prefix = torch.cat((canonical_spread_sum.new_zeros(1), canonical_spread_sum.cumsum(0)))
     quote_count_prefix = torch.cat((returns.new_zeros(1), _column(raw_one_second, "quote_pair_count").cumsum(0)))
     qi_sum_prefix = torch.cat((returns.new_zeros(1), _column(raw_one_second, "queue_imbalance_sum").cumsum(0)))
     availability_prefix = {
@@ -143,8 +158,10 @@ def build_physical_horizon_targets(
         for family in ("trade", "bid", "ask")
     }
     quote_availability_prefix = torch.cat((returns.new_zeros(1), quote_present.float().cumsum(0)))
-    trade_high = torch.where(trade_present, _column(raw_one_second, "trade_high"), torch.full_like(reference, -torch.inf))
-    trade_low_for_max = torch.where(trade_present, -_column(raw_one_second, "trade_low"), torch.full_like(reference, -torch.inf))
+    canonical_trade_high = _column(raw_one_second, "trade_high") * share_factors
+    canonical_trade_low = _column(raw_one_second, "trade_low") * share_factors
+    trade_high = torch.where(trade_present, canonical_trade_high, torch.full_like(canonical_reference, -torch.inf))
+    trade_low_for_max = torch.where(trade_present, -canonical_trade_low, torch.full_like(canonical_reference, -torch.inf))
     horizon_values: list[torch.Tensor] = []
     horizon_masks: list[torch.Tensor] = []
     total = raw_one_second.shape[0]
@@ -153,8 +170,8 @@ def build_physical_horizon_targets(
         endpoint = origin_indices + steps
         in_range = endpoint < total
         safe_endpoint = endpoint.clamp(max=max(total - 1, 0))
-        base_price = reference[origin_indices]
-        endpoint_price = reference[safe_endpoint]
+        base_price = canonical_reference[origin_indices]
+        endpoint_price = canonical_reference[safe_endpoint]
         price_valid = in_range & reference_valid[origin_indices] & reference_valid[safe_endpoint] & (base_price > 0) & (endpoint_price > 0)
         endpoint_return = torch.where(price_valid, torch.log(endpoint_price / base_price), 0.0)
         maxima = _window_max(trade_high, steps)
@@ -173,13 +190,14 @@ def build_physical_horizon_targets(
         starts = origin_indices + 1
         ends = safe_endpoint + 1
         realized = (variance_prefix[ends] - variance_prefix[starts]).clamp_min(0.0).sqrt()
-        volume = volume_prefix[ends] - volume_prefix[starts]
+        volume = (volume_prefix[ends] - volume_prefix[starts]) * share_factors[origin_indices]
         trade_count = trade_count_prefix[ends] - trade_count_prefix[starts]
         quote_count = quote_count_prefix[ends] - quote_count_prefix[starts]
         spread_mean = (spread_sum_prefix[ends] - spread_sum_prefix[starts]) / quote_count.clamp_min(1.0)
         qi_mean = (qi_sum_prefix[ends] - qi_sum_prefix[starts]) / quote_count.clamp_min(1.0)
-        midpoint = midpoint_close_filled[safe_endpoint].clamp_min(1e-12)
-        spread_close_bps = spread_close_filled[safe_endpoint] / midpoint * 10_000.0
+        endpoint_factor = share_factors[safe_endpoint]
+        midpoint = (midpoint_close_filled[safe_endpoint] * endpoint_factor).clamp_min(1e-12)
+        spread_close_bps = (spread_close_filled[safe_endpoint] * endpoint_factor) / midpoint * 10_000.0
         spread_mean_bps = spread_mean / midpoint * 10_000.0
         availability = [
             (availability_prefix[family][ends] - availability_prefix[family][starts] > 0).float()
