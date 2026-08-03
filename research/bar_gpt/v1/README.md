@@ -68,10 +68,12 @@ remain real market events or identity boundaries and are never silently treated
 as splits.
 
 Ticker aliases come from `q_live.id_symbol_interval_v1` and
-`q_live.market_ticker_event_entity_v1`. The one-second query uses only the
-source ticker valid for each date and emits the stable canonical model ticker.
-This retains FB history for canonical META while excluding the unrelated
-earlier security that used META.
+`q_live.market_ticker_event_entity_v1`; when the canonical interval graph is
+not yet populated, the loader reconstructs the same bounded timeline from
+`q_live.market_ticker_event_v1`. Both the one-second and daily-context queries
+use only the source ticker valid for each date and emit the stable canonical
+model ticker. This retains FB history for canonical META while excluding the
+unrelated earlier security that used META.
 
 The raw 100-symbol materialization remains intact. Training currently
 quarantines `GOOGL` because its provider event timeline ends at `GOOG`, and

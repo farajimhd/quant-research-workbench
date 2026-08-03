@@ -168,6 +168,39 @@ type RealLiveUniversePreviewPayload = {
   write_url: string;
 };
 
+function normalizePreflightPayload(value: unknown): RealLivePreflightPayload {
+  const payload = objectValue(value);
+  const normalizeAccounts = (candidate: unknown): RealLiveAccountConfig[] => recordValues(candidate).map((account) => ({
+    account_class: stringValue(account, "account_class"),
+    account_id: stringValue(account, "account_id"),
+    account_key: stringValue(account, "account_key"),
+    configured: account.configured === true,
+    label: stringValue(account, "label"),
+    trading_mode: stringValue(account, "trading_mode"),
+  })).filter((account) => account.account_key.length > 0);
+  const normalizeService = (candidate: unknown) => {
+    const service = optionalRecord(candidate);
+    return service ? { base_url: stringValue(service, "base_url") || undefined, name: stringValue(service, "name") || undefined } : undefined;
+  };
+  return {
+    account_id: stringValue(payload, "account_id"),
+    account_type: stringValue(payload, "account_type"),
+    accounts: normalizeAccounts(payload.accounts),
+    broker: normalizeService(payload.broker),
+    checks: recordValues(payload.checks).map((check) => ({
+      details: optionalRecord(check.details),
+      id: stringValue(check, "id"),
+      label: stringValue(check, "label"),
+      message: stringValue(check, "message") || undefined,
+      status: stringValue(check, "status") || "blocked",
+    })).filter((check) => check.id.length > 0),
+    data_provider: normalizeService(payload.data_provider),
+    ready: payload.ready === true,
+    selected_account_keys: stringValues(payload.selected_account_keys),
+    selected_accounts: normalizeAccounts(payload.selected_accounts),
+  };
+}
+
 type RealLiveProgressStep = {
   detail?: string;
   duration_ms?: number | null;
@@ -175,6 +208,66 @@ type RealLiveProgressStep = {
   label: string;
   status: string;
 };
+
+function normalizeUniversePreviewPayload(value: unknown): RealLiveUniversePreviewPayload {
+  const payload = objectValue(value);
+  const optionalNumber = (key: string) => {
+    const candidate = payload[key];
+    return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined;
+  };
+  const optionalString = (key: string) => typeof payload[key] === "string" ? payload[key] as string : undefined;
+  return {
+    can_query_universe: payload.can_query_universe === true,
+    columns: recordValues(payload.columns),
+    errors: recordValues(payload.errors),
+    filters: objectValue(payload.filters),
+    joined_snapshot_row_count: optionalNumber("joined_snapshot_row_count"),
+    massive_snapshot_row_count: optionalNumber("massive_snapshot_row_count"),
+    persistence: optionalRecord(payload.persistence),
+    preview_columns: stringValues(payload.preview_columns),
+    progress_steps: recordValues(payload.progress_steps).map((step) => ({
+      detail: typeof step.detail === "string" ? step.detail : undefined,
+      duration_ms: typeof step.duration_ms === "number" && Number.isFinite(step.duration_ms) ? step.duration_ms : null,
+      id: typeof step.id === "string" ? step.id : "",
+      label: typeof step.label === "string" ? step.label : "",
+      status: typeof step.status === "string" ? step.status : "waiting",
+    })).filter((step) => step.id.length > 0),
+    pulled_at_utc: optionalString("pulled_at_utc"),
+    read_database: stringValue(payload, "read_database"),
+    read_url: stringValue(payload, "read_url"),
+    reference_columns: stringValues(payload.reference_columns),
+    reference_row_count: optionalNumber("reference_row_count"),
+    reference_rows: recordValues(payload.reference_rows),
+    row_count: numberValue(payload, "row_count"),
+    rows: recordValues(payload.rows),
+    run_id: optionalString("run_id"),
+    scanner_row_count: optionalNumber("scanner_row_count"),
+    session_date: optionalString("session_date"),
+    snapshot_columns: stringValues(payload.snapshot_columns),
+    snapshot_rows: recordValues(payload.snapshot_rows),
+    startup_enrichment: optionalRecord(payload.startup_enrichment),
+    tables: recordValues(payload.tables),
+    universe_query: stringValue(payload, "universe_query"),
+    write_database: stringValue(payload, "write_database"),
+    write_url: stringValue(payload, "write_url"),
+  };
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function recordValues(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map(objectValue).filter((item) => Object.keys(item).length > 0) : [];
+}
+
+function stringValues(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
 
 type GateProgressStep = {
   detail: string;
@@ -636,13 +729,13 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   const loadUniversePreview = useCallback(async (options?: { refreshEnrichment?: boolean }) => {
     setUniversePreviewLoading(true);
     try {
-      const payload = await api<RealLiveUniversePreviewPayload>(`/api/real-live-trading/market-gateway/universe-preview${query({
+      const payload = normalizeUniversePreviewPayload(await api<unknown>(`/api/real-live-trading/market-gateway/universe-preview${query({
         refresh_enrichment: options?.refreshEnrichment ? "1" : "0",
         row_limit: 0,
         snapshot_row_limit: scannerSetupRowLimit,
         snapshot_sort_column: scannerSetupPreset.column,
         snapshot_sort_direction: scannerSetupPreset.direction,
-      })}`);
+      })}`));
       setUniversePreview(payload);
     } catch (requestError) {
       setUniversePreview({
@@ -929,7 +1022,7 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
     setLiveClockMode("loading_data");
     setLiveClockMessage("Checking Massive data and IBKR Client Portal connectivity.");
     try {
-      const payload = await api<RealLivePreflightPayload>(`/api/real-live-trading/preflight${query({ account_keys: accountKeys.join(","), account_type: accountKeys[0] || "paper" })}`);
+      const payload = normalizePreflightPayload(await api<unknown>(`/api/real-live-trading/preflight${query({ account_keys: accountKeys.join(","), account_type: accountKeys[0] || "paper" })}`));
       if (payload.accounts?.length) setAvailableAccounts(payload.accounts);
       if (payload.selected_account_keys?.length) setSelectedAccountKeys(payload.selected_account_keys);
       setPreflightStatus(payload);

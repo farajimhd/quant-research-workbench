@@ -34,6 +34,7 @@ from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.loader import (
     ClickHouseBarStreamConfig,
+    TickerInterval,
     daily_range_query,
     daily_session_frame_to_view,
     daily_tickers_range_query,
@@ -148,7 +149,7 @@ class BuilderSqlTest(unittest.TestCase):
             start_date="2025-01-01",
             end_date="2026-01-01",
         )
-        self.assertIn("canonical_ticker = 'AAPL'", daily_sql)
+        self.assertIn("source_ticker = 'AAPL'", daily_sql)
         self.assertIn("session_kind", daily_sql)
         self.assertIn("available_at_us", daily_sql)
         batched_daily_sql = daily_tickers_range_query(
@@ -157,8 +158,42 @@ class BuilderSqlTest(unittest.TestCase):
             start_date="2025-01-01",
             end_date="2026-01-01",
         )
-        self.assertIn("source_ticker IN ('AAPL', 'MSFT')", batched_daily_sql)
+        self.assertIn("source_ticker = 'AAPL'", batched_daily_sql)
+        self.assertIn("source_ticker = 'MSFT'", batched_daily_sql)
         self.assertIn("ORDER BY ticker, local_date, bar_start_us", batched_daily_sql)
+
+    def test_daily_context_uses_the_resolved_point_in_time_source_timeline(self) -> None:
+        sql = daily_tickers_range_query(
+            ClickHouseBarStreamConfig(url="http://localhost:8123", user="default", password=""),
+            tickers=("META",),
+            start_date="2019-01-01",
+            end_date="2024-01-01",
+            intervals_by_ticker={
+                "META": (
+                    TickerInterval("META", "FB", "2012-05-18", "2022-06-09"),
+                    TickerInterval("META", "META", "2022-06-09", "9999-12-31"),
+                )
+            },
+        )
+
+        self.assertIn("source_ticker = 'FB'", sql)
+        self.assertIn("session_date < toDate('2022-06-09')", sql)
+        self.assertIn("source_ticker = 'META'", sql)
+        self.assertIn("session_date >= toDate('2022-06-09')", sql)
+        self.assertNotIn("canonical_ticker", sql)
+
+    def test_daily_context_fails_closed_on_overlapping_reused_ticker(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "overlaps canonical identities"):
+            daily_tickers_range_query(
+                ClickHouseBarStreamConfig(url="http://localhost:8123", user="default", password=""),
+                tickers=("CURRENT_A", "CURRENT_B"),
+                start_date="2020-01-01",
+                end_date="2021-01-01",
+                intervals_by_ticker={
+                    "CURRENT_A": (TickerInterval("CURRENT_A", "REUSED", "2019-01-01", "2020-07-01"),),
+                    "CURRENT_B": (TickerInterval("CURRENT_B", "REUSED", "2020-06-01", "9999-12-31"),),
+                },
+            )
 
 
 class BuildReporterTest(unittest.TestCase):

@@ -233,13 +233,12 @@ def daily_range_query(
     start_date: str,
     end_date: str,
     daily_table: str = "daily_session_bars_by_symbol_time_v1",
-    mapped_identity: bool = True,
+    source_intervals: tuple[TickerInterval, ...] = (),
 ) -> str:
-    identity_filter = (
-        f"canonical_ticker = {sql_string(ticker.upper())}"
-        if mapped_identity
-        else f"(canonical_ticker = {sql_string(ticker.upper())} OR (canonical_ticker IS NULL AND source_ticker = {sql_string(ticker.upper())}))"
-    )
+    intervals = source_intervals or (TickerInterval(ticker.upper(), ticker.upper(), start_date, end_date),)
+    predicates = daily_source_interval_predicates(intervals, start_date=start_date, end_date=end_date)
+    if not predicates:
+        raise ValueError(f"no point-in-time daily source interval covers {ticker} in [{start_date},{end_date})")
     columns = ",\n    ".join(("session_date AS local_date", f"{sql_string(ticker.upper())} AS ticker", "session_kind", "bar_start_us", "bar_end_us", "available_at_us", *FEATURE_NAMES))
     return f"""
 SELECT
@@ -247,7 +246,7 @@ SELECT
 FROM {quote_ident(config.database)}.{quote_ident(daily_table)} FINAL
 PREWHERE session_date >= toDate({sql_string(start_date)})
   AND session_date < toDate({sql_string(end_date)})
-WHERE {identity_filter}
+WHERE {' OR '.join(predicate for predicate, _canonical in predicates)}
 ORDER BY local_date, bar_start_us
 SETTINGS max_threads = {max(1, int(config.max_threads))}, max_block_size = {max(1, int(config.max_block_size))}
 FORMAT ArrowStream
@@ -261,23 +260,30 @@ def daily_tickers_range_query(
     start_date: str,
     end_date: str,
     daily_table: str = "daily_session_bars_by_symbol_time_v1",
-    mapped_tickers: frozenset[str] = frozenset(),
+    intervals_by_ticker: Mapping[str, tuple[TickerInterval, ...]] | None = None,
 ) -> str:
     if not tickers:
         raise ValueError("at least one daily ticker is required")
-    mapped = tuple(ticker.upper() for ticker in tickers if ticker.upper() in mapped_tickers)
-    fallback = tuple(ticker.upper() for ticker in tickers if ticker.upper() not in mapped_tickers)
-    predicates: list[str] = []
-    if mapped:
-        predicates.append("canonical_ticker IN (" + ", ".join(sql_string(ticker) for ticker in mapped) + ")")
-    if fallback:
-        fallback_sql = ", ".join(sql_string(ticker) for ticker in fallback)
-        predicates.append(f"(canonical_ticker IN ({fallback_sql}) OR (canonical_ticker IS NULL AND source_ticker IN ({fallback_sql})))")
-    identity_filter = " OR ".join(predicates)
+    resolved = intervals_by_ticker or {
+        ticker.upper(): (TickerInterval(ticker.upper(), ticker.upper(), start_date, end_date),) for ticker in tickers
+    }
+    validate_unique_source_intervals(intervals_by_ticker=resolved, start_date=start_date, end_date=end_date)
+    predicates: list[tuple[str, str]] = []
+    for ticker in tickers:
+        canonical = ticker.upper()
+        intervals = resolved.get(canonical)
+        if not intervals:
+            raise ValueError(f"missing point-in-time daily source intervals for {canonical}")
+        predicates.extend(daily_source_interval_predicates(intervals, start_date=start_date, end_date=end_date))
+    if not predicates:
+        raise ValueError(f"no point-in-time daily source intervals cover [{start_date},{end_date})")
+    ticker_expression = "multiIf(" + ", ".join(
+        f"{predicate}, {sql_string(canonical)}" for predicate, canonical in predicates
+    ) + ", source_ticker)"
     columns = ",\n    ".join(
         (
             "session_date AS local_date",
-            "ifNull(canonical_ticker, source_ticker) AS ticker",
+            f"{ticker_expression} AS ticker",
             "session_kind",
             "bar_start_us",
             "bar_end_us",
@@ -291,31 +297,55 @@ SELECT
 FROM {quote_ident(config.database)}.{quote_ident(daily_table)} FINAL
 PREWHERE session_date >= toDate({sql_string(start_date)})
   AND session_date < toDate({sql_string(end_date)})
-WHERE {identity_filter}
+WHERE {' OR '.join(predicate for predicate, _canonical in predicates)}
 ORDER BY ticker, local_date, bar_start_us
 SETTINGS max_threads = {max(1, int(config.max_threads))}, max_block_size = {max(1, int(config.max_block_size))}
 FORMAT ArrowStream
 """
 
 
-def mapped_identity_tickers_query(
+def daily_source_interval_predicates(
+    intervals: tuple[TickerInterval, ...],
     *,
-    tickers: tuple[str, ...],
-    identity_database: str,
-    interval_table: str,
-    entity_table: str,
-) -> str:
-    selected = ", ".join(sql_string(ticker.upper()) for ticker in tickers)
-    return f"""
-SELECT DISTINCT upper(e.current_ticker) AS ticker
-FROM (SELECT provider_entity_key FROM {quote_ident(identity_database)}.{quote_ident(interval_table)} FINAL
-      WHERE is_deleted=0 AND mapping_status='mapped') AS i
-INNER JOIN (SELECT provider_entity_key,current_ticker FROM {quote_ident(identity_database)}.{quote_ident(entity_table)} FINAL
-            WHERE is_deleted=0) AS e USING provider_entity_key
-WHERE upper(e.current_ticker) IN ({selected})
-ORDER BY ticker
-FORMAT ArrowStream
-"""
+    start_date: str,
+    end_date: str,
+) -> list[tuple[str, str]]:
+    predicates: list[tuple[str, str]] = []
+    for interval in intervals:
+        left = max(start_date, interval.valid_from)
+        right = min(end_date, interval.valid_to_exclusive)
+        if left >= right:
+            continue
+        predicate = (
+            f"(source_ticker = {sql_string(interval.source_ticker)} AND "
+            f"session_date >= toDate({sql_string(left)}) AND session_date < toDate({sql_string(right)}))"
+        )
+        predicates.append((predicate, interval.canonical_ticker))
+    return predicates
+
+
+def validate_unique_source_intervals(
+    *,
+    intervals_by_ticker: Mapping[str, tuple[TickerInterval, ...]],
+    start_date: str,
+    end_date: str,
+) -> None:
+    by_source: dict[str, list[TickerInterval]] = {}
+    for intervals in intervals_by_ticker.values():
+        for interval in intervals:
+            if max(start_date, interval.valid_from) < min(end_date, interval.valid_to_exclusive):
+                by_source.setdefault(interval.source_ticker, []).append(interval)
+    for source_ticker, intervals in by_source.items():
+        ordered = sorted(intervals, key=lambda item: (item.valid_from, item.valid_to_exclusive, item.canonical_ticker))
+        for index, left in enumerate(ordered):
+            for right in ordered[index + 1 :]:
+                if right.valid_from >= left.valid_to_exclusive:
+                    break
+                if left.canonical_ticker != right.canonical_ticker:
+                    raise RuntimeError(
+                        f"point-in-time source ticker {source_ticker} overlaps canonical identities "
+                        f"{left.canonical_ticker} and {right.canonical_ticker}"
+                    )
 
 
 class ArrowStreamClient:
@@ -389,17 +419,9 @@ class ArrowStreamClient:
         start_date: str,
         end_date: str,
         daily_table: str,
-        identity_database: str = "q_live",
-        identity_interval_table: str = "id_symbol_interval_v1",
-        identity_entity_table: str = "market_ticker_event_entity_v1",
+        source_intervals: tuple[TickerInterval, ...] = (),
         device: torch.device | str = "cpu",
     ) -> tuple[list[str], BarView] | None:
-        mapped = self.read_mapped_identity_tickers(
-            (ticker,),
-            identity_database=identity_database,
-            interval_table=identity_interval_table,
-            entity_table=identity_entity_table,
-        )
         frames: list[pl.DataFrame] = []
         query = daily_range_query(
             self.config,
@@ -407,7 +429,7 @@ class ArrowStreamClient:
             start_date=start_date,
             end_date=end_date,
             daily_table=daily_table,
-            mapped_identity=ticker.upper() in mapped,
+            source_intervals=source_intervals,
         )
         with self.record_batches(query) as batches:
             for batch in batches:
@@ -425,17 +447,9 @@ class ArrowStreamClient:
         start_date: str,
         end_date: str,
         daily_table: str,
-        identity_database: str = "q_live",
-        identity_interval_table: str = "id_symbol_interval_v1",
-        identity_entity_table: str = "market_ticker_event_entity_v1",
+        intervals_by_ticker: Mapping[str, tuple[TickerInterval, ...]],
         device: torch.device | str = "cpu",
     ) -> dict[str, tuple[list[str], BarView]]:
-        mapped = self.read_mapped_identity_tickers(
-            tickers,
-            identity_database=identity_database,
-            interval_table=identity_interval_table,
-            entity_table=identity_entity_table,
-        )
         frames: list[pl.DataFrame] = []
         query = daily_tickers_range_query(
             self.config,
@@ -443,7 +457,7 @@ class ArrowStreamClient:
             start_date=start_date,
             end_date=end_date,
             daily_table=daily_table,
-            mapped_tickers=mapped,
+            intervals_by_ticker=intervals_by_ticker,
         )
         with self.record_batches(query) as batches:
             for batch in batches:
@@ -458,30 +472,6 @@ class ArrowStreamClient:
             ticker = str(part["ticker"][0]).upper()
             result[ticker] = daily_session_frame_to_view(part, device=device)
         return result
-
-    def read_mapped_identity_tickers(
-        self,
-        tickers: tuple[str, ...],
-        *,
-        identity_database: str,
-        interval_table: str,
-        entity_table: str,
-    ) -> frozenset[str]:
-        if not tickers:
-            return frozenset()
-        query = mapped_identity_tickers_query(
-            tickers=tickers,
-            identity_database=identity_database,
-            interval_table=interval_table,
-            entity_table=entity_table,
-        )
-        values: set[str] = set()
-        with self.record_batches(query) as batches:
-            for batch in batches:
-                frame = pl.from_arrow(batch)
-                if not frame.is_empty():
-                    values.update(str(value).upper() for value in frame["ticker"].to_list())
-        return frozenset(values)
 
     def read_identity_intervals(
         self,
@@ -1009,9 +999,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                 start_date=daily_start,
                 end_date=end_date,
                 daily_table=self.data_config.daily_table,
-                identity_database=self.data_config.identity_database,
-                identity_interval_table=self.data_config.identity_interval_table,
-                identity_entity_table=self.data_config.identity_entity_table,
+                intervals_by_ticker=intervals_by_ticker,
             ) if tickers else {}
             for ticker in tickers:
                 split_actions = actions_by_ticker.get(ticker, ())
