@@ -7,9 +7,18 @@ from research.text_intelligence.news_synthesis_v1.review_spec import (
     compile_approved_draft,
     compile_review_spec,
 )
+from research.text_intelligence.news_synthesis_v1.run_certify_review_specs import parse_source_specs
 
 
 class ReviewSpecTest(unittest.TestCase):
+    def test_certification_parser_accepts_multiline_object_with_unindented_children(self) -> None:
+        payload = '{"sample_id":"N0001","statements":[\n{"concept_leaf":"market.context"}\n]}'
+        self.assertEqual(parse_source_specs(payload)[0]["sample_id"], "N0001")
+
+    def test_certification_parser_accepts_jsonl(self) -> None:
+        payload = '{"sample_id":"N0001"}\n{"sample_id":"N0002"}\n'
+        self.assertEqual([row["sample_id"] for row in parse_source_specs(payload)], ["N0001", "N0002"])
+
     def test_capital_deleveraging_is_registered(self) -> None:
         registry = ConceptRegistry.load(REGISTRY_PATH)
         self.assertTrue(registry.contains("capital.deleveraging"))
@@ -21,6 +30,10 @@ class ReviewSpecTest(unittest.TestCase):
     def test_technical_analysis_is_registered(self) -> None:
         registry = ConceptRegistry.load(REGISTRY_PATH)
         self.assertTrue(registry.contains("market.technical_analysis"))
+
+    def test_conflict_of_interest_is_registered(self) -> None:
+        registry = ConceptRegistry.load(REGISTRY_PATH)
+        self.assertTrue(registry.contains("governance.conflict_of_interest"))
 
     def test_registry_includes_executive_compensation_without_overloading_management_change(self) -> None:
         registry = ConceptRegistry.load(REGISTRY_PATH)

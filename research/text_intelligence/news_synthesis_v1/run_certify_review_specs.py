@@ -14,6 +14,17 @@ from research.text_intelligence.news_synthesis_v1.review_spec import compile_rev
 from research.text_intelligence.news_synthesis_v1.taxonomy_audit import discover_pairs, load_json
 
 
+def parse_source_specs(payload: str) -> list[object]:
+    stripped = payload.strip()
+    if not stripped:
+        raise RuntimeError("No review specifications were provided.")
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return [json.loads(line) for line in payload.splitlines() if line.strip()]
+    return parsed if isinstance(parsed, list) else [parsed]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compile and certify manually authored V1-only review specifications.")
     parser.add_argument("input", nargs="?", type=Path, help="JSONL rows containing sample_id, review_notes, envelope, entities and atomic statements. Reads stdin when omitted.")
@@ -40,17 +51,8 @@ def main() -> int:
         payload = ""
     else:
         payload = args.input.read_text(encoding="utf-8") if args.input else sys.stdin.read()
-    stripped = payload.strip()
     if not args.input or not args.input.is_dir():
-        if not stripped:
-            raise RuntimeError("No review specifications were provided.")
-        if stripped.startswith("["):
-            parsed = json.loads(stripped)
-            source_specs = parsed if isinstance(parsed, list) else [parsed]
-        elif stripped.startswith("{") and "\n{" not in stripped:
-            source_specs = [json.loads(stripped)]
-        else:
-            source_specs = [json.loads(line) for line in payload.splitlines() if line.strip()]
+        source_specs = parse_source_specs(payload)
     if not source_specs:
         raise RuntimeError("No review specifications were provided.")
     rejected: list[tuple[str, str]] = []

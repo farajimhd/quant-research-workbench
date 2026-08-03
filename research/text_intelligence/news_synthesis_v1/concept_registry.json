@@ -1,5 +1,5 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_25",
+  "registry_version": "news_synthesis_concepts_v1_26",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
@@ -23,6 +23,7 @@
     {"id": "governance.management_change", "parent": "governance", "definition": "A material executive, director or governance change.", "aliases": ["management_change", "executive_change", "board_change"]},
     {"id": "governance.executive_compensation", "parent": "governance", "definition": "A reported, approved or changed executive or director compensation amount or arrangement.", "aliases": ["executive_compensation", "director_compensation", "ceo_pay"]},
     {"id": "governance.shareholder_vote", "parent": "governance", "definition": "A shareholder meeting, election, proposal or ratification vote and its reported outcome.", "aliases": ["shareholder_vote", "annual_meeting_vote", "proposal_vote", "auditor_ratification"]},
+    {"id": "governance.conflict_of_interest", "parent": "governance", "definition": "A reported or assessed conflict between a public, fiduciary or organizational duty and a private financial interest.", "aliases": ["conflict_of_interest", "official_stock_trading", "public_official_financial_conflict", "fiduciary_conflict"]},
     {"id": "operations.business_update", "parent": "operations", "definition": "A material operating expansion, disruption, restructuring or business update.", "aliases": ["business_update", "operations_update", "restructuring", "operations"]},
     {"id": "market.context", "parent": "market", "definition": "Market, sector or macro context that is not an issuer event.", "aliases": ["market_context", "historical_performance"]},
     {"id": "market.technical_analysis", "parent": "market.analysis", "definition": "A chart-pattern, trend, momentum, moving-average, support, resistance or comparable technical-market assessment or scenario.", "aliases": ["technical_analysis", "chart_pattern", "support_resistance", "moving_average_signal", "trend_analysis"]},
