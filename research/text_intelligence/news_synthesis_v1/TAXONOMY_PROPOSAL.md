@@ -182,7 +182,7 @@ Each registry entry must define:
 - exactly one parent path;
 - accepted lexical and metadata evidence patterns;
 - incompatible concepts and required typed facts, if any;
-- default direction guidance by entity participation role; and
+- default sentiment guidance by entity participation role; and
 - registry version and deprecation aliases.
 
 One statement receives one leaf. If one sentence says EPS beat while revenue
@@ -245,8 +245,8 @@ target without duplicating or discarding the source text.
 | `entity_kind` | `issuer`, `security`, `index`, `fund`, `commodity`, `currency`, `person`, `organization`, `place`, `product` | What the resolved or mentioned entity is. |
 | `semantic_role` | `affected_subject`, `acquirer`, `target`, `counterparty`, `none` | How the entity participates in the proposition. Exactly one. |
 | `discourse_role` | `claim_source`, `context_mention`, `none` | How the entity participates in the communication. Exactly one. |
-| `semantic_direction` | `positive`, `negative`, `neutral` | Text-implied effect of this statement for this entity. |
-| `direction_strength` | integer `0..4` | Entity-specific effect strength; not confidence or expected return. |
+| `semantic_sentiment` | `positive`, `negative`, `neutral` | Text-implied favorable, adverse or neutral effect of this statement for this entity. |
+| `sentiment_strength` | integer `0..4` | Entity-specific sentiment strength; not confidence or expected return. |
 | `identity_status` | `resolved`, `ambiguous`, `unresolved`, `not_tradable_as_of` | Point-in-time resolution outcome. |
 
 Semantic and discourse roles are separated because one entity may be both the
@@ -297,11 +297,13 @@ the evaluated security is the `affected_subject`. The security is not assigned
 a new issuer event merely because an opinion was published; it is attached to
 an assessment statement.
 
-#### `semantic_direction`
+#### `semantic_sentiment`
 
-Direction belongs to the entity-statement link because one shared statement can
-have different implications for different participants. It is not article
-tone, observed price movement or a forecast of market reaction.
+Sentiment belongs to the entity-statement link because one shared statement can
+have different implications for different participants. Here, sentiment means
+the text-implied favorable, adverse or neutral consequence for that entity. It
+is not emotional tone, observed price movement or a forecast of market
+reaction.
 
 | Value | Definition |
 |---|---|
@@ -311,14 +313,14 @@ tone, observed price movement or a forecast of market reaction.
 
 An acquisition premium may be positive for the target while financing terms
 are negative for the acquirer. An observed price increase remains a
-`market_observation`; its move direction is stored as a typed market fact, not
-as semantic direction.
+`market_observation`; its market-move direction is stored as a typed market
+fact, not as semantic sentiment.
 
-#### `direction_strength`
+#### `sentiment_strength`
 
 | Value | Definition |
 |---:|---|
-| `0` | No directional implication; required when semantic direction is neutral. |
+| `0` | No favorable or adverse implication; required when semantic sentiment is neutral. |
 | `1` | Weak, indirect, highly conditional or low-materiality implication. |
 | `2` | Clear but moderate implication supported by the statement. |
 | `3` | Strong, material implication with explicit or quantified evidence. |
@@ -374,7 +376,7 @@ Only the leaf is extracted. Parents support search, filtering and aggregation.
 Aliases are provenance, not extra concepts, so evaluation cannot award or
 penalize the same meaning multiple times.
 
-#### Composite issuer direction
+#### Composite issuer sentiment
 
 The engine groups atomic statements by issuer and retains:
 
@@ -383,7 +385,7 @@ The engine groups atomic statements by issuer and retains:
 - all neutral statements relevant to interpretation; and
 - whether positive and negative evidence concern the same or different facts.
 
-The derived direction is:
+The derived sentiment is:
 
 | Result | Rule |
 |---|---|
@@ -451,7 +453,7 @@ Derived flags expose, rather than hide:
 - unmatched or overlapping evidence spans;
 - unresolved communication-purpose ties;
 - registry concepts missing required facts;
-- conflicting issuer directions; and
+- conflicting issuer sentiments; and
 - migration records requiring human review.
 
 No quality flag deletes source evidence. It controls certification and
@@ -475,7 +477,7 @@ the transaction to be accretive next year":
 | Presentation | badges for `single subject`, `report`, `issuer origin`; no new ambiguous content-role class |
 | Eligibility | evaluated independently for A and B with policy IDs and identity/timestamp checks |
 
-The example illustrates why statements, participation and direction cannot be
+The example illustrates why statements, participation and sentiment cannot be
 collapsed into one article-level label.
 
 ## 4. Non-overlap rules
@@ -491,7 +493,7 @@ collapsed into one article-level label.
    statements remain separate and produce a derived mixed result.
 6. Every statement has one concept leaf. Concept parents and aliases are
    registry-derived and cannot coexist as independent predictions.
-7. Eligibility is downstream policy and cannot alter semantic direction or
+7. Eligibility is downstream policy and cannot alter semantic sentiment or
    suppress evidence.
 8. Observed price movement is a market observation, not language sentiment and
    not proof of a causal issuer event.
@@ -512,7 +514,7 @@ collapsed into one article-level label.
 | `issuer_role=primary_subject` or `analyst_subject` | entity semantic role `affected_subject`, scoped to its statement | rule-assisted review |
 | `issuer_role=mentioned_subject` | entity discourse role `context_mention` | exact structural move |
 | `modality/time= mixed` | split into atomic statements and map modality to epistemic status | manual review required |
-| `semantic_direction=mixed` | preserve component evidence; derive composite mixed | rule-assisted review |
+| legacy `semantic_direction=mixed` | preserve component evidence; derive composite mixed sentiment | rule-assisted review |
 | event concepts | map aliases to one leaf registry; retain original value in provenance | registry mapping + review |
 | eligibility booleans | recompute from V1 semantics and explicit policies | never copied as truth |
 | evidence spans and point-in-time identity | preserve and verify byte-for-byte | exact or migration fails |

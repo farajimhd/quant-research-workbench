@@ -6,7 +6,8 @@ news document. It transforms preserved source metadata and rendered text into:
 1. document communication and provenance;
 2. atomic issuer/event statements;
 3. normalized facts, entities, quantities and analyst opinions;
-4. language direction and strength, without using subsequent market reaction;
+4. entity-specific semantic sentiment and strength, without using subsequent
+   market reaction;
 5. compact structured and readable synthesis;
 6. derived operational eligibility with explicit reasons; and
 7. an evidence trace back to the source text and point-in-time issuer identity.
