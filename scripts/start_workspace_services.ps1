@@ -2,6 +2,8 @@
 param(
     [string]$HostName = "127.0.0.1",
     [ValidateRange(1, 65535)]
+    [int]$QmdHistoryPort = 8801,
+    [ValidateRange(1, 65535)]
     [int]$BackendPort = 8000,
     [ValidateRange(1, 65535)]
     [int]$FrontendPort = 5173,
@@ -10,6 +12,7 @@ param(
     [ValidateSet("Auto", "Caller", "Named")]
     [string]$TerminalTarget = "Auto",
     [string]$TerminalWindowName = "quant-research-workbench-workspace",
+    [string]$WorkspaceRuntimeRoot = "",
     [switch]$NoBackendReload
 )
 
@@ -114,6 +117,44 @@ function ConvertTo-PowerShellEncodedCommand {
     return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
 }
 
+function Resolve-WorkspaceRuntimeRoot {
+    param([string]$Requested)
+
+    $candidate = if ($Requested.Trim()) {
+        $Requested.Trim()
+    }
+    elseif ($env:QW_WORKSPACE_SERVICES_RUNTIME_ROOT) {
+        $env:QW_WORKSPACE_SERVICES_RUNTIME_ROOT.Trim()
+    }
+    else {
+        "D:\TradingML\runtimes\workspace_services"
+    }
+    $resolved = [IO.Path]::GetFullPath($candidate)
+    $resolvedRepo = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\')
+    if ($resolved.TrimEnd('\').Equals($resolvedRepo, [StringComparison]::OrdinalIgnoreCase) -or
+        $resolved.StartsWith($resolvedRepo + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Workspace service runtime state must be outside the repository: $resolved"
+    }
+    return $resolved
+}
+
+function Assert-ServicePortsAvailable {
+    param([object[]]$Tabs)
+
+    $conflicts = @()
+    foreach ($tab in $Tabs) {
+        foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort $tab.Port -ErrorAction SilentlyContinue)) {
+            $conflicts += "role=$($tab.Role) port=$($tab.Port) pid=$($connection.OwningProcess)"
+        }
+    }
+    if ($conflicts.Count -gt 0) {
+        throw (
+            "Workspace startup refuses to adopt existing port owners because they were not created by this launcher. " +
+            "Stop or relocate them explicitly. Conflicts: " + ($conflicts -join "; ")
+        )
+    }
+}
+
 Assert-Launcher -Path $qmdLauncher
 Assert-Launcher -Path $backendLauncher
 Assert-Launcher -Path $frontendLauncher
@@ -124,6 +165,9 @@ $callerTerminalWindow = Get-WindowsTerminalCallerWindow `
     -PythonExecutable $resolvedPython
 $powerShellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
 $resolvedWindowsTerminal = Resolve-WindowsTerminalExecutable -Requested $WindowsTerminalExe
+$resolvedWorkspaceRuntimeRoot = Resolve-WorkspaceRuntimeRoot -Requested $WorkspaceRuntimeRoot
+$workspaceInstanceId = [Guid]::NewGuid().ToString("N")
+$workspaceInstanceRoot = Join-Path (Join-Path $resolvedWorkspaceRuntimeRoot "instances") $workspaceInstanceId
 $terminalWindowTarget = Resolve-WindowsTerminalTarget `
     -Mode $TerminalTarget `
     -FallbackWindowName $TerminalWindowName `
@@ -141,7 +185,10 @@ $toolDirectories = @($toolDirectories | Select-Object -Unique)
 $pathTerms = @($toolDirectories | ForEach-Object { ConvertTo-PowerShellLiteral -Value $_ })
 $pathTerms += '$env:PATH'
 $pathAssignment = '$env:PATH = ' + ($pathTerms -join ' + [IO.Path]::PathSeparator + ') + [Environment]::NewLine
-$qmdCommand = $pathAssignment + "& " + (ConvertTo-PowerShellLiteral -Value $qmdLauncher)
+$qmdBind = "$HostName`:$QmdHistoryPort"
+$qmdCommand = $pathAssignment +
+    '$env:QMD_HISTORY_BIND = ' + (ConvertTo-PowerShellLiteral -Value $qmdBind) + [Environment]::NewLine +
+    "& " + (ConvertTo-PowerShellLiteral -Value $qmdLauncher)
 $backendCommand = $pathAssignment +
     "& " + (ConvertTo-PowerShellLiteral -Value $backendLauncher) +
     " -HostName " + (ConvertTo-PowerShellLiteral -Value $HostName) +
@@ -165,6 +212,8 @@ function Open-ServiceTabs {
         return $terminalWindowTarget
     }
 
+    Assert-ServicePortsAvailable -Tabs $Tabs
+
     $dispatchTarget = Confirm-WindowsTerminalTarget `
         -Target $terminalWindowTarget `
         -RequestedMode $TerminalTarget `
@@ -186,7 +235,12 @@ function Open-ServiceTabs {
             "-ExecutionPolicy", "Bypass",
             "-File", $serviceTabHost,
             "-EncodedCommand", (ConvertTo-PowerShellEncodedCommand -Command $Tabs[$index].Command),
-            "-PowerShellExe", $powerShellExe
+            "-PowerShellExe", $powerShellExe,
+            "-RegistryPath", (Join-Path $workspaceInstanceRoot "$($Tabs[$index].Role).json"),
+            "-ServiceRole", $Tabs[$index].Role,
+            "-ServicePort", $Tabs[$index].Port,
+            "-InstanceId", $workspaceInstanceId,
+            "-RepositoryRoot", $repoRoot
         )
     }
 
@@ -200,14 +254,20 @@ function Open-ServiceTabs {
 $serviceTabs = @(
     [pscustomobject]@{
         Title = "QMD History"
+        Role = "qmd_history"
+        Port = $QmdHistoryPort
         Command = $qmdCommand
     },
     [pscustomobject]@{
         Title = "Backend"
+        Role = "backend"
+        Port = $BackendPort
         Command = $backendCommand
     },
     [pscustomobject]@{
         Title = "Frontend"
+        Role = "frontend"
+        Port = $FrontendPort
         Command = $frontendCommand
     }
 )
@@ -238,7 +298,8 @@ Write-Host ""
 Write-Host "Opened independent QMD History, Backend, and Frontend PowerShell tabs in $($usedTerminalWindowTarget.Description)."
 Write-Host "This starter now exits instead of supervising the three launcher processes."
 Write-Host "A successful graceful stop exits each tab host cleanly so Windows Terminal closes the service tabs."
-Write-Host "QMD History: its launcher resolves QMD_HISTORY_BIND (default http://127.0.0.1:8801)."
+Write-Host "QMD History: http://$HostName`:$QmdHistoryPort"
 Write-Host "Backend:    http://$HostName`:$BackendPort"
 Write-Host "Frontend:   http://$HostName`:$FrontendPort"
-Write-Host "Stop all matching instances with scripts\stop_workspace_services.ps1."
+Write-Host "Ownership:  $workspaceInstanceRoot"
+Write-Host "Stop only launcher-owned instances with scripts\stop_workspace_services.ps1."

@@ -260,23 +260,36 @@ Windows Terminal window and `-TerminalTarget Caller` fails with an explicit
 host explanation.
 
 The starter delegates to `run_qmd_history_gateway.ps1`, `run_backend.ps1`, and
-`run_frontend.py`; it does not become a shared supervisor. Stop all matching
-instances, including alternate instances identified by those launcher/service
-command lines or owners of ports 8801, 8000, and 5173, with:
+`run_frontend.py`. Each tab host records its PID, creation time, role, port,
+instance ID, and kill-on-close Job Object under
+`D:\TradingML\runtimes\workspace_services`. Startup refuses to adopt an
+existing port owner because an unrelated process is never valid workspace
+shutdown authority. Stop only instances registered by this launcher with:
 
 ```powershell
 .\scripts\stop_workspace_services.ps1
 ```
 
-Shutdown sends Ctrl+C first, waits up to eight seconds, force-stops only
-survivors, rescans for reload-created children, and verifies the configured
-ports are free. A successfully stopped service tab exits cleanly and closes
-under Windows Terminal's normal `closeOnExit` behavior; genuine launcher
-failures retain their nonzero exit code and remain visible. Use
-`-QmdHistoryPort`, `-BackendPort`, and `-FrontendPort` on
-the stop script when the corresponding service was launched on a non-default
-port. Use `-PythonExe` on either script when the intended Python interpreter
-is not active or on `PATH`.
+Shutdown validates the registered host PID, creation time, repository, and
+launcher identity; sends one Ctrl+C event to each registered tab console; and
+waits up to eight seconds. Its bounded fallback terminates only the validated
+tab host, whose Job Object closes the complete owned child tree. Command-line
+substring matches and configured ports are never used as permission to kill a
+process. Foreign listeners are reported and left untouched. A successfully
+stopped service tab exits cleanly under Windows Terminal's normal
+`closeOnExit` behavior; genuine launcher failures retain their nonzero exit
+code and remain visible. Use
+`-QmdHistoryPort`, `-BackendPort`, and `-FrontendPort` consistently on the
+start and stop scripts when using non-default ports. Use `-PythonExe` on either
+script when the intended Python interpreter is not active or on `PATH`. Use
+`-WorkspaceRuntimeRoot` on both scripts only when an approved external runtime
+root other than the default is required.
+
+QMD History compiles once and executes the resulting binary directly. Cargo
+output defaults to
+`D:\TradingML\runtimes\qmd_history_gateway\cargo-target`; use
+`-CargoTargetDir` or `QMD_HISTORY_CARGO_TARGET_DIR` only for another approved
+external runtime path. Repository-local Cargo targets are rejected.
 
 The live support gateways have a separate ordered launcher:
 

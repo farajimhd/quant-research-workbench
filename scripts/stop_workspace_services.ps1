@@ -9,6 +9,7 @@ param(
     [ValidateRange(1, 60)]
     [int]$GracefulTimeoutSeconds = 8,
     [string]$PythonExe = "",
+    [string]$WorkspaceRuntimeRoot = "",
     [switch]$ListOnly
 )
 
@@ -16,6 +17,12 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 Import-Module CimCmdlets -ErrorAction Stop
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$serviceTabHost = [IO.Path]::GetFullPath(
+    (Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1")
+)
+$serviceRoles = @("qmd_history", "backend", "frontend")
 
 function Resolve-PythonExecutable {
     param([string]$Requested)
@@ -55,6 +62,27 @@ function Resolve-PythonExecutable {
     return ""
 }
 
+function Resolve-WorkspaceRuntimeRoot {
+    param([string]$Requested)
+
+    $candidate = if ($Requested.Trim()) {
+        $Requested.Trim()
+    }
+    elseif ($env:QW_WORKSPACE_SERVICES_RUNTIME_ROOT) {
+        $env:QW_WORKSPACE_SERVICES_RUNTIME_ROOT.Trim()
+    }
+    else {
+        "D:\TradingML\runtimes\workspace_services"
+    }
+    $resolved = [IO.Path]::GetFullPath($candidate).TrimEnd('\')
+    $resolvedRepo = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\')
+    if ($resolved.Equals($resolvedRepo, [StringComparison]::OrdinalIgnoreCase) -or
+        $resolved.StartsWith($resolvedRepo + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Workspace service runtime state must be outside the repository: $resolved"
+    }
+    return $resolved
+}
+
 function Get-ProcessSnapshot {
     $snapshot = @{}
     foreach ($process in Get-CimInstance Win32_Process) {
@@ -63,90 +91,120 @@ function Get-ProcessSnapshot {
     return $snapshot
 }
 
-function Test-WorkspaceServiceProcess {
-    param($Process)
-
-    $name = ([string]$Process.Name).ToLowerInvariant()
-    $commandLine = ([string]$Process.CommandLine).ToLowerInvariant()
-
-    if ($name -eq "qmd-history-gateway.exe" -or
-        $commandLine.Contains("run_qmd_history_gateway.ps1") -or
-        $commandLine.Contains("services\qmd_history_gateway")) {
-        return $true
-    }
-    if ($commandLine.Contains("run_backend.ps1") -or
-        ($commandLine.Contains("uvicorn") -and $commandLine.Contains("src.backend.app:app"))) {
-        return $true
-    }
-    if ($commandLine.Contains("run_frontend.py") -or
-        ($commandLine.Contains("vite") -and $commandLine.Contains("quant-research-workbench"))) {
-        return $true
-    }
-    return $false
-}
-
-function Get-PortOwnerIds {
-    param([int[]]$Ports)
-
-    $ownerIds = [Collections.Generic.HashSet[int]]::new()
-    foreach ($port in $Ports) {
-        foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)) {
-            if ($connection.OwningProcess -gt 0) {
-                [void]$ownerIds.Add([int]$connection.OwningProcess)
-            }
-        }
-    }
-    return ,$ownerIds
-}
-
-function Get-TargetProcessIds {
+function Test-ProcessStartIdentity {
     param(
-        [hashtable]$Snapshot,
-        [int[]]$Ports
+        $Process,
+        [string]$ExpectedUtc
     )
 
-    $targetIds = Get-PortOwnerIds -Ports $Ports
-    foreach ($entry in $Snapshot.GetEnumerator()) {
-        if (Test-WorkspaceServiceProcess -Process $entry.Value) {
-            [void]$targetIds.Add([int]$entry.Key)
-        }
+    [DateTimeOffset]$expected = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse($ExpectedUtc, [ref]$expected)) {
+        return $false
+    }
+    $actual = ([DateTime]$Process.CreationDate).ToUniversalTime()
+    return [Math]::Abs(($actual - $expected.UtcDateTime).TotalSeconds) -le 2
+}
+
+function Read-ValidRegistration {
+    param(
+        [string]$Path,
+        [hashtable]$Snapshot
+    )
+
+    try {
+        $record = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+    }
+    catch {
+        Write-Warning "Ignoring unreadable workspace ownership record '$Path': $($_.Exception.Message)"
+        return $null
     }
 
-    # Include children so reloaders, npm/cmd wrappers, Cargo, and service
-    # binaries are stopped as one bounded service tree.
+    try {
+        if ([int]$record.schema_version -ne 1 -or
+            [string]$record.service_role -notin $serviceRoles -or
+            [string]::IsNullOrWhiteSpace([string]$record.instance_id)) {
+            throw "required ownership fields are invalid"
+        }
+        $recordRepo = [IO.Path]::GetFullPath([string]$record.repository_root).TrimEnd('\')
+        $recordPath = [IO.Path]::GetFullPath([string]$record.registry_path)
+        $expectedPath = [IO.Path]::GetFullPath($Path)
+        $hostPid = [int]$record.host_pid
+    }
+    catch {
+        Write-Warning "Ignoring invalid workspace ownership record '$Path': $($_.Exception.Message)"
+        return $null
+    }
+    $expectedRepo = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\')
+    if (-not $recordRepo.Equals($expectedRepo, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Warning "Ignoring ownership record for another repository: $Path"
+        return $null
+    }
+    if (-not $recordPath.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Warning "Ignoring ownership record whose recorded path does not match its file: $Path"
+        return $null
+    }
+
+    if ($hostPid -le 0 -or -not $Snapshot.ContainsKey($hostPid)) {
+        return $null
+    }
+    $hostProcess = $Snapshot[$hostPid]
+    $hostName = ([string]$hostProcess.Name).ToLowerInvariant()
+    $hostCommand = [string]$hostProcess.CommandLine
+    if ($hostName -notin @("powershell.exe", "pwsh.exe") -or
+        $hostCommand.IndexOf($serviceTabHost, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        $hostCommand.IndexOf($recordPath, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        $hostCommand.IndexOf([string]$record.instance_id, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        -not (Test-ProcessStartIdentity -Process $hostProcess -ExpectedUtc ([string]$record.host_started_at_utc))) {
+        Write-Warning "Ignoring stale or mismatched workspace ownership record: $Path"
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Path = $Path
+        Record = $record
+        HostPid = $hostPid
+    }
+}
+
+function Get-OwnedProcessIds {
+    param(
+        [object[]]$Registrations,
+        [hashtable]$Snapshot
+    )
+
+    $owned = [Collections.Generic.HashSet[int]]::new()
+    foreach ($registration in $Registrations) {
+        [void]$owned.Add([int]$registration.HostPid)
+    }
     $changed = $true
     while ($changed) {
         $changed = $false
         foreach ($entry in $Snapshot.GetEnumerator()) {
-            $candidateProcessId = [int]$entry.Key
+            $candidatePid = [int]$entry.Key
             $parentPid = [int]$entry.Value.ParentProcessId
-            if (-not $targetIds.Contains($candidateProcessId) -and $targetIds.Contains($parentPid)) {
-                [void]$targetIds.Add($candidateProcessId)
+            if (-not $owned.Contains($candidatePid) -and $owned.Contains($parentPid)) {
+                [void]$owned.Add($candidatePid)
                 $changed = $true
             }
         }
     }
+    [void]$owned.Remove([int]$PID)
+    return ,$owned
+}
 
-    # Include only service-identifiable ancestors. This closes an existing
-    # launcher console without walking into an unrelated terminal or IDE.
-    foreach ($seedPid in @($targetIds)) {
-        $currentPid = $seedPid
-        while ($Snapshot.ContainsKey($currentPid)) {
-            $parentPid = [int]$Snapshot[$currentPid].ParentProcessId
-            if (-not $Snapshot.ContainsKey($parentPid)) {
-                break
+function Get-PortOwners {
+    param([int[]]$Ports)
+
+    $owners = @()
+    foreach ($port in $Ports) {
+        foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)) {
+            $owners += [pscustomobject]@{
+                Port = $port
+                ProcessId = [int]$connection.OwningProcess
             }
-            $parent = $Snapshot[$parentPid]
-            if (-not (Test-WorkspaceServiceProcess -Process $parent)) {
-                break
-            }
-            [void]$targetIds.Add($parentPid)
-            $currentPid = $parentPid
         }
     }
-
-    [void]$targetIds.Remove([int]$PID)
-    return ,$targetIds
+    return $owners
 }
 
 function Test-ProcessAlive {
@@ -185,100 +243,129 @@ raise SystemExit(0 if sent else 3)
     return $LASTEXITCODE -eq 0
 }
 
-function Wait-ForTargetsToExit {
+function Wait-ForHostsToExit {
     param(
-        [Collections.Generic.HashSet[int]]$TargetIds,
+        [int[]]$HostIds,
         [int]$TimeoutSeconds
     )
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
-        $remaining = @($TargetIds | Where-Object { Test-ProcessAlive -ProcessId $_ })
+        $remaining = @($HostIds | Where-Object { Test-ProcessAlive -ProcessId $_ })
         if ($remaining.Count -eq 0) {
             return @()
         }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
-
-    return @($TargetIds | Where-Object { Test-ProcessAlive -ProcessId $_ })
+    return @($HostIds | Where-Object { Test-ProcessAlive -ProcessId $_ })
 }
 
-$ports = @($QmdHistoryPort, $BackendPort, $FrontendPort) | Select-Object -Unique
+$runtimeRoot = Resolve-WorkspaceRuntimeRoot -Requested $WorkspaceRuntimeRoot
+$instanceRoot = Join-Path $runtimeRoot "instances"
+$registrationPaths = if (Test-Path -LiteralPath $instanceRoot -PathType Container) {
+    @(Get-ChildItem -LiteralPath $instanceRoot -Recurse -File -Filter "*.json" -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty FullName)
+}
+else {
+    @()
+}
+
 $snapshot = Get-ProcessSnapshot
-$targetIds = Get-TargetProcessIds -Snapshot $snapshot -Ports $ports
-
-if ($targetIds.Count -eq 0) {
-    Write-Host "No QMD History, backend, frontend, or configured-port processes are running."
-    return
-}
-
-Write-Host "Matched service processes:"
-foreach ($targetPid in ($targetIds | Sort-Object)) {
-    if ($snapshot.ContainsKey($targetPid)) {
-        $process = $snapshot[$targetPid]
-        Write-Host ("  PID {0,-7} {1}  {2}" -f $targetPid, $process.Name, $process.CommandLine)
+$registrations = @()
+$stalePaths = @()
+foreach ($registrationPath in $registrationPaths) {
+    $registration = Read-ValidRegistration -Path $registrationPath -Snapshot $snapshot
+    if ($null -ne $registration) {
+        $registrations += $registration
     }
     else {
-        Write-Host ("  PID {0}" -f $targetPid)
+        $stalePaths += $registrationPath
     }
+}
+$ownedIds = Get-OwnedProcessIds -Registrations $registrations -Snapshot $snapshot
+$registeredPorts = @($registrations | ForEach-Object { [int]$_.Record.service_port } | Where-Object { $_ -gt 0 })
+$ports = @(@($QmdHistoryPort, $BackendPort, $FrontendPort) + $registeredPorts) |
+    Select-Object -Unique
+$portOwners = @(Get-PortOwners -Ports $ports)
+
+if ($registrations.Count -eq 0) {
+    Write-Host "No launcher-owned workspace service instances are running."
+}
+else {
+    Write-Host "Registered workspace service instances:"
+    foreach ($registration in ($registrations | Sort-Object { $_.Record.service_role })) {
+        Write-Host (
+            "  {0,-12} host PID {1,-7} child PID {2,-7} instance {3}" -f
+            $registration.Record.service_role,
+            $registration.HostPid,
+            $registration.Record.child_pid,
+            $registration.Record.instance_id
+        )
+    }
+}
+
+$foreignPortOwners = @($portOwners | Where-Object { -not $ownedIds.Contains([int]$_.ProcessId) })
+if ($foreignPortOwners.Count -gt 0) {
+    Write-Warning (
+        "Configured ports have non-owned listeners that will not be stopped: " +
+        (($foreignPortOwners | ForEach-Object { "port=$($_.Port) pid=$($_.ProcessId)" }) -join "; ")
+    )
 }
 
 if ($ListOnly) {
-    Write-Host "List-only mode; no process was stopped."
+    Write-Host "List-only mode; no process or ownership record was changed."
+    return
+}
+
+foreach ($stalePath in $stalePaths) {
+    Remove-Item -LiteralPath $stalePath -Force -ErrorAction SilentlyContinue
+}
+if ($registrations.Count -eq 0) {
     return
 }
 
 $python = Resolve-PythonExecutable -Requested $PythonExe
-$gracefulSignalSent = $false
-
-# Service launchers started by start_workspace_services.ps1 own independent
-# consoles. Sending Ctrl+C to the oldest matching processes gives their
-# launchers and children the normal shutdown signal.
-foreach ($targetPid in ($targetIds | Sort-Object)) {
-    if (-not (Test-ProcessAlive -ProcessId $targetPid)) {
-        continue
-    }
-    if (Send-GracefulConsoleInterrupt -Python $python -ProcessId $targetPid) {
-        Write-Host "Sent Ctrl+C to the console containing PID $targetPid."
-        $gracefulSignalSent = $true
-        Start-Sleep -Milliseconds 300
+$hostIds = @($registrations | Select-Object -ExpandProperty HostPid -Unique)
+foreach ($hostPid in $hostIds) {
+    if (Test-ProcessAlive -ProcessId $hostPid) {
+        if (Send-GracefulConsoleInterrupt -Python $python -ProcessId $hostPid) {
+            Write-Host "Sent one Ctrl+C event to registered service console host PID $hostPid."
+        }
+        else {
+            Write-Warning "Registered service console host PID $hostPid did not accept Ctrl+C."
+        }
     }
 }
 
-if (-not $gracefulSignalSent) {
-    Write-Warning "No matching console accepted Ctrl+C; proceeding to the bounded forced fallback."
-}
-
-$remainingIds = @(Wait-ForTargetsToExit -TargetIds $targetIds -TimeoutSeconds $GracefulTimeoutSeconds)
-if ($remainingIds.Count -gt 0) {
-    Write-Warning ("Force-stopping {0} process(es) that did not exit after Ctrl+C: {1}" -f $remainingIds.Count, ($remainingIds -join ", "))
-    foreach ($targetPid in ($remainingIds | Sort-Object -Descending)) {
-        Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue
+$remainingHosts = @(Wait-ForHostsToExit -HostIds $hostIds -TimeoutSeconds $GracefulTimeoutSeconds)
+if ($remainingHosts.Count -gt 0) {
+    Write-Warning (
+        "Force-stopping registered service host(s) after the graceful timeout: " +
+        ($remainingHosts -join ", ")
+    )
+    foreach ($hostPid in $remainingHosts) {
+        Stop-Process -Id $hostPid -Force -ErrorAction SilentlyContinue
     }
+    Start-Sleep -Milliseconds 500
 }
 
-# Reloaders can replace a child PID during shutdown. Rescan once and remove any
-# remaining matching identity or exact configured-port owner.
-Start-Sleep -Milliseconds 400
-$finalSnapshot = Get-ProcessSnapshot
-$finalTargetIds = Get-TargetProcessIds -Snapshot $finalSnapshot -Ports $ports
-if ($finalTargetIds.Count -gt 0) {
-    Write-Warning ("Cleaning up {0} replacement or remaining process(es): {1}" -f $finalTargetIds.Count, (($finalTargetIds | Sort-Object) -join ", "))
-    foreach ($targetPid in ($finalTargetIds | Sort-Object -Descending)) {
-        Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue
-    }
-    Start-Sleep -Milliseconds 400
+# The tab host owns a kill-on-close Windows Job Object. Closing or terminating
+# that validated host is the bounded fallback for its complete child tree.
+$remainingOwned = @($ownedIds | Where-Object { Test-ProcessAlive -ProcessId $_ })
+if ($remainingOwned.Count -gt 0) {
+    throw "Registered workspace process cleanup failed; remaining PIDs: $($remainingOwned -join ', ')."
+}
+foreach ($registration in $registrations) {
+    Remove-Item -LiteralPath $registration.Path -Force -ErrorAction SilentlyContinue
 }
 
-$busyPorts = @()
-foreach ($port in $ports) {
-    if (@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue).Count -gt 0) {
-        $busyPorts += $port
-    }
-}
-$remainingMatches = Get-TargetProcessIds -Snapshot (Get-ProcessSnapshot) -Ports $ports
-if ($busyPorts.Count -gt 0 -or $remainingMatches.Count -gt 0) {
-    throw "Shutdown verification failed. Busy ports: $($busyPorts -join ', '); remaining matching PIDs: $(($remainingMatches | Sort-Object) -join ', ')."
+$remainingPortOwners = @(Get-PortOwners -Ports $ports)
+$remainingOwnedPortOwners = @($remainingPortOwners | Where-Object { $ownedIds.Contains([int]$_.ProcessId) })
+if ($remainingOwnedPortOwners.Count -gt 0) {
+    throw (
+        "Owned workspace listeners remain after shutdown: " +
+        (($remainingOwnedPortOwners | ForEach-Object { "port=$($_.Port) pid=$($_.ProcessId)" }) -join "; ")
+    )
 }
 
-Write-Host "Stopped all matching QMD History, backend, and frontend instances; configured ports are free."
+Write-Host "Stopped all registered workspace service instances. Foreign processes and ports were left untouched."
