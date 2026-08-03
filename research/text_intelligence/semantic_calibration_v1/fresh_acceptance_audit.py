@@ -110,50 +110,33 @@ FORMAT JSONEachRow
         )
     output: dict[str, GatewaySourceEvidence] = {}
     for source_id, record in records.items():
-        missing_columns = sorted(set(NORMALIZED_COLUMNS) - set(record))
-        if missing_columns:
-            raise RuntimeError(
-                f"News Gateway retained record is incomplete for {source_id}: "
-                f"missing={missing_columns}"
+        try:
+            output[source_id] = _verified_gateway_source_evidence(
+                source_id,
+                record,
+                expected_date=expected[source_id],
+                raw_path_maps=raw_path_maps,
             )
-        if str(record.get("published_date") or "") != expected[source_id]:
-            raise RuntimeError(f"News Gateway publication-date mismatch: {source_id}")
-        raw_path = _resolve_raw_artifact_path(
-            str(record.get("raw_artifact_path") or ""), raw_path_maps
-        )
-        if raw_path is None:
-            raise RuntimeError(
-                "News Gateway raw provider artifact is unavailable for "
-                f"{source_id}: {record.get('raw_artifact_path') or '<empty>'}"
+        except (RuntimeError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+            if not allow_missing:
+                raise
+            output[source_id] = GatewaySourceEvidence(
+                retained_record=record,
+                raw_payload={
+                    "audit_availability": "unavailable_gateway_raw_evidence",
+                    "note": (
+                        "The retained Gateway row is shown, but its raw provider "
+                        "artifact failed strict availability or integrity validation. "
+                        "The frozen source lanes remain visible below."
+                    ),
+                },
+                resolved_raw_artifact_path=str(record.get("raw_artifact_path") or ""),
+                retained_payload_hash=str(record.get("raw_payload_hash") or ""),
+                raw_artifact_byte_hash="",
+                hash_verification_method="unavailable_gateway_raw_evidence",
+                source_authority_available=False,
+                unavailable_reason=str(exc),
             )
-        raw_bytes = raw_path.read_bytes()
-        raw_payload = json.loads(raw_bytes.decode("utf-8"))
-        if not isinstance(raw_payload, dict):
-            raise RuntimeError(f"raw provider payload is not an object: {raw_path}")
-        retained_hash = str(record.get("raw_payload_hash") or "")
-        raw_byte_hash = _raw_artifact_hash(raw_bytes)
-        verification_method = _payload_hash_verification_method(
-            raw_payload,
-            retained_hash=retained_hash,
-            raw_artifact_byte_hash=raw_byte_hash,
-        )
-        if verification_method is None:
-            raise RuntimeError(
-                f"raw provider payload hash mismatch for {source_id}: "
-                f"retained={retained_hash} artifact_bytes={raw_byte_hash}"
-            )
-        if _raw_provider_article_id(raw_payload) != str(
-            record.get("provider_article_id") or ""
-        ):
-            raise RuntimeError(f"raw provider article identity mismatch: {source_id}")
-        output[source_id] = GatewaySourceEvidence(
-            retained_record=record,
-            raw_payload=raw_payload,
-            resolved_raw_artifact_path=str(raw_path),
-            retained_payload_hash=retained_hash,
-            raw_artifact_byte_hash=raw_byte_hash,
-            hash_verification_method=verification_method,
-        )
     if missing:
         by_source_id = {
             str(item.blinded["source_id"]): item.blinded for item in items
@@ -184,6 +167,60 @@ FORMAT JSONEachRow
                 ),
             )
     return output
+
+
+def _verified_gateway_source_evidence(
+    source_id: str,
+    record: Mapping[str, Any],
+    *,
+    expected_date: str,
+    raw_path_maps: Sequence[tuple[str, str]],
+) -> GatewaySourceEvidence:
+    """Return one strictly verified retained row and exact raw provider payload."""
+    missing_columns = sorted(set(NORMALIZED_COLUMNS) - set(record))
+    if missing_columns:
+        raise RuntimeError(
+            f"News Gateway retained record is incomplete for {source_id}: "
+            f"missing={missing_columns}"
+        )
+    if str(record.get("published_date") or "") != expected_date:
+        raise RuntimeError(f"News Gateway publication-date mismatch: {source_id}")
+    raw_path = _resolve_raw_artifact_path(
+        str(record.get("raw_artifact_path") or ""), raw_path_maps
+    )
+    if raw_path is None:
+        raise RuntimeError(
+            "News Gateway raw provider artifact is unavailable for "
+            f"{source_id}: {record.get('raw_artifact_path') or '<empty>'}"
+        )
+    raw_bytes = raw_path.read_bytes()
+    raw_payload = json.loads(raw_bytes.decode("utf-8"))
+    if not isinstance(raw_payload, dict):
+        raise RuntimeError(f"raw provider payload is not an object: {raw_path}")
+    retained_hash = str(record.get("raw_payload_hash") or "")
+    raw_byte_hash = _raw_artifact_hash(raw_bytes)
+    verification_method = _payload_hash_verification_method(
+        raw_payload,
+        retained_hash=retained_hash,
+        raw_artifact_byte_hash=raw_byte_hash,
+    )
+    if verification_method is None:
+        raise RuntimeError(
+            f"raw provider payload hash mismatch for {source_id}: "
+            f"retained={retained_hash} artifact_bytes={raw_byte_hash}"
+        )
+    if _raw_provider_article_id(raw_payload) != str(
+        record.get("provider_article_id") or ""
+    ):
+        raise RuntimeError(f"raw provider article identity mismatch: {source_id}")
+    return GatewaySourceEvidence(
+        retained_record=record,
+        raw_payload=raw_payload,
+        resolved_raw_artifact_path=str(raw_path),
+        retained_payload_hash=retained_hash,
+        raw_artifact_byte_hash=raw_byte_hash,
+        hash_verification_method=verification_method,
+    )
 
 
 def render_acceptance_audits(

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from .comparison import CollectionItem
+from .fresh_acceptance_audit import load_gateway_source_evidence
 from .manual_audit_packet import (
     render_bounded_manual_review_packet,
     audit_path,
@@ -12,7 +15,27 @@ from .manual_audit_packet import (
 )
 
 
+class _StaticClickHouseClient:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+
+    def execute(self, _sql: str) -> str:
+        return "\n".join(json.dumps(row) for row in self.rows)
+
+
 class ManualAuditPacketTests(unittest.TestCase):
+    @staticmethod
+    def _item() -> CollectionItem:
+        return CollectionItem(
+            sample_id="N0001",
+            split="validation",
+            blinded={
+                "source_id": "source-1",
+                "source_timestamp": "2026-07-01T12:00:00Z",
+            },
+            truth={},
+        )
+
     def test_packet_preserves_required_sections_and_decodes_html(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -63,6 +86,26 @@ class ManualAuditPacketTests(unittest.TestCase):
             self.assertIn('"tickers": [', packet)
             self.assertIn("Exact source", packet)
             self.assertNotIn("duplicate", packet)
+
+    def test_gateway_source_is_strict_by_default(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "missing"):
+            load_gateway_source_evidence(
+                _StaticClickHouseClient([]),
+                [self._item()],
+            )
+
+    def test_explicit_unavailable_mode_preserves_auditable_identity(self) -> None:
+        evidence = load_gateway_source_evidence(
+            _StaticClickHouseClient([]),
+            [self._item()],
+            allow_missing=True,
+        )["source-1"]
+        self.assertFalse(evidence.source_authority_available)
+        self.assertEqual(
+            evidence.retained_record["audit_availability"],
+            "missing_gateway_retained_record",
+        )
+        self.assertIn("No q_live", evidence.unavailable_reason)
 
 
 if __name__ == "__main__":

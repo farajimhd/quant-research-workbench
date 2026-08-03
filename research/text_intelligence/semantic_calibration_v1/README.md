@@ -1102,3 +1102,26 @@ Generated authorities and evidence remain under `D:\TradingML\runtimes`:
 - reviewed 500: `text_intelligence/semantic_calibration_v1/news_acceptance_500_v5_reviewed`
 - reviewed 200: `text_intelligence/semantic_calibration_v1/news_acceptance_200_v4_reviewed_v2`
 - prior regression: `text_intelligence/semantic_calibration_v1/news_1300_v1/candidate44_evaluation`
+
+## Unified 2,000-article human audit collection
+
+The three certified human authorities can be rendered as one indexed,
+runtime-only Candidate-44 audit collection:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_render_human_2000_audits --allow-missing-gateway-source
+```
+
+The launcher requires exactly `N0001` through `N2000`, rejects duplicate source
+identities, evaluates the current deterministic authority, loads exact News
+Gateway evidence in bounded batches, and writes one Markdown file per article
+under:
+
+`D:\TradingML\runtimes\text_intelligence\semantic_calibration_v1\news_human_2000_candidate44_audits`
+
+Strict source verification is the default. The explicit
+`--allow-missing-gateway-source` mode never invents source evidence: it retains
+the frozen original text and metadata, preserves any available Gateway row,
+and visibly marks missing or hash-mismatched current Gateway evidence. The
+completed collection contains 2,000 audits, of which 1,994 have verified
+current Gateway source authority and six carry explicit unavailable reasons.
