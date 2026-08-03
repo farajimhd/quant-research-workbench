@@ -294,6 +294,20 @@ On Windows, the frontend launcher invokes npm's JavaScript CLI through
 `node.exe` rather than `npm.cmd`, so Ctrl+C cannot block on the interactive
 `Terminate batch job (Y/N)?` prompt.
 
+Workspace startup also rejects a `.git` directory larger than 2 GiB because
+Codex status and diff snapshots become expensive even though the services run
+in separate processes. Audit repository object storage with:
+
+```powershell
+.\scripts\maintain_repository_git.ps1
+```
+
+When unreachable recovery objects are the cause, compact them with
+`.\scripts\maintain_repository_git.ps1 -Compact`. Before pruning, the command
+creates a verified hard-linked recovery copy under
+`D:\TradingML\runtimes\repository_maintenance\quant-research-workbench` so the
+10 GiB recovery database leaves the source tree without being discarded.
+
 The live support gateways have a separate ordered launcher:
 
 ```powershell

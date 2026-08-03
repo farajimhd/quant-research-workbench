@@ -13,6 +13,8 @@ param(
     [string]$TerminalTarget = "Auto",
     [string]$TerminalWindowName = "quant-research-workbench-workspace",
     [string]$WorkspaceRuntimeRoot = "",
+    [ValidateRange(0.01, 100.0)]
+    [double]$MaxGitDirectoryGB = 2.0,
     [switch]$NoBackendReload
 )
 
@@ -155,10 +157,33 @@ function Assert-ServicePortsAvailable {
     }
 }
 
+function Assert-RepositoryGitSize {
+    param([double]$MaximumGB)
+
+    $gitRoot = Join-Path $repoRoot ".git"
+    if (-not (Test-Path -LiteralPath $gitRoot -PathType Container)) {
+        return
+    }
+    $measure = Get-ChildItem -LiteralPath $gitRoot -Recurse -File -Force -ErrorAction Stop |
+        Measure-Object Length -Sum
+    $sizeGB = [double]$measure.Sum / 1GB
+    if ($sizeGB -gt $MaximumGB) {
+        throw (
+            "Workspace startup stopped because .git is {0:N2} GiB, above the {1:N2} GiB safety limit. " -f
+            $sizeGB, $MaximumGB
+        ) + (
+            "An oversized Git database makes Codex status and diff snapshots slow even though services are separate. " +
+            "Audit with scripts\maintain_repository_git.ps1 and compact with " +
+            "scripts\maintain_repository_git.ps1 -Compact before starting services."
+        )
+    }
+}
+
 Assert-Launcher -Path $qmdLauncher
 Assert-Launcher -Path $backendLauncher
 Assert-Launcher -Path $frontendLauncher
 Assert-Launcher -Path $serviceTabHost
+Assert-RepositoryGitSize -MaximumGB $MaxGitDirectoryGB
 
 $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe
 $callerTerminalWindow = Get-WindowsTerminalCallerWindow `
@@ -184,7 +209,8 @@ if ($cargoCommand) {
 $toolDirectories = @($toolDirectories | Select-Object -Unique)
 $pathTerms = @($toolDirectories | ForEach-Object { ConvertTo-PowerShellLiteral -Value $_ })
 $pathTerms += '$env:PATH'
-$pathAssignment = '$env:PATH = ' + ($pathTerms -join ' + [IO.Path]::PathSeparator + ') + [Environment]::NewLine
+$pathAssignment = '$env:PYTHONDONTWRITEBYTECODE = ''1''' + [Environment]::NewLine +
+    '$env:PATH = ' + ($pathTerms -join ' + [IO.Path]::PathSeparator + ') + [Environment]::NewLine
 $qmdBind = "$HostName`:$QmdHistoryPort"
 $qmdCommand = $pathAssignment +
     '$env:QMD_HISTORY_BIND = ' + (ConvertTo-PowerShellLiteral -Value $qmdBind) + [Environment]::NewLine +

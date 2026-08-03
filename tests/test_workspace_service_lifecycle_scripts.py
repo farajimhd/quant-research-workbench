@@ -39,6 +39,10 @@ def test_workspace_start_registers_each_role_and_rejects_foreign_port_adoption()
     ):
         assert argument in source
     assert "startup refuses to adopt existing port owners" in source
+    assert "assert-repositorygitsize" in source
+    assert "maintain_repository_git.ps1 -compact" in source
+    assert "maxgitdirectorygb = 2.0" in source
+    assert "pythondontwritebytecode" in source
 
 
 def test_tab_host_owns_children_with_manifest_and_kill_on_close_job() -> None:
@@ -74,3 +78,14 @@ def test_frontend_invokes_npm_without_the_windows_batch_wrapper() -> None:
     assert Path(command[0]).name.lower() == "node.exe"
     assert Path(command[1]).name.lower() == "npm-cli.js"
     assert all(Path(part).suffix.lower() not in {".cmd", ".bat"} for part in command)
+    assert module.sys.dont_write_bytecode is True
+
+
+def test_git_maintenance_backs_up_before_pruning_unreachable_objects() -> None:
+    source = _source("maintain_repository_git.ps1")
+
+    assert r"d:\tradingml\runtimes\repository_maintenance" in source
+    assert "new-item -itemtype hardlink" in source
+    assert '"fsck", "--connectivity-only"' in source
+    assert '"reflog", "expire", "--expire-unreachable=now", "--all"' in source
+    assert '"gc", "--prune=now"' in source
