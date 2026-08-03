@@ -824,7 +824,8 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   section: TradingConfigurationSection;
 }) {
   const step: GuidedStep = section === "oms" ? omsStage : section;
-  const profile = draft.strategy.profiles.find((row) => row.profile_id === draft.strategy.default_profile_id) ?? draft.strategy.profiles[0];
+  const [activeStrategyProfileId, setActiveStrategyProfileId] = useState(() => window.sessionStorage.getItem("guided-strategy-profile-id") || draft.strategy.default_profile_id);
+  const profile = draft.strategy.profiles.find((row) => row.profile_id === activeStrategyProfileId) ?? draft.strategy.profiles.find((row) => row.profile_id === draft.strategy.default_profile_id) ?? draft.strategy.profiles[0];
   const deployment = draft.assignments.deployments.find((row) => row.enabled) ?? draft.assignments.deployments[0];
   const mandate = draft.portfolio.mandates.find((row) => row.deployment_id === deployment?.deployment_id) ?? draft.portfolio.mandates[0];
   const omsProfile = draft.oms.profiles.find((row) => row.profile_id === deployment?.oms_profile_id) ?? draft.oms.profiles[0];
@@ -838,6 +839,16 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   const context = guidedContextRows(draft, step);
   const [questionIndex, setQuestionIndex] = useState(0);
   useEffect(() => setQuestionIndex(0), [step]);
+  useEffect(() => {
+    if (!profile || profile.profile_id === activeStrategyProfileId) return;
+    setActiveStrategyProfileId(profile.profile_id);
+    window.sessionStorage.setItem("guided-strategy-profile-id", profile.profile_id);
+  }, [activeStrategyProfileId, profile]);
+
+  function selectStrategyProfile(profileId: string) {
+    setActiveStrategyProfileId(profileId);
+    window.sessionStorage.setItem("guided-strategy-profile-id", profileId);
+  }
 
   function replaceDeployment(nextDeployment: Deployment) {
     onChange("assignments", { ...draft.assignments, deployments: draft.assignments.deployments.map((row) => row.deployment_id === deployment.deployment_id ? nextDeployment : row) });
@@ -860,7 +871,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
 
   if (section === "revisions") return <GuidedReview approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={onPublish} onReturn={() => navigateGuidedStep("accounts", onOmsStageChange)} publishing={publishing} revisions={revisions} />;
   if (!profile || !deployment || !mandate || !omsProfile || !executionPolicy || !protectionProfile || !account) return <GuidedEmpty onSwitchToExpert={onSwitchToExpert} />;
-  if (step === "strategy") return <GuidedStrategyConfiguration draft={draft} onChange={onChange} onContinue={() => onContinue("assignments")} profile={profile} />;
+  if (step === "strategy") return <GuidedStrategyConfiguration draft={draft} onChange={onChange} onContinue={() => onContinue("assignments")} onProfileChange={selectStrategyProfile} profile={profile} />;
 
   const questions: ReactNode[] = [];
   if (step === "assignments") questions.push(
@@ -926,13 +937,17 @@ type GuidedStrategyQuestionDefinition = {
   title: string;
 };
 
-function GuidedStrategyConfiguration({ draft, onChange, onContinue, profile }: {
+function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileChange, profile }: {
   draft: Draft;
   onChange: <K extends keyof Draft>(key: K, value: Draft[K]) => void;
   onContinue: () => void;
+  onProfileChange: (profileId: string) => void;
   profile: StrategyProfile;
 }) {
   const [questionIndex, setQuestionIndex] = useState(0);
+  const [startMode, setStartMode] = useState<"create" | "clone" | null>(null);
+  const [cloneSourceId, setCloneSourceId] = useState(profile.profile_id);
+  const [profileName, setProfileName] = useState("");
   const definition = draft.strategy.definitions.find((row) => row.strategy_id === profile.definition_id);
   const supportedSides = definition?.supported_sides?.length ? definition.supported_sides : ["long" as const];
   const initial = profile.lifecycle.initial_entry;
@@ -944,6 +959,35 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, profile }: {
       ...draft.strategy,
       profiles: draft.strategy.profiles.map((row) => row.profile_id === profile.profile_id ? nextProfile : row),
     });
+  }
+  function createNewProfile() {
+    const nextProfile = blankStrategyProfile(profile, draft);
+    nextProfile.name = profileName.trim() || "Untitled Strategy";
+    onChange("strategy", { ...draft.strategy, profiles: [...draft.strategy.profiles, nextProfile] });
+    onProfileChange(nextProfile.profile_id);
+    setQuestionIndex(1);
+  }
+  function cloneExistingProfile() {
+    const source = draft.strategy.profiles.find((row) => row.profile_id === cloneSourceId) ?? profile;
+    const nextProfile = cloneStrategyProfile(source, draft.strategy.profiles, profileName);
+    onChange("strategy", { ...draft.strategy, profiles: [...draft.strategy.profiles, nextProfile] });
+    onProfileChange(nextProfile.profile_id);
+    setQuestionIndex(1);
+  }
+  function chooseStartMode(mode: "create" | "clone") {
+    setStartMode(mode);
+    if (mode === "create") setProfileName(uniqueProfileName("Untitled Strategy", draft.strategy.profiles));
+    else {
+      const source = draft.strategy.profiles.find((row) => row.profile_id === cloneSourceId) ?? profile;
+      setCloneSourceId(source.profile_id);
+      setProfileName(uniqueProfileName(`${source.name} copy`, draft.strategy.profiles));
+    }
+  }
+  function chooseCloneSource(profileId: string) {
+    const source = draft.strategy.profiles.find((row) => row.profile_id === profileId);
+    if (!source) return;
+    setCloneSourceId(profileId);
+    setProfileName(uniqueProfileName(`${source.name} copy`, draft.strategy.profiles));
   }
   function replaceInitial(nextInitial: StrategyLifecycle["initial_entry"]) {
     replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: nextInitial } });
@@ -986,10 +1030,10 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, profile }: {
 
   const questions: GuidedStrategyQuestionDefinition[] = [
     {
-      id: "profile", section: "Behavior", title: "Which trading plan are you configuring?",
-      description: "Choose the reusable plan whose complete lifecycle you want to review.",
-      guide: "The protected profile is a safe starting point. Selecting a profile changes the draft default; it does not publish or start trading.",
-      content: <DecisionOptions onChange={(profile_id) => onChange("strategy", { ...draft.strategy, default_profile_id: profile_id })} options={draft.strategy.profiles.map((row) => ({ detail: strategyProfileChoiceDetail(row), label: row.name, recommended: row.protected, value: row.profile_id }))} value={profile.profile_id} />,
+      id: "profile", section: "Behavior", title: "How do you want to build this strategy?",
+      description: "Start with a blank strategy and answer every decision, or copy an existing strategy after reviewing exactly what it contains.",
+      guide: "A new strategy begins with no active entry rules, position adds, reentry, strategic exits, or capabilities. A clone is an independent editable copy; the source remains unchanged.",
+      content: <StrategyStartWorkflow cloneSourceId={cloneSourceId} mode={startMode} name={profileName} onClone={cloneExistingProfile} onCloneSourceChange={chooseCloneSource} onCreate={createNewProfile} onModeChange={chooseStartMode} onNameChange={setProfileName} profiles={draft.strategy.profiles} section={draft.strategy} />,
     },
     {
       id: "identity", section: "Behavior", title: "How should this plan be identified?",
@@ -1146,18 +1190,85 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, profile }: {
   useEffect(() => {
     if (questionIndex >= questions.length) setQuestionIndex(Math.max(questions.length - 1, 0));
   }, [questionIndex, questions.length]);
+  const guidanceItems = current.id === "profile"
+    ? [{ label: "Create new", value: "Begin without active trading logic and answer every lifecycle question." }, { label: "Clone existing", value: "Inspect one source, name the independent copy, then revise any answer." }, { label: "Runtime effect", value: "Neither path changes the protected system fallback or affects runtime before publication." }]
+    : [{ label: "Why this matters", value: current.guide }, { label: "Using the default", value: "Leave the displayed answer unchanged to approve the current default." }, { label: "Runtime effect", value: "This answer remains a draft until the configuration is published." }];
 
   return <main className="guided-strategy-wizard">
     <nav aria-label="Strategy setup sections" className="guided-strategy-section-nav">{sections.map((section) => { const firstIndex = questions.findIndex((question) => question.section === section); return <button aria-current={section === current.section ? "step" : undefined} key={section} onClick={() => setQuestionIndex(firstIndex)} type="button"><span>{section}</span><small>{questions.filter((question) => question.section === section).length}</small></button>; })}</nav>
     <section className="guided-strategy-question">
       <header><span>{current.section} · {sectionPosition} of {sectionQuestions.length}</span><small>Question {safeIndex + 1} of {questions.length}</small></header>
       <div className="guided-question-progress"><span style={{ width: `${((safeIndex + 1) / Math.max(questions.length, 1)) * 100}%` }} /></div>
-      <section className="guided-strategy-prompt guided-question-prompt"><span className="guided-prompt-label">Decision</span><h2>{current.title}</h2><p>{current.description}</p><ConfigurationGuidance items={[{ label: "Why this matters", value: current.guide }, { label: "Using the default", value: "Leave the displayed answer unchanged to approve the current default." }, { label: "Runtime effect", value: "This answer remains a draft until the configuration is published." }]} /></section>
-      <section className="guided-answer-surface"><header><span>Your answer</span><strong>Choose or configure one response</strong><small>Only this decision is being edited. You can return to it before publication.</small></header><div className="guided-strategy-controls guided-answer-content">{current.content}</div></section>
+      <section className="guided-strategy-prompt guided-question-prompt"><span className="guided-prompt-label">Decision</span><h2>{current.title}</h2><p>{current.description}</p><ConfigurationGuidance items={guidanceItems} /></section>
+      <section className="guided-answer-surface"><header><span>Your answer</span><strong>{current.id === "profile" ? "Choose how to begin" : "Choose or configure one response"}</strong><small>{current.id === "profile" ? "The selected path creates a new editable Strategy Profile; it does not modify an existing source." : "Only this decision is being edited. You can return to it before publication."}</small></header><div className="guided-strategy-controls guided-answer-content">{current.content}</div></section>
       <details className="guided-running-summary"><summary>Your setup so far <ChevronRight size={15} /></summary><div>{recap.map((row) => <span key={row.label}><small>{row.label}</small><strong>{row.value}</strong></span>)}</div></details>
-      <footer className="guided-strategy-navigation"><button className="button" disabled={safeIndex === 0} onClick={() => setQuestionIndex(safeIndex - 1)} type="button"><ArrowLeft size={15} /> Previous</button><div>{nextSectionIndex > 0 ? <button onClick={() => setQuestionIndex(nextSectionIndex)} type="button">Keep remaining {current.section} values</button> : <span>Review each published strategy decision</span>}</div><button className="button primary" onClick={() => safeIndex < questions.length - 1 ? setQuestionIndex(safeIndex + 1) : onContinue()} type="button">{safeIndex < questions.length - 1 ? "Next question" : "Save strategy and continue"} <ArrowRight size={15} /></button></footer>
+      <footer className="guided-strategy-navigation"><button className="button" disabled={safeIndex === 0} onClick={() => setQuestionIndex(safeIndex - 1)} type="button"><ArrowLeft size={15} /> Previous</button><div>{nextSectionIndex > 0 ? <button onClick={() => setQuestionIndex(nextSectionIndex)} type="button">Keep remaining {current.section} values</button> : <span>Review each published strategy decision</span>}</div><button className="button primary" disabled={safeIndex === 0} onClick={() => safeIndex < questions.length - 1 ? setQuestionIndex(safeIndex + 1) : onContinue()} type="button">{safeIndex === 0 ? "Choose a path above" : safeIndex < questions.length - 1 ? "Next question" : "Save strategy and continue"} <ArrowRight size={15} /></button></footer>
     </section>
   </main>;
+}
+
+function StrategyStartWorkflow({ cloneSourceId, mode, name, onClone, onCloneSourceChange, onCreate, onModeChange, onNameChange, profiles, section }: {
+  cloneSourceId: string;
+  mode: "create" | "clone" | null;
+  name: string;
+  onClone: () => void;
+  onCloneSourceChange: (profileId: string) => void;
+  onCreate: () => void;
+  onModeChange: (mode: "create" | "clone") => void;
+  onNameChange: (value: string) => void;
+  profiles: StrategyProfile[];
+  section: StrategySection;
+}) {
+  const source = profiles.find((row) => row.profile_id === cloneSourceId) ?? profiles[0];
+  const normalizedName = name.trim().toLocaleLowerCase();
+  const nameConflict = Boolean(normalizedName) && profiles.some((row) => row.name.trim().toLocaleLowerCase() === normalizedName);
+  const invalidName = !normalizedName || nameConflict;
+  return <div className="strategy-start-workflow">
+    <div className="strategy-start-paths">
+      <button aria-pressed={mode === "create"} onClick={() => onModeChange("create")} type="button"><span className="strategy-start-icon"><Plus size={18} /></span><span><small>Build from zero</small><strong>Create new strategy</strong><em>Begin with no active trading decisions. The guide will ask about identity, entries, adds, reentry, exits, protection, and capabilities.</em></span><ChevronRight size={17} /></button>
+      <button aria-pressed={mode === "clone"} onClick={() => onModeChange("clone")} type="button"><span className="strategy-start-icon"><Clipboard size={18} /></span><span><small>Reuse proven structure</small><strong>Clone an existing strategy</strong><em>Inspect its behavior and capabilities first, then create an independent copy with a new name.</em></span><ChevronRight size={17} /></button>
+    </div>
+    {mode === "create" ? <section className="strategy-start-builder">
+      <header><span>New strategy</span><strong>Start with a clean decision set</strong><p>This begins as an incomplete local draft with nothing enabled for trading. Complete the required lifecycle questions before it can be saved or published.</p></header>
+      <div className="strategy-blank-summary">
+        <span><Check size={15} /><span><strong>No active entry logic</strong><small>Opportunity, confirmation, and blocker rules begin empty.</small></span></span>
+        <span><Check size={15} /><span><strong>No position management</strong><small>Adds, reentry, strategic exits, and optional capabilities begin disabled.</small></span></span>
+        <span><Check size={15} /><span><strong>Safe draft only</strong><small>The protected system fallback remains unchanged until this strategy is complete and published.</small></span></span>
+      </div>
+      <div className="strategy-start-name"><TextField help={nameConflict ? "Choose a name not already used by another Strategy Profile." : "Use a distinct operator-facing name. You can refine it in the next question."} label="New strategy name" onChange={onNameChange} value={name} />{nameConflict ? <span role="alert">A strategy with this name already exists.</span> : null}</div>
+      <footer><button className="button primary" disabled={invalidName} onClick={onCreate} type="button">Create blank strategy <ArrowRight size={15} /></button></footer>
+    </section> : null}
+    {mode === "clone" && source ? <section className="strategy-start-builder strategy-clone-builder">
+      <header><span>Clone existing</span><strong>Review before copying</strong><p>Select a source to compare its trading behavior, lifecycle actions, execution choices, and enabled capabilities. The copy receives a new identity.</p></header>
+      <div className="strategy-clone-layout">
+        <nav aria-label="Strategies available to clone">{profiles.map((row) => <button aria-current={row.profile_id === source.profile_id ? "true" : undefined} key={row.profile_id} onClick={() => onCloneSourceChange(row.profile_id)} type="button"><span><strong>{row.name}</strong><small>{row.protected ? "Protected system strategy" : "Editable strategy"}</small></span><ChevronRight size={14} /></button>)}</nav>
+        <div className="strategy-clone-preview"><StrategyProfileFeaturePreview profile={source} section={section} /><div className="strategy-start-name"><TextField help={nameConflict ? "Choose a name not already used by another Strategy Profile." : "The source strategy keeps its current name and configuration."} label="Name for the clone" onChange={onNameChange} value={name} />{nameConflict ? <span role="alert">A strategy with this name already exists.</span> : null}</div></div>
+      </div>
+      <footer><span><LockKeyhole size={14} /> Source remains unchanged</span><button className="button primary" disabled={invalidName} onClick={onClone} type="button">Clone and configure <ArrowRight size={15} /></button></footer>
+    </section> : null}
+  </div>;
+}
+
+function StrategyProfileFeaturePreview({ profile, section }: { profile: StrategyProfile; section: StrategySection }) {
+  const behavior = profile.lifecycle.trading_behavior;
+  const initial = profile.lifecycle.initial_entry;
+  const opportunityCount = initial.opportunity.groups.filter((row) => row.enabled).length;
+  const confirmationCount = initial.confirmation.groups.filter((row) => row.enabled).length;
+  const blockerCount = initial.blockers.groups.filter((row) => row.enabled).length;
+  const addCount = initial.add_steps.filter((row) => row.enabled).length;
+  const exitCount = profile.lifecycle.exit.rule_sets.filter((row) => row.enabled).length;
+  const capabilities = profile.capabilities.filter((row) => row.enabled).map((row) => section.capability_catalog.find((item) => item.capability_id === row.capability_id)?.name ?? readableLabel(row.capability_id));
+  const executionPolicies = new Set([initial.order_intent.execution_policy, profile.lifecycle.reentry.order_intent.execution_policy, ...initial.add_steps.map((row) => row.order_intent.execution_policy), ...profile.lifecycle.exit.rule_sets.map((row) => row.order_intent.execution_policy)].filter(Boolean));
+  return <div className="strategy-feature-preview">
+    <header><span>{profile.protected ? "Protected source" : "Editable source"}</span><strong>{profile.name}</strong><p>{profile.description || "No strategy description has been provided."}</p></header>
+    <dl>
+      <div><dt>Trading behavior</dt><dd><strong>{readableLabel(behavior.side)}</strong><span>{behavior.eligible_sessions.map(readableLabel).join(", ")} · {readableLabel(behavior.evaluation_trigger)}</span></dd></div>
+      <div><dt>Initial entry</dt><dd><strong>{opportunityCount} opportunity · {confirmationCount} confirmation</strong><span>{blockerCount} blocker rule set{blockerCount === 1 ? "" : "s"} · {readableLabel(initial.capital_request.mode)}</span></dd></div>
+      <div><dt>Position lifecycle</dt><dd><strong>{addCount} add action{addCount === 1 ? "" : "s"} · {exitCount} strategic exit{exitCount === 1 ? "" : "s"}</strong><span>{profile.lifecycle.reentry.enabled ? `Reentry up to ${profile.lifecycle.reentry.maximum_attempts} times` : "Reentry disabled"}</span></dd></div>
+      <div><dt>Order behavior</dt><dd><strong>{executionPolicies.size} execution polic{executionPolicies.size === 1 ? "y" : "ies"}</strong><span>{readableLabel(initial.order_intent.partial_fill_policy)} · {initial.order_intent.deadline_ms} ms entry deadline</span></dd></div>
+    </dl>
+    <section><span>Enabled capabilities · {capabilities.length}</span>{capabilities.length ? <div>{capabilities.map((capability) => <strong key={capability}><CheckCircle2 size={13} />{capability}</strong>)}</div> : <p>No optional capabilities are enabled.</p>}</section>
+  </div>;
 }
 
 function GuidedCapitalRequestFields({ onChange, segment, value }: { onChange: (value: CapitalRequestConfig) => void; segment: "amount" | "priority"; value: CapitalRequestConfig }) {
@@ -1200,14 +1311,44 @@ function strategySetupRows(profile: StrategyProfile) {
   ];
 }
 
-function strategyProfileChoiceDetail(profile: StrategyProfile) {
-  const behavior = profile.lifecycle.trading_behavior;
-  const sessions = behavior.eligible_sessions.length > 0 ? behavior.eligible_sessions.map(readableLabel).join(", ") : "no entry sessions";
-  const addCount = profile.lifecycle.initial_entry.add_steps.filter((row) => row.enabled).length;
-  const exitCount = profile.lifecycle.exit.rule_sets.filter((row) => row.enabled).length;
-  const ownership = profile.protected ? "Protected system starting point" : "Editable configured plan";
-  const reentry = profile.lifecycle.reentry.enabled ? `reentry allowed up to ${profile.lifecycle.reentry.maximum_attempts} times` : "reentry disabled";
-  return `${ownership}. ${readableLabel(behavior.side)} entries during ${sessions}; ${addCount} add ${addCount === 1 ? "action" : "actions"}, ${exitCount} strategic ${exitCount === 1 ? "exit" : "exits"}, and ${reentry}.`;
+function blankStrategyProfile(source: StrategyProfile, draft: Draft): StrategyProfile {
+  const profileId = uniqueId("new-strategy", draft.strategy.profiles.map((row) => row.profile_id));
+  const emptyStage = (): RuleStage => ({ groups: [], operator: "all" });
+  const executionPolicy = draft.oms.execution_policies.find((row) => row.policy_id === "adaptive_regular")?.policy_id ?? draft.oms.execution_policies[0]?.policy_id ?? "";
+  const protectionProfile = draft.oms.protection_profiles[0]?.profile_id ?? "";
+  const capitalRequest: CapitalRequestConfig = { allow_replacement: false, mode: "mandate_fraction", priority: 50, value: 0.1 };
+  const orderIntent: OrderIntentConfig = { deadline_ms: 750, execution_policy: executionPolicy, partial_fill_policy: "complete_remainder", protection_profile: protectionProfile };
+  return {
+    ...deepClone(source),
+    capabilities: source.capabilities.map((row) => ({ ...deepClone(row), enabled: false })),
+    description: "",
+    editable: true,
+    enabled: false,
+    lifecycle: {
+      trading_behavior: { adopt_manual_positions: false, eligible_sessions: ["regular"], evaluation_trigger: "indicator_update", side: source.lifecycle.trading_behavior.side },
+      initial_entry: { add_steps: [], blockers: emptyStage(), capital_request: deepClone(capitalRequest), confirmation: emptyStage(), opportunity: emptyStage(), order_intent: deepClone(orderIntent) },
+      reentry: { capital_request: deepClone(capitalRequest), cooldown_ms: 0, enabled: false, maximum_attempts: 0, order_intent: deepClone(orderIntent), require_new_confirmation: true, rules: { blockers: emptyStage(), confirmation: emptyStage(), opportunity: emptyStage() } },
+      exit: { rule_sets: [{ action: "close", enabled: false, name: "Strategic exit", order_intent: deepClone(orderIntent), position_fraction: 1, rule_set_id: "strategic-exit", rules: emptyStage(), summary: "Define the evidence that should close the position.", timing: { active_after_ms: 0, expires_after_ms: 0 } }] },
+    },
+    name: "Untitled Strategy",
+    origin: "user",
+    profile_id: profileId,
+    protected: false,
+    revision: 1,
+  };
+}
+
+function cloneStrategyProfile(source: StrategyProfile, existing: StrategyProfile[], requestedName: string): StrategyProfile {
+  const profileId = uniqueId(`${source.profile_id}-copy`, existing.map((row) => row.profile_id));
+  return { ...deepClone(source), editable: true, name: requestedName.trim(), origin: "user", profile_id: profileId, protected: false, revision: 1 };
+}
+
+function uniqueProfileName(base: string, existing: StrategyProfile[]) {
+  const taken = new Set(existing.map((row) => row.name.trim().toLocaleLowerCase()));
+  let value = base;
+  let index = 2;
+  while (taken.has(value.toLocaleLowerCase())) value = `${base} ${index++}`;
+  return value;
 }
 
 function GuidedQuestion({ children, description, label, status }: { children: ReactNode; description: string; label: string; status: string }) {
