@@ -1,10 +1,11 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_28",
+  "registry_version": "news_synthesis_concepts_v1_29",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
     {"id": "market.price_move_observed", "parent": "market.observation", "definition": "An already observed security price move.", "aliases": ["price_action", "stock_move", "shares_move"]},
     {"id": "market.volume_move_observed", "parent": "market.observation", "definition": "An already observed trading-volume or attention move.", "aliases": ["volume_spike", "trading_volume"]},
+    {"id": "market.short_interest_observed", "parent": "market.observation", "definition": "An already observed short-interest level, change, share count, float percentage or days-to-cover measure.", "aliases": ["short_interest", "short_percent_float", "days_to_cover"]},
     {"id": "analyst.rating_action", "parent": "analyst.assessment", "definition": "An analyst initiates, maintains, upgrades or downgrades a rating.", "aliases": ["analyst_action", "rating_action", "analyst_rating"]},
     {"id": "analyst.price_target_action", "parent": "analyst.assessment", "definition": "An analyst establishes or changes a price target.", "aliases": ["price_target", "target_change"]},
     {"id": "earnings.performance", "parent": "earnings", "definition": "Reported earnings or operating performance.", "aliases": ["earnings", "earnings_results", "quarterly_results"]},

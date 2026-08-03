@@ -57,6 +57,7 @@ class ConceptRegistry:
         candidates = (
             ({"price", "move", "shares", "stock", "rally", "decline"}, "market.price_move_observed"),
             ({"volume", "trading", "attention"}, "market.volume_move_observed"),
+            ({"short", "interest", "float", "cover"}, "market.short_interest_observed"),
             ({"analyst", "rating", "upgrade", "downgrade"}, "analyst.rating_action"),
             ({"target", "price"}, "analyst.price_target_action"),
             ({"earnings", "eps", "revenue", "quarter"}, "earnings.performance"),

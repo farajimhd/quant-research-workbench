@@ -111,6 +111,10 @@ class MigrationTest(unittest.TestCase):
             ("corporate_transaction.asset_sale", "heuristic"),
         )
         self.assertEqual(
+            registry.resolve("short percent of float"),
+            ("market.short_interest_observed", "heuristic"),
+        )
+        self.assertEqual(
             registry.resolve("listing.minimum_bid_deficiency"),
             ("listing.market_structure", "exact_alias"),
         )
