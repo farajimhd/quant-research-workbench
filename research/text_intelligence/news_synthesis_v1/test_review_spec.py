@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from research.text_intelligence.news_synthesis_v1.review_spec import compile_review_spec
+from research.text_intelligence.news_synthesis_v1.review_spec import (
+    compile_approved_draft,
+    compile_review_spec,
+)
 
 
 class ReviewSpecTest(unittest.TestCase):
@@ -143,6 +146,15 @@ class ReviewSpecTest(unittest.TestCase):
             {"fact_type": "money", "raw": "$10B", "value": "10", "currency": "USD", "magnitude": "billion"},
         ])
 
+    def test_historical_benzinga_euro_marker_is_not_usd(self) -> None:
+        from research.text_intelligence.news_synthesis_v1.facts import extract_typed_facts
+
+        facts = extract_typed_facts([{"quote": "AbbVie issued E$3.6B of debt."}])
+        self.assertEqual(facts, [{
+            "fact_type": "money", "raw": "E$3.6B", "value": "3.6",
+            "currency": "EUR", "magnitude": "billion",
+        }])
+
     def test_generic_numbers_keep_magnitudes_and_reject_identifiers(self) -> None:
         from research.text_intelligence.news_synthesis_v1.facts import extract_typed_facts
 
@@ -154,6 +166,35 @@ class ReviewSpecTest(unittest.TestCase):
             {"fact_type": "number", "raw": "63", "value": "63", "magnitude": "units"},
             {"fact_type": "number", "raw": "750K", "value": "750", "magnitude": "thousand"},
         ])
+
+    def test_percentage_range_preserves_both_bounds(self) -> None:
+        from research.text_intelligence.news_synthesis_v1.facts import extract_typed_facts
+
+        facts = extract_typed_facts([{
+            "quote": "Sales growth 18-22%, licensing 10%-20%, and margin 40 to 44 percent."
+        }])
+        self.assertEqual(facts, [
+            {
+                "fact_type": "percentage_range", "raw": "18-22%",
+                "lower_value": "18", "upper_value": "22",
+            },
+            {
+                "fact_type": "percentage_range", "raw": "10%-20%",
+                "lower_value": "10", "upper_value": "20",
+            },
+            {
+                "fact_type": "percentage_range", "raw": "40 to 44 percent",
+                "lower_value": "40", "upper_value": "44",
+            },
+        ])
+
+    def test_time_with_seconds_is_one_fact(self) -> None:
+        from research.text_intelligence.news_synthesis_v1.facts import extract_typed_facts
+
+        self.assertEqual(
+            extract_typed_facts([{"quote": "Halted at 7:50:00 p.m. ET"}]),
+            [{"fact_type": "time", "raw": "7:50:00 p.m. ET"}],
+        )
 
     def test_security_cannot_be_claim_source(self) -> None:
         article = {
@@ -177,6 +218,80 @@ class ReviewSpecTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(RuntimeError, "claim_source_entity_kind"):
             compile_review_spec(article, spec)
+
+    def test_approved_draft_removes_migration_and_refreshes_derived_products(self) -> None:
+        article = {
+            "sample_id": "N1", "source_id": "source",
+            "source_timestamp": "2026-01-01T12:00:00Z",
+            "source_text_sha256": "f" * 64,
+            "rendered_product": {"text": "ABC raised guidance to E$3.6B."},
+        }
+        spec = {
+            "sample_id": "N1", "review_notes": "Reviewed.",
+            "envelope": {
+                field: {"value": value, "evidence": ["ABC raised guidance to E$3.6B."]}
+                for field, value in {
+                    "document_structure": "single_subject",
+                    "communication_purpose": "report",
+                    "information_origin": "issuer",
+                    "production_method": "original",
+                    "text_availability": "rendered",
+                }.items()
+            },
+            "entities": [{
+                "entity_id": "issuer:abc", "entity_kind": "issuer",
+                "display_name": "ABC", "identity_status": "resolved",
+                "identity_evidence": ["ABC"],
+            }],
+            "statements": [{
+                "statement_kind": "event", "concept_leaf": "guidance.issued",
+                "epistemic_status": "confirmed", "time_relation": "current",
+                "evidence": ["ABC raised guidance to E$3.6B."],
+                "participations": [{
+                    "entity_id": "issuer:abc", "semantic_role": "affected_subject",
+                    "discourse_role": "none", "semantic_sentiment": "positive",
+                    "sentiment_strength": 3,
+                }],
+            }],
+        }
+        draft = compile_review_spec(article, spec)
+        draft["concept_registry_version"] = "stale"
+        draft["statements"][0]["typed_facts"] = []
+        draft["statements"][0]["evidence_spans"][0]["source_field"] = "title"
+        draft["statements"][0]["evidence_spans"][0]["start"] = 99
+        draft["statements"][0]["evidence_spans"][0]["end"] = 130
+        draft["issuer_views"] = []
+        draft["synthesis"] = {"wrong": True}
+        draft["eligibility"] = []
+
+        approved = compile_approved_draft(article, draft)
+
+        self.assertIn("migration", approved)
+        self.assertNotEqual(approved["concept_registry_version"], "stale")
+        self.assertTrue(all(
+            row["rule_id"] == "manual_review_v1_approved_draft"
+            for row in approved["envelope"].values()
+        ))
+        self.assertEqual(approved["statements"][0]["typed_facts"], [{
+            "fact_type": "money", "raw": "E$3.6B", "value": "3.6",
+            "currency": "EUR", "magnitude": "billion",
+        }])
+        self.assertEqual(
+            approved["statements"][0]["evidence_spans"][0]["source_field"],
+            "rendered_text",
+        )
+        self.assertEqual(len(approved["issuer_views"]), 1)
+        self.assertEqual(
+            approved["synthesis"]["renderer_version"],
+            "news_synthesis_renderer_v1",
+        )
+        self.assertTrue(any(row["product"] == "forecast_trigger" for row in approved["eligibility"]))
+
+    def test_approved_draft_rejects_fallback_concept(self) -> None:
+        article = {"sample_id": "N1"}
+        draft = {"sample_id": "N1", "statements": [{"concept_leaf": "unclassified"}]}
+        with self.assertRaisesRegex(RuntimeError, "unresolved concept"):
+            compile_approved_draft(article, draft)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 from typing import Any, Mapping
 
 from research.text_intelligence.news_synthesis_v1.contracts import CONTRACT_VERSION, validate_document
-from research.text_intelligence.news_synthesis_v1.facts import extract_typed_facts
 from research.text_intelligence.news_synthesis_v1.registry import ConceptRegistry
-from research.text_intelligence.news_synthesis_v1.synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
+from research.text_intelligence.news_synthesis_v1.facts import extract_typed_facts
+from research.text_intelligence.news_synthesis_v1.synthesis import (
+    derive_eligibility,
+    derive_issuer_views,
+    derive_synthesis,
+)
 
 
 def compile_review_spec(article: Mapping[str, Any], spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -108,6 +113,66 @@ def compile_review_spec(article: Mapping[str, Any], spec: Mapping[str, Any]) -> 
     validation = validate_document(document)
     if not validation.valid:
         raise RuntimeError(f"Invalid V1 review specification for {sample_id}: {validation.issues}")
+    return document
+
+
+def compile_approved_draft(
+    article: Mapping[str, Any],
+    draft: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Recompile a manually approved V1 draft for certification.
+
+    This path is intentionally narrow: the reviewer may approve an unchanged
+    V1 semantic draft, but the compiler still refreshes typed facts, the active
+    concept-registry version, issuer views, synthesis and eligibility. It never
+    copies prior annotation fields into the certified authority. Temporary
+    migration provenance remains only until the certifier replaces it with the
+    required certification provenance.
+    """
+    if str(article.get("sample_id")) != str(draft.get("sample_id")):
+        raise RuntimeError("Approved-draft sample identity mismatch")
+    registry = ConceptRegistry.load()
+    document = deepcopy(dict(draft))
+    document["concept_registry_version"] = registry.version
+    for decision in document.get("envelope", {}).values():
+        if isinstance(decision, dict):
+            decision["rule_id"] = "manual_review_v1_approved_draft"
+    for statement in document.get("statements", []):
+        concept = str(statement.get("concept_leaf", ""))
+        if concept == registry.fallback_leaf or not registry.contains(concept):
+            raise RuntimeError(f"Approved draft has unresolved concept: {concept}")
+        statement["evidence_spans"] = [
+            _resolve_evidence(
+                article,
+                {"quote": str(span.get("quote", ""))},
+                statement=True,
+            )
+            for span in statement.get("evidence_spans", [])
+        ]
+        statement["typed_facts"] = extract_typed_facts(
+            list(statement.get("evidence_spans", []))
+        )
+    entities = list(document.get("entities", []))
+    statements = list(document.get("statements", []))
+    participations = list(document.get("participations", []))
+    issuer_views = derive_issuer_views(entities, participations)
+    document["issuer_views"] = issuer_views
+    document["synthesis"] = derive_synthesis(
+        entities=entities,
+        statements=statements,
+        participations=participations,
+        issuer_views=issuer_views,
+    )
+    document["eligibility"] = derive_eligibility(
+        entities=entities,
+        statements=statements,
+        participations=participations,
+        envelope=document["envelope"],
+        quality_flags=document.get("quality_flags", []),
+    )
+    validation = validate_document(document)
+    if not validation.valid:
+        raise RuntimeError(f"Invalid manually approved V1 draft for {draft.get('sample_id')}: {validation.issues}")
     return document
 
 

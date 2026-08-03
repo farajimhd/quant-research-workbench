@@ -335,7 +335,7 @@ def render_review_packet(article: Mapping[str, Any], draft: Mapping[str, Any], *
             row = participation.get((statement["statement_id"], entity["entity_id"]))
             if row:
                 lines.append(
-                    f"- {entity['ticker'] or entity['display_name']}: role `{row['semantic_role']}`, "
+                    f"- {entity.get('ticker') or entity['display_name']}: role `{row['semantic_role']}`, "
                     f"discourse `{row['discourse_role']}`, sentiment `{row['semantic_sentiment']}` "
                     f"strength `{row['sentiment_strength']}`"
                 )
