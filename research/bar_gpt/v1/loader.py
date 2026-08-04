@@ -1401,6 +1401,17 @@ def prepare_session_context(
     can contain many origin blocks, while its raw history, fixed-bucket
     rollups, and calendar context are identical across those blocks.
     """
+    session_start = int(session.bar_start_us[0])
+    session_end = int(session.available_at_us[-1])
+    mid_session_actions = [
+        action for action in split_actions
+        if session_start < int(action.effective_at_us) <= session_end
+    ]
+    if mid_session_actions:
+        raise RuntimeError(
+            "BarGPT requires split actions to become effective at or before the first session bar; "
+            f"found mid-session actions for {local_date}"
+        )
     warmup_rows = max(int(config.context_bars_1s), int(config.intraday_warmup_bars_1s))
     combined, halo_count = concatenate_views(
         prior_session if config.prior_session_halo else None,
