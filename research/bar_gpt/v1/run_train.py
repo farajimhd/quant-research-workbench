@@ -18,11 +18,11 @@ DEFAULT_ARGS: dict[str, str] = {
     "--origin-fetch-candidate-blocks": "16",
     "--origin-emit-blocks-per-chunk": "16",
     "--validation-blocks-per-slice": "4",
-    # Selected on the worker-owned iterable profile: 50,923 origins/s with
-    # 41.9% reserved GPU memory.  The effective update size remains
+    # Selected on the full-universe worker-owned profile: 52,138 origins/s
+    # with 41.7% reserved GPU memory.  The effective update size remains
     # 4,096 origins x 16 examples x 2 accumulated microbatches.
     "--batch-size": "16",
-    "--loader-workers": "12",
+    "--loader-workers": "16",
     "--ready-queue-blocks": "128",
     "--worker-prefetch-batches": "2",
     "--clickhouse-max-threads-per-worker": "1",

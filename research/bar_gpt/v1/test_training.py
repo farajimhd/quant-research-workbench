@@ -544,7 +544,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--batch-size"], "16")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
-        self.assertEqual(training_launcher_args["--loader-workers"], "12")
+        self.assertEqual(training_launcher_args["--loader-workers"], "16")
         config = TrainConfig(warmup_samples=0, warmup_fraction=0.01)
         self.assertEqual(_resolved_warmup_samples(config, 7_563_836_672), 75_638_367)
         config.warmup_samples = 12_345
@@ -763,7 +763,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--batch-size"], "16")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
-        self.assertEqual(training_launcher_args["--loader-workers"], "12")
+        self.assertEqual(training_launcher_args["--loader-workers"], "16")
         self.assertEqual(training_launcher_args["--ready-queue-blocks"], "128")
 
     def test_holdout_and_regime_resampling_are_deterministic(self) -> None:
