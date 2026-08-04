@@ -91,18 +91,17 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Profile the complete BarGPT loader, target, model, backward and optimizer path.")
     parser.add_argument("--start-date", default="2025-10-01")
     parser.add_argument("--end-date", default="2026-01-01")
-    parser.add_argument("--tickers", default="MSFT,AMD,INTC,JPM")
+    parser.add_argument("--tickers", default=",".join(DataConfig().training_tickers))
     parser.add_argument(
         "--candidates",
         default=(
-            "4096:8:4:8:1:0,4096:8:4:12:1:0,"
-            "4096:16:2:8:1:0,4096:16:2:12:1:0,"
-            "4096:32:1:8:1:0,8192:8:2:12:1:0"
+            "4096:16:2:12:1:0,4096:16:2:16:1:0,4096:16:2:24:1:0"
         ),
         help="origin:microbatch:accumulation:workers:cuda_prefetch:compile entries",
     )
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument("--measured-steps", type=int, default=8)
+    parser.add_argument("--ready-queue-blocks", type=int, default=128)
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
@@ -126,6 +125,7 @@ def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
         origin_bars_1s=candidate.origin_bars,
         batch_size=candidate.microbatch,
         loader_workers=candidate.workers,
+        ready_queue_blocks=int(args.ready_queue_blocks),
         coverage_mode="sequential",
         coverage_blocks_per_unit=16,
     )

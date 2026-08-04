@@ -10,13 +10,11 @@ from research.bar_gpt.v1.profile_train import main
 DEFAULT_ARGS: tuple[str, ...] = (
     "--start-date", "2025-10-01",
     "--end-date", "2026-01-01",
-    "--tickers", "MSFT,AMD,INTC,JPM,AAPL,NVDA,TSLA,AMZN,META,BAC,F,SOFI",
     "--candidates",
     (
-        "4096:8:4:8:1:0,4096:8:4:12:1:0,"
-        "4096:16:2:8:1:0,4096:16:2:12:1:0,"
-        "4096:32:1:8:1:0,8192:8:2:12:1:0"
+        "4096:16:2:12:1:0,4096:16:2:16:1:0,4096:16:2:24:1:0"
     ),
+    "--ready-queue-blocks", "128",
     "--warmup-steps", "2",
     "--measured-steps", "12",
     "--progress-layout", "auto",

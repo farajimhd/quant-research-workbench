@@ -50,6 +50,7 @@ from research.bar_gpt.v1.train import (
     _batch_eligibility_metrics,
     _checkpoint_policy,
     _mask_inactive_condition_targets,
+    PreparedValidationBatches,
     _validation_milestones,
     _resolved_warmup_samples,
     _resume_data_contract,
@@ -116,6 +117,19 @@ class LoaderTrainerContractTest(unittest.TestCase):
             milestones[1:3],
             (round(7_563_836_672 / 3), round(2 * 7_563_836_672 / 3)),
         )
+
+    def test_fixed_validation_batches_materialize_once_and_reiterate(self) -> None:
+        first = {"batch": 1}
+        second = {"batch": 2}
+        loader = torch.utils.data.DataLoader([first, second], batch_size=None, num_workers=0)
+        cached = PreparedValidationBatches(loader)
+        try:
+            self.assertEqual(list(cached), [first, second])
+            self.assertEqual(list(cached), [first, second])
+            self.assertTrue(cached.ready)
+            self.assertEqual(cached.batch_count, 2)
+        finally:
+            cached.close()
 
     def test_inactive_condition_channels_are_loss_ineligible(self) -> None:
         batch = SimpleNamespace(horizon_mask=torch.ones((1, 2, 3, 12), dtype=torch.bool))
@@ -742,17 +756,15 @@ class LoaderTrainerContractTest(unittest.TestCase):
         launcher_candidates = profile_launcher_args[profile_launcher_args.index("--candidates") + 1]
         parsed = _parse_candidates(launcher_candidates)
         shapes = [(item.origin_bars, item.microbatch, item.accumulation) for item in parsed]
-        self.assertIn((4096, 8, 4), shapes)
         self.assertIn((4096, 16, 2), shapes)
-        self.assertIn((4096, 32, 1), shapes)
-        self.assertIn((8192, 8, 2), shapes)
-        self.assertLessEqual(max(item.workers for item in parsed), 12)
+        self.assertEqual({item.workers for item in parsed}, {12, 16, 24})
 
     def test_training_launcher_uses_selected_worker_owned_profile(self) -> None:
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--batch-size"], "16")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
         self.assertEqual(training_launcher_args["--loader-workers"], "12")
+        self.assertEqual(training_launcher_args["--ready-queue-blocks"], "128")
 
     def test_holdout_and_regime_resampling_are_deterministic(self) -> None:
         tickers = tuple(f"T{index:02d}" for index in range(20))

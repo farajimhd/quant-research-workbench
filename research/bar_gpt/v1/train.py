@@ -9,6 +9,7 @@ import random
 import re
 import signal
 import sys
+import threading
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -744,9 +745,19 @@ def _loaders(
     stream = _stream_config(config.data)
     if validation_plan is None:
         raise ValueError("real training requires the bounded validation block plan")
-    # A single persistent validation worker progresses through each held-out
-    # ticker/slice without duplicating its warmup cache across workers.
-    validation_data = replace(config.data, loader_workers=1, balance_activity_regimes=False)
+    # The fixed held-out panel can be prepared once in parallel with training.
+    # Use the training batch shape but no more workers than held-out tickers;
+    # extra workers would only duplicate causal warmups for this finite panel.
+    validation_workers = min(
+        int(config.data.loader_workers),
+        len({ticker for ticker, _start, _end in config.data.validation_slices}),
+    )
+    validation_data = replace(
+        config.data,
+        loader_workers=validation_workers,
+        persistent_workers=False,
+        balance_activity_regimes=False,
+    )
     validation_dataset = BarGPTSequentialDataset(
         data_config=validation_data,
         stream_config=stream,
@@ -874,10 +885,63 @@ def _batch_eligibility_metrics(batch: BarGPTBatch) -> dict[str, torch.Tensor]:
     return result
 
 
+class PreparedValidationBatches:
+    """Materialize the fixed held-out panel once while training begins."""
+
+    def __init__(self, loader: DataLoader[Any]) -> None:
+        # Construct the DataLoader iterator on the caller thread so worker
+        # process creation is safe on Windows; consume it in a background
+        # thread while training workers fetch their own ticker shards.
+        self._iterator = iter(loader)
+        self._ready = threading.Event()
+        self._batches: tuple[BarGPTBatch, ...] = ()
+        self._failure: BaseException | None = None
+        self._thread = threading.Thread(
+            target=self._materialize,
+            name="bar-gpt-validation-cache",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _materialize(self) -> None:
+        try:
+            self._batches = tuple(self._iterator)
+            if not self._batches:
+                raise RuntimeError("fixed validation panel produced no batches")
+        except BaseException as exc:
+            self._failure = exc
+        finally:
+            shutdown = getattr(self._iterator, "_shutdown_workers", None)
+            if callable(shutdown):
+                shutdown()
+            self._ready.set()
+
+    @property
+    def ready(self) -> bool:
+        return self._ready.is_set()
+
+    @property
+    def batch_count(self) -> int:
+        return len(self._batches) if self._ready.is_set() and self._failure is None else 0
+
+    def __iter__(self) -> Iterator[BarGPTBatch]:
+        self._ready.wait()
+        if self._failure is not None:
+            raise RuntimeError("fixed validation panel preparation failed") from self._failure
+        return iter(self._batches)
+
+    def close(self) -> None:
+        if not self._ready.is_set():
+            shutdown = getattr(self._iterator, "_shutdown_workers", None)
+            if callable(shutdown):
+                shutdown()
+        self._thread.join(timeout=30.0)
+
+
 @torch.no_grad()
 def validate(
     model: torch.nn.Module,
-    loader: DataLoader[Any],
+    loader: Iterable[BarGPTBatch],
     config: ExperimentConfig,
     device: torch.device,
 ) -> dict[str, float]:
@@ -1243,6 +1307,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         sequential_plan=sequential_block_plan,
         validation_plan=bounded_validation_plan,
     )
+    validation_cache = PreparedValidationBatches(validation_loader)
     resumed_wandb_id = restored.get("wandb_run_id")
     if args.resume_checkpoint and config.train.wandb_mode != "disabled" and not resumed_wandb_id:
         raise RuntimeError(
@@ -1371,6 +1436,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "Condition targets: active=" + evidence["condition_active_targets"]
                 + "; loss-ineligible=" + evidence["condition_inactive_targets"]
             )
+            reporter.message("Preparing fixed validation panel in parallel with training")
             for epoch in range(resume_epoch, max(1, config.train.epochs)):
                 current_epoch = epoch
                 if epoch != resume_epoch:
@@ -1588,7 +1654,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                             iterator.close()
                             active_iterator = None
                             reporter.message("Training prefetch paused for isolated validation")
-                            last_val = validate(model, validation_loader, config, device)
+                            if not validation_cache.ready:
+                                reporter.message("Waiting for initial fixed validation panel preparation")
+                            last_val = validate(model, validation_cache, config, device)
                             metrics_logger.log(last_val, samples_seen)
                             reporter.validation(last_val["val/loss"])
                             last_validation_samples = samples_seen
@@ -1598,7 +1666,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                             if not _INTERRUPTED and not (
                                 training_limit > 0 and samples_seen >= training_limit
                             ):
-                                train_loader, validation_loader = _loaders(
+                                train_loader, _unused_validation = _loaders(
                                     config,
                                     args,
                                     resume_cursors=durable_cursors,
@@ -1661,7 +1729,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 epoch_start_samples = samples_seen
                 durable_cursors = {}
                 if last_validation_samples != samples_seen:
-                    last_val = validate(model, validation_loader, config, device)
+                    if not validation_cache.ready:
+                        reporter.message("Waiting for initial fixed validation panel preparation")
+                    last_val = validate(model, validation_cache, config, device)
                     metrics_logger.log(last_val, samples_seen)
                     reporter.validation(last_val["val/loss"])
                     last_validation_samples = samples_seen
@@ -1738,6 +1808,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     finally:
         if active_iterator is not None:
             active_iterator.close()
+        validation_cache.close()
         checkpointer.close(wait=True, timeout=300)
         if wandb_run is not None:
             try:

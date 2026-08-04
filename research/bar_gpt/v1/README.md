@@ -310,15 +310,18 @@ resume; worker count may not, because it changes ticker ownership.
 Validation is a fixed eight-ticker, eight-week panel spanning liquid,
 high-volatility, sector, event-driven, and illiquid names in 2026. Those
 identities are excluded from training. Each slice contributes four fixed
-stratified blocks, at most 16 batches are evaluated, and validation runs four
-times per coverage epoch: an early checkpoint-sized health check, two evenly
-spaced intermediate checks, and one at completion. It reports loss,
+stratified blocks. The full panel is materialized once into a bounded host-RAM
+cache on background validation workers while training begins, then the same
+prepared batches are reused for every validation. Validation uses the training
+batch shape and CUDA transfer path, with workers capped at the eight held-out
+tickers. Validation runs 100 times per coverage epoch: an early
+checkpoint-sized health check, evenly spaced intermediate checks, and one at
+completion. It reports loss,
 per-horizon median MAE, return-sign accuracy, binary Brier score, quantile
 coverage, and rare-condition average precision. At an intermediate validation
-boundary, training prefetch is stopped first; validation owns the bounded
-ClickHouse worker budget, then training restarts from consumed durable cursors.
-Unconsumed cached blocks replay safely rather than competing with validation or
-being marked complete.
+boundary, training prefetch is stopped first; validation evaluates the already
+prepared host batches, then training restarts from consumed durable cursors.
+Unconsumed training blocks replay safely rather than being marked complete.
 
 Training refuses to start unless canonical one-second, daily, exact condition,
 and point-in-time alias coverage are certified and the q_live identity and
@@ -375,8 +378,9 @@ tokens/second, and peak device memory. OOM candidates fail independently; only
 candidates at or below 90% reserved memory are eligible. `torch.compile` remains an
 explicit opt-in candidate because Windows compilation can stall before the first measured
 update; it is not part of the bounded default sweep. The current default uses
-eight single-thread ClickHouse workers instead of increasing server threads per
-query; the final count remains subject to the sustained workstation profile.
+twelve single-thread ClickHouse workers instead of increasing server threads
+per query. The bounded follow-up sweep compares that baseline with sixteen and
+twenty-four workers on the complete training ticker universe.
 Twelve measured updates cross
 the initial worker/unit buffer so results include
 ticker-month turnover rather than only warm-queue throughput. Promote the selected profile
