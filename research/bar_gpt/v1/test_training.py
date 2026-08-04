@@ -528,8 +528,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
-        self.assertEqual(training_launcher_args["--batch-size"], "1")
-        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "1")
+        self.assertEqual(training_launcher_args["--batch-size"], "16")
+        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
+        self.assertEqual(training_launcher_args["--loader-workers"], "12")
         config = TrainConfig(warmup_samples=0, warmup_fraction=0.01)
         self.assertEqual(_resolved_warmup_samples(config, 7_563_836_672), 75_638_367)
         config.warmup_samples = 12_345
@@ -738,6 +739,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertIn((4096, 32, 1), shapes)
         self.assertIn((8192, 8, 2), shapes)
         self.assertLessEqual(max(item.workers for item in parsed), 12)
+
+    def test_training_launcher_uses_selected_worker_owned_profile(self) -> None:
+        self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
+        self.assertEqual(training_launcher_args["--batch-size"], "16")
+        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
+        self.assertEqual(training_launcher_args["--loader-workers"], "12")
 
     def test_holdout_and_regime_resampling_are_deterministic(self) -> None:
         tickers = tuple(f"T{index:02d}" for index in range(20))
