@@ -994,7 +994,13 @@ def restore_checkpoint(
 
 
 def _resume_data_contract(data: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in data.items() if key not in _RESUME_RUNTIME_DATA_FIELDS}
+    contract = {key: value for key, value in data.items() if key not in _RESUME_RUNTIME_DATA_FIELDS}
+    # Checkpoints written before the worker-owned iterable stream had no
+    # version field and carried one global map-loader cursor.  Interpret those
+    # explicitly as v1 so a v2 run fails closed rather than replaying/mixing
+    # worker shards under incompatible cursor semantics.
+    contract.setdefault("loader_stream_contract_version", 1)
+    return contract
 
 
 def _cursor_map(values: dict[str, Any] | None) -> dict[int, CoverageCursor]:

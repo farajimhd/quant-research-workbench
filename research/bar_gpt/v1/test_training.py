@@ -590,6 +590,14 @@ class LoaderTrainerContractTest(unittest.TestCase):
         changed_sampling = {**base, "origin_fetch_candidate_blocks": 8}
         self.assertNotEqual(_resume_data_contract(base), _resume_data_contract(changed_sampling))
 
+    def test_legacy_map_loader_checkpoint_cannot_resume_worker_owned_stream(self) -> None:
+        legacy = _resume_data_contract({"context_bars_1s": 720})
+        worker_owned = _resume_data_contract(
+            {"context_bars_1s": 720, "loader_stream_contract_version": 2}
+        )
+        self.assertEqual(legacy["loader_stream_contract_version"], 1)
+        self.assertNotEqual(legacy, worker_owned)
+
     def test_exchange_clock_encoding_is_absolute_not_window_relative(self) -> None:
         raw = session_view(3).features
         timestamps = torch.as_tensor(

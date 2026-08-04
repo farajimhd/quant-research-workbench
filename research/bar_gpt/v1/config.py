@@ -74,6 +74,9 @@ class BarGPTConfig:
 
 @dataclass(slots=True)
 class DataConfig:
+    # Versioned because worker-owned iterable cursors are not compatible with
+    # the former map-style global cursor stored in older checkpoints.
+    loader_stream_contract_version: int = 2
     database: str = "market_sip_compact"
     one_second_table: str = BAR_GPT_COHORT_2TB_TABLE
     manifest_table: str = BAR_GPT_COHORT_2TB_MANIFEST_TABLE
@@ -164,6 +167,8 @@ class DataConfig:
         return tuple(ticker for ticker in self.tickers if ticker not in validation)
 
     def validate(self) -> None:
+        if self.loader_stream_contract_version != 2:
+            raise ValueError("this BarGPT version requires loader_stream_contract_version=2")
         if "split_adjusted" in self.one_second_table or self.daily_table.endswith("_adjusted"):
             raise ValueError("globally adjusted bar authorities are retired; use raw bars with causal split metadata")
         if len(self.tickers) < 2:
