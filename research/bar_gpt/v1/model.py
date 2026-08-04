@@ -211,12 +211,15 @@ class BarGPTV1(nn.Module):
         autoregressive = {}
         latent_predictions = {}
         for name, state in encoded.items():
-            if state.shape[1] > 1:
-                autoregressive[name] = torch.cat(
-                    (self.autoregressive_continuous_head(state[:, :-1]), self.autoregressive_availability_head(state[:, :-1])),
-                    dim=-1,
-                )
-                latent_predictions[name] = self.latent_prediction_head(state[:, :-1])
+            # Every configured view owns a stable output contract. A view with
+            # fewer than two completed bars has no next-bar supervision, but
+            # its heads still return [B,0,*] so loss/diagnostic schemas cannot
+            # change between gradient-accumulation microbatches.
+            autoregressive[name] = torch.cat(
+                (self.autoregressive_continuous_head(state[:, :-1]), self.autoregressive_availability_head(state[:, :-1])),
+                dim=-1,
+            )
+            latent_predictions[name] = self.latent_prediction_head(state[:, :-1])
         quantiles = None
         availability_logits = None
         if horizon_ids is not None:

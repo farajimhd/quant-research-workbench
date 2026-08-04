@@ -533,6 +533,20 @@ def _loaders(
     return make_dataloader(train_dataset, config.data, drop_last=True), make_dataloader(validation_dataset, config.data, drop_last=False)
 
 
+def _training_prefetcher(
+    loader: DataLoader[Any],
+    config: ExperimentConfig,
+    device: torch.device,
+) -> DeviceBatchPrefetcher:
+    host_cache_batches = max(1, math.ceil(config.data.ready_queue_blocks / config.data.batch_size))
+    return DeviceBatchPrefetcher(
+        loader,
+        device,
+        enabled=config.train.cuda_prefetch,
+        host_cache_batches=host_cache_batches,
+    )
+
+
 def _amp_dtype(name: str) -> torch.dtype:
     return {"bf16": torch.bfloat16, "fp16": torch.float16, "float32": torch.float32}[name]
 
@@ -929,13 +943,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                             for worker, cursor in sorted(durable_cursors.items())
                         )
                     )
-                host_cache_batches = max(1, math.ceil(config.data.ready_queue_blocks / config.data.batch_size))
-                iterator = DeviceBatchPrefetcher(
-                    train_loader,
-                    device,
-                    enabled=config.train.cuda_prefetch,
-                    host_cache_batches=host_cache_batches,
-                )
+                iterator = _training_prefetcher(train_loader, config, device)
                 active_iterator = iterator
                 optimizer.zero_grad(set_to_none=True)
                 accumulation_count = 0
@@ -977,6 +985,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 f"non-finite training loss at microbatch {batches_seen + accumulation_count + 1}: {detail}"
                             )
                         check, check_names = _finite_check_vector(result, batch)
+                        if finite_check_names and check_names != finite_check_names:
+                            raise RuntimeError(
+                                "training metric schema changed inside one optimizer update: "
+                                f"expected={finite_check_names}, actual={check_names}, "
+                                f"batch={list(zip(batch.tickers, batch.local_dates, strict=True))}"
+                            )
                         finite_checks.append(check)
                         finite_check_names = check_names
                         finite_check_batches.append(str(list(zip(batch.tickers, batch.local_dates, strict=True))))
@@ -1096,12 +1110,34 @@ def main(argv: Iterable[str] | None = None) -> int:
                             samples_seen >= next_validation
                             and validation_runs_in_epoch < config.train.validation_runs_per_epoch - 1
                         ):
+                            # Do not let a full training cache continue issuing
+                            # ClickHouse work while the held-out loader starts
+                            # its own workers. Durable cursors describe only
+                            # consumed batches, so rebuilding after validation
+                            # safely replays any discarded prefetched blocks.
+                            iterator.close()
+                            active_iterator = None
+                            reporter.message("Training prefetch paused for isolated validation")
                             last_val = validate(model, validation_loader, config, device)
                             metrics_logger.log(last_val, samples_seen)
                             reporter.validation(last_val["val/loss"])
                             last_validation_samples = samples_seen
                             validation_runs_in_epoch += 1
                             next_validation = samples_seen + validation_interval
+                            if not _INTERRUPTED and not (
+                                training_limit > 0 and samples_seen >= training_limit
+                            ):
+                                train_loader, validation_loader = _loaders(
+                                    config,
+                                    args,
+                                    resume_cursors=durable_cursors,
+                                )
+                                if isinstance(train_loader.dataset, BarGPTIterableDataset):
+                                    train_loader.dataset.epoch = epoch
+                                iterator = _training_prefetcher(train_loader, config, device)
+                                active_iterator = iterator
+                                pending_cursors = dict(durable_cursors)
+                                reporter.message("Training prefetch resumed from durable worker cursors")
                         latest_due = samples_seen // max(1, config.train.checkpoint_latest_samples) > checkpointer.last_latest_bucket
                         payload_latest_samples = samples_seen if latest_due else last_latest_samples
                         snapshot_cursors = dict(durable_cursors)
@@ -1184,7 +1220,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         checkpointer.close(wait=True, timeout=300)
         if wandb_run is not None:
             try:
-                wandb_run.finish()
+                exit_code = 130 if _INTERRUPTED else (1 if sys.exc_info()[0] is not None else 0)
+                wandb_run.finish(exit_code=exit_code)
             except Exception:
                 pass
     write_model_card(

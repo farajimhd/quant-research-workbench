@@ -20,6 +20,15 @@ class _ProducerFailure:
 _END = object()
 
 
+def _shutdown_loader_iterator(iterator: Iterator[BarGPTBatch] | None) -> None:
+    """Synchronously release multiprocessing DataLoader workers when present."""
+    if iterator is None:
+        return
+    shutdown = getattr(iterator, "_shutdown_workers", None)
+    if callable(shutdown):
+        shutdown()
+
+
 class HostBatchCache:
     """Continuously fill a bounded RAM cache from a DataLoader iterator."""
 
@@ -108,7 +117,15 @@ class HostBatchCache:
                 self._queue.get_nowait()
             except queue.Empty:
                 break
-        self._thread.join(timeout=2.0)
+        # PyTorch exposes no public iterator-cancellation API. Its iterator
+        # owns the worker processes and their outstanding ClickHouse reads, so
+        # use the guarded iterator shutdown hook before validation starts a new
+        # bounded worker pool. Merely stopping this producer thread leaves
+        # persistent workers querying in the background.
+        _shutdown_loader_iterator(self._iterator)
+        self._thread.join(timeout=30.0)
+        if self._thread.is_alive():
+            raise RuntimeError("host batch-cache producer did not stop after DataLoader shutdown")
 
 
 class DeviceBatchPrefetcher:
@@ -190,6 +207,9 @@ class DeviceBatchPrefetcher:
     def close(self) -> None:
         if self.host_cache is not None:
             self.host_cache.close()
+        else:
+            _shutdown_loader_iterator(self.iterator)
+            self.iterator = None
 
     def __enter__(self) -> "DeviceBatchPrefetcher":
         return self

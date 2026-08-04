@@ -241,9 +241,21 @@ is cumulative across all epochs or stops at an explicit `--max-samples`
 diagnostic cap. One origin is one supervised one-second prediction anchor. The
 default has one epoch, so its epoch and full-run budgets are identical.
 
-One microbatch contains two 512-origin blocks. Four microbatches are accumulated
-before one optimizer update, normally 4,096 origins. Eight persistent loader
-workers use one ClickHouse thread each, two in-flight batches per worker, and a
+One block is one ticker and one contiguous 512-second origin interval. It is
+one efficiently encoded sequence but contributes 512 distinct supervised
+origins and 512 distinct target sets—not one example with one target. The
+visible 1-second tensor contains 2,048 preceding context rows plus the 512
+origin rows. Causal attention lets the first origin use the preceding 2,048
+rows; each later origin may also use the earlier origin rows because those
+seconds are already known at its as-of time. Thus the last origin has a 2,559-row
+causal prefix. This is standard autoregressive packed-sequence training and is
+equivalent to 512 causal examples with shared computation, except that it does
+not impose a strict rolling 2,048-row attention window.
+
+One microbatch contains two such blocks, normally 1,024 supervised origins.
+Four microbatches are accumulated before one optimizer update, normally 4,096
+origins. Eight persistent loader workers use one ClickHouse thread each, two
+in-flight batches per worker, and a
 shared 64-block (32-batch) bounded RAM cache. One device batch transfers on a
 dedicated CUDA stream while the current batch computes. The terminal reports
 actual cache fill and per-update GPU duty so starvation is visible. Future target support
@@ -269,7 +281,11 @@ identities are excluded from training. Each slice contributes four fixed
 stratified blocks, at most 16 batches are evaluated, and validation runs four
 times per coverage epoch with the final run at completion. It reports loss,
 per-horizon median MAE, return-sign accuracy, binary Brier score, quantile
-coverage, and rare-condition average precision.
+coverage, and rare-condition average precision. At an intermediate validation
+boundary, training prefetch is stopped first; validation owns the bounded
+ClickHouse worker budget, then training restarts from consumed durable cursors.
+Unconsumed cached blocks replay safely rather than competing with validation or
+being marked complete.
 
 Training refuses to start unless canonical one-second, daily, exact condition,
 and point-in-time alias coverage are certified and the q_live identity and

@@ -330,6 +330,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
             asof_indices=batch.asof_indices,
             horizon_ids=torch.arange(2),
         )
+        self.assertEqual(set(output.autoregressive), set(batch.views))
+        self.assertEqual(set(output.latent_predictions), set(batch.views))
+        self.assertEqual(output.autoregressive["1MO"].shape[1], 0)
         loss = compute_loss(output, batch, TrainConfig(), model_config.quantiles)
         self.assertTrue(torch.isfinite(loss.loss))
         loss.loss.backward()
@@ -388,6 +391,35 @@ class LoaderTrainerContractTest(unittest.TestCase):
         second, _wait = prefetcher.next()
         self.assertEqual(second.origin_count, batch.origin_count)
         prefetcher.close()
+
+    def test_prefetch_close_releases_owned_loader_iterator(self) -> None:
+        examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=self.data_config()
+        ))[:2]
+        batch = collate_examples(examples)
+
+        class OwnedIterator:
+            def __init__(self) -> None:
+                self.shutdown = False
+                self.returned = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.returned:
+                    raise StopIteration
+                self.returned = True
+                return batch
+
+            def _shutdown_workers(self) -> None:
+                self.shutdown = True
+
+        owned = OwnedIterator()
+        prefetcher = DeviceBatchPrefetcher(owned, torch.device("cpu"), enabled=False)
+        prefetcher.close()
+        self.assertTrue(owned.shutdown)
 
     def test_profiler_candidate_contract_is_explicit(self) -> None:
         candidates = _parse_candidates("256:1:8:4:1,512:2:4:4:0:1")
