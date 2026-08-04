@@ -264,6 +264,91 @@ def origin_window_schedule(
     return tuple(selected)
 
 
+def validation_block_plan(
+    *,
+    data_config: DataConfig,
+    stream_config: ClickHouseBarStreamConfig,
+) -> SequentialBlockPlan:
+    """Build the fixed held-out panel for the bounded sequential loader.
+
+    Validation deliberately shares the production session/cache path.  The
+    former iterable validation path independently materialized ticker-month
+    condition and one-second data, so it could neither represent the real
+    training loader nor remain bounded under a larger panel.
+    """
+    stream = ArrowStreamClient(stream_config)
+    sessions: list[SequentialSessionPlan] = []
+    starts: list[int] = []
+    unit_starts: list[int] = []
+    unit_counts: list[int] = []
+    global_block = 0
+    for unit_index, (ticker, start_date, end_date) in enumerate(data_config.validation_slices):
+        canonical = ticker.upper()
+        intervals = stream.read_identity_intervals(
+            (canonical,),
+            identity_database=data_config.identity_database,
+            interval_table=data_config.identity_interval_table,
+            entity_table=data_config.identity_entity_table,
+            event_table=data_config.identity_event_table,
+            coverage_start=data_config.daily_history_start_date,
+        )[canonical]
+        daily = stream.read_daily_view(
+            ticker=canonical,
+            start_date=data_config.daily_history_start_date,
+            end_date=end_date,
+            daily_table=data_config.daily_table,
+            source_intervals=intervals,
+        )
+        actions = stream.read_split_actions(
+            {canonical: intervals},
+            start_date=data_config.daily_history_start_date,
+            end_date=end_date,
+            split_database=data_config.split_database,
+            split_table=data_config.split_table,
+        )[canonical]
+        dates = daily[0] if daily is not None else []
+        windows = origin_window_schedule(
+            dates=[day for day in dates if day not in split_execution_dates(actions)],
+            start_date=start_date,
+            end_date=end_date,
+            count=int(data_config.validation_blocks_per_slice),
+            context_bars=int(data_config.intraday_warmup_bars_1s),
+            origin_bars=int(data_config.origin_bars_1s),
+            right_support_bars=int(data_config.right_support_bars_1s),
+            conditions_by_date={},
+            seed=17 + unit_index,
+        )
+        if not windows:
+            raise RuntimeError(f"validation slice {canonical} [{start_date},{end_date}) has no eligible origin windows")
+        unit_starts.append(global_block)
+        for unit_block, window in enumerate(windows):
+            starts.append(global_block)
+            sessions.append(
+                SequentialSessionPlan(
+                    unit_index=unit_index,
+                    ticker=canonical,
+                    unit_start_date=start_date,
+                    unit_end_date=end_date,
+                    local_date=window.local_date,
+                    prior_date=window.prior_date,
+                    first_origin=int(window.origin_bucket) - SESSION_START_SECOND,
+                    block_count=1,
+                    unit_block_start=unit_block,
+                    global_block_start=global_block,
+                )
+            )
+            global_block += 1
+        unit_counts.append(len(windows))
+    return SequentialBlockPlan(
+        sessions=tuple(sessions),
+        session_block_starts=tuple(starts),
+        unit_global_starts=tuple(unit_starts),
+        unit_block_counts=tuple(unit_counts),
+        total_blocks=global_block,
+        total_origins=global_block * int(data_config.origin_bars_1s),
+    )
+
+
 def provider_timeline_intervals(
     canonical_ticker: str,
     rows: list[tuple[str, str, str]],

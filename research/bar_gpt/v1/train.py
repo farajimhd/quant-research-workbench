@@ -10,7 +10,7 @@ import re
 import signal
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -37,6 +37,7 @@ from research.bar_gpt.v1.loader import (
     make_dataloader,
     make_sequential_dataloader,
     month_units,
+    validation_block_plan,
 )
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
 from research.bar_gpt.v1.sampling import CoverageCursor, coverage_plan_summary
@@ -733,6 +734,7 @@ def _loaders(
     *,
     resume_cursors: dict[int, CoverageCursor] | None = None,
     sequential_plan: SequentialBlockPlan | None = None,
+    validation_plan: SequentialBlockPlan | None = None,
 ) -> tuple[DataLoader[Any], DataLoader[Any]]:
     if args.dummy_data:
         example = _dummy_example(config.data)
@@ -741,8 +743,17 @@ def _loaders(
         common = dict(batch_size=config.data.batch_size, num_workers=0, collate_fn=collate_examples)
         return DataLoader(train_dataset, **common), DataLoader(validation_dataset, **common)
     stream = _stream_config(config.data)
-    validation_dataset = BarGPTIterableDataset(data_config=config.data, stream_config=stream, split="validation", seed=config.train.seed)
-    validation_loader = make_dataloader(validation_dataset, config.data, drop_last=False)
+    if validation_plan is None:
+        raise ValueError("real training requires the bounded validation block plan")
+    # A single persistent validation worker progresses through each held-out
+    # ticker/slice without duplicating its warmup cache across workers.
+    validation_data = replace(config.data, loader_workers=1, balance_activity_regimes=False)
+    validation_dataset = BarGPTSequentialDataset(
+        data_config=validation_data,
+        stream_config=stream,
+        plan=validation_plan,
+    )
+    validation_loader = make_sequential_dataloader(validation_dataset, validation_data)
     if config.data.coverage_mode == "sequential":
         if sequential_plan is None:
             raise ValueError("sequential training requires the certified global block plan")
@@ -1095,6 +1106,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     sequential_sessions = sequential_blocks = sequential_origins = 0
     sequential_unit_plans: dict[str, tuple[int, int]] = {}
     sequential_block_plan: SequentialBlockPlan | None = None
+    bounded_validation_plan: SequentialBlockPlan | None = None
     if not args.dummy_data and config.data.coverage_mode == "sequential":
         (
             sequential_sessions,
@@ -1110,6 +1122,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "training_origins_per_epoch": str(sequential_origins),
             }
         )
+    if not args.dummy_data:
+        bounded_validation_plan = validation_block_plan(
+            data_config=config.data,
+            stream_config=_stream_config(config.data),
+        )
+        evidence["validation_blocks"] = str(bounded_validation_plan.total_blocks)
+        evidence["validation_origins"] = str(bounded_validation_plan.total_origins)
     run_name = args.run_name or f"bar-gpt-v1-{time.strftime('%Y%m%d-%H%M%S')}"
     config.train.run_name = run_name
     run_root = Path(config.train.output_root) / run_name if args.output_root else default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, run_name)
@@ -1206,6 +1225,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         args,
         resume_cursors=resume_cursors,
         sequential_plan=sequential_block_plan,
+        validation_plan=bounded_validation_plan,
     )
     wandb_run = init_wandb(
         entity=config.train.wandb_entity,
@@ -1327,7 +1347,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                 current_epoch = epoch
                 if epoch != resume_epoch:
                     train_loader, _unused_validation = _loaders(
-                        config, args, resume_cursors={}, sequential_plan=sequential_block_plan
+                        config,
+                        args,
+                        resume_cursors={},
+                        sequential_plan=sequential_block_plan,
+                        validation_plan=bounded_validation_plan,
                     )
                     durable_cursors = {}
                     validation_runs_in_epoch = 0
@@ -1547,6 +1571,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                                     args,
                                     resume_cursors=durable_cursors,
                                     sequential_plan=sequential_block_plan,
+                                    validation_plan=bounded_validation_plan,
                                 )
                                 if isinstance(train_loader.dataset, BarGPTIterableDataset):
                                     train_loader.dataset.epoch = epoch

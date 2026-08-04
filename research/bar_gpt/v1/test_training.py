@@ -31,6 +31,7 @@ from research.bar_gpt.v1.loader import (
     month_units,
     origin_window_schedule,
     origin_windows_query,
+    validation_block_plan,
     worker_ticker_shards,
 )
 from research.bar_gpt.v1.sampling import CoverageCursor, SESSION_PHASES, coverage_plan_summary, select_stratified_examples
@@ -259,6 +260,35 @@ class LoaderTrainerContractTest(unittest.TestCase):
         # ticker-month; conditions are bounded to the predecessor/current pair.
         self.assertEqual(fake.session_ranges, [("2024-12-20", "2025-01-04")])
         self.assertEqual(fake.condition_ranges, [("2025-01-02", "2025-01-04")])
+
+    def test_validation_plan_uses_bounded_sequential_blocks(self) -> None:
+        config = self.data_config()
+        config.validation_slices = (("CCC", "2026-01-01", "2026-01-08"),)
+        config.validation_blocks_per_slice = 2
+
+        class FakeClient:
+            def __init__(self, _config) -> None:
+                pass
+
+            def read_identity_intervals(self, tickers, **_kwargs):
+                return {tickers[0]: (TickerInterval(tickers[0], tickers[0], "2019-01-01", "9999-12-31"),)}
+
+            def read_daily_view(self, **_kwargs):
+                dates = ["2025-12-31", "2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07"]
+                return dates, session_view(len(dates))
+
+            def read_split_actions(self, intervals, **_kwargs):
+                return {next(iter(intervals)): ()}
+
+        with patch("research.bar_gpt.v1.loader.ArrowStreamClient", FakeClient):
+            plan = validation_block_plan(
+                data_config=config,
+                stream_config=ClickHouseBarStreamConfig("http://localhost:8123", "", ""),
+            )
+        self.assertEqual(plan.total_blocks, 2)
+        self.assertEqual(plan.total_origins, 6)
+        self.assertEqual([item.ticker for item in plan.sessions], ["CCC", "CCC"])
+        self.assertTrue(all(item.block_count == 1 for item in plan.sessions))
 
     def test_calendar_context_is_present_while_calendar_ar_loss_is_event_timed(self) -> None:
         config = self.data_config()
