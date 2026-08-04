@@ -35,6 +35,9 @@ requires a new checkpoint rather than resuming the current one.
 Every run writes reviewable architecture evidence to its runtime
 `artifacts/` directory: `model_details.json`, `model_parameters.jsonl`,
 `model_summary.txt`, `model_architecture.mmd`, and `model_architecture.md`.
+For interactive review, open `inspect_model.ipynb`; it renders the same
+torchinfo/torchview artifacts, prints real batch and target shapes, and runs a
+bounded checkpoint evaluation when `CHECKPOINT` is set.
 
 Training and production consume raw point-in-time SIP prices. The intraday
 authority is one rich row per completed active one-second bucket in
