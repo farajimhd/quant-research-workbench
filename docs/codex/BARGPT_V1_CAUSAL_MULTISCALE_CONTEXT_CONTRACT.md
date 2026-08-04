@@ -114,8 +114,12 @@ For each ticker-month work unit:
    state, including 1s, 5s, 10s, 30s, 1m, 5m, 30m, and 1h.
 4. Load the required daily history, normally approximately 365 daily session
    bars, and initialize daily, weekly, and monthly as-of state.
-5. Retain only bounded completed-bar rings and current in-progress aggregation
-   buckets. Warmup raw rows are discarded after they have been consumed.
+5. Retain the bounded rolling one-second history required by the largest
+   intraday physical lookback, plus completed-bar state and current
+   in-progress aggregation buckets. With the default 720 one-hour bars, this
+   is 30 market-clock days (2,592,000 one-second rows). Evict only rows older
+   than that moving maximum; they must remain available while they can still
+   contribute to a requested intraday context bar.
 
 ### Origin streaming
 
@@ -142,10 +146,13 @@ The loader should not reload or reaggregate the same warmup history for every
 origin. Warmup occurs once per ticker-month. Intraday aggregation then proceeds
 incrementally from the one-second stream.
 
-The long raw warmup should be streamed in Arrow/Polars batches and discarded
-after aggregation. The resident cache should contain only:
+The long raw warmup should be streamed in Arrow/Polars batches into one
+bounded rolling one-second context cache. Rows are evicted only after they
+fall outside the maximum configured intraday physical lookback. The resident
+cache should contain:
 
-- one bounded ring per intraday view;
+- the bounded one-second history required by the largest intraday view;
+- completed or derivable intraday context state for the configured views;
 - one bounded ring for daily bars;
 - weekly/monthly as-of aggregation state;
 - current incomplete intraday buckets;
