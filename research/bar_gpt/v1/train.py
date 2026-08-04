@@ -860,7 +860,7 @@ def _nonfinite_loss_diagnostic(result: BarGPTLoss, batch: BarGPTBatch) -> str:
 
 
 def _finite_check_vector(result: BarGPTLoss, batch: BarGPTBatch) -> tuple[torch.Tensor, tuple[str, ...]]:
-    """Build device-side checks that are transferred once per optimizer update."""
+    """Build device-side checks; CUDA checks are asserted on the active stream."""
     names: list[str] = ["loss"]
     checks: list[torch.Tensor] = [torch.isfinite(result.loss.detach())]
     for key, value in result.metrics.items():
@@ -870,6 +870,35 @@ def _finite_check_vector(result: BarGPTLoss, batch: BarGPTBatch) -> tuple[torch.
         names.append("valid_horizon_targets")
         checks.append(torch.isfinite(batch.horizon_targets[batch.horizon_mask]).all())
     return torch.stack(checks), tuple(names)
+
+
+def _assert_finite_before_step(
+    checks: list[torch.Tensor],
+    names: tuple[str, ...],
+    batches: list[str],
+    *,
+    device: torch.device,
+) -> None:
+    """Fail before an optimizer update without synchronizing normal CUDA work.
+
+    ``torch._assert_async`` is ordered before the optimizer kernels on the
+    default CUDA stream.  A non-finite loss therefore aborts that stream before
+    parameters can be updated, while a healthy run avoids a host round trip on
+    every update.  CPU retains the detailed synchronous diagnostic.
+    """
+    matrix = torch.stack(checks).detach()
+    if device.type == "cuda" and hasattr(torch, "_assert_async"):
+        torch._assert_async(matrix.all(), "BarGPT encountered a non-finite training value before optimizer step")
+        return
+    finite_matrix = matrix.cpu()
+    if bool(finite_matrix.all()):
+        return
+    bad_rows = torch.nonzero(~finite_matrix, as_tuple=False).tolist()
+    details = "; ".join(
+        f"micro={row + 1} field={names[column]} batch={batches[row]}"
+        for row, column in bad_rows[:8]
+    )
+    raise FloatingPointError(f"non-finite training values before optimizer update: {details}")
 
 
 def _batch_eligibility_metrics(batch: BarGPTBatch) -> dict[str, torch.Tensor]:
@@ -1553,16 +1582,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                     full_update = accumulation_count == config.train.gradient_accumulation_steps
                     partial_final_update = exhausted and accumulation_count > 0 and not _INTERRUPTED
                     if full_update or partial_final_update:
-                        finite_matrix = torch.stack(finite_checks).detach().cpu()
-                        if not bool(finite_matrix.all()):
-                            bad_rows = torch.nonzero(~finite_matrix, as_tuple=False).tolist()
-                            details = "; ".join(
-                                f"micro={row + 1} field={finite_check_names[column]} batch={finite_check_batches[row]}"
-                                for row, column in bad_rows[:8]
-                            )
-                            raise FloatingPointError(
-                                f"non-finite training values before optimizer update {optimizer_steps + 1}: {details}"
-                            )
+                        _assert_finite_before_step(
+                            finite_checks,
+                            finite_check_names,
+                            finite_check_batches,
+                            device=device,
+                        )
                         step_started = time.perf_counter()
                         step_start_event = step_end_event = None
                         if device.type == "cuda":
@@ -1589,10 +1614,6 @@ def main(argv: Iterable[str] | None = None) -> int:
                         if step_end_event is not None and step_start_event is not None:
                             step_end_event.record()
                             gpu_event_pairs.append((step_start_event, step_end_event))
-                            step_end_event.synchronize()
-                            accumulated_gpu_seconds += sum(
-                                start.elapsed_time(end) / 1_000.0 for start, end in gpu_event_pairs
-                            )
                         else:
                             accumulated_gpu_seconds += time.perf_counter() - step_started
                         samples_seen += accumulated_origins
@@ -1603,34 +1624,63 @@ def main(argv: Iterable[str] | None = None) -> int:
                         condition_blocks_seen += accumulated_condition_blocks
                         durable_cursors = dict(pending_cursors)
                         scheduler.step(samples_seen)
-                        metric_names = tuple(accumulated_metrics)
-                        metric_values = torch.stack(
-                            [accumulated_metrics[key] for key in metric_names]
-                        ).cpu().tolist()
-                        metrics = {
-                            key: float(value) / max(1, accumulated_origins)
-                            for key, value in zip(metric_names, metric_values, strict=True)
-                        }
-                        metrics.update(
-                            {
-                                "train/samples_seen": float(samples_seen),
-                                "train/batches_seen": float(batches_seen),
-                                "train/optimizer_steps": float(optimizer_steps),
-                                "train/blocks_seen": float(blocks_seen),
-                                "train/units_seen": float(len(units_seen)),
-                                "train/condition_blocks_seen": float(condition_blocks_seen),
-                                "train/accumulation_microbatches": float(accumulation_count),
-                                "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
-                                "train/loader_wait_seconds": accumulated_loader_wait,
-                                "train/gpu_seconds": accumulated_gpu_seconds,
-                                "train/gpu_duty_cycle": accumulated_gpu_seconds
-                                / max(accumulated_loader_wait + accumulated_gpu_seconds, 1e-9),
-                                "train/host_cache_batches": float(iterator.cache_fill),
-                                "train/host_cache_capacity": float(iterator.cache_capacity),
-                                "train/origins_per_second": accumulated_origins / max(accumulated_loader_wait + accumulated_gpu_seconds, 1e-9),
+                        telemetry_due = samples_seen >= next_log or optimizer_steps == 1
+                        if telemetry_due and device.type == "cuda":
+                            # Deliberately synchronize only at the bounded
+                            # telemetry cadence, never once per optimizer
+                            # update.  The events still report exact GPU time.
+                            for _start, end in gpu_event_pairs:
+                                end.synchronize()
+                            accumulated_gpu_seconds += sum(
+                                start.elapsed_time(end) / 1_000.0
+                                for start, end in gpu_event_pairs
+                            )
+                        if telemetry_due:
+                            metric_names = tuple(accumulated_metrics)
+                            metric_values = torch.stack(
+                                [accumulated_metrics[key] for key in metric_names]
+                            ).cpu().tolist()
+                            metrics = {
+                                key: float(value) / max(1, accumulated_origins)
+                                for key, value in zip(metric_names, metric_values, strict=True)
                             }
-                        )
-                        last_metrics = metrics
+                            metrics.update(
+                                {
+                                    "train/samples_seen": float(samples_seen),
+                                    "train/batches_seen": float(batches_seen),
+                                    "train/optimizer_steps": float(optimizer_steps),
+                                    "train/blocks_seen": float(blocks_seen),
+                                    "train/units_seen": float(len(units_seen)),
+                                    "train/condition_blocks_seen": float(condition_blocks_seen),
+                                    "train/accumulation_microbatches": float(accumulation_count),
+                                    "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
+                                    "train/loader_wait_seconds": accumulated_loader_wait,
+                                    "train/gpu_seconds": accumulated_gpu_seconds,
+                                    "train/gpu_duty_cycle": accumulated_gpu_seconds
+                                    / max(accumulated_loader_wait + accumulated_gpu_seconds, 1e-9),
+                                    "train/host_cache_batches": float(iterator.cache_fill),
+                                    "train/host_cache_capacity": float(iterator.cache_capacity),
+                                    "train/origins_per_second": accumulated_origins / max(accumulated_loader_wait + accumulated_gpu_seconds, 1e-9),
+                                }
+                            )
+                            last_metrics = metrics
+                        else:
+                            # Keep the terminal's coverage state current while
+                            # avoiding a CUDA scalar transfer for this update.
+                            metrics = dict(last_metrics)
+                            metrics.update(
+                                {
+                                    "train/samples_seen": float(samples_seen),
+                                    "train/batches_seen": float(batches_seen),
+                                    "train/optimizer_steps": float(optimizer_steps),
+                                    "train/blocks_seen": float(blocks_seen),
+                                    "train/units_seen": float(len(units_seen)),
+                                    "train/condition_blocks_seen": float(condition_blocks_seen),
+                                    "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
+                                    "train/host_cache_batches": float(iterator.cache_fill),
+                                    "train/host_cache_capacity": float(iterator.cache_capacity),
+                                }
+                            )
                         assert batch is not None or exhausted
                         reporter.update(
                             metrics,
@@ -1639,7 +1689,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                             unit_indices=batch.unit_indices if batch is not None else (),
                             block_offsets=batch.block_offsets if batch is not None else (),
                         )
-                        if samples_seen >= next_log or optimizer_steps == 1:
+                        if telemetry_due:
                             metrics_logger.log(metrics, samples_seen)
                             next_log = samples_seen + max(1, config.train.logging_samples)
                         if (

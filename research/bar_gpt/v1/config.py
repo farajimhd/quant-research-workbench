@@ -246,7 +246,10 @@ class TrainConfig:
     wandb_entity: str = "mehdifaraji"
     wandb_mode: str = "auto"
     wandb_init_timeout: int = 120
-    logging_samples: int = 65_536
+    # A default optimizer update currently covers 131,072 origins.  Logging
+    # below that cadence forces a CUDA-to-host scalar transfer after every
+    # update and prevents the CPU from getting ahead of the GPU.
+    logging_samples: int = 1_048_576
     validation_batches: int = 16
     # Validation is intentionally spread across the epoch to expose drift;
     # the epoch-end evaluation is included in this count.

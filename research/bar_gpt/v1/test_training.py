@@ -31,6 +31,7 @@ from research.bar_gpt.v1.loader import (
     month_units,
     origin_window_schedule,
     origin_windows_query,
+    _merge_rolling_daily_view,
     validation_block_plan,
     worker_ticker_shards,
 )
@@ -50,6 +51,7 @@ from research.bar_gpt.v1.train import (
     _batch_eligibility_metrics,
     _checkpoint_policy,
     _mask_inactive_condition_targets,
+    _assert_finite_before_step,
     PreparedValidationBatches,
     _validation_milestones,
     _resolved_warmup_samples,
@@ -88,6 +90,31 @@ def session_view(length: int = 24) -> BarView:
 
 
 class LoaderTrainerContractTest(unittest.TestCase):
+    def test_rolling_daily_cache_replaces_overlap_and_is_bounded(self) -> None:
+        first = session_view(3)
+        later = session_view(2)
+        merged = _merge_rolling_daily_view(
+            (["2026-01-01", "2026-01-02", "2026-01-03"], first),
+            (["2026-01-03", "2026-01-04"], later),
+            max_rows=3,
+        )
+        assert merged is not None
+        dates, view = merged
+        self.assertEqual(dates, ["2026-01-02", "2026-01-03", "2026-01-04"])
+        self.assertEqual(view.features.shape[0], 3)
+        # The incoming overlap is authoritative, rather than a duplicated
+        # calendar bar that would distort weekly/monthly aggregation.
+        self.assertTrue(torch.equal(view.features[1], later.features[0]))
+
+    def test_cpu_finite_check_rejects_nonfinite_before_optimizer(self) -> None:
+        with self.assertRaisesRegex(FloatingPointError, "non-finite training values"):
+            _assert_finite_before_step(
+                [torch.tensor([True, False])],
+                ("loss", "train/loss"),
+                ["[(AAA, 2026-01-02)]"],
+                device=torch.device("cpu"),
+            )
+
     def test_fixed_bucket_history_cache_evicts_old_rows(self) -> None:
         first = session_view(5)
         second = BarView(

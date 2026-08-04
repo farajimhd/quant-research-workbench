@@ -1972,6 +1972,50 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
         return example
 
 
+def _merge_rolling_daily_view(
+    existing: tuple[list[str], BarView] | None,
+    incoming: tuple[list[str], BarView] | None,
+    *,
+    max_rows: int,
+) -> tuple[list[str], BarView] | None:
+    """Merge an incremental daily read into a small date-keyed causal cache.
+
+    Month units are half-open intervals.  Re-reading their boundary date is
+    harmless, but retaining two copies would distort calendar aggregation, so
+    the newer authoritative row replaces an overlapping cached date.
+    """
+    if existing is None:
+        if incoming is None:
+            return None
+        dates, view = incoming
+        keep = max(0, len(dates) - int(max_rows))
+        return list(dates[keep:]), BarView(
+            view.features[keep:], view.bar_start_us[keep:], view.bar_end_us[keep:], view.available_at_us[keep:]
+        )
+    if incoming is None:
+        return existing
+    dates: list[str] = []
+    rows: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+    for source_dates, source_view in (existing, incoming):
+        for index, date_value in enumerate(source_dates):
+            if date_value not in rows:
+                dates.append(date_value)
+            rows[date_value] = (
+                source_view.features[index],
+                source_view.bar_start_us[index],
+                source_view.bar_end_us[index],
+                source_view.available_at_us[index],
+            )
+    dates.sort()
+    dates = dates[-int(max_rows):]
+    return dates, BarView(
+        torch.stack([rows[date_value][0] for date_value in dates]),
+        torch.stack([rows[date_value][1] for date_value in dates]),
+        torch.stack([rows[date_value][2] for date_value in dates]),
+        torch.stack([rows[date_value][3] for date_value in dates]),
+    )
+
+
 class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
     """Worker-sharded, bounded ArrowStream loader over ticker/session units."""
 
@@ -2068,6 +2112,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
             history_by_ticker: dict[str, FixedBucketHistoryCache] = {}
             prior_conditions_by_ticker: dict[str, torch.Tensor | None] = {}
             loaded_through_by_ticker: dict[str, str] = {}
+            daily_by_ticker: dict[str, tuple[list[str], BarView] | None] = {}
             for unit_index, unit in units:
                 if resume is not None and unit_index < resume.unit_index:
                     continue
@@ -2083,7 +2128,10 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                 )
                 previous_loaded = loaded_through_by_ticker.get(ticker)
                 fetch_start = (
-                    (dt.date.fromisoformat(previous_loaded) + dt.timedelta(days=1)).isoformat()
+                    # Ticker-month units use an exclusive end date.  Begin the
+                    # successor at that exact boundary: adding a day silently
+                    # loses the first session of every later month.
+                    previous_loaded
                     if previous_loaded is not None
                     else (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=warmup_days)).isoformat()
                 )
@@ -2109,31 +2157,29 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     )
                     previous_conditions = prior_conditions_by_ticker.get(ticker)
                     history_rows = history_cache.max_rows
-                    # Daily bars are context-only.  Read just the bounded
-                    # rolling daily window needed as of this ticker-month;
-                    # never retain the full history from the model start.
+                    # Daily bars are context-only.  The first month warms a
+                    # bounded history; later months read only their new dates
+                    # and merge them into the same bounded cache.  This avoids
+                    # repeatedly fetching two years of daily rows per month.
+                    existing_daily = daily_by_ticker.get(ticker)
                     daily_window_start = (
-                        dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=lookback_days)
-                    ).isoformat()
-                    daily_value = client.read_daily_views(
+                        unit.start_date
+                        if existing_daily is not None
+                        else (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=lookback_days)).isoformat()
+                    )
+                    incoming_daily = client.read_daily_views(
                         tickers=(ticker,),
                         start_date=daily_window_start,
                         end_date=unit.end_date,
                         daily_table=self.data_config.daily_table,
                         intervals_by_ticker={ticker: intervals_by_ticker[ticker]},
                     ).get(ticker)
-                    if daily_value is not None:
-                        daily_dates, daily_view = daily_value
-                        # Include the unit's current daily rows in addition to
-                        # the causal 365-row history.  `_calendar_views` still
-                        # removes dates at/after each intraday origin.
-                        keep_from = max(0, len(daily_dates) - (int(self.data_config.calendar_warmup_daily_bars) + 32))
-                        daily_value = (daily_dates[keep_from:], BarView(
-                            daily_view.features[keep_from:],
-                            daily_view.bar_start_us[keep_from:],
-                            daily_view.bar_end_us[keep_from:],
-                            daily_view.available_at_us[keep_from:],
-                        ))
+                    daily_value = _merge_rolling_daily_view(
+                        existing_daily,
+                        incoming_daily,
+                        max_rows=int(self.data_config.calendar_warmup_daily_bars) + 32,
+                    )
+                    daily_by_ticker[ticker] = daily_value
                     emitted = 0
                     for local_date, session in client.iter_session_views(
                         ticker=ticker,

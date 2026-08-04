@@ -49,6 +49,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--validation-batches": "16",
     "--checkpoint-latest-samples": "33554432",
     "--checkpoint-archive-samples": "268435456",
+    "--logging-samples": "1048576",
     "--condition-positive-weight": "32",
     "--amp-dtype": "bf16",
     "--progress-layout": "auto",
