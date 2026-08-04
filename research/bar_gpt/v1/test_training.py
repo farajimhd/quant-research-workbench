@@ -182,6 +182,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
         class FakeClient(ArrowStreamClient):
             fetches = 0
+            session_ranges: list[tuple[str, str]] = []
+            condition_ranges: list[tuple[str, str]] = []
 
             def read_identity_intervals(self, tickers, **_kwargs):
                 return {"AAA": (TickerInterval("AAA", "AAA", "2019-01-01", "9999-12-31"),)}
@@ -192,8 +194,27 @@ class LoaderTrainerContractTest(unittest.TestCase):
             def read_daily_view(self, **_kwargs):
                 return None
 
-            def read_condition_views(self, **_kwargs):
+            def read_condition_views(self, *, start_date, end_date, **_kwargs):
+                self.condition_ranges.append((start_date, end_date))
                 return {}
+
+            def iter_session_views(self, *, start_date, end_date, **_kwargs):
+                self.fetches += 1
+                self.session_ranges.append((start_date, end_date))
+                yield "2025-01-02", frame_to_dense_window(
+                    None,
+                    ticker="AAA",
+                    local_date="2025-01-02",
+                    clock_start_second=20 * 3600 - 20,
+                    clock_end_second=20 * 3600,
+                )
+                yield "2025-01-03", frame_to_dense_window(
+                    None,
+                    ticker="AAA",
+                    local_date="2025-01-03",
+                    clock_start_second=4 * 3600,
+                    clock_end_second=4 * 3600 + 20,
+                )
 
             def read_origin_windows(self, *, windows, context_bars, right_support_bars, **_kwargs):
                 self.fetches += 1
@@ -234,6 +255,10 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual((second.unit_index, second.block_offset), (0, 1))
         self.assertEqual(first.origin_indices.numel(), 3)
         self.assertEqual(fake.fetches, 1)
+        # The initial read ends at the requested session, not the end of its
+        # ticker-month; conditions are bounded to the predecessor/current pair.
+        self.assertEqual(fake.session_ranges, [("2024-12-20", "2025-01-04")])
+        self.assertEqual(fake.condition_ranges, [("2025-01-02", "2025-01-04")])
 
     def test_calendar_context_is_present_while_calendar_ar_loss_is_event_timed(self) -> None:
         config = self.data_config()

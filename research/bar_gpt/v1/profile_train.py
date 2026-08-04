@@ -202,12 +202,14 @@ def _profile_candidate(
     *,
     device: torch.device,
     reporter: ProfileReporter,
+    preflight_complete: bool,
 ) -> ProfileResult:
     data = _data(args, candidate)
     data.validate()
     url, user, password = default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
     clickhouse = ClickHouseHttpClient(url, user, password)
-    preflight(clickhouse, data)
+    if not preflight_complete:
+        preflight(clickhouse, data)
     stream = ClickHouseBarStreamConfig(
         url=url,
         user=user,
@@ -347,10 +349,25 @@ def main(argv: Iterable[str] | None = None) -> int:
     reporter = ProfileReporter(str(args.progress_layout))
     results: list[ProfileResult] = []
     jsonl = run_root / "profile.jsonl"
+    # Candidates vary only loader/model shape; the authority/schema audit is
+    # invariant.  Run it once so the measured sweep does not pay the same
+    # ClickHouse metadata cost for every batch-size candidate.
+    first_data = _data(args, candidates[0])
+    first_data.validate()
+    preflight(
+        ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()),
+        first_data,
+    )
     for index, candidate in enumerate(candidates, start=1):
         reporter.start(candidate, index, len(candidates))
         try:
-            result = _profile_candidate(args, candidate, device=device, reporter=reporter)
+            result = _profile_candidate(
+                args,
+                candidate,
+                device=device,
+                reporter=reporter,
+                preflight_complete=True,
+            )
         except (torch.cuda.OutOfMemoryError, RuntimeError, OSError) as exc:
             state = "oom" if "out of memory" in str(exc).lower() else "failed"
             result = ProfileResult(candidate, state, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0.0, str(exc))

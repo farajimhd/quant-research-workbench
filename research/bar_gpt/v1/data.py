@@ -25,39 +25,56 @@ class FixedBucketHistoryCache:
         if int(max_rows) <= 0:
             raise ValueError("max_rows must be positive")
         self.max_rows = int(max_rows)
+        # Keep session-sized chunks instead of repeatedly concatenating the
+        # complete warmup on every append.  The contiguous view is materialized
+        # only when a consumer actually needs it.
+        self._chunks: list[BarView] = []
+        self._rows = 0
         self._view: BarView | None = None
 
     @property
     def view(self) -> BarView | None:
+        if self._view is None and self._chunks:
+            if len(self._chunks) == 1:
+                self._view = self._chunks[0]
+            else:
+                self._view = BarView(
+                    features=torch.cat(tuple(item.features for item in self._chunks), dim=0),
+                    bar_start_us=torch.cat(tuple(item.bar_start_us for item in self._chunks), dim=0),
+                    bar_end_us=torch.cat(tuple(item.bar_end_us for item in self._chunks), dim=0),
+                    available_at_us=torch.cat(tuple(item.available_at_us for item in self._chunks), dim=0),
+                )
         return self._view
 
     @property
     def rows(self) -> int:
-        return 0 if self._view is None else int(self._view.features.shape[0])
+        return self._rows
 
-    def append(self, value: BarView) -> BarView:
+    def append(self, value: BarView, *, materialize: bool = True) -> BarView | None:
         if value.features.ndim != 2 or value.bar_start_us.ndim != 1:
             raise ValueError("history cache accepts aligned one-dimensional bar metadata")
         if value.features.shape[0] != value.bar_start_us.shape[0] or value.features.shape[0] != value.available_at_us.shape[0]:
             raise ValueError("history cache metadata must align with features")
-        if self._view is not None and int(self._view.available_at_us[-1]) >= int(value.bar_start_us[0]):
+        previous = self._chunks[-1] if self._chunks else None
+        if previous is not None and int(previous.available_at_us[-1]) >= int(value.bar_start_us[0]):
             raise ValueError("history cache append must be strictly chronological")
-        if self._view is None:
-            combined = value
-        else:
-            combined = BarView(
-                features=torch.cat((self._view.features, value.features), dim=0),
-                bar_start_us=torch.cat((self._view.bar_start_us, value.bar_start_us), dim=0),
-                bar_end_us=torch.cat((self._view.bar_end_us, value.bar_end_us), dim=0),
-                available_at_us=torch.cat((self._view.available_at_us, value.available_at_us), dim=0),
+        self._chunks.append(value)
+        self._rows += int(value.features.shape[0])
+        while self._chunks and self._rows - int(self._chunks[0].features.shape[0]) >= self.max_rows:
+            removed = self._chunks.pop(0)
+            self._rows -= int(removed.features.shape[0])
+        if self._chunks and self._rows > self.max_rows:
+            first = self._chunks[0]
+            trim = self._rows - self.max_rows
+            self._chunks[0] = BarView(
+                features=first.features[trim:],
+                bar_start_us=first.bar_start_us[trim:],
+                bar_end_us=first.bar_end_us[trim:],
+                available_at_us=first.available_at_us[trim:],
             )
-        self._view = BarView(
-            features=combined.features[-self.max_rows:],
-            bar_start_us=combined.bar_start_us[-self.max_rows:],
-            bar_end_us=combined.bar_end_us[-self.max_rows:],
-            available_at_us=combined.available_at_us[-self.max_rows:],
-        )
-        return self._view
+            self._rows = self.max_rows
+        self._view = None
+        return self.view if materialize else None
 
 
 @dataclass(slots=True)
