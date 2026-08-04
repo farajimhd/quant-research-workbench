@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pathlib
+import sys
 import hashlib
 import json
 from dataclasses import fields
@@ -16,6 +18,18 @@ from research.bar_gpt.v1.model import BarGPTV1
 
 _DATA_TUPLE_FIELDS = {"intraday_timeframes_us", "calendar_timeframes", "horizons_us", "tickers", "validation_slices"}
 _MODEL_TUPLE_FIELDS = {"quantiles"}
+
+
+def _install_pathlib_pickle_compat() -> None:
+    """Register a pickle-compatible alias for legacy `pathlib._local` modules.
+
+    Checkpoints saved with older Python `pathlib` internals can reference
+    `pathlib._local.Path` classes during unpickling. Some environments no longer
+    expose that private module path, so we remap it to `pathlib` before torch.load.
+    """
+
+    if "pathlib._local" not in sys.modules:
+        sys.modules["pathlib._local"] = pathlib
 
 
 def _dataclass_values(cls: type[Any], values: dict[str, Any], tuple_fields: set[str]) -> dict[str, Any]:
@@ -41,6 +55,7 @@ def load_pretrained(
     *,
     device: torch.device | str = "cpu",
 ) -> tuple[BarGPTV1, DataConfig, dict[str, Any]]:
+    _install_pathlib_pickle_compat()
     payload = torch.load(Path(checkpoint), map_location=device, weights_only=False)
     config = payload.get("config", {})
     if "model" not in config or "data" not in config:

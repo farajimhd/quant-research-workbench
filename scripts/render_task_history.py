@@ -9,7 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CSV_PATH = ROOT / "TASK_HISTORY.csv"
 MARKDOWN_PATH = ROOT / "TASK_HISTORY.md"
-CHAT_SUMMARIES_PATH = ROOT / "CHAT_SUMMARIES.md"
+CHAT_SUMMARIES_PATH = ROOT / "docs" / "codex" / "CHAT_SUMMARIES.md"
+CHAT_SUMMARIES_FALLBACK_PATH = ROOT / "CHAT_SUMMARIES.md"
 
 EXPECTED_COLUMNS = [
     "id",
@@ -66,14 +67,29 @@ def read_rows() -> list[dict[str, str]]:
 
 def read_chat_summary_index() -> list[str]:
     if not CHAT_SUMMARIES_PATH.exists():
-        return [
-            "No chat-summary index exists yet. See",
-            "`docs/codex/CHAT_SUMMARY_PROMPT.md` for the canonical format.",
-        ]
+        if CHAT_SUMMARIES_FALLBACK_PATH.exists():
+            CHAT_SUMMARIES_PATH_TO_USE = CHAT_SUMMARIES_FALLBACK_PATH
+        else:
+            return [
+                "No chat-summary index exists yet. See",
+                "`docs/codex/CHAT_SUMMARY_PROMPT.md` for the canonical format.",
+            ]
+    else:
+        CHAT_SUMMARIES_PATH_TO_USE = CHAT_SUMMARIES_PATH
 
-    lines = CHAT_SUMMARIES_PATH.read_text(encoding="utf-8-sig").splitlines()
+    lines = CHAT_SUMMARIES_PATH_TO_USE.read_text(encoding="utf-8-sig").splitlines()
     if not lines or lines[0].strip() != "# Chat Summaries":
-        raise ValueError("CHAT_SUMMARIES.md must begin with '# Chat Summaries'")
+        if CHAT_SUMMARIES_PATH_TO_USE == CHAT_SUMMARIES_PATH and CHAT_SUMMARIES_FALLBACK_PATH.exists():
+            lines = CHAT_SUMMARIES_FALLBACK_PATH.read_text(encoding="utf-8-sig").splitlines()
+            if not lines or lines[0].strip() != "# Chat Summaries":
+                raise ValueError(
+                    f"Fallback chat summary index {CHAT_SUMMARIES_FALLBACK_PATH} "
+                    "must begin with '# Chat Summaries'"
+                )
+        else:
+            raise ValueError(
+                f"CHAT_SUMMARIES.md must begin with '# Chat Summaries' ({CHAT_SUMMARIES_PATH_TO_USE})"
+            )
 
     rendered: list[str] = []
     for line in lines[1:]:
@@ -131,7 +147,7 @@ def render(rows: list[dict[str, str]]) -> str:
             "## High-Level Flow",
             "",
             "```mermaid",
-            "flowchart LR",
+            "flowchart TD",
             '    A["Raw and live sources<br/>SIP, news, SEC, reference, IBKR"] --> B["Versioned ingestion and gateways<br/>coverage, repair, audit"]',
             '    B --> C["Canonical point-in-time stores<br/>market, text, identity, brokerage"]',
             '    C --> D["Rolling causal loader<br/>completed context only; no separate builder"]',
