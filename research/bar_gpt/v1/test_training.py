@@ -49,6 +49,7 @@ from research.bar_gpt.v1.train import (
     _batch_eligibility_metrics,
     _checkpoint_policy,
     _mask_inactive_condition_targets,
+    _validation_milestones,
     _resolved_warmup_samples,
     _resume_data_contract,
     preflight,
@@ -85,6 +86,21 @@ def session_view(length: int = 24) -> BarView:
 
 
 class LoaderTrainerContractTest(unittest.TestCase):
+    def test_validation_milestones_start_early_and_end_at_epoch(self) -> None:
+        milestones = _validation_milestones(
+            epoch_origins=7_563_836_672,
+            runs_per_epoch=4,
+            explicit_interval=0,
+            initial_samples=33_554_432,
+        )
+        self.assertEqual(milestones[0], 33_554_432)
+        self.assertEqual(milestones[-1], 7_563_836_672)
+        self.assertEqual(len(milestones), 4)
+        self.assertEqual(
+            milestones[1:3],
+            (round(7_563_836_672 / 3), round(2 * 7_563_836_672 / 3)),
+        )
+
     def test_inactive_condition_channels_are_loss_ineligible(self) -> None:
         batch = SimpleNamespace(horizon_mask=torch.ones((1, 2, 3, 12), dtype=torch.bool))
         _mask_inactive_condition_targets(batch, (False, False, False, True))

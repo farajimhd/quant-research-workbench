@@ -167,6 +167,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cuda-prefetch", action=argparse.BooleanOptionalAction, default=train.cuda_prefetch)
     parser.add_argument("--logging-samples", type=int, default=train.logging_samples)
     parser.add_argument("--validation-interval-samples", type=int, default=train.validation_interval_samples)
+    parser.add_argument("--validation-initial-samples", type=int, default=train.validation_initial_samples)
     parser.add_argument("--validation-batches", type=int, default=train.validation_batches)
     parser.add_argument("--validation-runs-per-epoch", type=int, default=train.validation_runs_per_epoch)
     parser.add_argument("--warmup-samples", type=int, default=train.warmup_samples)
@@ -265,6 +266,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         wandb_init_timeout=int(args.wandb_init_timeout),
         logging_samples=int(args.logging_samples),
         validation_interval_samples=int(args.validation_interval_samples),
+        validation_initial_samples=int(args.validation_initial_samples),
         validation_batches=int(args.validation_batches),
         validation_runs_per_epoch=int(args.validation_runs_per_epoch),
         warmup_samples=int(args.warmup_samples),
@@ -516,6 +518,32 @@ def _resolved_warmup_samples(config: TrainConfig, schedule_samples: int) -> int:
         else int(round(schedule_samples * config.warmup_fraction))
     )
     return min(requested, schedule_samples - 1)
+
+
+def _validation_milestones(
+    *,
+    epoch_origins: int,
+    runs_per_epoch: int,
+    explicit_interval: int,
+    initial_samples: int,
+) -> tuple[int, ...]:
+    """Return local origin milestones, including the epoch-end evaluation.
+
+    The previous interval-only schedule put the first validation at 25% of a
+    multi-billion-origin epoch. The early milestone catches broken runs, while
+    the remaining milestones retain a deliberately low validation frequency.
+    """
+    if epoch_origins <= 0 or runs_per_epoch <= 0:
+        raise ValueError("validation schedule requires positive epoch and run counts")
+    if explicit_interval > 0:
+        offsets = [explicit_interval * index for index in range(1, runs_per_epoch)]
+    elif runs_per_epoch == 1:
+        offsets = []
+    else:
+        offsets = [min(initial_samples, epoch_origins)]
+        offsets.extend(round(epoch_origins * index / (runs_per_epoch - 1)) for index in range(1, runs_per_epoch))
+    offsets.append(epoch_origins)
+    return tuple(sorted({min(epoch_origins, max(1, int(value))) for value in offsets}))
 
 
 def sequential_coverage_counts(
@@ -873,6 +901,8 @@ def checkpoint_payload(
     data_cursors: dict[int, CoverageCursor],
     plan_hash: str,
     last_latest_samples: int,
+    validation_runs_in_epoch: int = 0,
+    last_validation_samples: int = -1,
 ) -> dict[str, Any]:
     return {
         "model": _unwrap(model).state_dict(),
@@ -892,6 +922,8 @@ def checkpoint_payload(
         "data_cursors": {str(worker): asdict(cursor) for worker, cursor in data_cursors.items()},
         "plan_hash": plan_hash,
         "last_latest_samples": last_latest_samples,
+        "validation_runs_in_epoch": validation_runs_in_epoch,
+        "last_validation_samples": last_validation_samples,
         "rng": {
             "python": random.getstate(),
             "numpy": np.random.get_state(),
@@ -1094,11 +1126,14 @@ def main(argv: Iterable[str] | None = None) -> int:
     training_limit = config.train.max_samples if config.train.max_samples > 0 else planned_samples
     # A diagnostic/safety cap must not shorten the epoch learning-rate curve.
     schedule_samples = max(2, training_limit if args.dummy_data else planned_samples)
-    validation_interval = (
-        config.train.validation_interval_samples
-        if config.train.validation_interval_samples > 0
-        else max(1, math.ceil(plan.expected_origins / config.train.epochs / config.train.validation_runs_per_epoch))
+    epoch_plan_origins = max(1, math.ceil(plan.expected_origins / config.train.epochs))
+    validation_milestones = _validation_milestones(
+        epoch_origins=epoch_plan_origins,
+        runs_per_epoch=config.train.validation_runs_per_epoch,
+        explicit_interval=config.train.validation_interval_samples,
+        initial_samples=config.train.validation_initial_samples,
     )
+    validation_interval = validation_milestones[0]
     (paths.run_root / "config.json").write_text(json.dumps(to_dict(config), indent=2, default=str), encoding="utf-8")
     (paths.run_root / "coverage_plan.json").write_text(json.dumps(plan.to_dict(), indent=2), encoding="utf-8")
     model: torch.nn.Module = BarGPTV1(config.model).to(device)
@@ -1146,6 +1181,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "coverage_plan": plan.to_dict(),
             "resolved_training_limit": training_limit,
             "resolved_validation_interval": validation_interval,
+            "resolved_validation_milestones": validation_milestones,
             "resolved_warmup_samples": resolved_warmup_samples,
         },
         data_roots={
@@ -1177,7 +1213,6 @@ def main(argv: Iterable[str] | None = None) -> int:
     resume_epoch = int(restored.get("epoch", 0))
     last_latest_samples = int(restored.get("last_latest_samples", 0))
     durable_cursors = dict(resume_cursors)
-    epoch_plan_origins = max(1, math.ceil(plan.expected_origins / config.train.epochs))
     epoch_start_samples = int(restored.get("epoch_start_samples", resume_epoch * epoch_plan_origins))
     state = TrainingProgressState(
         run_name=run_name,
@@ -1208,12 +1243,19 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     reporter = TrainingReporter(state, layout=config.train.progress_layout)
     next_log = samples_seen
-    next_validation = samples_seen + validation_interval
-    last_validation_samples = -1
-    validation_runs_in_epoch = min(
-        config.train.validation_runs_per_epoch - 1,
-        max(0, samples_seen - resume_epoch * epoch_plan_origins) // validation_interval,
+    restored_validation_runs = restored.get("validation_runs_in_epoch")
+    validation_state_missing = restored_validation_runs is None
+    validation_runs_in_epoch = int(restored_validation_runs or 0)
+    epoch_validation_milestones = validation_milestones
+    pending_resume_validation = bool(args.resume_checkpoint) and validation_state_missing
+    next_validation = (
+        samples_seen
+        if pending_resume_validation
+        else epoch_start_samples + epoch_validation_milestones[min(validation_runs_in_epoch, len(epoch_validation_milestones) - 1)]
     )
+    last_validation_samples = -1
+    if not pending_resume_validation:
+        validation_runs_in_epoch = min(validation_runs_in_epoch, max(0, len(epoch_validation_milestones) - 1))
     last_metrics: dict[str, float] = {"train/loss": math.inf}
     last_val: dict[str, float] = {}
     current_epoch = resume_epoch
@@ -1239,6 +1281,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                     durable_cursors = {}
                     validation_runs_in_epoch = 0
                     epoch_start_samples = samples_seen
+                epoch_validation_milestones = validation_milestones
+                if epoch != resume_epoch:
+                    next_validation = epoch_start_samples + epoch_validation_milestones[0]
                 reporter.epoch(epoch + 1, epoch_start_samples)
                 if isinstance(train_loader.dataset, BarGPTIterableDataset):
                     train_loader.dataset.epoch = epoch
@@ -1426,7 +1471,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                             next_log = samples_seen + max(1, config.train.logging_samples)
                         if (
                             samples_seen >= next_validation
-                            and validation_runs_in_epoch < config.train.validation_runs_per_epoch - 1
+                            and validation_runs_in_epoch < len(epoch_validation_milestones) - 1
                         ):
                             # Do not let a full training cache continue issuing
                             # ClickHouse work while the held-out loader starts
@@ -1441,7 +1486,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                             reporter.validation(last_val["val/loss"])
                             last_validation_samples = samples_seen
                             validation_runs_in_epoch += 1
-                            next_validation = samples_seen + validation_interval
+                            if validation_runs_in_epoch < len(epoch_validation_milestones):
+                                next_validation = epoch_start_samples + epoch_validation_milestones[validation_runs_in_epoch]
                             if not _INTERRUPTED and not (
                                 training_limit > 0 and samples_seen >= training_limit
                             ):
@@ -1471,6 +1517,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 condition_blocks_seen=condition_blocks_seen,
                                 data_cursors=cursors, plan_hash=plan.plan_hash,
                                 last_latest_samples=latest,
+                                validation_runs_in_epoch=validation_runs_in_epoch,
+                                last_validation_samples=last_validation_samples,
                             ),
                             train_metrics=last_metrics,
                             val_metrics=last_val,
@@ -1528,6 +1576,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     condition_blocks_seen=condition_blocks_seen,
                     data_cursors=cursors, plan_hash=plan.plan_hash,
                     last_latest_samples=samples_seen,
+                    validation_runs_in_epoch=validation_runs_in_epoch,
+                    last_validation_samples=last_validation_samples,
                 ),
                 train_metrics=last_metrics,
                 val_metrics=last_val,
@@ -1562,6 +1612,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     condition_blocks_seen=condition_blocks_seen,
                     data_cursors=cursors, plan_hash=plan.plan_hash,
                     last_latest_samples=samples_seen,
+                    validation_runs_in_epoch=validation_runs_in_epoch,
+                    last_validation_samples=last_validation_samples,
                 ),
                 train_metrics=last_metrics,
                 val_metrics=last_val,

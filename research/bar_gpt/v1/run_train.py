@@ -39,6 +39,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--warmup-fraction": "0.01",
     "--minimum-learning-rate": "0.00003",
     "--validation-interval-samples": "0",
+    "--validation-initial-samples": "33554432",
     "--validation-runs-per-epoch": "4",
     "--validation-batches": "16",
     "--checkpoint-latest-samples": "33554432",

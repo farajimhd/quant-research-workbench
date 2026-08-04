@@ -280,7 +280,8 @@ Validation is a fixed eight-ticker, eight-week panel spanning liquid,
 high-volatility, sector, event-driven, and illiquid names in 2026. Those
 identities are excluded from training. Each slice contributes four fixed
 stratified blocks, at most 16 batches are evaluated, and validation runs four
-times per coverage epoch with the final run at completion. It reports loss,
+times per coverage epoch: an early checkpoint-sized health check, two evenly
+spaced intermediate checks, and one at completion. It reports loss,
 per-horizon median MAE, return-sign accuracy, binary Brier score, quantile
 coverage, and rare-condition average precision. At an intermediate validation
 boundary, training prefetch is stopped first; validation owns the bounded

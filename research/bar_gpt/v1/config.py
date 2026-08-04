@@ -208,6 +208,9 @@ class TrainConfig:
     validation_batches: int = 16
     validation_runs_per_epoch: int = 4
     validation_interval_samples: int = 0
+    # First validation is deliberately early enough to catch a bad run; the
+    # remaining validations are spread across the epoch.
+    validation_initial_samples: int = 33_554_432
     warmup_samples: int = 0
     warmup_fraction: float = 0.01
     minimum_learning_rate: float = 3e-5
@@ -229,8 +232,8 @@ class TrainConfig:
             raise ValueError("gradient_accumulation_steps must be positive")
         if self.validation_runs_per_epoch <= 0 or self.validation_batches <= 0:
             raise ValueError("validation runs and batches must be positive")
-        if self.validation_interval_samples < 0 or self.warmup_samples < 0:
-            raise ValueError("validation interval and warmup samples cannot be negative")
+        if self.validation_interval_samples < 0 or self.validation_initial_samples <= 0 or self.warmup_samples < 0:
+            raise ValueError("validation interval/initial samples must be positive and warmup samples cannot be negative")
         if not 0 <= self.warmup_fraction < 1:
             raise ValueError("warmup_fraction must satisfy 0 <= fraction < 1")
         if self.learning_rate <= 0 or not 0 < self.minimum_learning_rate <= self.learning_rate:
