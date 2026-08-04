@@ -55,6 +55,7 @@ class TrainingProgressState:
     current_unit_month: str = "-"
     last_checkpoint: str = "-"
     losses: dict[str, float] = field(default_factory=dict)
+    eligibility: dict[str, float] = field(default_factory=dict)
     last_message: str = ""
 
 
@@ -96,9 +97,11 @@ class TrainingReporter:
             self.state.state = "completed"
         self.refresh(force=True)
         if self._live is not None:
-            self._live.stop()
+            live = self._live
+            live.stop()
             if self._console is not None:
                 self._console.print(self._render())
+            self._live = None
         return False
 
     def update(
@@ -133,6 +136,13 @@ class TrainingReporter:
         s.host_cache_batches = int(metrics.get("train/host_cache_batches", s.host_cache_batches))
         s.host_cache_capacity = int(metrics.get("train/host_cache_capacity", s.host_cache_capacity))
         s.losses = {key.removeprefix("train/loss_"): float(value) for key, value in metrics.items() if key.startswith("train/loss_")}
+        s.eligibility = {
+            key.removeprefix("train/"): float(value)
+            for key, value in metrics.items()
+            if key.startswith("train/context_available_")
+            or key.startswith("train/ar_event_rate_")
+            or key == "train/condition_positive_rate"
+        }
         if tickers:
             s.active_tickers = ",".join(tickers)
         if dates:
@@ -272,6 +282,10 @@ class TrainingReporter:
             f"{'CUDA prefetch' if s.cuda_prefetch else 'synchronous device handoff'}",
         )
         active.add_row("condition blocks", f"{s.condition_blocks_seen:,}")
+        active.add_row(
+            "causal eligibility",
+            "  ".join(f"{key}={value:.1%}" for key, value in s.eligibility.items()) or "waiting for first batch",
+        )
         active.add_row("checkpoint", s.last_checkpoint)
         active.add_row("output", s.output_dir)
         losses = Table.grid(expand=True, padding=(0, 2))

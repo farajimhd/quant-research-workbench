@@ -15,11 +15,15 @@ import torch
 
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, TrainConfig
 from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME
-from research.bar_gpt.v1.loader import BarGPTIterableDataset, ClickHouseBarStreamConfig, make_dataloader
+from research.bar_gpt.v1.loader import (
+    BarGPTSequentialDataset,
+    ClickHouseBarStreamConfig,
+    make_sequential_dataloader,
+)
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.objectives import compute_loss
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
-from research.bar_gpt.v1.train import preflight
+from research.bar_gpt.v1.train import preflight, sequential_coverage_counts
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
     default_clickhouse_password,
@@ -202,7 +206,8 @@ def _profile_candidate(
     data = _data(args, candidate)
     data.validate()
     url, user, password = default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
-    preflight(ClickHouseHttpClient(url, user, password), data)
+    clickhouse = ClickHouseHttpClient(url, user, password)
+    preflight(clickhouse, data)
     stream = ClickHouseBarStreamConfig(
         url=url,
         user=user,
@@ -214,11 +219,16 @@ def _profile_candidate(
         max_memory_usage=data.clickhouse_max_memory_usage,
         query_days=data.clickhouse_query_days,
         max_bytes_before_external_sort=data.clickhouse_max_bytes_before_external_sort,
+        retry_attempts=data.clickhouse_retry_attempts,
+        retry_initial_seconds=data.clickhouse_retry_initial_seconds,
+        retry_max_seconds=data.clickhouse_retry_max_seconds,
     )
-    loader = make_dataloader(
-        BarGPTIterableDataset(data_config=data, stream_config=stream, split="train", seed=17),
+    _sessions, _blocks, _origins, _units, sequential_plan = sequential_coverage_counts(
+        clickhouse, data, seed=17
+    )
+    loader = make_sequential_dataloader(
+        BarGPTSequentialDataset(data_config=data, stream_config=stream, plan=sequential_plan),
         data,
-        drop_last=True,
     )
     model_config = BarGPTConfig()
     model = BarGPTV1(model_config).to(device)

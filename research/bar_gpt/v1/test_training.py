@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import io
 import datetime as dt
+import http.client
 import threading
 import time
 import unittest
 from contextlib import redirect_stdout
 from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 from rich.console import Console
@@ -14,8 +17,12 @@ from rich.console import Console
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, TrainConfig
 from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarView, collate_examples
 from research.bar_gpt.v1.loader import (
+    ArrowStreamClient,
+    BarGPTSequentialDataset,
     ClickHouseBarStreamConfig,
     OriginWindow,
+    SequentialBlockPlan,
+    SequentialSessionPlan,
     TickerInterval,
     balanced_regime_stream,
     build_session_examples,
@@ -37,7 +44,15 @@ from research.bar_gpt.v1.objectives import _weighted_mean, compute_loss
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES, build_next_bar_targets, build_physical_horizon_targets
-from research.bar_gpt.v1.train import _advance_cursors, _checkpoint_policy, _resolved_warmup_samples, _resume_data_contract, preflight
+from research.bar_gpt.v1.train import (
+    _advance_cursors,
+    _batch_eligibility_metrics,
+    _checkpoint_policy,
+    _mask_inactive_condition_targets,
+    _resolved_warmup_samples,
+    _resume_data_contract,
+    preflight,
+)
 from research.bar_gpt.v1.profile_train import _parse_candidates
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
 from research.bar_gpt.v1.run_profile_train import DEFAULT_ARGS as profile_launcher_args
@@ -70,6 +85,161 @@ def session_view(length: int = 24) -> BarView:
 
 
 class LoaderTrainerContractTest(unittest.TestCase):
+    def test_inactive_condition_channels_are_loss_ineligible(self) -> None:
+        batch = SimpleNamespace(horizon_mask=torch.ones((1, 2, 3, 12), dtype=torch.bool))
+        _mask_inactive_condition_targets(batch, (False, False, False, True))
+        self.assertFalse(bool(batch.horizon_mask[..., -4:-1].any()))
+        self.assertTrue(bool(batch.horizon_mask[..., -1].all()))
+        self.assertTrue(bool(batch.horizon_mask[..., :-4].all()))
+
+    def test_arrow_retry_discards_partial_attempt_before_exposing_rows(self) -> None:
+        class Response:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        responses = [Response(), Response()]
+
+        def partial_stream(_response: object):
+            yield "partial"
+            raise http.client.IncompleteRead(b"partial", 100)
+
+        client = ArrowStreamClient(
+            ClickHouseBarStreamConfig(
+                "http://localhost:8123", "", "", retry_attempts=2,
+                retry_initial_seconds=0, retry_max_seconds=0,
+            )
+        )
+        with patch("research.bar_gpt.v1.loader.request.urlopen", side_effect=responses), patch(
+            "pyarrow.ipc.open_stream", side_effect=(partial_stream(None), iter(("complete",)))
+        ):
+            with client.record_batches("SELECT 1 FORMAT ArrowStream") as batches:
+                self.assertEqual(list(batches), ["complete"])
+        self.assertTrue(all(response.closed for response in responses))
+
+    def test_global_block_plan_resume_and_cursor_order_are_exact(self) -> None:
+        sessions = (
+            SequentialSessionPlan(0, "AAA", "2025-01-01", "2025-02-01", "2025-01-02", None, 4, 2, 0, 0),
+            SequentialSessionPlan(1, "BBB", "2025-01-01", "2025-02-01", "2025-01-02", None, 4, 2, 0, 2),
+        )
+        plan = SequentialBlockPlan(sessions, (0, 2), (0, 2), (2, 2), 4, 12)
+        self.assertEqual(plan.locate(2)[:2], (sessions[1], 0))
+        self.assertEqual(plan.resume_global_index(CoverageCursor(0, 1)), 2)
+        first = SimpleNamespace(worker_ids=(0,), unit_indices=(0,), block_offsets=(0,))
+        second = SimpleNamespace(worker_ids=(0,), unit_indices=(0,), block_offsets=(1,))
+        cursor = _advance_cursors({}, first, plan)
+        cursor = _advance_cursors(cursor, second, plan)
+        self.assertEqual(cursor, {0: CoverageCursor(0, 1)})
+        with self.assertRaisesRegex(RuntimeError, "order violation"):
+            _advance_cursors(cursor, first, plan)
+
+    def test_indexed_dataset_fetches_a_bounded_chunk_and_emits_global_order(self) -> None:
+        config = self.data_config()
+        config.batch_size = 1
+        config.origin_fetch_candidate_blocks = 2
+        config.origin_emit_blocks_per_chunk = 2
+        config.validation_slices = (("CCC", "2026-01-01", "2026-01-02"),)
+        sessions = (
+            SequentialSessionPlan(
+                0, "AAA", "2025-01-01", "2025-02-01", "2025-01-03", "2025-01-02",
+                0, 2, 0, 0,
+            ),
+        )
+        plan = SequentialBlockPlan(sessions, (0,), (0,), (2,), 2, 6)
+
+        class FakeClient(ArrowStreamClient):
+            fetches = 0
+
+            def read_identity_intervals(self, tickers, **_kwargs):
+                return {"AAA": (TickerInterval("AAA", "AAA", "2019-01-01", "9999-12-31"),)}
+
+            def read_split_actions(self, _intervals, **_kwargs):
+                return {"AAA": ()}
+
+            def read_daily_view(self, **_kwargs):
+                return None
+
+            def read_condition_views(self, **_kwargs):
+                return {}
+
+            def read_origin_windows(self, *, windows, context_bars, right_support_bars, **_kwargs):
+                self.fetches += 1
+                result = []
+                for window in windows:
+                    elapsed = window.origin_bucket - 4 * 3600
+                    prior_rows = max(0, context_bars - elapsed)
+                    left = max(4 * 3600, window.origin_bucket - context_bars)
+                    visible = int(window.origin_count or config.origin_bars_1s)
+                    right = min(20 * 3600, window.origin_bucket + visible + right_support_bars)
+                    current = frame_to_dense_window(
+                        None, ticker="AAA", local_date=window.local_date,
+                        clock_start_second=left, clock_end_second=right,
+                    )
+                    prior = (
+                        frame_to_dense_window(
+                            None, ticker="AAA", local_date=window.prior_date,
+                            clock_start_second=20 * 3600 - prior_rows, clock_end_second=20 * 3600,
+                        )
+                        if prior_rows and window.prior_date is not None else None
+                    )
+                    result.append((current, prior))
+                return result
+
+        dataset = BarGPTSequentialDataset(
+            data_config=config,
+            stream_config=ClickHouseBarStreamConfig("http://localhost:8123", "", ""),
+            plan=plan,
+        )
+        fake = FakeClient(dataset.stream_config)
+        dataset._runtime = {
+            "client": fake, "intervals": {}, "actions": {}, "daily": {},
+            "condition_key": None, "conditions": {}, "examples": {},
+        }
+        first = dataset[0]
+        second = dataset[1]
+        self.assertEqual((first.unit_index, first.block_offset), (0, 0))
+        self.assertEqual((second.unit_index, second.block_offset), (0, 1))
+        self.assertEqual(first.origin_indices.numel(), 3)
+        self.assertEqual(fake.fetches, 1)
+
+    def test_calendar_context_is_present_while_calendar_ar_loss_is_event_timed(self) -> None:
+        config = self.data_config()
+        daily_raw = session_view(3)
+        base = 1_700_000_000_000_000
+        current_raw = session_view(24)
+        current = BarView(
+            current_raw.features,
+            current_raw.bar_start_us + base,
+            current_raw.bar_end_us + base,
+            current_raw.available_at_us + base,
+        )
+        daily_starts = torch.tensor([base - 21 * 86_400_000_000, base - 14 * 86_400_000_000, base - 7 * 86_400_000_000])
+        daily = BarView(
+            daily_raw.features,
+            daily_starts,
+            daily_starts + 1_000_000,
+            daily_starts + 1_000_000,
+        )
+        example = next(
+            build_session_examples(
+                ticker="AAA",
+                local_date="2026-03-02",
+                session=current,
+                daily=(["2023-10-20", "2023-10-27", "2023-11-03"], daily),
+                split_actions=(),
+                config=config,
+            )
+        )
+        self.assertEqual(example.raw_views["1D"].shape[0], 3)
+        self.assertTrue(bool(torch.all(example.asof_indices["1D"] >= 0)))
+        batch = collate_examples([example])
+        self.assertFalse(bool(batch.autoregressive_mask["1D"].any()))
+        metrics = _batch_eligibility_metrics(batch)
+        self.assertEqual(float(metrics["train/context_available_1D"]), 1.0)
+        self.assertEqual(float(metrics["train/ar_event_rate_1D"]), 0.0)
+
     def test_origin_schedule_is_bounded_phase_spread_and_condition_first(self) -> None:
         dates = ["2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07"]
         flags = torch.zeros((16 * 3600, 4), dtype=torch.float32)
@@ -328,7 +498,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         tuned_queue = {**base, "ready_queue_blocks": 8}
         self.assertEqual(_resume_data_contract(base), _resume_data_contract(tuned_queue))
         changed_workers = {**base, "loader_workers": 4}
-        self.assertNotEqual(_resume_data_contract(base), _resume_data_contract(changed_workers))
+        self.assertEqual(_resume_data_contract(base), _resume_data_contract(changed_workers))
+        changed_retry = {**base, "clickhouse_retry_attempts": 9}
+        self.assertEqual(_resume_data_contract(base), _resume_data_contract(changed_retry))
         changed_sampling = {**base, "origin_fetch_candidate_blocks": 8}
         self.assertNotEqual(_resume_data_contract(base), _resume_data_contract(changed_sampling))
 
@@ -531,6 +703,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
                     return ""
                 if "intraday_base_bars_build_status" in query:
                     return "60\n"
+                if "intraday_condition_bars_by_time_ticker" in query and "countIf" in query:
+                    return "10\t2\t2\t3\t3\n"
                 return self.messages
 
         config = self.data_config()

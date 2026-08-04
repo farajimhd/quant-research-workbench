@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import http.client
 import math
 import multiprocessing as mp
 import random
 import re
+import time
 import uuid
+from bisect import bisect_right
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -17,7 +20,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import polars as pl
 import torch
-from torch.utils.data import DataLoader, IterableDataset, get_worker_info
+from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 
 from research.bar_gpt.v1.config import DataConfig
 from research.bar_gpt.v1.corporate_actions import (
@@ -63,6 +66,9 @@ class ClickHouseBarStreamConfig:
     max_memory_usage: int = 8 * 1024**3
     query_days: int = 7
     max_bytes_before_external_sort: int = 1024**3
+    retry_attempts: int = 5
+    retry_initial_seconds: float = 0.5
+    retry_max_seconds: float = 8.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +91,65 @@ class OriginWindow:
     local_date: str
     origin_bucket: int
     prior_date: str | None
+    origin_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SequentialSessionPlan:
+    unit_index: int
+    ticker: str
+    unit_start_date: str
+    unit_end_date: str
+    local_date: str
+    prior_date: str | None
+    first_origin: int
+    block_count: int
+    unit_block_start: int
+    global_block_start: int
+
+
+@dataclass(frozen=True, slots=True)
+class SequentialBlockPlan:
+    """Compact exact global ordering for every sequential training block."""
+
+    sessions: tuple[SequentialSessionPlan, ...]
+    session_block_starts: tuple[int, ...]
+    unit_global_starts: tuple[int, ...]
+    unit_block_counts: tuple[int, ...]
+    total_blocks: int
+    total_origins: int
+
+    def locate(self, global_block_index: int) -> tuple[SequentialSessionPlan, int, int]:
+        index = int(global_block_index)
+        if index < 0 or index >= self.total_blocks:
+            raise IndexError(f"global block index {index} is outside [0,{self.total_blocks})")
+        session_index = bisect_right(self.session_block_starts, index) - 1
+        session = self.sessions[session_index]
+        session_block = index - session.global_block_start
+        unit_block = session.unit_block_start + session_block
+        return session, session_block, unit_block
+
+    def resume_global_index(self, cursor: CoverageCursor | None) -> int:
+        if cursor is None:
+            return 0
+        unit = int(cursor.unit_index)
+        if unit < 0 or unit >= len(self.unit_global_starts):
+            raise ValueError(f"resume unit {unit} is outside the sequential plan")
+        block = int(cursor.block_offset)
+        if block < -1 or block >= self.unit_block_counts[unit]:
+            raise ValueError(
+                f"resume block {block} is outside unit {unit} with {self.unit_block_counts[unit]} blocks"
+            )
+        return self.unit_global_starts[unit] + block + 1
+
+    def cursor_global_index(self, cursor: CoverageCursor) -> int:
+        unit = int(cursor.unit_index)
+        block = int(cursor.block_offset)
+        if unit < 0 or unit >= len(self.unit_global_starts):
+            raise ValueError(f"cursor unit {unit} is outside the sequential plan")
+        if block < 0 or block >= self.unit_block_counts[unit]:
+            raise ValueError(f"cursor block {block} is outside unit {unit}")
+        return self.unit_global_starts[unit] + block
 
 
 def month_units(start_date: str, end_date: str, tickers: tuple[str, ...], *, seed: int) -> list[TickerDateUnit]:
@@ -294,9 +359,13 @@ def origin_windows_query(
         elapsed = int(window.origin_bucket) - SESSION_START_SECOND
         prior_rows = max(0, int(context_bars) - elapsed)
         target_start = max(SESSION_START_SECOND, int(window.origin_bucket) - int(context_bars))
-        target_end = int(window.origin_bucket) + int(origin_bars) + int(right_support_bars)
-        if target_end > SESSION_END_SECOND:
-            raise ValueError(f"origin window exceeds the session: {window}")
+        visible_origins = int(window.origin_count) if window.origin_count is not None else int(origin_bars)
+        target_end = min(
+            SESSION_END_SECOND,
+            int(window.origin_bucket) + visible_origins + int(right_support_bars),
+        )
+        if visible_origins <= 0 or int(window.origin_bucket) + visible_origins > SESSION_END_SECOND:
+            raise ValueError(f"invalid visible origin interval: {window}")
         ranges.add((source_for(window.local_date), window.local_date, target_start, target_end))
         if prior_rows:
             if window.prior_date is None:
@@ -586,30 +655,72 @@ class ArrowStreamClient:
     def __init__(self, config: ClickHouseBarStreamConfig) -> None:
         self.config = config
 
+    @staticmethod
+    def _retryable_read_error(exc: BaseException) -> bool:
+        if isinstance(exc, error.HTTPError):
+            return exc.code == 429 or 500 <= exc.code < 600
+        return isinstance(
+            exc,
+            (
+                error.URLError,
+                http.client.IncompleteRead,
+                http.client.RemoteDisconnected,
+                ConnectionError,
+                ConnectionResetError,
+                BrokenPipeError,
+                TimeoutError,
+                OSError,
+            ),
+        ) or exc.__class__.__name__ in {"ArrowIOError", "ArrowInvalid", "ArrowCapacityError"}
+
     @contextmanager
     def record_batches(self, sql: str, *, query_id: str | None = None):
+        """Return one complete bounded Arrow response, retrying before exposing any rows.
+
+        A partially consumed Arrow stream is never yielded to callers. This is
+        what makes a retry exact: the failed attempt contributes zero rows, so
+        a repeated query cannot duplicate a training block.
+        """
         query = sql.strip().rstrip(";")
         if not re.search(r"\bFORMAT\s+ArrowStream\s*$", query, flags=re.IGNORECASE):
             raise ValueError("ArrowStreamClient requires FORMAT ArrowStream")
-        identifier = query_id or f"bar_gpt_arrow_{uuid.uuid4().hex}"
-        url = self.config.url.rstrip("/") + "/?" + parse.urlencode({"query_id": identifier})
-        req = request.Request(url, data=query.encode("utf-8"), method="POST")
-        if self.config.user:
-            req.add_header("X-ClickHouse-User", self.config.user)
-        if self.config.password:
-            req.add_header("X-ClickHouse-Key", self.config.password)
-        try:
-            response = request.urlopen(req, timeout=None)
-        except error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"ClickHouse HTTP {exc.code} {exc.reason}: {body}") from exc
-        try:
-            import pyarrow as pa
+        logical_id = query_id or f"bar_gpt_arrow_{uuid.uuid4().hex}"
+        attempts = max(1, int(self.config.retry_attempts))
+        buffered: tuple[object, ...] | None = None
+        for attempt in range(attempts):
+            identifier = f"{logical_id}_attempt_{attempt + 1}"
+            url = self.config.url.rstrip("/") + "/?" + parse.urlencode({"query_id": identifier})
+            req = request.Request(url, data=query.encode("utf-8"), method="POST")
+            if self.config.user:
+                req.add_header("X-ClickHouse-User", self.config.user)
+            if self.config.password:
+                req.add_header("X-ClickHouse-Key", self.config.password)
+            response = None
+            try:
+                response = request.urlopen(req, timeout=None)
+                import pyarrow as pa
 
-            reader = pa.ipc.open_stream(response)
-            yield reader
-        finally:
-            response.close()
+                buffered = tuple(pa.ipc.open_stream(response))
+                break
+            except error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                if not self._retryable_read_error(exc) or attempt + 1 >= attempts:
+                    raise RuntimeError(f"ClickHouse HTTP {exc.code} {exc.reason}: {body}") from exc
+            except BaseException as exc:
+                if not self._retryable_read_error(exc) or attempt + 1 >= attempts:
+                    raise
+            finally:
+                if response is not None:
+                    response.close()
+            delay = min(
+                float(self.config.retry_max_seconds),
+                float(self.config.retry_initial_seconds) * (2**attempt),
+            )
+            if delay > 0:
+                time.sleep(delay)
+        if buffered is None:
+            raise RuntimeError("ClickHouse Arrow response exhausted retries without a result")
+        yield iter(buffered)
 
     def iter_session_views(
         self,
@@ -704,7 +815,11 @@ class ArrowStreamClient:
             elapsed = int(window.origin_bucket) - SESSION_START_SECOND
             prior_rows = max(0, int(context_bars) - elapsed)
             target_start = max(SESSION_START_SECOND, int(window.origin_bucket) - int(context_bars))
-            target_end = int(window.origin_bucket) + int(origin_bars) + int(right_support_bars)
+            visible_origins = int(window.origin_count) if window.origin_count is not None else int(origin_bars)
+            target_end = min(
+                SESSION_END_SECOND,
+                int(window.origin_bucket) + visible_origins + int(right_support_bars),
+            )
             target = window_view(window.local_date, target_start, target_end)
             prior = None
             if prior_rows and window.prior_date is not None:
@@ -1183,6 +1298,7 @@ def build_session_examples(
     session_conditions: torch.Tensor | None = None,
     prior_conditions: torch.Tensor | None = None,
     include_incomplete_horizons: bool = False,
+    origin_count_limit: int | None = None,
 ) -> Iterator[BarGPTExample]:
     """Yield non-overlapping origins while sharing one exact session rollup and target support."""
     context = int(config.context_bars_1s)
@@ -1204,6 +1320,10 @@ def build_session_examples(
     else:
         combined_conditions = session_conditions
     first_origin = max(0, context - halo_count)
+    if origin_count_limit is not None:
+        if int(origin_count_limit) <= 0:
+            raise ValueError("origin_count_limit must be positive")
+        maximum_origin = min(maximum_origin, first_origin + int(origin_count_limit))
     if maximum_origin - first_origin < int(config.min_origins_per_block):
         return
     session_anchor = int(session.available_at_us[-1])
@@ -1374,6 +1494,244 @@ def balanced_regime_stream(
             offsets[regime] += 1
         if len(buffer) < max(3, int(buffer_size)):
             return
+
+
+class BarGPTSequentialDataset(Dataset[BarGPTExample]):
+    """Indexable global block stream with ordered multi-worker bounded fetch.
+
+    PyTorch assigns monotonically increasing indices across workers and its
+    map-style DataLoader returns them in sampler order. Workers may therefore
+    prepare future blocks concurrently without changing the trainer-visible
+    ticker-month/block sequence or the single durable cursor.
+    """
+
+    def __init__(
+        self,
+        *,
+        data_config: DataConfig,
+        stream_config: ClickHouseBarStreamConfig,
+        plan: SequentialBlockPlan,
+        resume_cursor: CoverageCursor | None = None,
+    ) -> None:
+        super().__init__()
+        data_config.validate()
+        self.data_config = data_config
+        self.stream_config = stream_config
+        self.plan = plan
+        self.start_global_index = plan.resume_global_index(resume_cursor)
+        self._runtime: dict[str, object] | None = None
+
+    def __getstate__(self) -> dict[str, object]:
+        state = dict(self.__dict__)
+        state["_runtime"] = None
+        return state
+
+    def __len__(self) -> int:
+        return max(0, self.plan.total_blocks - self.start_global_index)
+
+    def _worker_runtime(self) -> dict[str, object]:
+        if self._runtime is None:
+            self._runtime = {
+                "client": ArrowStreamClient(self.stream_config),
+                "intervals": {},
+                "actions": {},
+                "daily": {},
+                "condition_key": None,
+                "conditions": {},
+                "examples": {},
+            }
+        return self._runtime
+
+    def _ticker_references(
+        self,
+        ticker: str,
+    ) -> tuple[tuple[TickerInterval, ...], tuple[SplitAction, ...], tuple[list[str], BarView] | None]:
+        runtime = self._worker_runtime()
+        intervals_cache = runtime["intervals"]
+        actions_cache = runtime["actions"]
+        daily_cache = runtime["daily"]
+        assert isinstance(intervals_cache, dict)
+        assert isinstance(actions_cache, dict)
+        assert isinstance(daily_cache, dict)
+        if ticker not in intervals_cache:
+            client = runtime["client"]
+            assert isinstance(client, ArrowStreamClient)
+            intervals = client.read_identity_intervals(
+                (ticker,),
+                identity_database=self.data_config.identity_database,
+                interval_table=self.data_config.identity_interval_table,
+                entity_table=self.data_config.identity_entity_table,
+                event_table=self.data_config.identity_event_table,
+                coverage_start=self.data_config.daily_history_start_date,
+            )[ticker]
+            actions = client.read_split_actions(
+                {ticker: intervals},
+                start_date=self.data_config.daily_history_start_date,
+                end_date=self.data_config.end_date,
+                split_database=self.data_config.split_database,
+                split_table=self.data_config.split_table,
+            )[ticker]
+            daily = client.read_daily_view(
+                ticker=ticker,
+                start_date=self.data_config.daily_history_start_date,
+                end_date=self.data_config.end_date,
+                daily_table=self.data_config.daily_table,
+                source_intervals=intervals,
+            )
+            intervals_cache[ticker] = intervals
+            actions_cache[ticker] = actions
+            daily_cache[ticker] = daily
+        return intervals_cache[ticker], actions_cache[ticker], daily_cache[ticker]
+
+    def _unit_conditions(
+        self,
+        session: SequentialSessionPlan,
+        intervals: tuple[TickerInterval, ...],
+    ) -> dict[str, torch.Tensor]:
+        runtime = self._worker_runtime()
+        key = (session.ticker, session.unit_start_date, session.unit_end_date)
+        if runtime["condition_key"] != key:
+            client = runtime["client"]
+            assert isinstance(client, ArrowStreamClient)
+            fetch_start = (
+                dt.date.fromisoformat(session.unit_start_date) - dt.timedelta(days=14)
+            ).isoformat()
+            runtime["conditions"] = client.read_condition_views(
+                ticker=session.ticker,
+                start_date=fetch_start,
+                end_date=session.unit_end_date,
+                condition_table=self.data_config.condition_table,
+                source_intervals=intervals,
+            )
+            runtime["condition_key"] = key
+        conditions = runtime["conditions"]
+        assert isinstance(conditions, dict)
+        return conditions
+
+    def _chunk_indices(self, global_index: int) -> tuple[int, ...]:
+        worker = get_worker_info()
+        stride = (
+            int(worker.num_workers) * int(self.data_config.batch_size)
+            if worker is not None
+            else 1
+        )
+        limit = max(1, int(self.data_config.origin_fetch_candidate_blocks))
+        first_session, _session_block, _unit_block = self.plan.locate(global_index)
+        selected: list[int] = []
+        candidate = global_index
+        while candidate < self.plan.total_blocks and len(selected) < limit:
+            session, _local, _unit = self.plan.locate(candidate)
+            if session.unit_index != first_session.unit_index:
+                break
+            selected.append(candidate)
+            candidate += stride
+        return tuple(selected)
+
+    def _fill_examples(self, global_index: int) -> None:
+        runtime = self._worker_runtime()
+        client = runtime["client"]
+        example_cache = runtime["examples"]
+        assert isinstance(client, ArrowStreamClient)
+        assert isinstance(example_cache, dict)
+        indices = self._chunk_indices(global_index)
+        first_session, _first_local, _first_unit = self.plan.locate(indices[0])
+        intervals, actions, daily = self._ticker_references(first_session.ticker)
+        conditions = self._unit_conditions(first_session, intervals)
+        windows: list[OriginWindow] = []
+        metadata: list[tuple[SequentialSessionPlan, int, int, int]] = []
+        for index in indices:
+            session, session_block, unit_block = self.plan.locate(index)
+            if session.ticker != first_session.ticker or session.unit_index != first_session.unit_index:
+                raise RuntimeError("one ordered fetch chunk crossed a ticker-month boundary")
+            origin_start = session.first_origin + session_block * int(self.data_config.origin_bars_1s)
+            origin_count = min(
+                int(self.data_config.origin_bars_1s),
+                SESSION_END_SECOND - SESSION_START_SECOND - origin_start,
+            )
+            if origin_count < int(self.data_config.min_origins_per_block):
+                raise RuntimeError(f"planned block {index} has only {origin_count} origins")
+            windows.append(
+                OriginWindow(
+                    session.local_date,
+                    SESSION_START_SECOND + origin_start,
+                    session.prior_date,
+                    origin_count,
+                )
+            )
+            metadata.append((session, session_block, unit_block, origin_count))
+        fetched = client.read_origin_windows(
+            ticker=first_session.ticker,
+            windows=tuple(windows),
+            source_intervals=intervals,
+            context_bars=self.data_config.context_bars_1s,
+            origin_bars=self.data_config.origin_bars_1s,
+            right_support_bars=self.data_config.right_support_bars_1s,
+        )
+        for index, window, (session_view, prior_view), details in zip(
+            indices, windows, fetched, metadata, strict=True
+        ):
+            session, _session_block, unit_block, origin_count = details
+            elapsed = int(window.origin_bucket) - SESSION_START_SECOND
+            target_start = max(SESSION_START_SECOND, int(window.origin_bucket) - int(self.data_config.context_bars_1s))
+            target_end = min(
+                SESSION_END_SECOND,
+                int(window.origin_bucket) + origin_count + int(self.data_config.right_support_bars_1s),
+            )
+            dense_conditions = conditions.get(window.local_date)
+            session_conditions = (
+                dense_conditions[target_start - SESSION_START_SECOND : target_end - SESSION_START_SECOND]
+                if dense_conditions is not None
+                else torch.zeros((target_end - target_start, len(CONDITION_COLUMNS)), dtype=torch.float32)
+            )
+            prior_conditions = None
+            if prior_view is not None and window.prior_date is not None:
+                dense_prior = conditions.get(window.prior_date)
+                prior_rows = min(int(prior_view.features.shape[0]), max(0, int(self.data_config.context_bars_1s) - elapsed))
+                prior_conditions = (
+                    dense_prior[-prior_rows:]
+                    if dense_prior is not None
+                    else torch.zeros((prior_rows, len(CONDITION_COLUMNS)), dtype=torch.float32)
+                )
+            built = list(
+                build_session_examples(
+                    ticker=session.ticker,
+                    local_date=session.local_date,
+                    session=session_view,
+                    prior_session=prior_view,
+                    session_conditions=session_conditions,
+                    prior_conditions=prior_conditions,
+                    daily=daily,
+                    split_actions=actions,
+                    config=self.data_config,
+                    include_incomplete_horizons=True,
+                    origin_count_limit=origin_count,
+                )
+            )
+            if len(built) != 1 or int(built[0].origin_indices.numel()) != origin_count:
+                raise RuntimeError(
+                    f"global block {index} produced {len(built)} examples instead of one {origin_count}-origin example"
+                )
+            example = built[0]
+            example.worker_id = 0  # one global durable cursor, independent of physical fetch worker
+            example.unit_index = session.unit_index
+            example.block_offset = unit_block
+            example.session_phase = session_phase(example)
+            example.has_condition_target = has_condition_target(example)
+            example_cache[index] = example
+
+    def __getitem__(self, index: int) -> BarGPTExample:
+        local_index = int(index)
+        if local_index < 0 or local_index >= len(self):
+            raise IndexError(local_index)
+        global_index = self.start_global_index + local_index
+        runtime = self._worker_runtime()
+        example_cache = runtime["examples"]
+        assert isinstance(example_cache, dict)
+        if global_index not in example_cache:
+            self._fill_examples(global_index)
+        example = example_cache.pop(global_index)
+        assert isinstance(example, BarGPTExample)
+        return example
 
 
 class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
@@ -1656,6 +2014,28 @@ def make_dataloader(
         num_workers=int(config.loader_workers),
         pin_memory=bool(config.pin_memory),
         drop_last=drop_last,
+        collate_fn=partial(collate_examples, balance_activity_regimes=config.balance_activity_regimes),
+        **kwargs,
+    )
+
+
+def make_sequential_dataloader(
+    dataset: BarGPTSequentialDataset,
+    config: DataConfig,
+) -> DataLoader[BarGPTExample]:
+    """Parallel fetch with strict sampler-order emission."""
+    kwargs: dict[str, object] = {}
+    if config.loader_workers > 0:
+        kwargs["prefetch_factor"] = int(config.worker_prefetch_batches)
+        kwargs["persistent_workers"] = bool(config.persistent_workers)
+        kwargs["in_order"] = True
+    return DataLoader(
+        dataset,
+        batch_size=int(config.batch_size),
+        shuffle=False,
+        num_workers=int(config.loader_workers),
+        pin_memory=bool(config.pin_memory),
+        drop_last=False,
         collate_fn=partial(collate_examples, balance_activity_regimes=config.balance_activity_regimes),
         **kwargs,
     )

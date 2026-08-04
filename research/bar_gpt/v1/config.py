@@ -77,6 +77,9 @@ class DataConfig:
     daily_manifest_table: str = BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE
     condition_table: str = "intraday_condition_bars_by_time_ticker"
     condition_status_table: str = "intraday_base_bars_build_status"
+    # Populated by training preflight. A channel without positive evidence in
+    # the training authority must not be learned as an always-negative label.
+    condition_target_active: tuple[bool, bool, bool, bool] = (True, True, True, True)
     identity_database: str = "q_live"
     identity_interval_table: str = "id_symbol_interval_v1"
     identity_entity_table: str = "market_ticker_event_entity_v1"
@@ -108,6 +111,9 @@ class DataConfig:
     clickhouse_max_memory_usage: int = 8 * 1024**3
     clickhouse_query_days: int = 7
     clickhouse_max_bytes_before_external_sort: int = 1024**3
+    clickhouse_retry_attempts: int = 5
+    clickhouse_retry_initial_seconds: float = 0.5
+    clickhouse_retry_max_seconds: float = 8.0
     min_origins_per_block: int = 64
     coverage_mode: str = "sequential"
     coverage_blocks_per_unit: int = 16
@@ -135,6 +141,8 @@ class DataConfig:
             raise ValueError("at least two tickers are required for disjoint train/validation populations")
         if not self.horizons_us:
             raise ValueError("at least one prediction horizon is required")
+        if len(self.condition_target_active) != 4:
+            raise ValueError("condition_target_active must contain four condition channels")
         if self.context_bars_1s <= 0 or self.origin_bars_1s <= 0:
             raise ValueError("context and origin bars must be positive")
         if self.coverage_blocks_per_unit <= 0:
@@ -169,6 +177,12 @@ class DataConfig:
             raise ValueError("ready queue blocks and worker prefetch batches must be positive")
         if self.clickhouse_query_days <= 0 or self.clickhouse_max_bytes_before_external_sort <= 0:
             raise ValueError("ClickHouse query days and external-sort threshold must be positive")
+        if self.clickhouse_retry_attempts <= 0:
+            raise ValueError("ClickHouse retry attempts must be positive")
+        if self.clickhouse_retry_initial_seconds < 0 or self.clickhouse_retry_max_seconds < 0:
+            raise ValueError("ClickHouse retry delays cannot be negative")
+        if self.clickhouse_retry_max_seconds < self.clickhouse_retry_initial_seconds:
+            raise ValueError("ClickHouse retry maximum cannot be below the initial delay")
 
 
 @dataclass(slots=True)

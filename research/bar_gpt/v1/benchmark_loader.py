@@ -12,9 +12,15 @@ from urllib.parse import urlsplit
 import torch
 
 from research.bar_gpt.v1.config import DataConfig
-from research.bar_gpt.v1.loader import BarGPTIterableDataset, ClickHouseBarStreamConfig, make_dataloader
+from research.bar_gpt.v1.loader import (
+    BarGPTIterableDataset,
+    BarGPTSequentialDataset,
+    ClickHouseBarStreamConfig,
+    make_dataloader,
+    make_sequential_dataloader,
+)
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
-from research.bar_gpt.v1.train import preflight
+from research.bar_gpt.v1.train import preflight, sequential_coverage_counts
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
     default_clickhouse_password,
@@ -91,6 +97,9 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-max-block-size", type=int, default=defaults.clickhouse_max_block_size)
     parser.add_argument("--clickhouse-max-memory-usage", type=int, default=defaults.clickhouse_max_memory_usage)
     parser.add_argument("--clickhouse-query-days", type=int, default=defaults.clickhouse_query_days)
+    parser.add_argument("--clickhouse-retry-attempts", type=int, default=defaults.clickhouse_retry_attempts)
+    parser.add_argument("--clickhouse-retry-initial-seconds", type=float, default=defaults.clickhouse_retry_initial_seconds)
+    parser.add_argument("--clickhouse-retry-max-seconds", type=float, default=defaults.clickhouse_retry_max_seconds)
     parser.add_argument(
         "--clickhouse-max-bytes-before-external-sort",
         type=int,
@@ -260,6 +269,9 @@ def _make_data_config(args: argparse.Namespace) -> DataConfig:
         clickhouse_max_memory_usage=int(args.clickhouse_max_memory_usage),
         clickhouse_query_days=int(args.clickhouse_query_days),
         clickhouse_max_bytes_before_external_sort=int(args.clickhouse_max_bytes_before_external_sort),
+        clickhouse_retry_attempts=int(args.clickhouse_retry_attempts),
+        clickhouse_retry_initial_seconds=float(args.clickhouse_retry_initial_seconds),
+        clickhouse_retry_max_seconds=float(args.clickhouse_retry_max_seconds),
         pin_memory=bool(args.pin_memory),
         persistent_workers=bool(args.persistent_workers),
         balance_activity_regimes=bool(args.balance_activity_regimes),
@@ -277,7 +289,8 @@ def run_benchmark(args: argparse.Namespace) -> LoaderBenchmarkResult:
     url = default_clickhouse_url()
     user = default_clickhouse_user()
     password = default_clickhouse_password()
-    preflight(ClickHouseHttpClient(url, user, password), data)
+    clickhouse = ClickHouseHttpClient(url, user, password)
+    preflight(clickhouse, data)
     stream = ClickHouseBarStreamConfig(
         url=url,
         user=user,
@@ -289,9 +302,23 @@ def run_benchmark(args: argparse.Namespace) -> LoaderBenchmarkResult:
         max_memory_usage=data.clickhouse_max_memory_usage,
         query_days=data.clickhouse_query_days,
         max_bytes_before_external_sort=data.clickhouse_max_bytes_before_external_sort,
+        retry_attempts=data.clickhouse_retry_attempts,
+        retry_initial_seconds=data.clickhouse_retry_initial_seconds,
+        retry_max_seconds=data.clickhouse_retry_max_seconds,
     )
-    dataset = BarGPTIterableDataset(data_config=data, stream_config=stream, split=str(args.split), seed=int(args.seed))
-    loader = make_dataloader(dataset, data, drop_last=True)
+    if args.split == "train" and data.coverage_mode == "sequential":
+        _sessions, _blocks, _origins, _units, sequential_plan = sequential_coverage_counts(
+            clickhouse, data, seed=int(args.seed)
+        )
+        dataset = BarGPTSequentialDataset(
+            data_config=data,
+            stream_config=stream,
+            plan=sequential_plan,
+        )
+        loader = make_sequential_dataloader(dataset, data)
+    else:
+        dataset = BarGPTIterableDataset(data_config=data, stream_config=stream, split=str(args.split), seed=int(args.seed))
+        loader = make_dataloader(dataset, data, drop_last=True)
     total = int(args.warmup_batches) + int(args.measured_batches)
     host = urlsplit(url).hostname or "configured ClickHouse"
     reporter = BenchmarkReporter(layout=str(args.progress_layout), total=total, json_only=bool(args.json))

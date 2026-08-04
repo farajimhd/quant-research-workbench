@@ -140,24 +140,23 @@ generated artifact is written into the repository.
 
 ## Loader and temporal contract
 
-Training uses incremental ArrowStream record batches. The durable work unit is
+Training uses a certified, indexable global block plan. The durable work unit is
 one canonical ticker over one calendar month. Months remain chronological for
 partition locality and ticker order is deterministically shuffled inside each
-month. Every ticker is assigned to exactly one worker for the epoch, so its
-identity, split, and daily-history state is loaded once and reused across all
-months instead of being duplicated by changing worker assignments. The month is
-an ordering and resume boundary, not a materialization boundary. Training reads
-ordered sparse bars in bounded seven-day Arrow pages. Each session is densified
-and rolled up once, then emitted chronologically in non-overlapping `O`-origin
-blocks (4,096 by default) until the ticker-month is complete. Preceding raw bars
-remain the causal halo for the next block; encoded Transformer states are never
-reused across optimizer updates because they would be stale. Ready workers may publish
-out of order across workers, while each worker's own cursor order remains
-strict. A dedicated producer continuously fills a bounded 64-block RAM cache;
-the CUDA stream stages the next collated batch without withholding an already
-ready batch when a producer is slow. Source-table predicates are qualified so
-ClickHouse cannot substitute the projected canonical ticker alias and scan every
-ticker. Daily history is cached once per ticker.
+month. PyTorch map workers fetch exact bounded future windows concurrently, but
+the DataLoader emits only global sampler order: every block of the active
+ticker-month reaches the trainer before the next ticker-month. Physical worker
+identity never enters the training cursor.
+
+Each bounded ClickHouse query contains only causal context, one or more planned
+4,096-origin blocks, and target-only support. A response is buffered to a
+complete Arrow boundary before any row is exposed. Truncated HTTP/Arrow reads
+therefore contribute zero rows and retry the identical query with exponential
+backoff; they cannot duplicate or skip an origin. Workers cache point-in-time
+identity, split, and daily history and prefetch their future positions into a
+bounded 64-block RAM cache. The CUDA stream stages the next collated batch while
+the current batch computes. Source predicates remain qualified so the projected
+canonical ticker cannot broaden a ClickHouse scan.
 
 The prior completed session contributes up to 2,048 one-second context rows to
 the first premarket origins. No overnight seconds are fabricated: timestamps
@@ -250,7 +249,7 @@ origins and target sets—not one example with one target. The visible 1-second
 tensor contains 2,048 preceding context rows plus the 4,096
 origin rows. Causal attention lets the first origin use the preceding 2,048
 rows; each later origin may also use the earlier origin rows because those
-seconds are already known at its as-of time. Thus the last origin has a 2,559-row
+seconds are already known at its as-of time. Thus the last origin has a 6,143-row
 causal prefix. This is standard autoregressive packed-sequence training and is
 equivalent to 4,096 causal examples with shared computation, except that it does
 not impose a strict rolling 2,048-row attention window.
@@ -258,7 +257,7 @@ not impose a strict rolling 2,048-row attention window.
 One microbatch contains one block and produces one optimizer update with up to
 4,096 supervised origins. Eight persistent loader workers use one ClickHouse thread each, two
 in-flight batches per worker, and a
-shared 64-block (32-batch) bounded RAM cache. One device batch transfers on a
+shared 64-block (64-batch) bounded RAM cache. One device batch transfers on a
 dedicated CUDA stream while the current batch computes. The terminal reports
 actual cache fill and per-update GPU duty so starvation is visible. Future target support
 never enters `batch.views`; it is consumed only by GPU target construction and
@@ -268,14 +267,14 @@ targets. This preserves nonnegative volume and count semantics when a quiet
 window follows large earlier activity and prevents float32 prefix cancellation
 from creating invalid `log1p` targets.
 
-The durable resume cursor is `(worker, global ticker-month index, chronological block
+The durable resume cursor is `(global ticker-month index, chronological block
 offset)`. It advances only after a successful optimizer update. Ctrl+C discards
 an incomplete accumulation group and replays it; resume jumps over completed
 units rather than reading and discarding them. A coverage-plan hash binds the
 population, dates, coverage mode, exact session/block/origin totals, block shape,
-and epochs. Loader worker count is part of the resume contract because it
-defines the stable ticker-to-worker assignment; cache depth and per-worker
-prefetch depth may be tuned when resuming.
+epochs, and ordered-loader contract. Loader worker count, cache depth, retry
+budget, and per-worker prefetch depth may be tuned when resuming because they do
+not affect logical order.
 
 Validation is a fixed eight-ticker, eight-week panel spanning liquid,
 high-volatility, sector, event-driven, and illiquid names in 2026. Those
@@ -306,7 +305,9 @@ cursors are part of every resumable checkpoint.
 Best-model selection uses fixed-panel validation loss. Training-loss minima are
 not checkpointed because ticker/session composition changes over the epoch;
 durable latest and archive checkpoints remain sample-clocked and Ctrl+C forces
-a final latest checkpoint. Loader concurrency and ClickHouse transport settings
+a final latest checkpoint. An unhandled loader or training failure first stops
+prefetch and forces a checkpoint at the last optimizer-committed global cursor;
+any partially prepared block replays. Loader concurrency and ClickHouse transport settings
 may change when resuming, while model, sampling, and causal data contracts must
 still match exactly.
 
@@ -315,10 +316,16 @@ is exact epoch-origin coverage; the secondary bar is the latest durably trained
 ticker-month and block offset. The stable dashboard also shows smoothed speed,
 elapsed time, ETA and expected finish, scheduler phase, learning rate, loss,
 validation, GPU duty, loader wait, RAM cache, checkpoint, and recent lifecycle
-messages. Redirected output remains plain text without cursor control.
+messages. Calendar context availability is reported separately from calendar
+autoregressive event rate: a zero 1D/1W/1MO AR loss is expected unless a coarse
+bar actually becomes available inside the current origin interval. Redirected
+output remains plain text without cursor control.
 
 Rare condition positives receive a configurable 32x BCE positive weight; the
-four ordinary market-family availability labels remain unweighted.
+four ordinary market-family availability labels remain unweighted. Preflight
+also gates each condition channel: a channel with no positive evidence in the
+certified training range is loss-ineligible and recorded as inactive in the
+manifest and checkpoint config instead of being learned as always negative.
 
 Profile the complete Arrow-to-optimizer path before the first full run:
 

@@ -29,9 +29,13 @@ from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, B
 from research.bar_gpt.v1.loader import (
     ArrowStreamClient,
     BarGPTIterableDataset,
+    BarGPTSequentialDataset,
     ClickHouseBarStreamConfig,
+    SequentialBlockPlan,
+    SequentialSessionPlan,
     build_session_examples,
     make_dataloader,
+    make_sequential_dataloader,
     month_units,
 )
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
@@ -67,12 +71,16 @@ _INTERRUPTED = False
 _RESUME_RUNTIME_DATA_FIELDS = frozenset(
     {
         "ready_queue_blocks",
+        "loader_workers",
         "worker_prefetch_batches",
         "clickhouse_max_threads_per_worker",
         "clickhouse_max_block_size",
         "clickhouse_max_memory_usage",
         "clickhouse_query_days",
         "clickhouse_max_bytes_before_external_sort",
+        "clickhouse_retry_attempts",
+        "clickhouse_retry_initial_seconds",
+        "clickhouse_retry_max_seconds",
         "pin_memory",
         "persistent_workers",
     }
@@ -131,6 +139,9 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=data.clickhouse_max_threads_per_worker)
     parser.add_argument("--clickhouse-max-memory-usage", type=int, default=data.clickhouse_max_memory_usage)
     parser.add_argument("--clickhouse-query-days", type=int, default=data.clickhouse_query_days)
+    parser.add_argument("--clickhouse-retry-attempts", type=int, default=data.clickhouse_retry_attempts)
+    parser.add_argument("--clickhouse-retry-initial-seconds", type=float, default=data.clickhouse_retry_initial_seconds)
+    parser.add_argument("--clickhouse-retry-max-seconds", type=float, default=data.clickhouse_retry_max_seconds)
     parser.add_argument(
         "--clickhouse-max-bytes-before-external-sort",
         type=int,
@@ -220,6 +231,9 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         clickhouse_max_memory_usage=int(args.clickhouse_max_memory_usage),
         clickhouse_query_days=int(args.clickhouse_query_days),
         clickhouse_max_bytes_before_external_sort=int(args.clickhouse_max_bytes_before_external_sort),
+        clickhouse_retry_attempts=int(args.clickhouse_retry_attempts),
+        clickhouse_retry_initial_seconds=float(args.clickhouse_retry_initial_seconds),
+        clickhouse_retry_max_seconds=float(args.clickhouse_retry_max_seconds),
         balance_activity_regimes=bool(args.balance_activity_regimes),
     )
     data.validate()
@@ -442,6 +456,21 @@ FORMAT TSVRaw
             f"{condition_days}/{expected_condition_days} calendar days; run "
             "python -B -m research.bar_gpt.v1.run_build_conditions_1s"
         )
+    condition_positive_sql = f"""
+SELECT count(),
+       countIf(condition_halt_pause_flag=1),
+       countIf(condition_resume_flag=1),
+       countIf(condition_news_risk_flag=1),
+       countIf(condition_luld_limit_state_flag=1)
+FROM {quote_ident(config.database)}.{quote_ident(config.condition_table)}
+WHERE ticker IN ({', '.join(sql_string(ticker) for ticker in certified_condition_tickers)})
+  AND local_date>=toDate({sql_string(config.start_date)})
+  AND local_date<toDate({sql_string(config.validation_start_date)})
+FORMAT TSVRaw
+"""
+    positive_values = [int(value) for value in client.query_tsv(condition_positive_sql).strip().split("\t") if value]
+    if len(positive_values) != 5:
+        raise RuntimeError("condition sidecar positive-row audit returned an invalid schema")
     return {
         "certified_start": config.start_date,
         "certified_end": cursor,
@@ -452,6 +481,11 @@ FORMAT TSVRaw
         "daily_certified_end": daily_cursor,
         "daily_certified_ranges": str(daily_ranges),
         "condition_certified_days": str(condition_days),
+        "condition_positive_rows": str(positive_values[0]),
+        "condition_halt_rows": str(positive_values[1]),
+        "condition_resume_rows": str(positive_values[2]),
+        "condition_news_rows": str(positive_values[3]),
+        "condition_luld_rows": str(positive_values[4]),
     }
 
 
@@ -467,6 +501,9 @@ def _stream_config(data: DataConfig) -> ClickHouseBarStreamConfig:
         max_memory_usage=data.clickhouse_max_memory_usage,
         query_days=data.clickhouse_query_days,
         max_bytes_before_external_sort=data.clickhouse_max_bytes_before_external_sort,
+        retry_attempts=data.clickhouse_retry_attempts,
+        retry_initial_seconds=data.clickhouse_retry_initial_seconds,
+        retry_max_seconds=data.clickhouse_retry_max_seconds,
     )
 
 
@@ -486,7 +523,7 @@ def sequential_coverage_counts(
     config: DataConfig,
     *,
     seed: int = 17,
-) -> tuple[int, int, int, dict[str, tuple[int, int]]]:
+) -> tuple[int, int, int, dict[str, tuple[int, int]], SequentialBlockPlan]:
     """Return exact epoch totals and ticker-month block plans in dataset order."""
     stream = ArrowStreamClient(_stream_config(config))
     lookback_start = (dt.date.fromisoformat(config.start_date) - dt.timedelta(days=14)).isoformat()
@@ -532,39 +569,72 @@ def sequential_coverage_counts(
     session_seconds = 16 * 3_600
     sessions = blocks = origins = 0
     unit_plans: dict[str, tuple[int, int]] = {}
+    session_plans: list[SequentialSessionPlan] = []
+    session_block_starts: list[int] = []
+    unit_global_starts: list[int] = []
+    unit_block_counts: list[int] = []
     units = month_units(
         config.start_date,
         config.validation_start_date,
         config.training_tickers,
         seed=seed,
     )
-    for unit in units:
+    for unit_index, unit in enumerate(units):
         left = dt.date.fromisoformat(unit.start_date)
         right = dt.date.fromisoformat(unit.end_date)
         fetch_start = left - dt.timedelta(days=14)
         dates = dates_by_ticker[unit.ticker]
-        previous_available = any(fetch_start <= day < left for day in dates)
+        previous_dates = [day for day in dates if fetch_start <= day < left]
+        previous_date = max(previous_dates).isoformat() if previous_dates else None
         unit_sessions = unit_blocks = unit_origins = 0
+        unit_global_starts.append(blocks)
         for day in dates:
             if day < left or day >= right:
                 continue
-            first_origin = 0 if previous_available else int(config.context_bars_1s)
+            first_origin = 0 if previous_date is not None else int(config.context_bars_1s)
             eligible = max(0, session_seconds - first_origin)
             full, remainder = divmod(eligible, int(config.origin_bars_1s))
-            unit_blocks += full
-            unit_origins += full * int(config.origin_bars_1s)
+            session_blocks = full
+            session_origins = full * int(config.origin_bars_1s)
             if remainder >= int(config.min_origins_per_block):
-                unit_blocks += 1
-                unit_origins += remainder
+                session_blocks += 1
+                session_origins += remainder
+            if session_blocks:
+                session_block_starts.append(blocks + unit_blocks)
+                session_plans.append(
+                    SequentialSessionPlan(
+                        unit_index=unit_index,
+                        ticker=unit.ticker,
+                        unit_start_date=unit.start_date,
+                        unit_end_date=unit.end_date,
+                        local_date=day.isoformat(),
+                        prior_date=previous_date,
+                        first_origin=first_origin,
+                        block_count=session_blocks,
+                        unit_block_start=unit_blocks,
+                        global_block_start=blocks + unit_blocks,
+                    )
+                )
+            unit_blocks += session_blocks
+            unit_origins += session_origins
             unit_sessions += 1
-            previous_available = True
+            previous_date = day.isoformat()
         sessions += unit_sessions
         blocks += unit_blocks
         origins += unit_origins
+        unit_block_counts.append(unit_blocks)
         unit_plans[f"{unit.ticker}:{left:%Y-%m}"] = (unit_blocks, unit_origins)
     if not sessions or not blocks or not origins:
         raise RuntimeError("sequential coverage query found no trainable one-second sessions")
-    return sessions, blocks, origins, unit_plans
+    block_plan = SequentialBlockPlan(
+        sessions=tuple(session_plans),
+        session_block_starts=tuple(session_block_starts),
+        unit_global_starts=tuple(unit_global_starts),
+        unit_block_counts=tuple(unit_block_counts),
+        total_blocks=blocks,
+        total_origins=origins,
+    )
+    return sessions, blocks, origins, unit_plans, block_plan
 
 
 class _DummyDataset(IterableDataset[BarGPTExample]):
@@ -617,6 +687,7 @@ def _loaders(
     args: argparse.Namespace,
     *,
     resume_cursors: dict[int, CoverageCursor] | None = None,
+    sequential_plan: SequentialBlockPlan | None = None,
 ) -> tuple[DataLoader[Any], DataLoader[Any]]:
     if args.dummy_data:
         example = _dummy_example(config.data)
@@ -625,6 +696,18 @@ def _loaders(
         common = dict(batch_size=config.data.batch_size, num_workers=0, collate_fn=collate_examples)
         return DataLoader(train_dataset, **common), DataLoader(validation_dataset, **common)
     stream = _stream_config(config.data)
+    validation_dataset = BarGPTIterableDataset(data_config=config.data, stream_config=stream, split="validation", seed=config.train.seed)
+    validation_loader = make_dataloader(validation_dataset, config.data, drop_last=False)
+    if config.data.coverage_mode == "sequential":
+        if sequential_plan is None:
+            raise ValueError("sequential training requires the certified global block plan")
+        train_dataset = BarGPTSequentialDataset(
+            data_config=config.data,
+            stream_config=stream,
+            plan=sequential_plan,
+            resume_cursor=(resume_cursors or {}).get(0),
+        )
+        return make_sequential_dataloader(train_dataset, config.data), validation_loader
     train_dataset = BarGPTIterableDataset(
         data_config=config.data,
         stream_config=stream,
@@ -632,8 +715,7 @@ def _loaders(
         seed=config.train.seed,
         resume_cursors=resume_cursors,
     )
-    validation_dataset = BarGPTIterableDataset(data_config=config.data, stream_config=stream, split="validation", seed=config.train.seed)
-    return make_dataloader(train_dataset, config.data, drop_last=True), make_dataloader(validation_dataset, config.data, drop_last=False)
+    return make_dataloader(train_dataset, config.data, drop_last=True), validation_loader
 
 
 def _training_prefetcher(
@@ -658,6 +740,20 @@ def _unwrap(model: torch.nn.Module) -> torch.nn.Module:
     return getattr(model, "_orig_mod", model)
 
 
+def _mask_inactive_condition_targets(
+    batch: BarGPTBatch,
+    active_channels: tuple[bool, bool, bool, bool],
+) -> None:
+    if batch.horizon_mask is None:
+        return
+    active = torch.as_tensor(
+        active_channels,
+        dtype=torch.bool,
+        device=batch.horizon_mask.device,
+    )
+    batch.horizon_mask[..., -4:] &= active
+
+
 def _forward(model: torch.nn.Module, batch: BarGPTBatch, config: ExperimentConfig) -> tuple[Any, BarGPTLoss]:
     output = model(
         batch.views,
@@ -668,6 +764,7 @@ def _forward(model: torch.nn.Module, batch: BarGPTBatch, config: ExperimentConfi
         asof_indices=batch.asof_indices,
         horizon_ids=torch.arange(len(config.data.horizons_us), device=batch.origin_indices.device),
     )
+    _mask_inactive_condition_targets(batch, config.data.condition_target_active)
     return output, compute_loss(output, batch, config.train, config.model.quantiles)
 
 
@@ -710,6 +807,26 @@ def _finite_check_vector(result: BarGPTLoss, batch: BarGPTBatch) -> tuple[torch.
         names.append("valid_horizon_targets")
         checks.append(torch.isfinite(batch.horizon_targets[batch.horizon_mask]).all())
     return torch.stack(checks), tuple(names)
+
+
+def _batch_eligibility_metrics(batch: BarGPTBatch) -> dict[str, torch.Tensor]:
+    """Expose context availability separately from event-timed AR supervision."""
+    result: dict[str, torch.Tensor] = {}
+    origin_denominator = batch.origin_mask.sum().clamp_min(1)
+    for name in ("1D", "1W", "1MO"):
+        asof = batch.asof_indices[name]
+        context_available = (asof >= 0) & batch.origin_mask[:, : asof.shape[1]]
+        result[f"train/context_available_{name}"] = context_available.sum().float() / origin_denominator
+        ar_mask = batch.autoregressive_mask[name]
+        result[f"train/ar_event_rate_{name}"] = ar_mask.any(dim=-1).float().mean() if ar_mask.numel() else ar_mask.new_zeros(())
+    if batch.horizon_targets is not None and batch.horizon_mask is not None:
+        condition_target = batch.horizon_targets[..., -4:]
+        condition_mask = batch.horizon_mask[..., -4:]
+        valid = condition_mask.sum().clamp_min(1)
+        result["train/condition_positive_rate"] = (
+            ((condition_target > 0) & condition_mask).sum().float() / valid
+        )
+    return result
 
 
 @torch.no_grad()
@@ -837,7 +954,29 @@ def _cursor_map(values: dict[str, Any] | None) -> dict[int, CoverageCursor]:
     }
 
 
-def _advance_cursors(cursors: dict[int, CoverageCursor], batch: BarGPTBatch) -> dict[int, CoverageCursor]:
+def _advance_cursors(
+    cursors: dict[int, CoverageCursor],
+    batch: BarGPTBatch,
+    sequential_plan: SequentialBlockPlan | None = None,
+) -> dict[int, CoverageCursor]:
+    if sequential_plan is not None:
+        current = cursors.get(0)
+        expected = 0 if current is None else sequential_plan.cursor_global_index(current) + 1
+        for worker, unit, block in zip(
+            batch.worker_ids, batch.unit_indices, batch.block_offsets, strict=True
+        ):
+            if int(worker) != 0:
+                raise RuntimeError("ordered sequential training requires one logical global cursor")
+            candidate = CoverageCursor(int(unit), int(block))
+            actual = sequential_plan.cursor_global_index(candidate)
+            if actual != expected:
+                raise RuntimeError(
+                    f"sequential block order violation: expected global block {expected:,}, got {actual:,} "
+                    f"(unit={candidate.unit_index}, block={candidate.block_offset})"
+                )
+            current = candidate
+            expected += 1
+        return {0: current} if current is not None else dict(cursors)
     updated = dict(cursors)
     for worker, unit, block in zip(batch.worker_ids, batch.unit_indices, batch.block_offsets, strict=True):
         candidate = CoverageCursor(int(unit), int(block))
@@ -886,12 +1025,42 @@ def main(argv: Iterable[str] | None = None) -> int:
         default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
     )
     evidence = {"mode": "dummy"} if args.dummy_data else preflight(clickhouse_client, config.data)
+    condition_evidence = (
+        ("halt_pause", "condition_halt_rows"),
+        ("resume", "condition_resume_rows"),
+        ("news_risk", "condition_news_rows"),
+        ("luld_limit_state", "condition_luld_rows"),
+    )
+    if not args.dummy_data:
+        config.data.condition_target_active = tuple(
+            int(evidence.get(evidence_key, "0")) > 0
+            for _name, evidence_key in condition_evidence
+        )
+    evidence["condition_active_targets"] = ",".join(
+        name
+        for (name, _evidence_key), active in zip(
+            condition_evidence, config.data.condition_target_active, strict=True
+        )
+        if active
+    ) or "none"
+    evidence["condition_inactive_targets"] = ",".join(
+        name
+        for (name, _evidence_key), active in zip(
+            condition_evidence, config.data.condition_target_active, strict=True
+        )
+        if not active
+    ) or "none"
     sequential_sessions = sequential_blocks = sequential_origins = 0
     sequential_unit_plans: dict[str, tuple[int, int]] = {}
+    sequential_block_plan: SequentialBlockPlan | None = None
     if not args.dummy_data and config.data.coverage_mode == "sequential":
-        sequential_sessions, sequential_blocks, sequential_origins, sequential_unit_plans = sequential_coverage_counts(
-            clickhouse_client, config.data, seed=config.train.seed
-        )
+        (
+            sequential_sessions,
+            sequential_blocks,
+            sequential_origins,
+            sequential_unit_plans,
+            sequential_block_plan,
+        ) = sequential_coverage_counts(clickhouse_client, config.data, seed=config.train.seed)
         evidence.update(
             {
                 "training_sessions_per_epoch": str(sequential_sessions),
@@ -946,7 +1115,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and config.train.amp_dtype == "fp16" and device.type == "cuda")
     restored = restore_checkpoint(args.resume_checkpoint, model, optimizer, scaler, scheduler, device, config, plan.plan_hash)
     resume_cursors = _cursor_map(restored.get("data_cursors"))
-    train_loader, validation_loader = _loaders(config, args, resume_cursors=resume_cursors)
+    train_loader, validation_loader = _loaders(
+        config,
+        args,
+        resume_cursors=resume_cursors,
+        sequential_plan=sequential_block_plan,
+    )
     wandb_run = init_wandb(
         entity=config.train.wandb_entity,
         project=config.train.wandb_project,
@@ -1052,10 +1226,16 @@ def main(argv: Iterable[str] | None = None) -> int:
                 f"Certified source; plan={plan.plan_hash[:12]} units={plan.units:,} "
                 f"blocks={plan.expected_blocks:,}; held-out tickers={len(holdout)}"
             )
+            reporter.message(
+                "Condition targets: active=" + evidence["condition_active_targets"]
+                + "; loss-ineligible=" + evidence["condition_inactive_targets"]
+            )
             for epoch in range(resume_epoch, max(1, config.train.epochs)):
                 current_epoch = epoch
                 if epoch != resume_epoch:
-                    train_loader, _unused_validation = _loaders(config, args, resume_cursors={})
+                    train_loader, _unused_validation = _loaders(
+                        config, args, resume_cursors={}, sequential_plan=sequential_block_plan
+                    )
                     durable_cursors = {}
                     validation_runs_in_epoch = 0
                     epoch_start_samples = samples_seen
@@ -1142,8 +1322,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                             for worker, unit in zip(batch.worker_ids, batch.unit_indices, strict=True)
                         )
                         accumulated_condition_blocks += sum(batch.condition_blocks)
-                        pending_cursors = _advance_cursors(pending_cursors, batch)
-                        for key, value in result.metrics.items():
+                        pending_cursors = _advance_cursors(
+                            pending_cursors,
+                            batch,
+                            sequential_plan=sequential_block_plan,
+                        )
+                        batch_metrics = {**result.metrics, **_batch_eligibility_metrics(batch)}
+                        for key, value in batch_metrics.items():
                             contribution = value.detach().float() * origins
                             accumulated_metrics[key] = accumulated_metrics.get(key, torch.zeros_like(contribution)) + contribution
 
@@ -1264,6 +1449,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                                     config,
                                     args,
                                     resume_cursors=durable_cursors,
+                                    sequential_plan=sequential_block_plan,
                                 )
                                 if isinstance(train_loader.dataset, BarGPTIterableDataset):
                                     train_loader.dataset.epoch = epoch
@@ -1347,6 +1533,45 @@ def main(argv: Iterable[str] | None = None) -> int:
                 val_metrics=last_val,
                 force=True,
             )
+    except BaseException as failure:
+        if active_iterator is not None:
+            try:
+                active_iterator.close()
+            except BaseException as close_failure:
+                failure.add_note(
+                    f"training prefetch shutdown also failed: {close_failure.__class__.__name__}: {close_failure}"
+                )
+            finally:
+                active_iterator = None
+        optimizer.zero_grad(set_to_none=True)
+        reporter.state.state = "failed"
+        reporter.message(
+            f"Saving failure checkpoint at durable origin {samples_seen:,}: "
+            f"{failure.__class__.__name__}"
+        )
+        snapshot_cursors = dict(durable_cursors)
+        try:
+            checkpointer.maybe_save(
+                step=samples_seen,
+                payload_factory=lambda cursors=snapshot_cursors: checkpoint_payload(
+                    model, optimizer, scaler, scheduler, checkpointer, config,
+                    samples_seen=samples_seen, batches_seen=batches_seen,
+                    optimizer_steps=optimizer_steps, epoch=current_epoch,
+                    epoch_start_samples=epoch_start_samples,
+                    blocks_seen=blocks_seen, units_seen=units_seen,
+                    condition_blocks_seen=condition_blocks_seen,
+                    data_cursors=cursors, plan_hash=plan.plan_hash,
+                    last_latest_samples=samples_seen,
+                ),
+                train_metrics=last_metrics,
+                val_metrics=last_val,
+                force=True,
+            )
+        except BaseException as checkpoint_failure:
+            failure.add_note(
+                f"failure checkpoint also failed: {checkpoint_failure.__class__.__name__}: {checkpoint_failure}"
+            )
+        raise
     finally:
         if active_iterator is not None:
             active_iterator.close()

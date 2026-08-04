@@ -85,7 +85,7 @@ def coverage_plan_summary(
     else:
         raise ValueError("coverage_mode must be sequential or stratified")
     payload = {
-        "version": 3,
+        "version": 4,
         "coverage_mode": coverage_mode,
         "start_date": start_date,
         "end_date": end_date,
