@@ -37,6 +37,9 @@ class TrainingProgressState:
     origins_per_second: float = 0.0
     loader_wait_seconds: float = 0.0
     gpu_seconds: float = 0.0
+    gpu_duty_cycle: float = 0.0
+    host_cache_batches: int = 0
+    host_cache_capacity: int = 0
     active_tickers: str = "-"
     active_dates: str = "-"
     last_checkpoint: str = "-"
@@ -99,6 +102,9 @@ class TrainingReporter:
         s.origins_per_second = float(metrics.get("train/origins_per_second", s.origins_per_second))
         s.loader_wait_seconds = float(metrics.get("train/loader_wait_seconds", s.loader_wait_seconds))
         s.gpu_seconds = float(metrics.get("train/gpu_seconds", s.gpu_seconds))
+        s.gpu_duty_cycle = float(metrics.get("train/gpu_duty_cycle", s.gpu_duty_cycle))
+        s.host_cache_batches = int(metrics.get("train/host_cache_batches", s.host_cache_batches))
+        s.host_cache_capacity = int(metrics.get("train/host_cache_capacity", s.host_cache_capacity))
         s.losses = {key.removeprefix("train/loss_"): float(value) for key, value in metrics.items() if key.startswith("train/loss_")}
         if tickers:
             s.active_tickers = ",".join(tickers)
@@ -145,6 +151,8 @@ class TrainingReporter:
                 f"run_origins={s.samples_seen:,}/{s.max_samples:,} steps={s.optimizer_steps:,} "
                 f"blocks={s.blocks_seen:,}/{s.planned_blocks:,} units={s.units_seen:,}/{s.planned_units:,} "
                 f"loss={s.loss:.6f} speed={s.origins_per_second:,.1f}/s "
+                f"gpu_duty={s.gpu_duty_cycle * 100:.1f}% "
+                f"cache={s.host_cache_batches}/{s.host_cache_capacity} batches "
                 f"active={s.active_tickers} dates={s.active_dates}",
                 flush=True,
             )
@@ -173,7 +181,11 @@ class TrainingReporter:
             summary.add_row(f"[bold]state[/] {s.state}", f"[bold]run[/] {s.run_name}", f"[bold]device[/] {s.device} {s.precision}")
             summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]validation[/] {s.validation_loss:.6f}" if s.validation_loss is not None else "[bold]validation[/] -", f"[bold]lr[/] {s.learning_rate:.3e}")
             summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]elapsed[/] {_duration(elapsed)}", f"[bold]run ETA[/] {_duration(eta) if eta else '-'}")
-            summary.add_row(f"[bold]loader wait[/] {s.loader_wait_seconds:.2f}s", f"[bold]GPU[/] {s.gpu_seconds:.2f}s", f"[bold]parameters[/] {s.model_parameters:,}")
+            summary.add_row(
+                f"[bold]loader wait[/] {s.loader_wait_seconds:.2f}s",
+                f"[bold]GPU[/] {s.gpu_seconds:.2f}s ({s.gpu_duty_cycle * 100:.0f}% duty)",
+                f"[bold]host cache[/] {s.host_cache_batches}/{s.host_cache_capacity} batches",
+            )
             summary.add_row(
                 f"[bold]run origins[/] {s.samples_seen:,}/{s.max_samples:,}",
                 f"[bold]blocks[/] {s.blocks_seen:,}/{s.planned_blocks:,} planned",
@@ -184,12 +196,20 @@ class TrainingReporter:
             summary.add_row(f"[bold]state[/] {s.state}", f"[bold]device[/] {s.device} {s.precision}")
             summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]lr[/] {s.learning_rate:.3e}")
             summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]run ETA[/] {_duration(eta) if eta else '-'}")
+            summary.add_row(
+                f"[bold]GPU duty[/] {s.gpu_duty_cycle * 100:.0f}%",
+                f"[bold]cache[/] {s.host_cache_batches}/{s.host_cache_capacity} batches",
+            )
             summary.add_row(f"[bold]run origins[/] {s.samples_seen:,}/{s.max_samples:,}", f"[bold]updates[/] {s.optimizer_steps:,}")
         active = Table.grid(expand=True, padding=(0, 2))
         active.add_column(style="bold", no_wrap=True); active.add_column(ratio=1)
         active.add_row("tickers", s.active_tickers)
         active.add_row("dates", s.active_dates)
-        active.add_row("pipeline", f"CPU queue + {'CUDA prefetch' if s.cuda_prefetch else 'synchronous device handoff'}")
+        active.add_row(
+            "pipeline",
+            f"RAM cache {s.host_cache_batches}/{s.host_cache_capacity} batches + "
+            f"{'CUDA prefetch' if s.cuda_prefetch else 'synchronous device handoff'}",
+        )
         active.add_row("condition blocks", f"{s.condition_blocks_seen:,}")
         active.add_row("checkpoint", s.last_checkpoint)
         active.add_row("output", s.output_dir)

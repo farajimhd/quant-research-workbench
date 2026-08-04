@@ -103,6 +103,18 @@ def month_units(start_date: str, end_date: str, tickers: tuple[str, ...], *, see
     return units
 
 
+def worker_ticker_shards(tickers: tuple[str, ...], *, workers: int, seed: int) -> tuple[tuple[str, ...], ...]:
+    """Assign each ticker to one worker for an epoch so reference caches are never duplicated."""
+    if workers <= 0:
+        return (tuple(tickers),)
+    ordered = list(dict.fromkeys(tickers))
+    random.Random(f"{seed}:worker-ticker-shards").shuffle(ordered)
+    shards: list[list[str]] = [[] for _ in range(int(workers))]
+    for index, ticker in enumerate(ordered):
+        shards[index % int(workers)].append(ticker)
+    return tuple(tuple(values) for values in shards)
+
+
 def origin_window_schedule(
     *,
     dates: list[str],
@@ -664,15 +676,20 @@ class ArrowStreamClient:
                 if not frame.is_empty():
                     frames.append(frame)
         combined = pl.concat(frames, how="vertical") if frames else None
+        frames_by_date = (
+            {
+                str(part["local_date"][0]): part
+                for part in combined.partition_by("local_date", maintain_order=True)
+            }
+            if combined is not None
+            else {}
+        )
 
         def window_view(day: str, left: int, right: int) -> BarView:
-            selected = None
-            if combined is not None:
-                selected = combined.filter(
-                    (pl.col("local_date").cast(pl.String) == day)
-                    & (pl.col("bucket_index") >= left)
-                    & (pl.col("bucket_index") < right)
-                )
+            frame = frames_by_date.get(day)
+            selected = frame.filter(
+                (pl.col("bucket_index") >= left) & (pl.col("bucket_index") < right)
+            ) if frame is not None else None
             return frame_to_dense_window(
                 selected,
                 ticker=ticker,
@@ -1400,7 +1417,13 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         indexed = list(enumerate(selected))
         worker = get_worker_info()
         if worker is not None:
-            indexed = indexed[worker.id :: worker.num_workers]
+            shards = worker_ticker_shards(
+                tuple(dict.fromkeys(unit.ticker for unit in selected)),
+                workers=worker.num_workers,
+                seed=self.seed + self.epoch,
+            )
+            assigned = set(shards[worker.id])
+            indexed = [(index, unit) for index, unit in indexed if unit.ticker in assigned]
         return indexed
 
     def __iter__(self) -> Iterator[BarGPTExample]:
@@ -1561,8 +1584,11 @@ def make_dataloader(
 ) -> DataLoader[BarGPTExample]:
     kwargs: dict[str, object] = {}
     if config.loader_workers > 0:
-        kwargs["prefetch_factor"] = max(1, math.ceil(int(config.ready_queue_blocks) / int(config.loader_workers)))
+        kwargs["prefetch_factor"] = int(config.worker_prefetch_batches)
         kwargs["persistent_workers"] = bool(config.persistent_workers)
+        # Preserve each worker's local order for cursor safety, but never let a
+        # slow ClickHouse query hide ready batches produced by other workers.
+        kwargs["in_order"] = False
     return DataLoader(
         dataset,
         batch_size=int(config.batch_size),

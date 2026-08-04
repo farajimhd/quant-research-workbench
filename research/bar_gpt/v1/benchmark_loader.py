@@ -13,6 +13,7 @@ import torch
 
 from research.bar_gpt.v1.config import DataConfig
 from research.bar_gpt.v1.loader import BarGPTIterableDataset, ClickHouseBarStreamConfig, make_dataloader
+from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
 from research.bar_gpt.v1.train import preflight
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
@@ -84,6 +85,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=defaults.batch_size)
     parser.add_argument("--loader-workers", type=int, default=defaults.loader_workers)
     parser.add_argument("--ready-queue-blocks", type=int, default=defaults.ready_queue_blocks)
+    parser.add_argument("--worker-prefetch-batches", type=int, default=defaults.worker_prefetch_batches)
     parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=defaults.clickhouse_max_threads_per_worker)
     parser.add_argument("--clickhouse-max-block-size", type=int, default=defaults.clickhouse_max_block_size)
     parser.add_argument("--clickhouse-max-memory-usage", type=int, default=defaults.clickhouse_max_memory_usage)
@@ -250,6 +252,7 @@ def _make_data_config(args: argparse.Namespace) -> DataConfig:
         batch_size=int(args.batch_size),
         loader_workers=int(args.loader_workers),
         ready_queue_blocks=int(args.ready_queue_blocks),
+        worker_prefetch_batches=int(args.worker_prefetch_batches),
         clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_worker),
         clickhouse_max_block_size=int(args.clickhouse_max_block_size),
         clickhouse_max_memory_usage=int(args.clickhouse_max_memory_usage),
@@ -306,17 +309,19 @@ def run_benchmark(args: argparse.Namespace) -> LoaderBenchmarkResult:
             f"from {host}; workers={data.loader_workers}; batch={data.batch_size}; device={device}"
         )
         try:
-            iterator = iter(loader)
+            iterator = DeviceBatchPrefetcher(
+                loader,
+                device,
+                enabled=device.type == "cuda",
+                host_cache_batches=max(1, math.ceil(data.ready_queue_blocks / data.batch_size)),
+            )
             for index in range(total):
                 if index == int(args.warmup_batches):
                     measured_started = time.perf_counter()
-                wait_started = time.perf_counter()
-                raw_batch = next(iterator)
-                wait_seconds = time.perf_counter() - wait_started
+                batch, wait_seconds = iterator.next()
                 if index == 0:
                     cold_start = time.perf_counter() - started
                 handoff_started = time.perf_counter()
-                batch = raw_batch.to(device)
                 if device.type == "cuda":
                     torch.cuda.synchronize()
                 handoff_seconds = time.perf_counter() - handoff_started
@@ -334,7 +339,8 @@ def run_benchmark(args: argparse.Namespace) -> LoaderBenchmarkResult:
         except StopIteration as exc:
             raise RuntimeError(f"loader ended after {index} of {total} requested batches") from exc
         finally:
-            del iterator
+            if iterator is not None:
+                iterator.close()
             del loader
     measured_seconds = max(measured_finished - measured_started, 1e-9)
     rate = origins / measured_seconds

@@ -101,6 +101,32 @@ class BarGPTBatch:
     def origin_count(self) -> int:
         return int(self.origin_mask.sum().item())
 
+    def record_stream(self, stream: torch.Stream) -> None:
+        """Keep asynchronously staged tensors alive on their consuming stream."""
+        for values in (
+            self.views,
+            self.asof_indices,
+            self.autoregressive_targets,
+            self.autoregressive_mask,
+        ):
+            for value in values.values():
+                value.record_stream(stream)
+        for value in (
+            self.origin_indices,
+            self.origin_timestamps_us,
+            self.origin_mask,
+            self.target_support,
+            self.target_support_lengths,
+            self.target_share_factors,
+            self.target_condition_flags,
+            self.support_origin_indices,
+            self.horizon_targets,
+            self.horizon_mask,
+            self.sample_weights,
+        ):
+            if value is not None:
+                value.record_stream(stream)
+
     def to(self, device: torch.device | str, *, non_blocking: bool = True) -> "BarGPTBatch":
         def move_map(values: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
             return {key: value.to(device, non_blocking=non_blocking) for key, value in values.items()}

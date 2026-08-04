@@ -64,8 +64,8 @@ JOB_TYPE = "train"
 _INTERRUPTED = False
 _RESUME_RUNTIME_DATA_FIELDS = frozenset(
     {
-        "loader_workers",
         "ready_queue_blocks",
+        "worker_prefetch_batches",
         "clickhouse_max_threads_per_worker",
         "clickhouse_max_block_size",
         "clickhouse_max_memory_usage",
@@ -124,6 +124,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=data.batch_size)
     parser.add_argument("--loader-workers", type=int, default=data.loader_workers)
     parser.add_argument("--ready-queue-blocks", type=int, default=data.ready_queue_blocks)
+    parser.add_argument("--worker-prefetch-batches", type=int, default=data.worker_prefetch_batches)
     parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=data.clickhouse_max_threads_per_worker)
     parser.add_argument("--clickhouse-max-memory-usage", type=int, default=data.clickhouse_max_memory_usage)
     parser.add_argument("--clickhouse-query-days", type=int, default=data.clickhouse_query_days)
@@ -209,6 +210,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         maximum_target_horizon_us=max(horizons),
         loader_workers=int(args.loader_workers),
         ready_queue_blocks=int(args.ready_queue_blocks),
+        worker_prefetch_batches=int(args.worker_prefetch_batches),
         clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_worker),
         clickhouse_max_memory_usage=int(args.clickhouse_max_memory_usage),
         clickhouse_query_days=int(args.clickhouse_query_days),
@@ -580,6 +582,19 @@ def _nonfinite_loss_diagnostic(result: BarGPTLoss, batch: BarGPTBatch) -> str:
     return " | ".join(parts)
 
 
+def _finite_check_vector(result: BarGPTLoss, batch: BarGPTBatch) -> tuple[torch.Tensor, tuple[str, ...]]:
+    """Build device-side checks that are transferred once per optimizer update."""
+    names: list[str] = ["loss"]
+    checks: list[torch.Tensor] = [torch.isfinite(result.loss.detach())]
+    for key, value in result.metrics.items():
+        names.append(key)
+        checks.append(torch.isfinite(value.detach()).all())
+    if batch.horizon_targets is not None and batch.horizon_mask is not None:
+        names.append("valid_horizon_targets")
+        checks.append(torch.isfinite(batch.horizon_targets[batch.horizon_mask]).all())
+    return torch.stack(checks), tuple(names)
+
+
 @torch.no_grad()
 def validate(
     model: torch.nn.Module,
@@ -590,14 +605,17 @@ def validate(
     model.eval()
     accumulator = ValidationAccumulator(config.data.horizons_us, config.model.quantiles)
     iterator = DeviceBatchPrefetcher(loader, device, enabled=config.train.cuda_prefetch)
-    for _ in range(max(1, config.train.validation_batches)):
-        try:
-            batch = next(iterator)
-        except StopIteration:
-            break
-        with torch.autocast(device_type=device.type, dtype=_amp_dtype(config.train.amp_dtype), enabled=config.train.amp and device.type == "cuda"):
-            output, result = _forward(model, batch, config)
-        accumulator.update(output, batch, result)
+    try:
+        for _ in range(max(1, config.train.validation_batches)):
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                break
+            with torch.autocast(device_type=device.type, dtype=_amp_dtype(config.train.amp_dtype), enabled=config.train.amp and device.type == "cuda"):
+                output, result = _forward(model, batch, config)
+            accumulator.update(output, batch, result)
+    finally:
+        iterator.close()
     model.train()
     return accumulator.finalize()
 
@@ -885,6 +903,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     last_val: dict[str, float] = {}
     current_epoch = resume_epoch
     completed_normally = False
+    active_iterator: DeviceBatchPrefetcher | None = None
     try:
         with reporter:
             checkpointer.set_message_callback(reporter.message)
@@ -910,13 +929,24 @@ def main(argv: Iterable[str] | None = None) -> int:
                             for worker, cursor in sorted(durable_cursors.items())
                         )
                     )
-                iterator = DeviceBatchPrefetcher(train_loader, device, enabled=config.train.cuda_prefetch)
+                host_cache_batches = max(1, math.ceil(config.data.ready_queue_blocks / config.data.batch_size))
+                iterator = DeviceBatchPrefetcher(
+                    train_loader,
+                    device,
+                    enabled=config.train.cuda_prefetch,
+                    host_cache_batches=host_cache_batches,
+                )
+                active_iterator = iterator
                 optimizer.zero_grad(set_to_none=True)
                 accumulation_count = 0
                 accumulated_origins = 0
                 accumulated_loader_wait = 0.0
                 accumulated_gpu_seconds = 0.0
-                accumulated_metrics: dict[str, float] = {}
+                gpu_event_pairs: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
+                accumulated_metrics: dict[str, torch.Tensor] = {}
+                finite_checks: list[torch.Tensor] = []
+                finite_check_names: tuple[str, ...] = ()
+                finite_check_batches: list[str] = []
                 accumulated_blocks = 0
                 accumulated_units: set[str] = set()
                 accumulated_condition_blocks = 0
@@ -933,37 +963,68 @@ def main(argv: Iterable[str] | None = None) -> int:
                         loader_wait = 0.0
                     if batch is not None:
                         gpu_started = time.perf_counter()
+                        gpu_start_event = gpu_end_event = None
+                        if device.type == "cuda":
+                            gpu_start_event = torch.cuda.Event(enable_timing=True)
+                            gpu_end_event = torch.cuda.Event(enable_timing=True)
+                            gpu_start_event.record()
                         with torch.autocast(device_type=device.type, dtype=_amp_dtype(config.train.amp_dtype), enabled=config.train.amp and device.type == "cuda"):
                             _, result = _forward(model, batch, config)
                             scaled_loss = result.loss / config.train.gradient_accumulation_steps
-                        if not torch.isfinite(result.loss):
+                        if device.type != "cuda" and not torch.isfinite(result.loss):
                             detail = _nonfinite_loss_diagnostic(result, batch)
                             raise FloatingPointError(
                                 f"non-finite training loss at microbatch {batches_seen + accumulation_count + 1}: {detail}"
                             )
+                        check, check_names = _finite_check_vector(result, batch)
+                        finite_checks.append(check)
+                        finite_check_names = check_names
+                        finite_check_batches.append(str(list(zip(batch.tickers, batch.local_dates, strict=True))))
                         if scaler.is_enabled():
                             scaler.scale(scaled_loss).backward()
                         else:
                             scaled_loss.backward()
-                        if device.type == "cuda":
-                            torch.cuda.synchronize()
-                        micro_gpu_seconds = time.perf_counter() - gpu_started
+                        if gpu_end_event is not None and gpu_start_event is not None:
+                            gpu_end_event.record()
+                            gpu_event_pairs.append((gpu_start_event, gpu_end_event))
+                            micro_gpu_seconds = 0.0
+                        else:
+                            micro_gpu_seconds = time.perf_counter() - gpu_started
                         origins = batch.origin_count
                         accumulation_count += 1
                         accumulated_origins += origins
                         accumulated_loader_wait += loader_wait
                         accumulated_gpu_seconds += micro_gpu_seconds
                         accumulated_blocks += len(batch.tickers)
-                        accumulated_units.update(f"{epoch}:{unit}" for unit in batch.unit_indices)
+                        accumulated_units.update(
+                            f"{epoch}:{worker}:{unit}"
+                            for worker, unit in zip(batch.worker_ids, batch.unit_indices, strict=True)
+                        )
                         accumulated_condition_blocks += sum(batch.condition_blocks)
                         pending_cursors = _advance_cursors(pending_cursors, batch)
                         for key, value in result.metrics.items():
-                            accumulated_metrics[key] = accumulated_metrics.get(key, 0.0) + float(value) * origins
+                            contribution = value.detach().float() * origins
+                            accumulated_metrics[key] = accumulated_metrics.get(key, torch.zeros_like(contribution)) + contribution
 
                     full_update = accumulation_count == config.train.gradient_accumulation_steps
                     partial_final_update = exhausted and accumulation_count > 0 and not _INTERRUPTED
                     if full_update or partial_final_update:
+                        finite_matrix = torch.stack(finite_checks).detach().cpu()
+                        if not bool(finite_matrix.all()):
+                            bad_rows = torch.nonzero(~finite_matrix, as_tuple=False).tolist()
+                            details = "; ".join(
+                                f"micro={row + 1} field={finite_check_names[column]} batch={finite_check_batches[row]}"
+                                for row, column in bad_rows[:8]
+                            )
+                            raise FloatingPointError(
+                                f"non-finite training values before optimizer update {optimizer_steps + 1}: {details}"
+                            )
                         step_started = time.perf_counter()
+                        step_start_event = step_end_event = None
+                        if device.type == "cuda":
+                            step_start_event = torch.cuda.Event(enable_timing=True)
+                            step_end_event = torch.cuda.Event(enable_timing=True)
+                            step_start_event.record()
                         if scaler.is_enabled():
                             previous_scale = scaler.get_scale()
                             scaler.unscale_(optimizer)
@@ -981,9 +1042,15 @@ def main(argv: Iterable[str] | None = None) -> int:
                         else:
                             optimizer.step()
                         optimizer.zero_grad(set_to_none=True)
-                        if device.type == "cuda":
-                            torch.cuda.synchronize()
-                        accumulated_gpu_seconds += time.perf_counter() - step_started
+                        if step_end_event is not None and step_start_event is not None:
+                            step_end_event.record()
+                            gpu_event_pairs.append((step_start_event, step_end_event))
+                            step_end_event.synchronize()
+                            accumulated_gpu_seconds += sum(
+                                start.elapsed_time(end) / 1_000.0 for start, end in gpu_event_pairs
+                            )
+                        else:
+                            accumulated_gpu_seconds += time.perf_counter() - step_started
                         samples_seen += accumulated_origins
                         batches_seen += accumulation_count
                         optimizer_steps += 1
@@ -992,9 +1059,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                         condition_blocks_seen += accumulated_condition_blocks
                         durable_cursors = dict(pending_cursors)
                         scheduler.step(samples_seen)
+                        metric_names = tuple(accumulated_metrics)
+                        metric_values = torch.stack(
+                            [accumulated_metrics[key] for key in metric_names]
+                        ).cpu().tolist()
                         metrics = {
-                            key: value / max(1, accumulated_origins)
-                            for key, value in accumulated_metrics.items()
+                            key: float(value) / max(1, accumulated_origins)
+                            for key, value in zip(metric_names, metric_values, strict=True)
                         }
                         metrics.update(
                             {
@@ -1008,6 +1079,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
                                 "train/loader_wait_seconds": accumulated_loader_wait,
                                 "train/gpu_seconds": accumulated_gpu_seconds,
+                                "train/gpu_duty_cycle": accumulated_gpu_seconds
+                                / max(accumulated_loader_wait + accumulated_gpu_seconds, 1e-9),
+                                "train/host_cache_batches": float(iterator.cache_fill),
+                                "train/host_cache_capacity": float(iterator.cache_capacity),
                                 "train/origins_per_second": accumulated_origins / max(accumulated_loader_wait + accumulated_gpu_seconds, 1e-9),
                             }
                         )
@@ -1051,7 +1126,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                         accumulated_origins = 0
                         accumulated_loader_wait = 0.0
                         accumulated_gpu_seconds = 0.0
+                        gpu_event_pairs = []
                         accumulated_metrics = {}
+                        finite_checks = []
+                        finite_check_names = ()
+                        finite_check_batches = []
                         accumulated_blocks = 0
                         accumulated_units = set()
                         accumulated_condition_blocks = 0
@@ -1062,6 +1141,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 f"Discarded {accumulation_count} incomplete accumulation microbatches; they will replay on resume"
                             )
                         break
+                iterator.close()
+                active_iterator = None
                 if _INTERRUPTED or (training_limit > 0 and samples_seen >= training_limit):
                     break
                 current_epoch = epoch + 1
@@ -1098,6 +1179,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 force=True,
             )
     finally:
+        if active_iterator is not None:
+            active_iterator.close()
         checkpointer.close(wait=True, timeout=300)
         if wandb_run is not None:
             try:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import datetime as dt
+import threading
+import time
 import unittest
 from copy import deepcopy
 
@@ -21,6 +23,7 @@ from research.bar_gpt.v1.loader import (
     month_units,
     origin_window_schedule,
     origin_windows_query,
+    worker_ticker_shards,
 )
 from research.bar_gpt.v1.sampling import CoverageCursor, SESSION_PHASES, coverage_plan_summary, select_stratified_examples
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
@@ -276,8 +279,10 @@ class LoaderTrainerContractTest(unittest.TestCase):
             "origin_emit_blocks_per_chunk": 2,
             "context_bars_1s": 2048,
         }
-        tuned = {**base, "loader_workers": 4, "ready_queue_blocks": 8}
-        self.assertEqual(_resume_data_contract(base), _resume_data_contract(tuned))
+        tuned_queue = {**base, "ready_queue_blocks": 8}
+        self.assertEqual(_resume_data_contract(base), _resume_data_contract(tuned_queue))
+        changed_workers = {**base, "loader_workers": 4}
+        self.assertNotEqual(_resume_data_contract(base), _resume_data_contract(changed_workers))
         changed_sampling = {**base, "origin_fetch_candidate_blocks": 8}
         self.assertNotEqual(_resume_data_contract(base), _resume_data_contract(changed_sampling))
 
@@ -361,6 +366,29 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(values.shape, (2, 3, 5))
         self.assertTrue(torch.equal(valid, torch.tensor([[True, True, False], [True, False, False]])))
 
+    def test_host_cache_never_holds_ready_batch_behind_slow_successor(self) -> None:
+        examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=self.data_config()
+        ))[:2]
+        batch = collate_examples(examples)
+        release = threading.Event()
+
+        def source():
+            yield batch
+            release.wait(timeout=2.0)
+            yield batch
+
+        prefetcher = DeviceBatchPrefetcher(source(), torch.device("cpu"), enabled=False, host_cache_batches=2)
+        started = time.perf_counter()
+        first, _wait = prefetcher.next()
+        self.assertLess(time.perf_counter() - started, 0.2)
+        self.assertEqual(first.origin_count, batch.origin_count)
+        release.set()
+        second, _wait = prefetcher.next()
+        self.assertEqual(second.origin_count, batch.origin_count)
+        prefetcher.close()
+
     def test_profiler_candidate_contract_is_explicit(self) -> None:
         candidates = _parse_candidates("256:1:8:4:1,512:2:4:4:0:1")
         self.assertEqual(candidates[0].origin_bars, 256)
@@ -381,6 +409,15 @@ class LoaderTrainerContractTest(unittest.TestCase):
         first = [item.activity_regime for item in balanced_regime_stream(iter(examples), buffer_size=6, seed=3)]
         second = [item.activity_regime for item in balanced_regime_stream(iter(examples), buffer_size=6, seed=3)]
         self.assertEqual(first, second)
+
+    def test_ticker_worker_shards_are_disjoint_complete_and_deterministic(self) -> None:
+        tickers = tuple(f"T{index:02d}" for index in range(23))
+        first = worker_ticker_shards(tickers, workers=8, seed=17)
+        second = worker_ticker_shards(tickers, workers=8, seed=17)
+        self.assertEqual(first, second)
+        flattened = [ticker for shard in first for ticker in shard]
+        self.assertEqual(set(flattened), set(tickers))
+        self.assertEqual(len(flattened), len(set(flattened)))
 
     def test_preflight_requires_continuous_certified_source_coverage(self) -> None:
         class FakeClient:

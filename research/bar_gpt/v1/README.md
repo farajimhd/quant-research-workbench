@@ -142,15 +142,20 @@ generated artifact is written into the repository.
 
 Training uses incremental ArrowStream record batches. The durable work unit is
 one canonical ticker over one calendar month. Months remain chronological for
-partition locality; ticker order is deterministically shuffled inside each
-month and units are then divided among workers. The month is an ordering and
-resume boundary, not a materialization boundary. A query fetches sixteen bounded
+partition locality and ticker order is deterministically shuffled inside each
+month. Every ticker is assigned to exactly one worker for the epoch, so its
+identity, split, and daily-history state is loaded once and reused across all
+months instead of being duplicated by changing worker assignments. The month is
+an ordering and resume boundary, not a materialization boundary. A query fetches sixteen bounded
 candidate windows, where each window contains only the prior context, 512
 visible origins, and 3,600 seconds of target-only support. Eight phase/activity/
-condition-stratified blocks are emitted immediately, while workers fetch the
-next window group and the CUDA stream transfers the next collated batch. This
-avoids scanning unused ticker-month seconds. Daily history is cached once per
-ticker per worker.
+condition-stratified blocks are emitted immediately. Ready workers may publish
+out of order across workers, while each worker's own cursor order remains
+strict. A dedicated producer continuously fills a bounded 64-block RAM cache;
+the CUDA stream stages the next collated batch without withholding an already
+ready batch when a producer is slow. This avoids scanning unused ticker-month
+seconds and removes cross-worker head-of-line blocking. Daily history is cached
+once per ticker.
 
 The prior completed session contributes up to 2,048 one-second context rows to
 the first premarket origins. No overnight seconds are fabricated: timestamps
@@ -237,9 +242,11 @@ diagnostic cap. One origin is one supervised one-second prediction anchor. The
 default has one epoch, so its epoch and full-run budgets are identical.
 
 One microbatch contains two 512-origin blocks. Four microbatches are accumulated
-before one optimizer update, normally 4,096 origins. Four persistent loader
-workers keep up to eight CPU batches ready, and one device batch transfers on a
-dedicated CUDA stream while the current batch computes. Future target support
+before one optimizer update, normally 4,096 origins. Eight persistent loader
+workers use one ClickHouse thread each, two in-flight batches per worker, and a
+shared 64-block (32-batch) bounded RAM cache. One device batch transfers on a
+dedicated CUDA stream while the current batch computes. The terminal reports
+actual cache fill and per-update GPU duty so starvation is visible. Future target support
 never enters `batch.views`; it is consumed only by GPU target construction and
 the loss, so later origins or horizons in one update do not create lookahead.
 Additive horizon statistics use float64 prefixes before returning model-dtype
@@ -252,7 +259,9 @@ offset)`. It advances only after a successful optimizer update. Ctrl+C discards
 an incomplete accumulation group and replays it; resume jumps over completed
 units rather than reading and discarding them. A coverage-plan hash binds the
 population, dates, ordering seed, block quota, origin count, fetch/emit chunk
-shape, and epochs.
+shape, and epochs. Loader worker count is part of the resume contract because it
+defines the stable ticker-to-worker assignment; cache depth and per-worker
+prefetch depth may be tuned when resuming.
 
 Validation is a fixed eight-ticker, eight-week panel spanning liquid,
 high-volatility, sector, event-driven, and illiquid names in 2026. Those
@@ -294,8 +303,9 @@ The candidate sweep measures loader wait, GPU time, origins/second, encoded
 tokens/second, and peak device memory. OOM candidates fail independently; only
 candidates at or below 90% reserved memory are eligible. `torch.compile` remains an
 explicit opt-in candidate because Windows compilation can stall before the first measured
-update; it is not part of the bounded default sweep. Four workers were selected
-from the bounded-window benchmark; six workers regressed due to ClickHouse contention.
+update; it is not part of the bounded default sweep. The current default uses
+eight single-thread ClickHouse workers instead of increasing server threads per
+query; the final count remains subject to the sustained workstation profile.
 Eight measured updates cross
 the initial worker/unit buffer so results include
 ticker-month turnover rather than only warm-queue throughput. Promote the selected profile

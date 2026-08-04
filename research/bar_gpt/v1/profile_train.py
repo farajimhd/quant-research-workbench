@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import math
 import os
 import sys
 import time
@@ -223,7 +224,12 @@ def _profile_candidate(
         model = torch.compile(model, dynamic=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.1, foreach=device.type == "cuda")
     train_config = TrainConfig(gradient_accumulation_steps=candidate.accumulation, cuda_prefetch=candidate.cuda_prefetch)
-    prefetcher = DeviceBatchPrefetcher(loader, device, enabled=candidate.cuda_prefetch)
+    prefetcher = DeviceBatchPrefetcher(
+        loader,
+        device,
+        enabled=candidate.cuda_prefetch,
+        host_cache_batches=max(1, math.ceil(data.ready_queue_blocks / data.batch_size)),
+    )
     total_steps = int(args.warmup_steps) + int(args.measured_steps)
     measured_origins = measured_tokens = 0
     measured_loader = measured_gpu = 0.0
@@ -272,6 +278,7 @@ def _profile_candidate(
             measured_gpu += step_gpu
             reporter.step(candidate, step - int(args.warmup_steps) + 1, int(args.measured_steps))
     elapsed = max(time.perf_counter() - measured_started, 1e-9)
+    prefetcher.close()
     if device.type == "cuda":
         allocated = int(torch.cuda.max_memory_allocated(device))
         reserved = int(torch.cuda.max_memory_reserved(device))

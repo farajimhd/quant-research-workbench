@@ -100,9 +100,10 @@ class DataConfig:
     daily_context_bars: int = 512
     batch_size: int = 2
     maximum_target_horizon_us: int = 3_600_000_000
-    loader_workers: int = 4
-    ready_queue_blocks: int = 8
-    clickhouse_max_threads_per_worker: int = 2
+    loader_workers: int = 8
+    ready_queue_blocks: int = 64
+    worker_prefetch_batches: int = 2
+    clickhouse_max_threads_per_worker: int = 1
     clickhouse_max_block_size: int = 65_536
     clickhouse_max_memory_usage: int = 8 * 1024**3
     clickhouse_query_days: int = 7
@@ -161,6 +162,8 @@ class DataConfig:
             raise ValueError("daily_history_start_date cannot be later than the training start")
         if self.batch_size <= 0 or self.loader_workers < 0:
             raise ValueError("batch_size must be positive and loader_workers cannot be negative")
+        if self.ready_queue_blocks <= 0 or self.worker_prefetch_batches <= 0:
+            raise ValueError("ready queue blocks and worker prefetch batches must be positive")
         if self.clickhouse_query_days <= 0 or self.clickhouse_max_bytes_before_external_sort <= 0:
             raise ValueError("ClickHouse query days and external-sort threshold must be positive")
 
