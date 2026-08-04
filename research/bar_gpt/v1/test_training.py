@@ -733,8 +733,11 @@ class LoaderTrainerContractTest(unittest.TestCase):
         launcher_candidates = profile_launcher_args[profile_launcher_args.index("--candidates") + 1]
         parsed = _parse_candidates(launcher_candidates)
         shapes = [(item.origin_bars, item.microbatch, item.accumulation) for item in parsed]
-        self.assertIn((2048, 1, 2), shapes)
-        self.assertIn((4096, 1, 1), shapes)
+        self.assertIn((4096, 8, 4), shapes)
+        self.assertIn((4096, 16, 2), shapes)
+        self.assertIn((4096, 32, 1), shapes)
+        self.assertIn((8192, 8, 2), shapes)
+        self.assertLessEqual(max(item.workers for item in parsed), 12)
 
     def test_holdout_and_regime_resampling_are_deterministic(self) -> None:
         tickers = tuple(f"T{index:02d}" for index in range(20))

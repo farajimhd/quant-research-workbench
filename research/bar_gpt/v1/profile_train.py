@@ -16,14 +16,14 @@ import torch
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, TrainConfig
 from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME
 from research.bar_gpt.v1.loader import (
-    BarGPTSequentialDataset,
+    BarGPTIterableDataset,
     ClickHouseBarStreamConfig,
-    make_sequential_dataloader,
+    make_dataloader,
 )
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.objectives import compute_loss
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
-from research.bar_gpt.v1.train import preflight, sequential_coverage_counts
+from research.bar_gpt.v1.train import preflight
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
     default_clickhouse_password,
@@ -95,8 +95,9 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--candidates",
         default=(
-            "512:2:4:8:1:0,768:2:3:8:1:0,1024:1:4:8:1:0,"
-            "2048:1:2:8:1:0,4096:1:1:8:1:0"
+            "4096:8:4:8:1:0,4096:8:4:12:1:0,"
+            "4096:16:2:8:1:0,4096:16:2:12:1:0,"
+            "4096:32:1:8:1:0,8192:8:2:12:1:0"
         ),
         help="origin:microbatch:accumulation:workers:cuda_prefetch:compile entries",
     )
@@ -206,6 +207,11 @@ def _profile_candidate(
 ) -> ProfileResult:
     data = _data(args, candidate)
     data.validate()
+    if candidate.workers > len(data.training_tickers):
+        raise ValueError(
+            "worker-owned profiling cannot use more workers than training tickers: "
+            f"workers={candidate.workers}, training_tickers={len(data.training_tickers)}"
+        )
     url, user, password = default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
     clickhouse = ClickHouseHttpClient(url, user, password)
     if not preflight_complete:
@@ -225,13 +231,17 @@ def _profile_candidate(
         retry_initial_seconds=data.clickhouse_retry_initial_seconds,
         retry_max_seconds=data.clickhouse_retry_max_seconds,
     )
-    _sessions, _blocks, _origins, _units, sequential_plan = sequential_coverage_counts(
-        clickhouse, data, seed=17
+    # This must be the same worker-owned stream used by train.py.  The old
+    # indexed sequential loader round-robinned a ticker-month across workers,
+    # which gave an invalid profile after ticker-affine cache ownership was
+    # introduced.
+    dataset = BarGPTIterableDataset(
+        data_config=data,
+        stream_config=stream,
+        split="train",
+        seed=17,
     )
-    loader = make_sequential_dataloader(
-        BarGPTSequentialDataset(data_config=data, stream_config=stream, plan=sequential_plan),
-        data,
-    )
+    loader = make_dataloader(dataset, data, drop_last=True)
     model_config = BarGPTConfig()
     model = BarGPTV1(model_config).to(device)
     if candidate.compile_model:

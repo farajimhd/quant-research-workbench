@@ -1200,7 +1200,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         summary_notes=(
             "Causal decoder-only multiscale bar model. Every origin uses the fixed "
             "multiscale input; physical horizon targets are built from future support "
-            "with causal masks. Calendar views are context and auxiliary next-bar heads."
+            "with causal masks. Calendar views are context-only and have no autoregressive heads."
         ),
         dummy_input_factory=model_artifact_dummy,
     )
