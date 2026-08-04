@@ -31,10 +31,15 @@ class TrainingProgressState:
     planned_blocks: int = 0
     gradient_accumulation_steps: int = 1
     cuda_prefetch: bool = False
+    origin_bars: int = 0
+    warmup_samples: int = 0
+    schedule_samples: int = 0
+    unit_plans: dict[str, tuple[int, int]] = field(default_factory=dict)
     loss: float = 0.0
     validation_loss: float | None = None
     learning_rate: float = 0.0
     origins_per_second: float = 0.0
+    smoothed_origins_per_second: float = 0.0
     loader_wait_seconds: float = 0.0
     gpu_seconds: float = 0.0
     gpu_duty_cycle: float = 0.0
@@ -42,6 +47,12 @@ class TrainingProgressState:
     host_cache_capacity: int = 0
     active_tickers: str = "-"
     active_dates: str = "-"
+    current_unit_index: int = -1
+    current_unit_block: int = 0
+    current_unit_blocks: int = 0
+    current_unit_origins: int = 0
+    current_unit_ticker: str = "-"
+    current_unit_month: str = "-"
     last_checkpoint: str = "-"
     losses: dict[str, float] = field(default_factory=dict)
     last_message: str = ""
@@ -65,7 +76,7 @@ class TrainingReporter:
                 from rich.live import Live
 
                 self._console = Console()
-                self._live = Live(self._render(), console=self._console, screen=False, transient=False, auto_refresh=False)
+                self._live = Live(self._render(), console=self._console, screen=True, transient=False, auto_refresh=False)
                 self._live.start()
             except Exception:
                 if self.layout == "rich":
@@ -86,9 +97,19 @@ class TrainingReporter:
         self.refresh(force=True)
         if self._live is not None:
             self._live.stop()
+            if self._console is not None:
+                self._console.print(self._render())
         return False
 
-    def update(self, metrics: Mapping[str, Any], *, tickers: tuple[str, ...] = (), dates: tuple[str, ...] = ()) -> None:
+    def update(
+        self,
+        metrics: Mapping[str, Any],
+        *,
+        tickers: tuple[str, ...] = (),
+        dates: tuple[str, ...] = (),
+        unit_indices: tuple[int, ...] = (),
+        block_offsets: tuple[int, ...] = (),
+    ) -> None:
         s = self.state
         s.samples_seen = int(metrics.get("train/samples_seen", s.samples_seen))
         s.epoch_origins_seen = max(0, s.samples_seen - s.epoch_start_origins)
@@ -100,6 +121,12 @@ class TrainingReporter:
         s.loss = float(metrics.get("train/loss", s.loss))
         s.learning_rate = float(metrics.get("train/learning_rate", s.learning_rate))
         s.origins_per_second = float(metrics.get("train/origins_per_second", s.origins_per_second))
+        if s.origins_per_second > 0:
+            s.smoothed_origins_per_second = (
+                s.origins_per_second
+                if s.smoothed_origins_per_second <= 0
+                else 0.15 * s.origins_per_second + 0.85 * s.smoothed_origins_per_second
+            )
         s.loader_wait_seconds = float(metrics.get("train/loader_wait_seconds", s.loader_wait_seconds))
         s.gpu_seconds = float(metrics.get("train/gpu_seconds", s.gpu_seconds))
         s.gpu_duty_cycle = float(metrics.get("train/gpu_duty_cycle", s.gpu_duty_cycle))
@@ -110,6 +137,16 @@ class TrainingReporter:
             s.active_tickers = ",".join(tickers)
         if dates:
             s.active_dates = f"{min(dates)}..{max(dates)}"
+        if unit_indices and block_offsets:
+            s.current_unit_index = int(unit_indices[-1])
+            s.current_unit_block = int(block_offsets[-1]) + 1
+            ticker = tickers[-1] if tickers else "-"
+            month = dates[-1][:7] if dates else "-"
+            blocks, origins = s.unit_plans.get(f"{ticker}:{month}", (0, 0))
+            s.current_unit_ticker = ticker
+            s.current_unit_month = month
+            s.current_unit_blocks = int(blocks)
+            s.current_unit_origins = int(origins)
         self.refresh()
 
     def epoch(self, index: int, start_origins: int) -> None:
@@ -153,6 +190,8 @@ class TrainingReporter:
                 f"loss={s.loss:.6f} speed={s.origins_per_second:,.1f}/s "
                 f"gpu_duty={s.gpu_duty_cycle * 100:.1f}% "
                 f"cache={s.host_cache_batches}/{s.host_cache_capacity} batches "
+                f"unit={s.current_unit_ticker}:{s.current_unit_month} "
+                f"unit_blocks={s.current_unit_block}/{s.current_unit_blocks} "
                 f"active={s.active_tickers} dates={s.active_dates}",
                 flush=True,
             )
@@ -167,44 +206,66 @@ class TrainingReporter:
         width = self._console.size.width if self._console is not None else 120
         height = self._console.size.height if self._console is not None else 40
         elapsed = max(1e-9, time.perf_counter() - self.started)
+        rate = s.smoothed_origins_per_second or s.origins_per_second
         remaining = max(0, s.max_samples - s.samples_seen) if s.max_samples else 0
-        eta = remaining / s.origins_per_second if remaining and s.origins_per_second > 0 else 0.0
-        progress = Progress(
-            TextColumn(f"[bold]epoch {s.epoch_index}/{s.epochs_total} origin budget"), BarColumn(), TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
-            TextColumn("{task.percentage:>5.1f}%"), expand=True,
+        eta = remaining / rate if remaining and rate > 0 else 0.0
+        epoch_progress = Progress(
+            TextColumn(f"[bold bright_cyan]Epoch {s.epoch_index}/{s.epochs_total}[/] [dim]origins[/]"),
+            BarColumn(complete_style="bright_cyan", finished_style="green"),
+            TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
+            TextColumn("[bold]{task.percentage:>5.1f}%[/]"), expand=True,
         )
         total = max(s.epoch_origin_budget, s.epoch_origins_seen, 1)
-        progress.add_task("epoch origins", total=total, completed=min(s.epoch_origins_seen, total))
+        epoch_progress.add_task("epoch origins", total=total, completed=min(s.epoch_origins_seen, total))
+        unit_progress = Progress(
+            TextColumn(
+                f"[bold green]{s.current_unit_ticker}[/] [green]{s.current_unit_month}[/] [dim]ticker-month blocks[/]"
+            ),
+            BarColumn(complete_style="green", finished_style="green"),
+            TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
+            TextColumn("{task.percentage:>5.1f}%"), expand=True,
+        )
+        unit_total = max(s.current_unit_blocks, s.current_unit_block, 1)
+        unit_progress.add_task(
+            "ticker-month blocks",
+            total=unit_total,
+            completed=min(s.current_unit_block, unit_total),
+        )
+        unit_remaining_origins = max(0, s.current_unit_blocks - s.current_unit_block) * max(1, s.origin_bars)
+        unit_eta = unit_remaining_origins / rate if unit_remaining_origins and rate > 0 else 0.0
+        finish_at = time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() + eta)) if eta else "-"
+        schedule_phase, schedule_progress = _schedule_status(s)
         summary = Table.grid(expand=True, padding=(0, 2))
         if width >= 100:
             summary.add_column(); summary.add_column(); summary.add_column()
             summary.add_row(f"[bold]state[/] {s.state}", f"[bold]run[/] {s.run_name}", f"[bold]device[/] {s.device} {s.precision}")
             summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]validation[/] {s.validation_loss:.6f}" if s.validation_loss is not None else "[bold]validation[/] -", f"[bold]lr[/] {s.learning_rate:.3e}")
-            summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]elapsed[/] {_duration(elapsed)}", f"[bold]run ETA[/] {_duration(eta) if eta else '-'}")
+            summary.add_row(f"[bold]speed[/] {rate:,.0f} origins/s", f"[bold]elapsed[/] {_duration(elapsed)}", f"[bold]ETA / finish[/] {_duration(eta) if eta else '-'} / {finish_at}")
             summary.add_row(
                 f"[bold]loader wait[/] {s.loader_wait_seconds:.2f}s",
                 f"[bold]GPU[/] {s.gpu_seconds:.2f}s ({s.gpu_duty_cycle * 100:.0f}% duty)",
                 f"[bold]host cache[/] {s.host_cache_batches}/{s.host_cache_capacity} batches",
             )
             summary.add_row(
-                f"[bold]run origins[/] {s.samples_seen:,}/{s.max_samples:,}",
-                f"[bold]blocks[/] {s.blocks_seen:,}/{s.planned_blocks:,} planned",
-                f"[bold]updates[/] {s.optimizer_steps:,} ({s.gradient_accumulation_steps} micro/update)",
+                f"[bold]schedule[/] {schedule_phase} {schedule_progress:.1f}%",
+                f"[bold]learning rate[/] {s.learning_rate:.3e}",
+                f"[bold]unit ETA[/] {_duration(unit_eta) if unit_eta else '-'}",
             )
         else:
             summary.add_column(); summary.add_column()
             summary.add_row(f"[bold]state[/] {s.state}", f"[bold]device[/] {s.device} {s.precision}")
             summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]lr[/] {s.learning_rate:.3e}")
-            summary.add_row(f"[bold]speed[/] {s.origins_per_second:,.1f}/s", f"[bold]run ETA[/] {_duration(eta) if eta else '-'}")
+            summary.add_row(f"[bold]speed[/] {rate:,.0f}/s", f"[bold]run ETA[/] {_duration(eta) if eta else '-'}")
             summary.add_row(
                 f"[bold]GPU duty[/] {s.gpu_duty_cycle * 100:.0f}%",
                 f"[bold]cache[/] {s.host_cache_batches}/{s.host_cache_capacity} batches",
             )
-            summary.add_row(f"[bold]run origins[/] {s.samples_seen:,}/{s.max_samples:,}", f"[bold]updates[/] {s.optimizer_steps:,}")
+            summary.add_row(f"[bold]LR[/] {s.learning_rate:.3e} {schedule_phase}", f"[bold]updates[/] {s.optimizer_steps:,}")
         active = Table.grid(expand=True, padding=(0, 2))
         active.add_column(style="bold", no_wrap=True); active.add_column(ratio=1)
-        active.add_row("tickers", s.active_tickers)
-        active.add_row("dates", s.active_dates)
+        active.add_row("durable focus", f"{s.current_unit_ticker}  {s.current_unit_month}  block {s.current_unit_block:,}/{s.current_unit_blocks:,}")
+        active.add_row("GPU batch", f"{s.active_tickers}  •  {s.active_dates}")
+        active.add_row("coverage", f"{s.samples_seen:,}/{s.max_samples:,} origins  •  {s.blocks_seen:,}/{s.planned_blocks:,} blocks  •  {s.units_seen:,}/{s.planned_units:,} units touched")
         active.add_row(
             "pipeline",
             f"RAM cache {s.host_cache_batches}/{s.host_cache_capacity} batches + "
@@ -221,7 +282,7 @@ class TrainingReporter:
             losses.add_row("waiting for first batch", "-")
         message_limit = 1 if height < 22 else (3 if height < 30 else 6)
         messages = "\n".join(list(self.messages)[-message_limit:]) if self.messages else "No messages"
-        primary = Panel(Group(progress, summary), title="BarGPT v1 training", border_style="cyan")
+        primary = Panel(Group(epoch_progress, unit_progress, summary), title="BarGPT v1 training", border_style="cyan")
         current = Panel(active, title="Current work and durability", border_style="green")
         recent = Panel(messages, title="Recent messages", border_style="yellow")
         if height < 22:
@@ -241,3 +302,11 @@ def _duration(value: float) -> str:
     hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{hours:d}h {minutes:02d}m" if hours else (f"{minutes:d}m {secs:02d}s" if minutes else f"{secs:d}s")
+
+
+def _schedule_status(state: TrainingProgressState) -> tuple[str, float]:
+    if state.warmup_samples > 0 and state.samples_seen < state.warmup_samples:
+        return "warmup", 100.0 * state.samples_seen / state.warmup_samples
+    decay_span = max(1, state.schedule_samples - state.warmup_samples)
+    progress = 100.0 * (state.samples_seen - state.warmup_samples) / decay_span
+    return "cosine", min(100.0, max(0.0, progress))

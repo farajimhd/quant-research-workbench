@@ -38,7 +38,12 @@ class HorizonTargets:
     mask: torch.Tensor
 
 
-def build_next_bar_targets(raw: torch.Tensor) -> HorizonTargets:
+def build_next_bar_targets(
+    raw: torch.Tensor,
+    *,
+    bar_start_us: torch.Tensor | None = None,
+    expected_step_us: int | None = None,
+) -> HorizonTargets:
     """Build next completed-bar targets for an arbitrary aggregated timeframe."""
     if raw.ndim != 2:
         raise ValueError("raw bar features must have shape [T,F]")
@@ -82,6 +87,13 @@ def build_next_bar_targets(raw: torch.Tensor) -> HorizonTargets:
     mask[:, 1:3] &= excursion_valid[:, None]
     mask[:, 3] = False  # exact intrabar realized volatility is unavailable after aggregation
     mask[:, -4:] = False  # exact event conditions are supervised only by physical-horizon sidecars
+    if bar_start_us is not None or expected_step_us is not None:
+        if bar_start_us is None or expected_step_us is None:
+            raise ValueError("bar_start_us and expected_step_us must be supplied together")
+        if bar_start_us.ndim != 1 or bar_start_us.shape[0] != raw.shape[0]:
+            raise ValueError("bar_start_us must align one-to-one with raw rows")
+        continuous = bar_start_us[1:] - bar_start_us[:-1] == int(expected_step_us)
+        mask &= continuous[:, None]
     return HorizonTargets(values=values, mask=mask)
 
 

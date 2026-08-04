@@ -39,7 +39,7 @@ from research.bar_gpt.v1.data import (
 )
 from research.bar_gpt.v1.features import project_stationary_features
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES, SESSION_END_SECOND, SESSION_START_SECOND, SESSION_TIMEZONE
-from research.bar_gpt.v1.sampling import CoverageCursor, select_stratified_examples
+from research.bar_gpt.v1.sampling import CoverageCursor, has_condition_target, select_stratified_examples, session_phase
 from research.mlops.clickhouse import quote_ident, sql_string
 
 
@@ -234,8 +234,8 @@ def ticker_range_query(
         right = min(end_date, interval.valid_to_exclusive)
         if left < right:
             predicates.append(
-                f"(ticker = {sql_string(interval.source_ticker)} AND "
-                f"local_date >= toDate({sql_string(left)}) AND local_date < toDate({sql_string(right)}))"
+                f"(b.ticker = {sql_string(interval.source_ticker)} AND "
+                f"b.local_date >= toDate({sql_string(left)}) AND b.local_date < toDate({sql_string(right)}))"
             )
     if not predicates:
         raise ValueError(f"no point-in-time source interval covers {ticker} in [{start_date},{end_date})")
@@ -252,9 +252,9 @@ def ticker_range_query(
     return f"""
 SELECT
     {columns}
-FROM {quote_ident(config.database)}.{quote_ident(config.table)}
+FROM {quote_ident(config.database)}.{quote_ident(config.table)} AS b
 PREWHERE {' OR '.join(predicates)}
-ORDER BY ticker, local_date, bucket_index
+ORDER BY b.ticker, b.local_date, b.bucket_index
 SETTINGS
     max_threads = {max(1, int(config.max_threads))},
     max_block_size = {max(1, int(config.max_block_size))},
@@ -310,8 +310,8 @@ def origin_windows_query(
                 )
             )
     predicates = [
-        f"(ticker={sql_string(source)} AND local_date=toDate({sql_string(day)}) "
-        f"AND bucket_index>={left} AND bucket_index<{right})"
+        f"(b.ticker={sql_string(source)} AND b.local_date=toDate({sql_string(day)}) "
+        f"AND b.bucket_index>={left} AND b.bucket_index<{right})"
         for source, day, left, right in sorted(ranges)
     ]
     columns = ",\n    ".join(
@@ -328,9 +328,9 @@ def origin_windows_query(
     return f"""
 SELECT
     {columns}
-FROM {quote_ident(config.database)}.{quote_ident(config.table)}
+FROM {quote_ident(config.database)}.{quote_ident(config.table)} AS b
 PREWHERE {' OR '.join(predicates)}
-ORDER BY ticker, local_date, bucket_index
+ORDER BY b.ticker, b.local_date, b.bucket_index
 SETTINGS
     max_threads = {max(1, int(config.max_threads))},
     max_block_size = {max(1, int(config.max_block_size))},
@@ -1182,11 +1182,12 @@ def build_session_examples(
     prior_session: BarView | None = None,
     session_conditions: torch.Tensor | None = None,
     prior_conditions: torch.Tensor | None = None,
+    include_incomplete_horizons: bool = False,
 ) -> Iterator[BarGPTExample]:
     """Yield non-overlapping origins while sharing one exact session rollup and target support."""
     context = int(config.context_bars_1s)
     right = int(config.right_support_bars_1s)
-    maximum_origin = session.features.shape[0] - right
+    maximum_origin = session.features.shape[0] if include_incomplete_horizons else session.features.shape[0] - right
     combined, halo_count = concatenate_views(
         prior_session if config.prior_session_halo else None,
         session,
@@ -1241,7 +1242,7 @@ def build_session_examples(
         combined_origin_start = halo_count + origin_start
         input_start = combined_origin_start - context
         input_end = combined_origin_start + origin_count
-        support_end = input_end + right
+        support_end = min(combined.features.shape[0], input_end + right)
         support = combined.features[input_start:support_end]
         support_conditions = combined_conditions[input_start:support_end]
         support_share_factors = cumulative_share_factors(
@@ -1253,6 +1254,7 @@ def build_session_examples(
         last_anchor = int(anchors[-1])
         raw_views: dict[str, torch.Tensor] = {"1s": base_raw}
         raw_view_start_us: dict[str, torch.Tensor] = {"1s": normalized_session.bar_start_us[input_start:input_end]}
+        raw_view_available_at_us: dict[str, torch.Tensor] = {"1s": normalized_session.available_at_us[input_start:input_end]}
         asof: dict[str, torch.Tensor] = {}
         for name in ("5s", "30s", "1m", "5m", "15m", "1h"):
             view = full_views[name]
@@ -1262,10 +1264,12 @@ def build_session_examples(
             if prefix is None:
                 raw_views[name] = _dummy_raw()
                 raw_view_start_us[name] = torch.zeros(1, dtype=torch.long)
+                raw_view_available_at_us[name] = torch.zeros(1, dtype=torch.long)
                 asof[name] = torch.full((origin_count,), -1, dtype=torch.long)
             else:
                 raw_views[name] = prefix.features
                 raw_view_start_us[name] = prefix.bar_start_us
+                raw_view_available_at_us[name] = prefix.available_at_us
                 asof[name] = causal_asof_indices(prefix.available_at_us, anchors)
         for name in ("1D", "1W", "1MO"):
             view = calendar_views.get(name)
@@ -1274,10 +1278,12 @@ def build_session_examples(
             if prefix is None:
                 raw_views[name] = _dummy_raw()
                 raw_view_start_us[name] = torch.zeros(1, dtype=torch.long)
+                raw_view_available_at_us[name] = torch.zeros(1, dtype=torch.long)
                 asof[name] = torch.full((origin_count,), -1, dtype=torch.long)
             else:
                 raw_views[name] = prefix.features
                 raw_view_start_us[name] = prefix.bar_start_us
+                raw_view_available_at_us[name] = prefix.available_at_us
                 asof[name] = causal_asof_indices(prefix.available_at_us, anchors)
         activity = float(base_raw[origins, FEATURE_INDEX["source_event_count"]].float().mean())
         regime = 0 if activity < config.activity_regime_low else (2 if activity >= config.activity_regime_high else 1)
@@ -1286,6 +1292,7 @@ def build_session_examples(
             local_date=local_date,
             raw_views=raw_views,
             raw_view_start_us=raw_view_start_us,
+            raw_view_available_at_us=raw_view_available_at_us,
             origin_indices=origins,
             origin_timestamps_us=anchors,
             asof_indices=asof,
@@ -1481,6 +1488,55 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     condition_table=self.data_config.condition_table,
                     source_intervals=intervals_by_ticker[ticker],
                 )
+                if self.split == "train" and self.data_config.coverage_mode == "sequential":
+                    # Fetch ordered sparse bars in bounded date pages.  Each session is
+                    # densified once, then split into consecutive O-origin examples; the
+                    # preceding session remains the raw causal halo for the next session.
+                    previous_session: BarView | None = None
+                    previous_conditions: torch.Tensor | None = None
+                    emitted = 0
+                    for local_date, session in client.iter_session_views(
+                        ticker=ticker,
+                        start_date=fetch_start,
+                        end_date=unit.end_date,
+                        source_intervals=intervals_by_ticker[ticker],
+                    ):
+                        dense_conditions = conditions_by_date.get(local_date)
+                        if dense_conditions is None:
+                            dense_conditions = torch.zeros((session.features.shape[0], 4), dtype=torch.float32)
+                        if local_date < unit.start_date:
+                            previous_session = session
+                            previous_conditions = dense_conditions
+                            continue
+                        for example in build_session_examples(
+                            ticker=ticker,
+                            local_date=local_date,
+                            session=session,
+                            prior_session=previous_session,
+                            session_conditions=dense_conditions,
+                            prior_conditions=previous_conditions,
+                            daily=daily_by_ticker.get(ticker),
+                            split_actions=split_actions,
+                            config=self.data_config,
+                            include_incomplete_horizons=True,
+                        ):
+                            block_offset = emitted
+                            emitted += 1
+                            if (
+                                resume is not None
+                                and unit_index == resume.unit_index
+                                and block_offset <= resume.block_offset
+                            ):
+                                continue
+                            example.worker_id = worker_id
+                            example.unit_index = unit_index
+                            example.block_offset = block_offset
+                            example.session_phase = session_phase(example)
+                            example.has_condition_target = has_condition_target(example)
+                            yield example
+                        previous_session = session
+                        previous_conditions = dense_conditions
+                    continue
                 limit = (
                     self.data_config.validation_blocks_per_slice
                     if self.split == "validation"

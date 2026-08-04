@@ -109,6 +109,7 @@ class DataConfig:
     clickhouse_query_days: int = 7
     clickhouse_max_bytes_before_external_sort: int = 1024**3
     min_origins_per_block: int = 64
+    coverage_mode: str = "sequential"
     coverage_blocks_per_unit: int = 16
     origin_fetch_candidate_blocks: int = 16
     origin_emit_blocks_per_chunk: int = 16
@@ -138,6 +139,8 @@ class DataConfig:
             raise ValueError("context and origin bars must be positive")
         if self.coverage_blocks_per_unit <= 0:
             raise ValueError("coverage_blocks_per_unit must be positive")
+        if self.coverage_mode not in {"sequential", "stratified"}:
+            raise ValueError("coverage_mode must be sequential or stratified")
         if self.origin_fetch_candidate_blocks <= 0 or self.origin_emit_blocks_per_chunk <= 0:
             raise ValueError("origin fetch and emit chunk sizes must be positive")
         if self.origin_emit_blocks_per_chunk > self.origin_fetch_candidate_blocks:
@@ -191,7 +194,8 @@ class TrainConfig:
     validation_batches: int = 16
     validation_runs_per_epoch: int = 4
     validation_interval_samples: int = 0
-    warmup_samples: int = 1_048_576
+    warmup_samples: int = 0
+    warmup_fraction: float = 0.01
     minimum_learning_rate: float = 3e-5
     checkpoint_latest_samples: int = 1_048_576
     checkpoint_archive_samples: int = 16_777_216
@@ -213,6 +217,8 @@ class TrainConfig:
             raise ValueError("validation runs and batches must be positive")
         if self.validation_interval_samples < 0 or self.warmup_samples < 0:
             raise ValueError("validation interval and warmup samples cannot be negative")
+        if not 0 <= self.warmup_fraction < 1:
+            raise ValueError("warmup_fraction must satisfy 0 <= fraction < 1")
         if self.learning_rate <= 0 or not 0 < self.minimum_learning_rate <= self.learning_rate:
             raise ValueError("learning rates must satisfy 0 < minimum <= peak")
         if self.grad_clip_norm <= 0:

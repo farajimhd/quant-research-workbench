@@ -30,11 +30,13 @@ class CoverageCursor:
 
 @dataclass(frozen=True, slots=True)
 class CoveragePlanSummary:
+    coverage_mode: str
     start_date: str
     end_date: str
     training_tickers: tuple[str, ...]
     months: int
     units: int
+    sessions_per_epoch: int
     blocks_per_unit: int
     fetch_candidate_blocks: int
     emit_blocks_per_chunk: int
@@ -59,6 +61,10 @@ def coverage_plan_summary(
     seed: int,
     fetch_candidate_blocks: int = 16,
     emit_blocks_per_chunk: int = 16,
+    coverage_mode: str = "stratified",
+    sessions_per_epoch: int = 0,
+    sequential_blocks_per_epoch: int = 0,
+    sequential_origins_per_epoch: int = 0,
 ) -> CoveragePlanSummary:
     start = dt.date.fromisoformat(start_date)
     end = dt.date.fromisoformat(end_date)
@@ -68,9 +74,19 @@ def coverage_plan_summary(
         cursor = min(end, (cursor.replace(day=28) + dt.timedelta(days=4)).replace(day=1))
         months += 1
     units = months * len(training_tickers)
-    expected_blocks = units * int(blocks_per_unit) * int(epochs)
+    if coverage_mode == "sequential":
+        if sessions_per_epoch <= 0 or sequential_blocks_per_epoch <= 0 or sequential_origins_per_epoch <= 0:
+            raise ValueError("sequential coverage requires exact positive session, block, and origin totals")
+        expected_blocks = int(sequential_blocks_per_epoch) * int(epochs)
+        expected_origins = int(sequential_origins_per_epoch) * int(epochs)
+    elif coverage_mode == "stratified":
+        expected_blocks = units * int(blocks_per_unit) * int(epochs)
+        expected_origins = expected_blocks * int(origin_bars)
+    else:
+        raise ValueError("coverage_mode must be sequential or stratified")
     payload = {
-        "version": 2,
+        "version": 3,
+        "coverage_mode": coverage_mode,
         "start_date": start_date,
         "end_date": end_date,
         "training_tickers": training_tickers,
@@ -80,21 +96,26 @@ def coverage_plan_summary(
         "origin_bars": int(origin_bars),
         "epochs": int(epochs),
         "seed": int(seed),
+        "sessions_per_epoch": int(sessions_per_epoch),
+        "sequential_blocks_per_epoch": int(sequential_blocks_per_epoch),
+        "sequential_origins_per_epoch": int(sequential_origins_per_epoch),
     }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     return CoveragePlanSummary(
+        coverage_mode=coverage_mode,
         start_date=start_date,
         end_date=end_date,
         training_tickers=training_tickers,
         months=months,
         units=units,
+        sessions_per_epoch=int(sessions_per_epoch),
         blocks_per_unit=int(blocks_per_unit),
         fetch_candidate_blocks=int(fetch_candidate_blocks),
         emit_blocks_per_chunk=int(emit_blocks_per_chunk),
         origin_bars=int(origin_bars),
         epochs=int(epochs),
         expected_blocks=expected_blocks,
-        expected_origins=expected_blocks * int(origin_bars),
+        expected_origins=expected_origins,
         plan_hash=digest,
     )
 
@@ -151,6 +172,7 @@ def _materialize(example: BarGPTExample) -> BarGPTExample:
         local_date=example.local_date,
         raw_views={name: value.clone() for name, value in example.raw_views.items()},
         raw_view_start_us={name: value.clone() for name, value in example.raw_view_start_us.items()},
+        raw_view_available_at_us={name: value.clone() for name, value in example.raw_view_available_at_us.items()},
         origin_indices=example.origin_indices.clone(),
         origin_timestamps_us=example.origin_timestamps_us.clone(),
         asof_indices={name: value.clone() for name, value in example.asof_indices.items()},

@@ -90,7 +90,10 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tickers", default="MSFT,AMD,INTC,JPM")
     parser.add_argument(
         "--candidates",
-        default="256:1:8:2:1:0,512:1:8:2:1:0,512:2:4:2:1:0",
+        default=(
+            "512:2:4:8:1:0,768:2:3:8:1:0,1024:1:4:8:1:0,"
+            "2048:1:2:8:1:0,4096:1:1:8:1:0"
+        ),
         help="origin:microbatch:accumulation:workers:cuda_prefetch:compile entries",
     )
     parser.add_argument("--warmup-steps", type=int, default=1)
@@ -118,6 +121,7 @@ def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
         origin_bars_1s=candidate.origin_bars,
         batch_size=candidate.microbatch,
         loader_workers=candidate.workers,
+        coverage_mode="sequential",
         coverage_blocks_per_unit=16,
     )
 

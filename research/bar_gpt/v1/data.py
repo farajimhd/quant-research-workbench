@@ -53,6 +53,7 @@ class BarGPTExample:
     local_date: str
     raw_views: dict[str, torch.Tensor]
     raw_view_start_us: dict[str, torch.Tensor]
+    raw_view_available_at_us: dict[str, torch.Tensor]
     origin_indices: torch.Tensor
     origin_timestamps_us: torch.Tensor
     asof_indices: dict[str, torch.Tensor]
@@ -204,7 +205,23 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
     ar_targets: dict[str, torch.Tensor] = {}
     ar_masks: dict[str, torch.Tensor] = {}
     for name, values in raw_by_view.items():
-        built = [build_next_bar_targets(value) for value in values]
+        built = []
+        for value, example in zip(values, examples, strict=True):
+            item = build_next_bar_targets(
+                value,
+                bar_start_us=example.raw_view_start_us[name] if name in {"1s", "5s", "30s", "1m", "5m", "15m", "1h"} else None,
+                expected_step_us=TIMEFRAME_US_BY_NAME[name] if name in {"1s", "5s", "30s", "1m", "5m", "15m", "1h"} else None,
+            )
+            available = example.raw_view_available_at_us[name]
+            if available.shape != (value.shape[0],):
+                raise ValueError(f"{name} availability timestamps must align with raw rows")
+            if item.mask.shape[0]:
+                newly_available = (
+                    (available[1:] >= int(example.origin_timestamps_us[0]))
+                    & (available[1:] <= int(example.origin_timestamps_us[-1]))
+                )
+                item.mask &= newly_available[:, None]
+            built.append(item)
         ar_targets[name] = _pad_first_dimension([item.values for item in built])
         ar_masks[name] = _pad_first_dimension([item.mask for item in built], fill=False)
     origin_indices = _pad_first_dimension([example.origin_indices for example in examples], fill=0)

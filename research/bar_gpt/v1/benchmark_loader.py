@@ -78,6 +78,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--split-table", default=defaults.split_table)
     parser.add_argument("--context-bars-1s", type=int, default=defaults.context_bars_1s)
     parser.add_argument("--origin-bars-1s", type=int, default=defaults.origin_bars_1s)
+    parser.add_argument("--coverage-mode", choices=("sequential", "stratified"), default=defaults.coverage_mode)
     parser.add_argument("--coverage-blocks-per-unit", type=int, default=defaults.coverage_blocks_per_unit)
     parser.add_argument("--origin-fetch-candidate-blocks", type=int, default=defaults.origin_fetch_candidate_blocks)
     parser.add_argument("--origin-emit-blocks-per-chunk", type=int, default=defaults.origin_emit_blocks_per_chunk)
@@ -241,6 +242,7 @@ def _make_data_config(args: argparse.Namespace) -> DataConfig:
         validation_slices=validation_slices,
         context_bars_1s=int(args.context_bars_1s),
         origin_bars_1s=int(args.origin_bars_1s),
+        coverage_mode=str(args.coverage_mode),
         coverage_blocks_per_unit=int(args.coverage_blocks_per_unit),
         origin_fetch_candidate_blocks=int(args.origin_fetch_candidate_blocks),
         origin_emit_blocks_per_chunk=int(args.origin_emit_blocks_per_chunk),

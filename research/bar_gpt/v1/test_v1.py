@@ -160,7 +160,8 @@ class BuilderSqlTest(unittest.TestCase):
             end_date="2026-08-01",
         )
         self.assertIn("ticker = 'AAPL'", sql)
-        self.assertIn("ORDER BY ticker, local_date, bucket_index", sql)
+        self.assertIn("PREWHERE (b.ticker = 'AAPL'", sql)
+        self.assertIn("ORDER BY b.ticker, b.local_date, b.bucket_index", sql)
         self.assertIn("max_bytes_before_external_sort = 1073741824", sql)
         self.assertIn("optimize_read_in_order = 1", sql)
         self.assertTrue(sql.strip().endswith("FORMAT ArrowStream"))

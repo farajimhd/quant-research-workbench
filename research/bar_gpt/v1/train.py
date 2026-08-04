@@ -27,10 +27,12 @@ from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig, to_dict
 from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarGPTBatch, BarGPTExample, BarView, collate_examples
 from research.bar_gpt.v1.loader import (
+    ArrowStreamClient,
     BarGPTIterableDataset,
     ClickHouseBarStreamConfig,
     build_session_examples,
     make_dataloader,
+    month_units,
 )
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
 from research.bar_gpt.v1.sampling import CoverageCursor, coverage_plan_summary
@@ -116,6 +118,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--context-bars-1s", type=int, default=data.context_bars_1s)
     parser.add_argument("--origin-bars-1s", type=int, default=data.origin_bars_1s)
     parser.add_argument("--min-origins-per-block", type=int, default=data.min_origins_per_block)
+    parser.add_argument("--coverage-mode", choices=("sequential", "stratified"), default=data.coverage_mode)
     parser.add_argument("--coverage-blocks-per-unit", type=int, default=data.coverage_blocks_per_unit)
     parser.add_argument("--origin-fetch-candidate-blocks", type=int, default=data.origin_fetch_candidate_blocks)
     parser.add_argument("--origin-emit-blocks-per-chunk", type=int, default=data.origin_emit_blocks_per_chunk)
@@ -156,6 +159,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--validation-batches", type=int, default=train.validation_batches)
     parser.add_argument("--validation-runs-per-epoch", type=int, default=train.validation_runs_per_epoch)
     parser.add_argument("--warmup-samples", type=int, default=train.warmup_samples)
+    parser.add_argument("--warmup-fraction", type=float, default=train.warmup_fraction)
     parser.add_argument("--minimum-learning-rate", type=float, default=train.minimum_learning_rate)
     parser.add_argument("--checkpoint-latest-samples", type=int, default=train.checkpoint_latest_samples)
     parser.add_argument("--checkpoint-archive-samples", type=int, default=train.checkpoint_archive_samples)
@@ -201,6 +205,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         context_bars_1s=int(args.context_bars_1s),
         origin_bars_1s=int(args.origin_bars_1s),
         min_origins_per_block=int(args.min_origins_per_block),
+        coverage_mode=str(args.coverage_mode),
         coverage_blocks_per_unit=int(args.coverage_blocks_per_unit),
         origin_fetch_candidate_blocks=int(args.origin_fetch_candidate_blocks),
         origin_emit_blocks_per_chunk=int(args.origin_emit_blocks_per_chunk),
@@ -249,6 +254,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         validation_batches=int(args.validation_batches),
         validation_runs_per_epoch=int(args.validation_runs_per_epoch),
         warmup_samples=int(args.warmup_samples),
+        warmup_fraction=float(args.warmup_fraction),
         minimum_learning_rate=float(args.minimum_learning_rate),
         checkpoint_latest_samples=int(args.checkpoint_latest_samples),
         checkpoint_archive_samples=int(args.checkpoint_archive_samples),
@@ -462,6 +468,103 @@ def _stream_config(data: DataConfig) -> ClickHouseBarStreamConfig:
         query_days=data.clickhouse_query_days,
         max_bytes_before_external_sort=data.clickhouse_max_bytes_before_external_sort,
     )
+
+
+def _resolved_warmup_samples(config: TrainConfig, schedule_samples: int) -> int:
+    if schedule_samples < 2:
+        raise ValueError("schedule_samples must be at least two")
+    requested = (
+        int(config.warmup_samples)
+        if config.warmup_samples > 0
+        else int(round(schedule_samples * config.warmup_fraction))
+    )
+    return min(requested, schedule_samples - 1)
+
+
+def sequential_coverage_counts(
+    client: ClickHouseHttpClient,
+    config: DataConfig,
+    *,
+    seed: int = 17,
+) -> tuple[int, int, int, dict[str, tuple[int, int]]]:
+    """Return exact epoch totals and ticker-month block plans in dataset order."""
+    stream = ArrowStreamClient(_stream_config(config))
+    lookback_start = (dt.date.fromisoformat(config.start_date) - dt.timedelta(days=14)).isoformat()
+    intervals = stream.read_identity_intervals(
+        config.training_tickers,
+        identity_database=config.identity_database,
+        interval_table=config.identity_interval_table,
+        entity_table=config.identity_entity_table,
+        event_table=config.identity_event_table,
+        coverage_start=lookback_start,
+    )
+    subqueries: list[str] = []
+    for ticker in config.training_tickers:
+        predicates = []
+        for interval in intervals[ticker]:
+            left = max(lookback_start, interval.valid_from)
+            right = min(config.validation_start_date, interval.valid_to_exclusive)
+            if left < right:
+                predicates.append(
+                    f"(ticker={sql_string(interval.source_ticker)} "
+                    f"AND local_date>=toDate({sql_string(left)}) "
+                    f"AND local_date<toDate({sql_string(right)}))"
+                )
+        if predicates:
+            subqueries.append(
+                f"SELECT {sql_string(ticker)} AS canonical_ticker, local_date "
+                f"FROM {quote_ident(config.database)}.{quote_ident(config.one_second_table)} "
+                f"PREWHERE {' OR '.join(predicates)} GROUP BY local_date"
+            )
+    if not subqueries:
+        raise RuntimeError("no point-in-time one-second ranges cover the sequential training population")
+    rows = client.query_tsv(
+        "SELECT canonical_ticker, toString(local_date) FROM (\n"
+        + "\nUNION ALL\n".join(subqueries)
+        + "\n) ORDER BY canonical_ticker, local_date FORMAT TSVRaw"
+    )
+    dates_by_ticker: dict[str, list[dt.date]] = {ticker: [] for ticker in config.training_tickers}
+    for line in rows.splitlines():
+        values = line.split("\t")
+        if len(values) == 2:
+            dates_by_ticker[values[0]].append(dt.date.fromisoformat(values[1]))
+
+    session_seconds = 16 * 3_600
+    sessions = blocks = origins = 0
+    unit_plans: dict[str, tuple[int, int]] = {}
+    units = month_units(
+        config.start_date,
+        config.validation_start_date,
+        config.training_tickers,
+        seed=seed,
+    )
+    for unit in units:
+        left = dt.date.fromisoformat(unit.start_date)
+        right = dt.date.fromisoformat(unit.end_date)
+        fetch_start = left - dt.timedelta(days=14)
+        dates = dates_by_ticker[unit.ticker]
+        previous_available = any(fetch_start <= day < left for day in dates)
+        unit_sessions = unit_blocks = unit_origins = 0
+        for day in dates:
+            if day < left or day >= right:
+                continue
+            first_origin = 0 if previous_available else int(config.context_bars_1s)
+            eligible = max(0, session_seconds - first_origin)
+            full, remainder = divmod(eligible, int(config.origin_bars_1s))
+            unit_blocks += full
+            unit_origins += full * int(config.origin_bars_1s)
+            if remainder >= int(config.min_origins_per_block):
+                unit_blocks += 1
+                unit_origins += remainder
+            unit_sessions += 1
+            previous_available = True
+        sessions += unit_sessions
+        blocks += unit_blocks
+        origins += unit_origins
+        unit_plans[f"{unit.ticker}:{left:%Y-%m}"] = (unit_blocks, unit_origins)
+    if not sessions or not blocks or not origins:
+        raise RuntimeError("sequential coverage query found no trainable one-second sessions")
+    return sessions, blocks, origins, unit_plans
 
 
 class _DummyDataset(IterableDataset[BarGPTExample]):
@@ -779,9 +882,23 @@ def main(argv: Iterable[str] | None = None) -> int:
     if device.type == "cuda":
         torch.cuda.manual_seed_all(config.train.seed)
         torch.set_float32_matmul_precision("high")
-    evidence = {"mode": "dummy"} if args.dummy_data else preflight(
-        ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()), config.data
+    clickhouse_client = ClickHouseHttpClient(
+        default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
     )
+    evidence = {"mode": "dummy"} if args.dummy_data else preflight(clickhouse_client, config.data)
+    sequential_sessions = sequential_blocks = sequential_origins = 0
+    sequential_unit_plans: dict[str, tuple[int, int]] = {}
+    if not args.dummy_data and config.data.coverage_mode == "sequential":
+        sequential_sessions, sequential_blocks, sequential_origins, sequential_unit_plans = sequential_coverage_counts(
+            clickhouse_client, config.data, seed=config.train.seed
+        )
+        evidence.update(
+            {
+                "training_sessions_per_epoch": str(sequential_sessions),
+                "training_blocks_per_epoch": str(sequential_blocks),
+                "training_origins_per_epoch": str(sequential_origins),
+            }
+        )
     run_name = args.run_name or f"bar-gpt-v1-{time.strftime('%Y%m%d-%H%M%S')}"
     config.train.run_name = run_name
     run_root = Path(config.train.output_root) / run_name if args.output_root else default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, run_name)
@@ -797,6 +914,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         seed=config.train.seed,
         fetch_candidate_blocks=config.data.origin_fetch_candidate_blocks,
         emit_blocks_per_chunk=config.data.origin_emit_blocks_per_chunk,
+        coverage_mode="stratified" if args.dummy_data else config.data.coverage_mode,
+        sessions_per_epoch=sequential_sessions,
+        sequential_blocks_per_epoch=sequential_blocks,
+        sequential_origins_per_epoch=sequential_origins,
     )
     planned_samples = plan.expected_origins
     if args.dummy_data and config.train.max_samples == 0:
@@ -815,9 +936,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     if config.train.compile_model and hasattr(torch, "compile"):
         model = torch.compile(model, dynamic=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay, foreach=device.type == "cuda")
+    resolved_warmup_samples = _resolved_warmup_samples(config.train, schedule_samples)
     scheduler = SampleWarmupCosineScheduler(
         optimizer,
-        warmup_samples=min(config.train.warmup_samples, schedule_samples - 1),
+        warmup_samples=resolved_warmup_samples,
         total_samples=schedule_samples,
         minimum_lr=config.train.minimum_learning_rate,
     )
@@ -850,6 +972,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "coverage_plan": plan.to_dict(),
             "resolved_training_limit": training_limit,
             "resolved_validation_interval": validation_interval,
+            "resolved_warmup_samples": resolved_warmup_samples,
         },
         data_roots={
             "clickhouse": default_clickhouse_url(),
@@ -904,6 +1027,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         planned_blocks=plan.expected_blocks,
         gradient_accumulation_steps=config.train.gradient_accumulation_steps,
         cuda_prefetch=config.train.cuda_prefetch and device.type == "cuda",
+        origin_bars=config.data.origin_bars_1s,
+        warmup_samples=resolved_warmup_samples,
+        schedule_samples=schedule_samples,
+        unit_plans=sequential_unit_plans,
     )
     reporter = TrainingReporter(state, layout=config.train.progress_layout)
     next_log = samples_seen
@@ -1102,7 +1229,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                         )
                         last_metrics = metrics
                         assert batch is not None or exhausted
-                        reporter.update(metrics, tickers=batch.tickers if batch is not None else (), dates=batch.local_dates if batch is not None else ())
+                        reporter.update(
+                            metrics,
+                            tickers=batch.tickers if batch is not None else (),
+                            dates=batch.local_dates if batch is not None else (),
+                            unit_indices=batch.unit_indices if batch is not None else (),
+                            block_offsets=batch.block_offsets if batch is not None else (),
+                        )
                         if samples_seen >= next_log or optimizer_steps == 1:
                             metrics_logger.log(metrics, samples_seen)
                             next_log = samples_seen + max(1, config.train.logging_samples)

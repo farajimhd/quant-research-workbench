@@ -5,6 +5,7 @@ import datetime as dt
 import threading
 import time
 import unittest
+from contextlib import redirect_stdout
 from copy import deepcopy
 
 import torch
@@ -35,10 +36,12 @@ from research.bar_gpt.v1.linear_probe import fit_ridge_probes
 from research.bar_gpt.v1.objectives import _weighted_mean, compute_loss
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
-from research.bar_gpt.v1.targets import TARGET_NAMES, build_physical_horizon_targets
-from research.bar_gpt.v1.train import _advance_cursors, _checkpoint_policy, _resume_data_contract, preflight
+from research.bar_gpt.v1.targets import TARGET_NAMES, build_next_bar_targets, build_physical_horizon_targets
+from research.bar_gpt.v1.train import _advance_cursors, _checkpoint_policy, _resolved_warmup_samples, _resume_data_contract, preflight
 from research.bar_gpt.v1.profile_train import _parse_candidates
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
+from research.bar_gpt.v1.run_profile_train import DEFAULT_ARGS as profile_launcher_args
+from research.bar_gpt.v1.run_train import DEFAULT_ARGS as training_launcher_args
 from research.mlops.schedulers import SampleWarmupCosineScheduler
 
 
@@ -98,8 +101,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
             origin_bars=512,
             right_support_bars=3600,
         )
-        self.assertIn("bucket_index>=14400 AND bucket_index<18512", sql)
-        self.assertIn("bucket_index>=69952 AND bucket_index<72000", sql)
+        self.assertIn("b.bucket_index>=14400 AND b.bucket_index<18512", sql)
+        self.assertIn("b.bucket_index>=69952 AND b.bucket_index<72000", sql)
+        self.assertIn("PREWHERE (b.ticker='META'", sql)
         self.assertNotIn("local_date>=", sql)
 
     def test_bounded_window_builds_exactly_one_causal_example(self) -> None:
@@ -164,6 +168,28 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(first.target_support.shape[0], 9)
         self.assertEqual(first.asof_indices["5s"].tolist(), [0, 0, 0])
         self.assertTrue(torch.all(first.asof_indices["1h"] == -1))
+        batch = collate_examples([first])
+        self.assertEqual(int(batch.autoregressive_mask["1s"].any(dim=-1).sum()), 3)
+        self.assertFalse(bool(batch.autoregressive_mask["1D"].any()))
+
+    def test_sequential_session_emits_tail_origins_with_unavailable_horizons_masked(self) -> None:
+        config = self.data_config()
+        examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-02", session=session_view(11), daily=None,
+            split_actions=(), config=config, include_incomplete_horizons=True,
+        ))
+        self.assertEqual(sum(item.origin_indices.numel() for item in examples), 7)
+        last = examples[-1]
+        batch = collate_examples([last]).to("cpu", non_blocking=False)
+        self.assertFalse(bool(batch.horizon_mask[0, -1, -1].any()))
+
+    def test_intraday_autoregressive_target_masks_session_gap(self) -> None:
+        raw = session_view(4).features
+        starts = torch.tensor([0, 1_000_000, 86_400_000_000, 86_401_000_000])
+        targets = build_next_bar_targets(raw, bar_start_us=starts, expected_step_us=1_000_000)
+        self.assertTrue(bool(targets.mask[0].any()))
+        self.assertFalse(bool(targets.mask[1].any()))
+        self.assertTrue(bool(targets.mask[2].any()))
 
     def test_prior_session_halo_enables_first_premarket_origins_without_overlap(self) -> None:
         prior = session_view(8)
@@ -202,6 +228,17 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(plan.expected_blocks, 103_680)
         self.assertEqual(plan.expected_origins, 53_084_160)
 
+    def test_coverage_plan_uses_exact_sequential_totals(self) -> None:
+        plan = coverage_plan_summary(
+            start_date="2020-01-01", end_date="2020-02-01",
+            training_tickers=("AAA",), blocks_per_unit=16, origin_bars=512,
+            epochs=2, seed=17, coverage_mode="sequential", sessions_per_epoch=20,
+            sequential_blocks_per_epoch=2_260, sequential_origins_per_epoch=1_152_000,
+        )
+        self.assertEqual(plan.sessions_per_epoch, 20)
+        self.assertEqual(plan.expected_blocks, 4_520)
+        self.assertEqual(plan.expected_origins, 2_304_000)
+
     def test_stratified_selector_covers_phases_and_keeps_condition_block(self) -> None:
         base = list(build_session_examples(
             ticker="AAA", local_date="2026-01-02", session=session_view(80), daily=None,
@@ -233,6 +270,15 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-4)
         scheduler.step(1_000)
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-5)
+
+    def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
+        self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
+        self.assertEqual(training_launcher_args["--batch-size"], "1")
+        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "1")
+        config = TrainConfig(warmup_samples=0, warmup_fraction=0.01)
+        self.assertEqual(_resolved_warmup_samples(config, 7_563_836_672), 75_638_367)
+        config.warmup_samples = 12_345
+        self.assertEqual(_resolved_warmup_samples(config, 7_563_836_672), 12_345)
 
     def test_zero_activity_horizon_volume_remains_finite_after_large_prefix(self) -> None:
         raw = session_view(64).features
@@ -427,6 +473,11 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(candidates[0].cuda_prefetch)
         self.assertFalse(candidates[1].cuda_prefetch)
         self.assertTrue(candidates[1].compile_model)
+        launcher_candidates = profile_launcher_args[profile_launcher_args.index("--candidates") + 1]
+        parsed = _parse_candidates(launcher_candidates)
+        shapes = [(item.origin_bars, item.microbatch, item.accumulation) for item in parsed]
+        self.assertIn((2048, 1, 2), shapes)
+        self.assertIn((4096, 1, 1), shapes)
 
     def test_holdout_and_regime_resampling_are_deterministic(self) -> None:
         tickers = tuple(f"T{index:02d}" for index in range(20))
@@ -503,7 +554,10 @@ class LoaderTrainerContractTest(unittest.TestCase):
             epochs_total=3, epoch_index=2, epoch_start_origins=100_000,
             epoch_origin_budget=100_000, epoch_origins_seen=25_000,
             state="running", loss=0.123, origins_per_second=400.0, active_tickers="AAPL,SPY", active_dates="2025-01-02..2025-01-03",
-            last_checkpoint="checkpoint_latest.pt",
+            last_checkpoint="checkpoint_latest.pt", origin_bars=4_096,
+            warmup_samples=30_000, schedule_samples=300_000,
+            current_unit_ticker="AAPL", current_unit_month="2025-01",
+            current_unit_block=75, current_unit_blocks=300,
         )
         reporter = TrainingReporter(state, layout="rich")
         output = io.StringIO()
@@ -514,9 +568,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertIn("running", rendered)
         self.assertIn("AAPL,SPY", rendered)
         self.assertIn("checkpoint_latest.pt", rendered)
-        self.assertIn("epoch 2/3 origin budget", rendered)
+        self.assertIn("Epoch 2/3 origins", rendered)
         self.assertIn("25,000/100,000", rendered)
-        self.assertIn("run origins 125,000/300,000", rendered)
+        self.assertIn("AAPL 2025-01 ticker-month blocks", rendered)
+        self.assertIn("75/300", rendered)
+        self.assertIn("125,000/300,000 origins", rendered)
+        self.assertIn("cosine", rendered)
 
         normal_output = io.StringIO()
         reporter._console = Console(file=normal_output, width=120, height=40, force_terminal=False, color_system=None)
@@ -530,6 +587,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
         short_rendered = " ".join(short_output.getvalue().split())
         self.assertIn("running", short_rendered)
         self.assertIn("source certified", short_rendered)
+
+        text_output = io.StringIO()
+        with redirect_stdout(text_output):
+            TrainingReporter(state, layout="text").refresh(force=True)
+        self.assertNotIn("\x1b", text_output.getvalue())
+        self.assertIn("unit=AAPL:2025-01", text_output.getvalue())
 
         failed = TrainingReporter(state, layout="none")
         failed.__exit__(RuntimeError, RuntimeError("CUDA out of memory"), None)
