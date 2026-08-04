@@ -148,7 +148,7 @@ identity, split, and daily-history state is loaded once and reused across all
 months instead of being duplicated by changing worker assignments. The month is
 an ordering and resume boundary, not a materialization boundary. A query fetches sixteen bounded
 candidate windows, where each window contains only the prior context, 512
-visible origins, and 3,600 seconds of target-only support. Eight phase/activity/
+visible origins, and 3,600 seconds of target-only support. Sixteen phase/activity/
 condition-stratified blocks are emitted immediately. Ready workers may publish
 out of order across workers, while each worker's own cursor order remains
 strict. A dedicated producer continuously fills a bounded 64-block RAM cache;
@@ -229,7 +229,7 @@ python -B -m research.bar_gpt.v1.run_train
 Training uses `[2020-01-01, 2026-01-01)`. One coverage epoch is one
 deterministic pass over 72 month partitions and the 90 non-validation tickers.
 Each ticker-month contributes at most 16 blocks through bounded groups of sixteen
-candidate windows and eight immediate emissions, retaining session-phase,
+candidate windows and sixteen immediate emissions, retaining session-phase,
 activity-regime, and rare-condition coverage without reading the full month.
 The default ceiling is 6,480 units, 103,680
 blocks, and 53,084,160 origin timestamps; unavailable ticker-months can produce
@@ -306,7 +306,7 @@ explicit opt-in candidate because Windows compilation can stall before the first
 update; it is not part of the bounded default sweep. The current default uses
 eight single-thread ClickHouse workers instead of increasing server threads per
 query; the final count remains subject to the sustained workstation profile.
-Eight measured updates cross
+Twelve measured updates cross
 the initial worker/unit buffer so results include
 ticker-month turnover rather than only warm-queue throughput. Promote the selected profile
 into launcher defaults only after measuring it on the training workstation.

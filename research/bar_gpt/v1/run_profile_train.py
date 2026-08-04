@@ -10,10 +10,10 @@ from research.bar_gpt.v1.profile_train import main
 DEFAULT_ARGS: tuple[str, ...] = (
     "--start-date", "2025-10-01",
     "--end-date", "2026-01-01",
-    "--tickers", "MSFT,AMD,INTC,JPM",
-    "--candidates", "256:1:8:2:1:0,512:1:8:2:1:0,512:2:4:2:1:0",
-    "--warmup-steps", "1",
-    "--measured-steps", "8",
+    "--tickers", "MSFT,AMD,INTC,JPM,AAPL,NVDA,TSLA,AMZN,META,BAC,F,SOFI",
+    "--candidates", "512:2:4:4:1:0,512:2:4:8:1:0,512:2:4:12:1:0",
+    "--warmup-steps", "2",
+    "--measured-steps", "12",
     "--progress-layout", "auto",
 )
 

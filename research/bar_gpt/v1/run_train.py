@@ -15,7 +15,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--origin-bars-1s": "512",
     "--coverage-blocks-per-unit": "16",
     "--origin-fetch-candidate-blocks": "16",
-    "--origin-emit-blocks-per-chunk": "8",
+    "--origin-emit-blocks-per-chunk": "16",
     "--validation-blocks-per-slice": "4",
     "--batch-size": "2",
     "--loader-workers": "8",

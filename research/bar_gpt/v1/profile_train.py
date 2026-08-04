@@ -244,9 +244,15 @@ def _profile_candidate(
         optimizer.zero_grad(set_to_none=True)
         step_origins = step_tokens = 0
         step_loader = step_gpu = 0.0
+        gpu_event_pairs: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
         for _micro in range(candidate.accumulation):
             batch, wait = prefetcher.next()
             started = time.perf_counter()
+            gpu_start_event = gpu_end_event = None
+            if device.type == "cuda":
+                gpu_start_event = torch.cuda.Event(enable_timing=True)
+                gpu_end_event = torch.cuda.Event(enable_timing=True)
+                gpu_start_event.record()
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
                 output = model(
                     batch.views,
@@ -259,18 +265,29 @@ def _profile_candidate(
                 )
                 loss = compute_loss(output, batch, train_config, model_config.quantiles).loss / candidate.accumulation
             loss.backward()
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            step_gpu += time.perf_counter() - started
+            if gpu_end_event is not None and gpu_start_event is not None:
+                gpu_end_event.record()
+                gpu_event_pairs.append((gpu_start_event, gpu_end_event))
+            else:
+                step_gpu += time.perf_counter() - started
             step_loader += wait
             step_origins += batch.origin_count
             step_tokens += sum(int(value.shape[0] * value.shape[1]) for value in batch.views.values())
         started = time.perf_counter()
+        step_start_event = step_end_event = None
+        if device.type == "cuda":
+            step_start_event = torch.cuda.Event(enable_timing=True)
+            step_end_event = torch.cuda.Event(enable_timing=True)
+            step_start_event.record()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-        if device.type == "cuda":
-            torch.cuda.synchronize(device)
-        step_gpu += time.perf_counter() - started
+        if step_end_event is not None and step_start_event is not None:
+            step_end_event.record()
+            gpu_event_pairs.append((step_start_event, step_end_event))
+            step_end_event.synchronize()
+            step_gpu += sum(start.elapsed_time(end) / 1_000.0 for start, end in gpu_event_pairs)
+        else:
+            step_gpu += time.perf_counter() - started
         if step >= int(args.warmup_steps):
             measured_origins += step_origins
             measured_tokens += step_tokens

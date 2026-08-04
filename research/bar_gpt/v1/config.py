@@ -111,7 +111,7 @@ class DataConfig:
     min_origins_per_block: int = 64
     coverage_blocks_per_unit: int = 16
     origin_fetch_candidate_blocks: int = 16
-    origin_emit_blocks_per_chunk: int = 8
+    origin_emit_blocks_per_chunk: int = 16
     pin_memory: bool = True
     persistent_workers: bool = True
     balance_activity_regimes: bool = True

@@ -21,7 +21,7 @@ class LoaderBenchmarkContractTest(unittest.TestCase):
         self.assertEqual(DEFAULT_ARGS["--worker-prefetch-batches"], "2")
         self.assertEqual(DEFAULT_ARGS["--clickhouse-max-threads-per-worker"], "1")
         self.assertEqual(DEFAULT_ARGS["--origin-fetch-candidate-blocks"], "16")
-        self.assertEqual(DEFAULT_ARGS["--origin-emit-blocks-per-chunk"], "8")
+        self.assertEqual(DEFAULT_ARGS["--origin-emit-blocks-per-chunk"], "16")
         self.assertEqual(DEFAULT_ARGS["--batch-size"], "2")
         self.assertGreater(int(DEFAULT_ARGS["--measured-batches"]), int(DEFAULT_ARGS["--warmup-batches"]))
 

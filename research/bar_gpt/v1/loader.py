@@ -1429,6 +1429,8 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
     def __iter__(self) -> Iterator[BarGPTExample]:
         client = ArrowStreamClient(self.stream_config)
         units = self._units()
+        if not units:
+            return
         tickers = tuple(sorted({unit.ticker for _index, unit in units}))
         start_date = min((unit.start_date for _index, unit in units), default=self.data_config.start_date)
         end_date = max((unit.end_date for _index, unit in units), default=self.data_config.end_date)
@@ -1450,7 +1452,18 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                 split_database=self.data_config.split_database,
                 split_table=self.data_config.split_table,
             )
-            daily_by_ticker: dict[str, tuple[list[str], BarView] | None] = {}
+            daily_by_ticker: dict[str, tuple[list[str], BarView] | None] = {
+                ticker: value
+                for ticker, value in client.read_daily_views(
+                    tickers=tickers,
+                    start_date=daily_start,
+                    end_date=end_date,
+                    daily_table=self.data_config.daily_table,
+                    intervals_by_ticker=intervals_by_ticker,
+                ).items()
+            }
+            for ticker in tickers:
+                daily_by_ticker.setdefault(ticker, None)
             worker = get_worker_info()
             worker_id = worker.id if worker is not None else 0
             resume = self.resume_cursors.get(worker_id)
@@ -1460,14 +1473,6 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                 ticker = unit.ticker
                 split_actions = actions_by_ticker.get(ticker, ())
                 excluded_dates = split_execution_dates(split_actions)
-                if ticker not in daily_by_ticker:
-                    daily_by_ticker[ticker] = client.read_daily_view(
-                        ticker=ticker,
-                        start_date=daily_start,
-                        end_date=end_date,
-                        daily_table=self.data_config.daily_table,
-                        source_intervals=intervals_by_ticker[ticker],
-                    )
                 fetch_start = (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=14)).isoformat()
                 conditions_by_date = client.read_condition_views(
                     ticker=ticker,

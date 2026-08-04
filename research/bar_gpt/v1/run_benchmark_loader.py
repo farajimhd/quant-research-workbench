@@ -17,7 +17,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--worker-prefetch-batches": "2",
     "--clickhouse-max-threads-per-worker": "1",
     "--origin-fetch-candidate-blocks": "16",
-    "--origin-emit-blocks-per-chunk": "8",
+    "--origin-emit-blocks-per-chunk": "16",
     "--warmup-batches": "16",
     "--measured-batches": "128",
     "--device": "auto",
