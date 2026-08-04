@@ -11,6 +11,25 @@ from research.bar_gpt.v1.config import BarGPTConfig
 from research.bar_gpt.v1.targets import AVAILABILITY_TARGET_COUNT
 
 
+def build_model_mermaid() -> str:
+    """Stable architecture diagram written into every training artifact."""
+    return """flowchart TD
+      A["As-of multiscale bars\\n1s 5s 30s 1m 5m 15m 1h 1D 1W 1MO"]
+      B["Stationary feature projection\\n46 input channels"]
+      C["Continuous timeframe + pathway embeddings"]
+      D["Causal decoder\\n8 RMSNorm + GQA RoPE blocks\\nd_model=384, heads=8, KV heads=4"]
+      E["As-of fusion at each 1s origin"]
+      F["Origin embedding\\nmodel representation"]
+      G["Autoregressive heads\\nnext-bar reconstruction per view"]
+      H["Physical horizon head\\n6 horizons x 14 target channels x quantiles"]
+      I["Availability heads\\nvalidity and event-risk masks"]
+      A --> B --> C --> D --> E --> F
+      F --> G
+      F --> H
+      F --> I
+    """
+
+
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6) -> None:
         super().__init__()

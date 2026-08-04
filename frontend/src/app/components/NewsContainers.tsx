@@ -31,13 +31,14 @@ type NewsRow = {
   provider_tags?: string[];
   published_at_utc: string;
   render_status?: "rendered" | "title_only" | "unrendered";
-  intelligence_status?: "ready" | "unavailable";
+  intelligence_status?: "ready" | "pending" | "unavailable";
   text_preview?: string;
   ticker_link_sample?: string[];
   title: string;
   url_domain?: string;
   scoped_labels?: ScopedNewsLabel[];
   scoped_summary?: ScopedNewsSummary | null;
+  news_synthesis?: NewsSynthesisDocument | null;
 };
 
 type NewsPayload = {
@@ -66,8 +67,9 @@ type NewsDetailPayload = {
     url_domain: string;
     scoped_labels?: ScopedNewsLabel[];
     scoped_summary?: ScopedNewsSummary | null;
+    news_synthesis?: NewsSynthesisDocument | null;
     render_status?: "rendered" | "title_only" | "unrendered";
-    intelligence_status?: "ready" | "unavailable";
+    intelligence_status?: "ready" | "pending" | "unavailable";
   };
   tickers: string[];
 };
@@ -129,10 +131,10 @@ type NewsTemperature = "cold" | "hot" | "old";
 type AllNewsSettings = { content: string; endDate: string; kind: string; limit: number; lookbackHours: number; rangeMode: "custom" | "preset"; startDate: string; ticker: string };
 type EligibilityQuery = { forecast: string; reaction: string; history: string; prior: string; followup: string };
 const EMPTY_ELIGIBILITY_QUERY: EligibilityQuery = { forecast: "", reaction: "", history: "", prior: "", followup: "" };
-const NEWS_DIRECTION_OPTIONS: InventoryFilterOption[] = [{ value: "", label: "Any direction" }, { value: "positive", label: "Positive" }, { value: "negative", label: "Negative" }, { value: "neutral", label: "Neutral" }, { value: "mixed", label: "Mixed" }];
+const NEWS_DIRECTION_OPTIONS: InventoryFilterOption[] = [{ value: "", label: "Any sentiment" }, { value: "positive", label: "Positive" }, { value: "negative", label: "Negative" }, { value: "neutral", label: "Neutral" }, { value: "mixed", label: "Mixed" }];
 const NEWS_WINDOW_OPTIONS: InventoryFilterOption[] = [{ value: "1", label: "1 hour" }, { value: "6", label: "6 hours" }, { value: "24", label: "24 hours" }, { value: "168", label: "7 days" }, { value: "720", label: "30 days" }, { value: "8760", label: "1 year" }, { value: "43800", label: "5 years" }, { value: "custom", label: "Custom dates" }];
-const NEWS_ROLE_OPTIONS: InventoryFilterOption[] = [{ value: "", label: "Any role" }, { value: "primary_event", label: "Primary event" }, { value: "analyst_event", label: "Analyst event" }, { value: "regulatory_event", label: "Regulatory event" }, { value: "editorial_analysis", label: "Editorial analysis" }, { value: "market_roundup", label: "Market roundup" }, { value: "mover_recap", label: "Mover recap" }, { value: "why_moving_followup", label: "Why-moving follow-up" }, { value: "automated_market_statistics", label: "Automated summary" }];
-const NEWS_ORIGIN_OPTIONS: InventoryFilterOption[] = [{ value: "", label: "Any origin" }, { value: "issuer", label: "Issuer" }, { value: "analyst", label: "Analyst" }, { value: "regulatory", label: "Regulatory" }, { value: "editorial", label: "Editorial" }, { value: "automated", label: "Automated" }];
+const NEWS_ROLE_OPTIONS: InventoryFilterOption[] = [{ value: "", label: "Any purpose" }, { value: "report", label: "Report" }, { value: "analyze", label: "Analysis" }, { value: "preview", label: "Preview" }, { value: "recap", label: "Recap" }, { value: "explain_move", label: "Move explanation" }];
+const NEWS_ORIGIN_OPTIONS: InventoryFilterOption[] = [{ value: "", label: "Any origin" }, { value: "issuer", label: "Issuer" }, { value: "regulator", label: "Regulator" }, { value: "analyst", label: "Analyst" }, { value: "editorial", label: "Editorial" }, { value: "mixed", label: "Mixed" }, { value: "unknown", label: "Unknown" }];
 const NEWS_LIMIT_OPTIONS: InventoryFilterOption[] = [25, 50, 100, 250].map((value) => ({ value: String(value), label: `Top ${value}` }));
 const NEWS_LABEL_STATE_OPTIONS: InventoryFilterOption[] = [{ value: "", label: "Any state" }, { value: "classified", label: "Classified" }, { value: "pending", label: "Pending" }, { value: "quality", label: "Quality issue" }];
 const NEWS_ARTICLE_CLASS_LABELS: Record<NewsKindValue, string> = {
@@ -146,9 +148,21 @@ const NEWS_ARTICLE_CLASS_LABELS: Record<NewsKindValue, string> = {
   regulatory: "Regulatory article",
   why_moving: "Why-moving article",
 };
+type NewsSynthesisEvidence = { source_field: string; start: number; end: number; quote: string };
+type NewsSynthesisDocument = {
+  contract_version: string;
+  concept_registry_version: string;
+  envelope: Record<string, { value: string; rule_id: string; evidence: NewsSynthesisEvidence[] }>;
+  entities: Array<{ entity_id: string; entity_kind: string; display_name: string; ticker: string; identity_status: string; identity_evidence: string[] }>;
+  statements: Array<{ statement_id: string; statement_kind: string; concept_leaf: string; epistemic_status: string; time_relation: string; evidence_spans: NewsSynthesisEvidence[]; typed_facts: Array<Record<string, unknown>> }>;
+  participations: Array<{ statement_id: string; entity_id: string; semantic_role: string; discourse_role: string; semantic_sentiment: string; sentiment_strength: number }>;
+  issuer_views: Array<{ entity_id: string; composite_sentiment: string; positive_strength: number; negative_strength: number; statement_ids: string[] }>;
+  eligibility: Array<{ entity_id: string; product: string; eligible: boolean; reasons: string[]; blocking_flags: string[] }>;
+  quality_flags: string[];
+};
 export const NEWS_ARTICLE_CLASS_OPTIONS: InventoryFilterOption[] = [
   { value: "all", label: "All article classes" },
-  ...Object.entries(NEWS_ARTICLE_CLASS_LABELS).map(([value, label]) => ({ value, label })),
+  ...(["analyst", "company", "editorial", "market", "multi", "regulatory", "why_moving"] as NewsKindValue[]).map((value) => ({ value, label: NEWS_ARTICLE_CLASS_LABELS[value] })),
 ];
 const NEWS_TEXT_OPTIONS: InventoryFilterOption[] = [{ value: "all", label: "All text" }, { value: "full", label: "Full text" }, { value: "title", label: "Title only" }];
 type NewsSelection = { newsId: string; publishedAt: string; queryId: string };
@@ -194,17 +208,17 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
       <div className="news-query-primary">
         <label className="news-search"><Search size={13} /><input aria-label="Search all news" onChange={(event) => { const next = event.target.value; setSearch(next); if (!next.trim() && committedSearch) commitSearch(""); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSearch(event.currentTarget.value); } }} placeholder="Search source ID, ticker, headline…" value={search} /></label>
         <button className="button secondary compact news-search-submit" type="submit">Search</button>
-        <span className="news-query-visible-core"><InventoryFilterSelect ariaLabel="Semantic direction" onChange={setDirection} options={NEWS_DIRECTION_OPTIONS} value={direction} /></span>
+        <span className="news-query-visible-core"><InventoryFilterSelect ariaLabel="Semantic sentiment" onChange={setDirection} options={NEWS_DIRECTION_OPTIONS} value={direction} /></span>
         <span className="news-query-visible-core"><InventoryFilterSelect ariaLabel="News time window" defaultValue={168} onChange={(value) => value === "custom" ? onSettingsChange({ rangeMode: "custom" }) : onSettingsChange({ lookbackHours: Number(value), rangeMode: "preset" })} options={NEWS_WINDOW_OPTIONS} value={settings.rangeMode === "custom" ? "custom" : settings.lookbackHours} /></span>
-        <span className="news-query-visible-wide"><InventoryFilterSelect ariaLabel="News content role" onChange={setRole} options={NEWS_ROLE_OPTIONS} value={role} /></span>
+        <span className="news-query-visible-wide"><InventoryFilterSelect ariaLabel="Communication purpose" onChange={setRole} options={NEWS_ROLE_OPTIONS} value={role} /></span>
         <span className="news-query-visible-wide"><InventoryFilterSelect ariaLabel="Source origin" onChange={setOrigin} options={NEWS_ORIGIN_OPTIONS} value={origin} /></span>
         {settings.rangeMode === "custom" ? <span className="news-query-date-controls news-query-visible-wide"><NewsDateRangeFilters onSettingsChange={onSettingsChange} settings={settings} /></span> : null}
         <InventoryFilterSelect ariaLabel="Ticker" onChange={(value) => onSettingsChange({ ticker: value })} options={tickerOptions} searchable searchPlaceholder="Search tickers…" value={settings.ticker} />
         <FilterOverflowMenu activeCount={activeFilterCount}>
           <div className="filter-overflow-section"><strong>Query filters</strong><div className="filter-overflow-grid">
-            <InventoryFilterSelect ariaLabel="Semantic direction" onChange={setDirection} options={NEWS_DIRECTION_OPTIONS} value={direction} />
+            <InventoryFilterSelect ariaLabel="Semantic sentiment" onChange={setDirection} options={NEWS_DIRECTION_OPTIONS} value={direction} />
             <InventoryFilterSelect ariaLabel="News time window" defaultValue={168} onChange={(value) => value === "custom" ? onSettingsChange({ rangeMode: "custom" }) : onSettingsChange({ lookbackHours: Number(value), rangeMode: "preset" })} options={NEWS_WINDOW_OPTIONS} value={settings.rangeMode === "custom" ? "custom" : settings.lookbackHours} />
-            <InventoryFilterSelect ariaLabel="News content role" onChange={setRole} options={NEWS_ROLE_OPTIONS} value={role} />
+            <InventoryFilterSelect ariaLabel="Communication purpose" onChange={setRole} options={NEWS_ROLE_OPTIONS} value={role} />
             <InventoryFilterSelect ariaLabel="Source origin" onChange={setOrigin} options={NEWS_ORIGIN_OPTIONS} value={origin} />
             <InventoryFilterSelect ariaLabel="News result limit" defaultValue={100} onChange={(value) => onSettingsChange({ limit: Number(value) })} options={NEWS_LIMIT_OPTIONS} value={settings.limit} />
             <InventoryFilterSelect ariaLabel="Ticker" onChange={(value) => onSettingsChange({ ticker: value })} options={tickerOptions} searchable value={settings.ticker} />
@@ -251,7 +265,7 @@ export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settin
   const wallClockMs = useWallClock();
   const orderedRows = [...state.rows].sort(compareNewsRecency);
   const eventRows = orderedRows.filter((row) => row.scoped_summary?.forecast_trigger_eligible);
-  const contextRows = orderedRows.filter((row) => !row.scoped_summary?.forecast_trigger_eligible && ["analyst_event", "editorial_analysis", "regulatory_event"].includes(row.scoped_summary?.content_role ?? ""));
+  const contextRows = orderedRows.filter((row) => !row.scoped_summary?.forecast_trigger_eligible && ["analyst", "editorial", "regulator", "mixed"].includes(row.scoped_summary?.source_origin ?? ""));
   const followupRows = orderedRows.filter((row) => !eventRows.includes(row) && !contextRows.includes(row));
   return <section className="ticker-news" aria-label={`${symbol} news`}>
     <header><div><TickerIdentityWithChange asOf={effectiveAsOf} className="ticker-news-symbol" inputAriaLabel="Ticker news symbol" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={effectiveAsOf} /></small></header>
@@ -340,8 +354,8 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
       {tags.length ? <div className="news-reader-tags" aria-label="Source tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
     </header>
     <div className="news-reader-evidence-grid">
-      {scopedLabels.length ? <section className="news-reader-intelligence" aria-label="Issuer-specific interpretation"><header><div><strong>Issuer interpretations</strong><small>Direction and evidence are evaluated for each affected issuer.</small></div><span>{scopedLabels.length} {scopedLabels.length === 1 ? "issuer view" : "issuer views"}</span></header>{scopedLabels.map((label) => <ScopedLabelPanel key={`${label.unit_id}-${label.ticker}`} label={label} presentations={presentations} />)}</section> : null}
-      <NewsClassificationPanel classification={classification} summary={scopedSummary} />
+      {scopedLabels.length ? <section className="news-reader-intelligence" aria-label="Issuer-specific interpretation"><header><div><strong>Issuer interpretations</strong><small>Sentiment and evidence are evaluated for each affected issuer.</small></div><span>{scopedLabels.length} {scopedLabels.length === 1 ? "issuer view" : "issuer views"}</span></header>{scopedLabels.map((label) => <ScopedLabelPanel key={`${label.unit_id}-${label.ticker}`} label={label} presentations={presentations} />)}</section> : null}
+      {row.news_synthesis ? <NewsSynthesisPanel document={row.news_synthesis} /> : <NewsClassificationPanel classification={classification} summary={scopedSummary} />}
     </div>
     {body ? <div className="news-reader-body">{articleParagraphs(body).map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 20)}`}><MarketNumberText text={paragraph} /></p>)}</div> : <NewsEmpty label="This record contains title metadata but no readable article text." />}
     <footer>{row.article_url ? <a href={row.article_url} rel="noreferrer" target="_blank">Open original source <ExternalLink size={12} /></a> : null}</footer>
@@ -439,8 +453,8 @@ function ScopedClass({ summary }: { summary?: ScopedNewsSummary | null }) { if (
 function ScopedConcepts({ compact = false, concepts = [] }: { compact?: boolean; concepts?: string[] }) { const readable = concepts.map(shortConcept).filter(Boolean); const visible = readable.slice(0, compact ? 1 : 3); if (!visible.length) return null; return <span className="news-scoped-concepts">{visible.map((concept) => <span key={concept}>{concept}</span>)}{readable.length > visible.length ? <span>+{readable.length - visible.length}</span> : null}</span>; }
 function NewsDetailOverview({ summary }: { summary: ScopedNewsSummary }) {
   return <section className="detail-intelligence-overview" aria-label="News interpretation summary">
-    <div className="detail-direction-focus"><span>Text direction</span><ScopedDirection prominent summary={summary} /></div>
-    <DetailDatum label="Content role" value={readableLabel(summary.content_role || "unclassified")} />
+    <div className="detail-direction-focus"><span>Text sentiment</span><ScopedDirection prominent summary={summary} /></div>
+    <DetailDatum label="Purpose" value={readableLabel(summary.content_role || "unclassified")} />
     <DetailDatum label="Source origin" value={readableLabel(summary.source_origin || "unknown")} />
     <DetailDatum label="Primary event" value={shortConcept(summary.event_concepts[0] || "Not identified")} />
     <DetailDatum label="Operational use" value={eligibilityText(summary)} />
@@ -466,18 +480,53 @@ function NewsClassificationPanel({ classification, summary }: { classification: 
     </div>
   </details>;
 }
+function NewsSynthesisPanel({ document }: { document: NewsSynthesisDocument }) {
+  const envelope = document.envelope;
+  const entityById = new Map(document.entities.map((entity) => [entity.entity_id, entity]));
+  const statementById = new Map(document.statements.map((statement) => [statement.statement_id, statement]));
+  return <details className="news-detail-contract" open>
+    <summary><span><strong>News synthesis</strong><small>Evidence-preserving document and issuer interpretation</small></span><em>{document.contract_version}</em></summary>
+    <div className="news-detail-contract-body">
+      <section aria-label="News synthesis envelope">
+        <header>Document envelope</header>
+        <div className="news-detail-contract-grid">
+          <DetailDatum label="Structure" value={readableLabel(envelope.document_structure?.value || "unknown")} />
+          <DetailDatum label="Purpose" value={readableLabel(envelope.communication_purpose?.value || "unknown")} />
+          <DetailDatum label="Origin" value={readableLabel(envelope.information_origin?.value || "unknown")} />
+          <DetailDatum label="Production" value={readableLabel(envelope.production_method?.value || "unknown")} />
+          <DetailDatum label="Text" value={readableLabel(envelope.text_availability?.value || "unknown")} />
+          <DetailDatum label="Concept registry" value={document.concept_registry_version} />
+        </div>
+        <DetailList label="Quality flags" values={document.quality_flags.map(readableStructuredLabel)} emptyLabel="None" />
+      </section>
+      <section aria-label="News synthesis issuer views">
+        <header>Issuer views</header>
+        {document.issuer_views.map((view) => {
+          const entity = entityById.get(view.entity_id);
+          const statements = view.statement_ids.map((id) => statementById.get(id)).filter(Boolean) as NewsSynthesisDocument["statements"];
+          return <article className="news-scoped-label" key={view.entity_id}>
+            <header><strong>{entity?.ticker || entity?.display_name || "Unresolved issuer"}</strong><span className="news-scoped-class" data-state="event">{readableLabel(view.composite_sentiment)}</span></header>
+            <div className="news-scoped-label-facts"><DetailDatum label="Identity" value={readableLabel(entity?.identity_status || "unknown")} /><DetailDatum label="Positive strength" value={String(view.positive_strength)} /><DetailDatum label="Negative strength" value={String(view.negative_strength)} /><DetailDatum label="Statements" value={String(statements.length)} /></div>
+            <DetailList label="Concepts" values={Array.from(new Set(statements.map((statement) => shortConcept(statement.concept_leaf))))} emptyLabel="None" />
+            {statements.map((statement) => <details key={statement.statement_id}><summary>{shortConcept(statement.concept_leaf)} · {readableLabel(statement.statement_kind)} · {readableLabel(statement.time_relation)}</summary><p>{statement.evidence_spans.map((span) => span.quote).join(" ")}</p><DetailList label="Facts" values={statement.typed_facts.map((fact) => String(fact.raw || fact.fact_type || "fact"))} emptyLabel="None" /></details>)}
+          </article>;
+        })}
+      </section>
+    </div>
+  </details>;
+}
 function ScopedLabelPanel({ label, presentations }: { label: ScopedNewsLabel; presentations: Record<string, TickerPresentation> }) {
   const summary: ScopedNewsSummary = { content_role: label.content_role, episode_followup_eligible: label.episode_followup_eligible, event_concepts: label.event_concepts, forecast_trigger_eligible: label.forecast_trigger_eligible, issuer_count: label.ticker ? 1 : 0, issuer_history_context_eligible: label.issuer_history_context_eligible, label_count: 1, labeling_version: label.labeling_version, prior_primary_context_eligible: label.prior_primary_context_eligible, reaction_evaluation_eligible: label.reaction_evaluation_eligible, semantic_direction: label.semantic_direction, semantic_score: label.semantic_score, source_origin: label.source_origin };
   const confidence = Number.isFinite(label.confidence) ? `${Math.round(label.confidence * 100)}%` : "Not reported";
   return <article className="news-scoped-label">
     <header><div className="news-scoped-label-identity">{label.ticker ? <TickerIdentity logoUrl={presentations[label.ticker]?.logo_url} ticker={label.ticker} /> : <strong>Document-wide</strong>}<ScopedClass summary={summary} /></div><ScopedDirection prominent summary={summary} /></header>
-    <div className="news-scoped-label-facts"><DetailDatum label="Content role" value={readableLabel(label.content_role || "not specified")} /><DetailDatum label="Unit role" value={readableLabel(label.unit_role || "not specified")} /><DetailDatum label="Issuer role" value={readableLabel(label.issuer_role || "not specified")} /><DetailDatum label="Issuer relationship" value={readableLabel(label.issuer_relationship || "not specified")} /><DetailDatum label="Evidence scope" value={readableLabel(label.evidence_scope || "document")} /><DetailDatum label="Origin" value={readableLabel(label.source_origin || "unknown")} /><DetailDatum label="Source type" value={readableLabel(label.source_type || "not specified")} /><DetailDatum label="Source subtype" value={readableLabel(label.source_subtype || "not specified")} /><DetailDatum label="Timing" value={readableLabel(label.time_orientation || "not specified")} /><DetailDatum label="Modality" value={readableLabel(label.modality || "not specified")} /><DetailDatum label="Scope" value={readableLabel(label.scope || "not specified")} /></div>
+    <div className="news-scoped-label-facts"><DetailDatum label="Purpose" value={readableLabel(label.content_role || "not specified")} /><DetailDatum label="Unit role" value={readableLabel(label.unit_role || "not specified")} /><DetailDatum label="Issuer role" value={readableLabel(label.issuer_role || "not specified")} /><DetailDatum label="Issuer relationship" value={readableLabel(label.issuer_relationship || "not specified")} /><DetailDatum label="Evidence scope" value={readableLabel(label.evidence_scope || "document")} /><DetailDatum label="Origin" value={readableLabel(label.source_origin || "unknown")} /><DetailDatum label="Source type" value={readableLabel(label.source_type || "not specified")} /><DetailDatum label="Source subtype" value={readableLabel(label.source_subtype || "not specified")} /><DetailDatum label="Timing" value={readableLabel(label.time_orientation || "not specified")} /><DetailDatum label="Modality" value={readableLabel(label.modality || "not specified")} /><DetailDatum label="Scope" value={readableLabel(label.scope || "not specified")} /></div>
     <div className="detail-confidence" aria-label={`Classification confidence ${confidence}`}><span><small>Confidence</small><strong>{confidence}</strong></span><div><i style={{ width: `${Math.max(0, Math.min(100, label.confidence * 100))}%` }} /></div></div>
     <DetailList label="Event concepts" values={label.event_concepts.map(shortConcept)} emptyLabel="None" />
-    <DetailList label="Direction basis" values={label.semantic_direction_basis.map(readableStructuredLabel)} emptyLabel="Text evidence" />
+    <DetailList label="Sentiment basis" values={label.semantic_direction_basis.map(readableStructuredLabel)} emptyLabel="Text evidence" />
     <DetailList label="Event tickers" values={label.event_tickers} emptyLabel="None" />
     <div className="news-label-identifiers"><DetailDatum label="Unit ID" value={label.unit_id || "Not reported"} /><DetailDatum label="Event ID" value={label.event_id || "Not reported"} /><DetailDatum label="Label version" value={label.labeling_version || "Not reported"} /></div>
-    <details><summary>Read direction evidence</summary><p>{label.semantic_evidence_text ? <MarketNumberText text={label.semantic_evidence_text} /> : "Not reported"}</p></details>
+    <details><summary>Read sentiment evidence</summary><p>{label.semantic_evidence_text ? <MarketNumberText text={label.semantic_evidence_text} /> : "Not reported"}</p></details>
     <DetailList label="Quality flags" values={label.quality_flags.map(readableStructuredLabel)} emptyLabel="None" />
     <footer><EligibilityState active={label.forecast_trigger_eligible} label="Forecast trigger" /><EligibilityState active={label.reaction_evaluation_eligible} label="Reaction study" /><EligibilityState active={label.issuer_history_context_eligible} label="Issuer history" /><EligibilityState active={label.prior_primary_context_eligible} label="Prior primary context" /><EligibilityState active={label.episode_followup_eligible} label="Episode follow-up" /></footer>
   </article>;

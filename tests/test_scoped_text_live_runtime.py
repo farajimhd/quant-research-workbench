@@ -52,7 +52,7 @@ class ScopedTextLiveRuntimeTests(unittest.TestCase):
                 title="Example",
                 rendered_text="Example body",
             )
-            item = PreparedNewsCandidate(candidate=candidate, scoped_labels=())
+            item = PreparedNewsCandidate(candidate=candidate, synthesis_labels=())
             try:
                 accepted = await asyncio.to_thread(
                     runtime.enqueue_prepared_threadsafe, item
@@ -73,7 +73,7 @@ class ScopedTextLiveRuntimeTests(unittest.TestCase):
             title="Example",
             rendered_text="Example body",
         )
-        item = PreparedNewsCandidate(candidate=candidate, scoped_labels=())
+        item = PreparedNewsCandidate(candidate=candidate, synthesis_labels=())
         try:
             self.assertFalse(runtime.enqueue_prepared(item))
             self.assertEqual(runtime.queue.qsize(), 0)

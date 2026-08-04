@@ -24,6 +24,7 @@ IDENTITY_STATUSES = frozenset(("resolved", "ambiguous", "unresolved", "not_trada
 PRODUCTS = frozenset(("forecast_trigger", "reaction_study", "issuer_history", "analyst_evaluation"))
 MIGRATION_STATUSES = frozenset(("exact", "rule_mapped", "review_required", "rejected"))
 CERTIFICATION_VERSION = "news_synthesis_v1_manual_certification_v1"
+PRODUCTION_VERSION = "news_synthesis_v1_production_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,7 +161,8 @@ def validate_document(document: Mapping[str, Any]) -> ValidationResult:
         issues.append("invalid:eligibility_coverage")
     has_migration = isinstance(document.get("migration"), Mapping)
     has_certification = isinstance(document.get("certification"), Mapping)
-    if has_migration == has_certification:
+    has_production = isinstance(document.get("production"), Mapping)
+    if sum((has_migration, has_certification, has_production)) != 1:
         issues.append("invalid:provenance_exactly_one_required")
     elif has_migration and document["migration"].get("status") not in MIGRATION_STATUSES:
         issues.append("invalid:migration_status")
@@ -172,6 +174,12 @@ def validate_document(document: Mapping[str, Any]) -> ValidationResult:
             issues.append("invalid:certification_status")
         if not certification.get("reviewer") or not certification.get("review_notes"):
             issues.append("invalid:certification_review")
+    elif has_production:
+        production = document["production"]
+        if production.get("production_version") != PRODUCTION_VERSION:
+            issues.append("invalid:production_version")
+        if not production.get("engine_version") or not production.get("generated_at_utc"):
+            issues.append("invalid:production_provenance")
     return ValidationResult(not issues, tuple(dict.fromkeys(issues)))
 
 

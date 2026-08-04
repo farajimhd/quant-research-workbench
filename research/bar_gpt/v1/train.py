@@ -40,7 +40,7 @@ from research.bar_gpt.v1.loader import (
 )
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
 from research.bar_gpt.v1.sampling import CoverageCursor, coverage_plan_summary
-from research.bar_gpt.v1.model import BarGPTV1
+from research.bar_gpt.v1.model import BarGPTV1, build_model_mermaid
 from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.objectives import BarGPTLoss, compute_loss
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
@@ -59,7 +59,7 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
-from research.mlops.model_artifacts import parameter_summary, write_model_card
+from research.mlops.model_artifacts import parameter_summary, write_model_artifacts, write_model_card
 from research.mlops.paths import RunPaths, default_run_root
 from research.mlops.schedulers import SampleWarmupCosineScheduler
 from research.mlops.seeds import set_seed
@@ -1137,6 +1137,33 @@ def main(argv: Iterable[str] | None = None) -> int:
     (paths.run_root / "config.json").write_text(json.dumps(to_dict(config), indent=2, default=str), encoding="utf-8")
     (paths.run_root / "coverage_plan.json").write_text(json.dumps(plan.to_dict(), indent=2), encoding="utf-8")
     model: torch.nn.Module = BarGPTV1(config.model).to(device)
+    view_names = tuple(name for name in TIMEFRAME_US_BY_NAME if name not in config.data.calendar_timeframes)
+    all_view_names = (*view_names, *config.data.calendar_timeframes)
+    # Durable architecture evidence is created at run start, before the first
+    # optimizer update, so a stopped run remains reviewable.
+    write_model_artifacts(
+        model=model,
+        artifact_dir=paths.artifacts_dir,
+        model_config=config.model,
+        input_contract={
+            "views": {name: ["B", "T_view", len(FEATURE_NAMES)] for name in all_view_names},
+            "asof_indices": ["B", "N_views"],
+            "origin_indices": ["B", "N_origins"],
+            "time_semantics": "available_at_us and explicit session/calendar masks",
+        },
+        output_contract={
+            "embedding": ["B", "N_origins", config.model.d_model],
+            "autoregressive": {name: ["B", "T_view-1", config.model.target_dim] for name in all_view_names},
+            "physical_horizon_quantiles": ["B", "N_origins", len(config.data.horizons_us), config.model.target_dim - 8, len(config.model.quantiles)],
+            "physical_horizon_availability_logits": ["B", "N_origins", len(config.data.horizons_us), 8],
+        },
+        architecture_mermaid=build_model_mermaid(),
+        summary_notes=(
+            "Causal decoder-only multiscale bar model. Every origin uses the fixed "
+            "multiscale input; physical horizon targets are built from future support "
+            "with causal masks. Calendar views are context and auxiliary next-bar heads."
+        ),
+    )
     if config.train.compile_model and hasattr(torch, "compile"):
         model = torch.compile(model, dynamic=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay, foreach=device.type == "cuda")

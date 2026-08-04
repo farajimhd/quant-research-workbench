@@ -7,6 +7,35 @@ physical-horizon quantiles.
 
 ## Data authority
 
+## Model contract
+
+BarGPT is a decoder-only continuous-token transformer. It does not tokenize
+prices and it does not switch into separate daily or weekly modes. Every
+example is anchored at a 1-second origin and carries the same multiscale view
+set: `1s`, `5s`, `30s`, `1m`, `5m`, `15m`, `1h`, `1D`, `1W`, and `1MO`.
+Each view is aligned by its causal `available_at_us` timestamp; a bar that was
+not complete at the origin is masked, never backfilled from the future.
+
+The model returns the origin embedding, an autoregressive next-bar head for
+each view, and direct probabilistic physical-horizon heads. The direct heads
+currently cover `5s`, `30s`, `1m`, `5m`, `15m`, and `1h`. Each direct horizon
+contains the target contract in `targets.py`: endpoint return, upper/lower
+excursion, realized volatility, log trade volume/count, trade/bid/ask/paired
+quote availability, and halt/resume/news/LULD risk flags. Future support is
+constructed on the loader/device side and masked when unavailable, preserving
+point-in-time causality.
+
+The daily/weekly/monthly views are inputs at every origin. In the current v1
+checkpoint they also have auxiliary next-bar reconstruction heads; those
+calendar heads are supervised only when a new completed calendar bar is
+causally available. They are not separate model modes. Adding explicit
+every-origin 1D/1W/1MO forecast horizons would change the output contract and
+requires a new checkpoint rather than resuming the current one.
+
+Every run writes reviewable architecture evidence to its runtime
+`artifacts/` directory: `model_details.json`, `model_parameters.jsonl`,
+`model_summary.txt`, `model_architecture.mmd`, and `model_architecture.md`.
+
 Training and production consume raw point-in-time SIP prices. The intraday
 authority is one rich row per completed active one-second bucket in
 `market_sip_compact.bar_gpt_1s_bars_v1_cohort_2tb`. It preserves:

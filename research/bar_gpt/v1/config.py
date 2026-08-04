@@ -206,7 +206,10 @@ class TrainConfig:
     wandb_init_timeout: int = 120
     logging_samples: int = 65_536
     validation_batches: int = 16
-    validation_runs_per_epoch: int = 4
+    # Validation is inexpensive relative to an epoch and must expose drift
+    # early enough to stop a bad long-running job. These are 24 interior
+    # checkpoints plus the epoch-end evaluation.
+    validation_runs_per_epoch: int = 25
     validation_interval_samples: int = 0
     # First validation is deliberately early enough to catch a bad run; the
     # remaining validations are spread across the epoch.

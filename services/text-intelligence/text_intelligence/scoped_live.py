@@ -22,10 +22,6 @@ from research.mlops.clickhouse import (
 from research.text_intelligence.candidate_inventory_v1.config import (
     CandidateInventoryConfig,
 )
-from research.text_intelligence.scoped_labeling_v1.news_identity import (
-    NewsIssuerResolver,
-    load_news_issuer_resolver,
-)
 from research.text_intelligence.scoped_labeling_v1.persistence import (
     RELATION_TABLE,
     TARGET_TABLE,
@@ -37,19 +33,25 @@ from research.text_intelligence.scoped_labeling_v1.persistence import (
     relationship_rows,
     row_to_document,
 )
-from research.text_intelligence.scoped_labeling_v1.pipeline import (
-    classify_news_document,
-    classify_sec_document,
-)
+from research.text_intelligence.scoped_labeling_v1.pipeline import classify_sec_document
 from research.text_intelligence.scoped_labeling_v1.schema import (
     SCOPED_LABELING_VERSION,
-    ScopedLabel,
 )
 from research.text_intelligence.scoped_labeling_v1.sec_extractor import (
     sec_document_labeling_eligible,
 )
+from research.text_intelligence.news_synthesis_v1.engine import (
+    ENGINE_VERSION as NEWS_SYNTHESIS_ENGINE_VERSION,
+    NewsSynthesisEngine,
+)
+from research.text_intelligence.news_synthesis_v1.storage import (
+    SYNTHESIS_TABLE,
+    create_tables as create_news_synthesis_tables,
+    load_identity_index,
+    persist_documents,
+)
 
-from .live import LiveCandidate, LiveNewsRuntime, PreparedNewsCandidate
+from .live import LiveCandidate, LiveNewsRuntime, PreparedNewsCandidate, SynthesisLiveLabel
 
 
 STATUS_TABLE = "scoped_text_live_status_v2"
@@ -99,7 +101,7 @@ class ScopedTextRuntime:
         self.pending: set[tuple[str, str]] = set()
         self.workers: list[asyncio.Task[None]] = []
         self.reconcile_task: asyncio.Task[None] | None = None
-        self.issuer_resolver: NewsIssuerResolver | None = None
+        self.news_engine: NewsSynthesisEngine | None = None
         self.sec_mappings: dict[str, list[dict[str, Any]]] = {}
         self.sec_mapping_lock = threading.Lock()
         self.state_lock = threading.Lock()
@@ -137,10 +139,10 @@ class ScopedTextRuntime:
 
     async def start(self) -> None:
         await asyncio.to_thread(create_tables, self.client, self.database)
+        await asyncio.to_thread(create_news_synthesis_tables, self.client, self.database)
         await asyncio.to_thread(self._ensure_status_table)
-        self.issuer_resolver = await asyncio.to_thread(
-            load_news_issuer_resolver, self.client, self.database
-        )
+        identity_index = await asyncio.to_thread(load_identity_index, self.client, self.database)
+        self.news_engine = NewsSynthesisEngine(identity_index)
         count = max(1, min(16, int(os.environ.get("TEXT_INTELLIGENCE_WORKERS", "4"))))
         with self.state_lock:
             self.worker_states = {
@@ -271,6 +273,8 @@ class ScopedTextRuntime:
         forward_current: bool = False,
         worker_index: int | None = None,
     ) -> str:
+        if notice.corpus == "news":
+            return self._process_news_notice(notice, forward_current, worker_index)
         self._set_worker_stage(worker_index, "loading_source")
         loaded = self._load_source(notice)
         if loaded.disposition == "not_ready":
@@ -311,25 +315,12 @@ class ScopedTextRuntime:
         self._set_worker_stage(worker_index, "classifying")
         for source_row in loaded.rows:
             document = row_to_document(source_row, notice.corpus)
-            labels = (
-                classify_news_document(
-                    document, issuer_resolver=self.issuer_resolver
-                )
-                if notice.corpus == "news"
-                else classify_sec_document(document)
-            )
+            labels = classify_sec_document(document)
             label_rows.extend(
                 persistence_row(document, label, run_id) for label in labels
             )
             for label in labels:
                 relation_rows.extend(relationship_rows(document, label, run_id))
-            if notice.corpus == "news" and self.live_news.enabled:
-                prepared_news.append(
-                    PreparedNewsCandidate(
-                        candidate=_live_candidate(source_row),
-                        scoped_labels=labels,
-                    )
-                )
         if label_rows and not source_is_current:
             self._set_worker_stage(worker_index, "writing_labels")
             insert_json_each_row(
@@ -382,6 +373,48 @@ class ScopedTextRuntime:
                         self.metrics["deterministic_live_forwarded"]
                     ) + 1
         return "complete" if not source_is_current else "forwarded_current"
+
+    def _process_news_notice(
+        self,
+        notice: TextDocumentNotice,
+        forward_current: bool,
+        worker_index: int | None,
+    ) -> str:
+        self._set_worker_stage(worker_index, "loading_source")
+        loaded = self._load_news(notice)
+        if loaded.disposition == "not_ready":
+            self.metrics["deterministic_deferred_not_ready"] = int(self.metrics["deterministic_deferred_not_ready"]) + 1
+            return "deferred_not_ready"
+        if not loaded.rows or self.news_engine is None:
+            raise RuntimeError(f"canonical news source or synthesis engine is not ready: {notice.source_id}")
+        self._set_worker_stage(worker_index, "checking_status")
+        current = self._status_is_current(notice, loaded.source_hash)
+        if current and not forward_current:
+            self.metrics["deterministic_skipped_current"] = int(self.metrics["deterministic_skipped_current"]) + 1
+            return "skipped_current"
+        self._set_worker_stage(worker_index, "synthesizing")
+        documents = [self.news_engine.synthesize(row) for row in loaded.rows]
+        if not current:
+            self._set_worker_stage(worker_index, "writing_synthesis")
+            persist_documents(self.client, self.database, documents)
+            self._write_status(notice, loaded.source_hash, "complete", len(documents), 0, "")
+            self.metrics["deterministic_news_labels"] = int(self.metrics["deterministic_news_labels"]) + len(documents)
+            self.metrics["deterministic_completed"] = int(self.metrics["deterministic_completed"]) + 1
+        if self.live_news.enabled:
+            for source_row, document in zip(loaded.rows, documents):
+                item = PreparedNewsCandidate(
+                    candidate=_live_candidate(source_row),
+                    synthesis_labels=_live_synthesis_labels(document),
+                )
+                self._set_worker_stage(worker_index, "forwarding_live")
+                try:
+                    accepted = self.live_news.enqueue_prepared_threadsafe(item)
+                except Exception:  # noqa: BLE001
+                    self.metrics["deterministic_live_forward_failed"] = int(self.metrics["deterministic_live_forward_failed"]) + 1
+                else:
+                    if accepted:
+                        self.metrics["deterministic_live_forwarded"] = int(self.metrics["deterministic_live_forwarded"]) + 1
+        return "complete" if not current else "forwarded_current"
 
     def _load_source(self, notice: TextDocumentNotice) -> LoadedSource:
         return (
@@ -498,10 +531,11 @@ class ScopedTextRuntime:
 SELECT
  e.canonical_news_id AS source_id,
  toString(e.published_at_utc) AS source_timestamp,
- e.title, r.rendered_text AS text, e.tickers AS entity_terms, e.tickers,
+ e.title, if(empty(r.rendered_text),e.title,r.rendered_text) AS text, e.tickers AS entity_terms, e.tickers,
  e.channels, e.provider_tags, e.links, e.author, e.url_domain, e.article_url,
  e.content_quality_flags, r.renderer_version, r.text_contract,
- r.quality_flags, r.rendered_text_hash
+ r.quality_flags, multiIf(empty(r.canonical_news_id),'unrendered',r.source_count=0,'title_only','rendered') render_status,
+ if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash) rendered_text_hash
 FROM
 (
  SELECT *
@@ -509,12 +543,11 @@ FROM
  PREWHERE published_date=toDate({sql_string(source_date)})
  WHERE canonical_news_id={sql_string(notice.source_id)}
 ) AS e
-INNER JOIN
+LEFT JOIN
 (
  SELECT *
  FROM `{self.database}`.`benzinga_news_rendered_v2` FINAL
  PREWHERE published_date=toDate({sql_string(source_date)})
- WHERE notEmpty(rendered_text)
 ) AS r
  ON r.published_date=e.published_date
  AND r.provider_article_id=e.provider_article_id
@@ -523,7 +556,9 @@ LIMIT 1
 SETTINGS max_execution_time=25
 FORMAT JSONEachRow
 """))
-        source_hash = str(rows[0].get("rendered_text_hash") or "") if rows else ""
+        if not rows:
+            return LoadedSource(notice, (), "", "not_ready")
+        source_hash = str(rows[0].get("rendered_text_hash") or "")
         return LoadedSource(notice, tuple(rows), source_hash)
 
     def _load_sec(self, notice: TextDocumentNotice) -> LoadedSource:
@@ -630,13 +665,14 @@ FORMAT JSONEachRow
     def _status_is_current(
         self, notice: TextDocumentNotice, source_hash: str
     ) -> bool:
+        version = _authority_version(notice.corpus)
         value = self.client.execute(f"""
 SELECT count()
 FROM `{self.database}`.`{STATUS_TABLE}` FINAL
 WHERE corpus={sql_string(notice.corpus)}
   AND source_id={sql_string(notice.source_id)}
   AND source_hash={sql_string(source_hash)}
-  AND labeling_version={sql_string(SCOPED_LABELING_VERSION)}
+  AND labeling_version={sql_string(version)}
   AND status='complete'
 """).strip()
         return int(value or "0") > 0
@@ -655,7 +691,7 @@ WHERE corpus={sql_string(notice.corpus)}
             "source_id": notice.source_id,
             "source_timestamp": notice.source_timestamp or "1970-01-01 00:00:00",
             "source_hash": source_hash,
-            "labeling_version": SCOPED_LABELING_VERSION,
+            "labeling_version": _authority_version(notice.corpus),
             "status": status,
             "label_rows": label_rows,
             "relation_rows": relation_rows,
@@ -731,10 +767,9 @@ WHERE corpus={sql_string(notice.corpus)}
 WITH
  complete_status AS
  (
-  SELECT corpus,source_id,source_hash,updated_at_utc
+  SELECT corpus,source_id,source_hash,labeling_version,updated_at_utc
   FROM `{self.database}`.`{STATUS_TABLE}` FINAL
-  WHERE labeling_version={sql_string(SCOPED_LABELING_VERSION)}
-    AND status='complete'
+  WHERE status='complete'
  ),
  recent_sec AS
  (
@@ -755,29 +790,29 @@ SELECT 'news' corpus,e.canonical_news_id source_id,
        '' source_cik
 FROM
 (
- SELECT canonical_news_id,published_date,provider_article_id,
+ SELECT canonical_news_id,published_date,provider_article_id,title,
         source_revision_key,published_at_utc,updated_at_utc
  FROM `{self.database}`.`benzinga_news_event_v2` FINAL
  PREWHERE published_date >= toDate({sql_string(start_date_sql)})
  WHERE published_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
 ) e
-INNER JOIN
+LEFT JOIN
 (
  SELECT published_date,provider_article_id,source_revision_key,
         rendered_text_hash,updated_at_utc
  FROM `{self.database}`.`benzinga_news_rendered_v2` FINAL
  PREWHERE published_date >= toDate({sql_string(start_date_sql)})
  WHERE published_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
-   AND notEmpty(rendered_text)
 ) r
  ON r.published_date=e.published_date
  AND r.provider_article_id=e.provider_article_id
  AND r.source_revision_key=e.source_revision_key
 LEFT JOIN complete_status s
  ON s.corpus='news' AND s.source_id=e.canonical_news_id
- AND s.source_hash=r.rendered_text_hash
+ AND s.source_hash=if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash)
+ AND s.labeling_version={sql_string(NEWS_SYNTHESIS_ENGINE_VERSION)}
 WHERE empty(s.source_id)
-   OR s.source_hash != r.rendered_text_hash
+   OR s.source_hash != if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash)
    OR greatest(e.updated_at_utc,r.updated_at_utc) > s.updated_at_utc
 UNION ALL
 SELECT 'sec' corpus,f.source_id,toString(f.source_timestamp) source_timestamp,
@@ -785,6 +820,7 @@ SELECT 'sec' corpus,f.source_id,toString(f.source_timestamp) source_timestamp,
 FROM recent_sec f
 LEFT JOIN complete_status s
  ON s.corpus='sec' AND s.source_id=f.source_id
+ AND s.labeling_version={sql_string(SCOPED_LABELING_VERSION)}
 WHERE empty(s.source_id)
    OR f.source_updated_at_utc > s.updated_at_utc
 )
@@ -815,30 +851,28 @@ FORMAT JSONEachRow
         start_sql = started.strftime("%Y-%m-%d %H:%M:%S.%f")
         rows = list(self.client.iter_json_each_row(f"""
 SELECT DISTINCT
- 'news' corpus,l.source_id,toString(l.source_timestamp) source_timestamp
+ 'news' corpus,l.canonical_news_id source_id,toString(l.published_at_utc) source_timestamp
 FROM
 (
- SELECT source_id,source_timestamp,ticker,unit_id
- FROM `{self.database}`.`{TARGET_TABLE}` FINAL
- WHERE corpus='news'
-   AND labeling_version={sql_string(SCOPED_LABELING_VERSION)}
-   AND forecast_trigger_eligible=1
-   AND source_timestamp >= toDateTime64({sql_string(start_sql)},6,'UTC')
+ SELECT canonical_news_id,published_at_utc,arrayJoin(forecast_tickers) ticker,
+        concat(canonical_news_id,':',ticker) unit_id
+ FROM `{self.database}`.`{SYNTHESIS_TABLE}` FINAL
+ WHERE engine_version={sql_string(NEWS_SYNTHESIS_ENGINE_VERSION)}
+   AND published_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
 ) l
 INNER JOIN
 (
- SELECT e.canonical_news_id,r.rendered_text_hash
+ SELECT e.canonical_news_id,if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash) rendered_text_hash
  FROM
  (
-  SELECT canonical_news_id,published_date,provider_article_id,source_revision_key
+  SELECT canonical_news_id,published_date,provider_article_id,source_revision_key,title
   FROM `{self.database}`.`benzinga_news_event_v2` FINAL
  ) e
- INNER JOIN
+ LEFT JOIN
  (
   SELECT published_date,provider_article_id,source_revision_key,
          rendered_text_hash
   FROM `{self.database}`.`benzinga_news_rendered_v2` FINAL
-  WHERE notEmpty(rendered_text)
  ) r
   ON r.published_date=e.published_date
   AND r.provider_article_id=e.provider_article_id
@@ -849,7 +883,7 @@ LEFT JOIN
 (
  SELECT canonical_news_id,ticker,unit_id,rendered_text_hash
  FROM `{self.database}`.`{self.live_news.table}` FINAL
- WHERE scoped_labeling_version={sql_string(SCOPED_LABELING_VERSION)}
+ WHERE scoped_labeling_version={sql_string(NEWS_SYNTHESIS_ENGINE_VERSION)}
    AND published_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
 ) m
  ON m.canonical_news_id=l.source_id
@@ -897,6 +931,61 @@ def _live_candidate(row: dict[str, Any]) -> LiveCandidate:
         links=[str(value) for value in row.get("links") or []],
         quality_flags=[str(value) for value in row.get("quality_flags") or []],
     )
+
+
+def _authority_version(corpus: str) -> str:
+    return NEWS_SYNTHESIS_ENGINE_VERSION if corpus == "news" else SCOPED_LABELING_VERSION
+
+
+def _live_synthesis_labels(document: dict[str, Any]) -> tuple[SynthesisLiveLabel, ...]:
+    entities = {str(row["entity_id"]): row for row in document["entities"]}
+    statements = {str(row["statement_id"]): row for row in document["statements"]}
+    participations: dict[str, list[dict[str, Any]]] = {}
+    for row in document["participations"]:
+        participations.setdefault(str(row["entity_id"]), []).append(row)
+    eligibility = {
+        (str(row["entity_id"]), str(row["product"])): bool(row["eligible"])
+        for row in document["eligibility"]
+    }
+    event_tickers = tuple(
+        str(row.get("ticker") or "") for row in document["entities"] if row.get("ticker")
+    )
+    output: list[SynthesisLiveLabel] = []
+    for view in document["issuer_views"]:
+        entity_id = str(view["entity_id"])
+        entity = entities[entity_id]
+        ticker = str(entity.get("ticker") or "")
+        if not ticker:
+            continue
+        rows = participations.get(entity_id, [])
+        statement_ids = [str(row["statement_id"]) for row in rows]
+        concepts = sorted({str(statements[sid]["concept_leaf"]) for sid in statement_ids if sid in statements})
+        quotes = [str(statements[sid]["evidence_spans"][0]["quote"]) for sid in statement_ids if sid in statements]
+        role = next((str(row["semantic_role"]) for row in rows if row.get("semantic_role") != "none"), "affected_subject")
+        output.append(SynthesisLiveLabel(
+            ticker=ticker,
+            unit_id=f"{document['source_id']}:{ticker}",
+            event_id=str(document["source_id"]),
+            event_tickers=event_tickers,
+            issuer_role=role,
+            evidence_scope="issuer_passages",
+            semantic_evidence_text=" ".join(dict.fromkeys(quotes)),
+            forecast_trigger_eligible=eligibility.get((entity_id, "forecast_trigger"), False),
+            classification={
+                "contract_version": document["contract_version"],
+                "document_structure": document["envelope"]["document_structure"]["value"],
+                "communication_purpose": document["envelope"]["communication_purpose"]["value"],
+                "information_origin": document["envelope"]["information_origin"]["value"],
+                "production_method": document["envelope"]["production_method"]["value"],
+                "semantic_sentiment": view["composite_sentiment"],
+                "positive_strength": view["positive_strength"],
+                "negative_strength": view["negative_strength"],
+                "concepts": concepts,
+                "quality_flags": document["quality_flags"],
+            },
+            synthesis_version=NEWS_SYNTHESIS_ENGINE_VERSION,
+        ))
+    return tuple(output)
 
 
 def _sec_document_set_hash(documents: list[dict[str, Any]]) -> str:

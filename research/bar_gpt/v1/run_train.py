@@ -40,7 +40,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--minimum-learning-rate": "0.00003",
     "--validation-interval-samples": "0",
     "--validation-initial-samples": "33554432",
-    "--validation-runs-per-epoch": "4",
+    "--validation-runs-per-epoch": "25",
     "--validation-batches": "16",
     "--checkpoint-latest-samples": "33554432",
     "--checkpoint-archive-samples": "268435456",

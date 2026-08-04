@@ -10,8 +10,9 @@
     "participations", "issuer_views", "synthesis", "eligibility", "quality_flags"
   ],
   "oneOf": [
-    {"required": ["migration"], "not": {"required": ["certification"]}},
-    {"required": ["certification"], "not": {"required": ["migration"]}}
+    {"required": ["migration"], "not": {"anyOf": [{"required": ["certification"]}, {"required": ["production"]}]}},
+    {"required": ["certification"], "not": {"anyOf": [{"required": ["migration"]}, {"required": ["production"]}]}},
+    {"required": ["production"], "not": {"anyOf": [{"required": ["migration"]}, {"required": ["certification"]}]}}
   ],
   "properties": {
     "contract_version": {"const": "news_synthesis_v1"},
@@ -29,7 +30,8 @@
     "eligibility": {"type": "array", "items": {"$ref": "#/$defs/eligibility"}},
     "quality_flags": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
     "migration": {"$ref": "#/$defs/migration"},
-    "certification": {"$ref": "#/$defs/certification"}
+    "certification": {"$ref": "#/$defs/certification"},
+    "production": {"$ref": "#/$defs/production"}
   },
   "$defs": {
     "evidence": {
@@ -168,6 +170,16 @@
         "reviewed_at_utc": {"type": "string", "minLength": 1},
         "review_notes": {"type": "string", "minLength": 1},
         "status": {"const": "certified"}
+      }
+    },
+    "production": {
+      "type": "object", "additionalProperties": false,
+      "required": ["production_version", "engine_version", "generated_at_utc", "source_revision"],
+      "properties": {
+        "production_version": {"const": "news_synthesis_v1_production_v1"},
+        "engine_version": {"type": "string", "minLength": 1},
+        "generated_at_utc": {"type": "string", "minLength": 1},
+        "source_revision": {"type": "string"}
       }
     }
   }

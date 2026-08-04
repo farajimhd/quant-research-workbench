@@ -1,5 +1,5 @@
 {
-  "registry_version": "news_synthesis_concepts_v1_29",
+  "registry_version": "news_synthesis_concepts_v1_31",
   "fallback_leaf": "unclassified.semantic_claim",
   "leaves": [
     {"id": "unclassified.semantic_claim", "parent": "unclassified", "definition": "Substantive evidence whose precise canonical concept still requires review.", "aliases": []},
@@ -19,9 +19,11 @@
     {"id": "capital.deleveraging", "parent": "capital", "definition": "A confirmed, planned or prioritized reduction in debt, leverage or comparable balance-sheet obligations.", "aliases": ["deleveraging", "debt_reduction", "reduce_leverage", "pay_down_debt"]},
     {"id": "regulatory.action", "parent": "regulatory", "definition": "A regulator or exchange takes or announces an official action.", "aliases": ["regulatory_event", "regulatory_action", "trading_halt"]},
     {"id": "legal.proceeding", "parent": "legal", "definition": "A lawsuit, investigation, settlement or other legal proceeding.", "aliases": ["legal", "lawsuit", "investigation", "litigation", "settlement"]},
-    {"id": "clinical.regulatory_milestone", "parent": "clinical", "definition": "A clinical or medical regulatory milestone or decision.", "aliases": ["fda_approval", "regulatory.fda_approval", "clinical_trial", "trial_results"]},
+    {"id": "clinical.regulatory_milestone", "parent": "clinical", "definition": "A clinical or medical regulatory filing, designation, approval, rejection, hold or other official regulatory decision.", "aliases": ["fda_approval", "regulatory.fda_approval", "clinical_regulatory_decision"]},
+    {"id": "clinical.trial_result", "parent": "clinical", "definition": "A reported clinical-study design, endpoint result, efficacy outcome, safety outcome or other trial finding distinct from a regulator's decision.", "aliases": ["clinical_trial", "trial_results", "clinical_study_result", "trial_endpoint"]},
     {"id": "commercial.contract", "parent": "commercial", "definition": "A material customer contract, order, award or cancellation.", "aliases": ["contract", "order", "contract_award"]},
     {"id": "product.milestone", "parent": "product", "definition": "A product launch, delay, recall or discontinuation.", "aliases": ["product_launch", "product_update", "recall"]},
+    {"id": "corporate.communication_event", "parent": "corporate", "definition": "An issuer schedules, announces or participates in an investor conference, presentation, webcast or comparable public communication event.", "aliases": ["investor_conference", "conference_presentation", "investor_day", "corporate_webcast"]},
     {"id": "governance.management_change", "parent": "governance", "definition": "A material executive, director or governance change.", "aliases": ["management_change", "executive_change", "board_change"]},
     {"id": "governance.executive_compensation", "parent": "governance", "definition": "A reported, approved or changed executive or director compensation amount or arrangement.", "aliases": ["executive_compensation", "director_compensation", "ceo_pay"]},
     {"id": "governance.shareholder_vote", "parent": "governance", "definition": "A shareholder meeting, election, proposal or ratification vote and its reported outcome.", "aliases": ["shareholder_vote", "annual_meeting_vote", "proposal_vote", "auditor_ratification"]},

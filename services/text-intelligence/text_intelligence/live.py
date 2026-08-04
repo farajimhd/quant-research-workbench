@@ -23,10 +23,6 @@ from research.mlops.clickhouse import (
 )
 from research.news_labeling.gpt_oss_v1.prompt import build_messages
 from research.news_labeling.gpt_oss_v1.schema import TRANSPORT_SCHEMA, validate_label
-from research.text_intelligence.scoped_labeling_v1.schema import (
-    SCOPED_LABELING_VERSION,
-    ScopedLabel,
-)
 from services.market_hours import get_market_hours_client
 
 
@@ -50,9 +46,23 @@ class LiveCandidateBatch(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class SynthesisLiveLabel:
+    ticker: str
+    unit_id: str
+    event_id: str
+    event_tickers: tuple[str, ...]
+    issuer_role: str
+    evidence_scope: str
+    semantic_evidence_text: str
+    forecast_trigger_eligible: bool
+    classification: dict[str, Any]
+    synthesis_version: str
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedNewsCandidate:
     candidate: LiveCandidate
-    scoped_labels: tuple[ScopedLabel, ...]
+    synthesis_labels: tuple[SynthesisLiveLabel, ...]
 
 
 class LiveSessionUpdate(BaseModel):
@@ -216,7 +226,7 @@ class LiveNewsRuntime:
             self.metrics["filtered"] += 1
             return
         eligible = [
-            label for label in item.scoped_labels if label.forecast_trigger_eligible
+            label for label in item.synthesis_labels if label.forecast_trigger_eligible
         ]
         if not eligible:
             self.metrics["filtered"] += 1
@@ -234,7 +244,7 @@ class LiveNewsRuntime:
     async def _process_scoped(
         self,
         candidate: LiveCandidate,
-        scoped: ScopedLabel,
+        scoped: SynthesisLiveLabel,
         market_clock: Any,
     ) -> None:
         ticker = scoped.ticker.upper()
@@ -244,6 +254,7 @@ class LiveNewsRuntime:
             ticker,
             scoped.unit_id,
             candidate.rendered_text_hash,
+            scoped.synthesis_version,
         ):
             return
         snapshot = await asyncio.to_thread(_get_json, f"{self.qmd_url}/snapshot/ticker/{ticker}", 1.5)
@@ -253,7 +264,7 @@ class LiveNewsRuntime:
             return
         deterministic = {
             **scoped.classification,
-            "scoped_labeling_version": SCOPED_LABELING_VERSION,
+            "news_synthesis_version": scoped.synthesis_version,
             "target_ticker": ticker,
             "event_id": scoped.event_id,
             "event_tickers": list(scoped.event_tickers),
@@ -272,7 +283,7 @@ class LiveNewsRuntime:
         messages = build_messages(article)
         key_source = (
             f"{candidate.canonical_news_id}|{scoped.unit_id}|{ticker}|"
-            f"{candidate.rendered_text_hash}|{SCOPED_LABELING_VERSION}|"
+            f"{candidate.rendered_text_hash}|{scoped.synthesis_version}|"
             "news-label-prompt-v1|news.semantic_fast.v1"
         )
         response = await asyncio.to_thread(
@@ -326,6 +337,7 @@ class LiveNewsRuntime:
         ticker: str,
         unit_id: str,
         rendered_text_hash: str,
+        synthesis_version: str,
     ) -> bool:
         sql = f"""
 SELECT count()
@@ -334,7 +346,7 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
   AND ticker={sql_string(ticker)}
   AND unit_id={sql_string(unit_id)}
   AND rendered_text_hash={sql_string(rendered_text_hash)}
-  AND scoped_labeling_version={sql_string(SCOPED_LABELING_VERSION)}
+  AND scoped_labeling_version={sql_string(synthesis_version)}
 """
         return int(self.client.execute(sql).strip() or "0") > 0
 
@@ -399,7 +411,7 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
     def _persist(
         self,
         candidate: LiveCandidate,
-        scoped: ScopedLabel,
+        scoped: SynthesisLiveLabel,
         ticker: str,
         price: float,
         deterministic: dict[str, Any],
@@ -419,8 +431,8 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
             "issuer_role": scoped.issuer_role,
             "evidence_scope": scoped.evidence_scope,
             "semantic_evidence_text": scoped.semantic_evidence_text,
-            "scoped_labeling_version": SCOPED_LABELING_VERSION,
-            "deterministic_version": SCOPED_LABELING_VERSION,
+            "scoped_labeling_version": scoped.synthesis_version,
+            "deterministic_version": scoped.synthesis_version,
             "deterministic_json": json.dumps(deterministic, separators=(",", ":")),
             "semantic_contract": "gpt_oss_news_semantics_v1",
             "semantic_json": json.dumps(label, separators=(",", ":")),

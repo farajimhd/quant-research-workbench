@@ -61,11 +61,8 @@ from src.backend.market_data_service import (
     source_scan,
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
-from src.backend.news_classification import classify_news, classify_news_kind, news_classification_sql
-from src.backend.scoped_text_labels import (
-    load_scoped_news_labels,
-    scoped_news_summary,
-)
+from src.backend.news_synthesis import load_news_synthesis
+from src.backend.scoped_text_labels import scoped_news_summary
 from src.backend.sec_canvas_service import (
     sec_document_text_payload,
     sec_filing_detail_payload,
@@ -294,8 +291,9 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     ],
     "text-intelligence": [
         {"database": "q_live", "table": "news_semantic_label_v2", "role": "issuer-scoped semantic labels"},
-        {"database": "q_live", "table": "scoped_text_labels_v5", "role": "deterministic scoped labels"},
-        {"database": "q_live", "table": "scoped_content_relations_v3", "role": "News and SEC content relationships"},
+        {"database": "q_live", "table": "news_synthesis_v1", "role": "News Synthesis V1"},
+        {"database": "q_live", "table": "scoped_text_labels_v5", "role": "SEC deterministic scoped labels"},
+        {"database": "q_live", "table": "scoped_content_relations_v3", "role": "SEC content relationships"},
     ],
     "market-ai": [
         {"database": "q_live", "table": "news_market_hypothesis_v1", "role": "contextual hypotheses"},
@@ -1270,8 +1268,8 @@ def service_news_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, A
             n.provider_tags,
             length(n.tickers) AS ticker_link_count,
             arraySort(n.tickers) AS ticker_link_sample,
-            r.source_count > 0 AS has_body,
-            r.source_count = 0 AS is_title_only,
+            ifNull(r.source_count, 0) > 0 AS has_body,
+            notEmpty(r.canonical_news_id) AND ifNull(r.source_count, 0) = 0 AS is_title_only,
             has(n.content_quality_flags, 'external_text') AS has_external_text,
             has(n.content_quality_flags, 'pdf_text') AS has_pdf,
             '' AS external_fetch_status,
@@ -1280,10 +1278,10 @@ def service_news_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, A
             0 AS body_chars,
             0 AS external_chars,
             0 AS pdf_chars,
-            lengthUTF8(r.rendered_text) AS full_text_chars,
-            substring(r.rendered_text, 1, 240) AS text_preview
+            lengthUTF8(ifNull(r.rendered_text, '')) AS full_text_chars,
+            substring(ifNull(r.rendered_text, ''), 1, 240) AS text_preview
         FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-        INNER JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
+        LEFT JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
             ON r.published_date=n.published_date
             AND r.provider_article_id=n.provider_article_id
             AND r.source_revision_key=n.source_revision_key
@@ -1333,10 +1331,10 @@ def news_detail_source(canonical_news_id: str) -> tuple[str, str, str, str, dict
     row_query = f"""
         SELECT
             n.* EXCEPT(published_at_utc, downloaded_at_utc, last_updated_at_utc, updated_at_utc),
-            r.rendered_text AS normalized_full_text,
-            r.rendered_text_hash AS text_hash,
-            r.source_count,
-            r.block_count,
+            ifNull(r.rendered_text, '') AS normalized_full_text,
+            ifNull(r.rendered_text_hash, '') AS text_hash,
+            ifNull(r.source_count, 0) AS source_count,
+            ifNull(r.block_count, 0) AS block_count,
             formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
             formatDateTime(n.downloaded_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS downloaded_at_utc,
             if(
@@ -1346,7 +1344,7 @@ def news_detail_source(canonical_news_id: str) -> tuple[str, str, str, str, dict
             ) AS last_updated_at_utc,
             formatDateTime(n.updated_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS updated_at_utc
         FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-        INNER JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
+        LEFT JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
             ON r.published_date=n.published_date
             AND r.provider_article_id=n.provider_article_id
             AND r.source_revision_key=n.source_revision_key
@@ -1441,20 +1439,19 @@ def trading_news_detail(canonical_news_id: str, *, published_at: str = "", query
         FORMAT JSONEachRow
     """
     ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
-    classification = classify_news(source_row, len(ticker_rows))
     try:
-        scoped_by_source = load_scoped_news_labels(
+        synthesis_by_source = load_news_synthesis(
             [news_id],
             query_rows=clickhouse_json_each_row,
             quote=sql_string,
-            source_end=str(source_row.get("published_at_utc") or ""),
-            source_start=str(source_row.get("published_at_utc") or ""),
         )
-        intelligence_status = "ready"
+        intelligence_status = "ready" if synthesis_by_source.get(news_id) else "pending"
     except Exception:
-        scoped_by_source = {}
+        synthesis_by_source = {}
         intelligence_status = "unavailable"
-    scoped_labels = scoped_by_source.get(news_id, [])
+    synthesis_payload = synthesis_by_source.get(news_id, {})
+    scoped_labels = synthesis_payload.get("labels", [])
+    synthesis_fields = synthesis_payload.get("article_fields", {})
     # Product APIs expose only decision-relevant presentation fields. Database,
     # table, storage-path, ingestion-diagnostic, and agent/chat implementation
     # details must never cross into a user-facing response contract.
@@ -1463,8 +1460,18 @@ def trading_news_detail(canonical_news_id: str, *, published_at: str = "", query
             "article_url": source_row.get("article_url") or "",
             "author": source_row.get("author") or "",
             "channels": source_row.get("channels") or [],
-            "classification": classification.as_dict(),
-            "news_kind": classification.kind,
+            "classification": ({
+                "kind": synthesis_fields.get("news_kind", "market"),
+                "format": synthesis_fields.get("news_format", "general"),
+                "origin": synthesis_fields.get("news_origin", "unknown"),
+                "scope": synthesis_fields.get("news_scope", "market_wide"),
+                "topics": synthesis_fields.get("news_topics", []),
+                "is_company_news": synthesis_fields.get("is_company_news", False),
+                "confidence": synthesis_fields.get("classification_confidence", 0.0),
+                "evidence": synthesis_fields.get("classification_evidence", ["news_synthesis_pending"]),
+                "version": "news_synthesis_engine_v1" if synthesis_fields else "pending",
+            }),
+            "news_kind": synthesis_fields.get("news_kind", "market"),
             "provider_tags": source_row.get("provider_tags") or [],
             "published_at_utc": source_row.get("published_at_utc") or "",
             "text": source_row.get("text") or "",
@@ -1473,6 +1480,7 @@ def trading_news_detail(canonical_news_id: str, *, published_at: str = "", query
             "url_domain": source_row.get("url_domain") or "",
             "scoped_labels": scoped_labels,
             "scoped_summary": scoped_news_summary(scoped_labels),
+            "news_synthesis": synthesis_payload.get("document"),
             "intelligence_status": intelligence_status,
         },
         "tickers": sorted({str(row.get("ticker") or "").strip().upper() for row in ticker_rows if str(row.get("ticker") or "").strip()}),
@@ -1585,56 +1593,63 @@ def trading_news_rows(
     filters = [*base_filters, cursor_filter]
     if safe_ticker and not exact_source_id:
         filters.append(f"has(n.tickers, {sql_string(safe_ticker)})")
-    label_having: list[str] = []
-    if safe_role:
-        label_having.append(f"countIf(l.content_role = {sql_string(safe_role)}) > 0")
-    if safe_origin:
-        label_having.append(f"countIf(l.source_origin = {sql_string(safe_origin)}) > 0")
-    if safe_direction:
-        if safe_direction == "mixed":
-            label_having.append("uniqExact(l.semantic_direction) > 1 OR countIf(l.semantic_direction = 'mixed') > 0")
-        else:
-            label_having.append(f"uniqExact(l.semantic_direction) = 1 AND any(l.semantic_direction) = {sql_string(safe_direction)}")
-    if safe_eligibility:
-        eligibility_column = {
-            "forecast": "forecast_trigger_eligible",
-            "reaction": "reaction_evaluation_eligible",
-            "history": "issuer_history_context_eligible",
-        }[safe_eligibility]
-        label_having.append(f"max(l.{eligibility_column}) = 1")
-    eligibility_expressions = {
-        "forecast_eligible": "l.forecast_trigger_eligible",
-        "reaction_eligible": "l.reaction_evaluation_eligible",
-        "history_eligible": "l.issuer_history_context_eligible",
-        "prior_context_eligible": "JSONExtractBool(l.classification_json, 'prior_primary_context_eligible')",
-        "followup_eligible": "JSONExtractBool(l.classification_json, 'episode_followup_eligible')",
-    }
-    for name, value in eligibility_filters.items():
-        if value:
-            label_having.append(f"max({eligibility_expressions[name]}) = {1 if value == 'eligible' else 0}")
-    label_group_having = f" GROUP BY l.source_id HAVING {' AND '.join(f'({item})' for item in label_having)}" if label_having else " GROUP BY l.source_id"
-
     def label_predicates(ticker_scope: str = "") -> tuple[str, str]:
-        label_prewhere = [
-            "l.corpus = 'news'",
-            "l.source_timestamp >= window_start",
-            "l.source_timestamp <= window_end",
+        """Build V1-only semantic predicates; canonical News remains independently visible."""
+        conditions = [
+            "l.engine_version = 'news_synthesis_engine_v1'",
+            "l.published_at_utc >= window_start",
+            "l.published_at_utc <= window_end",
         ]
+        ticker_sql = sql_string(ticker_scope) if ticker_scope else ""
         if ticker_scope:
-            label_prewhere.append(f"l.ticker = {sql_string(ticker_scope)}")
+            conditions.append(f"has(l.tickers, {ticker_sql})")
+        if safe_role:
+            conditions.append(f"l.communication_purpose = {sql_string(safe_role)}")
+        if safe_origin:
+            conditions.append(f"l.information_origin = {sql_string(safe_origin)}")
+        if safe_direction:
+            if ticker_scope:
+                scoped_sentiment = f"arrayElement(l.sentiments, indexOf(l.tickers, {ticker_sql}))"
+                conditions.append(f"{scoped_sentiment} = {sql_string(safe_direction)}")
+            elif safe_direction == "mixed":
+                conditions.append("(has(l.sentiments, 'mixed') OR length(arrayDistinct(l.sentiments)) > 1)")
+            else:
+                conditions.append(f"has(l.sentiments, {sql_string(safe_direction)})")
+        product_columns = {
+            "forecast": "forecast_tickers",
+            "reaction": "reaction_tickers",
+            "history": "history_tickers",
+        }
+        if safe_eligibility:
+            column = product_columns[safe_eligibility]
+            conditions.append(f"has(l.{column}, {ticker_sql})" if ticker_scope else f"notEmpty(l.{column})")
+        eligibility_columns = {
+            "forecast_eligible": "forecast_tickers",
+            "reaction_eligible": "reaction_tickers",
+            "history_eligible": "history_tickers",
+            "prior_context_eligible": "history_tickers",
+        }
+        for name, value in eligibility_filters.items():
+            if not value:
+                continue
+            if name == "followup_eligible":
+                expression = "l.communication_purpose IN ('recap','explain_move')"
+            else:
+                column = eligibility_columns[name]
+                expression = f"has(l.{column}, {ticker_sql})" if ticker_scope else f"notEmpty(l.{column})"
+            conditions.append(expression if value == "eligible" else f"NOT ({expression})")
+        where = " AND ".join(conditions)
         label_exists_sql = (
-            "n.canonical_news_id IN (SELECT source_id "
-            "FROM q_live.scoped_text_labels_v5 AS l FINAL "
-            f"PREWHERE {' AND '.join(label_prewhere)} "
-            f"WHERE l.labeling_version = 'scoped_text_labeling_v5'{label_group_having})"
+            "n.canonical_news_id IN (SELECT canonical_news_id "
+            "FROM q_live.news_synthesis_v1 AS l FINAL "
+            f"WHERE {where})"
         )
         quality_exists_sql = (
-            "n.canonical_news_id IN (SELECT source_id "
-            "FROM q_live.scoped_text_labels_v5 AS l FINAL "
-            f"PREWHERE {' AND '.join(label_prewhere)} "
-            "WHERE l.labeling_version = 'scoped_text_labeling_v5' "
-            "AND position(l.classification_json, 'quality_flags') > 0 "
-            "AND position(l.classification_json, '[]') = 0)"
+            "n.canonical_news_id IN (SELECT canonical_news_id "
+            "FROM q_live.news_synthesis_v1 AS l FINAL "
+            "WHERE l.engine_version = 'news_synthesis_engine_v1' "
+            "AND l.published_at_utc >= window_start AND l.published_at_utc <= window_end "
+            "AND notEmpty(l.quality_flags))"
         )
         return label_exists_sql, quality_exists_sql
 
@@ -1681,10 +1696,34 @@ def trading_news_rows(
         "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), "
         "arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
     )
-    classification_sql = news_classification_sql(ticker_links_sql, body_sql="r.rendered_text")
+    classification_sql = {
+        "kind": "'market'",
+        "scope": f"multiIf(length({ticker_links_sql})=1,'single_ticker',length({ticker_links_sql})>1,'multi_ticker','market_wide')",
+        "origin": "'unknown'",
+        "format": "'general'",
+        "topics": "CAST([], 'Array(String)')",
+        "company": "toUInt8(0)",
+        "confidence": "toFloat64(0)",
+        "evidence": "['news_synthesis_pending']",
+    }
     news_kind_sql = classification_sql["kind"]
     if safe_kind != "all" and not exact_source_id:
-        kind_filter = f"({news_kind_sql}) = {sql_string(safe_kind)}"
+        kind_conditions = {
+            "why_moving": "l.communication_purpose='explain_move'",
+            "analyst": "l.information_origin='analyst'",
+            "regulatory": "l.information_origin='regulator'",
+            "market": "l.document_structure IN ('market_overview','reference_list')",
+            "multi": "l.document_structure='multi_subject_digest'",
+            "company": "l.information_origin='issuer'",
+            "editorial": "l.information_origin IN ('editorial','mixed','unknown')",
+        }
+        condition = kind_conditions.get(safe_kind, "0")
+        kind_filter = (
+            "n.canonical_news_id IN (SELECT canonical_news_id "
+            "FROM q_live.news_synthesis_v1 AS l FINAL "
+            "WHERE l.engine_version='news_synthesis_engine_v1' "
+            f"AND l.published_at_utc>=window_start AND l.published_at_utc<=window_end AND ({condition}))"
+        )
         filters.append(kind_filter)
         facet_filters.append(kind_filter)
     where_sql = " AND ".join(filters)
@@ -1874,28 +1913,28 @@ def trading_news_rows(
         },
     )
     try:
-        scoped_by_source = load_scoped_news_labels(
+        synthesis_by_source = load_news_synthesis(
             [str(row.get("canonical_news_id") or "") for row in rows],
             query_rows=lambda sql: clickhouse_json_each_row(
                 sql, timeout_seconds=NEWS_INTELLIGENCE_TIMEOUT_SECONDS
             ),
             quote=sql_string,
-            source_end=cutoff.isoformat(),
-            source_start=window_start.isoformat(),
-            ticker="" if exact_source_id else safe_ticker,
         )
         intelligence_status = "ready"
     except Exception:
-        scoped_by_source = {}
+        synthesis_by_source = {}
         intelligence_status = "unavailable"
     for row in rows:
         source_id = str(row.get("canonical_news_id") or "")
-        labels = scoped_by_source.get(source_id, [])
+        synthesis_payload = synthesis_by_source.get(source_id, {})
+        labels = synthesis_payload.get("labels", [])
         row["scoped_labels"] = labels
         row["scoped_summary"] = scoped_news_summary(
             labels, ticker=safe_ticker
         )
-        row["intelligence_status"] = intelligence_status
+        row["news_synthesis"] = synthesis_payload.get("document")
+        row.update(synthesis_payload.get("article_fields", {}))
+        row["intelligence_status"] = intelligence_status if synthesis_payload else "pending"
     response = {
         "as_of": cutoff.isoformat().replace("+00:00", "Z"),
         "has_more": has_more,

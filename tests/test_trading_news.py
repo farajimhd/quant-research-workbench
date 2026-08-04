@@ -57,18 +57,15 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("AS news_topics", sql)
         self.assertIn("AS is_company_news", sql)
         self.assertIn("'analyst'", sql)
-        self.assertIn("'insights'", sql)
-        self.assertIn("startsWith(lowerUTF8(trimBoth(value)), 'bzi-')", sql)
-        self.assertIn(") = 'analyst'", sql)
-        self.assertIn("'multi'", sql)
-        self.assertIn("'company'", sql)
+        self.assertIn("q_live.news_synthesis_v1", sql)
+        self.assertIn("l.information_origin='analyst'", sql)
         self.assertIn("LIMIT 2", sql)
         self.assertEqual(query_mock.call_args_list[0].kwargs["timeout_seconds"], 12.0)
         facet_sql = query_mock.call_args_list[1].args[0]
         self.assertNotIn("page_before", facet_sql)
         self.assertNotIn("has(n.tickers, 'AAPL')", facet_sql)
-        self.assertIn("scoped_text_labels_v5", query_mock.call_args_list[2].args[0])
-        self.assertIn("PREWHERE corpus='news'", query_mock.call_args_list[2].args[0])
+        self.assertIn("news_synthesis_v1", query_mock.call_args_list[2].args[0])
+        self.assertIn("engine_version", query_mock.call_args_list[2].args[0])
         self.assertTrue(payload["query_id"])
         self.assertEqual(payload["market_timezone"], "America/New_York")
         self.assertEqual(query_mock.call_args_list[2].kwargs["timeout_seconds"], 1.5)
@@ -233,12 +230,11 @@ class TradingNewsTests(unittest.TestCase):
             followup_eligible="ineligible",
         )
         sql = query_mock.call_args_list[0].args[0]
-        self.assertIn("max(l.forecast_trigger_eligible) = 1", sql)
-        self.assertIn("max(l.reaction_evaluation_eligible) = 0", sql)
-        self.assertIn("JSONExtractBool(l.classification_json, 'prior_primary_context_eligible')", sql)
-        self.assertIn("JSONExtractBool(l.classification_json, 'episode_followup_eligible')", sql)
-        self.assertIn("GROUP BY l.source_id HAVING", sql)
-        self.assertLess(sql.index("scoped_text_labels_v5"), sql.index("LIMIT 101"))
+        self.assertIn("notEmpty(l.forecast_tickers)", sql)
+        self.assertIn("NOT (notEmpty(l.reaction_tickers))", sql)
+        self.assertIn("notEmpty(l.history_tickers)", sql)
+        self.assertIn("NOT (l.communication_purpose IN ('recap','explain_move'))", sql)
+        self.assertLess(sql.index("news_synthesis_v1"), sql.index("LIMIT 101"))
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_unfiltered_ticker_query_limits_events_before_rendered_join(self, query_mock) -> None:
@@ -334,8 +330,9 @@ class TradingNewsTests(unittest.TestCase):
 
         payload = trading_news_detail("b2185e66008f39d6875a8f4449f82b7f")
 
-        self.assertEqual(payload["article"]["news_kind"], "insights")
-        self.assertEqual(payload["article"]["classification"]["origin"], "automated")
+        self.assertEqual(payload["article"]["news_kind"], "market")
+        self.assertEqual(payload["article"]["classification"]["origin"], "unknown")
+        self.assertEqual(payload["article"]["intelligence_status"], "pending")
         self.assertEqual(payload["article"]["text"], "Readable article body.")
         self.assertEqual(payload["tickers"], ["AAPL"])
         event_sql, render_sql, ticker_sql = [call.args[0] for call in query_mock.call_args_list[:3]]

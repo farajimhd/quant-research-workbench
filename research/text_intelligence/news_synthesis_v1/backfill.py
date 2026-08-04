@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, timedelta
+
+from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password, default_clickhouse_url, default_clickhouse_user, sql_string
+
+from .engine import ENGINE_VERSION, NewsSynthesisEngine
+from .storage import create_tables, load_identity_index, persist_documents, write_status
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Resumable News Synthesis V1 historical backfill")
+    parser.add_argument("--start", required=True); parser.add_argument("--end-exclusive", required=True)
+    parser.add_argument("--workers", type=int, default=8); parser.add_argument("--database", default="q_live")
+    parser.add_argument("--execute", action="store_true")
+    args = parser.parse_args(argv)
+    start, end = date.fromisoformat(args.start), date.fromisoformat(args.end_exclusive)
+    if end <= start: raise ValueError("end-exclusive must be after start")
+    client = _client()
+    if args.execute:
+        create_tables(client, args.database)
+    engine = NewsSynthesisEngine(load_identity_index(client, args.database))
+    client.close()
+    days = [start + timedelta(days=i) for i in range((end - start).days)]
+    print(f"NEWS SYNTHESIS V1 | days={len(days):,} workers={args.workers} execute={args.execute}")
+    failures = 0
+    with ThreadPoolExecutor(max_workers=max(1, min(32, args.workers))) as pool:
+        futures = {pool.submit(_build_day, day, args.database, engine, args.execute): day for day in days}
+        for index, future in enumerate(as_completed(futures), 1):
+            day = futures[future]
+            try: total, completed = future.result(); print(f"[{index:,}/{len(days):,}] {day} rows={total:,} completed={completed:,}", flush=True)
+            except Exception as exc: failures += 1; print(f"[{index:,}/{len(days):,}] {day} FAILED {type(exc).__name__}: {exc}", flush=True)
+    return 1 if failures else 0
+
+
+def _build_day(day: date, database: str, engine: NewsSynthesisEngine, execute: bool) -> tuple[int, int]:
+    client = _client(); day_text = day.isoformat()
+    try:
+        rows = list(client.iter_json_each_row(f"""SELECT e.canonical_news_id source_id,toString(e.published_at_utc) source_timestamp,e.title,
+if(empty(r.rendered_text),e.title,r.rendered_text) text,e.tickers,e.channels,e.provider_tags,e.content_quality_flags,r.quality_flags,e.source_revision_key,
+multiIf(empty(r.canonical_news_id),'unrendered',r.source_count=0,'title_only','rendered') render_status,
+if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash) rendered_text_hash
+FROM `{database}`.`benzinga_news_event_v2` e FINAL
+LEFT JOIN `{database}`.`benzinga_news_rendered_v2` r FINAL ON r.published_date=e.published_date AND r.provider_article_id=e.provider_article_id AND r.source_revision_key=e.source_revision_key
+PREWHERE e.published_date=toDate({sql_string(day_text)}) FORMAT JSONEachRow"""))
+        source_revision = _source_revision(rows)
+        current = int(client.execute(f"SELECT count() FROM `{database}`.`news_synthesis_build_status_v1` FINAL WHERE published_date=toDate({sql_string(day_text)}) AND engine_version={sql_string(ENGINE_VERSION)} AND source_rows={len(rows)} AND source_revision={sql_string(source_revision)} AND status='complete'").strip() or "0") if execute else 0
+        if current: return len(rows), len(rows)
+        documents = [engine.synthesize(row) for row in rows]
+        completed = persist_documents(client, database, documents) if execute else len(documents)
+        if execute: write_status(client, database, published_date=day_text, source_rows=len(rows), completed_rows=completed, failed_rows=0, source_revision=source_revision, status="complete")
+        return len(rows), completed
+    except Exception as exc:
+        if execute: write_status(client, database, published_date=day_text, source_rows=0, completed_rows=0, failed_rows=1, source_revision="0" * 64, status="failed", error=f"{type(exc).__name__}: {exc}")
+        raise
+    finally: client.close()
+
+
+def _client() -> ClickHouseHttpClient:
+    return ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=60)
+
+
+def _source_revision(rows: list[dict[str, object]]) -> str:
+    """Hash every source field that can change synthesis, not merely row count."""
+    fields = (
+        "source_id", "source_timestamp", "source_revision_key", "rendered_text_hash",
+        "title", "tickers", "channels", "provider_tags", "content_quality_flags",
+        "quality_flags", "render_status",
+    )
+    material = [
+        {field: row.get(field) for field in fields}
+        for row in sorted(rows, key=lambda item: (str(item.get("source_id") or ""), str(item.get("source_revision_key") or "")))
+    ]
+    return hashlib.sha256(
+        json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()

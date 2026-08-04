@@ -21,6 +21,42 @@ This package starts fresh and does not import prior semantic-labeling or
 classification versions. Verified V9 behavior and reviewed regression cases are
 requirements, not an architecture dependency.
 
+## Production engine
+
+`engine.py` independently derives the document envelope, point-in-time
+issuer/security identities, atomic statements, exact evidence spans, typed
+facts, issuer participation, semantic sentiment, issuer views, readable
+evidence-preserving synthesis, and operational eligibility. Provider tickers
+are candidates only; text evidence and the point-in-time identity index decide
+which issuers participate.
+
+Generated documents use `production` provenance, distinct from manual
+`certification` and draft `migration`. Exactly one provenance type is valid.
+`storage.py` owns the versioned `q_live.news_synthesis_v1` table. Historical
+backfill and live Text Intelligence call the same engine and contract. Source
+news remains visible when synthesis is missing, and title-only/unrendered rows
+are processed from their title with explicit text-availability state.
+
+Dry-run the resumable daily build:
+
+```powershell
+python -m research.text_intelligence.news_synthesis_v1.run_backfill `
+  --start 2010-01-01 --end-exclusive 2026-08-04 --workers 16
+```
+
+Persist it after the dry run succeeds:
+
+```powershell
+python -m research.text_intelligence.news_synthesis_v1.run_backfill `
+  --start 2010-01-01 --end-exclusive 2026-08-04 --workers 16 --execute
+```
+
+Completed dates are checkpointed and skipped on restart. Backend News list and
+detail responses load V1 without making canonical News availability depend on
+it. Canvas News Detail presents the envelope, issuer views, concepts, exact
+evidence, typed facts, sentiment strengths, eligibility and quality state.
+V5/V9 News labels are not used as a semantic fallback.
+
 The approved V1 contract is frozen in:
 
 - `schema/news_synthesis_v1.schema.json`;
