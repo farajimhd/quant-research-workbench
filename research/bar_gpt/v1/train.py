@@ -1139,6 +1139,19 @@ def main(argv: Iterable[str] | None = None) -> int:
     model: torch.nn.Module = BarGPTV1(config.model).to(device)
     view_names = tuple(name for name in TIMEFRAME_US_BY_NAME if name not in config.data.calendar_timeframes)
     all_view_names = (*view_names, *config.data.calendar_timeframes)
+    def model_artifact_dummy() -> tuple[tuple[Any, ...], dict[str, Any]]:
+        batch, length = 1, 8
+        views = {name: torch.zeros(batch, length, config.model.feature_dim, device=device) for name in all_view_names}
+        asof = {name: torch.full((batch, 1), length - 1, dtype=torch.long, device=device) for name in all_view_names}
+        return (), {
+            "views": views,
+            "timeframe_us": {name: TIMEFRAME_US_BY_NAME[name] for name in all_view_names},
+            "pathway_ids": {name: PATHWAY_ID_BY_NAME[name] for name in all_view_names},
+            "base_view": "1s",
+            "origin_indices": torch.zeros(batch, 1, dtype=torch.long, device=device),
+            "asof_indices": asof,
+            "horizon_ids": torch.arange(len(config.data.horizons_us), dtype=torch.long, device=device),
+        }
     # Durable architecture evidence is created at run start, before the first
     # optimizer update, so a stopped run remains reviewable.
     write_model_artifacts(
@@ -1163,6 +1176,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "multiscale input; physical horizon targets are built from future support "
             "with causal masks. Calendar views are context and auxiliary next-bar heads."
         ),
+        dummy_input_factory=model_artifact_dummy,
     )
     if config.train.compile_model and hasattr(torch, "compile"):
         model = torch.compile(model, dynamic=True)
