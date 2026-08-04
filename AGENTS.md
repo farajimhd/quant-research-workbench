@@ -30,6 +30,7 @@
 
 - Read `TASK_HISTORY.md` Current Focus and the relevant rows of `TASK_HISTORY.csv` before substantive work.
 - Read `CHAT_SUMMARIES.md` and only the linked detailed summaries relevant to the requested area; do not load the complete archive.
+- Treat the latest user clarification as authoritative and reconcile it explicitly with stale history. Use `docs/codex/CHAT_SUMMARY_PROMPT.md` when creating or refreshing narrative summaries.
 - Read-only questions and transient status checks do not require a new task row.
 - For a durable outcome, create or refresh one `TASK_HISTORY.csv` row near the start, keep `current_focus` accurate, and run `python scripts/render_task_history.py` after editing the CSV.
 - Before a related commit, update the row with progress, validation, remaining dependency, and program contribution; commit the CSV and rendered Markdown together.
@@ -39,9 +40,12 @@
 - Keep one authority for each concern and reuse shared contracts across historical, live, UI, and backfill paths.
 - Preserve raw/source, normalized, canonical, and model-ready layers with provenance, versioning, explicit timezone semantics, point-in-time identity, idempotency, and restart-safe checkpoints.
 - Do not silently drop, skip, truncate, or overwrite authoritative data. Expose counts and reasons for rejected, deferred, retried, or failed work.
+- For dataframe and bulk-data work, prefer native Polars expressions, lazy execution, predicate/projection pushdown, and vectorized operations over Python row loops when practical.
 - Bound concurrency, queues, batches, and memory; measure representative bottlenecks before redesigning for performance.
+- Validate table relationships, keys, ordering, partitioning, deduplication, final-row semantics, and timezone-aware timestamps before declaring data work complete.
 - Long-running work must expose active, queued, completed, skipped, retried, and failed units and support graceful restart.
 - Generated commands must include safe complete defaults. Use repository launchers where available.
+- Use deterministic code for source preservation, structural parsing, identity, deduplication, hashes, timestamps, and other integrity-critical invariants. For agreed agentic stages, require validated structured final output rather than hidden reasoning or conversational filler.
 
 ## Delivery
 
