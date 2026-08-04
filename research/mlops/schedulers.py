@@ -56,3 +56,40 @@ class SampleWarmupCosineScheduler:
         if saved_base != self.base_lrs:
             raise RuntimeError("scheduler base learning rates do not match the resumed optimizer")
         self.step(int(state.get("samples_seen", 0)))
+
+
+class SampleCosineRestartScheduler:
+    """Sample-clock cosine annealing with decaying warm restarts."""
+
+    def __init__(self, optimizer: torch.optim.Optimizer, *, cycle_samples: int, minimum_lr: float, restart_decay: float = 0.98) -> None:
+        if cycle_samples <= 0 or not 0.0 < restart_decay <= 1.0:
+            raise ValueError("cycle_samples must be positive and restart_decay must be in (0,1]")
+        self.optimizer = optimizer
+        self.cycle_samples = int(cycle_samples)
+        self.minimum_lr = float(minimum_lr)
+        self.restart_decay = float(restart_decay)
+        self.base_lrs = [float(group["lr"]) for group in optimizer.param_groups]
+        if any(self.minimum_lr < 0 or self.minimum_lr > base for base in self.base_lrs):
+            raise ValueError("minimum_lr must be between zero and every base learning rate")
+        self.samples_seen = 0
+        self.step(0)
+
+    def step(self, samples_seen: int) -> None:
+        self.samples_seen = max(0, int(samples_seen))
+        cycle = self.samples_seen // self.cycle_samples
+        phase = (self.samples_seen % self.cycle_samples) / self.cycle_samples
+        amplitude = self.restart_decay ** cycle
+        for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs, strict=True):
+            peak = self.minimum_lr + (base_lr - self.minimum_lr) * amplitude
+            group["lr"] = self.minimum_lr + (peak - self.minimum_lr) * 0.5 * (1.0 + math.cos(math.pi * phase))
+
+    def state_dict(self) -> dict[str, Any]:
+        return {"samples_seen": self.samples_seen, "base_lrs": self.base_lrs}
+
+    def load_state_dict(self, state: dict[str, Any] | None) -> None:
+        if not state:
+            return
+        saved_base = [float(value) for value in state.get("base_lrs", self.base_lrs)]
+        if saved_base != self.base_lrs:
+            raise RuntimeError("scheduler base learning rates do not match the resumed optimizer")
+        self.step(int(state.get("samples_seen", 0)))

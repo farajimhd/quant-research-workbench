@@ -38,6 +38,8 @@ DEFAULT_ARGS: dict[str, str] = {
     "--warmup-samples": "0",
     "--warmup-fraction": "0.01",
     "--minimum-learning-rate": "0.00003",
+    "--cosine-cycle-samples": "100000000",
+    "--cosine-restart-decay": "0.98",
     "--validation-interval-samples": "0",
     "--validation-initial-samples": "33554432",
     "--validation-runs-per-epoch": "25",

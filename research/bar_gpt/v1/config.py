@@ -217,6 +217,8 @@ class TrainConfig:
     warmup_samples: int = 0
     warmup_fraction: float = 0.01
     minimum_learning_rate: float = 3e-5
+    cosine_cycle_samples: int = 100_000_000
+    cosine_restart_decay: float = 0.98
     checkpoint_latest_samples: int = 1_048_576
     checkpoint_archive_samples: int = 16_777_216
     progress_layout: str = "auto"
@@ -241,6 +243,8 @@ class TrainConfig:
             raise ValueError("warmup_fraction must satisfy 0 <= fraction < 1")
         if self.learning_rate <= 0 or not 0 < self.minimum_learning_rate <= self.learning_rate:
             raise ValueError("learning rates must satisfy 0 < minimum <= peak")
+        if self.cosine_cycle_samples <= 0 or not 0 < self.cosine_restart_decay <= 1:
+            raise ValueError("cosine restart settings are invalid")
         if self.grad_clip_norm <= 0:
             raise ValueError("grad_clip_norm must be positive")
 

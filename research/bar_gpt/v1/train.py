@@ -61,7 +61,7 @@ from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
 from research.mlops.model_artifacts import parameter_summary, write_model_artifacts, write_model_card
 from research.mlops.paths import RunPaths, default_run_root
-from research.mlops.schedulers import SampleWarmupCosineScheduler
+from research.mlops.schedulers import SampleCosineRestartScheduler
 from research.mlops.seeds import set_seed
 from research.mlops.wandb_utils import init_wandb
 
@@ -173,6 +173,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--warmup-samples", type=int, default=train.warmup_samples)
     parser.add_argument("--warmup-fraction", type=float, default=train.warmup_fraction)
     parser.add_argument("--minimum-learning-rate", type=float, default=train.minimum_learning_rate)
+    parser.add_argument("--cosine-cycle-samples", type=int, default=train.cosine_cycle_samples)
+    parser.add_argument("--cosine-restart-decay", type=float, default=train.cosine_restart_decay)
     parser.add_argument("--checkpoint-latest-samples", type=int, default=train.checkpoint_latest_samples)
     parser.add_argument("--checkpoint-archive-samples", type=int, default=train.checkpoint_archive_samples)
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=train.progress_layout)
@@ -272,6 +274,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         warmup_samples=int(args.warmup_samples),
         warmup_fraction=float(args.warmup_fraction),
         minimum_learning_rate=float(args.minimum_learning_rate),
+        cosine_cycle_samples=int(args.cosine_cycle_samples),
+        cosine_restart_decay=float(args.cosine_restart_decay),
         checkpoint_latest_samples=int(args.checkpoint_latest_samples),
         checkpoint_archive_samples=int(args.checkpoint_archive_samples),
         progress_layout=str(args.progress_layout),
@@ -1182,11 +1186,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         model = torch.compile(model, dynamic=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay, foreach=device.type == "cuda")
     resolved_warmup_samples = _resolved_warmup_samples(config.train, schedule_samples)
-    scheduler = SampleWarmupCosineScheduler(
+    scheduler = SampleCosineRestartScheduler(
         optimizer,
-        warmup_samples=resolved_warmup_samples,
-        total_samples=schedule_samples,
+        cycle_samples=config.train.cosine_cycle_samples,
         minimum_lr=config.train.minimum_learning_rate,
+        restart_decay=config.train.cosine_restart_decay,
     )
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and config.train.amp_dtype == "fp16" and device.type == "cuda")
     restored = restore_checkpoint(args.resume_checkpoint, model, optimizer, scaler, scheduler, device, config, plan.plan_hash)
