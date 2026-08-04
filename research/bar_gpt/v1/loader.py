@@ -2027,7 +2027,10 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
             )
             assigned = set(shards[worker.id])
             indexed = [(index, unit) for index, unit in indexed if unit.ticker in assigned]
-        return indexed
+        # Keep a ticker's months contiguous inside its owning worker.  This is
+        # essential: the worker retains the bounded one-second halo between
+        # months instead of re-reading the same warmup on every unit.
+        return sorted(indexed, key=lambda item: (item[1].ticker, item[1].start_date, item[0]))
 
     def __iter__(self) -> Iterator[BarGPTExample]:
         client = ArrowStreamClient(self.stream_config)
@@ -2037,7 +2040,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         tickers = tuple(sorted({unit.ticker for _index, unit in units}))
         start_date = min((unit.start_date for _index, unit in units), default=self.data_config.start_date)
         end_date = max((unit.end_date for _index, unit in units), default=self.data_config.end_date)
-        lookback_days = max(730, int(self.data_config.daily_context_bars * 2.2))
+        lookback_days = max(730, int(self.data_config.calendar_warmup_daily_bars * 2.2))
         daily_start = (dt.date.fromisoformat(start_date) - dt.timedelta(days=lookback_days)).isoformat()
         def raw_examples() -> Iterator[BarGPTExample]:
             intervals_by_ticker = client.read_identity_intervals(
@@ -2055,21 +2058,16 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                 split_database=self.data_config.split_database,
                 split_table=self.data_config.split_table,
             )
-            daily_by_ticker: dict[str, tuple[list[str], BarView] | None] = {
-                ticker: value
-                for ticker, value in client.read_daily_views(
-                    tickers=tickers,
-                    start_date=daily_start,
-                    end_date=end_date,
-                    daily_table=self.data_config.daily_table,
-                    intervals_by_ticker=intervals_by_ticker,
-                ).items()
-            }
-            for ticker in tickers:
-                daily_by_ticker.setdefault(ticker, None)
             worker = get_worker_info()
             worker_id = worker.id if worker is not None else 0
             resume = self.resume_cursors.get(worker_id)
+            # A worker owns each ticker, so these caches survive ticker-month
+            # boundaries.  Both are explicitly bounded: raw 1s history by the
+            # largest physical intraday lookback and daily history by the
+            # calendar warmup contract.
+            history_by_ticker: dict[str, FixedBucketHistoryCache] = {}
+            prior_conditions_by_ticker: dict[str, torch.Tensor | None] = {}
+            loaded_through_by_ticker: dict[str, str] = {}
             for unit_index, unit in units:
                 if resume is not None and unit_index < resume.unit_index:
                     continue
@@ -2083,7 +2081,12 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                         / max(1, SESSION_END_SECOND - SESSION_START_SECOND)
                     ) + 3,
                 )
-                fetch_start = (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=warmup_days)).isoformat()
+                previous_loaded = loaded_through_by_ticker.get(ticker)
+                fetch_start = (
+                    (dt.date.fromisoformat(previous_loaded) + dt.timedelta(days=1)).isoformat()
+                    if previous_loaded is not None
+                    else (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=warmup_days)).isoformat()
+                )
                 conditions_by_date = client.read_condition_views(
                     ticker=ticker,
                     start_date=fetch_start,
@@ -2095,9 +2098,42 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     # Fetch ordered sparse bars in bounded date pages.  Each session is
                     # densified once, then split into consecutive O-origin examples; the
                     # preceding session remains the raw causal halo for the next session.
-                    history_cache = FixedBucketHistoryCache(max_rows=max(int(self.data_config.intraday_warmup_bars_1s), int(self.data_config.context_bars_1s)))
-                    previous_conditions: torch.Tensor | None = None
+                    history_cache = history_by_ticker.setdefault(
+                        ticker,
+                        FixedBucketHistoryCache(
+                            max_rows=max(
+                                int(self.data_config.intraday_warmup_bars_1s),
+                                int(self.data_config.context_bars_1s),
+                            )
+                        ),
+                    )
+                    previous_conditions = prior_conditions_by_ticker.get(ticker)
                     history_rows = history_cache.max_rows
+                    # Daily bars are context-only.  Read just the bounded
+                    # rolling daily window needed as of this ticker-month;
+                    # never retain the full history from the model start.
+                    daily_window_start = (
+                        dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=lookback_days)
+                    ).isoformat()
+                    daily_value = client.read_daily_views(
+                        tickers=(ticker,),
+                        start_date=daily_window_start,
+                        end_date=unit.end_date,
+                        daily_table=self.data_config.daily_table,
+                        intervals_by_ticker={ticker: intervals_by_ticker[ticker]},
+                    ).get(ticker)
+                    if daily_value is not None:
+                        daily_dates, daily_view = daily_value
+                        # Include the unit's current daily rows in addition to
+                        # the causal 365-row history.  `_calendar_views` still
+                        # removes dates at/after each intraday origin.
+                        keep_from = max(0, len(daily_dates) - (int(self.data_config.calendar_warmup_daily_bars) + 32))
+                        daily_value = (daily_dates[keep_from:], BarView(
+                            daily_view.features[keep_from:],
+                            daily_view.bar_start_us[keep_from:],
+                            daily_view.bar_end_us[keep_from:],
+                            daily_view.available_at_us[keep_from:],
+                        ))
                     emitted = 0
                     for local_date, session in client.iter_session_views(
                         ticker=ticker,
@@ -2119,7 +2155,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                             prior_session=history_cache.view,
                             session_conditions=dense_conditions,
                             prior_conditions=previous_conditions,
-                            daily=daily_by_ticker.get(ticker),
+                            daily=daily_value,
                             split_actions=split_actions,
                             config=self.data_config,
                             include_incomplete_horizons=True,
@@ -2140,13 +2176,30 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                             yield example
                         previous_session = history_cache.append(session)
                         previous_conditions = torch.cat((previous_conditions, dense_conditions), dim=0)[-history_rows:] if previous_conditions is not None else dense_conditions[-history_rows:]
+                    prior_conditions_by_ticker[ticker] = previous_conditions
+                    loaded_through_by_ticker[ticker] = unit.end_date
                     continue
                 limit = (
                     self.data_config.validation_blocks_per_slice
                     if self.split == "validation"
                     else self.data_config.coverage_blocks_per_unit
                 )
-                daily_value = daily_by_ticker.get(ticker)
+                # Stratified mode remains window-oriented, but its daily
+                # resident data follows the same bounded contract.
+                daily_value = client.read_daily_views(
+                    tickers=(ticker,),
+                    start_date=(dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=lookback_days)).isoformat(),
+                    end_date=unit.end_date,
+                    daily_table=self.data_config.daily_table,
+                    intervals_by_ticker={ticker: intervals_by_ticker[ticker]},
+                ).get(ticker)
+                if daily_value is not None:
+                    daily_dates, daily_view = daily_value
+                    keep_from = max(0, len(daily_dates) - (int(self.data_config.calendar_warmup_daily_bars) + 32))
+                    daily_value = (daily_dates[keep_from:], BarView(
+                        daily_view.features[keep_from:], daily_view.bar_start_us[keep_from:],
+                        daily_view.bar_end_us[keep_from:], daily_view.available_at_us[keep_from:],
+                    ))
                 daily_dates = daily_value[0] if daily_value is not None else []
                 fetch_blocks = int(self.data_config.origin_fetch_candidate_blocks)
                 emit_blocks = int(self.data_config.origin_emit_blocks_per_chunk)

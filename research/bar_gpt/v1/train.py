@@ -754,16 +754,13 @@ def _loaders(
         plan=validation_plan,
     )
     validation_loader = make_sequential_dataloader(validation_dataset, validation_data)
-    if config.data.coverage_mode == "sequential":
-        if sequential_plan is None:
-            raise ValueError("sequential training requires the certified global block plan")
-        train_dataset = BarGPTSequentialDataset(
-            data_config=config.data,
-            stream_config=stream,
-            plan=sequential_plan,
-            resume_cursor=(resume_cursors or {}).get(0),
-        )
-        return make_sequential_dataloader(train_dataset, config.data), validation_loader
+    if config.data.coverage_mode == "sequential" and sequential_plan is None:
+        raise ValueError("sequential training requires the certified global block plan")
+    # Training must use the worker-sharded iterable stream, including the
+    # sequential coverage mode.  A map-style DataLoader round-robins blocks
+    # across workers and therefore makes several workers warm the same
+    # ticker-month.  Here a ticker (and every one of its months) has one
+    # deterministic owner, which preserves its rolling 1s cache.
     train_dataset = BarGPTIterableDataset(
         data_config=config.data,
         stream_config=stream,
@@ -1445,7 +1442,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                         pending_cursors = _advance_cursors(
                             pending_cursors,
                             batch,
-                            sequential_plan=sequential_block_plan,
+                            sequential_plan=(
+                                sequential_block_plan
+                                if isinstance(train_loader.dataset, BarGPTSequentialDataset)
+                                else None
+                            ),
                         )
                         batch_metrics = {**result.metrics, **_batch_eligibility_metrics(batch)}
                         for key, value in batch_metrics.items():
