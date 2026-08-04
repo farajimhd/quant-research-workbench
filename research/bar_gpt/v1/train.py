@@ -72,7 +72,6 @@ _INTERRUPTED = False
 _RESUME_RUNTIME_DATA_FIELDS = frozenset(
     {
         "ready_queue_blocks",
-        "loader_workers",
         "worker_prefetch_batches",
         "clickhouse_max_threads_per_worker",
         "clickhouse_max_block_size",
@@ -919,6 +918,7 @@ def checkpoint_payload(
     data_cursors: dict[int, CoverageCursor],
     plan_hash: str,
     last_latest_samples: int,
+    wandb_run_id: str | None,
     validation_runs_in_epoch: int = 0,
     last_validation_samples: int = -1,
 ) -> dict[str, Any]:
@@ -942,6 +942,16 @@ def checkpoint_payload(
         "last_latest_samples": last_latest_samples,
         "validation_runs_in_epoch": validation_runs_in_epoch,
         "last_validation_samples": last_validation_samples,
+        "wandb_run_id": wandb_run_id,
+        # Raw cache tensors are intentionally not checkpointed: they can be
+        # gigabytes per worker and are deterministically rebuilt from these
+        # committed cursors plus the causal warmup contract on resume.
+        "data_stream_state": {
+            "loader_stream_contract_version": config.data.loader_stream_contract_version,
+            "cache_restore": "rehydrate_from_committed_worker_cursors",
+            "intraday_warmup_bars_1s": config.data.intraday_warmup_bars_1s,
+            "calendar_warmup_daily_bars": config.data.calendar_warmup_daily_bars,
+        },
         "rng": {
             "python": random.getstate(),
             "numpy": np.random.get_state(),
@@ -965,7 +975,7 @@ def restore_checkpoint(
         return {
             "samples_seen": 0, "batches_seen": 0, "optimizer_steps": 0,
             "blocks_seen": 0, "units_seen": [], "condition_blocks_seen": 0,
-            "epoch": 0, "data_cursors": {}, "checkpointer": {},
+            "epoch": 0, "data_cursors": {}, "checkpointer": {}, "wandb_run_id": None,
         }
     payload = torch.load(path, map_location=device, weights_only=False)
     saved_config = payload.get("config", {})
@@ -976,6 +986,9 @@ def restore_checkpoint(
         raise RuntimeError("resume checkpoint model/data contract does not match the requested run")
     if payload.get("plan_hash") != plan_hash:
         raise RuntimeError("resume checkpoint coverage plan does not match the requested run")
+    stream_state = payload.get("data_stream_state", {})
+    if stream_state.get("cache_restore") != "rehydrate_from_committed_worker_cursors":
+        raise RuntimeError("resume checkpoint does not contain the worker-owned data-stream state")
     _unwrap(model).load_state_dict(payload["model"])
     optimizer.load_state_dict(payload["optimizer"])
     scaler.load_state_dict(payload.get("scaler", {}))
@@ -1230,6 +1243,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         sequential_plan=sequential_block_plan,
         validation_plan=bounded_validation_plan,
     )
+    resumed_wandb_id = restored.get("wandb_run_id")
+    if args.resume_checkpoint and config.train.wandb_mode != "disabled" and not resumed_wandb_id:
+        raise RuntimeError(
+            "resume checkpoint has no W&B run id; use --wandb-mode disabled only for an explicit logging reset"
+        )
     wandb_run = init_wandb(
         entity=config.train.wandb_entity,
         project=config.train.wandb_project,
@@ -1238,7 +1256,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         run_dir=paths.wandb_dir,
         mode=config.train.wandb_mode,
         timeout_seconds=config.train.wandb_init_timeout,
+        run_id=str(resumed_wandb_id) if resumed_wandb_id else None,
     )
+    wandb_run_id = str(getattr(wandb_run, "id", "")) or None
     metrics_logger = JsonlMetricLogger(paths.metrics_path, wandb_run)
     write_run_manifest(
         paths.manifest_path,
@@ -1270,7 +1290,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         },
         output_root=paths.run_root,
         source_checkpoint=Path(args.resume_checkpoint) if args.resume_checkpoint else None,
-        wandb_info={"project": config.train.wandb_project, "entity": config.train.wandb_entity, "run_name": run_name},
+        wandb_info={
+            "project": config.train.wandb_project,
+            "entity": config.train.wandb_entity,
+            "run_name": run_name,
+            "run_id": wandb_run_id,
+        },
     )
     checkpointer = AsyncCheckpointManager(
         paths.checkpoints_dir,
@@ -1600,6 +1625,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 condition_blocks_seen=condition_blocks_seen,
                                 data_cursors=cursors, plan_hash=plan.plan_hash,
                                 last_latest_samples=latest,
+                                wandb_run_id=wandb_run_id,
                                 validation_runs_in_epoch=validation_runs_in_epoch,
                                 last_validation_samples=last_validation_samples,
                             ),
@@ -1659,6 +1685,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     condition_blocks_seen=condition_blocks_seen,
                     data_cursors=cursors, plan_hash=plan.plan_hash,
                     last_latest_samples=samples_seen,
+                    wandb_run_id=wandb_run_id,
                     validation_runs_in_epoch=validation_runs_in_epoch,
                     last_validation_samples=last_validation_samples,
                 ),
@@ -1695,6 +1722,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     condition_blocks_seen=condition_blocks_seen,
                     data_cursors=cursors, plan_hash=plan.plan_hash,
                     last_latest_samples=samples_seen,
+                    wandb_run_id=wandb_run_id,
                     validation_runs_in_epoch=validation_runs_in_epoch,
                     last_validation_samples=last_validation_samples,
                 ),

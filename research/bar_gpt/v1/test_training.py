@@ -584,7 +584,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         tuned_queue = {**base, "ready_queue_blocks": 8}
         self.assertEqual(_resume_data_contract(base), _resume_data_contract(tuned_queue))
         changed_workers = {**base, "loader_workers": 4}
-        self.assertEqual(_resume_data_contract(base), _resume_data_contract(changed_workers))
+        self.assertNotEqual(_resume_data_contract(base), _resume_data_contract(changed_workers))
         changed_retry = {**base, "clickhouse_retry_attempts": 9}
         self.assertEqual(_resume_data_contract(base), _resume_data_contract(changed_retry))
         changed_sampling = {**base, "origin_fetch_candidate_blocks": 8}

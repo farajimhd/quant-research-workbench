@@ -297,14 +297,15 @@ targets. This preserves nonnegative volume and count semantics when a quiet
 window follows large earlier activity and prevents float32 prefix cancellation
 from creating invalid `log1p` targets.
 
-The durable resume cursor is `(global ticker-month index, chronological block
-offset)`. It advances only after a successful optimizer update. Ctrl+C discards
-an incomplete accumulation group and replays it; resume jumps over completed
-units rather than reading and discarding them. A coverage-plan hash binds the
-population, dates, coverage mode, exact session/block/origin totals, block shape,
-epochs, and ordered-loader contract. Loader worker count, cache depth, retry
-budget, and per-worker prefetch depth may be tuned when resuming because they do
-not affect logical order.
+Each worker owns a deterministic ticker shard and persists one cursor per owned
+ticker-month stream. Cursors advance only after a successful optimizer update.
+Ctrl+C discards an incomplete accumulation group and replays it; resume
+deterministically rehydrates each bounded raw cache from its committed cursor
+rather than serializing gigabytes of bar tensors. A coverage-plan hash and the
+loader-stream contract bind the population, dates, coverage mode, exact
+session/block/origin totals, block shape, epochs, ticker sharding, and worker
+count. Cache depth, retry budget, and per-worker prefetch depth may be tuned on
+resume; worker count may not, because it changes ticker ownership.
 
 Validation is a fixed eight-ticker, eight-week panel spanning liquid,
 high-volatility, sector, event-driven, and illiquid names in 2026. Those
@@ -331,8 +332,11 @@ sample-clock scheduler starts at `3e-5`, linearly warms over the first 1% of the
 resolved run population (about 75.6 million origins for the current epoch), then
 performs one monotonic cosine decay to `3e-5` at the coverage-plan ceiling.
 Explicit `--warmup-samples` overrides the fractional default. Scheduler,
-optimizer, scaler, RNG, plan, and logical data
-cursors are part of every resumable checkpoint.
+optimizer, scaler, RNG, plan, logical data cursors, validation schedule,
+checkpoint-manager state, and W&B run ID are part of every resumable checkpoint.
+Resume continues the same W&B run; `--wandb-mode disabled` is an explicit
+logging reset. Raw caches are deterministically rehydrated from the committed
+cursors rather than copied into checkpoints.
 Best-model selection uses fixed-panel validation loss. Training-loss minima are
 not checkpointed because ticker/session composition changes over the epoch;
 durable latest and archive checkpoints remain sample-clocked and Ctrl+C forces

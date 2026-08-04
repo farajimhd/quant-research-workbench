@@ -26,6 +26,7 @@ def init_wandb(
     run_dir: Path,
     mode: str,
     timeout_seconds: int,
+    run_id: str | None = None,
 ) -> Any | None:
     if not project or project.lower() in {"off", "none", "disabled"}:
         print("*** WANDB project disabled; writing metrics locally only.", flush=True)
@@ -60,9 +61,12 @@ def init_wandb(
                 entity=entity or None,
                 project=project,
                 name=run_name,
+                id=run_id,
                 config=config,
                 dir=str(run_dir),
-                resume="allow",
+                # A resumed checkpoint must append to its original W&B run;
+                # a fresh run must never attach to an unrelated same-name run.
+                resume="must" if run_id else "never",
                 mode=resolved_mode,
                 settings=wandb.Settings(
                     init_timeout=max(1, int(timeout_seconds)),
