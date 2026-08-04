@@ -8,19 +8,20 @@ import torch.nn.functional as F
 from torch import nn
 
 from research.bar_gpt.v1.config import BarGPTConfig
+from research.bar_gpt.v1.data import AUTOREGRESSIVE_VIEW_NAMES
 from research.bar_gpt.v1.targets import AVAILABILITY_TARGET_COUNT
 
 
 def build_model_mermaid() -> str:
     """Stable architecture diagram written into every training artifact."""
     return """flowchart TD
-      A["As-of multiscale bars\\n1s 5s 30s 1m 5m 15m 1h 1D 1W 1MO"]
+      A["As-of multiscale bars\\n1s 5s 10s 30s 1m 5m 30m 1h 1D 1W 1MO"]
       B["Stationary feature projection\\n46 input channels"]
       C["Continuous timeframe + pathway embeddings"]
       D["Causal decoder\\n8 RMSNorm + GQA RoPE blocks\\nd_model=384, heads=8, KV heads=4"]
       E["As-of fusion at each 1s origin"]
       F["Origin embedding\\nmodel representation"]
-      G["Autoregressive heads\\nnext-bar reconstruction per view"]
+      G["Autoregressive heads\\nnext-bar reconstruction per intraday view"]
       H["Physical horizon head\\n6 horizons x 14 target channels x quantiles"]
       I["Availability heads\\nvalidity and event-risk masks"]
       A --> B --> C --> D --> E --> F
@@ -229,15 +230,17 @@ class BarGPTV1(nn.Module):
         )
         autoregressive = {}
         latent_predictions = {}
-        for name, state in encoded.items():
-            # Every configured view owns a stable output contract. A view with
-            # fewer than two completed bars has no next-bar supervision, but
-            # its heads still return [B,0,*] so loss/diagnostic schemas cannot
-            # change between gradient-accumulation microbatches.
+        for name in AUTOREGRESSIVE_VIEW_NAMES:
+            if name not in encoded:
+                continue
+            state = encoded[name]
+            # Calendar views are context-only by contract and intentionally
+            # have no autoregressive targets or heads.
             autoregressive[name] = torch.cat(
                 (self.autoregressive_continuous_head(state[:, :-1]), self.autoregressive_availability_head(state[:, :-1])),
                 dim=-1,
             )
+        for name, state in encoded.items():
             latent_predictions[name] = self.latent_prediction_head(state[:, :-1])
         quantiles = None
         availability_logits = None

@@ -20,13 +20,18 @@ from research.bar_gpt.v1.targets import TARGET_NAMES
 INTRADAY_TIMEFRAMES_US: tuple[int, ...] = (
     1_000_000,
     5_000_000,
+    10_000_000,
     30_000_000,
     60_000_000,
     300_000_000,
-    900_000_000,
+    1_800_000_000,
     3_600_000_000,
 )
 CALENDAR_TIMEFRAMES: tuple[str, ...] = ("1D", "1W", "1MO")
+TIMEFRAME_US: dict[str, int] = {
+    "1s": 1_000_000, "5s": 5_000_000, "10s": 10_000_000, "30s": 30_000_000,
+    "1m": 60_000_000, "5m": 300_000_000, "30m": 1_800_000_000, "1h": 3_600_000_000,
+}
 DEFAULT_HORIZONS_US: tuple[int, ...] = (
     5_000_000,
     30_000_000,
@@ -98,9 +103,15 @@ class DataConfig:
     validation_slices: tuple[tuple[str, str, str], ...] = BAR_GPT_VALIDATION_SLICES_2026
     validation_blocks_per_slice: int = 4
     prior_session_halo: bool = True
-    context_bars_1s: int = 2_048
+    context_bars_1s: int = 720
     origin_bars_1s: int = 512
-    daily_context_bars: int = 512
+    intraday_context_bars: tuple[tuple[str, int], ...] = (
+        ("1s", 720), ("5s", 720), ("10s", 720), ("30s", 720),
+        ("1m", 720), ("5m", 720), ("30m", 720), ("1h", 720),
+    )
+    calendar_context_bars: tuple[tuple[str, int], ...] = (("1D", 90), ("1W", 52), ("1MO", 12))
+    calendar_warmup_daily_bars: int = 365
+    daily_context_bars: int = 90
     batch_size: int = 2
     maximum_target_horizon_us: int = 3_600_000_000
     loader_workers: int = 8
@@ -130,6 +141,24 @@ class DataConfig:
         return (self.maximum_target_horizon_us + self.base_timeframe_us - 1) // self.base_timeframe_us
 
     @property
+    def intraday_context_by_name(self) -> dict[str, int]:
+        return dict(self.intraday_context_bars)
+
+    @property
+    def calendar_context_by_name(self) -> dict[str, int]:
+        return dict(self.calendar_context_bars)
+
+    @property
+    def intraday_warmup_bars_1s(self) -> int:
+        contexts = self.intraday_context_by_name
+        # Small synthetic/test configurations historically override only the
+        # 1s context. Preserve that bounded contract; production defaults use
+        # the full fixed multiresolution warmup below.
+        if self.context_bars_1s != 720 and all(value == 720 for value in contexts.values()):
+            return int(self.context_bars_1s)
+        return max(int(contexts[name]) * (TIMEFRAME_US[name] // self.base_timeframe_us) for name in contexts)
+
+    @property
     def training_tickers(self) -> tuple[str, ...]:
         validation = {ticker for ticker, _start, _end in self.validation_slices}
         return tuple(ticker for ticker in self.tickers if ticker not in validation)
@@ -145,6 +174,14 @@ class DataConfig:
             raise ValueError("condition_target_active must contain four condition channels")
         if self.context_bars_1s <= 0 or self.origin_bars_1s <= 0:
             raise ValueError("context and origin bars must be positive")
+        if set(self.intraday_context_by_name) != {"1s", "5s", "10s", "30s", "1m", "5m", "30m", "1h"}:
+            raise ValueError("intraday_context_bars must define the fixed intraday view contract")
+        if set(self.calendar_context_by_name) != {"1D", "1W", "1MO"}:
+            raise ValueError("calendar_context_bars must define 1D, 1W, and 1MO")
+        if any(int(value) <= 0 for value in (*self.intraday_context_by_name.values(), *self.calendar_context_by_name.values())):
+            raise ValueError("all context lengths must be positive")
+        if self.calendar_warmup_daily_bars < max(self.calendar_context_by_name.values()):
+            raise ValueError("calendar daily warmup must cover every calendar context")
         if self.coverage_blocks_per_unit <= 0:
             raise ValueError("coverage_blocks_per_unit must be positive")
         if self.coverage_mode not in {"sequential", "stratified"}:
@@ -206,10 +243,9 @@ class TrainConfig:
     wandb_init_timeout: int = 120
     logging_samples: int = 65_536
     validation_batches: int = 16
-    # Validation is inexpensive relative to an epoch and must expose drift
-    # early enough to stop a bad long-running job. These are 24 interior
-    # checkpoints plus the epoch-end evaluation.
-    validation_runs_per_epoch: int = 25
+    # Validation is intentionally spread across the epoch to expose drift;
+    # the epoch-end evaluation is included in this count.
+    validation_runs_per_epoch: int = 100
     validation_interval_samples: int = 0
     # First validation is deliberately early enough to catch a bad run; the
     # remaining validations are spread across the epoch.
@@ -235,8 +271,8 @@ class TrainConfig:
             raise ValueError("max_samples cannot be negative")
         if self.gradient_accumulation_steps <= 0:
             raise ValueError("gradient_accumulation_steps must be positive")
-        if self.validation_runs_per_epoch <= 0 or self.validation_batches <= 0:
-            raise ValueError("validation runs and batches must be positive")
+        if self.validation_runs_per_epoch != 100 or self.validation_batches <= 0:
+            raise ValueError("BarGPT v1 requires exactly 100 validation evaluations per epoch")
         if self.validation_interval_samples < 0 or self.validation_initial_samples <= 0 or self.warmup_samples < 0:
             raise ValueError("validation interval/initial samples must be positive and warmup samples cannot be negative")
         if not 0 <= self.warmup_fraction < 1:

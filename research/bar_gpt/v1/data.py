@@ -18,6 +18,48 @@ class BarView:
     available_at_us: torch.Tensor
 
 
+class FixedBucketHistoryCache:
+    """Bounded causal one-second history shared by fixed-bucket rollups."""
+
+    def __init__(self, *, max_rows: int) -> None:
+        if int(max_rows) <= 0:
+            raise ValueError("max_rows must be positive")
+        self.max_rows = int(max_rows)
+        self._view: BarView | None = None
+
+    @property
+    def view(self) -> BarView | None:
+        return self._view
+
+    @property
+    def rows(self) -> int:
+        return 0 if self._view is None else int(self._view.features.shape[0])
+
+    def append(self, value: BarView) -> BarView:
+        if value.features.ndim != 2 or value.bar_start_us.ndim != 1:
+            raise ValueError("history cache accepts aligned one-dimensional bar metadata")
+        if value.features.shape[0] != value.bar_start_us.shape[0] or value.features.shape[0] != value.available_at_us.shape[0]:
+            raise ValueError("history cache metadata must align with features")
+        if self._view is not None and int(self._view.available_at_us[-1]) >= int(value.bar_start_us[0]):
+            raise ValueError("history cache append must be strictly chronological")
+        if self._view is None:
+            combined = value
+        else:
+            combined = BarView(
+                features=torch.cat((self._view.features, value.features), dim=0),
+                bar_start_us=torch.cat((self._view.bar_start_us, value.bar_start_us), dim=0),
+                bar_end_us=torch.cat((self._view.bar_end_us, value.bar_end_us), dim=0),
+                available_at_us=torch.cat((self._view.available_at_us, value.available_at_us), dim=0),
+            )
+        self._view = BarView(
+            features=combined.features[-self.max_rows:],
+            bar_start_us=combined.bar_start_us[-self.max_rows:],
+            bar_end_us=combined.bar_end_us[-self.max_rows:],
+            available_at_us=combined.available_at_us[-self.max_rows:],
+        )
+        return self._view
+
+
 @dataclass(slots=True)
 class MultiscaleBlock:
     views: dict[str, BarView]
@@ -29,22 +71,18 @@ class MultiscaleBlock:
 
 
 TIMEFRAME_US_BY_NAME: dict[str, int] = {
-    "1s": 1_000_000,
-    "5s": 5_000_000,
-    "30s": 30_000_000,
-    "1m": 60_000_000,
-    "5m": 300_000_000,
-    "15m": 900_000_000,
-    "1h": 3_600_000_000,
+    "1s": 1_000_000, "5s": 5_000_000, "10s": 10_000_000, "30s": 30_000_000,
+    "1m": 60_000_000, "5m": 300_000_000, "30m": 1_800_000_000, "1h": 3_600_000_000,
     "1D": 86_400_000_000,
     "1W": 604_800_000_000,
     "1MO": 2_629_800_000_000,
 }
 PATHWAY_ID_BY_NAME: dict[str, int] = {
-    "1s": 0, "5s": 0, "30s": 0,
-    "1m": 1, "5m": 1, "15m": 1, "1h": 1,
+    "1s": 0, "5s": 0, "10s": 0, "30s": 0,
+    "1m": 1, "5m": 1, "30m": 1, "1h": 1,
     "1D": 2, "1W": 2, "1MO": 2,
 }
+AUTOREGRESSIVE_VIEW_NAMES: tuple[str, ...] = ("1s", "5s", "10s", "30s", "1m", "5m", "30m", "1h")
 
 
 @dataclass(slots=True)
@@ -205,12 +243,14 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
     ar_targets: dict[str, torch.Tensor] = {}
     ar_masks: dict[str, torch.Tensor] = {}
     for name, values in raw_by_view.items():
+        if name not in AUTOREGRESSIVE_VIEW_NAMES:
+            continue
         built = []
         for value, example in zip(values, examples, strict=True):
             item = build_next_bar_targets(
                 value,
-                bar_start_us=example.raw_view_start_us[name] if name in {"1s", "5s", "30s", "1m", "5m", "15m", "1h"} else None,
-                expected_step_us=TIMEFRAME_US_BY_NAME[name] if name in {"1s", "5s", "30s", "1m", "5m", "15m", "1h"} else None,
+                bar_start_us=example.raw_view_start_us[name] if name in AUTOREGRESSIVE_VIEW_NAMES else None,
+                expected_step_us=TIMEFRAME_US_BY_NAME[name] if name in AUTOREGRESSIVE_VIEW_NAMES else None,
             )
             available = example.raw_view_available_at_us[name]
             if available.shape != (value.shape[0],):

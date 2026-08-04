@@ -12,12 +12,12 @@ physical-horizon quantiles.
 BarGPT is a decoder-only continuous-token transformer. It does not tokenize
 prices and it does not switch into separate daily or weekly modes. Every
 example is anchored at a 1-second origin and carries the same multiscale view
-set: `1s`, `5s`, `30s`, `1m`, `5m`, `15m`, `1h`, `1D`, `1W`, and `1MO`.
+set: `1s`, `5s`, `10s`, `30s`, `1m`, `5m`, `30m`, `1h`, `1D`, `1W`, and `1MO`.
 Each view is aligned by its causal `available_at_us` timestamp; a bar that was
 not complete at the origin is masked, never backfilled from the future.
 
-The model returns the origin embedding, an autoregressive next-bar head for
-each view, and direct probabilistic physical-horizon heads. The direct heads
+The model returns the origin embedding, autoregressive next-bar heads for the
+intraday views only, and direct probabilistic physical-horizon heads. The direct heads
 currently cover `5s`, `30s`, `1m`, `5m`, `15m`, and `1h`. Each direct horizon
 contains the target contract in `targets.py`: endpoint return, upper/lower
 excursion, realized volatility, log trade volume/count, trade/bid/ask/paired
@@ -25,12 +25,10 @@ quote availability, and halt/resume/news/LULD risk flags. Future support is
 constructed on the loader/device side and masked when unavailable, preserving
 point-in-time causality.
 
-The daily/weekly/monthly views are inputs at every origin. In the current v1
-checkpoint they also have auxiliary next-bar reconstruction heads; those
-calendar heads are supervised only when a new completed calendar bar is
-causally available. They are not separate model modes. Adding explicit
-every-origin 1D/1W/1MO forecast horizons would change the output contract and
-requires a new checkpoint rather than resuming the current one.
+The daily/weekly/monthly views are context inputs at every origin. They are not
+target views and have no autoregressive heads or losses. Adding explicit
+1D/1W/1MO forecast horizons would change the output contract and requires a
+new checkpoint rather than resuming the current one.
 
 Every run writes reviewable architecture evidence to its runtime
 `artifacts/` directory: `model_details.json`, `model_parameters.jsonl`,
@@ -350,7 +348,9 @@ ticker-month and block offset. The stable dashboard also shows smoothed speed,
 elapsed time, ETA and expected finish, scheduler phase, learning rate, loss,
 validation, GPU duty, loader wait, RAM cache, checkpoint, and recent lifecycle
 messages. Calendar context availability is reported separately from calendar
-autoregressive event rate: a zero 1D/1W/1MO AR loss is expected unless a coarse
+autoregressive event rate: calendar AR metrics are not emitted because
+1D/1W/1MO are context-only; a zero calendar AR loss in older checkpoints was
+expected unless a coarse
 bar actually becomes available inside the current origin interval. Redirected
 output remains plain text without cursor control.
 

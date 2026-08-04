@@ -25,7 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 from research.bar_gpt.v1 import MODEL_FAMILY, MODEL_VERSION
 from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig, to_dict
-from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarGPTBatch, BarGPTExample, BarView, collate_examples
+from research.bar_gpt.v1.data import AUTOREGRESSIVE_VIEW_NAMES, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarGPTBatch, BarGPTExample, BarView, collate_examples
 from research.bar_gpt.v1.loader import (
     ArrowStreamClient,
     BarGPTIterableDataset,
@@ -100,6 +100,14 @@ def _int_csv(value: str) -> tuple[int, ...]:
     return tuple(int(item.strip()) for item in value.split(",") if item.strip())
 
 
+def _named_int_csv(value: str) -> tuple[tuple[str, int], ...]:
+    result: list[tuple[str, int]] = []
+    for item in value.split(","):
+        name, raw = item.split("=", 1)
+        result.append((name.strip(), int(raw.strip())))
+    return tuple(result)
+
+
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     data, model, train = DataConfig(), BarGPTConfig(), TrainConfig()
     parser = argparse.ArgumentParser(description="Pretrain BarGPT v1 from certified one-second and daily bars.")
@@ -132,6 +140,9 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--origin-emit-blocks-per-chunk", type=int, default=data.origin_emit_blocks_per_chunk)
     parser.add_argument("--validation-blocks-per-slice", type=int, default=data.validation_blocks_per_slice)
     parser.add_argument("--daily-context-bars", type=int, default=data.daily_context_bars)
+    parser.add_argument("--intraday-context-bars", default=','.join(f"{name}={value}" for name, value in data.intraday_context_bars))
+    parser.add_argument("--calendar-context-bars", default=','.join(f"{name}={value}" for name, value in data.calendar_context_bars))
+    parser.add_argument("--calendar-warmup-daily-bars", type=int, default=data.calendar_warmup_daily_bars)
     parser.add_argument("--batch-size", type=int, default=data.batch_size)
     parser.add_argument("--loader-workers", type=int, default=data.loader_workers)
     parser.add_argument("--ready-queue-blocks", type=int, default=data.ready_queue_blocks)
@@ -225,6 +236,9 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         origin_emit_blocks_per_chunk=int(args.origin_emit_blocks_per_chunk),
         validation_blocks_per_slice=int(args.validation_blocks_per_slice),
         daily_context_bars=int(args.daily_context_bars),
+        intraday_context_bars=_named_int_csv(str(args.intraday_context_bars)),
+        calendar_context_bars=_named_int_csv(str(args.calendar_context_bars)),
+        calendar_warmup_daily_bars=int(args.calendar_warmup_daily_bars),
         batch_size=int(args.batch_size),
         maximum_target_horizon_us=max(horizons),
         loader_workers=int(args.loader_workers),
@@ -533,9 +547,8 @@ def _validation_milestones(
 ) -> tuple[int, ...]:
     """Return local origin milestones, including the epoch-end evaluation.
 
-    The previous interval-only schedule put the first validation at 25% of a
-    multi-billion-origin epoch. The early milestone catches broken runs, while
-    the remaining milestones retain a deliberately low validation frequency.
+    The early milestone catches broken runs, while the remaining milestones
+    spread the required 100 validation evaluations across the epoch.
     """
     if epoch_origins <= 0 or runs_per_epoch <= 0:
         raise ValueError("validation schedule requires positive epoch and run counts")
@@ -844,13 +857,6 @@ def _finite_check_vector(result: BarGPTLoss, batch: BarGPTBatch) -> tuple[torch.
 def _batch_eligibility_metrics(batch: BarGPTBatch) -> dict[str, torch.Tensor]:
     """Expose context availability separately from event-timed AR supervision."""
     result: dict[str, torch.Tensor] = {}
-    origin_denominator = batch.origin_mask.sum().clamp_min(1)
-    for name in ("1D", "1W", "1MO"):
-        asof = batch.asof_indices[name]
-        context_available = (asof >= 0) & batch.origin_mask[:, : asof.shape[1]]
-        result[f"train/context_available_{name}"] = context_available.sum().float() / origin_denominator
-        ar_mask = batch.autoregressive_mask[name]
-        result[f"train/ar_event_rate_{name}"] = ar_mask.any(dim=-1).float().mean() if ar_mask.numel() else ar_mask.new_zeros(())
     if batch.horizon_targets is not None and batch.horizon_mask is not None:
         condition_target = batch.horizon_targets[..., -4:]
         condition_mask = batch.horizon_mask[..., -4:]
@@ -1170,7 +1176,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         },
         output_contract={
             "embedding": ["B", "N_origins", config.model.d_model],
-            "autoregressive": {name: ["B", "T_view-1", config.model.target_dim] for name in all_view_names},
+            "autoregressive": {name: ["B", "T_view-1", config.model.target_dim] for name in AUTOREGRESSIVE_VIEW_NAMES},
             "physical_horizon_quantiles": ["B", "N_origins", len(config.data.horizons_us), config.model.target_dim - 8, len(config.model.quantiles)],
             "physical_horizon_availability_logits": ["B", "N_origins", len(config.data.horizons_us), 8],
         },

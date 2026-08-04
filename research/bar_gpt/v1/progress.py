@@ -139,9 +139,7 @@ class TrainingReporter:
         s.eligibility = {
             key.removeprefix("train/"): float(value)
             for key, value in metrics.items()
-            if key.startswith("train/context_available_")
-            or key.startswith("train/ar_event_rate_")
-            or key == "train/condition_positive_rate"
+            if key == "train/condition_positive_rate"
         }
         if tickers:
             s.active_tickers = ",".join(tickers)

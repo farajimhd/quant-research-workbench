@@ -15,7 +15,7 @@ import torch
 from rich.console import Console
 
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, TrainConfig
-from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarView, collate_examples
+from research.bar_gpt.v1.data import FixedBucketHistoryCache, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarView, collate_examples
 from research.bar_gpt.v1.loader import (
     ArrowStreamClient,
     BarGPTSequentialDataset,
@@ -86,6 +86,21 @@ def session_view(length: int = 24) -> BarView:
 
 
 class LoaderTrainerContractTest(unittest.TestCase):
+    def test_fixed_bucket_history_cache_evicts_old_rows(self) -> None:
+        first = session_view(5)
+        second = BarView(
+            first.features[:3],
+            first.bar_start_us[:3] + 10_000_000,
+            first.bar_end_us[:3] + 10_000_000,
+            first.available_at_us[:3] + 10_000_000,
+        )
+        cache = FixedBucketHistoryCache(max_rows=4)
+        cache.append(first)
+        retained = cache.append(second)
+        self.assertEqual(cache.rows, 4)
+        self.assertEqual(int(retained.bar_start_us[0]), int(first.bar_start_us[4]))
+        self.assertEqual(int(retained.bar_start_us[-1]), int(second.bar_start_us[-1]))
+
     def test_validation_milestones_start_early_and_end_at_epoch(self) -> None:
         milestones = _validation_milestones(
             epoch_origins=7_563_836_672,
@@ -251,10 +266,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(example.raw_views["1D"].shape[0], 3)
         self.assertTrue(bool(torch.all(example.asof_indices["1D"] >= 0)))
         batch = collate_examples([example])
-        self.assertFalse(bool(batch.autoregressive_mask["1D"].any()))
+        self.assertNotIn("1D", batch.autoregressive_mask)
         metrics = _batch_eligibility_metrics(batch)
-        self.assertEqual(float(metrics["train/context_available_1D"]), 1.0)
-        self.assertEqual(float(metrics["train/ar_event_rate_1D"]), 0.0)
+        self.assertNotIn("train/context_available_1D", metrics)
 
     def test_origin_schedule_is_bounded_phase_spread_and_condition_first(self) -> None:
         dates = ["2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07"]
@@ -356,7 +370,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(torch.all(first.asof_indices["1h"] == -1))
         batch = collate_examples([first])
         self.assertEqual(int(batch.autoregressive_mask["1s"].any(dim=-1).sum()), 3)
-        self.assertFalse(bool(batch.autoregressive_mask["1D"].any()))
+        self.assertNotIn("1D", batch.autoregressive_mask)
 
     def test_sequential_session_emits_tail_origins_with_unavailable_horizons_masked(self) -> None:
         config = self.data_config()
@@ -564,9 +578,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
             asof_indices=batch.asof_indices,
             horizon_ids=torch.arange(2),
         )
-        self.assertEqual(set(output.autoregressive), set(batch.views))
+        self.assertEqual(set(output.autoregressive), {"1s", "5s", "10s", "30s", "1m", "5m", "30m", "1h"})
         self.assertEqual(set(output.latent_predictions), set(batch.views))
-        self.assertEqual(output.autoregressive["1MO"].shape[1], 0)
+        self.assertNotIn("1MO", output.autoregressive)
         loss = compute_loss(output, batch, TrainConfig(), model_config.quantiles)
         self.assertTrue(torch.isfinite(loss.loss))
         loss.loss.backward()

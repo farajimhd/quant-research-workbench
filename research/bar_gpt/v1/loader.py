@@ -32,6 +32,7 @@ from research.bar_gpt.v1.corporate_actions import (
 from research.bar_gpt.v1.data import (
     PATHWAY_ID_BY_NAME,
     TIMEFRAME_US_BY_NAME,
+    FixedBucketHistoryCache,
     BarGPTExample,
     BarView,
     causal_asof_indices,
@@ -1299,15 +1300,17 @@ def build_session_examples(
     prior_conditions: torch.Tensor | None = None,
     include_incomplete_horizons: bool = False,
     origin_count_limit: int | None = None,
+    origin_start_index: int | None = None,
 ) -> Iterator[BarGPTExample]:
     """Yield non-overlapping origins while sharing one exact session rollup and target support."""
     context = int(config.context_bars_1s)
     right = int(config.right_support_bars_1s)
     maximum_origin = session.features.shape[0] if include_incomplete_horizons else session.features.shape[0] - right
+    warmup_rows = max(context, int(config.intraday_warmup_bars_1s))
     combined, halo_count = concatenate_views(
         prior_session if config.prior_session_halo else None,
         session,
-        left_rows=context,
+        left_rows=warmup_rows,
     )
     if session_conditions is None:
         session_conditions = torch.zeros((session.features.shape[0], 4), dtype=torch.float32)
@@ -1319,7 +1322,9 @@ def build_session_examples(
         combined_conditions = torch.cat((prior_conditions[-halo_count:], session_conditions), dim=0)
     else:
         combined_conditions = session_conditions
-    first_origin = max(0, context - halo_count)
+    first_origin = max(0, context - halo_count) if origin_start_index is None else int(origin_start_index)
+    if first_origin < 0 or first_origin >= session.features.shape[0]:
+        raise ValueError("origin_start_index must identify a row in the current session")
     if origin_count_limit is not None:
         if int(origin_count_limit) <= 0:
             raise ValueError("origin_count_limit must be positive")
@@ -1340,16 +1345,19 @@ def build_session_examples(
     )
     calendar_views = _calendar_views(
         daily,
+        cutoff_local_date=local_date,
+        max_daily_rows=int(config.calendar_warmup_daily_bars),
         anchor_us=session_anchor,
         split_actions=split_actions,
     )
     full_views: dict[str, BarView] = {"1s": normalized_session}
     scale_names = {
         5_000_000: "5s",
+        10_000_000: "10s",
         30_000_000: "30s",
         60_000_000: "1m",
         300_000_000: "5m",
-        900_000_000: "15m",
+        1_800_000_000: "30m",
         3_600_000_000: "1h",
     }
     for timeframe_us in config.intraday_timeframes_us:
@@ -1376,10 +1384,10 @@ def build_session_examples(
         raw_view_start_us: dict[str, torch.Tensor] = {"1s": normalized_session.bar_start_us[input_start:input_end]}
         raw_view_available_at_us: dict[str, torch.Tensor] = {"1s": normalized_session.available_at_us[input_start:input_end]}
         asof: dict[str, torch.Tensor] = {}
-        for name in ("5s", "30s", "1m", "5m", "15m", "1h"):
+        for name in ("5s", "10s", "30s", "1m", "5m", "30m", "1h"):
             view = full_views[name]
             duration = TIMEFRAME_US_BY_NAME[name]
-            rows = max(8, context * int(config.base_timeframe_us) // duration + origin_count * int(config.base_timeframe_us) // duration + 4)
+            rows = max(8, int(config.intraday_context_by_name[name]) + 4)
             prefix = _view_prefix(view, last_available_us=last_anchor, max_rows=rows)
             if prefix is None:
                 raw_views[name] = _dummy_raw()
@@ -1391,9 +1399,14 @@ def build_session_examples(
                 raw_view_start_us[name] = prefix.bar_start_us
                 raw_view_available_at_us[name] = prefix.available_at_us
                 asof[name] = causal_asof_indices(prefix.available_at_us, anchors)
+                selected = asof[name] >= 0
+                if torch.any(selected):
+                    selected_times = prefix.available_at_us[asof[name].clamp_min(0)]
+                    if torch.any(selected_times[selected] > anchors[selected]):
+                        raise RuntimeError(f"{name} context lookahead detected")
         for name in ("1D", "1W", "1MO"):
             view = calendar_views.get(name)
-            max_rows = int(config.daily_context_bars) if name == "1D" else max(24, int(config.daily_context_bars) // (5 if name == "1W" else 21))
+            max_rows = int(config.calendar_context_by_name[name])
             prefix = _view_prefix(view, last_available_us=last_anchor, max_rows=max_rows) if view is not None else None
             if prefix is None:
                 raw_views[name] = _dummy_raw()
@@ -1405,6 +1418,11 @@ def build_session_examples(
                 raw_view_start_us[name] = prefix.bar_start_us
                 raw_view_available_at_us[name] = prefix.available_at_us
                 asof[name] = causal_asof_indices(prefix.available_at_us, anchors)
+                selected = asof[name] >= 0
+                if torch.any(selected):
+                    selected_times = prefix.available_at_us[asof[name].clamp_min(0)]
+                    if torch.any(selected_times[selected] > anchors[selected]):
+                        raise RuntimeError(f"{name} calendar context lookahead detected")
         activity = float(base_raw[origins, FEATURE_INDEX["source_event_count"]].float().mean())
         regime = 0 if activity < config.activity_regime_low else (2 if activity >= config.activity_regime_high else 1)
         yield BarGPTExample(
@@ -1429,6 +1447,8 @@ def build_session_examples(
 def _calendar_views(
     daily: tuple[list[str], BarView] | None,
     *,
+    cutoff_local_date: str,
+    max_daily_rows: int,
     anchor_us: int,
     split_actions: tuple[SplitAction, ...],
 ) -> dict[str, BarView]:
@@ -1436,8 +1456,11 @@ def _calendar_views(
         return {}
     dates, daily_view = daily
     excluded = split_execution_dates(split_actions)
-    keep = torch.as_tensor([value not in excluded for value in dates], dtype=torch.bool, device=daily_view.features.device)
-    filtered_dates = [value for value in dates if value not in excluded]
+    filtered_dates = [value for value in dates if value not in excluded and value < cutoff_local_date]
+    filtered_dates = filtered_dates[-max(1, int(max_daily_rows)):]
+    keep = torch.as_tensor(
+        [value in set(filtered_dates) for value in dates], dtype=torch.bool, device=daily_view.features.device
+    )
     if not filtered_dates:
         return {}
     normalized_daily = BarView(
@@ -1454,12 +1477,6 @@ def _calendar_views(
     result = {"1D": normalized_daily}
     for name in ("1W", "1MO"):
         rolled = rollup_calendar_view(normalized_daily, calendar_period_ids(filtered_dates, name))
-        # A final calendar group has no following period proving that it closed; omit it
-        # rather than leaking an incomplete lifecycle week/month as a completed bar.
-        if rolled.features.shape[0] > 0:
-            rolled = BarView(
-                rolled.features[:-1], rolled.bar_start_us[:-1], rolled.bar_end_us[:-1], rolled.available_at_us[:-1]
-            )
         result[name] = rolled
     return result
 
@@ -1538,6 +1555,7 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
                 "daily": {},
                 "condition_key": None,
                 "conditions": {},
+                "sessions": {},
                 "examples": {},
             }
         return self._runtime
@@ -1593,8 +1611,12 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
         if runtime["condition_key"] != key:
             client = runtime["client"]
             assert isinstance(client, ArrowStreamClient)
+            warmup_days = max(
+                14,
+                math.ceil(self.data_config.intraday_warmup_bars_1s / max(1, SESSION_END_SECOND - SESSION_START_SECOND)) + 3,
+            )
             fetch_start = (
-                dt.date.fromisoformat(session.unit_start_date) - dt.timedelta(days=14)
+                dt.date.fromisoformat(session.unit_start_date) - dt.timedelta(days=warmup_days)
             ).isoformat()
             runtime["conditions"] = client.read_condition_views(
                 ticker=session.ticker,
@@ -1607,6 +1629,61 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
         conditions = runtime["conditions"]
         assert isinstance(conditions, dict)
         return conditions
+
+    def _unit_sessions(
+        self,
+        session: SequentialSessionPlan,
+        intervals: tuple[TickerInterval, ...],
+    ) -> tuple[dict[str, BarView], dict[str, BarView | None]]:
+        runtime = self._worker_runtime()
+        cache = runtime.setdefault("sessions", {})
+        assert isinstance(cache, dict)
+        key = (session.ticker, session.unit_start_date, session.unit_end_date)
+        if key not in cache:
+            client = runtime["client"]
+            assert isinstance(client, ArrowStreamClient)
+            warmup_days = max(
+                14,
+                math.ceil(self.data_config.intraday_warmup_bars_1s / max(1, SESSION_END_SECOND - SESSION_START_SECOND)) + 3,
+            )
+            fetch_start = (dt.date.fromisoformat(session.unit_start_date) - dt.timedelta(days=warmup_days)).isoformat()
+            if type(client) is ArrowStreamClient or type(client).iter_session_views is not ArrowStreamClient.iter_session_views:
+                sessions = {
+                    local_date: view
+                    for local_date, view in client.iter_session_views(
+                        ticker=session.ticker,
+                        start_date=fetch_start,
+                        end_date=session.unit_end_date,
+                        source_intervals=intervals,
+                    )
+                }
+            else:
+                window = OriginWindow(
+                    session.local_date,
+                    SESSION_START_SECOND + session.first_origin,
+                    session.prior_date,
+                    max(1, int(session.block_count) * int(self.data_config.origin_bars_1s)),
+                )
+                fetched = client.read_origin_windows(
+                    ticker=session.ticker, windows=(window,), source_intervals=intervals,
+                    context_bars=self.data_config.intraday_warmup_bars_1s,
+                    origin_bars=window.origin_count or 1, right_support_bars=self.data_config.right_support_bars_1s,
+                )
+                current, prior = fetched[0]
+                sessions = {session.local_date: current}
+                cache[key] = (sessions, {session.local_date: prior})
+                return sessions, {session.local_date: prior}
+            history: dict[str, BarView | None] = {}
+            history_cache = FixedBucketHistoryCache(
+                max_rows=max(int(self.data_config.intraday_warmup_bars_1s), int(self.data_config.context_bars_1s))
+            )
+            for local_date in sorted(sessions):
+                history[local_date] = history_cache.view
+                history_cache.append(sessions[local_date])
+            cache[key] = (sessions, history)
+        sessions, history = cache[key]
+        assert isinstance(sessions, dict) and isinstance(history, dict)
+        return sessions, history
 
     def _chunk_indices(self, global_index: int) -> tuple[int, ...]:
         worker = get_worker_info()
@@ -1659,39 +1736,20 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
                 )
             )
             metadata.append((session, session_block, unit_block, origin_count))
-        fetched = client.read_origin_windows(
-            ticker=first_session.ticker,
-            windows=tuple(windows),
-            source_intervals=intervals,
-            context_bars=self.data_config.context_bars_1s,
-            origin_bars=self.data_config.origin_bars_1s,
-            right_support_bars=self.data_config.right_support_bars_1s,
-        )
-        for index, window, (session_view, prior_view), details in zip(
-            indices, windows, fetched, metadata, strict=True
-        ):
+        sessions, histories = self._unit_sessions(first_session, intervals)
+        for index, window, details in zip(indices, windows, metadata, strict=True):
             session, _session_block, unit_block, origin_count = details
-            elapsed = int(window.origin_bucket) - SESSION_START_SECOND
-            target_start = max(SESSION_START_SECOND, int(window.origin_bucket) - int(self.data_config.context_bars_1s))
-            target_end = min(
-                SESSION_END_SECOND,
-                int(window.origin_bucket) + origin_count + int(self.data_config.right_support_bars_1s),
-            )
+            session_view = sessions.get(window.local_date)
+            if session_view is None:
+                raise RuntimeError(f"warmup cache did not load session {window.local_date}")
+            prior_view = histories.get(window.local_date)
             dense_conditions = conditions.get(window.local_date)
-            session_conditions = (
-                dense_conditions[target_start - SESSION_START_SECOND : target_end - SESSION_START_SECOND]
-                if dense_conditions is not None
-                else torch.zeros((target_end - target_start, len(CONDITION_COLUMNS)), dtype=torch.float32)
-            )
+            session_conditions = dense_conditions if dense_conditions is not None else torch.zeros((session_view.features.shape[0], len(CONDITION_COLUMNS)), dtype=torch.float32)
             prior_conditions = None
-            if prior_view is not None and window.prior_date is not None:
-                dense_prior = conditions.get(window.prior_date)
-                prior_rows = min(int(prior_view.features.shape[0]), max(0, int(self.data_config.context_bars_1s) - elapsed))
-                prior_conditions = (
-                    dense_prior[-prior_rows:]
-                    if dense_prior is not None
-                    else torch.zeros((prior_rows, len(CONDITION_COLUMNS)), dtype=torch.float32)
-                )
+            if prior_view is not None:
+                prior_rows = int(prior_view.features.shape[0])
+                prior_parts = [conditions[name] for name in sorted(conditions) if name < window.local_date]
+                prior_conditions = torch.cat(prior_parts, dim=0)[-prior_rows:] if prior_parts else torch.zeros((prior_rows, len(CONDITION_COLUMNS)), dtype=torch.float32)
             built = list(
                 build_session_examples(
                     ticker=session.ticker,
@@ -1705,6 +1763,7 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
                     config=self.data_config,
                     include_incomplete_horizons=True,
                     origin_count_limit=origin_count,
+                    origin_start_index=max(0, int(window.origin_bucket) - SESSION_START_SECOND),
                 )
             )
             if len(built) != 1 or int(built[0].origin_indices.numel()) != origin_count:
@@ -1838,7 +1897,14 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                 ticker = unit.ticker
                 split_actions = actions_by_ticker.get(ticker, ())
                 excluded_dates = split_execution_dates(split_actions)
-                fetch_start = (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=14)).isoformat()
+                warmup_days = max(
+                    14,
+                    math.ceil(
+                        self.data_config.intraday_warmup_bars_1s
+                        / max(1, SESSION_END_SECOND - SESSION_START_SECOND)
+                    ) + 3,
+                )
+                fetch_start = (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=warmup_days)).isoformat()
                 conditions_by_date = client.read_condition_views(
                     ticker=ticker,
                     start_date=fetch_start,
@@ -1850,8 +1916,9 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     # Fetch ordered sparse bars in bounded date pages.  Each session is
                     # densified once, then split into consecutive O-origin examples; the
                     # preceding session remains the raw causal halo for the next session.
-                    previous_session: BarView | None = None
+                    history_cache = FixedBucketHistoryCache(max_rows=max(int(self.data_config.intraday_warmup_bars_1s), int(self.data_config.context_bars_1s)))
                     previous_conditions: torch.Tensor | None = None
+                    history_rows = history_cache.max_rows
                     emitted = 0
                     for local_date, session in client.iter_session_views(
                         ticker=ticker,
@@ -1863,14 +1930,14 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                         if dense_conditions is None:
                             dense_conditions = torch.zeros((session.features.shape[0], 4), dtype=torch.float32)
                         if local_date < unit.start_date:
-                            previous_session = session
-                            previous_conditions = dense_conditions
+                            previous_session = history_cache.append(session)
+                            previous_conditions = torch.cat((previous_conditions, dense_conditions), dim=0)[-history_rows:] if previous_conditions is not None else dense_conditions[-history_rows:]
                             continue
                         for example in build_session_examples(
                             ticker=ticker,
                             local_date=local_date,
                             session=session,
-                            prior_session=previous_session,
+                            prior_session=history_cache.view,
                             session_conditions=dense_conditions,
                             prior_conditions=previous_conditions,
                             daily=daily_by_ticker.get(ticker),
@@ -1892,8 +1959,8 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                             example.session_phase = session_phase(example)
                             example.has_condition_target = has_condition_target(example)
                             yield example
-                        previous_session = session
-                        previous_conditions = dense_conditions
+                        previous_session = history_cache.append(session)
+                        previous_conditions = torch.cat((previous_conditions, dense_conditions), dim=0)[-history_rows:] if previous_conditions is not None else dense_conditions[-history_rows:]
                     continue
                 limit = (
                     self.data_config.validation_blocks_per_slice
@@ -1910,7 +1977,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     start_date=unit.start_date,
                     end_date=unit.end_date,
                     count=candidate_count,
-                    context_bars=self.data_config.context_bars_1s,
+                    context_bars=self.data_config.intraday_warmup_bars_1s,
                     origin_bars=self.data_config.origin_bars_1s,
                     right_support_bars=self.data_config.right_support_bars_1s,
                     conditions_by_date=conditions_by_date,
@@ -1925,7 +1992,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                         ticker=ticker,
                         windows=windows,
                         source_intervals=intervals_by_ticker[ticker],
-                        context_bars=self.data_config.context_bars_1s,
+                        context_bars=self.data_config.intraday_warmup_bars_1s,
                         origin_bars=self.data_config.origin_bars_1s,
                         right_support_bars=self.data_config.right_support_bars_1s,
                     )
@@ -1933,7 +2000,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     for window, (session, prior_session) in zip(windows, fetched, strict=True):
                         target_start = max(
                             SESSION_START_SECOND,
-                            int(window.origin_bucket) - int(self.data_config.context_bars_1s),
+                            int(window.origin_bucket) - int(self.data_config.intraday_warmup_bars_1s),
                         )
                         target_end = (
                             int(window.origin_bucket)
@@ -1968,6 +2035,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                                 daily=daily_value,
                                 split_actions=split_actions,
                                 config=self.data_config,
+                                origin_start_index=max(0, int(window.origin_bucket) - target_start),
                             )
                         )
                         if len(built) > 1:
