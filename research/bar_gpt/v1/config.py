@@ -100,7 +100,7 @@ class DataConfig:
     calendar_timeframes: tuple[str, ...] = CALENDAR_TIMEFRAMES
     horizons_us: tuple[int, ...] = DEFAULT_HORIZONS_US
     tickers: tuple[str, ...] = BAR_GPT_TRAINING_TICKERS
-    start_date: str = "2020-01-01"
+    start_date: str = "2019-01-01"
     end_date: str = "2026-08-01"
     validation_start_date: str = "2026-01-01"
     daily_history_start_date: str = "2019-01-01"

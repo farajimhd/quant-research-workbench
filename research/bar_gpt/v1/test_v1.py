@@ -93,6 +93,7 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertEqual(tuple(args.tickers.split(",")), BAR_GPT_COHORT_2TB)
         self.assertEqual(args.target_table, BAR_GPT_COHORT_2TB_TABLE)
         self.assertEqual(args.manifest_table, BAR_GPT_COHORT_2TB_MANIFEST_TABLE)
+        self.assertEqual(args.start_date, "2019-01-01")
         self.assertEqual(DataConfig().one_second_table, BAR_GPT_COHORT_2TB_TABLE)
         self.assertEqual(DataConfig().tickers, BAR_GPT_TRAINING_TICKERS)
         self.assertEqual(BAR_GPT_IDENTITY_QUARANTINE, ("GOOGL", "MOGO"))

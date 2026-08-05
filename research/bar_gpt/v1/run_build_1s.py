@@ -18,7 +18,7 @@ os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
 
 DEFAULTS = {
-    "start_date": "auto",
+    "start_date": "2019-01-01",
     "end_date": "auto",
     "ticker_batch_max_events": "40000000",
     "ticker_batch_max_tickers": "256",

@@ -378,6 +378,42 @@ class LoaderTrainerContractTest(unittest.TestCase):
         metrics = _batch_eligibility_metrics(batch)
         self.assertNotIn("train/context_available_1D", metrics)
 
+    def test_calendar_context_grows_from_explicit_unavailable_history_without_lookahead(self) -> None:
+        config = self.data_config()
+        base = 1_800_000_000_000_000
+        current_raw = session_view(24)
+        current = BarView(
+            current_raw.features,
+            current_raw.bar_start_us + base,
+            current_raw.bar_end_us + base,
+            current_raw.available_at_us + base,
+        )
+        empty = next(build_session_examples(
+            ticker="AAA", local_date="2019-01-02", session=current,
+            daily=None, split_actions=(), config=config,
+        ))
+        for name in ("1D", "1W", "1MO"):
+            self.assertEqual(empty.raw_views[name].shape[0], 1)
+            self.assertTrue(torch.all(empty.raw_views[name] == 0))
+            self.assertTrue(torch.all(empty.asof_indices[name] == -1))
+
+        daily_raw = session_view(3)
+        daily_starts = torch.tensor([base - 86_400_000_000, base, base + 86_400_000_000])
+        daily = BarView(
+            daily_raw.features,
+            daily_starts,
+            daily_starts + 1_000_000,
+            daily_starts + 1_000_000,
+        )
+        partial = next(build_session_examples(
+            ticker="AAA", local_date="2019-01-02", session=current,
+            daily=(("2019-01-01", "2019-01-02", "2019-01-03"), daily),
+            split_actions=(), config=config,
+        ))
+        for name in ("1D", "1W", "1MO"):
+            self.assertEqual(partial.raw_views[name].shape[0], 1)
+            self.assertTrue(torch.all(partial.asof_indices[name] >= 0))
+
     def test_origin_schedule_is_bounded_phase_spread_and_condition_first(self) -> None:
         dates = ["2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07"]
         flags = torch.zeros((16 * 3600, 4), dtype=torch.float32)
@@ -626,6 +662,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-5)
 
     def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
+        self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--batch-size"], "16")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
@@ -719,6 +756,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         args = condition_builder_argv()
         self.assertIn("conditions-only", args)
         self.assertIn("--replace-existing", args)
+        self.assertEqual(args[args.index("--start-date") + 1], "2019-01-01")
         output_index = args.index("--output-root") + 1
         self.assertEqual(args[output_index], r"D:\TradingML\runtimes\bar_gpt\v1\build_conditions_1s")
         self.assertEqual(DataConfig().condition_status_table, "intraday_base_bars_build_status")

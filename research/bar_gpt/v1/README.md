@@ -77,9 +77,27 @@ zero-activity sessions. The loader collapses only completed session rows into
 1D and derives completed ISO-week and calendar-month views online.
 
 Massive aggregate bars are excluded because they do not retain the event,
-quote, and size geometry of the SIP contract. Training starts in 2020; available
-2019 SIP daily sessions supply left context and earlier unavailable context is
-masked.
+quote, and size geometry of the SIP contract. Training begins in 2019. At that
+authority boundary, missing 1D/1W/1MO history is represented by a zero padding
+row plus causal `asof=-1`, never by a fabricated completed bar. As completed
+2019 daily sessions become available, the loader grows the calendar prefixes
+from 1 to their 90-day, 52-week, and 12-month caps. Dates on or after the
+current session remain excluded.
+
+Build and certify the missing 2019 one-second authority before requesting 2019
+training or offline shards. The end date is exclusive:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_build_1s --start-date 2019-01-01 --end-date 2020-01-01
+python -B -m research.bar_gpt.v1.run_build_1s --start-date 2019-01-01 --end-date 2020-01-01 --execute
+python -B -m research.bar_gpt.v1.run_build_conditions_1s --start-date 2019-01-01 --end-date 2020-01-01
+```
+
+The first command is a safe plan. The one-second builder is manifest-resumable;
+the conditions launcher retains its explicit replace-and-certify behavior for
+the requested range. The identity-alias builder already begins in 2019, and the
+daily-session authority must also remain continuously certified from
+`2019-01-01`.
 
 ## Causal split and identity contract
 
@@ -258,7 +276,7 @@ The canonical workstation training command is:
 python -B -m research.bar_gpt.v1.run_train
 ```
 
-Training uses `[2020-01-01, 2026-01-01)`. One coverage epoch is one
+Training uses `[2019-01-01, 2026-01-01)`. One coverage epoch is one
 deterministic exhaustive pass over every available 04:00-20:00 second in all
 72 month partitions and the non-validation tickers. Startup derives exact
 session, block, and origin totals from point-in-time identity intervals and the
@@ -399,10 +417,10 @@ python -B -m research.bar_gpt.v1.run_build_offline_shards --execute
 
 The first command is a read-only plan. The execute form partitions work across
 bounded ticker workers and writes immutable ticker-month shards beneath
-`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v1`. The current certified
-one-second authority begins in 2020; daily history begins in 2019 and remains
-the calendar warmup authority. The compiler never fabricates unavailable 2019
-intraday sessions.
+`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v1`. Both the requested
+one-second authority and daily-session authority now begin in 2019. The
+compiler fails preflight until those sources are continuously certified and
+never fabricates unavailable intraday sessions or calendar history.
 
 Within each worker, ClickHouse iteration runs in the foreground while one
 bounded background slot compiles completed sessions. At most two session

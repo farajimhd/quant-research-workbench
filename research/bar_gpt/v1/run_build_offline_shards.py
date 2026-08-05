@@ -20,7 +20,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     parser.add_argument("--workers", type=int, default=min(12, max(2, (os.cpu_count() or 8) // 4)))
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
     parser.add_argument("--tickers", default=",".join(BAR_GPT_TRAINING_TICKERS))
-    parser.add_argument("--start-date", default="2020-01-01")
+    parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="2026-08-01")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
     args, extra = parser.parse_known_args(argv)

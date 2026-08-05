@@ -10,7 +10,7 @@ from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS
 
 DEFAULT_ARGS: dict[str, str] = {
     "--artifact-mode": "conditions-only",
-    "--start-date": "2020-01-01",
+    "--start-date": "2019-01-01",
     "--end-date": "2026-08-01",
     "--resolutions": "1s",
     "--tickers": ",".join(BAR_GPT_TRAINING_TICKERS),
