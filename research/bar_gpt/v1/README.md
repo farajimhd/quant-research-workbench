@@ -386,6 +386,46 @@ the initial worker/unit buffer so results include
 ticker-month turnover rather than only warm-queue throughput. Promote the selected profile
 into launcher defaults only after measuring it on the training workstation.
 
+### Offline training-ready tensor shards
+
+The production-scale loader can be decoupled from ClickHouse with a separate,
+restart-safe offline compiler:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_build_offline_shards
+
+python -B -m research.bar_gpt.v1.run_build_offline_shards --execute
+```
+
+The first command is a read-only plan. The execute form partitions work across
+bounded ticker workers and writes immutable ticker-month shards beneath
+`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v1`. The current certified
+one-second authority begins in 2020; daily history begins in 2019 and remains
+the calendar warmup authority. The compiler never fabricates unavailable 2019
+intraday sessions.
+
+Each month stores every session-level 1s, intraday-rollup, and calendar tensor
+once. Block records retain only slices, exact causal prefix corrections,
+autoregressive masks, origin-specific physical-horizon targets, and metadata.
+This reproduces the online collate contract without repeating each 720-bar
+context. Shards use uncompressed PyTorch tensor containers so `torch.load` can
+memory-map their storage. The runtime reader performs only mmap slicing,
+padding into reusable pinned batches, and asynchronous CUDA handoff.
+
+Completion advances only after the shard is atomically renamed, SHA-256
+certified, and accompanied by its sidecar manifest. Rerunning the same command
+skips compatible certified or explicitly covered-empty ticker-months. A changed
+feature, target, identity, split, table, range, or loader configuration changes
+the config hash and therefore cannot silently reuse an incompatible cache.
+`--max-shards N` provides a representative bounded pilot, and `--force-rebuild`
+is the explicit replacement path. `--skip-hash` is diagnostic only and produces
+uncertified shards that are intentionally not resume-skipped.
+
+Interactive output shows durable coverage, active worker stage and ticker-month,
+written GiB, blocks, origins, rate, ETA, failures, output, and resume semantics.
+Redirected output is plain text. Ctrl+C lets in-flight atomic writes finish,
+stops workers, rebuilds the certified catalog, and returns exit code 130.
+
 Audit the actual fetched feature and target contract before training:
 
 ```powershell

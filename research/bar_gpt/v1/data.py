@@ -187,27 +187,65 @@ class BarGPTBatch:
             if value is not None:
                 value.record_stream(stream)
 
+    def pin_memory(self) -> "BarGPTBatch":
+        """Pin every CPU tensor so the CUDA prefetch stream can copy asynchronously."""
+        def pin_map(values: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+            return {key: value.pin_memory() for key, value in values.items()}
+
+        return BarGPTBatch(
+            views=pin_map(self.views),
+            origin_indices=self.origin_indices.pin_memory(),
+            origin_timestamps_us=self.origin_timestamps_us.pin_memory(),
+            origin_mask=self.origin_mask.pin_memory(),
+            asof_indices=pin_map(self.asof_indices),
+            autoregressive_targets=pin_map(self.autoregressive_targets),
+            autoregressive_mask=pin_map(self.autoregressive_mask),
+            target_support=self.target_support.pin_memory(),
+            target_support_lengths=self.target_support_lengths.pin_memory(),
+            target_share_factors=self.target_share_factors.pin_memory(),
+            target_condition_flags=self.target_condition_flags.pin_memory(),
+            support_origin_indices=self.support_origin_indices.pin_memory(),
+            horizons_us=self.horizons_us,
+            base_timeframe_us=self.base_timeframe_us,
+            horizon_targets=self.horizon_targets.pin_memory() if self.horizon_targets is not None else None,
+            horizon_mask=self.horizon_mask.pin_memory() if self.horizon_mask is not None else None,
+            sample_weights=self.sample_weights.pin_memory(),
+            tickers=self.tickers,
+            local_dates=self.local_dates,
+            worker_ids=self.worker_ids,
+            unit_indices=self.unit_indices,
+            block_offsets=self.block_offsets,
+            session_phases=self.session_phases,
+            condition_blocks=self.condition_blocks,
+            loader_stage_seconds=dict(self.loader_stage_seconds),
+        )
     def to(self, device: torch.device | str, *, non_blocking: bool = True) -> "BarGPTBatch":
         def move_map(values: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
             return {key: value.to(device, non_blocking=non_blocking) for key, value in values.items()}
-        support_length_values = self.target_support_lengths.tolist()
-        origin_count_values = self.origin_mask.sum(dim=1).tolist()
         support = self.target_support.to(device, non_blocking=non_blocking)
         share_factors = self.target_share_factors.to(device, non_blocking=non_blocking)
         condition_flags = self.target_condition_flags.to(device, non_blocking=non_blocking)
         support_lengths = self.target_support_lengths.to(device, non_blocking=non_blocking)
         support_origins = self.support_origin_indices.to(device, non_blocking=non_blocking)
-        built = [
-            build_physical_horizon_targets(
-                support[row, : int(support_length_values[row])],
-                support_origins[row, : int(origin_count_values[row])],
-                torch.as_tensor(self.horizons_us, dtype=torch.long, device=support.device),
-                base_timeframe_us=self.base_timeframe_us,
-                share_factors=share_factors[row, : int(support_length_values[row])],
-                condition_flags=condition_flags[row, : int(support_length_values[row])],
-            )
-            for row in range(support.shape[0])
-        ]
+        if self.horizon_targets is None or self.horizon_mask is None:
+            support_length_values = self.target_support_lengths.tolist()
+            origin_count_values = self.origin_mask.sum(dim=1).tolist()
+            built = [
+                build_physical_horizon_targets(
+                    support[row, : int(support_length_values[row])],
+                    support_origins[row, : int(origin_count_values[row])],
+                    torch.as_tensor(self.horizons_us, dtype=torch.long, device=support.device),
+                    base_timeframe_us=self.base_timeframe_us,
+                    share_factors=share_factors[row, : int(support_length_values[row])],
+                    condition_flags=condition_flags[row, : int(support_length_values[row])],
+                )
+                for row in range(support.shape[0])
+            ]
+            horizon_targets = _pad_first_dimension([item.values for item in built])
+            horizon_mask = _pad_first_dimension([item.mask for item in built], fill=False)
+        else:
+            horizon_targets = self.horizon_targets.to(device, non_blocking=non_blocking)
+            horizon_mask = self.horizon_mask.to(device, non_blocking=non_blocking)
         return BarGPTBatch(
             views=move_map(self.views),
             origin_indices=self.origin_indices.to(device, non_blocking=non_blocking),
@@ -223,8 +261,8 @@ class BarGPTBatch:
             support_origin_indices=support_origins,
             horizons_us=self.horizons_us,
             base_timeframe_us=self.base_timeframe_us,
-            horizon_targets=_pad_first_dimension([item.values for item in built]),
-            horizon_mask=_pad_first_dimension([item.mask for item in built], fill=False),
+            horizon_targets=horizon_targets,
+            horizon_mask=horizon_mask,
             sample_weights=self.sample_weights.to(device, non_blocking=non_blocking),
             tickers=self.tickers,
             local_dates=self.local_dates,

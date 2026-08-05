@@ -5,9 +5,11 @@ import datetime as dt
 import http.client
 import threading
 import time
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -43,6 +45,13 @@ from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.linear_probe import fit_ridge_probes
 from research.bar_gpt.v1.objectives import _weighted_mean, compute_loss
+from research.bar_gpt.v1.offline_shards import (
+    collate_compiled_blocks,
+    compile_unit,
+    load_shard,
+    materialize_block,
+    write_unit,
+)
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES, build_next_bar_targets, build_physical_horizon_targets
@@ -467,6 +476,36 @@ class LoaderTrainerContractTest(unittest.TestCase):
         batch = collate_examples([first])
         self.assertEqual(int(batch.autoregressive_mask["1s"].any(dim=-1).sum()), 3)
         self.assertNotIn("1D", batch.autoregressive_mask)
+
+    def test_offline_shard_round_trip_preserves_compiled_targets_without_context_duplication(self) -> None:
+        config = self.data_config()
+        examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=config,
+        ))
+        for offset, example in enumerate(examples):
+            example.unit_index = 7
+            example.block_offset = offset
+        payload = compile_unit(examples, config, "AAA:2026-01")
+        session = payload["sessions"][0]
+        shared_rows = int(session["views"]["1s"]["features"].shape[0])
+        repeated_rows = sum(int(example.raw_views["1s"].shape[0]) for example in examples)
+        self.assertLess(shared_rows, repeated_rows)
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = write_unit(Path(directory), payload, certify_hash=True)
+            shard = load_shard(Path(evidence["path"]), verify_sha256=evidence["sha256"])
+            compiled = [materialize_block(shard, 0, index) for index in range(len(examples))]
+            cached_batch = collate_compiled_blocks(
+                compiled, horizons_us=config.horizons_us, base_timeframe_us=config.base_timeframe_us,
+            ).to("cpu", non_blocking=False)
+        live_batch = collate_examples(examples).to("cpu", non_blocking=False)
+        for name in live_batch.views:
+            self.assertTrue(torch.equal(cached_batch.views[name], live_batch.views[name]), name)
+        for name in live_batch.autoregressive_targets:
+            self.assertTrue(torch.equal(cached_batch.autoregressive_targets[name], live_batch.autoregressive_targets[name]), name)
+            self.assertTrue(torch.equal(cached_batch.autoregressive_mask[name], live_batch.autoregressive_mask[name]), name)
+        self.assertTrue(torch.equal(cached_batch.horizon_targets, live_batch.horizon_targets))
+        self.assertTrue(torch.equal(cached_batch.horizon_mask, live_batch.horizon_mask))
 
     def test_sequential_session_emits_tail_origins_with_unavailable_horizons_masked(self) -> None:
         config = self.data_config()

@@ -2067,10 +2067,12 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         seed: int,
         epoch: int = 0,
         resume_cursors: Mapping[int, CoverageCursor] | None = None,
+        unit_tickers: tuple[str, ...] | None = None,
+        skip_unit_keys: frozenset[str] = frozenset(),
     ) -> None:
         super().__init__()
-        if split not in {"train", "validation"}:
-            raise ValueError("split must be train or validation")
+        if split not in {"train", "validation", "cache"}:
+            raise ValueError("split must be train, validation, or cache")
         data_config.validate()
         self.data_config = data_config
         self.stream_config = stream_config
@@ -2078,6 +2080,8 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         self.seed = int(seed)
         self._epoch = mp.Value("q", int(epoch))
         self.resume_cursors = dict(resume_cursors or {})
+        self.unit_tickers = tuple(item.upper() for item in unit_tickers) if unit_tickers else None
+        self.skip_unit_keys = frozenset(skip_unit_keys)
 
     @property
     def epoch(self) -> int:
@@ -2093,13 +2097,21 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         if self.split == "validation":
             selected = [TickerDateUnit(*values) for values in self.data_config.validation_slices]
         else:
-            tickers = tuple(ticker for ticker in self.data_config.tickers if ticker not in validation_tickers)
+            tickers = (
+                self.unit_tickers
+                if self.unit_tickers is not None
+                else tuple(ticker for ticker in self.data_config.tickers if ticker not in validation_tickers)
+            )
             selected = month_units(
                 self.data_config.start_date,
-                self.data_config.validation_start_date,
+                self.data_config.end_date if self.split == "cache" else self.data_config.validation_start_date,
                 tickers,
                 seed=self.seed + self.epoch,
             )
+        selected = [
+            unit for unit in selected
+            if f"{unit.ticker}:{unit.start_date[:7]}" not in self.skip_unit_keys
+        ]
         indexed = list(enumerate(selected))
         worker = get_worker_info()
         if worker is not None:
@@ -2175,7 +2187,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     else (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=warmup_days)).isoformat()
                 )
                 unit_prepare_started = time.perf_counter()
-                if self.split == "train" and self.data_config.coverage_mode == "sequential":
+                if self.split in {"train", "cache"} and self.data_config.coverage_mode == "sequential":
                     # Fetch ordered sparse bars in bounded date pages.  Each session is
                     # densified once, then split into consecutive O-origin examples; the
                     # preceding session remains the raw causal halo for the next session.
