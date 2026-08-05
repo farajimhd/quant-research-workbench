@@ -582,6 +582,26 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertFalse(bool(targets.mask[1].any()))
         self.assertTrue(bool(targets.mask[2].any()))
 
+    def test_target_builders_vectorize_blocks_with_exact_single_block_results(self) -> None:
+        raw = session_view(12).features
+        starts = torch.arange(12, dtype=torch.long) * 1_000_000
+        next_single = build_next_bar_targets(raw, bar_start_us=starts, expected_step_us=1_000_000)
+        next_batch = build_next_bar_targets(
+            torch.stack((raw, raw)),
+            bar_start_us=torch.stack((starts, starts)),
+            expected_step_us=1_000_000,
+        )
+        self.assertTrue(torch.equal(next_batch.values[0], next_single.values))
+        self.assertTrue(torch.equal(next_batch.mask[0], next_single.mask))
+        origins = torch.tensor([4, 5, 6], dtype=torch.long)
+        horizons = torch.tensor([1_000_000, 2_000_000], dtype=torch.long)
+        physical_single = build_physical_horizon_targets(raw, origins, horizons)
+        physical_batch = build_physical_horizon_targets(
+            torch.stack((raw, raw)), torch.stack((origins, origins)), horizons
+        )
+        self.assertTrue(torch.equal(physical_batch.values[0], physical_single.values))
+        self.assertTrue(torch.equal(physical_batch.mask[0], physical_single.mask))
+
     def test_prior_session_halo_enables_first_premarket_origins_without_overlap(self) -> None:
         prior = session_view(8)
         current = session_view(12)

@@ -29,7 +29,7 @@ from research.bar_gpt.v1.data import (
 )
 from research.bar_gpt.v1.features import project_stationary_features
 from research.bar_gpt.v1.loader import BarGPTIterableDataset, month_units
-from research.bar_gpt.v1.targets import build_next_bar_targets, build_physical_horizon_targets
+from research.bar_gpt.v1.targets import HorizonTargets, build_next_bar_targets, build_physical_horizon_targets
 from research.bar_gpt.v1.train import _stream_config, preflight, sequential_coverage_counts
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
@@ -220,15 +220,14 @@ def _merge_view(
     unique_starts = starts[keep].contiguous()
     unique_available = available[keep].contiguous()
     unique_raw = raw[keep].contiguous()
-    position = {int(value): index for index, value in enumerate(unique_starts.tolist())}
     slices: list[tuple[int, int]] = []
-    patches: list[dict[str, torch.Tensor]] = []
     for example in examples:
-        local = example.raw_view_start_us[name].tolist()
-        indices = [position[int(value)] for value in local]
-        if indices != list(range(indices[0], indices[0] + len(indices))):
+        local = example.raw_view_start_us[name].cpu()
+        indices = torch.searchsorted(unique_starts, local)
+        expected = torch.arange(indices[0], indices[0] + indices.numel(), dtype=indices.dtype)
+        if not torch.equal(indices, expected) or not torch.equal(unique_starts[indices], local):
             raise RuntimeError(f"{example.ticker} {example.local_date} {name} is not a contiguous shared slice")
-        slices.append((indices[0], len(indices)))
+        slices.append((int(indices[0]), int(indices.numel())))
     projected = project_stationary_features(
         unique_raw,
         unique_starts,
@@ -250,20 +249,28 @@ def _merge_view(
     # Stationary projection carries prior-valid state.  Store the shared
     # session projection once and only the usually tiny prefix corrections
     # required to reproduce each independently projected training block.
-    for example, (start, length) in zip(examples, slices, strict=True):
-        exact = project_stationary_features(
-            example.raw_views[name].cpu(),
-            example.raw_view_start_us[name].cpu(),
-            timeframe_us=TIMEFRAME_US_BY_NAME[name],
+    patches: list[dict[str, torch.Tensor] | None] = [None] * len(examples)
+    shape_groups: dict[tuple[int, ...], list[int]] = {}
+    for index, example in enumerate(examples):
+        shape_groups.setdefault(tuple(example.raw_views[name].shape), []).append(index)
+    for indices in shape_groups.values():
+        raw_batch = torch.stack([examples[index].raw_views[name].cpu() for index in indices])
+        start_batch = torch.stack([examples[index].raw_view_start_us[name].cpu() for index in indices])
+        exact_batch = project_stationary_features(
+            raw_batch, start_batch, timeframe_us=TIMEFRAME_US_BY_NAME[name]
         )
-        shared_slice = projected[start : start + length]
-        changed = torch.any(exact != shared_slice, dim=-1)
-        indices = torch.nonzero(changed, as_tuple=False).flatten().to(torch.int32)
-        patches.append({
-            "indices": indices,
-            "values": exact[indices.long()].contiguous(),
-        })
-    return result, slices, patches
+        for batch_row, example_index in enumerate(indices):
+            start, length = slices[example_index]
+            exact = exact_batch[batch_row]
+            changed = torch.any(exact != projected[start : start + length], dim=-1)
+            changed_indices = torch.nonzero(changed, as_tuple=False).flatten().to(torch.int32)
+            patches[example_index] = {
+                "indices": changed_indices,
+                "values": exact[changed_indices.long()].contiguous(),
+            }
+    if any(patch is None for patch in patches):
+        raise RuntimeError("failed to compile every block-local view patch")
+    return result, slices, [patch for patch in patches if patch is not None]
 
 
 def compile_session(examples: Sequence[BarGPTExample]) -> dict[str, Any]:
@@ -280,26 +287,55 @@ def compile_session(examples: Sequence[BarGPTExample]) -> dict[str, Any]:
     patches_by_view: dict[str, list[dict[str, torch.Tensor]]] = {}
     for name in view_names:
         views[name], slices_by_view[name], patches_by_view[name] = _merge_view(examples, name)
+    exact_ar_by_view: dict[str, list[HorizonTargets | None]] = {}
+    for name in AUTOREGRESSIVE_VIEW_NAMES:
+        exact_items: list[HorizonTargets | None] = [None] * len(examples)
+        shape_groups: dict[tuple[int, ...], list[int]] = {}
+        for index, example in enumerate(examples):
+            shape_groups.setdefault(tuple(example.raw_views[name].shape), []).append(index)
+        for indices in shape_groups.values():
+            raw_batch = torch.stack([examples[index].raw_views[name].cpu() for index in indices])
+            start_batch = torch.stack([examples[index].raw_view_start_us[name].cpu() for index in indices])
+            batch = build_next_bar_targets(
+                raw_batch,
+                bar_start_us=start_batch,
+                expected_step_us=TIMEFRAME_US_BY_NAME[name],
+            )
+            for batch_row, example_index in enumerate(indices):
+                exact_items[example_index] = HorizonTargets(
+                    batch.values[batch_row].contiguous(), batch.mask[batch_row].contiguous()
+                )
+        exact_ar_by_view[name] = exact_items
     horizon_ids = torch.as_tensor(examples[0].horizons_us, dtype=torch.long)
+    exact_horizons: list[HorizonTargets | None] = [None] * len(examples)
+    horizon_shape_groups: dict[tuple[tuple[int, ...], tuple[int, ...]], list[int]] = {}
+    for index, example in enumerate(examples):
+        signature = (tuple(example.target_support.shape), tuple(example.support_origin_indices.shape))
+        horizon_shape_groups.setdefault(signature, []).append(index)
+    for indices in horizon_shape_groups.values():
+        batch = build_physical_horizon_targets(
+            torch.stack([examples[index].target_support.cpu() for index in indices]),
+            torch.stack([examples[index].support_origin_indices.cpu() for index in indices]),
+            horizon_ids,
+            base_timeframe_us=examples[indices[0]].base_timeframe_us,
+            share_factors=torch.stack([examples[index].target_share_factors.cpu() for index in indices]),
+            condition_flags=torch.stack([examples[index].target_condition_flags.cpu() for index in indices]),
+        )
+        for batch_row, example_index in enumerate(indices):
+            exact_horizons[example_index] = HorizonTargets(
+                batch.values[batch_row].contiguous(), batch.mask[batch_row].contiguous()
+            )
     blocks: list[dict[str, Any]] = []
     for row, example in enumerate(examples):
-        horizon = build_physical_horizon_targets(
-            example.target_support.cpu(),
-            example.support_origin_indices.cpu(),
-            horizon_ids,
-            base_timeframe_us=example.base_timeframe_us,
-            share_factors=example.target_share_factors.cpu(),
-            condition_flags=example.target_condition_flags.cpu(),
-        )
+        horizon = exact_horizons[row]
+        if horizon is None:
+            raise RuntimeError(f"failed to compile physical horizon targets for block {row}")
         ar_masks: dict[str, torch.Tensor] = {}
         ar_patches: dict[str, dict[str, torch.Tensor]] = {}
         for name in AUTOREGRESSIVE_VIEW_NAMES:
-            value = example.raw_views[name].cpu()
-            item = build_next_bar_targets(
-                value,
-                bar_start_us=example.raw_view_start_us[name].cpu(),
-                expected_step_us=TIMEFRAME_US_BY_NAME[name],
-            )
+            item = exact_ar_by_view[name][row]
+            if item is None:
+                raise RuntimeError(f"failed to compile {name} autoregressive targets for block {row}")
             available = example.raw_view_available_at_us[name].cpu()
             if item.mask.shape[0]:
                 item.mask &= (

@@ -45,10 +45,11 @@ def build_next_bar_targets(
     expected_step_us: int | None = None,
 ) -> HorizonTargets:
     """Build next completed-bar targets for an arbitrary aggregated timeframe."""
-    if raw.ndim != 2:
-        raise ValueError("raw bar features must have shape [T,F]")
-    if raw.shape[0] < 2:
-        shape = (0, len(TARGET_NAMES))
+    if raw.ndim not in {2, 3}:
+        raise ValueError("raw bar features must have shape [T,F] or [B,T,F]")
+    time_dim = raw.shape[-2]
+    if time_dim < 2:
+        shape = (*raw.shape[:-2], 0, len(TARGET_NAMES))
         return HorizonTargets(raw.new_zeros(shape), torch.zeros(shape, dtype=torch.bool, device=raw.device))
     trade_present = _column(raw, "trade_present") > 0
     quote_present = _column(raw, "quote_pair_present") > 0
@@ -57,61 +58,71 @@ def build_next_bar_targets(
     reference_raw = torch.where(quote_present, midpoint_close, trade_close)
     reference_valid_raw = (quote_present & (midpoint_close > 0)) | (trade_present & (trade_close > 0))
     reference, reference_valid = _forward_fill(reference_raw, reference_valid_raw)
-    base = reference[:-1]
-    endpoint = reference[1:]
-    price_valid = reference_valid[:-1] & reference_valid[1:] & (base > 0) & (endpoint > 0)
+    base = reference[..., :-1]
+    endpoint = reference[..., 1:]
+    price_valid = reference_valid[..., :-1] & reference_valid[..., 1:] & (base > 0) & (endpoint > 0)
     endpoint_return = torch.where(price_valid, torch.log(endpoint / base), 0.0)
-    next_trade = trade_present[1:]
-    high = _column(raw, "trade_high")[1:]
-    low = _column(raw, "trade_low")[1:]
+    next_trade = trade_present[..., 1:]
+    high = _column(raw, "trade_high")[..., 1:]
+    low = _column(raw, "trade_low")[..., 1:]
     excursion_valid = price_valid & next_trade & (high > 0) & (low > 0)
     upper = torch.where(excursion_valid, torch.log(high.clamp_min(1e-12) / base).clamp_min(0.0), 0.0)
     lower = torch.where(excursion_valid, torch.log(base / low.clamp_min(1e-12)).clamp_min(0.0), 0.0)
-    availability = tuple((_column(raw, f"{family}_present")[1:] > 0).float() for family in ("trade", "bid", "ask"))
+    availability = tuple((_column(raw, f"{family}_present")[..., 1:] > 0).float() for family in ("trade", "bid", "ask"))
     values = torch.stack(
         (
             torch.asinh(endpoint_return * 100.0),
             torch.asinh(upper * 100.0),
             torch.asinh(lower * 100.0),
             torch.asinh(endpoint_return.abs() * 100.0),
-            torch.log1p(_column(raw, "trade_size_sum")[1:]),
-            torch.log1p(_column(raw, "trade_event_count")[1:]),
+            torch.log1p(_column(raw, "trade_size_sum")[..., 1:]),
+            torch.log1p(_column(raw, "trade_event_count")[..., 1:]),
             *availability,
-            quote_present[1:].float(),
-            *raw.new_zeros((4, raw.shape[0] - 1)),
+            quote_present[..., 1:].float(),
+            *raw.new_zeros((*raw.shape[:-2], 4, time_dim - 1)).unbind(dim=-2),
         ),
         dim=-1,
     )
     mask = torch.ones_like(values, dtype=torch.bool)
-    mask[:, :4] &= price_valid[:, None]
-    mask[:, 1:3] &= excursion_valid[:, None]
-    mask[:, 3] = False  # exact intrabar realized volatility is unavailable after aggregation
-    mask[:, -4:] = False  # exact event conditions are supervised only by physical-horizon sidecars
+    mask[..., :4] &= price_valid[..., None]
+    mask[..., 1:3] &= excursion_valid[..., None]
+    mask[..., 3] = False  # exact intrabar realized volatility is unavailable after aggregation
+    mask[..., -4:] = False  # exact event conditions are supervised only by physical-horizon sidecars
     if bar_start_us is not None or expected_step_us is not None:
         if bar_start_us is None or expected_step_us is None:
             raise ValueError("bar_start_us and expected_step_us must be supplied together")
-        if bar_start_us.ndim != 1 or bar_start_us.shape[0] != raw.shape[0]:
-            raise ValueError("bar_start_us must align one-to-one with raw rows")
-        continuous = bar_start_us[1:] - bar_start_us[:-1] == int(expected_step_us)
-        mask &= continuous[:, None]
+        if bar_start_us.shape != raw.shape[:-1]:
+            raise ValueError("bar_start_us must align with raw bar rows")
+        continuous = bar_start_us[..., 1:] - bar_start_us[..., :-1] == int(expected_step_us)
+        mask &= continuous[..., None]
     return HorizonTargets(values=values, mask=mask)
 
 
 def _column(raw: torch.Tensor, name: str) -> torch.Tensor:
-    return raw[:, FEATURE_INDEX[name]].float()
+    return raw[..., FEATURE_INDEX[name]].float()
 
 
 def _forward_fill(values: torch.Tensor, valid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    rows = torch.arange(values.shape[0], device=values.device, dtype=torch.long)
-    last = torch.where(valid, rows, torch.full_like(rows, -1)).cummax(dim=0).values
+    rows = torch.arange(values.shape[-1], device=values.device, dtype=torch.long)
+    rows = rows.view(*([1] * (values.ndim - 1)), -1).expand_as(values)
+    last = torch.where(valid, rows, torch.full_like(rows, -1)).cummax(dim=-1).values
     available = last >= 0
-    return values[last.clamp(min=0)], available
+    return torch.gather(values, -1, last.clamp(min=0)), available
 
 
 def _window_max(values: torch.Tensor, steps: int) -> torch.Tensor:
-    if values.numel() <= steps:
-        return values.new_empty((0,))
-    return F.max_pool1d(values[1:].view(1, 1, -1), kernel_size=steps, stride=1).view(-1)
+    length = values.shape[-1]
+    if length <= steps:
+        return values.new_empty((*values.shape[:-1], 0))
+    flattened = values[..., 1:].reshape(-1, 1, length - 1)
+    pooled = F.max_pool1d(flattened, kernel_size=steps, stride=1)
+    return pooled.reshape(*values.shape[:-1], pooled.shape[-1])
+
+
+def _gather_time(values: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    if values.ndim == 1:
+        return values[indices]
+    return torch.gather(values, -1, indices)
 
 
 def build_physical_horizon_targets(
@@ -124,23 +135,23 @@ def build_physical_horizon_targets(
     condition_flags: torch.Tensor | None = None,
 ) -> HorizonTargets:
     """Build direct horizons in each origin's share basis without copied windows."""
-    if raw_one_second.ndim != 2 or origin_indices.ndim != 1 or horizons_us.ndim != 1:
-        raise ValueError("expected raw [T,F], origins [N], and horizons [H]")
+    if raw_one_second.ndim not in {2, 3} or origin_indices.ndim != raw_one_second.ndim - 1 or horizons_us.ndim != 1:
+        raise ValueError("expected raw [T,F]/[B,T,F], matching origins [N]/[B,N], and horizons [H]")
     if torch.any(horizons_us % int(base_timeframe_us) != 0):
         raise ValueError("physical horizons must be integral multiples of the base timeframe")
     if share_factors is None:
-        share_factors = torch.ones(raw_one_second.shape[0], dtype=torch.float64, device=raw_one_second.device)
-    if share_factors.ndim != 1 or share_factors.shape[0] != raw_one_second.shape[0]:
+        share_factors = torch.ones(raw_one_second.shape[:-1], dtype=torch.float64, device=raw_one_second.device)
+    if share_factors.shape != raw_one_second.shape[:-1]:
         raise ValueError("share_factors must align one-to-one with raw rows")
     if torch.any(~torch.isfinite(share_factors)) or torch.any(share_factors <= 0):
         raise ValueError("share_factors must be finite and positive")
     share_factors = share_factors.to(device=raw_one_second.device, dtype=raw_one_second.dtype)
     if condition_flags is None:
-        condition_flags = torch.zeros((raw_one_second.shape[0], 4), dtype=torch.float32, device=raw_one_second.device)
+        condition_flags = torch.zeros((*raw_one_second.shape[:-1], 4), dtype=torch.float32, device=raw_one_second.device)
         condition_authoritative = False
     else:
-        if condition_flags.shape != (raw_one_second.shape[0], 4):
-            raise ValueError("condition_flags must have shape [T,4] aligned to raw rows")
+        if condition_flags.shape != (*raw_one_second.shape[:-1], 4):
+            raise ValueError("condition_flags must have shape [T,4] or [B,T,4] aligned to raw rows")
         condition_flags = condition_flags.to(device=raw_one_second.device, dtype=torch.float32)
         condition_authoritative = True
     trade_present = _column(raw_one_second, "trade_present") > 0
@@ -151,7 +162,7 @@ def build_physical_horizon_targets(
     reference_valid_raw = (quote_present & (midpoint_close > 0)) | (trade_present & (trade_close > 0))
     reference, reference_valid = _forward_fill(reference_raw, reference_valid_raw)
     canonical_reference = reference * share_factors
-    previous = torch.cat((canonical_reference[:1], canonical_reference[:-1]))
+    previous = torch.cat((canonical_reference[..., :1], canonical_reference[..., :-1]), dim=-1)
     returns = torch.where(
         reference_valid & (canonical_reference > 0) & (previous > 0),
         torch.log(canonical_reference / previous),
@@ -162,25 +173,26 @@ def build_physical_horizon_targets(
     # activity; subtracting them for a zero-activity window then makes log1p NaN.
     # The exact volume/count invariant is nonnegative, so restore that invariant
     # after the stable prefix difference before returning model-dtype targets.
-    variance_prefix = torch.cat((returns.new_zeros(1, dtype=torch.float64), returns.square().double().cumsum(0)))
+    prefix_shape = (*returns.shape[:-1], 1)
+    variance_prefix = torch.cat((returns.new_zeros(prefix_shape, dtype=torch.float64), returns.square().double().cumsum(-1)), dim=-1)
     canonical_volume = _column(raw_one_second, "trade_size_sum").double() / share_factors.double()
-    volume_prefix = torch.cat((canonical_volume.new_zeros(1), canonical_volume.cumsum(0)))
+    volume_prefix = torch.cat((canonical_volume.new_zeros(prefix_shape), canonical_volume.cumsum(-1)), dim=-1)
     trade_count_values = _column(raw_one_second, "trade_event_count").double()
-    trade_count_prefix = torch.cat((trade_count_values.new_zeros(1), trade_count_values.cumsum(0)))
+    trade_count_prefix = torch.cat((trade_count_values.new_zeros(prefix_shape), trade_count_values.cumsum(-1)), dim=-1)
     availability_prefix = {
         family: torch.cat(
             (
-                torch.zeros(1, dtype=torch.int64, device=raw_one_second.device),
-                (_column(raw_one_second, f"{family}_present") > 0).to(torch.int64).cumsum(0),
-            )
+                torch.zeros(prefix_shape, dtype=torch.int64, device=raw_one_second.device),
+                (_column(raw_one_second, f"{family}_present") > 0).to(torch.int64).cumsum(-1),
+            ), dim=-1
         )
         for family in ("trade", "bid", "ask")
     }
     quote_availability_prefix = torch.cat(
         (
-            torch.zeros(1, dtype=torch.int64, device=raw_one_second.device),
-            quote_present.to(torch.int64).cumsum(0),
-        )
+            torch.zeros(prefix_shape, dtype=torch.int64, device=raw_one_second.device),
+            quote_present.to(torch.int64).cumsum(-1),
+        ), dim=-1
     )
     canonical_trade_high = _column(raw_one_second, "trade_high") * share_factors
     canonical_trade_low = _column(raw_one_second, "trade_low") * share_factors
@@ -188,23 +200,24 @@ def build_physical_horizon_targets(
     trade_low_for_max = torch.where(trade_present, -canonical_trade_low, torch.full_like(canonical_reference, -torch.inf))
     horizon_values: list[torch.Tensor] = []
     horizon_masks: list[torch.Tensor] = []
-    total = raw_one_second.shape[0]
+    total = raw_one_second.shape[-2]
     for horizon in horizons_us.tolist():
         steps = int(horizon) // int(base_timeframe_us)
         endpoint = origin_indices + steps
         in_range = endpoint < total
         safe_endpoint = endpoint.clamp(max=max(total - 1, 0))
-        base_price = canonical_reference[origin_indices]
-        endpoint_price = canonical_reference[safe_endpoint]
-        price_valid = in_range & reference_valid[origin_indices] & reference_valid[safe_endpoint] & (base_price > 0) & (endpoint_price > 0)
+        base_price = _gather_time(canonical_reference, origin_indices)
+        endpoint_price = _gather_time(canonical_reference, safe_endpoint)
+        price_valid = in_range & _gather_time(reference_valid, origin_indices) & _gather_time(reference_valid, safe_endpoint) & (base_price > 0) & (endpoint_price > 0)
         endpoint_return = torch.where(price_valid, torch.log(endpoint_price / base_price), 0.0)
         maxima = _window_max(trade_high, steps)
         minima = -_window_max(trade_low_for_max, steps)
-        range_available = origin_indices < maxima.numel()
-        if maxima.numel():
-            safe_origin = origin_indices.clamp(max=maxima.numel() - 1)
-            max_price = torch.where(range_available, maxima[safe_origin], base_price)
-            min_price = torch.where(range_available, minima[safe_origin], base_price)
+        window_count = maxima.shape[-1]
+        range_available = origin_indices < window_count
+        if window_count:
+            safe_origin = origin_indices.clamp(max=window_count - 1)
+            max_price = torch.where(range_available, _gather_time(maxima, safe_origin), base_price)
+            min_price = torch.where(range_available, _gather_time(minima, safe_origin), base_price)
         else:
             max_price = base_price
             min_price = base_price
@@ -213,26 +226,26 @@ def build_physical_horizon_targets(
         lower = torch.where(excursion_valid, torch.log(base_price / min_price.clamp_min(1e-12)).clamp_min(0.0), 0.0)
         starts = origin_indices + 1
         ends = safe_endpoint + 1
-        realized = (variance_prefix[ends] - variance_prefix[starts]).clamp_min(0.0).sqrt().to(raw_one_second.dtype)
+        realized = (_gather_time(variance_prefix, ends) - _gather_time(variance_prefix, starts)).clamp_min(0.0).sqrt().to(raw_one_second.dtype)
         volume = (
-            (volume_prefix[ends] - volume_prefix[starts]).clamp_min(0.0)
-            * share_factors[origin_indices].double()
+            (_gather_time(volume_prefix, ends) - _gather_time(volume_prefix, starts)).clamp_min(0.0)
+            * _gather_time(share_factors, origin_indices).double()
         ).to(raw_one_second.dtype)
-        trade_count = (trade_count_prefix[ends] - trade_count_prefix[starts]).clamp_min(0.0).to(raw_one_second.dtype)
+        trade_count = (_gather_time(trade_count_prefix, ends) - _gather_time(trade_count_prefix, starts)).clamp_min(0.0).to(raw_one_second.dtype)
         availability = [
-            (availability_prefix[family][ends] - availability_prefix[family][starts] > 0).float()
+            (_gather_time(availability_prefix[family], ends) - _gather_time(availability_prefix[family], starts) > 0).float()
             for family in ("trade", "bid", "ask")
         ]
-        quote_available = (quote_availability_prefix[ends] - quote_availability_prefix[starts] > 0).float()
+        quote_available = (_gather_time(quote_availability_prefix, ends) - _gather_time(quote_availability_prefix, starts) > 0).float()
         condition_window = torch.stack(
             [
-                _window_max(condition_flags[:, column], steps)[origin_indices.clamp(max=max(total - steps - 1, 0))]
+                _gather_time(_window_max(condition_flags[..., column], steps), origin_indices.clamp(max=max(total - steps - 1, 0)))
                 if total > steps else torch.zeros_like(origin_indices, dtype=torch.float32)
                 for column in range(4)
             ],
             dim=-1,
         )
-        condition_window = torch.where(in_range[:, None], condition_window, torch.zeros_like(condition_window))
+        condition_window = torch.where(in_range[..., None], condition_window, torch.zeros_like(condition_window))
         values = torch.stack(
             (
                 torch.asinh(endpoint_return * 100.0),
@@ -247,10 +260,10 @@ def build_physical_horizon_targets(
             ),
             dim=-1,
         )
-        masks = in_range[:, None].expand(-1, len(TARGET_NAMES)).clone()
-        masks[:, :4] &= price_valid[:, None]
-        masks[:, 1:3] &= excursion_valid[:, None]
-        masks[:, -4:] &= condition_authoritative
+        masks = in_range[..., None].expand(*in_range.shape, len(TARGET_NAMES)).clone()
+        masks[..., :4] &= price_valid[..., None]
+        masks[..., 1:3] &= excursion_valid[..., None]
+        masks[..., -4:] &= condition_authoritative
         horizon_values.append(values)
         horizon_masks.append(masks)
-    return HorizonTargets(values=torch.stack(horizon_values, dim=1), mask=torch.stack(horizon_masks, dim=1))
+    return HorizonTargets(values=torch.stack(horizon_values, dim=-2), mask=torch.stack(horizon_masks, dim=-2))

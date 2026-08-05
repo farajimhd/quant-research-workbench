@@ -426,6 +426,12 @@ Within each worker, ClickHouse iteration runs in the foreground while one
 bounded background slot compiles completed sessions. At most two session
 compilations are pending, so source I/O and tensor projection overlap without
 retaining an entire raw ticker-month or creating an unbounded memory queue.
+Inside a completed session, blocks with the same tensor geometry are compiled
+as one bounded batch: stationary projections, next-bar targets, physical
+horizon prefixes, and horizon pooling all vectorize across the block dimension.
+Tensor `searchsorted` replaces Python timestamp dictionaries. Pooling retains
+an independent time axis per block, and exact single-block equivalence is a
+regression gate, so batching cannot cross a causal or split boundary.
 The final local write remains worker-owned: measured pilot writes plus SHA-256
 certification took about 2.3--2.5 seconds for each 1.13 GiB shard, so sending
 those payloads through a separate process writer would add IPC serialization
