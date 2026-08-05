@@ -50,7 +50,7 @@ class ProfileCandidate:
     def name(self) -> str:
         return (
             f"origins-{self.origin_bars}_micro-{self.microbatch}_accum-{self.accumulation}_"
-            f"workers-{self.workers}_prefetch-{int(self.cuda_prefetch)}_compile-{int(self.compile_model)}"
+            f"workers-{self.workers}_cuda-prefetch-{int(self.cuda_prefetch)}_compile-{int(self.compile_model)}"
         )
 
 
@@ -102,6 +102,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument("--measured-steps", type=int, default=8)
     parser.add_argument("--ready-queue-blocks", type=int, default=512)
+    parser.add_argument("--worker-prefetch-batches", type=int, default=4)
     parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=1)
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -127,6 +128,7 @@ def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
         batch_size=candidate.microbatch,
         loader_workers=candidate.workers,
         ready_queue_blocks=int(args.ready_queue_blocks),
+        worker_prefetch_batches=int(args.worker_prefetch_batches),
         clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_worker),
         coverage_mode="sequential",
         coverage_blocks_per_unit=16,
