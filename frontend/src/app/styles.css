@@ -26801,6 +26801,121 @@ button {
 }
 .configuration-help-dialog-body > footer > strong { color: var(--warning); }
 
+/* Strategy Studio adopts the compact All News filter grammar for every editable
+   surface: neutral control backgrounds, a single border/focus treatment, and
+   quiet menus instead of a second, neon-specific control language. */
+.trading-configuration-page[data-configuration-section="strategy"] {
+  --strategy-control-height: calc(34px * var(--app-readable-scale, 1));
+  --strategy-control-radius: calc(8px * var(--app-readable-scale, 1));
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field input:not([type="checkbox"]),
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field select,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-lookup-button,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-detail-heading input,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-detail-heading textarea,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-exit-rule-meta input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--strategy-control-radius);
+  box-shadow: none;
+  color: var(--foreground);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field input:not([type="checkbox"]),
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field select,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-lookup-button,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-exit-rule-meta input {
+  height: var(--strategy-control-height);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-lookup-button {
+  font-size: calc(12px * var(--app-readable-scale, 1));
+  min-width: 0;
+  width: 100%;
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field input:not([type="checkbox"]):hover,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field select:hover,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-lookup-button:hover,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-detail-heading input:hover,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-detail-heading textarea:hover,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-exit-rule-meta input:hover { border-color: var(--border-strong, var(--border)); }
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field input:focus,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field select:focus,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-detail-heading input:focus,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-detail-heading textarea:focus,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-exit-rule-meta input:focus {
+  border-color: var(--focus);
+  outline: 1px solid color-mix(in oklab, var(--focus) 28%, transparent);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-number input { border-radius: var(--strategy-control-radius) 0 0 var(--strategy-control-radius) !important; }
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-number em {
+  background: var(--surface-alt);
+  border-radius: 0 var(--strategy-control-radius) var(--strategy-control-radius) 0;
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-boolean,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-mode-selector span,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-template-picker > button,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-json-inspector > header button,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help-dialog > header > button {
+  background: var(--surface);
+  border-color: var(--border);
+  border-radius: var(--strategy-control-radius);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-mode-selector input:checked + span {
+  background: var(--surface);
+  border-color: var(--border-strong, var(--border));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent);
+  color: var(--foreground);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage > summary,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-exit-route > summary,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help-dialog > header {
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage > summary {
+  border-top: 1px solid var(--border);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage > summary > div > span,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage > summary > svg,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help-dialog-title > span,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help-dialog-title small,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help-dialog-body > section > strong,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help-dialog-body > footer > strong { color: var(--muted-foreground); }
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help-dialog {
+  border-color: var(--border);
+  border-radius: calc(12px * var(--app-overlay-scale, 1));
+  box-shadow: var(--menu-shadow);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help-dialog-title > span {
+  background: var(--surface-alt);
+  border-color: var(--border);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help-dialog > header > button:hover {
+  border-color: var(--border-strong, var(--border));
+  color: var(--foreground);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help-dialog-body dl > div {
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  border-radius: calc(7px * var(--app-overlay-scale, 1));
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help-dialog-body dt { color: var(--foreground); }
+
 .strategy-order-request {
   background: color-mix(in oklab, var(--canvas-link-blue) 3%, var(--surface));
   border-top: 3px solid var(--canvas-link-blue);
