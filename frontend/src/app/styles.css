@@ -27036,3 +27036,136 @@ button {
   .strategy-rule-toolbar-fields { grid-template-columns: minmax(0, 1fr); }
   .strategy-rule-toolbar-actions { justify-content: space-between; }
 }
+
+/* Strategy Studio uses the All News filter language end-to-end.  Keep this at
+   the end of the cascade: earlier schema-specific blocks deliberately color
+   stages by meaning, but configuration editing needs one quiet neutral grammar. */
+.trading-configuration-page[data-configuration-section="strategy"] {
+  --strategy-neutral-focus: color-mix(in oklab, var(--foreground) 42%, var(--border));
+  --rule-tone: var(--muted-foreground);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field > span,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field > small,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field input,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field select,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-lookup-button,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-number em { font-size: calc(12px * var(--app-readable-scale, 1)); }
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field > span { color: var(--foreground); font-weight: 600; }
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field > small,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field > small em { color: var(--muted-foreground); font-size: calc(10px * var(--app-readable-scale, 1)); }
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field input:focus,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-field select:focus,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-detail-heading input:focus,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-detail-heading textarea:focus,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-exit-rule-meta input:focus,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-lookup-button:focus-visible {
+  border-color: var(--strategy-neutral-focus);
+  outline: 1px solid color-mix(in oklab, var(--foreground) 18%, transparent);
+  outline-offset: 0;
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-library > div > button.active,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-journey a[aria-current="step"],
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-template-picker > button:focus-visible,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-mode-selector input:checked + span {
+  background: var(--surface-alt);
+  box-shadow: inset 3px 0 0 var(--muted-foreground);
+  border-color: var(--border);
+  color: var(--foreground);
+}
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-mode-selector input:focus-visible + span { outline-color: var(--strategy-neutral-focus); }
+
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage[data-stage],
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-toolbar { --rule-tone: var(--muted-foreground); }
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage > summary,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-exit-route > summary,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-toolbar,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-condition {
+  background: var(--surface);
+  border-color: var(--border);
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  box-shadow: none;
+}
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage > summary > div > span,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage > summary > svg,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-toolbar-heading > span { color: var(--muted-foreground); }
+
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-order-request,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-handoff-result,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-smart-session {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-order-request { border-top-width: 1px; }
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-handoff-flow span { border-color: var(--border); }
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-handoff-flow svg,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-handoff-card > header > svg,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-smart-session > svg,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-handoff-card > header span,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-handoff-result span,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-smart-session span { color: var(--muted-foreground); }
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-detail-heading input { font-size: calc(18px * var(--app-readable-scale, 1)); }
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-detail-heading textarea,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage > summary p,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-handoff-card > header p,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-handoff-result small,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-smart-session p { font-size: calc(12px * var(--app-readable-scale, 1)); }
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage > summary strong,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-handoff-card > header strong { font-size: calc(14px * var(--app-readable-scale, 1)); }
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-rule-stage > summary > div > span,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-handoff-card > header span,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-handoff-result span,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-smart-session span { font-size: calc(10px * var(--app-readable-scale, 1)); }
+
+/* Neutralize the remaining workflow selection and lifecycle accents. */
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-page-icon,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-page-icon svg,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-journey a[aria-current="step"] > span:first-child,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-journey a[aria-current="step"] > svg,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-guide > svg { color: var(--muted-foreground); }
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-journey a[aria-current="step"] {
+  background: var(--surface-alt);
+  box-shadow: inset 0 -2px 0 var(--muted-foreground);
+}
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-library > div > button.active {
+  box-shadow: inset 3px 0 0 var(--muted-foreground);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-lifecycle-panel,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-lifecycle-panel[data-section] { --strategy-tone: var(--muted-foreground); border-color: var(--border); box-shadow: none; }
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-lifecycle-panel > summary,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-lifecycle-panel[open] > summary {
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+}
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-lifecycle-panel > summary small,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-lifecycle-panel > summary > svg { color: var(--muted-foreground); }
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-lifecycle-index {
+  background: var(--surface-alt);
+  border-color: var(--border);
+  color: var(--muted-foreground);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-protection-authority,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-safety-note {
+  background: var(--surface-alt);
+  border-color: var(--border);
+  border-left: 1px solid var(--border);
+}
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-protection-authority > svg,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-protection-authority span,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-protection-authority a,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-safety-note > svg { color: var(--muted-foreground); }
+
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-expert-guide span,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-order-request > header span,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-add-plan > header span,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help > button,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-help > button svg { color: var(--muted-foreground); }
