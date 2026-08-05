@@ -669,7 +669,8 @@ def audit_build(
             f"SELECT count() FROM {quote_ident(target.database)}.{quote_ident(target.ticker_table)} AS t FINAL "
             f"INNER JOIN {quote_ident(target.database)}.{quote_ident(target.event_table)} AS e FINAL "
             "ON e.published_date=t.published_date AND e.provider_article_id=t.provider_article_id "
-            "AND e.source_revision_key=t.source_revision_key",
+            "AND e.source_revision_key=t.source_revision_key "
+            f"WHERE t.renderer_version='{NEWS_RENDERER_VERSION}'",
         )
         source_block_total = scalar(
             client,
@@ -883,7 +884,8 @@ SELECT
   INNER JOIN {quote_ident(target.database)}.{quote_ident(target.event_table)} AS e FINAL
    ON e.published_date=t.published_date AND e.provider_article_id=t.provider_article_id
    AND e.source_revision_key=t.source_revision_key
-  WHERE e.published_date={day_sql} AND e.renderer_version='{version_sql}') AS current_tickers,
+  WHERE e.published_date={day_sql} AND e.renderer_version='{version_sql}'
+    AND t.renderer_version='{version_sql}') AS current_tickers,
  (SELECT sum(source_count) FROM {quote_ident(target.database)}.{quote_ident(target.rendered_table)} FINAL
   WHERE published_date={day_sql} AND renderer_version='{version_sql}') AS expected_sources,
  (SELECT count()
