@@ -46,7 +46,10 @@ from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.linear_probe import fit_ridge_probes
 from research.bar_gpt.v1.objectives import _weighted_mean, compute_loss
 from research.bar_gpt.v1.offline_shards import (
+    ShardBuildReporter,
     collate_compiled_blocks,
+    compile_prepared_unit,
+    compile_session,
     compile_unit,
     load_shard,
     materialize_block,
@@ -487,6 +490,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
             example.unit_index = 7
             example.block_offset = offset
         payload = compile_unit(examples, config, "AAA:2026-01")
+        pipelined = compile_prepared_unit([compile_session(examples)], config, "AAA:2026-01")
+        self.assertEqual(pipelined["counts"], payload["counts"])
+        self.assertTrue(torch.equal(
+            pipelined["sessions"][0]["views"]["1s"]["features"],
+            payload["sessions"][0]["views"]["1s"]["features"],
+        ))
         session = payload["sessions"][0]
         shared_rows = int(session["views"]["1s"]["features"].shape[0])
         repeated_rows = sum(int(example.raw_views["1s"].shape[0]) for example in examples)
@@ -506,6 +515,16 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertTrue(torch.equal(cached_batch.autoregressive_mask[name], live_batch.autoregressive_mask[name]), name)
         self.assertTrue(torch.equal(cached_batch.horizon_targets, live_batch.horizon_targets))
         self.assertTrue(torch.equal(cached_batch.horizon_mask, live_batch.horizon_mask))
+
+    def test_offline_reporter_tracks_known_worker_totals(self) -> None:
+        reporter = ShardBuildReporter(
+            total=5, completed=0, root=Path("D:/runtime"), workers=2,
+            layout="text", refresh=60.0, worker_totals=(2, 3),
+        )
+        reporter.event(("worker", 0, "starting", "AAA", 2))
+        reporter.event(("block", 0, "AAA:2026-01", "2026-01-02", 8, 8))
+        reporter.event(("session", 0, "AAA:2026-01", "2026-01-02", 1))
+        self.assertEqual(reporter.worker_progress[0], [0, 2, 1, 8])
 
     def test_sequential_session_emits_tail_origins_with_unavailable_horizons_masked(self) -> None:
         config = self.data_config()

@@ -12,6 +12,7 @@ import sys
 import time
 import traceback
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -78,6 +79,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start-date", default=defaults.start_date)
     parser.add_argument("--end-date", default=defaults.end_date)
     parser.add_argument("--workers", type=int, default=min(12, max(2, (os.cpu_count() or 8) // 4)))
+    parser.add_argument("--cpu-threads-per-worker", type=int, default=0, help="Zero auto-partitions CPU threads across workers.")
     parser.add_argument("--origin-bars-1s", type=int, default=4096)
     parser.add_argument("--clickhouse-query-days", type=int, default=defaults.clickhouse_query_days)
     parser.add_argument("--clickhouse-prefetch-pages", type=int, default=defaults.clickhouse_prefetch_pages)
@@ -93,6 +95,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.workers <= 0:
         parser.error("--workers must be positive")
+    if args.cpu_threads_per_worker < 0:
+        parser.error("--cpu-threads-per-worker cannot be negative")
     if args.refresh_seconds <= 0:
         parser.error("--refresh-seconds must be positive")
     if args.max_shards < 0:
@@ -335,11 +339,22 @@ def compile_session(examples: Sequence[BarGPTExample]) -> dict[str, Any]:
     }
 
 
+def _compile_session_timed(examples: Sequence[BarGPTExample]) -> tuple[dict[str, Any], float]:
+    started = time.perf_counter()
+    return compile_session(examples), time.perf_counter() - started
+
+
 def compile_unit(examples: Sequence[BarGPTExample], config: DataConfig, key: str) -> dict[str, Any]:
     by_date: dict[str, list[BarGPTExample]] = {}
     for example in examples:
         by_date.setdefault(example.local_date, []).append(example)
     sessions = [compile_session(by_date[day]) for day in sorted(by_date)]
+    return compile_prepared_unit(sessions, config, key)
+
+
+def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig, key: str) -> dict[str, Any]:
+    """Assemble already compiled sessions without retaining a month of raw examples."""
+    sessions = list(sessions)
     origins = sum(
         int(block["origin_indices"].numel())
         for session in sessions for block in session["blocks"]
@@ -526,14 +541,17 @@ def _worker_main(
     certify_hash: bool,
     events: Any,
     stop: Any,
+    cpu_threads: int,
 ) -> None:
     try:
+        torch.set_num_threads(max(1, int(cpu_threads)))
+        torch.set_num_interop_threads(1)
         planned = {
             unit_key(unit.ticker, unit.start_date)
             for unit in month_units(config.start_date, config.end_date, tickers, seed=0)
             if unit_key(unit.ticker, unit.start_date) not in skipped
         }
-        events.put(("worker", worker_id, "starting", ",".join(tickers)))
+        events.put(("worker", worker_id, "starting", ",".join(tickers), len(planned)))
         dataset = BarGPTIterableDataset(
             data_config=config,
             stream_config=_stream_config(config),
@@ -543,34 +561,82 @@ def _worker_main(
             skip_unit_keys=skipped,
         )
         current_key = ""
+        current_date = ""
         current_examples: list[BarGPTExample] = []
+        compiled_sessions: list[dict[str, Any]] = []
+        pending: deque[tuple[str, Future[tuple[dict[str, Any], float]]]] = deque()
         seen: set[str] = set()
+        fetched_blocks = 0
+        unit_started = 0.0
+        compile_cpu_seconds = 0.0
 
-        def flush() -> None:
-            nonlocal current_examples, current_key
+        def collect_one(*, wait: bool) -> None:
+            nonlocal compile_cpu_seconds
+            if not pending or (not wait and not pending[0][1].done()):
+                return
+            local_date, future = pending.popleft()
+            session, compile_seconds = future.result()
+            compiled_sessions.append(session)
+            compile_cpu_seconds += float(compile_seconds)
+            events.put(("session", worker_id, current_key, local_date, len(compiled_sessions)))
+
+        def submit_session(executor: ThreadPoolExecutor) -> None:
+            nonlocal current_examples
             if not current_examples:
                 return
-            events.put(("unit", worker_id, "compiling", current_key))
-            payload = compile_unit(current_examples, config, current_key)
+            local_date = current_examples[0].local_date
+            pending.append((local_date, executor.submit(_compile_session_timed, tuple(current_examples))))
+            current_examples = []
+            # Bound compiler memory while keeping one session compiling and one queued.
+            if len(pending) >= 2:
+                collect_one(wait=True)
+
+        def flush_unit(executor: ThreadPoolExecutor) -> None:
+            nonlocal compiled_sessions, current_key, current_date, unit_started, compile_cpu_seconds
+            submit_session(executor)
+            while pending:
+                collect_one(wait=True)
+            if not compiled_sessions:
+                return
+            events.put(("unit", worker_id, "assembling", current_key))
+            payload = compile_prepared_unit(compiled_sessions, config, current_key)
             events.put(("unit", worker_id, "writing", current_key))
+            write_started = time.perf_counter()
             evidence = write_unit(Path(root), payload, certify_hash=certify_hash)
+            evidence["prepare_wall_seconds"] = max(0.0, write_started - unit_started)
+            evidence["compile_cpu_seconds"] = compile_cpu_seconds
+            evidence["unit_wall_seconds"] = max(0.0, time.perf_counter() - unit_started)
+            _atomic_json(sidecar_path(shard_path(Path(root), current_key)), evidence)
             seen.add(current_key)
             events.put(("complete", worker_id, current_key, evidence))
-            current_examples = []
+            compiled_sessions = []
+            current_date = ""
+            unit_started = 0.0
+            compile_cpu_seconds = 0.0
 
-        for example in dataset:
-            if stop.is_set():
-                break
-            key = unit_key(example.ticker, example.local_date)
-            if current_key and key != current_key:
-                flush()
-            current_key = key
-            current_examples.append(example)
-        if not stop.is_set():
-            flush()
-            for key in sorted(planned - seen):
-                evidence = _write_empty(Path(root), config, key)
-                events.put(("complete", worker_id, key, evidence))
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"bar-gpt-compile-{worker_id}") as executor:
+            for example in dataset:
+                if stop.is_set():
+                    break
+                key = unit_key(example.ticker, example.local_date)
+                if current_key and key != current_key:
+                    flush_unit(executor)
+                if current_date and example.local_date != current_date:
+                    submit_session(executor)
+                current_key = key
+                if not unit_started:
+                    unit_started = time.perf_counter()
+                current_date = example.local_date
+                current_examples.append(example)
+                fetched_blocks += 1
+                if len(current_examples) == 1 or len(current_examples) % 8 == 0:
+                    events.put(("block", worker_id, current_key, current_date, len(current_examples), fetched_blocks))
+                collect_one(wait=False)
+            if not stop.is_set():
+                flush_unit(executor)
+                for key in sorted(planned - seen):
+                    evidence = _write_empty(Path(root), config, key)
+                    events.put(("complete", worker_id, key, evidence))
         events.put(("worker", worker_id, "stopped" if stop.is_set() else "completed", ""))
     except BaseException as exc:
         events.put(("failure", worker_id, exc.__class__.__name__, str(exc), traceback.format_exc()))
@@ -580,6 +646,7 @@ class ShardBuildReporter:
     def __init__(
         self, *, total: int, completed: int, root: Path, workers: int, layout: str, refresh: float,
         initial_bytes: int = 0, initial_blocks: int = 0, initial_origins: int = 0,
+        worker_totals: Sequence[int] = (),
     ) -> None:
         self.total = total
         self.completed = completed
@@ -596,6 +663,9 @@ class ShardBuildReporter:
         self.retries = 0
         self.state = "starting"
         self.worker_state: dict[int, tuple[str, str]] = {}
+        self.worker_progress: dict[int, list[int]] = {
+            worker: [0, int(total), 0, 0] for worker, total in enumerate(worker_totals)
+        }
         self.messages: deque[str] = deque(maxlen=6)
         self._live: Any | None = None
         self._console: Any | None = None
@@ -614,7 +684,12 @@ class ShardBuildReporter:
         return self
 
     def __exit__(self, exc_type: object, exc: object, _tb: object) -> bool:
-        self.state = "interrupted" if exc_type is KeyboardInterrupt else ("failed" if exc else "completed")
+        if exc_type is KeyboardInterrupt:
+            self.state = "interrupted"
+        elif exc:
+            self.state = "failed"
+        elif self.state not in {"failed", "interrupted"}:
+            self.state = "completed"
         if exc:
             self.message(str(exc))
         self.refresh(force=True)
@@ -633,14 +708,28 @@ class ShardBuildReporter:
         worker = int(value[1])
         if kind == "worker":
             self.worker_state[worker] = (str(value[2]), str(value[3]))
+            if len(value) > 4:
+                self.worker_progress[worker] = [0, int(value[4]), 0, 0]
         elif kind == "unit":
             self.worker_state[worker] = (str(value[2]), str(value[3]))
+        elif kind == "block":
+            progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0])
+            progress[3] = int(value[5])
+            self.worker_state[worker] = ("fetching", f"{value[2]} {value[3]} block {value[4]}")
+        elif kind == "session":
+            progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0])
+            progress[2] = int(value[4])
+            self.worker_state[worker] = ("compiled", f"{value[2]} {value[3]} ({value[4]} sessions)")
         elif kind == "complete":
             evidence = value[3]
             self.completed += 1
             self.bytes += int(evidence["bytes"])
             self.blocks += int(evidence["blocks"])
             self.origins += int(evidence["origins"])
+            progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0])
+            progress[0] += 1
+            progress[2] = 0
+            progress[3] = 0
             self.worker_state[worker] = ("ready", "")
             self.messages.append(f"{time.strftime('%H:%M:%S')} certified {value[2]} ({int(evidence['bytes']) / 2**30:.2f} GiB)")
         elif kind == "failure":
@@ -659,7 +748,10 @@ class ShardBuildReporter:
             elapsed = max(time.perf_counter() - self.started, 1e-9)
             rate = (self.completed - self.initial_completed) / elapsed
             eta = (self.total - self.completed) / rate if rate > 0 else 0
-            active = ", ".join(f"w{worker}:{state}:{focus}" for worker, (state, focus) in sorted(self.worker_state.items()))
+            active = ", ".join(
+                f"w{worker}:{self.worker_progress.get(worker, [0, 0])[0]}/{self.worker_progress.get(worker, [0, 0])[1]}:{state}:{focus}"
+                for worker, (state, focus) in sorted(self.worker_state.items())
+            )
             print(
                 f"state={self.state} certified={self.completed}/{self.total} rate={rate:.3f}_shards/s "
                 f"eta={_duration(eta) if eta else '-'} written={self.bytes / 2**30:.2f}GiB "
@@ -698,13 +790,24 @@ class ShardBuildReporter:
             summary.add_row(f"[bold]rate[/] {rate * 60:.2f}/min", f"[bold]written[/] {self.bytes / 2**30:.2f} GiB")
             summary.add_row(f"[bold]failures[/] {self.failures}", f"[bold]elapsed[/] {_duration(elapsed)}")
         workers = Table(show_header=True, header_style="bold", expand=True)
-        workers.add_column("worker", no_wrap=True); workers.add_column("stage", no_wrap=True); workers.add_column("current ticker-month", ratio=1)
+        workers.add_column("worker", no_wrap=True)
+        workers.add_column("assigned progress", ratio=1)
+        workers.add_column("stage", no_wrap=True)
+        workers.add_column("current ticker-month/session", ratio=2)
         worker_limit = self.workers if height >= 34 else min(self.workers, 4)
         for worker in range(worker_limit):
             state, focus = self.worker_state.get(worker, ("queued", ""))
-            workers.add_row(str(worker), state, focus or "-")
+            done, total, sessions, blocks = self.worker_progress.get(worker, [0, 0, 0, 0])
+            fraction = done / total if total else 0.0
+            cells = 10
+            filled = min(cells, int(fraction * cells))
+            bar = f"[green]{'=' * filled}[/][dim]{'-' * (cells - filled)}[/] {done}/{total}"
+            detail = focus or "-"
+            if sessions or blocks:
+                detail = f"{detail} · sessions {sessions} · blocks {blocks}"
+            workers.add_row(str(worker), bar, state, detail)
         if worker_limit < self.workers:
-            workers.add_row("...", "summary", f"{self.workers - worker_limit} additional workers")
+            workers.add_row("...", "-", "summary", f"{self.workers - worker_limit} additional workers")
         recent = "\n".join(self.messages) if self.messages else "Waiting for first durable completion"
         primary = Panel(Group(progress, summary), title="BarGPT offline tensor compiler", border_style="cyan")
         message_limit = 1 if height < 22 else (3 if height < 32 else 6)
@@ -772,6 +875,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.execute:
         print("Plan only; add --execute to write atomically certified tensor shards.", flush=True)
         return 0
+    allowed = set(remaining)
+    selected_tickers = tuple(ticker for ticker in config.tickers if any(key.startswith(f"{ticker}:") for key in allowed))
+    partitions = _partition_tickers(selected_tickers, int(args.workers)) if selected_tickers else []
+    cpu_threads = int(args.cpu_threads_per_worker) or max(1, (os.cpu_count() or 8) // max(1, len(partitions)))
     load_env_files(discover_clickhouse_env_files(), verbose=True)
     client = ClickHouseHttpClient(
         default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
@@ -785,7 +892,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "data_config": _canonical_config(config),
         "planned_units": len(plan),
         "selected_units": len(remaining),
-        "workers": min(int(args.workers), len(config.tickers)),
+        "workers": len(partitions),
+        "cpu_threads_per_worker": cpu_threads,
     })
     if args.skip_hash:
         print("WARNING: --skip-hash writes uncertified shards that will not be resume-skipped.", file=sys.stderr, flush=True)
@@ -793,9 +901,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         catalog = rebuild_catalog(root, expected_hash)
         print(f"All units already certified: {catalog['counts']}", flush=True)
         return 0
-    allowed = set(remaining)
-    selected_tickers = tuple(ticker for ticker in config.tickers if any(key.startswith(f"{ticker}:") for key in allowed))
-    partitions = _partition_tickers(selected_tickers, int(args.workers))
+    partition_totals = [
+        sum(1 for key in allowed if key.partition(":")[0] in set(tickers))
+        for tickers in partitions
+    ]
     skipped = frozenset(key for key in plan if key not in allowed)
     context = mp.get_context("spawn")
     events = context.Queue(maxsize=max(128, len(partitions) * 16))
@@ -803,7 +912,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     processes = [
         context.Process(
             target=_worker_main,
-            args=(worker, tickers, config, str(root), skipped, not args.skip_hash, events, stop),
+            args=(worker, tickers, config, str(root), skipped, not args.skip_hash, events, stop, cpu_threads),
             name=f"bar-gpt-shard-{worker}",
         )
         for worker, tickers in enumerate(partitions)
@@ -815,6 +924,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         initial_bytes=sum(int(item["bytes"]) for item in existing.values()),
         initial_blocks=sum(int(item["blocks"]) for item in existing.values()),
         initial_origins=sum(int(item["origins"]) for item in existing.values()),
+        worker_totals=partition_totals,
     ) as reporter:
         for process in processes:
             process.start()

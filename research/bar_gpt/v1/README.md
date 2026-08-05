@@ -404,6 +404,21 @@ one-second authority begins in 2020; daily history begins in 2019 and remains
 the calendar warmup authority. The compiler never fabricates unavailable 2019
 intraday sessions.
 
+Within each worker, ClickHouse iteration runs in the foreground while one
+bounded background slot compiles completed sessions. At most two session
+compilations are pending, so source I/O and tensor projection overlap without
+retaining an entire raw ticker-month or creating an unbounded memory queue.
+The final local write remains worker-owned: measured pilot writes plus SHA-256
+certification took about 2.3--2.5 seconds for each 1.13 GiB shard, so sending
+those payloads through a separate process writer would add IPC serialization
+and memory pressure to a stage that accounted for less than one percent of the
+observed wall time.
+
+Each spawned process also receives a bounded PyTorch CPU-thread budget. Zero is
+the automatic setting and divides logical CPUs across active workers; override
+it only from measured evidence with `--cpu-threads-per-worker N`. This prevents
+every worker from independently creating a workstation-sized CPU thread pool.
+
 Each month stores every session-level 1s, intraday-rollup, and calendar tensor
 once. Block records retain only slices, exact causal prefix corrections,
 autoregressive masks, origin-specific physical-horizon targets, and metadata.
@@ -421,8 +436,12 @@ the config hash and therefore cannot silently reuse an incompatible cache.
 is the explicit replacement path. `--skip-hash` is diagnostic only and produces
 uncertified shards that are intentionally not resume-skipped.
 
-Interactive output shows durable coverage, active worker stage and ticker-month,
-written GiB, blocks, origins, rate, ETA, failures, output, and resume semantics.
+Interactive output gives every worker its own assigned-shard total and progress
+bar, plus its active ticker-month, session, fetched block count, compiled-session
+count, and stage. The primary display also shows durable coverage, written GiB,
+origins, rate, ETA, failures, output, and resume semantics. New sidecars record
+preparation wall time, compilation CPU time, write/hash time, and total unit wall
+time so subsequent tuning is measurement-based.
 Redirected output is plain text. Ctrl+C lets in-flight atomic writes finish,
 stops workers, rebuilds the certified catalog, and returns exit code 130.
 

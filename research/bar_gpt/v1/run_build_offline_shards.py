@@ -18,6 +18,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     parser.add_argument("--execute", action="store_true", help="Required to write; omit for the safe plan.")
     parser.add_argument("--output-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v1")
     parser.add_argument("--workers", type=int, default=min(12, max(2, (os.cpu_count() or 8) // 4)))
+    parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
     parser.add_argument("--tickers", default=",".join(BAR_GPT_TRAINING_TICKERS))
     parser.add_argument("--start-date", default="2020-01-01")
     parser.add_argument("--end-date", default="2026-08-01")
@@ -32,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.executable, "-B", "-m", "research.bar_gpt.v1.offline_shards",
         "--output-root", args.output_root,
         "--workers", str(args.workers),
+        "--cpu-threads-per-worker", str(args.cpu_threads_per_worker),
         "--tickers", args.tickers,
         "--start-date", args.start_date,
         "--end-date", args.end_date,
