@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from copy import deepcopy
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+from dotenv import load_dotenv
 
 from src.backend.trading_runtime_service import (
     get_strategy_definition,
@@ -44,6 +48,29 @@ SUPPORTED_URGENCIES = {
     "very_urgent",
 }
 SUPPORTED_MODES = {"replay", "backtest", "backtest_debug", "paper", "live"}
+
+
+def _load_configuration_env() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    for env_path in (Path.cwd() / ".env", repo_root / ".env"):
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
+    load_dotenv(override=False)
+
+
+def _resolved_source_account_id(binding: dict[str, Any]) -> str:
+    environment_key = str(binding.get("source_account_env") or "").strip()
+    if environment_key:
+        _load_configuration_env()
+        return os.environ.get(environment_key, "").strip()
+    return str(binding.get("source_account_id") or "").strip()
+
+
+def _runtime_account_binding(binding: dict[str, Any]) -> dict[str, Any]:
+    resolved = deepcopy(binding)
+    if str(resolved.get("source_account_env") or "").strip():
+        resolved["source_account_id"] = _resolved_source_account_id(resolved)
+    return resolved
 
 
 def capability_catalog() -> list[dict[str, Any]]:
@@ -366,7 +393,7 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deploymen
     ]
     account_keys = {str(row["account_key"]) for row in mandates}
     bindings = [
-        deepcopy(row) for row in dict(model["accounts"]).get("bindings") or []
+        _runtime_account_binding(dict(row)) for row in dict(model["accounts"]).get("bindings") or []
         if str(row.get("account_key")) in account_keys
     ]
     mandate_by_account = {str(row["account_key"]): row for row in mandates}
@@ -943,7 +970,7 @@ def _default_draft() -> dict[str, Any]:
     bindings = [
         {
             "account_key": account_keys[account_id],
-            "name": "Replay account" if account_id == "replay" else account_id,
+            "name": "Backtest account" if account_id in {"replay", "backtest"} else account_id,
             "source_account_id": account_id,
             "account_class": "simulated",
             "base_currency": "USD",
@@ -954,6 +981,7 @@ def _default_draft() -> dict[str, Any]:
         }
         for account_id in account_ids
     ]
+    _ensure_environment_account_bindings(bindings, policy["policy_id"])
     mandates = [
         {
             "mandate_id": f"balanced-{binding['account_key']}",
@@ -969,6 +997,7 @@ def _default_draft() -> dict[str, Any]:
             "minimum_replacement_improvement_pct": 20.0,
         }
         for binding in bindings
+        if "replay" in binding["modes"]
     ]
     return {
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
@@ -1067,8 +1096,9 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         modes = set(row.get("modes") or [])
         if not modes or not modes <= SUPPORTED_MODES:
             raise ValueError(f"Account {row.get('account_key')} has unsupported runtime modes")
-        if require_runtime_ready and modes.intersection({"paper", "live"}) and not str(row.get("source_account_id") or "").strip():
-            raise ValueError(f"Account {row.get('account_key')} requires an exact broker account id for Paper or Live")
+        if require_runtime_ready and modes.intersection({"paper", "live"}) and not _resolved_source_account_id(row):
+            reference = str(row.get("source_account_env") or "broker account id")
+            raise ValueError(f"Account {row.get('account_key')} requires an exact broker account id ({reference}) for Paper or Live")
         if not str(row.get("session_key") or "").strip():
             raise ValueError(f"Account {row.get('account_key')} requires a session key")
 
@@ -1472,6 +1502,10 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             oms_profile["settings"] = settings
         for binding in dict(result.get("accounts") or {}).get("bindings") or []:
             _normalize_account_binding(binding)
+        _ensure_environment_account_bindings(
+            result["accounts"]["bindings"],
+            str(result["portfolio"]["policies"][0]["policy_id"]),
+        )
         return result
     if not isinstance(raw.get("strategy"), dict) or "strategy_id" not in dict(raw.get("strategy") or {}):
         return deepcopy(raw)
@@ -1595,8 +1629,52 @@ def _strategy_profile(
 
 def _normalize_account_binding(binding: dict[str, Any]) -> None:
     account_key = str(binding.get("account_key") or "")
-    fallback = "Replay account" if account_key == "replay" else account_key or "Trading account"
+    fallback = "Backtest account" if account_key in {"replay", "backtest"} else account_key or "Trading account"
+    if account_key == "replay" and str(binding.get("name") or "") == "Replay account":
+        binding["name"] = fallback
+        return
     binding["name"] = str(binding.get("name") or binding.get("display_name") or fallback)
+
+
+def _ensure_environment_account_bindings(bindings: list[dict[str, Any]], policy_id: str) -> None:
+    managed = [
+        {
+            "account_key": "paper",
+            "name": "IBKR Paper account",
+            "source_account_env": "IBKR_PAPER_ACCOUNT_ID",
+            "source_account_id": "",
+            "account_class": "paper",
+            "base_currency": "USD",
+            "session_key": "ibkr-paper",
+            "portfolio_policy_id": policy_id,
+            "enabled": False,
+            "system_managed": True,
+            "modes": ["paper"],
+        },
+        {
+            "account_key": "cash",
+            "name": "IBKR Cash account",
+            "source_account_env": "IBKR_CASH_ACCOUNT_ID",
+            "source_account_id": "",
+            "account_class": "cash",
+            "base_currency": "USD",
+            "session_key": "ibkr-live",
+            "portfolio_policy_id": policy_id,
+            "enabled": False,
+            "system_managed": True,
+            "modes": ["live"],
+        },
+    ]
+    managed_by_key = {binding["account_key"]: binding for binding in managed}
+    existing = {str(binding.get("account_key") or "") for binding in bindings}
+    for binding in bindings:
+        template = managed_by_key.get(str(binding.get("account_key") or ""))
+        if template is None or str(binding.get("source_account_env") or "") != template["source_account_env"]:
+            continue
+        if not bool(binding.get("system_managed")):
+            binding["enabled"] = False
+            binding["system_managed"] = True
+    bindings.extend(deepcopy(binding) for binding in managed if binding["account_key"] not in existing)
 
 
 def _lifecycle_order_intents(lifecycle: dict[str, Any]) -> list[dict[str, Any]]:

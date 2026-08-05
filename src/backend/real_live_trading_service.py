@@ -208,11 +208,14 @@ def _approved_configuration_checks(
             and (account.account_key, str(row.get("deployment_id") or "")) in mandate_pairs
             for row in deployments
         )
+        configured_account_id = str(binding.get("source_account_id") or "").strip() if binding else ""
+        if binding and not configured_account_id:
+            configured_account_id = os.environ.get(str(binding.get("source_account_env") or ""), "").strip()
         ready = bool(
             binding
             and bool(binding.get("enabled", True))
             and account.trading_mode in set(binding.get("modes") or [])
-            and str(binding.get("source_account_id") or "") == account.account_id
+            and configured_account_id == account.account_id
             and mode_ready
         )
         checks.append({

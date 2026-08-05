@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import os
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from src.backend.trading_configuration_service import (
     _default_draft,
     _migrate_draft,
+    _resolved_source_account_id,
     _validate_draft,
     approved_configuration,
     capability_catalog,
@@ -24,6 +26,31 @@ from src.trading_runtime.strategy_engine import long_momentum_strategy_definitio
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
+    def test_environment_bound_paper_and_cash_accounts_keep_ids_out_of_draft(self) -> None:
+        with patch.dict(os.environ, {
+            "IBKR_PAPER_ACCOUNT_ID": "DU-PAPER-TEST",
+            "IBKR_CASH_ACCOUNT_ID": "U-CASH-TEST",
+        }, clear=False), patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), patch(
+            "src.backend.trading_configuration_service.list_strategy_assignments",
+            return_value=[],
+        ):
+            draft = _default_draft()
+            accounts = {row["account_key"]: row for row in draft["accounts"]["bindings"]}
+            self.assertEqual(set(accounts), {"replay", "paper", "cash"})
+            self.assertEqual(accounts["replay"]["name"], "Backtest account")
+            self.assertEqual(accounts["replay"]["modes"], ["replay", "backtest", "backtest_debug"])
+            self.assertEqual(accounts["paper"]["source_account_env"], "IBKR_PAPER_ACCOUNT_ID")
+            self.assertEqual(accounts["cash"]["source_account_env"], "IBKR_CASH_ACCOUNT_ID")
+            self.assertEqual(accounts["paper"]["source_account_id"], "")
+            self.assertEqual(accounts["cash"]["source_account_id"], "")
+            self.assertFalse(accounts["paper"]["enabled"])
+            self.assertFalse(accounts["cash"]["enabled"])
+            self.assertEqual(_resolved_source_account_id(accounts["paper"]), "DU-PAPER-TEST")
+            self.assertEqual(_resolved_source_account_id(accounts["cash"]), "U-CASH-TEST")
+
     def test_schema_v8_migration_removes_legacy_session_overrides_and_adds_policy_catalogs(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
