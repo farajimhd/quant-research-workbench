@@ -24,7 +24,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--batch-size": "16",
     "--loader-workers": "16",
     "--ready-queue-blocks": "512",
-    "--worker-prefetch-batches": "4",
+    "--worker-prefetch-batches": "8",
     "--clickhouse-max-threads-per-worker": "1",
     "--clickhouse-query-days": "7",
     "--clickhouse-max-bytes-before-external-sort": "1073741824",
