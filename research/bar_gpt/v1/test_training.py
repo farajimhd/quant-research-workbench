@@ -555,12 +555,13 @@ class LoaderTrainerContractTest(unittest.TestCase):
     def test_offline_reporter_tracks_known_worker_totals(self) -> None:
         reporter = ShardBuildReporter(
             total=5, completed=0, root=Path("D:/runtime"), workers=2,
-            layout="text", refresh=60.0, worker_totals=(2, 3),
+            layout="text", refresh=60.0, worker_totals=(2, 3), worker_block_totals=(30, 45),
         )
-        reporter.event(("worker", 0, "starting", "AAA", 2))
+        reporter.event(("worker", 0, "starting", "AAA", 2, 30))
         reporter.event(("block", 0, "AAA:2026-01", "2026-01-02", 8, 8))
-        reporter.event(("session", 0, "AAA:2026-01", "2026-01-02", 1))
-        self.assertEqual(reporter.worker_progress[0], [0, 2, 1, 8])
+        reporter.event(("session", 0, "AAA:2026-01", "2026-01-02", 1, 8))
+        self.assertEqual(reporter.worker_progress[0], [0, 2, 8, 30, 1, 8])
+        self.assertEqual(reporter.compiled_work_blocks, 8)
 
     def test_sequential_session_emits_tail_origins_with_unavailable_horizons_masked(self) -> None:
         config = self.data_config()

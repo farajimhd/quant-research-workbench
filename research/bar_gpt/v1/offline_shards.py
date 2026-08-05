@@ -30,7 +30,7 @@ from research.bar_gpt.v1.data import (
 from research.bar_gpt.v1.features import project_stationary_features
 from research.bar_gpt.v1.loader import BarGPTIterableDataset, month_units
 from research.bar_gpt.v1.targets import build_next_bar_targets, build_physical_horizon_targets
-from research.bar_gpt.v1.train import _stream_config, preflight
+from research.bar_gpt.v1.train import _stream_config, preflight, sequential_coverage_counts
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
     default_clickhouse_password,
@@ -542,6 +542,7 @@ def _worker_main(
     events: Any,
     stop: Any,
     cpu_threads: int,
+    assigned_blocks: int,
 ) -> None:
     try:
         torch.set_num_threads(max(1, int(cpu_threads)))
@@ -551,7 +552,7 @@ def _worker_main(
             for unit in month_units(config.start_date, config.end_date, tickers, seed=0)
             if unit_key(unit.ticker, unit.start_date) not in skipped
         }
-        events.put(("worker", worker_id, "starting", ",".join(tickers), len(planned)))
+        events.put(("worker", worker_id, "starting", ",".join(tickers), len(planned), assigned_blocks))
         dataset = BarGPTIterableDataset(
             data_config=config,
             stream_config=_stream_config(config),
@@ -567,18 +568,20 @@ def _worker_main(
         pending: deque[tuple[str, Future[tuple[dict[str, Any], float]]]] = deque()
         seen: set[str] = set()
         fetched_blocks = 0
+        compiled_blocks = 0
         unit_started = 0.0
         compile_cpu_seconds = 0.0
 
         def collect_one(*, wait: bool) -> None:
-            nonlocal compile_cpu_seconds
+            nonlocal compile_cpu_seconds, compiled_blocks
             if not pending or (not wait and not pending[0][1].done()):
                 return
             local_date, future = pending.popleft()
             session, compile_seconds = future.result()
             compiled_sessions.append(session)
             compile_cpu_seconds += float(compile_seconds)
-            events.put(("session", worker_id, current_key, local_date, len(compiled_sessions)))
+            compiled_blocks += len(session["blocks"])
+            events.put(("session", worker_id, current_key, local_date, len(compiled_sessions), compiled_blocks))
 
         def submit_session(executor: ThreadPoolExecutor) -> None:
             nonlocal current_examples
@@ -646,7 +649,7 @@ class ShardBuildReporter:
     def __init__(
         self, *, total: int, completed: int, root: Path, workers: int, layout: str, refresh: float,
         initial_bytes: int = 0, initial_blocks: int = 0, initial_origins: int = 0,
-        worker_totals: Sequence[int] = (),
+        worker_totals: Sequence[int] = (), worker_block_totals: Sequence[int] = (),
     ) -> None:
         self.total = total
         self.completed = completed
@@ -659,12 +662,15 @@ class ShardBuildReporter:
         self.bytes = int(initial_bytes)
         self.blocks = int(initial_blocks)
         self.origins = int(initial_origins)
+        self.total_work_blocks = sum(int(value) for value in worker_block_totals)
+        self.compiled_work_blocks = 0
         self.failures = 0
         self.retries = 0
         self.state = "starting"
         self.worker_state: dict[int, tuple[str, str]] = {}
         self.worker_progress: dict[int, list[int]] = {
-            worker: [0, int(total), 0, 0] for worker, total in enumerate(worker_totals)
+            worker: [0, int(total), 0, int(worker_block_totals[worker]), 0, 0]
+            for worker, total in enumerate(worker_totals)
         }
         self.messages: deque[str] = deque(maxlen=6)
         self._live: Any | None = None
@@ -709,27 +715,29 @@ class ShardBuildReporter:
         if kind == "worker":
             self.worker_state[worker] = (str(value[2]), str(value[3]))
             if len(value) > 4:
-                self.worker_progress[worker] = [0, int(value[4]), 0, 0]
+                block_total = int(value[5]) if len(value) > 5 else 0
+                self.worker_progress[worker] = [0, int(value[4]), 0, block_total, 0, 0]
         elif kind == "unit":
             self.worker_state[worker] = (str(value[2]), str(value[3]))
         elif kind == "block":
-            progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0])
-            progress[3] = int(value[5])
+            progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0, 0, 0])
+            progress[5] = int(value[5])
             self.worker_state[worker] = ("fetching", f"{value[2]} {value[3]} block {value[4]}")
         elif kind == "session":
-            progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0])
-            progress[2] = int(value[4])
-            self.worker_state[worker] = ("compiled", f"{value[2]} {value[3]} ({value[4]} sessions)")
+            progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0, 0, 0])
+            new_compiled = int(value[5])
+            self.compiled_work_blocks += max(0, new_compiled - progress[2])
+            progress[2] = new_compiled
+            progress[4] += 1
+            self.worker_state[worker] = ("compiled", f"{value[2]} {value[3]}")
         elif kind == "complete":
             evidence = value[3]
             self.completed += 1
             self.bytes += int(evidence["bytes"])
             self.blocks += int(evidence["blocks"])
             self.origins += int(evidence["origins"])
-            progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0])
+            progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0, 0, 0])
             progress[0] += 1
-            progress[2] = 0
-            progress[3] = 0
             self.worker_state[worker] = ("ready", "")
             self.messages.append(f"{time.strftime('%H:%M:%S')} certified {value[2]} ({int(evidence['bytes']) / 2**30:.2f} GiB)")
         elif kind == "failure":
@@ -746,16 +754,17 @@ class ShardBuildReporter:
         if force or now - self._last_text >= 15:
             self._last_text = now
             elapsed = max(time.perf_counter() - self.started, 1e-9)
-            rate = (self.completed - self.initial_completed) / elapsed
-            eta = (self.total - self.completed) / rate if rate > 0 else 0
+            rate = self.compiled_work_blocks / elapsed
+            eta = (self.total_work_blocks - self.compiled_work_blocks) / rate if rate > 0 else 0
             active = ", ".join(
-                f"w{worker}:{self.worker_progress.get(worker, [0, 0])[0]}/{self.worker_progress.get(worker, [0, 0])[1]}:{state}:{focus}"
+                f"w{worker}:{self.worker_progress.get(worker, [0, 0, 0, 0])[2]}/{self.worker_progress.get(worker, [0, 0, 0, 0])[3]}blocks:{state}:{focus}"
                 for worker, (state, focus) in sorted(self.worker_state.items())
             )
             print(
-                f"state={self.state} certified={self.completed}/{self.total} rate={rate:.3f}_shards/s "
+                f"state={self.state} compiled_blocks={self.compiled_work_blocks}/{self.total_work_blocks} "
+                f"certified_shards={self.completed}/{self.total} rate={rate:.1f}_blocks/s "
                 f"eta={_duration(eta) if eta else '-'} written={self.bytes / 2**30:.2f}GiB "
-                f"blocks={self.blocks:,} origins={self.origins:,} failures={self.failures} active=[{active}]",
+                f"certified_blocks={self.blocks:,} origins={self.origins:,} failures={self.failures} active=[{active}]",
                 flush=True,
             )
 
@@ -767,27 +776,30 @@ class ShardBuildReporter:
         width = self._console.size.width if self._console is not None else 120
         height = self._console.size.height if self._console is not None else 40
         elapsed = max(time.perf_counter() - self.started, 1e-9)
-        rate = max(0.0, (self.completed - self.initial_completed) / elapsed)
-        remaining = max(0, self.total - self.completed)
+        rate = max(0.0, self.compiled_work_blocks / elapsed)
+        remaining = max(0, self.total_work_blocks - self.compiled_work_blocks)
         eta = remaining / rate if rate else 0
         progress = Progress(
-            TextColumn("[bold cyan]Certified ticker-month shards[/]"),
+            TextColumn("[bold cyan]Compiled training blocks[/]"),
             BarColumn(complete_style="cyan", finished_style="green"),
             TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
             TextColumn("[bold]{task.percentage:>5.1f}%[/]"),
             expand=True,
         )
-        progress.add_task("certified", total=max(1, self.total), completed=min(self.completed, max(1, self.total)))
+        progress.add_task(
+            "compiled", total=max(1, self.total_work_blocks),
+            completed=min(self.compiled_work_blocks, max(1, self.total_work_blocks)),
+        )
         summary = Table.grid(expand=True, padding=(0, 2))
         if width >= 90:
             summary.add_column(); summary.add_column(); summary.add_column()
-            summary.add_row(f"[bold]state[/] {self.state}", f"[bold]rate[/] {rate * 60:.2f} shards/min", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
-            summary.add_row(f"[bold]written[/] {self.bytes / 2**30:.2f} GiB", f"[bold]blocks[/] {self.blocks:,}", f"[bold]origins[/] {self.origins:,}")
+            summary.add_row(f"[bold]state[/] {self.state}", f"[bold]rate[/] {rate:.1f} blocks/s", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
+            summary.add_row(f"[bold]certified[/] {self.completed:,}/{self.total:,} shards", f"[bold]written[/] {self.bytes / 2**30:.2f} GiB", f"[bold]origins[/] {self.origins:,}")
             summary.add_row(f"[bold]workers[/] {self.workers}", f"[bold]failures[/] {self.failures}", f"[bold]elapsed[/] {_duration(elapsed)}")
         else:
             summary.add_column(); summary.add_column()
             summary.add_row(f"[bold]state[/] {self.state}", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
-            summary.add_row(f"[bold]rate[/] {rate * 60:.2f}/min", f"[bold]written[/] {self.bytes / 2**30:.2f} GiB")
+            summary.add_row(f"[bold]rate[/] {rate:.1f} blocks/s", f"[bold]certified[/] {self.completed}/{self.total}")
             summary.add_row(f"[bold]failures[/] {self.failures}", f"[bold]elapsed[/] {_duration(elapsed)}")
         workers = Table(show_header=True, header_style="bold", expand=True)
         workers.add_column("worker", no_wrap=True)
@@ -797,12 +809,17 @@ class ShardBuildReporter:
         worker_limit = self.workers if height >= 34 else min(self.workers, 4)
         for worker in range(worker_limit):
             state, focus = self.worker_state.get(worker, ("queued", ""))
-            done, total, sessions, blocks = self.worker_progress.get(worker, [0, 0, 0, 0])
-            fraction = done / total if total else 0.0
+            shards_done, shards_total, blocks_done, blocks_total, sessions, fetched = self.worker_progress.get(
+                worker, [0, 0, 0, 0, 0, 0]
+            )
+            fraction = blocks_done / blocks_total if blocks_total else (
+                1.0 if shards_done == shards_total and shards_total else 0.0
+            )
             cells = 10
             filled = min(cells, int(fraction * cells))
-            bar = f"[green]{'=' * filled}[/][dim]{'-' * (cells - filled)}[/] {done}/{total}"
-            detail = focus or "-"
+            bar = f"[green]{'=' * filled}[/][dim]{'-' * (cells - filled)}[/] {blocks_done:,}/{blocks_total:,} blocks"
+            detail = f"{focus or '-'} | shards {shards_done}/{shards_total}"
+            blocks = fetched
             if sessions or blocks:
                 detail = f"{detail} · sessions {sessions} · blocks {blocks}"
             workers.add_row(str(worker), bar, state, detail)
@@ -884,6 +901,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
     )
     evidence = preflight(client, config)
+    coverage_config = dataclasses.replace(
+        config,
+        tickers=selected_tickers,
+        validation_slices=(),
+        validation_start_date=config.end_date,
+    )
+    _sessions, _exact_blocks, _exact_origins, unit_block_plan, _block_plan = sequential_coverage_counts(
+        client, coverage_config, seed=17,
+    )
     _atomic_json(root / "manifest" / "build_plan.json", {
         "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
         "config_hash": expected_hash,
@@ -894,6 +920,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "selected_units": len(remaining),
         "workers": len(partitions),
         "cpu_threads_per_worker": cpu_threads,
+        "selected_blocks": sum(int(unit_block_plan.get(key, (0, 0))[0]) for key in allowed),
+        "selected_origins": sum(int(unit_block_plan.get(key, (0, 0))[1]) for key in allowed),
     })
     if args.skip_hash:
         print("WARNING: --skip-hash writes uncertified shards that will not be resume-skipped.", file=sys.stderr, flush=True)
@@ -905,6 +933,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         sum(1 for key in allowed if key.partition(":")[0] in set(tickers))
         for tickers in partitions
     ]
+    partition_block_totals = [
+        sum(int(unit_block_plan.get(key, (0, 0))[0]) for key in allowed if key.partition(":")[0] in set(tickers))
+        for tickers in partitions
+    ]
     skipped = frozenset(key for key in plan if key not in allowed)
     context = mp.get_context("spawn")
     events = context.Queue(maxsize=max(128, len(partitions) * 16))
@@ -912,7 +944,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     processes = [
         context.Process(
             target=_worker_main,
-            args=(worker, tickers, config, str(root), skipped, not args.skip_hash, events, stop, cpu_threads),
+            args=(
+                worker, tickers, config, str(root), skipped, not args.skip_hash,
+                events, stop, cpu_threads, partition_block_totals[worker],
+            ),
             name=f"bar-gpt-shard-{worker}",
         )
         for worker, tickers in enumerate(partitions)
@@ -925,6 +960,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         initial_blocks=sum(int(item["blocks"]) for item in existing.values()),
         initial_origins=sum(int(item["origins"]) for item in existing.values()),
         worker_totals=partition_totals,
+        worker_block_totals=partition_block_totals,
     ) as reporter:
         for process in processes:
             process.start()

@@ -454,10 +454,14 @@ the config hash and therefore cannot silently reuse an incompatible cache.
 is the explicit replacement path. `--skip-hash` is diagnostic only and produces
 uncertified shards that are intentionally not resume-skipped.
 
-Interactive output gives every worker its own assigned-shard total and progress
-bar, plus its active ticker-month, session, fetched block count, compiled-session
-count, and stage. The primary display also shows durable coverage, written GiB,
-origins, rate, ETA, failures, output, and resume semantics. New sidecars record
+Execute-time coverage planning derives exact block totals from the certified
+one-second sessions before workers start. Interactive output gives every worker
+its own compiled-block progress bar, plus assigned shard count, active
+ticker-month/session, fetched blocks, compiled sessions, and stage. The primary
+progress bar, rate, and ETA are based on compiled blocks across all workers;
+atomically certified ticker-month shards remain a separate durability counter.
+The display also shows written GiB, origins, failures, output, and resume
+semantics. New sidecars record
 preparation wall time, compilation CPU time, write/hash time, and total unit wall
 time so subsequent tuning is measurement-based.
 Redirected output is plain text. Ctrl+C lets in-flight atomic writes finish,

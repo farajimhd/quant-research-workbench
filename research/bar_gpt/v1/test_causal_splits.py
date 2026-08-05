@@ -35,6 +35,13 @@ def raw_rows(prices: tuple[float, ...], sizes: tuple[float, ...]) -> torch.Tenso
 
 
 class CausalSplitContractTest(unittest.TestCase):
+    def test_future_split_does_not_change_pre_effective_context(self) -> None:
+        action = SplitAction(3_000_000, 4.0, "2020-08-31", "AAPL")
+        timestamps = torch.tensor([1_000_000, 2_000_000], dtype=torch.long)
+        raw = raw_rows((400.0, 404.0), (10.0, 11.0))
+        normalized = normalize_features_to_anchor(raw, timestamps, anchor_us=2_000_000, actions=(action,))
+        self.assertTrue(torch.equal(normalized, raw))
+
     def test_input_history_is_normalized_only_to_the_anchor_basis(self) -> None:
         action = SplitAction(2_000_000, 4.0, "2020-08-31", "AAPL")
         timestamps = torch.tensor([1_000_000, 2_000_000], dtype=torch.long)
