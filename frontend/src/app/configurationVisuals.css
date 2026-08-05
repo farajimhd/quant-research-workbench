@@ -18,7 +18,7 @@
 .sidebar-collapsed .sidebar-nav { padding-top: 8px; }
 .collapse-button { top: 8px; }
 
-.trading-configuration-page[data-configuration-section="strategy"] { --configuration-accent: var(--canvas-link-blue); }
+.trading-configuration-page[data-configuration-section="strategy"] { --configuration-accent: var(--muted-foreground); }
 .trading-configuration-page[data-configuration-section="assignments"] { --configuration-accent: var(--canvas-link-violet); }
 .trading-configuration-page[data-configuration-section="portfolio"] { --configuration-accent: var(--canvas-link-green); }
 .trading-configuration-page[data-configuration-section="oms"] { --configuration-accent: var(--canvas-link-cyan); }
@@ -1929,4 +1929,23 @@
   .strategy-blank-summary > span + span,
   .strategy-feature-preview > dl > div:nth-child(n+2) { border-top: 1px solid var(--border); }
   .strategy-clone-source-step > nav { max-height: 260px; }
+}
+
+/* Keep Guided Strategy setup states in the same restrained, neutral grammar as toolbar filters. */
+.trading-configuration-page[data-configuration-section="strategy"] {
+  --strategy-neutral-focus: color-mix(in oklab, var(--muted-foreground) 58%, var(--border));
+  --strategy-neutral-focus-soft: color-mix(in oklab, var(--muted-foreground) 12%, transparent);
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-start-paths > button:focus-visible,
+.trading-configuration-page[data-configuration-section="strategy"] .strategy-clone-source-step > nav button:focus-visible,
+.trading-configuration-page[data-configuration-section="strategy"] .guided-decision-options input:focus-visible + .guided-choice-card {
+  outline: 1px solid var(--strategy-neutral-focus);
+  outline-offset: 2px;
+}
+
+.trading-configuration-page[data-configuration-section="strategy"] .guided-action-step.is-next,
+.trading-configuration-page[data-configuration-section="strategy"] .guided-action-step:focus-within {
+  border-color: var(--strategy-neutral-focus);
+  box-shadow: 0 0 0 3px var(--strategy-neutral-focus-soft);
 }
