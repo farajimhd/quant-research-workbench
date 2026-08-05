@@ -343,6 +343,14 @@ def main(argv: list[str] | None = None) -> int:
             counts.event_rows += expected_day
             counts.rendered_rows += expected_day
             append_jsonl(status_path, {"day": day.isoformat(), "status": "skipped_complete", "rows": expected_day})
+            if day_index == 1 or day_index % 25 == 0 or day_index == len(days):
+                elapsed = time.perf_counter() - wall_start
+                eta = elapsed / day_index * (len(days) - day_index)
+                print(
+                    f"[{day_index:,}/{len(days):,}] {day} skipped_complete rows={expected_day:,} "
+                    f"total={counts.event_rows:,} elapsed={elapsed / 60:.1f}m eta={eta / 60:.1f}m",
+                    flush=True,
+                )
             continue
         rows = load_source_day(client, args.database, args.source_table, day)
         rendered_rows: list[dict[str, Any]] = []
