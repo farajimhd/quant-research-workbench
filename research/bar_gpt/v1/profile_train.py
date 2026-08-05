@@ -101,7 +101,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument("--measured-steps", type=int, default=8)
-    parser.add_argument("--ready-queue-blocks", type=int, default=128)
+    parser.add_argument("--ready-queue-blocks", type=int, default=512)
+    parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=1)
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
@@ -126,6 +127,7 @@ def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
         batch_size=candidate.microbatch,
         loader_workers=candidate.workers,
         ready_queue_blocks=int(args.ready_queue_blocks),
+        clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_worker),
         coverage_mode="sequential",
         coverage_blocks_per_unit=16,
     )

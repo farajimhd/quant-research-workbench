@@ -791,7 +791,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--batch-size"], "16")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
         self.assertEqual(training_launcher_args["--loader-workers"], "16")
-        self.assertEqual(training_launcher_args["--ready-queue-blocks"], "128")
+        self.assertEqual(training_launcher_args["--ready-queue-blocks"], "512")
+        self.assertEqual(training_launcher_args["--worker-prefetch-batches"], "4")
 
     def test_holdout_and_regime_resampling_are_deterministic(self) -> None:
         tickers = tuple(f"T{index:02d}" for index in range(20))

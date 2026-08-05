@@ -14,7 +14,7 @@ DEFAULT_ARGS: tuple[str, ...] = (
     (
         "4096:16:2:12:1:0,4096:16:2:16:1:0,4096:16:2:24:1:0"
     ),
-    "--ready-queue-blocks", "128",
+    "--ready-queue-blocks", "512",
     "--warmup-steps", "2",
     "--measured-steps", "12",
     "--progress-layout", "auto",

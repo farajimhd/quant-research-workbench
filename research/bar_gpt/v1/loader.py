@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import http.client
 import math
@@ -829,19 +830,17 @@ class ArrowStreamClient:
         source_intervals: tuple[TickerInterval, ...] = (),
         device: torch.device | str = "cpu",
     ) -> Iterator[tuple[str, BarView]]:
-        cursor = dt.date.fromisoformat(start_date)
-        end = dt.date.fromisoformat(end_date)
-        while cursor < end:
-            right = min(end, cursor + dt.timedelta(days=max(1, int(self.config.query_days))))
+        def read_page(left: dt.date, right: dt.date) -> list[tuple[str, BarView]]:
             query = ticker_range_query(
                 self.config,
                 ticker=ticker,
-                start_date=cursor.isoformat(),
+                start_date=left.isoformat(),
                 end_date=right.isoformat(),
                 source_intervals=source_intervals,
             )
             current_date = ""
             current_frames: list[pl.DataFrame] = []
+            result: list[tuple[str, BarView]] = []
             with self.record_batches(query) as batches:
                 for batch in batches:
                     frame = pl.from_arrow(batch)
@@ -850,13 +849,32 @@ class ArrowStreamClient:
                     for part in frame.partition_by("local_date", maintain_order=True):
                         date_value = str(part["local_date"][0])
                         if current_date and date_value != current_date:
-                            yield current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)
+                            result.append((current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)))
                             current_frames = []
                         current_date = date_value
                         current_frames.append(part)
             if current_frames:
-                yield current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)
-            cursor = right
+                result.append((current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)))
+            return result
+
+        cursor = dt.date.fromisoformat(start_date)
+        end = dt.date.fromisoformat(end_date)
+        # One bounded page is materialized while the caller constructs/yields
+        # examples from the preceding page.  It changes neither page order nor
+        # source timestamps, but hides the next HTTP/Arrow round trip.
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="bar-gpt-page") as executor:
+            future = None
+            while cursor < end:
+                right = min(end, cursor + dt.timedelta(days=max(1, int(self.config.query_days))))
+                if future is None:
+                    future = executor.submit(read_page, cursor, right)
+                page = future.result()
+                next_cursor = right
+                next_right = min(end, next_cursor + dt.timedelta(days=max(1, int(self.config.query_days))))
+                future = executor.submit(read_page, next_cursor, next_right) if next_cursor < end else None
+                for item in page:
+                    yield item
+                cursor = right
 
     def read_origin_windows(
         self,

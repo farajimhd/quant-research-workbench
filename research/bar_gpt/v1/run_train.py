@@ -23,8 +23,8 @@ DEFAULT_ARGS: dict[str, str] = {
     # 4,096 origins x 16 examples x 2 accumulated microbatches.
     "--batch-size": "16",
     "--loader-workers": "16",
-    "--ready-queue-blocks": "128",
-    "--worker-prefetch-batches": "2",
+    "--ready-queue-blocks": "512",
+    "--worker-prefetch-batches": "4",
     "--clickhouse-max-threads-per-worker": "1",
     "--clickhouse-query-days": "7",
     "--clickhouse-max-bytes-before-external-sort": "1073741824",
