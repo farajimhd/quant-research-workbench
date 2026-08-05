@@ -417,7 +417,7 @@ python -B -m research.bar_gpt.v1.run_build_offline_shards --execute
 
 The first command is a read-only plan. The execute form partitions work across
 bounded ticker workers and writes immutable ticker-month shards beneath
-`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v1`. Both the requested
+`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2`. Both the requested
 one-second authority and daily-session authority now begin in 2019. The
 compiler fails preflight until those sources are continuously certified and
 never fabricates unavailable intraday sessions or calendar history.
@@ -450,6 +450,26 @@ This reproduces the online collate contract without repeating each 720-bar
 context. Shards use uncompressed PyTorch tensor containers so `torch.load` can
 memory-map their storage. The runtime reader performs only mmap slicing,
 padding into reusable pinned batches, and asynchronous CUDA handoff.
+
+The v2 storage identity contains only settings that can alter one ticker-month
+tensor payload. GPU batch size, loader workers, pinning, prefetch depth,
+requested tickers, requested date range, validation ownership, query tuning,
+and progress/concurrency controls are excluded. A stable ticker-month hash
+replaces range-dependent unit numbering inside each shard. Consequently the
+same certified shard can be collated into any loader-time batch size and two
+disjoint build commands can safely accumulate compatible months in one root.
+`origin_bars_1s` remains storage geometry—the number of sequential origins in
+one independently addressable block—not the number of blocks collated into a
+training batch.
+
+The current bounded eager build targets both calendar years 2019 and 2020 for
+training and January through July 2026 for chronological validation. The two
+commands intentionally share one root and are independently resumable:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --start-date 2019-01-01 --end-date 2021-01-01 --workers 4 --cpu-threads-per-worker 32
+python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --start-date 2026-01-01 --end-date 2026-08-01 --workers 4 --cpu-threads-per-worker 32
+```
 
 Completion advances only after the shard is atomically renamed, SHA-256
 certified, and accompanied by its sidecar manifest. Rerunning the same command

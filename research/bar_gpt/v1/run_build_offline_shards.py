@@ -16,7 +16,7 @@ os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(description="Workstation launcher for the BarGPT offline tensor compiler.")
     parser.add_argument("--execute", action="store_true", help="Required to write; omit for the safe plan.")
-    parser.add_argument("--output-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v1")
+    parser.add_argument("--output-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2")
     parser.add_argument("--workers", type=int, default=min(12, max(2, (os.cpu_count() or 8) // 4)))
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
     parser.add_argument("--tickers", default=",".join(BAR_GPT_TRAINING_TICKERS))

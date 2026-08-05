@@ -41,8 +41,38 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 
 
-OFFLINE_SHARD_CONTRACT_VERSION = 1
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v1")
+OFFLINE_SHARD_CONTRACT_VERSION = 2
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2")
+
+
+_STORAGE_IRRELEVANT_CONFIG_FIELDS = frozenset({
+    "tickers",
+    "start_date",
+    "end_date",
+    "validation_start_date",
+    "validation_slices",
+    "batch_size",
+    "loader_workers",
+    "pin_memory",
+    "persistent_workers",
+    "worker_prefetch_batches",
+    "ready_queue_blocks",
+    "balance_activity_regimes",
+    "coverage_mode",
+    "coverage_blocks_per_unit",
+    "validation_blocks_per_slice",
+    "origin_fetch_candidate_blocks",
+    "origin_emit_blocks_per_chunk",
+    "clickhouse_query_days",
+    "clickhouse_prefetch_pages",
+    "clickhouse_max_block_size",
+    "clickhouse_max_threads_per_worker",
+    "clickhouse_max_memory_usage",
+    "clickhouse_max_bytes_before_external_sort",
+    "clickhouse_retry_attempts",
+    "clickhouse_retry_initial_seconds",
+    "clickhouse_retry_max_seconds",
+})
 
 
 @dataclass(slots=True)
@@ -160,10 +190,19 @@ def _canonical_config(config: DataConfig) -> dict[str, Any]:
     return dataclasses.asdict(config)
 
 
+def _storage_contract_config(config: DataConfig) -> dict[str, Any]:
+    """Return only fields capable of changing one ticker-month tensor payload."""
+    return {
+        key: value
+        for key, value in _canonical_config(config).items()
+        if key not in _STORAGE_IRRELEVANT_CONFIG_FIELDS
+    }
+
+
 def config_hash(config: DataConfig) -> str:
     payload = {
         "contract": OFFLINE_SHARD_CONTRACT_VERSION,
-        "data": _canonical_config(config),
+        "data": _storage_contract_config(config),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -391,6 +430,10 @@ def compile_unit(examples: Sequence[BarGPTExample], config: DataConfig, key: str
 def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig, key: str) -> dict[str, Any]:
     """Assemble already compiled sessions without retaining a month of raw examples."""
     sessions = list(sessions)
+    stable_unit_index = int.from_bytes(hashlib.sha256(key.encode("utf-8")).digest()[:8], "big") & ((1 << 63) - 1)
+    for session in sessions:
+        for block in session["blocks"]:
+            block["unit_index"] = stable_unit_index
     origins = sum(
         int(block["origin_indices"].numel())
         for session in sessions for block in session["blocks"]
@@ -951,7 +994,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "config_hash": expected_hash,
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "source_evidence": evidence,
-        "data_config": _canonical_config(config),
+        "storage_config": _storage_contract_config(config),
+        "selection": {
+            "tickers": list(config.tickers),
+            "start_date": config.start_date,
+            "end_date": config.end_date,
+        },
         "planned_units": len(plan),
         "selected_units": len(remaining),
         "workers": len(partitions),

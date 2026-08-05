@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import dataclasses
 import datetime as dt
 import http.client
 import threading
@@ -51,6 +52,7 @@ from research.bar_gpt.v1.offline_shards import (
     compile_prepared_unit,
     compile_session,
     compile_unit,
+    config_hash,
     load_shard,
     materialize_block,
     write_unit,
@@ -551,6 +553,22 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertTrue(torch.equal(cached_batch.autoregressive_mask[name], live_batch.autoregressive_mask[name]), name)
         self.assertTrue(torch.equal(cached_batch.horizon_targets, live_batch.horizon_targets))
         self.assertTrue(torch.equal(cached_batch.horizon_mask, live_batch.horizon_mask))
+
+    def test_offline_shard_identity_excludes_loader_batch_and_selection_settings(self) -> None:
+        base = self.data_config()
+        loader_variant = dataclasses.replace(
+            base,
+            batch_size=16,
+            loader_workers=8,
+            pin_memory=False,
+            tickers=("AAA",),
+            start_date="2026-01-01",
+            end_date="2026-02-01",
+            validation_start_date="2026-01-01",
+        )
+        geometry_variant = dataclasses.replace(base, origin_bars_1s=base.origin_bars_1s + 1)
+        self.assertEqual(config_hash(base), config_hash(loader_variant))
+        self.assertNotEqual(config_hash(base), config_hash(geometry_variant))
 
     def test_offline_reporter_tracks_known_worker_totals(self) -> None:
         reporter = ShardBuildReporter(
