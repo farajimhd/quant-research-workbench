@@ -125,6 +125,9 @@ class DataConfig:
     clickhouse_max_block_size: int = 65_536
     clickhouse_max_memory_usage: int = 8 * 1024**3
     clickhouse_query_days: int = 7
+    # Keep several bounded Arrow pages in flight per worker.  This is page
+    # concurrency, not ClickHouse execution threads within a query.
+    clickhouse_prefetch_pages: int = 4
     clickhouse_max_bytes_before_external_sort: int = 1024**3
     clickhouse_retry_attempts: int = 5
     clickhouse_retry_initial_seconds: float = 0.5
@@ -218,7 +221,7 @@ class DataConfig:
             raise ValueError("batch_size must be positive and loader_workers cannot be negative")
         if self.ready_queue_blocks <= 0 or self.worker_prefetch_batches <= 0:
             raise ValueError("ready queue blocks and worker prefetch batches must be positive")
-        if self.clickhouse_query_days <= 0 or self.clickhouse_max_bytes_before_external_sort <= 0:
+        if self.clickhouse_query_days <= 0 or self.clickhouse_prefetch_pages <= 0 or self.clickhouse_max_bytes_before_external_sort <= 0:
             raise ValueError("ClickHouse query days and external-sort threshold must be positive")
         if self.clickhouse_retry_attempts <= 0:
             raise ValueError("ClickHouse retry attempts must be positive")

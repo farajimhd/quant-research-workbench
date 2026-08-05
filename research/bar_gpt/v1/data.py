@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 import torch
@@ -124,6 +124,7 @@ class BarGPTExample:
     block_offset: int = -1
     session_phase: str = "unknown"
     has_condition_target: bool = False
+    loader_stage_seconds: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -152,6 +153,9 @@ class BarGPTBatch:
     block_offsets: tuple[int, ...]
     session_phases: tuple[str, ...]
     condition_blocks: tuple[bool, ...]
+    # CPU-side loader timings are deliberately retained off-device.  They are
+    # diagnostic evidence only and never participate in model computation.
+    loader_stage_seconds: dict[str, float] = field(default_factory=dict)
 
     @property
     def origin_count(self) -> int:
@@ -229,6 +233,7 @@ class BarGPTBatch:
             block_offsets=self.block_offsets,
             session_phases=self.session_phases,
             condition_blocks=self.condition_blocks,
+            loader_stage_seconds=dict(self.loader_stage_seconds),
         )
 
 
@@ -300,6 +305,10 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
             if count:
                 weights[selected] = len(examples) / (3.0 * count)
         weights /= weights.mean().clamp_min(1e-12)
+    loader_stage_seconds: dict[str, float] = {}
+    for example in examples:
+        for name, seconds in example.loader_stage_seconds.items():
+            loader_stage_seconds[name] = loader_stage_seconds.get(name, 0.0) + float(seconds)
     return BarGPTBatch(
         views=views,
         origin_indices=origin_indices,
@@ -325,6 +334,7 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
         block_offsets=tuple(example.block_offset for example in examples),
         session_phases=tuple(example.session_phase for example in examples),
         condition_blocks=tuple(example.has_condition_target for example in examples),
+        loader_stage_seconds=loader_stage_seconds,
     )
 
 

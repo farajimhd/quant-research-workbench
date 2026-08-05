@@ -151,6 +151,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=data.clickhouse_max_threads_per_worker)
     parser.add_argument("--clickhouse-max-memory-usage", type=int, default=data.clickhouse_max_memory_usage)
     parser.add_argument("--clickhouse-query-days", type=int, default=data.clickhouse_query_days)
+    parser.add_argument("--clickhouse-prefetch-pages", type=int, default=data.clickhouse_prefetch_pages)
     parser.add_argument("--clickhouse-retry-attempts", type=int, default=data.clickhouse_retry_attempts)
     parser.add_argument("--clickhouse-retry-initial-seconds", type=float, default=data.clickhouse_retry_initial_seconds)
     parser.add_argument("--clickhouse-retry-max-seconds", type=float, default=data.clickhouse_retry_max_seconds)
@@ -248,6 +249,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_worker),
         clickhouse_max_memory_usage=int(args.clickhouse_max_memory_usage),
         clickhouse_query_days=int(args.clickhouse_query_days),
+        clickhouse_prefetch_pages=int(args.clickhouse_prefetch_pages),
         clickhouse_max_bytes_before_external_sort=int(args.clickhouse_max_bytes_before_external_sort),
         clickhouse_retry_attempts=int(args.clickhouse_retry_attempts),
         clickhouse_retry_initial_seconds=float(args.clickhouse_retry_initial_seconds),
@@ -1500,6 +1502,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 accumulated_origins = 0
                 accumulated_loader_wait = 0.0
                 accumulated_gpu_seconds = 0.0
+                accumulated_loader_stages: dict[str, float] = {}
                 gpu_event_pairs: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
                 accumulated_metrics: dict[str, torch.Tensor] = {}
                 finite_checks: list[torch.Tensor] = []
@@ -1558,6 +1561,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                         accumulation_count += 1
                         accumulated_origins += origins
                         accumulated_loader_wait += loader_wait
+                        for name, seconds in batch.loader_stage_seconds.items():
+                            accumulated_loader_stages[name] = accumulated_loader_stages.get(name, 0.0) + float(seconds)
                         accumulated_gpu_seconds += micro_gpu_seconds
                         accumulated_blocks += len(batch.tickers)
                         accumulated_units.update(
@@ -1663,6 +1668,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                                     "train/origins_per_second": accumulated_origins / max(accumulated_loader_wait + accumulated_gpu_seconds, 1e-9),
                                 }
                             )
+                            metrics.update({
+                                f"train/loader_stage_{name}": seconds
+                                for name, seconds in sorted(accumulated_loader_stages.items())
+                            })
                             last_metrics = metrics
                         else:
                             # Keep the terminal's coverage state current while
@@ -1756,6 +1765,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                         accumulated_origins = 0
                         accumulated_loader_wait = 0.0
                         accumulated_gpu_seconds = 0.0
+                        accumulated_loader_stages.clear()
                         gpu_event_pairs = []
                         accumulated_metrics = {}
                         finite_checks = []

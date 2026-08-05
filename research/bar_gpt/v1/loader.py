@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
-from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 import hashlib
 import http.client
 import math
@@ -9,6 +10,7 @@ import multiprocessing as mp
 import random
 import re
 import time
+import threading
 import uuid
 from bisect import bisect_right
 from contextlib import contextmanager
@@ -753,6 +755,18 @@ class ArrowStreamClient:
 
     def __init__(self, config: ClickHouseBarStreamConfig) -> None:
         self.config = config
+        self._timing_lock = threading.Lock()
+        self._timings: dict[str, float] = {}
+
+    def _add_timing(self, name: str, seconds: float) -> None:
+        with self._timing_lock:
+            self._timings[name] = self._timings.get(name, 0.0) + max(0.0, float(seconds))
+
+    def take_timings(self) -> dict[str, float]:
+        with self._timing_lock:
+            result = dict(self._timings)
+            self._timings.clear()
+        return result
 
     @staticmethod
     def _retryable_read_error(exc: BaseException) -> bool:
@@ -829,8 +843,10 @@ class ArrowStreamClient:
         end_date: str,
         source_intervals: tuple[TickerInterval, ...] = (),
         device: torch.device | str = "cpu",
+        prefetch_pages: int = 1,
     ) -> Iterator[tuple[str, BarView]]:
         def read_page(left: dt.date, right: dt.date) -> list[tuple[str, BarView]]:
+            started = time.perf_counter()
             query = ticker_range_query(
                 self.config,
                 ticker=ticker,
@@ -855,23 +871,28 @@ class ArrowStreamClient:
                         current_frames.append(part)
             if current_frames:
                 result.append((current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)))
+            self._add_timing("intraday_page_seconds", time.perf_counter() - started)
             return result
 
         cursor = dt.date.fromisoformat(start_date)
         end = dt.date.fromisoformat(end_date)
-        # One bounded page is materialized while the caller constructs/yields
-        # examples from the preceding page.  It changes neither page order nor
-        # source timestamps, but hides the next HTTP/Arrow round trip.
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="bar-gpt-page") as executor:
-            future = None
-            while cursor < end:
-                right = min(end, cursor + dt.timedelta(days=max(1, int(self.config.query_days))))
-                if future is None:
-                    future = executor.submit(read_page, cursor, right)
+        # Ordered, bounded page pipeline.  Pages remain causally independent:
+        # overlap only hides HTTP/Arrow latency; consumption remains date order.
+        depth = max(1, int(prefetch_pages))
+        with ThreadPoolExecutor(max_workers=depth, thread_name_prefix="bar-gpt-page") as executor:
+            pending: deque[tuple[dt.date, Future[list[tuple[str, BarView]]]]] = deque()
+            submit_cursor = cursor
+            while submit_cursor < end and len(pending) < depth:
+                right = min(end, submit_cursor + dt.timedelta(days=max(1, int(self.config.query_days))))
+                pending.append((right, executor.submit(read_page, submit_cursor, right)))
+                submit_cursor = right
+            while pending:
+                right, future = pending.popleft()
                 page = future.result()
-                next_cursor = right
-                next_right = min(end, next_cursor + dt.timedelta(days=max(1, int(self.config.query_days))))
-                future = executor.submit(read_page, next_cursor, next_right) if next_cursor < end else None
+                if submit_cursor < end:
+                    next_right = min(end, submit_cursor + dt.timedelta(days=max(1, int(self.config.query_days))))
+                    pending.append((next_right, executor.submit(read_page, submit_cursor, next_right)))
+                    submit_cursor = next_right
                 for item in page:
                     yield item
                 cursor = right
@@ -2153,13 +2174,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     if previous_loaded is not None
                     else (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=warmup_days)).isoformat()
                 )
-                conditions_by_date = client.read_condition_views(
-                    ticker=ticker,
-                    start_date=fetch_start,
-                    end_date=unit.end_date,
-                    condition_table=self.data_config.condition_table,
-                    source_intervals=intervals_by_ticker[ticker],
-                )
+                unit_prepare_started = time.perf_counter()
                 if self.split == "train" and self.data_config.coverage_mode == "sequential":
                     # Fetch ordered sparse bars in bounded date pages.  Each session is
                     # densified once, then split into consecutive O-origin examples; the
@@ -2185,13 +2200,28 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                         if existing_daily is not None
                         else (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=lookback_days)).isoformat()
                     )
-                    incoming_daily = client.read_daily_views(
-                        tickers=(ticker,),
-                        start_date=daily_window_start,
-                        end_date=unit.end_date,
-                        daily_table=self.data_config.daily_table,
-                        intervals_by_ticker={ticker: intervals_by_ticker[ticker]},
-                    ).get(ticker)
+                    # Independent unit metadata reads run concurrently before
+                    # the ordered intraday stream begins.  They are bounded to
+                    # this unit and do not materialize its one-second rows.
+                    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="bar-gpt-unit") as unit_executor:
+                        condition_future = unit_executor.submit(
+                            client.read_condition_views,
+                            ticker=ticker,
+                            start_date=fetch_start,
+                            end_date=unit.end_date,
+                            condition_table=self.data_config.condition_table,
+                            source_intervals=intervals_by_ticker[ticker],
+                        )
+                        daily_future = unit_executor.submit(
+                            client.read_daily_views,
+                            tickers=(ticker,),
+                            start_date=daily_window_start,
+                            end_date=unit.end_date,
+                            daily_table=self.data_config.daily_table,
+                            intervals_by_ticker={ticker: intervals_by_ticker[ticker]},
+                        )
+                        conditions_by_date = condition_future.result()
+                        incoming_daily = daily_future.result().get(ticker)
                     daily_value = _merge_rolling_daily_view(
                         existing_daily,
                         incoming_daily,
@@ -2204,6 +2234,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                         start_date=fetch_start,
                         end_date=unit.end_date,
                         source_intervals=intervals_by_ticker[ticker],
+                        prefetch_pages=self.data_config.clickhouse_prefetch_pages,
                     ):
                         dense_conditions = conditions_by_date.get(local_date)
                         if dense_conditions is None:
@@ -2232,6 +2263,11 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                                 and block_offset <= resume.block_offset
                             ):
                                 continue
+                            # Transfer accumulated source/decode timing once;
+                            # this remains host-only diagnostic metadata.
+                            example.loader_stage_seconds = client.take_timings()
+                            if emitted == 1:
+                                example.loader_stage_seconds["unit_prepare_seconds"] = time.perf_counter() - unit_prepare_started
                             example.worker_id = worker_id
                             example.unit_index = unit_index
                             example.block_offset = block_offset
