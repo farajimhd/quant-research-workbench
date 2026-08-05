@@ -846,6 +846,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     reporter.event(events.get_nowait())
                 except queue.Empty:
                     break
+            if not interrupted and (
+                reporter.failures or any(process.exitcode not in {0, None} for process in processes)
+            ):
+                reporter.state = "failed"
+                reporter.message("Build stopped after a worker failure; certified shards remain resumable")
+                reporter.refresh(force=True)
     catalog = rebuild_catalog(root, expected_hash)
     print(f"Final certified catalog: {catalog['counts']}", flush=True)
     if interrupted:
