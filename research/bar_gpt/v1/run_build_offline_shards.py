@@ -19,6 +19,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     parser.add_argument("--output-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2")
     parser.add_argument("--workers", type=int, default=min(12, max(2, (os.cpu_count() or 8) // 4)))
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
+    parser.add_argument("--clickhouse-max-concurrent-pages", type=int, default=0)
     parser.add_argument("--tickers", default=",".join(BAR_GPT_TRAINING_TICKERS))
     parser.add_argument("--selection", choices=("all", "train", "validation"), default="all")
     parser.add_argument("--start-date", default="2019-01-01")
@@ -42,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         "--output-root", args.output_root,
         "--workers", str(args.workers),
         "--cpu-threads-per-worker", str(args.cpu_threads_per_worker),
+        "--clickhouse-max-concurrent-pages", str(args.clickhouse_max_concurrent_pages),
         "--tickers", ",".join(tickers),
         "--start-date", args.start_date,
         "--end-date", args.end_date,

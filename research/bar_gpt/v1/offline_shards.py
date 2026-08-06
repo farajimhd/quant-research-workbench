@@ -64,7 +64,6 @@ _STORAGE_IRRELEVANT_CONFIG_FIELDS = frozenset({
     "validation_blocks_per_slice",
     "origin_fetch_candidate_blocks",
     "origin_emit_blocks_per_chunk",
-    "loader_stream_contract_version",
     "clickhouse_query_days",
     "clickhouse_prefetch_pages",
     "clickhouse_max_block_size",
@@ -127,6 +126,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--origin-bars-1s", type=int, default=4096)
     parser.add_argument("--clickhouse-query-days", type=int, default=defaults.clickhouse_query_days)
     parser.add_argument("--clickhouse-prefetch-pages", type=int, default=defaults.clickhouse_prefetch_pages)
+    parser.add_argument(
+        "--clickhouse-max-concurrent-pages",
+        type=int,
+        default=0,
+        help="Global Arrow-response concurrency across workers; zero selects a worker-aware bound.",
+    )
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
     parser.add_argument("--refresh-seconds", type=float, default=0.5)
     parser.add_argument("--force-rebuild", action="store_true")
@@ -145,6 +150,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--refresh-seconds must be positive")
     if args.max_shards < 0:
         parser.error("--max-shards cannot be negative")
+    if args.clickhouse_max_concurrent_pages < 0:
+        parser.error("--clickhouse-max-concurrent-pages cannot be negative")
     return args
 
 
@@ -806,9 +813,50 @@ def _write_empty(root: Path, config: DataConfig, key: str) -> dict[str, Any]:
     return value
 
 
-def _worker_main(
+def _process_memory_snapshot() -> dict[str, int]:
+    """Return process-private diagnostics without adding a runtime dependency."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class ProcessMemoryCountersEx(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+                ("PrivateUsage", ctypes.c_size_t),
+            ]
+
+        counters = ProcessMemoryCountersEx()
+        counters.cb = ctypes.sizeof(counters)
+        get_current_process = ctypes.windll.kernel32.GetCurrentProcess
+        get_current_process.restype = wintypes.HANDLE
+        get_process_memory_info = ctypes.windll.psapi.GetProcessMemoryInfo
+        get_process_memory_info.argtypes = (
+            wintypes.HANDLE, ctypes.POINTER(ProcessMemoryCountersEx), wintypes.DWORD,
+        )
+        get_process_memory_info.restype = wintypes.BOOL
+        handle = get_current_process()
+        if get_process_memory_info(handle, ctypes.byref(counters), counters.cb):
+            return {
+                "worker_working_set_bytes": int(counters.WorkingSetSize),
+                "worker_peak_working_set_bytes": int(counters.PeakWorkingSetSize),
+                "worker_private_bytes": int(counters.PrivateUsage),
+                "worker_peak_pagefile_bytes": int(counters.PeakPagefileUsage),
+            }
+    return {}
+
+
+def _ticker_worker_main(
     worker_id: int,
-    tickers: tuple[str, ...],
+    ticker: str,
     config: DataConfig,
     root: str,
     skipped: frozenset[str],
@@ -816,7 +864,8 @@ def _worker_main(
     events: Any,
     stop: Any,
     cpu_threads: int,
-    assigned_blocks: int,
+    query_gate: Any,
+    progress_block_offset: int,
 ) -> None:
     try:
         from research.bar_gpt.v1.train import _stream_config
@@ -825,17 +874,18 @@ def _worker_main(
         torch.set_num_interop_threads(1)
         planned = {
             unit_key(unit.ticker, unit.start_date)
-            for unit in month_units(config.start_date, config.end_date, tickers, seed=0)
+            for unit in month_units(config.start_date, config.end_date, (ticker,), seed=0)
             if unit_key(unit.ticker, unit.start_date) not in skipped
         }
-        events.put(("worker", worker_id, "starting", ",".join(tickers), len(planned), assigned_blocks))
+        events.put(("unit", worker_id, "starting ticker", ticker))
         dataset = BarGPTIterableDataset(
             data_config=config,
             stream_config=_stream_config(config),
             split="cache",
             seed=17,
-            unit_tickers=tickers,
+            unit_tickers=(ticker,),
             skip_unit_keys=skipped,
+            query_gate=query_gate,
         )
         current_key = ""
         current_date = ""
@@ -843,10 +893,11 @@ def _worker_main(
         compiled_sessions: list[dict[str, Any]] = []
         pending: deque[tuple[str, Future[tuple[dict[str, Any], float]]]] = deque()
         seen: set[str] = set()
-        fetched_blocks = 0
-        compiled_blocks = 0
+        fetched_blocks = int(progress_block_offset)
+        compiled_blocks = int(progress_block_offset)
         unit_started = 0.0
         compile_cpu_seconds = 0.0
+        loader_stage_seconds: dict[str, float] = {}
 
         def collect_one(*, wait: bool) -> None:
             nonlocal compile_cpu_seconds, compiled_blocks
@@ -871,7 +922,7 @@ def _worker_main(
                 collect_one(wait=True)
 
         def flush_unit(executor: ThreadPoolExecutor) -> None:
-            nonlocal compiled_sessions, current_key, current_date, unit_started, compile_cpu_seconds
+            nonlocal compiled_sessions, current_key, current_date, unit_started, compile_cpu_seconds, loader_stage_seconds
             submit_session(executor)
             while pending:
                 collect_one(wait=True)
@@ -885,6 +936,10 @@ def _worker_main(
             evidence["prepare_wall_seconds"] = max(0.0, write_started - unit_started)
             evidence["compile_cpu_seconds"] = compile_cpu_seconds
             evidence["unit_wall_seconds"] = max(0.0, time.perf_counter() - unit_started)
+            evidence["loader_stage_seconds"] = {
+                name: float(seconds) for name, seconds in sorted(loader_stage_seconds.items())
+            }
+            evidence.update(_process_memory_snapshot())
             _atomic_json(sidecar_path(shard_path(Path(root), current_key)), evidence)
             seen.add(current_key)
             events.put(("complete", worker_id, current_key, evidence))
@@ -892,6 +947,7 @@ def _worker_main(
             current_date = ""
             unit_started = 0.0
             compile_cpu_seconds = 0.0
+            loader_stage_seconds = {}
 
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"bar-gpt-compile-{worker_id}") as executor:
             for example in dataset:
@@ -906,6 +962,8 @@ def _worker_main(
                 if not unit_started:
                     unit_started = time.perf_counter()
                 current_date = example.local_date
+                for name, seconds in example.loader_stage_seconds.items():
+                    loader_stage_seconds[name] = loader_stage_seconds.get(name, 0.0) + float(seconds)
                 current_examples.append(example)
                 fetched_blocks += 1
                 if len(current_examples) == 1 or len(current_examples) % 8 == 0:
@@ -916,9 +974,9 @@ def _worker_main(
                 for key in sorted(planned - seen):
                     evidence = _write_empty(Path(root), config, key)
                     events.put(("complete", worker_id, key, evidence))
-        events.put(("worker", worker_id, "stopped" if stop.is_set() else "completed", ""))
     except BaseException as exc:
         events.put(("failure", worker_id, exc.__class__.__name__, str(exc), traceback.format_exc()))
+        raise
 
 
 class ShardBuildReporter:
@@ -1122,11 +1180,35 @@ def _duration(value: float) -> str:
     return f"{hours}h {minutes:02d}m" if hours else (f"{minutes}m {secs:02d}s" if minutes else f"{secs}s")
 
 
-def _partition_tickers(tickers: tuple[str, ...], workers: int) -> list[tuple[str, ...]]:
+def _resolve_cpu_threads_per_worker(*, workers: int, requested: int, logical_cpus: int | None = None) -> int:
+    if requested > 0:
+        return int(requested)
+    available = max(1, int(logical_cpus or os.cpu_count() or 8))
+    # Leave ClickHouse and the OS headroom while avoiding hundreds of native
+    # allocator arenas.  Dense page conversion benefits from modest intra-op
+    # parallelism; additional build workers supply the outer parallelism.
+    cap = 8 if workers <= 40 else 6
+    return max(1, min(cap, available // max(1, workers)))
+
+
+def _resolve_max_concurrent_pages(*, workers: int, prefetch_pages: int, requested: int) -> int:
+    if requested > 0:
+        return int(requested)
+    return max(1, min(32, int(workers) * max(1, int(prefetch_pages))))
+
+
+def _partition_tickers(
+    tickers: tuple[str, ...], workers: int, weights: dict[str, int] | None = None,
+) -> list[tuple[str, ...]]:
     count = min(max(1, workers), len(tickers))
     buckets: list[list[str]] = [[] for _ in range(count)]
-    for index, ticker in enumerate(tickers):
-        buckets[index % count].append(ticker)
+    loads = [0] * count
+    order = {ticker: index for index, ticker in enumerate(tickers)}
+    resolved_weights = {ticker: max(0, int((weights or {}).get(ticker, 0))) for ticker in tickers}
+    for ticker in sorted(tickers, key=lambda item: (-resolved_weights[item], order[item])):
+        target = min(range(count), key=lambda index: (loads[index], len(buckets[index]), index))
+        buckets[target].append(ticker)
+        loads[target] += resolved_weights[ticker]
     return [tuple(bucket) for bucket in buckets if bucket]
 
 
@@ -1172,8 +1254,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     allowed = set(remaining)
     selected_tickers = tuple(ticker for ticker in config.tickers if any(key.startswith(f"{ticker}:") for key in allowed))
-    partitions = _partition_tickers(selected_tickers, int(args.workers)) if selected_tickers else []
-    cpu_threads = int(args.cpu_threads_per_worker) or max(1, (os.cpu_count() or 8) // max(1, len(partitions)))
     load_env_files(discover_clickhouse_env_files(), verbose=True)
     client = ClickHouseHttpClient(
         default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
@@ -1187,6 +1267,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     _sessions, _exact_blocks, _exact_origins, unit_block_plan, _block_plan = sequential_coverage_counts(
         client, coverage_config, seed=17,
+    )
+    ticker_weights = {
+        ticker: sum(
+            int(unit_block_plan.get(key, (0, 0))[0])
+            for key in allowed if key.partition(":")[0] == ticker
+        )
+        for ticker in selected_tickers
+    }
+    partitions = (
+        _partition_tickers(selected_tickers, int(args.workers), ticker_weights)
+        if selected_tickers else []
+    )
+    cpu_threads = _resolve_cpu_threads_per_worker(
+        workers=max(1, len(partitions)), requested=int(args.cpu_threads_per_worker)
+    )
+    max_concurrent_pages = _resolve_max_concurrent_pages(
+        workers=max(1, len(partitions)),
+        prefetch_pages=int(config.clickhouse_prefetch_pages),
+        requested=int(args.clickhouse_max_concurrent_pages),
     )
     _atomic_json(root / "manifest" / "build_plan.json", {
         "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
@@ -1203,6 +1302,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "selected_units": len(remaining),
         "workers": len(partitions),
         "cpu_threads_per_worker": cpu_threads,
+        "clickhouse_query_days": int(config.clickhouse_query_days),
+        "clickhouse_prefetch_pages": int(config.clickhouse_prefetch_pages),
+        "clickhouse_max_concurrent_pages": max_concurrent_pages,
+        "ticker_partitions": [list(tickers) for tickers in partitions],
         "selected_blocks": sum(int(unit_block_plan.get(key, (0, 0))[0]) for key in allowed),
         "selected_origins": sum(int(unit_block_plan.get(key, (0, 0))[1]) for key in allowed),
     })
@@ -1224,49 +1327,79 @@ def main(argv: Sequence[str] | None = None) -> int:
     context = mp.get_context("spawn")
     events = context.Queue(maxsize=max(128, len(partitions) * 16))
     stop = context.Event()
-    processes = [
-        context.Process(
-            target=_worker_main,
+    query_gate = context.BoundedSemaphore(max_concurrent_pages)
+    ticker_queues = [deque(tickers) for tickers in partitions]
+    active_processes: dict[int, Any] = {}
+    active_tickers: dict[int, str] = {}
+    worker_block_offsets = [0] * len(partitions)
+    started_processes: list[Any] = []
+
+    def launch_next_ticker(worker: int) -> None:
+        ticker = ticker_queues[worker].popleft()
+        process = context.Process(
+            target=_ticker_worker_main,
             args=(
-                worker, tickers, config, str(root), skipped, not args.skip_hash,
-                events, stop, cpu_threads, partition_block_totals[worker],
+                worker, ticker, config, str(root), skipped, not args.skip_hash,
+                events, stop, cpu_threads, query_gate, worker_block_offsets[worker],
             ),
-            name=f"bar-gpt-shard-{worker}",
+            name=f"bar-gpt-shard-{worker}-{ticker}",
         )
-        for worker, tickers in enumerate(partitions)
-    ]
+        active_processes[worker] = process
+        active_tickers[worker] = ticker
+        started_processes.append(process)
+        process.start()
+
     interrupted = False
     with ShardBuildReporter(
         total=len(existing) + len(remaining), completed=len(existing), root=root,
-        workers=len(processes), layout=args.progress_layout, refresh=args.refresh_seconds,
+        workers=len(partitions), layout=args.progress_layout, refresh=args.refresh_seconds,
         initial_bytes=sum(int(item["bytes"]) for item in existing.values()),
         initial_blocks=sum(int(item["blocks"]) for item in existing.values()),
         initial_origins=sum(int(item["origins"]) for item in existing.values()),
         worker_totals=partition_totals,
         worker_block_totals=partition_block_totals,
     ) as reporter:
-        for process in processes:
-            process.start()
+        for worker, tickers in enumerate(partitions):
+            reporter.event((
+                "worker", worker, "starting", ",".join(tickers),
+                partition_totals[worker], partition_block_totals[worker],
+            ))
+            launch_next_ticker(worker)
         try:
-            alive = len(processes)
-            while alive:
+            while active_processes:
                 try:
                     event = events.get(timeout=float(args.refresh_seconds))
                     reporter.event(event)
                 except queue.Empty:
                     reporter.refresh()
-                alive = sum(process.is_alive() for process in processes)
                 if reporter.failures:
                     stop.set()
+                for worker, process in tuple(active_processes.items()):
+                    if process.is_alive():
+                        continue
+                    process.join(timeout=1)
+                    del active_processes[worker]
+                    ticker = active_tickers.pop(worker)
+                    if process.exitcode not in {0, None}:
+                        stop.set()
+                    else:
+                        worker_block_offsets[worker] += int(ticker_weights[ticker])
+                    if process.exitcode in {0, None} and ticker_queues[worker] and not stop.is_set():
+                        launch_next_ticker(worker)
+                    else:
+                        reporter.event((
+                            "worker", worker,
+                            "stopped" if stop.is_set() else "completed", "",
+                        ))
         except KeyboardInterrupt:
             interrupted = True
             stop.set()
             reporter.state = "interrupted"
             reporter.message("Interrupt received; finishing atomic writes and stopping workers")
         finally:
-            for process in processes:
+            for process in active_processes.values():
                 process.join(timeout=30)
-            for process in processes:
+            for process in active_processes.values():
                 if process.is_alive():
                     process.terminate()
                     process.join(timeout=10)
@@ -1276,7 +1409,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 except queue.Empty:
                     break
             if not interrupted and (
-                reporter.failures or any(process.exitcode not in {0, None} for process in processes)
+                reporter.failures or any(process.exitcode not in {0, None} for process in started_processes)
             ):
                 reporter.state = "failed"
                 reporter.message("Build stopped after a worker failure; certified shards remain resumable")
@@ -1285,7 +1418,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Final certified catalog: {catalog['counts']}", flush=True)
     if interrupted:
         return 130
-    return 1 if reporter.failures or any(process.exitcode not in {0, None} for process in processes) else 0
+    return 1 if reporter.failures or any(
+        process.exitcode not in {0, None} for process in started_processes
+    ) else 0
 
 
 if __name__ == "__main__":

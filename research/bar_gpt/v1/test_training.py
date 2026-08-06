@@ -4,6 +4,7 @@ import io
 import dataclasses
 import datetime as dt
 import http.client
+import multiprocessing as mp
 import threading
 import time
 import tempfile
@@ -47,7 +48,13 @@ from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.linear_probe import fit_ridge_probes
 from research.bar_gpt.v1.objectives import _weighted_mean, compute_loss
 from research.bar_gpt.v1.offline_shards import (
+    OFFLINE_SHARD_CONTRACT_VERSION,
+    DEFAULT_OUTPUT_ROOT,
     ShardBuildReporter,
+    _partition_tickers,
+    _resolve_cpu_threads_per_worker,
+    _resolve_max_concurrent_pages,
+    _ticker_worker_main,
     collate_compiled_blocks,
     compile_prepared_unit,
     compile_session,
@@ -58,6 +65,7 @@ from research.bar_gpt.v1.offline_shards import (
     make_offline_dataloader,
     materialize_block,
     OfflineShardDataset,
+    shard_path,
     write_unit,
 )
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
@@ -146,6 +154,61 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(cache.rows, 4)
         self.assertEqual(int(retained.bar_start_us[0]), int(first.bar_start_us[4]))
         self.assertEqual(int(retained.bar_start_us[-1]), int(second.bar_start_us[-1]))
+        self.assertTrue(torch.equal(retained.features, torch.cat((first.features[4:], second.features))))
+        self.assertTrue(torch.equal(retained.bar_start_us, torch.cat((first.bar_start_us[4:], second.bar_start_us))))
+        self.assertTrue(torch.equal(retained.bar_end_us, torch.cat((first.bar_end_us[4:], second.bar_end_us))))
+        self.assertTrue(torch.equal(
+            retained.available_at_us, torch.cat((first.available_at_us[4:], second.available_at_us)),
+        ))
+        self.assertEqual(len(cache._chunks), 1)
+        self.assertIs(cache._chunks[0], retained)
+
+    def test_offline_builder_runtime_parallelism_is_worker_aware(self) -> None:
+        self.assertEqual(_resolve_cpu_threads_per_worker(workers=32, requested=0, logical_cpus=512), 8)
+        self.assertEqual(_resolve_cpu_threads_per_worker(workers=40, requested=0, logical_cpus=512), 8)
+        self.assertEqual(_resolve_cpu_threads_per_worker(workers=49, requested=0, logical_cpus=512), 6)
+        self.assertEqual(_resolve_cpu_threads_per_worker(workers=49, requested=3, logical_cpus=512), 3)
+        self.assertEqual(_resolve_cpu_threads_per_worker(workers=32, requested=0, logical_cpus=64), 2)
+        self.assertEqual(_resolve_max_concurrent_pages(workers=32, prefetch_pages=4, requested=0), 32)
+        self.assertEqual(_resolve_max_concurrent_pages(workers=4, prefetch_pages=4, requested=0), 16)
+        self.assertEqual(_resolve_max_concurrent_pages(workers=49, prefetch_pages=4, requested=12), 12)
+
+    def test_offline_ticker_partition_balances_planned_blocks(self) -> None:
+        partitions = _partition_tickers(
+            ("AAA", "BBB", "CCC", "DDD"), 2,
+            {"AAA": 10, "BBB": 9, "CCC": 2, "DDD": 1},
+        )
+        self.assertEqual(partitions, [("AAA", "DDD"), ("BBB", "CCC")])
+        self.assertEqual({ticker for partition in partitions for ticker in partition}, {"AAA", "BBB", "CCC", "DDD"})
+
+    def test_offline_ticker_worker_spawn_path_releases_process_at_ticker_boundary(self) -> None:
+        context = mp.get_context("spawn")
+        events = context.Queue(maxsize=8)
+        stop = context.Event()
+        gate = context.BoundedSemaphore(1)
+        config = dataclasses.replace(
+            self.data_config(),
+            tickers=("AAA", "BBB"),
+            start_date="2026-01-01",
+            end_date="2026-02-01",
+            validation_start_date="2026-02-01",
+            validation_slices=(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            process = context.Process(
+                target=_ticker_worker_main,
+                args=(
+                    0, "AAA", config, directory, frozenset({"AAA:2026-01"}),
+                    True, events, stop, 1, gate, 0,
+                ),
+            )
+            process.start()
+            process.join(timeout=20)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+            self.assertEqual(process.exitcode, 0)
+            self.assertFalse(list(Path(directory).rglob("*.pt")))
 
     def test_validation_milestones_start_early_and_end_at_epoch(self) -> None:
         milestones = _validation_milestones(
@@ -196,11 +259,24 @@ class LoaderTrainerContractTest(unittest.TestCase):
             yield "partial"
             raise http.client.IncompleteRead(b"partial", 100)
 
+        class Gate:
+            def __init__(self) -> None:
+                self.acquired = 0
+                self.released = 0
+
+            def acquire(self) -> None:
+                self.acquired += 1
+
+            def release(self) -> None:
+                self.released += 1
+
+        gate = Gate()
         client = ArrowStreamClient(
             ClickHouseBarStreamConfig(
                 "http://localhost:8123", "", "", retry_attempts=2,
                 retry_initial_seconds=0, retry_max_seconds=0,
-            )
+            ),
+            query_gate=gate,
         )
         with patch("research.bar_gpt.v1.loader.request.urlopen", side_effect=responses), patch(
             "pyarrow.ipc.open_stream", side_effect=(partial_stream(None), iter(("complete",)))
@@ -208,6 +284,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
             with client.record_batches("SELECT 1 FORMAT ArrowStream") as batches:
                 self.assertEqual(list(batches), ["complete"])
         self.assertTrue(all(response.closed for response in responses))
+        self.assertEqual(gate.acquired, 2)
+        self.assertEqual(gate.released, 2)
 
     def test_global_block_plan_resume_and_cursor_order_are_exact(self) -> None:
         sessions = (
@@ -571,9 +649,25 @@ class LoaderTrainerContractTest(unittest.TestCase):
         )
         geometry_variant = dataclasses.replace(base, origin_bars_1s=base.origin_bars_1s + 1)
         stream_variant = dataclasses.replace(base, loader_stream_contract_version=4)
+        fetch_variant = dataclasses.replace(base, clickhouse_query_days=3, clickhouse_prefetch_pages=2)
         self.assertEqual(config_hash(base), config_hash(loader_variant))
-        self.assertEqual(config_hash(base), config_hash(stream_variant))
+        self.assertNotEqual(config_hash(base), config_hash(stream_variant))
+        self.assertEqual(config_hash(base), config_hash(fetch_variant))
         self.assertNotEqual(config_hash(base), config_hash(geometry_variant))
+        self.assertEqual(
+            config_hash(dataclasses.replace(DataConfig(), origin_bars_1s=4096)),
+            "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619",
+        )
+        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 2)
+        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2"))
+        self.assertEqual(
+            shard_path(DEFAULT_OUTPUT_ROOT, "AAA:2019-01"),
+            DEFAULT_OUTPUT_ROOT / "tickers" / "AAA" / "2019" / "2019-01.pt",
+        )
+        self.assertEqual(
+            shard_path(DEFAULT_OUTPUT_ROOT, "AAA:2026-01"),
+            DEFAULT_OUTPUT_ROOT / "tickers" / "AAA" / "2026" / "2026-01.pt",
+        )
 
     def test_offline_loader_owns_batch_size_and_validation_selection(self) -> None:
         config = self.data_config()
@@ -630,13 +724,17 @@ class LoaderTrainerContractTest(unittest.TestCase):
     def test_offline_reporter_tracks_known_worker_totals(self) -> None:
         reporter = ShardBuildReporter(
             total=5, completed=0, root=Path("D:/runtime"), workers=2,
-            layout="text", refresh=60.0, worker_totals=(2, 3), worker_block_totals=(30, 45),
+            layout="text", refresh=60.0, worker_totals=(2, 3), worker_block_totals=(75, 45),
         )
-        reporter.event(("worker", 0, "starting", "AAA", 2, 30))
+        reporter.event(("worker", 0, "starting", "AAA", 2, 75))
         reporter.event(("block", 0, "AAA:2026-01", "2026-01-02", 8, 8))
         reporter.event(("session", 0, "AAA:2026-01", "2026-01-02", 1, 8))
-        self.assertEqual(reporter.worker_progress[0], [0, 2, 8, 30, 1, 8])
+        self.assertEqual(reporter.worker_progress[0], [0, 2, 8, 75, 1, 8])
         self.assertEqual(reporter.compiled_work_blocks, 8)
+        reporter.event(("session", 0, "AAA:2026-01", "2026-01-03", 2, 30))
+        reporter.event(("session", 0, "BBB:2026-01", "2026-01-02", 1, 45))
+        self.assertEqual(reporter.worker_progress[0][2], 45)
+        self.assertEqual(reporter.compiled_work_blocks, 45)
 
     def test_sequential_session_emits_tail_origins_with_unavailable_horizons_masked(self) -> None:
         config = self.data_config()

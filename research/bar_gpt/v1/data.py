@@ -44,6 +44,10 @@ class FixedBucketHistoryCache:
                     bar_end_us=torch.cat(tuple(item.bar_end_us for item in self._chunks), dim=0),
                     available_at_us=torch.cat(tuple(item.available_at_us for item in self._chunks), dim=0),
                 )
+                # The contiguous view is the new cache authority.  Retaining
+                # both it and every source session doubles the resident
+                # history without preserving any information.
+                self._chunks = [self._view]
         return self._view
 
     @property

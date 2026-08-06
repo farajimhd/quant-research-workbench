@@ -753,8 +753,9 @@ def validate_unique_source_intervals(
 class ArrowStreamClient:
     """Incremental ClickHouse ArrowStream reader; response bodies are never read_all()."""
 
-    def __init__(self, config: ClickHouseBarStreamConfig) -> None:
+    def __init__(self, config: ClickHouseBarStreamConfig, *, query_gate: object | None = None) -> None:
         self.config = config
+        self.query_gate = query_gate
         self._timing_lock = threading.Lock()
         self._timings: dict[str, float] = {}
 
@@ -809,7 +810,11 @@ class ArrowStreamClient:
             if self.config.password:
                 req.add_header("X-ClickHouse-Key", self.config.password)
             response = None
+            gate_acquired = False
             try:
+                if self.query_gate is not None:
+                    self.query_gate.acquire()
+                    gate_acquired = True
                 response = request.urlopen(req, timeout=None)
                 import pyarrow as pa
 
@@ -825,6 +830,8 @@ class ArrowStreamClient:
             finally:
                 if response is not None:
                     response.close()
+                if gate_acquired:
+                    self.query_gate.release()
             delay = min(
                 float(self.config.retry_max_seconds),
                 float(self.config.retry_initial_seconds) * (2**attempt),
@@ -2069,6 +2076,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         resume_cursors: Mapping[int, CoverageCursor] | None = None,
         unit_tickers: tuple[str, ...] | None = None,
         skip_unit_keys: frozenset[str] = frozenset(),
+        query_gate: object | None = None,
     ) -> None:
         super().__init__()
         if split not in {"train", "validation", "cache"}:
@@ -2082,6 +2090,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         self.resume_cursors = dict(resume_cursors or {})
         self.unit_tickers = tuple(item.upper() for item in unit_tickers) if unit_tickers else None
         self.skip_unit_keys = frozenset(skip_unit_keys)
+        self.query_gate = query_gate
 
     @property
     def epoch(self) -> int:
@@ -2128,7 +2137,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
         return sorted(indexed, key=lambda item: (item[1].ticker, item[1].start_date, item[0]))
 
     def __iter__(self) -> Iterator[BarGPTExample]:
-        client = ArrowStreamClient(self.stream_config)
+        client = ArrowStreamClient(self.stream_config, query_gate=self.query_gate)
         units = self._units()
         if not units:
             return
@@ -2164,10 +2173,19 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
             prior_conditions_by_ticker: dict[str, torch.Tensor | None] = {}
             loaded_through_by_ticker: dict[str, str] = {}
             daily_by_ticker: dict[str, tuple[list[str], BarView] | None] = {}
+            active_ticker = ""
             for unit_index, unit in units:
                 if resume is not None and unit_index < resume.unit_index:
                     continue
                 ticker = unit.ticker
+                if active_ticker and ticker != active_ticker:
+                    # Units are sorted by ticker and month, so no later unit
+                    # can consume the completed ticker's causal caches.
+                    history_by_ticker.clear()
+                    prior_conditions_by_ticker.clear()
+                    loaded_through_by_ticker.clear()
+                    daily_by_ticker.clear()
+                active_ticker = ticker
                 split_actions = actions_by_ticker.get(ticker, ())
                 excluded_dates = split_execution_dates(split_actions)
                 warmup_days = max(

@@ -417,14 +417,25 @@ python -B -m research.bar_gpt.v1.run_build_offline_shards
 python -B -m research.bar_gpt.v1.run_build_offline_shards --execute
 ```
 
-The first command is a read-only plan. The execute form partitions work across
-bounded ticker workers and writes immutable ticker-month shards beneath
+The first command is a read-only plan. The execute form balances whole tickers
+by their planned block counts across bounded logical worker slots and writes
+immutable ticker-month shards beneath
 `D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2`. Both the requested
 one-second authority and daily-session authority now begin in 2019. The
 compiler fails preflight until those sources are continuously certified and
 never fabricates unavailable intraday sessions or calendar history.
 
-Within each worker, ClickHouse iteration runs in the foreground while one
+Each ticker runs in a fresh spawned process, so completing a ticker releases
+PyTorch, Arrow, Polars, and Windows allocator arenas before that logical worker
+slot advances to its next assigned ticker. ClickHouse Arrow-response concurrency
+is bounded globally across all processes; zero for
+`--clickhouse-max-concurrent-pages` selects the worker-aware bound. The measured
+seven-day query and four-page prefetch remain the defaults because the laptop
+client benchmark found them faster than the tested two- and three-day variants.
+The bounded causal history keeps one contiguous cache authority instead of both
+session chunks and their concatenated copy, and completed-ticker state is
+discarded because ticker months are processed contiguously.
+Within each ticker process, ClickHouse iteration runs in the foreground while one
 bounded background slot compiles completed sessions. At most two session
 compilations are pending, so source I/O and tensor projection overlap without
 retaining an entire raw ticker-month or creating an unbounded memory queue.
@@ -441,9 +452,11 @@ and memory pressure to a stage that accounted for less than one percent of the
 observed wall time.
 
 Each spawned process also receives a bounded PyTorch CPU-thread budget. Zero is
-the automatic setting and divides logical CPUs across active workers; override
-it only from measured evidence with `--cpu-threads-per-worker N`. This prevents
-every worker from independently creating a workstation-sized CPU thread pool.
+the automatic setting: it divides logical CPUs across the requested active
+workers, capped at eight threads through 40 workers and six threads above 40.
+Override it only from measured evidence with `--cpu-threads-per-worker N`.
+This prevents every worker from independently creating a workstation-sized CPU
+thread pool while leaving capacity for ClickHouse and the operating system.
 
 Each month stores every session-level 1s, intraday-rollup, and calendar tensor
 once. Block records retain only slices, exact causal prefix corrections,
@@ -460,6 +473,8 @@ and progress/concurrency controls are excluded. A stable ticker-month hash
 replaces range-dependent unit numbering inside each shard. Consequently the
 same certified shard can be collated into any loader-time batch size and two
 disjoint build commands can safely accumulate compatible months in one root.
+The loader stream contract remains part of the v2 identity to match the active
+2019--2020 build and its certified sidecars.
 `origin_bars_1s` remains storage geometry—the number of sequential origins in
 one independently addressable block—not the number of blocks collated into a
 training batch.
@@ -469,8 +484,8 @@ training and January through July 2026 for chronological validation. The two
 commands intentionally share one root and are independently resumable:
 
 ```powershell
-python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection train --start-date 2019-01-01 --end-date 2021-01-01 --workers 4 --cpu-threads-per-worker 32
-python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection validation --start-date 2026-01-01 --end-date 2026-08-01 --workers 4 --cpu-threads-per-worker 32
+python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection train --start-date 2019-01-01 --end-date 2021-01-01 --workers 32
+python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection validation --start-date 2026-01-01 --end-date 2026-08-01 --workers 8
 ```
 
 Completion advances only after the shard is atomically renamed, SHA-256
