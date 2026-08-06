@@ -305,6 +305,106 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         concepts = {row["concept_leaf"] for row in document["statements"]}
         self.assertIn("operations.workforce", concepts)
 
+    def test_opposing_financing_and_credit_evidence_derives_mixed_sentiment(self) -> None:
+        cases = (
+            (
+                "Alpha prices convertible senior notes to fund capital return",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) prices $1.3 billion of convertible senior notes and will use the proceeds to fund capital return.",
+                {"capital.financing", "capital.return"},
+            ),
+            (
+                "Alpha credit update",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reports card delinquencies up to 1.59%, while credit-card write-offs are down to 1.73%.",
+                {"financial.credit_quality"},
+            ),
+            (
+                "Alpha refinancing",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) prices convertible senior notes to repurchase older convertible bonds.",
+                {"capital.financing", "capital.structure"},
+            ),
+        )
+        for index, (title, text, expected_concepts) in enumerate(cases):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-mixed-capital-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                concepts = {row["concept_leaf"] for row in document["statements"]}
+                self.assertTrue(expected_concepts <= concepts)
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
+
+    def test_arbitration_and_authorization_tradeoffs_derive_mixed_sentiment(self) -> None:
+        arbitration = self.engine.synthesize({
+            "source_id": "news-arbitration",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha files arbitration seeking damages",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) files arbitration seeking $250 million in damages. "
+                "The company was placed at a competitive disadvantage by discriminatory treatment."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(arbitration["issuer_views"][0]["composite_sentiment"], "mixed")
+
+        authorization = self.engine.synthesize({
+            "source_id": "news-authorization",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha authorization update",
+            "text": (
+                "The FDA issued a letter of authorization to authorize use of Alpha Therapeutics Inc (NASDAQ:AAA) vaccine; "
+                "the FDA revised conditions of authorization to include myocarditis and pericarditis reporting requirements."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(authorization["issuer_views"][0]["composite_sentiment"], "mixed")
+
+    def test_canonical_aliases_bind_statements_and_shared_transaction_context(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "Alpha Holdings", ("Alpha Legacy Corporation",), "NYSE"),
+            IssuerIdentity("BBB", "issuer:bbb", "Beta Holdings", ("Beta Industries",), "NYSE"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-alias-transaction",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Legacy buys Beta Industries",
+            "text": (
+                "Alpha Legacy Corporation will combine with Beta Industries. "
+                "The two companies expect to complete the amalgamation after approval."
+            ),
+            "tickers": ["AAA", "BBB"],
+        })
+        self.assertEqual({row["ticker"] for row in document["entities"]}, {"AAA", "BBB"})
+        participated = {row["entity_id"] for row in document["participations"]}
+        self.assertEqual(participated, {row["entity_id"] for row in document["entities"]})
+
+    def test_same_issuer_alias_can_resolve_multiple_provider_supported_securities(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:alpha", "Alpha Air", ("Alpha Air",), "OTC", security_id="security:aaa"),
+            IssuerIdentity("AAB", "issuer:alpha", "Alpha Air", ("Alpha Air",), "OTC", security_id="security:aab"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-multiple-securities",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Air doubles its aircraft fleet",
+            "text": "Alpha Air doubles its aircraft fleet and expands capacity.",
+            "tickers": ["AAA", "AAB"],
+        })
+        self.assertEqual({row["ticker"] for row in document["entities"]}, {"AAA", "AAB"})
+
+    def test_plural_shareholder_vote_is_governance_statement(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-shareholder-vote",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha shareholders reject proposal",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) shareholders reject a proposal before the annual meeting.",
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("governance.shareholder_vote", concepts)
+
     def test_prelisting_identity_and_unrendered_text_fail_closed(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((
             IssuerIdentity("NEW", "issuer:new", "New Company", ("New Company",), "NASDAQ", list_date=date(2026, 8, 5)),
