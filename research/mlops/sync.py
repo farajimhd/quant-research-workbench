@@ -22,6 +22,11 @@ def sync_version_code(
     research_destination = destination_root / "research"
     copy_tree(repo_root / "research" / "mlops", research_destination / "mlops")
     copy_tree(repo_root / "research" / "market_references", research_destination / "market_references")
+    copy_runtime_module(
+        repo_root,
+        destination_root,
+        Path("pipelines/market_sip/events/session_bar_contract.py"),
+    )
     family_source = repo_root / "research" / model_family
     family_destination = research_destination / model_family
     copy_family_runtime_modules(family_source, family_destination)
@@ -49,6 +54,24 @@ def copy_family_runtime_modules(source: Path, destination: Path) -> None:
         if path.name.startswith("test_") or should_ignore_runtime_path(path):
             continue
         shutil.copy2(path, destination / path.name)
+
+
+def copy_runtime_module(repo_root: Path, destination_root: Path, relative_path: Path) -> None:
+    """Copy one importable shared module plus the package markers it needs."""
+    source = repo_root / relative_path
+    if not source.is_file():
+        raise FileNotFoundError(f"runtime module is absent: {source}")
+    target = destination_root / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    package = relative_path.parent
+    while package != Path("."):
+        source_init = repo_root / package / "__init__.py"
+        if source_init.is_file():
+            target_init = destination_root / package / "__init__.py"
+            target_init.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_init, target_init)
+        package = package.parent
 
 
 def copy_tree(source: Path, destination: Path) -> None:

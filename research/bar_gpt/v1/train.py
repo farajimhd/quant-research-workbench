@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Sequence
 
 import numpy as np
 import torch
@@ -39,6 +39,12 @@ from research.bar_gpt.v1.loader import (
     make_sequential_dataloader,
     month_units,
     validation_block_plan,
+)
+from research.bar_gpt.v1.offline_shards import (
+    OfflineShardDataset,
+    OfflineShardUnit,
+    discover_offline_units,
+    make_offline_dataloader,
 )
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
 from research.bar_gpt.v1.sampling import CoverageCursor, coverage_plan_summary
@@ -202,6 +208,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-init-timeout", type=int, default=train.wandb_init_timeout)
     parser.add_argument("--resume-checkpoint", default="")
     parser.add_argument("--seed", type=int, default=train.seed)
+    parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="clickhouse")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2")
+    parser.add_argument("--offline-train-start-date", default="2019-01-01")
+    parser.add_argument("--offline-train-end-date", default="2021-01-01")
+    parser.add_argument("--offline-validation-start-date", default="2026-01-01")
+    parser.add_argument("--offline-validation-end-date", default="2026-08-01")
     parser.add_argument("--dummy-data", action="store_true")
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -209,6 +221,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
     horizons = _int_csv(args.horizons_us)
     data = DataConfig(
+        loader_stream_contract_version=4 if args.data_source == "offline" else 3,
         database=str(args.database),
         one_second_table=str(args.one_second_table),
         manifest_table=str(args.manifest_table),
@@ -737,6 +750,8 @@ def _loaders(
     resume_cursors: dict[int, CoverageCursor] | None = None,
     sequential_plan: SequentialBlockPlan | None = None,
     validation_plan: SequentialBlockPlan | None = None,
+    offline_train_units: Sequence[OfflineShardUnit] = (),
+    offline_validation_units: Sequence[OfflineShardUnit] = (),
 ) -> tuple[DataLoader[Any], DataLoader[Any]]:
     if args.dummy_data:
         example = _dummy_example(config.data)
@@ -744,6 +759,33 @@ def _loaders(
         validation_dataset = _DummyDataset(example)
         common = dict(batch_size=config.data.batch_size, num_workers=0, collate_fn=collate_examples)
         return DataLoader(train_dataset, **common), DataLoader(validation_dataset, **common)
+    if args.data_source == "offline":
+        if not offline_train_units or not offline_validation_units:
+            raise ValueError("offline training requires certified train and validation shard units")
+        train_dataset = OfflineShardDataset(
+            offline_train_units,
+            seed=config.train.seed,
+            shuffle_units=True,
+            resume_cursors=resume_cursors,
+        )
+        validation_workers = min(int(config.data.loader_workers), len(config.data.validation_slices))
+        validation_data = replace(
+            config.data,
+            loader_workers=validation_workers,
+            persistent_workers=False,
+            balance_activity_regimes=False,
+        )
+        validation_dataset = OfflineShardDataset(
+            offline_validation_units,
+            seed=config.train.seed,
+            shuffle_units=False,
+            validation_slices=config.data.validation_slices,
+            blocks_per_validation_slice=config.data.validation_blocks_per_slice,
+        )
+        return (
+            make_offline_dataloader(train_dataset, config.data, drop_last=False),
+            make_offline_dataloader(validation_dataset, validation_data, drop_last=False),
+        )
     stream = _stream_config(config.data)
     if validation_plan is None:
         raise ValueError("real training requires the bounded validation block plan")
@@ -1122,6 +1164,8 @@ def _advance_cursors(
     cursors: dict[int, CoverageCursor],
     batch: BarGPTBatch,
     sequential_plan: SequentialBlockPlan | None = None,
+    *,
+    latest_per_worker: bool = False,
 ) -> dict[int, CoverageCursor]:
     if sequential_plan is not None:
         current = cursors.get(0)
@@ -1145,7 +1189,7 @@ def _advance_cursors(
     for worker, unit, block in zip(batch.worker_ids, batch.unit_indices, batch.block_offsets, strict=True):
         candidate = CoverageCursor(int(unit), int(block))
         current = updated.get(int(worker))
-        if current is None or (candidate.unit_index, candidate.block_offset) > (current.unit_index, current.block_offset):
+        if latest_per_worker or current is None or (candidate.unit_index, candidate.block_offset) > (current.unit_index, current.block_offset):
             updated[int(worker)] = candidate
     return updated
 
@@ -1177,7 +1221,6 @@ def main(argv: Iterable[str] | None = None) -> int:
     signal.signal(signal.SIGINT, _handle_interrupt)
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _handle_interrupt)
-    load_env_files(discover_clickhouse_env_files(), verbose=True)
     args = parse_args(argv)
     config = build_config(args)
     set_seed(config.train.seed)
@@ -1185,10 +1228,51 @@ def main(argv: Iterable[str] | None = None) -> int:
     if device.type == "cuda":
         torch.cuda.manual_seed_all(config.train.seed)
         torch.set_float32_matmul_precision("high")
-    clickhouse_client = ClickHouseHttpClient(
-        default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
-    )
-    evidence = {"mode": "dummy"} if args.dummy_data else preflight(clickhouse_client, config.data)
+    clickhouse_client: ClickHouseHttpClient | None = None
+    offline_train_units: tuple[OfflineShardUnit, ...] = ()
+    offline_validation_units: tuple[OfflineShardUnit, ...] = ()
+    if args.dummy_data:
+        evidence = {"mode": "dummy"}
+    elif args.data_source == "offline":
+        root = Path(args.offline_shard_root)
+        validation_tickers = tuple(sorted({ticker for ticker, _start, _end in config.data.validation_slices}))
+        offline_train_units = discover_offline_units(
+            root,
+            config.data,
+            tickers=config.data.training_tickers,
+            start_date=str(args.offline_train_start_date),
+            end_date=str(args.offline_train_end_date),
+        )
+        offline_validation_units = discover_offline_units(
+            root,
+            config.data,
+            tickers=validation_tickers,
+            start_date=str(args.offline_validation_start_date),
+            end_date=str(args.offline_validation_end_date),
+        )
+        condition_counts = tuple(
+            sum(unit.condition_positive_counts[index] for unit in offline_train_units)
+            for index in range(4)
+        )
+        evidence = {
+            "mode": "offline_shards_v2",
+            "offline_shard_root": str(root),
+            "offline_training_units": str(len(offline_train_units)),
+            "offline_training_blocks": str(sum(unit.blocks for unit in offline_train_units)),
+            "offline_training_origins": str(sum(unit.origins for unit in offline_train_units)),
+            "offline_validation_units": str(len(offline_validation_units)),
+            "offline_validation_available_blocks": str(sum(unit.blocks for unit in offline_validation_units)),
+            "condition_halt_rows": str(condition_counts[0]),
+            "condition_resume_rows": str(condition_counts[1]),
+            "condition_news_rows": str(condition_counts[2]),
+            "condition_luld_rows": str(condition_counts[3]),
+        }
+    else:
+        load_env_files(discover_clickhouse_env_files(), verbose=True)
+        clickhouse_client = ClickHouseHttpClient(
+            default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
+        )
+        evidence = preflight(clickhouse_client, config.data)
     condition_evidence = (
         ("halt_pause", "condition_halt_rows"),
         ("resume", "condition_resume_rows"),
@@ -1218,7 +1302,21 @@ def main(argv: Iterable[str] | None = None) -> int:
     sequential_unit_plans: dict[str, tuple[int, int]] = {}
     sequential_block_plan: SequentialBlockPlan | None = None
     bounded_validation_plan: SequentialBlockPlan | None = None
-    if not args.dummy_data and config.data.coverage_mode == "sequential":
+    if not args.dummy_data and args.data_source == "offline":
+        sequential_sessions = sum(unit.sessions for unit in offline_train_units)
+        sequential_blocks = sum(unit.blocks for unit in offline_train_units)
+        sequential_origins = sum(unit.origins for unit in offline_train_units)
+        sequential_unit_plans = {
+            unit.unit_key: (unit.blocks, unit.origins)
+            for unit in offline_train_units
+        }
+        evidence.update({
+            "training_sessions_per_epoch": str(sequential_sessions),
+            "training_blocks_per_epoch": str(sequential_blocks),
+            "training_origins_per_epoch": str(sequential_origins),
+        })
+    elif not args.dummy_data and config.data.coverage_mode == "sequential":
+        assert clickhouse_client is not None
         (
             sequential_sessions,
             sequential_blocks,
@@ -1233,21 +1331,26 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "training_origins_per_epoch": str(sequential_origins),
             }
         )
-    if not args.dummy_data:
+    if not args.dummy_data and args.data_source == "clickhouse":
         bounded_validation_plan = validation_block_plan(
             data_config=config.data,
             stream_config=_stream_config(config.data),
         )
         evidence["validation_blocks"] = str(bounded_validation_plan.total_blocks)
         evidence["validation_origins"] = str(bounded_validation_plan.total_origins)
+    elif not args.dummy_data:
+        evidence["validation_blocks"] = str(
+            len(config.data.validation_slices) * config.data.validation_blocks_per_slice
+        )
+        evidence["validation_origins"] = "stored_in_offline_blocks"
     run_name = args.run_name or f"bar-gpt-v1-{time.strftime('%Y%m%d-%H%M%S')}"
     config.train.run_name = run_name
     run_root = Path(config.train.output_root) / run_name if args.output_root else default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, run_name)
     paths = RunPaths.create(run_root)
     holdout = tuple(sorted({ticker for ticker, _start, _end in config.data.validation_slices}))
     plan = coverage_plan_summary(
-        start_date=config.data.start_date,
-        end_date=config.data.validation_start_date,
+        start_date=(str(args.offline_train_start_date) if args.data_source == "offline" else config.data.start_date),
+        end_date=(str(args.offline_train_end_date) if args.data_source == "offline" else config.data.validation_start_date),
         training_tickers=config.data.training_tickers,
         blocks_per_unit=config.data.coverage_blocks_per_unit,
         origin_bars=config.data.origin_bars_1s,
@@ -1337,6 +1440,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         resume_cursors=resume_cursors,
         sequential_plan=sequential_block_plan,
         validation_plan=bounded_validation_plan,
+        offline_train_units=offline_train_units,
+        offline_validation_units=offline_validation_units,
     )
     validation_cache = PreparedValidationBatches(validation_loader)
     resumed_wandb_id = restored.get("wandb_run_id")
@@ -1374,16 +1479,24 @@ def main(argv: Iterable[str] | None = None) -> int:
             "resolved_validation_milestones": validation_milestones,
             "resolved_warmup_samples": resolved_warmup_samples,
         },
-        data_roots={
-            "clickhouse": default_clickhouse_url(),
-            "database": config.data.database,
-            "one_second_table": config.data.one_second_table,
-            "one_second_manifest_table": config.data.manifest_table,
-            "daily_table": config.data.daily_table,
-            "daily_manifest_table": config.data.daily_manifest_table,
-            "identity_database": config.data.identity_database,
-            "identity_interval_table": config.data.identity_interval_table,
-        },
+        data_roots=(
+            {
+                "offline_shards": str(Path(args.offline_shard_root)),
+                "training_range": f"[{args.offline_train_start_date},{args.offline_train_end_date})",
+                "validation_range": f"[{args.offline_validation_start_date},{args.offline_validation_end_date})",
+            }
+            if args.data_source == "offline"
+            else {
+                "clickhouse": default_clickhouse_url(),
+                "database": config.data.database,
+                "one_second_table": config.data.one_second_table,
+                "one_second_manifest_table": config.data.manifest_table,
+                "daily_table": config.data.daily_table,
+                "daily_manifest_table": config.data.daily_manifest_table,
+                "identity_database": config.data.identity_database,
+                "identity_interval_table": config.data.identity_interval_table,
+            }
+        ),
         output_root=paths.run_root,
         source_checkpoint=Path(args.resume_checkpoint) if args.resume_checkpoint else None,
         wandb_info={
@@ -1477,6 +1590,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                         resume_cursors={},
                         sequential_plan=sequential_block_plan,
                         validation_plan=bounded_validation_plan,
+                        offline_train_units=offline_train_units,
+                        offline_validation_units=offline_validation_units,
                     )
                     durable_cursors = {}
                     validation_runs_in_epoch = 0
@@ -1485,7 +1600,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 if epoch != resume_epoch:
                     next_validation = epoch_start_samples + epoch_validation_milestones[0]
                 reporter.epoch(epoch + 1, epoch_start_samples)
-                if isinstance(train_loader.dataset, BarGPTIterableDataset):
+                if isinstance(train_loader.dataset, (BarGPTIterableDataset, OfflineShardDataset)):
                     train_loader.dataset.epoch = epoch
                 if durable_cursors:
                     reporter.message(
@@ -1578,6 +1693,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 if isinstance(train_loader.dataset, BarGPTSequentialDataset)
                                 else None
                             ),
+                            latest_per_worker=isinstance(train_loader.dataset, OfflineShardDataset),
                         )
                         batch_metrics = {**result.metrics, **_batch_eligibility_metrics(batch)}
                         for key, value in batch_metrics.items():
@@ -1731,8 +1847,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                                     resume_cursors=durable_cursors,
                                     sequential_plan=sequential_block_plan,
                                     validation_plan=bounded_validation_plan,
+                                    offline_train_units=offline_train_units,
+                                    offline_validation_units=offline_validation_units,
                                 )
-                                if isinstance(train_loader.dataset, BarGPTIterableDataset):
+                                if isinstance(train_loader.dataset, (BarGPTIterableDataset, OfflineShardDataset)):
                                     train_loader.dataset.epoch = epoch
                                 iterator = _training_prefetcher(train_loader, config, device)
                                 active_iterator = iterator

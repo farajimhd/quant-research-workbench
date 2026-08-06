@@ -53,8 +53,11 @@ from research.bar_gpt.v1.offline_shards import (
     compile_session,
     compile_unit,
     config_hash,
+    discover_offline_units,
     load_shard,
+    make_offline_dataloader,
     materialize_block,
+    OfflineShardDataset,
     write_unit,
 )
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
@@ -567,8 +570,62 @@ class LoaderTrainerContractTest(unittest.TestCase):
             validation_start_date="2026-01-01",
         )
         geometry_variant = dataclasses.replace(base, origin_bars_1s=base.origin_bars_1s + 1)
+        stream_variant = dataclasses.replace(base, loader_stream_contract_version=4)
         self.assertEqual(config_hash(base), config_hash(loader_variant))
+        self.assertEqual(config_hash(base), config_hash(stream_variant))
         self.assertNotEqual(config_hash(base), config_hash(geometry_variant))
+
+    def test_offline_loader_owns_batch_size_and_validation_selection(self) -> None:
+        config = self.data_config()
+        examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=config,
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_unit(root, compile_unit(examples, config, "AAA:2026-01"), certify_hash=True)
+            units = discover_offline_units(
+                root, config, tickers=("AAA",),
+                start_date="2026-01-01", end_date="2026-02-01",
+            )
+            single_config = dataclasses.replace(config, batch_size=1, loader_workers=0, pin_memory=False)
+            triple_config = dataclasses.replace(config, batch_size=3, loader_workers=0, pin_memory=False)
+            single = next(iter(make_offline_dataloader(
+                OfflineShardDataset(units, seed=7, shuffle_units=False), single_config, drop_last=False,
+            )))
+            triple = next(iter(make_offline_dataloader(
+                OfflineShardDataset(units, seed=7, shuffle_units=False), triple_config, drop_last=False,
+            )))
+            self.assertEqual(len(single.tickers), 1)
+            self.assertEqual(len(triple.tickers), 3)
+            self.assertEqual(single.views["1s"].shape[1:], triple.views["1s"].shape[1:])
+            validation = list(make_offline_dataloader(
+                OfflineShardDataset(
+                    units, seed=7, shuffle_units=False,
+                    validation_slices=(("AAA", "2026-01-02", "2026-01-03"),),
+                    blocks_per_validation_slice=2,
+                ),
+                single_config,
+                drop_last=False,
+            ))
+            self.assertEqual(len(validation), 2)
+            worker_config = dataclasses.replace(
+                config, batch_size=2, loader_workers=2, worker_prefetch_batches=2,
+                pin_memory=False, persistent_workers=False,
+            )
+            worker_loader = make_offline_dataloader(
+                OfflineShardDataset(units, seed=7, shuffle_units=False),
+                worker_config,
+                drop_last=False,
+            )
+            worker_iterator = iter(worker_loader)
+            try:
+                worker_batch = next(worker_iterator)
+                self.assertGreaterEqual(len(worker_batch.tickers), 1)
+            finally:
+                shutdown = getattr(worker_iterator, "_shutdown_workers", None)
+                if callable(shutdown):
+                    shutdown()
 
     def test_offline_reporter_tracks_known_worker_totals(self) -> None:
         reporter = ShardBuildReporter(
@@ -701,6 +758,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-5)
 
     def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
+        self.assertEqual(training_launcher_args["--data-source"], "offline")
+        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v2"))
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--batch-size"], "16")

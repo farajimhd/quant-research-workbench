@@ -171,8 +171,8 @@ class DataConfig:
         return tuple(ticker for ticker in self.tickers if ticker not in validation)
 
     def validate(self) -> None:
-        if self.loader_stream_contract_version != 3:
-            raise ValueError("this BarGPT version requires loader_stream_contract_version=3")
+        if self.loader_stream_contract_version not in {3, 4}:
+            raise ValueError("this BarGPT version requires loader_stream_contract_version 3 or 4")
         if "split_adjusted" in self.one_second_table or self.daily_table.endswith("_adjusted"):
             raise ValueError("globally adjusted bar authorities are retired; use raw bars with causal split metadata")
         if len(self.tickers) < 2:

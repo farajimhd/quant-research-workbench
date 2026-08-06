@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from research.mlops.sync import copy_family_runtime_modules
+from research.mlops.sync import copy_family_runtime_modules, copy_runtime_module
 
 
 class RuntimeSyncTests(unittest.TestCase):
@@ -26,6 +26,24 @@ class RuntimeSyncTests(unittest.TestCase):
             self.assertTrue((destination / "shared_helper.py").exists())
             self.assertFalse((destination / "test_shared_helper.py").exists())
             self.assertFalse((destination / "v11").exists())
+
+    def test_shared_runtime_module_includes_package_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            destination = root / "destination"
+            module = source / "pipelines" / "market_sip" / "events" / "contract.py"
+            module.parent.mkdir(parents=True)
+            for package in (source / "pipelines", source / "pipelines" / "market_sip", module.parent):
+                (package / "__init__.py").write_text("", encoding="utf-8")
+            module.write_text("VALUE = 1\n", encoding="utf-8")
+
+            copy_runtime_module(source, destination, Path("pipelines/market_sip/events/contract.py"))
+
+            self.assertEqual((destination / "pipelines/market_sip/events/contract.py").read_text(encoding="utf-8"), "VALUE = 1\n")
+            self.assertTrue((destination / "pipelines/__init__.py").is_file())
+            self.assertTrue((destination / "pipelines/market_sip/__init__.py").is_file())
+            self.assertTrue((destination / "pipelines/market_sip/events/__init__.py").is_file())
 
 
 if __name__ == "__main__":

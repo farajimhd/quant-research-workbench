@@ -276,12 +276,14 @@ The canonical workstation training command is:
 python -B -m research.bar_gpt.v1.run_train
 ```
 
-Training uses `[2019-01-01, 2026-01-01)`. One coverage epoch is one
-deterministic exhaustive pass over every available 04:00-20:00 second in all
-72 month partitions and the non-validation tickers. Startup derives exact
-session, block, and origin totals from point-in-time identity intervals and the
-one-second authority; those totals drive progress, scheduling, validation
-spacing, ETA, and the resume-plan hash. The final hour remains an origin
+The canonical launcher now trains from certified v2 offline shards. Its bounded
+training selection is `[2019-01-01, 2021-01-01)` and its fixed validation
+selection is `[2026-01-01, 2026-08-01)`. One coverage epoch is one deterministic
+exhaustive pass over every stored 04:00-20:00 block in the non-validation
+tickers. Startup reads sidecar metadata—not tensor payloads—to verify every
+requested ticker-month and derive exact session, block, and origin totals;
+those totals drive progress, scheduling, validation spacing, ETA, and the
+resume-plan hash. The final hour remains an origin
 population, while horizons extending past 20:00 are masked rather than crossing
 overnight.
 
@@ -302,21 +304,20 @@ causal prefix. This is standard autoregressive packed-sequence training and is
 equivalent to 4,096 causal examples with shared computation, except that it does
 not impose a strict rolling 2,048-row attention window.
 
-One microbatch contains one block and produces one optimizer update with up to
-4,096 supervised origins. Eight persistent loader workers use one ClickHouse thread each, two
-in-flight batches per worker, and a
-shared 64-block (64-batch) bounded RAM cache. One device batch transfers on a
+The shard stores no microbatch dimension. `--batch-size` is the number of
+independent 4,096-origin blocks collated by the loader and may be tuned without
+rebuilding shards. The production default is 16 blocks per microbatch with two
+microbatches per optimizer update. Sixteen worker-owned mmap streams retain
+shard-local access, eight in-flight batches per worker, and a shared bounded
+RAM cache sized in loader blocks. One pinned device batch transfers on a
 dedicated CUDA stream while the current batch computes. The terminal reports
 actual cache fill and per-update GPU duty so starvation is visible. Future target support
-never enters `batch.views`; it is consumed only by GPU target construction and
-the loss, so later origins or horizons in one update do not create lookahead.
-Additive horizon statistics use float64 prefixes before returning model-dtype
-targets. This preserves nonnegative volume and count semantics when a quiet
-window follows large earlier activity and prevents float32 prefix cancellation
-from creating invalid `log1p` targets.
+never enters `batch.views`; eager horizon targets and masks are read directly
+from the shard, so the device path performs no target materialization.
 
-Each worker owns a deterministic ticker shard and persists one cursor per owned
-ticker-month stream. Cursors advance only after a successful optimizer update.
+Each worker owns a deterministic shuffled sequence of ticker-month mmap shards
+and persists one cursor per worker-owned stream. Cursors advance only after a
+successful optimizer update.
 Ctrl+C discards an incomplete accumulation group and replays it; resume
 deterministically rehydrates each bounded raw cache from its committed cursor
 rather than serializing gigabytes of bar tensors. A coverage-plan hash and the
@@ -341,9 +342,10 @@ boundary, training prefetch is stopped first; validation evaluates the already
 prepared host batches, then training restarts from consumed durable cursors.
 Unconsumed training blocks replay safely rather than being marked complete.
 
-Training refuses to start unless canonical one-second, daily, exact condition,
-and point-in-time alias coverage are certified and the q_live identity and
-split authorities exist. Defaults are a 384-wide eight-layer decoder, BF16,
+Training refuses to start unless every requested ticker-month has a compatible
+contract-v2 complete or explicitly covered-empty sidecar and every complete
+sidecar has its tensor file. ClickHouse is not contacted by the offline training
+path. Defaults are a 384-wide eight-layer decoder, BF16,
 and six horizons from 5 seconds through 1 hour. `--max-samples 0` means the
 complete coverage epoch; a positive value is an operator safety or diagnostic
 cap and does not shorten the full-epoch learning-rate curve.
@@ -467,8 +469,8 @@ training and January through July 2026 for chronological validation. The two
 commands intentionally share one root and are independently resumable:
 
 ```powershell
-python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --start-date 2019-01-01 --end-date 2021-01-01 --workers 4 --cpu-threads-per-worker 32
-python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --start-date 2026-01-01 --end-date 2026-08-01 --workers 4 --cpu-threads-per-worker 32
+python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection train --start-date 2019-01-01 --end-date 2021-01-01 --workers 4 --cpu-threads-per-worker 32
+python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection validation --start-date 2026-01-01 --end-date 2026-08-01 --workers 4 --cpu-threads-per-worker 32
 ```
 
 Completion advances only after the shard is atomically renamed, SHA-256

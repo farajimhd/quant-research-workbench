@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS
+from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS, BAR_GPT_VALIDATION_SLICES_2026
 
 
 sys.dont_write_bytecode = True
@@ -20,6 +20,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     parser.add_argument("--workers", type=int, default=min(12, max(2, (os.cpu_count() or 8) // 4)))
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
     parser.add_argument("--tickers", default=",".join(BAR_GPT_TRAINING_TICKERS))
+    parser.add_argument("--selection", choices=("all", "train", "validation"), default="all")
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="2026-08-01")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
@@ -29,12 +30,19 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
 
 def main(argv: list[str] | None = None) -> int:
     args, extra = parse_args(argv)
+    validation_tickers = {ticker for ticker, _start, _end in BAR_GPT_VALIDATION_SLICES_2026}
+    if args.selection == "train":
+        tickers = tuple(ticker for ticker in BAR_GPT_TRAINING_TICKERS if ticker not in validation_tickers)
+    elif args.selection == "validation":
+        tickers = tuple(ticker for ticker in BAR_GPT_TRAINING_TICKERS if ticker in validation_tickers)
+    else:
+        tickers = tuple(item.strip().upper() for item in str(args.tickers).split(",") if item.strip())
     command = [
         sys.executable, "-B", "-m", "research.bar_gpt.v1.offline_shards",
         "--output-root", args.output_root,
         "--workers", str(args.workers),
         "--cpu-threads-per-worker", str(args.cpu_threads_per_worker),
-        "--tickers", args.tickers,
+        "--tickers", ",".join(tickers),
         "--start-date", args.start_date,
         "--end-date", args.end_date,
         "--progress-layout", args.progress_layout,

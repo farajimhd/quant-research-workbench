@@ -8,6 +8,12 @@ from research.bar_gpt.v1.train import main
 
 
 DEFAULT_ARGS: dict[str, str] = {
+    "--data-source": "offline",
+    "--offline-shard-root": r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2",
+    "--offline-train-start-date": "2019-01-01",
+    "--offline-train-end-date": "2021-01-01",
+    "--offline-validation-start-date": "2026-01-01",
+    "--offline-validation-end-date": "2026-08-01",
     "--start-date": "2019-01-01",
     "--end-date": "2026-08-01",
     "--validation-start-date": "2026-01-01",
@@ -18,9 +24,9 @@ DEFAULT_ARGS: dict[str, str] = {
     "--origin-fetch-candidate-blocks": "16",
     "--origin-emit-blocks-per-chunk": "16",
     "--validation-blocks-per-slice": "4",
-    # Selected on the full-universe worker-owned profile: 52,138 origins/s
-    # with 41.7% reserved GPU memory.  The effective update size remains
-    # 4,096 origins x 16 examples x 2 accumulated microbatches.
+    # Loader-owned shape retained from the full-universe profile. Offline
+    # shards contain 4,096-origin blocks but never this batch dimension; tune
+    # it from the launcher without rebuilding storage.
     "--batch-size": "16",
     "--loader-workers": "16",
     "--ready-queue-blocks": "1024",

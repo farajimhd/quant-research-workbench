@@ -8,8 +8,10 @@ from research.bar_gpt.v1.profile_train import main
 
 
 DEFAULT_ARGS: tuple[str, ...] = (
-    "--start-date", "2025-10-01",
-    "--end-date", "2026-01-01",
+    "--data-source", "offline",
+    "--offline-shard-root", r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2",
+    "--start-date", "2019-01-01",
+    "--end-date", "2019-02-01",
     "--candidates",
     (
         "4096:16:2:12:1:0,4096:16:2:16:1:0,4096:16:2:24:1:0"

@@ -14,10 +14,12 @@ import traceback
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 import torch
+from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 from research.bar_gpt.v1.config import DataConfig
 from research.bar_gpt.v1.data import (
@@ -30,7 +32,6 @@ from research.bar_gpt.v1.data import (
 from research.bar_gpt.v1.features import project_stationary_features
 from research.bar_gpt.v1.loader import BarGPTIterableDataset, month_units
 from research.bar_gpt.v1.targets import HorizonTargets, build_next_bar_targets, build_physical_horizon_targets
-from research.bar_gpt.v1.train import _stream_config, preflight, sequential_coverage_counts
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
     default_clickhouse_password,
@@ -63,6 +64,7 @@ _STORAGE_IRRELEVANT_CONFIG_FIELDS = frozenset({
     "validation_blocks_per_slice",
     "origin_fetch_candidate_blocks",
     "origin_emit_blocks_per_chunk",
+    "loader_stream_contract_version",
     "clickhouse_query_days",
     "clickhouse_prefetch_pages",
     "clickhouse_max_block_size",
@@ -92,6 +94,18 @@ class CompiledBlock:
     block_offset: int
     session_phase: str
     has_condition_target: bool
+    worker_id: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class OfflineShardUnit:
+    unit_key: str
+    path: Path
+    sessions: int
+    blocks: int
+    origins: int
+    stable_unit_index: int
+    condition_positive_counts: tuple[int, int, int, int]
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -168,6 +182,10 @@ def build_data_config(args: argparse.Namespace) -> DataConfig:
 
 def unit_key(ticker: str, month: str) -> str:
     return f"{ticker.upper()}:{month[:7]}"
+
+
+def stable_unit_index(key: str) -> int:
+    return int.from_bytes(hashlib.sha256(key.encode("utf-8")).digest()[:8], "big") & ((1 << 63) - 1)
 
 
 def planned_unit_keys(config: DataConfig) -> tuple[str, ...]:
@@ -430,14 +448,22 @@ def compile_unit(examples: Sequence[BarGPTExample], config: DataConfig, key: str
 def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig, key: str) -> dict[str, Any]:
     """Assemble already compiled sessions without retaining a month of raw examples."""
     sessions = list(sessions)
-    stable_unit_index = int.from_bytes(hashlib.sha256(key.encode("utf-8")).digest()[:8], "big") & ((1 << 63) - 1)
+    unit_index = stable_unit_index(key)
     for session in sessions:
         for block in session["blocks"]:
-            block["unit_index"] = stable_unit_index
+            block["unit_index"] = unit_index
     origins = sum(
         int(block["origin_indices"].numel())
         for session in sessions for block in session["blocks"]
     )
+    condition_positive_counts = [0, 0, 0, 0]
+    for session in sessions:
+        for block in session["blocks"]:
+            values = block["horizon_targets"][..., -4:]
+            mask = block["horizon_mask"][..., -4:]
+            counts = ((values > 0) & mask).sum(dim=tuple(range(values.ndim - 1))).tolist()
+            for index, count in enumerate(counts):
+                condition_positive_counts[index] += int(count)
     return {
         "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
         "config_hash": config_hash(config),
@@ -450,6 +476,7 @@ def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig
             "sessions": len(sessions),
             "blocks": sum(len(session["blocks"]) for session in sessions),
             "origins": origins,
+            "condition_positive_counts": condition_positive_counts,
         },
     }
 
@@ -530,6 +557,174 @@ def materialize_block(shard: dict[str, Any], session_index: int, block_index: in
     )
 
 
+def discover_offline_units(
+    root: Path,
+    config: DataConfig,
+    *,
+    tickers: Sequence[str],
+    start_date: str,
+    end_date: str,
+) -> tuple[OfflineShardUnit, ...]:
+    """Fail closed unless every requested ticker-month has a certified v2 sidecar."""
+    start = dt.date.fromisoformat(start_date)
+    end = dt.date.fromisoformat(end_date)
+    if start.day != 1 or end.day != 1 or start >= end:
+        raise ValueError("offline shard selections must use non-empty month boundaries")
+    expected_hash = config_hash(config)
+    expected: list[str] = []
+    cursor = start
+    while cursor < end:
+        expected.extend(f"{ticker}:{cursor:%Y-%m}" for ticker in tickers)
+        cursor = (cursor.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+    units: list[OfflineShardUnit] = []
+    missing: list[str] = []
+    incompatible: list[str] = []
+    for key in expected:
+        path = shard_path(root, key)
+        sidecar = sidecar_path(path)
+        try:
+            value = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            missing.append(key)
+            continue
+        if (
+            int(value.get("contract_version", -1)) != OFFLINE_SHARD_CONTRACT_VERSION
+            or value.get("config_hash") != expected_hash
+        ):
+            incompatible.append(key)
+            continue
+        status = str(value.get("status", ""))
+        if status == "covered_empty":
+            continue
+        if status != "complete" or not path.is_file():
+            missing.append(key)
+            continue
+        raw_condition_counts = value.get("condition_positive_counts")
+        if not isinstance(raw_condition_counts, list) or len(raw_condition_counts) != 4:
+            incompatible.append(key)
+            continue
+        units.append(OfflineShardUnit(
+            unit_key=key,
+            path=path,
+            sessions=int(value["sessions"]),
+            blocks=int(value["blocks"]),
+            origins=int(value["origins"]),
+            stable_unit_index=stable_unit_index(key),
+            condition_positive_counts=tuple(int(item) for item in raw_condition_counts),
+        ))
+    if missing or incompatible:
+        detail = []
+        if missing:
+            detail.append(f"missing={len(missing)} first={missing[:5]}")
+        if incompatible:
+            detail.append(f"incompatible={len(incompatible)} first={incompatible[:5]}")
+        raise RuntimeError("offline shard coverage is incomplete: " + "; ".join(detail))
+    if not units:
+        raise RuntimeError("offline shard selection contains no completed trainable units")
+    return tuple(units)
+
+
+class OfflineShardDataset(IterableDataset[CompiledBlock]):
+    """Worker-owned mmap stream; batching and prefetch remain DataLoader concerns."""
+
+    def __init__(
+        self,
+        units: Sequence[OfflineShardUnit],
+        *,
+        seed: int,
+        shuffle_units: bool,
+        resume_cursors: dict[int, Any] | None = None,
+        validation_slices: Sequence[tuple[str, str, str]] = (),
+        blocks_per_validation_slice: int = 0,
+    ) -> None:
+        super().__init__()
+        self.units = tuple(units)
+        self.seed = int(seed)
+        self.shuffle_units = bool(shuffle_units)
+        self.resume_cursors = dict(resume_cursors or {})
+        self.validation_slices = tuple(validation_slices)
+        self.blocks_per_validation_slice = int(blocks_per_validation_slice)
+        self.epoch = 0
+
+    def _ordered_units(self) -> list[OfflineShardUnit]:
+        units = list(self.units)
+        if self.shuffle_units:
+            generator = torch.Generator().manual_seed(self.seed + self.epoch * 1_000_003)
+            order = torch.randperm(len(units), generator=generator).tolist()
+            units = [units[index] for index in order]
+        return units
+
+    def __iter__(self) -> Iterator[CompiledBlock]:
+        info = get_worker_info()
+        worker_id = int(info.id) if info is not None else 0
+        workers = int(info.num_workers) if info is not None else 1
+        units = self._ordered_units()[worker_id::workers]
+        resume = self.resume_cursors.get(worker_id)
+        resume_reached = resume is None
+        validation_ranges = {
+            ticker: (start, end)
+            for ticker, start, end in self.validation_slices
+        }
+        for unit in units:
+            if not resume_reached:
+                if unit.stable_unit_index != int(resume.unit_index):
+                    continue
+                resume_reached = True
+            shard = load_shard(unit.path)
+            selected: list[tuple[int, int]] = []
+            ticker = unit.unit_key.partition(":")[0]
+            validation_range = validation_ranges.get(ticker)
+            for session_index, session in enumerate(shard["sessions"]):
+                local_date = str(session["local_date"])
+                if validation_range is not None and not (
+                    validation_range[0] <= local_date < validation_range[1]
+                ):
+                    continue
+                selected.extend((session_index, block_index) for block_index in range(len(session["blocks"])))
+            if validation_range is not None and self.blocks_per_validation_slice > 0:
+                limit = min(self.blocks_per_validation_slice, len(selected))
+                if limit:
+                    positions = torch.linspace(0, len(selected) - 1, steps=limit).round().long().tolist()
+                    selected = [selected[position] for position in dict.fromkeys(positions)]
+            for session_index, block_index in selected:
+                block = materialize_block(shard, session_index, block_index)
+                if resume is not None and unit.stable_unit_index == int(resume.unit_index):
+                    if block.block_offset <= int(resume.block_offset):
+                        continue
+                block.worker_id = worker_id
+                yield block
+        if resume is not None and not resume_reached:
+            raise RuntimeError(
+                f"offline resume cursor unit {resume.unit_index} is not owned by worker {worker_id}"
+            )
+
+
+def make_offline_dataloader(
+    dataset: OfflineShardDataset,
+    config: DataConfig,
+    *,
+    drop_last: bool,
+) -> DataLoader[CompiledBlock]:
+    kwargs: dict[str, Any] = {}
+    if config.loader_workers > 0:
+        kwargs["prefetch_factor"] = int(config.worker_prefetch_batches)
+        kwargs["persistent_workers"] = False
+        kwargs["in_order"] = False
+    return DataLoader(
+        dataset,
+        batch_size=int(config.batch_size),
+        num_workers=int(config.loader_workers),
+        pin_memory=bool(config.pin_memory),
+        drop_last=drop_last,
+        collate_fn=partial(
+            collate_compiled_blocks,
+            horizons_us=tuple(config.horizons_us),
+            base_timeframe_us=int(config.base_timeframe_us),
+        ),
+        **kwargs,
+    )
+
+
 def collate_compiled_blocks(
     blocks: Sequence[CompiledBlock],
     *,
@@ -583,7 +778,7 @@ def collate_compiled_blocks(
         sample_weights=weights,
         tickers=tuple(block.ticker for block in blocks),
         local_dates=tuple(block.local_date for block in blocks),
-        worker_ids=tuple(0 for _ in blocks),
+        worker_ids=tuple(block.worker_id for block in blocks),
         unit_indices=tuple(block.unit_index for block in blocks),
         block_offsets=tuple(block.block_offset for block in blocks),
         session_phases=tuple(block.session_phase for block in blocks),
@@ -624,6 +819,8 @@ def _worker_main(
     assigned_blocks: int,
 ) -> None:
     try:
+        from research.bar_gpt.v1.train import _stream_config
+
         torch.set_num_threads(max(1, int(cpu_threads)))
         torch.set_num_interop_threads(1)
         planned = {
@@ -954,6 +1151,8 @@ def rebuild_catalog(root: Path, expected_hash: str) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from research.bar_gpt.v1.train import preflight, sequential_coverage_counts
+
     args = parse_args(argv)
     config = build_data_config(args)
     root = args.output_root.resolve()

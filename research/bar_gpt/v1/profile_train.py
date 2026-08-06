@@ -20,6 +20,7 @@ from research.bar_gpt.v1.loader import (
     ClickHouseBarStreamConfig,
     make_dataloader,
 )
+from research.bar_gpt.v1.offline_shards import OfflineShardDataset, discover_offline_units, make_offline_dataloader
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.objectives import compute_loss
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
@@ -107,6 +108,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
+    parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="offline")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -119,6 +122,7 @@ def _device(value: str) -> torch.device:
 def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
     tickers = tuple(item.strip().upper() for item in str(args.tickers).split(",") if item.strip())
     return DataConfig(
+        loader_stream_contract_version=4 if args.data_source == "offline" else 3,
         tickers=tickers,
         start_date=str(args.start_date),
         end_date=str(args.end_date),
@@ -216,36 +220,30 @@ def _profile_candidate(
             "worker-owned profiling cannot use more workers than training tickers: "
             f"workers={candidate.workers}, training_tickers={len(data.training_tickers)}"
         )
-    url, user, password = default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
-    clickhouse = ClickHouseHttpClient(url, user, password)
-    if not preflight_complete:
-        preflight(clickhouse, data)
-    stream = ClickHouseBarStreamConfig(
-        url=url,
-        user=user,
-        password=password,
-        database=data.database,
-        table=data.one_second_table,
-        max_threads=data.clickhouse_max_threads_per_worker,
-        max_block_size=data.clickhouse_max_block_size,
-        max_memory_usage=data.clickhouse_max_memory_usage,
-        query_days=data.clickhouse_query_days,
-        max_bytes_before_external_sort=data.clickhouse_max_bytes_before_external_sort,
-        retry_attempts=data.clickhouse_retry_attempts,
-        retry_initial_seconds=data.clickhouse_retry_initial_seconds,
-        retry_max_seconds=data.clickhouse_retry_max_seconds,
-    )
-    # This must be the same worker-owned stream used by train.py.  The old
-    # indexed sequential loader round-robinned a ticker-month across workers,
-    # which gave an invalid profile after ticker-affine cache ownership was
-    # introduced.
-    dataset = BarGPTIterableDataset(
-        data_config=data,
-        stream_config=stream,
-        split="train",
-        seed=17,
-    )
-    loader = make_dataloader(dataset, data, drop_last=True)
+    if args.data_source == "offline":
+        units = discover_offline_units(
+            Path(args.offline_shard_root), data, tickers=data.training_tickers,
+            start_date=data.start_date, end_date=data.end_date,
+        )
+        dataset = OfflineShardDataset(units, seed=17, shuffle_units=True)
+        loader = make_offline_dataloader(dataset, data, drop_last=False)
+    else:
+        url, user, password = default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
+        clickhouse = ClickHouseHttpClient(url, user, password)
+        if not preflight_complete:
+            preflight(clickhouse, data)
+        stream = ClickHouseBarStreamConfig(
+            url=url, user=user, password=password, database=data.database,
+            table=data.one_second_table, max_threads=data.clickhouse_max_threads_per_worker,
+            max_block_size=data.clickhouse_max_block_size, max_memory_usage=data.clickhouse_max_memory_usage,
+            query_days=data.clickhouse_query_days,
+            max_bytes_before_external_sort=data.clickhouse_max_bytes_before_external_sort,
+            retry_attempts=data.clickhouse_retry_attempts,
+            retry_initial_seconds=data.clickhouse_retry_initial_seconds,
+            retry_max_seconds=data.clickhouse_retry_max_seconds,
+        )
+        dataset = BarGPTIterableDataset(data_config=data, stream_config=stream, split="train", seed=17)
+        loader = make_dataloader(dataset, data, drop_last=True)
     model_config = BarGPTConfig()
     model = BarGPTV1(model_config).to(device)
     if candidate.compile_model:
@@ -354,7 +352,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     if args.warmup_steps < 0 or args.measured_steps <= 0:
         raise ValueError("warmup steps cannot be negative and measured steps must be positive")
-    load_env_files(discover_clickhouse_env_files(), verbose=True)
+    if args.data_source == "clickhouse":
+        load_env_files(discover_clickhouse_env_files(), verbose=True)
     device = _device(str(args.device))
     candidates = _parse_candidates(str(args.candidates))
     output_root = Path(args.output_root)
@@ -368,10 +367,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     # ClickHouse metadata cost for every batch-size candidate.
     first_data = _data(args, candidates[0])
     first_data.validate()
-    preflight(
-        ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()),
-        first_data,
-    )
+    if args.data_source == "clickhouse":
+        preflight(
+            ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()),
+            first_data,
+        )
     for index, candidate in enumerate(candidates, start=1):
         reporter.start(candidate, index, len(candidates))
         try:
