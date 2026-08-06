@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from research.mlops.sync import copy_family_runtime_modules, copy_runtime_module
+from research.mlops.sync import copy_family_runtime_modules, copy_runtime_module, copy_tree
 
 
 class RuntimeSyncTests(unittest.TestCase):
@@ -44,6 +44,21 @@ class RuntimeSyncTests(unittest.TestCase):
             self.assertTrue((destination / "pipelines/__init__.py").is_file())
             self.assertTrue((destination / "pipelines/market_sip/__init__.py").is_file())
             self.assertTrue((destination / "pipelines/market_sip/events/__init__.py").is_file())
+
+    def test_copy_tree_copies_runtime_code_and_prunes_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            destination = root / "destination"
+            source.mkdir()
+            destination.mkdir()
+            (source / "runtime.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (source / "test_runtime.py").write_text("VALUE = 2\n", encoding="utf-8")
+            (destination / "test_runtime.py").write_text("stale\n", encoding="utf-8")
+
+            copy_tree(source, destination)
+            self.assertTrue((destination / "runtime.py").is_file())
+            self.assertFalse((destination / "test_runtime.py").exists())
 
 
 if __name__ == "__main__":

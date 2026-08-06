@@ -6,7 +6,7 @@ from pathlib import Path
 from research.mlops.paths import MLOpsPathConfig
 
 
-EXCLUDED_DIRS = {"__pycache__", ".ipynb_checkpoints"}
+EXCLUDED_DIRS = {"__pycache__", ".ipynb_checkpoints", "tests"}
 EXCLUDED_SUFFIXES = {".pyc"}
 
 
@@ -52,6 +52,9 @@ def copy_family_runtime_modules(source: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     for path in source.glob("*.py"):
         if path.name.startswith("test_") or should_ignore_runtime_path(path):
+            stale_target = destination / path.name
+            if stale_target.is_file():
+                stale_target.unlink()
             continue
         shutil.copy2(path, destination / path.name)
 
@@ -81,10 +84,14 @@ def copy_tree(source: Path, destination: Path) -> None:
     # sync cannot remove import-critical files such as config.py/model.py.
     destination.mkdir(parents=True, exist_ok=True)
     for path in source.rglob("*"):
-        if should_ignore_runtime_path(path):
-            continue
         relative = path.relative_to(source)
         target = destination / relative
+        if should_ignore_runtime_path(path):
+            if target.is_file():
+                target.unlink()
+            elif target.is_dir():
+                shutil.rmtree(target)
+            continue
         if path.is_dir():
             target.mkdir(parents=True, exist_ok=True)
         else:
@@ -102,4 +109,11 @@ def ignore_runtime_noise(directory: str, names: list[str]) -> set[str]:
 
 
 def should_ignore_runtime_path(path: Path) -> bool:
-    return any(part in EXCLUDED_DIRS for part in path.parts) or path.suffix in EXCLUDED_SUFFIXES
+    is_test_file = path.is_file() and path.suffix == ".py" and (
+        path.name.startswith("test_") or path.name.endswith("_test.py") or path.name == "conftest.py"
+    )
+    return (
+        any(part in EXCLUDED_DIRS for part in path.parts)
+        or path.suffix in EXCLUDED_SUFFIXES
+        or is_test_file
+    )
