@@ -708,22 +708,13 @@ def _json_list(value: Any) -> str:
 
 
 def _news_label(row: Mapping[str, Any], ticker: str) -> dict[str, Any]:
-    from src.backend.news_classification import classify_news
-
-    result = classify_news(
-        {
-            **row,
-            "text": row.get("normalized_full_text")
-            or row.get("teaser")
-            or "",
-        },
-        ticker_count=len(row.get("tickers") or [ticker]),
-    )
+    del ticker
     return {
-        "kind": result.kind,
-        "origin": result.origin,
-        "scope": result.scope,
-        "topics": list(result.topics),
+        "authority": str(row.get("news_classification_version") or "news_synthesis_engine_v1"),
+        "kind": str(row.get("news_kind") or "unknown"),
+        "origin": str(row.get("news_origin") or "unknown"),
+        "scope": str(row.get("news_scope") or "unknown"),
+        "topics": list(row.get("news_topics") or []),
     }
 
 

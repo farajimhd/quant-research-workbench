@@ -181,9 +181,19 @@ class GptOssV1Tests(unittest.TestCase):
             "author": "Desk",
             "url_domain": "example.com",
             "quality_flags": [],
+            "synthesis_json": json.dumps({
+                "contract_version": "news_synthesis_contract_v1",
+                "envelope": {
+                    "document_structure": {"value": "analyst_note"},
+                    "communication_purpose": {"value": "report_event"},
+                    "information_origin": {"value": "analyst"},
+                    "production_method": {"value": "editorial"},
+                },
+                "quality_flags": [],
+            }),
         }]
         sample = stratify(rows, 1)
-        self.assertEqual(sample[0]["deterministic"]["kind"], "analyst")
+        self.assertEqual(sample[0]["deterministic"]["information_origin"], "analyst")
         self.assertEqual(len(sample[0]["text_sha256"]), 64)
 
     def test_audit_writes_readable_sample(self) -> None:

@@ -17,13 +17,13 @@ from text_intelligence.live import (  # noqa: E402
     LiveNewsRuntime,
     PreparedNewsCandidate,
 )
-from text_intelligence.scoped_live import (  # noqa: E402
+from text_intelligence.canonical_live import (  # noqa: E402
     _parse_utc,
     _sec_document_set_hash,
 )
 
 
-class ScopedTextLiveRuntimeTests(unittest.TestCase):
+class CanonicalTextLiveRuntimeTests(unittest.TestCase):
     def test_sec_hash_is_order_independent_and_revision_sensitive(self) -> None:
         left = [
             {"source_id": "doc-b", "text_sha256": "bbb"},

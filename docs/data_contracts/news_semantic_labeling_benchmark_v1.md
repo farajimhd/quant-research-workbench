@@ -1,5 +1,9 @@
 # News semantic labeling benchmark v1
 
+> Historical benchmark only. News Synthesis V1 is the current production and
+> evaluation authority. The V5/V6/V9 systems and recommendations below must not
+> be used as runtime fallbacks or current acceptance criteria.
+
 Date: 2026-08-01
 
 Scope: News text only; SEC semantic labeling is not evaluated here.

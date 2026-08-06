@@ -31,7 +31,8 @@ are candidates only; text evidence and the point-in-time identity index decide
 which issuers participate.
 
 Generated documents use `production` provenance, distinct from manual
-`certification` and draft `migration`. Exactly one provenance type is valid.
+`certification`. Historical draft-migration provenance is accepted only by the
+archived certification tooling and is never a production input.
 `storage.py` owns the versioned `q_live.news_synthesis_v1` table. Historical
 backfill and live Text Intelligence call the same engine and contract. Source
 news remains visible when synthesis is missing, and title-only/unrendered rows
@@ -63,27 +64,11 @@ The approved V1 contract is frozen in:
 - `concept_registry.json`; and
 - `TAXONOMY_PROPOSAL.md`.
 
-The taxonomy audit remains read-only:
-
-```powershell
-python -m research.text_intelligence.news_synthesis_v1.run_taxonomy_audit
-```
-
-It inventories the full 2,000-article gold contract, measures overlaps and
-contradictions, and writes generated evidence under
-`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1`. It does not change
-the existing gold authority.
-
-After taxonomy approval, the non-destructive draft migration is run with:
-
-```powershell
-python -m research.text_intelligence.news_synthesis_v1.run_migrate_gold
-```
-
-It writes only under
-`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\gold_migration_v1`.
-The existing V3 gold authority is never modified. Draft records marked
-`review_required` must be manually certified before cutover.
+`taxonomy_audit.py`, `migration.py`, and their runners are retained only to
+reproduce the completed V1 design and certification lineage. They are not
+exported from the package root, are not imported by the production engine,
+service, backend, or frontend, and must not be used to generate production
+News semantics.
 
 Initialize the separate V1-only certification workspace with:
 
@@ -91,7 +76,8 @@ Initialize the separate V1-only certification workspace with:
 python -m research.text_intelligence.news_synthesis_v1.run_initialize_certification
 ```
 
-Review packets contain preserved source evidence and the V1 draft only. They
-exclude prior V3 label fields. Certified labels are written separately under
+Review packets contain preserved source evidence and the V1 draft only.
+Certified labels are written separately under
 `manual_certification_v1/certified_labels` and cannot contain unresolved
-quality flags.
+quality flags. Production evaluation reads those certified V1 documents, not
+the historical migration or annotation contracts.

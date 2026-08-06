@@ -26,6 +26,7 @@ from research.news_labeling.trade_hypothesis_v2.contract import (
     build_messages,
     validate_hypothesis,
 )
+from research.text_intelligence.news_synthesis_v1.storage import LIVE_SEMANTIC_TABLE
 
 
 load_env_files(
@@ -174,7 +175,7 @@ class ContextualMarketAi:
         SELECT l.canonical_news_id, l.ticker, toString(l.published_at_utc) AS published_at_utc,
                e.title, r.rendered_text, l.semantic_json, l.qmd_snapshot_json,
                l.market_status_json, l.session_id
-        FROM `{self.database}`.`news_semantic_label_v2` FINAL AS l
+        FROM `{self.database}`.`{LIVE_SEMANTIC_TABLE}` FINAL AS l
         INNER JOIN `{self.database}`.`benzinga_news_event_v2` FINAL AS e
           ON l.canonical_news_id=e.canonical_news_id
         INNER JOIN `{self.database}`.`benzinga_news_rendered_v2` FINAL AS r

@@ -7,7 +7,6 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from src.backend.app import SERVICE_REGISTRY, service_websocket_url, trading_news_detail, trading_news_rows
-from src.backend.news_classification import classify_news, classify_news_kind
 
 
 class TradingNewsTests(unittest.TestCase):
@@ -221,19 +220,17 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("canonical_news_id < 'news-002'", sql)
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
-    def test_each_eligibility_filter_queries_aggregate_label_state_before_limit(self, query_mock) -> None:
+    def test_each_v1_eligibility_filter_queries_aggregate_state_before_limit(self, query_mock) -> None:
         trading_news_rows(
             as_of="2026-07-10T13:45:00Z",
             forecast_eligible="eligible",
             reaction_eligible="ineligible",
-            prior_context_eligible="eligible",
-            followup_eligible="ineligible",
+            history_eligible="eligible",
         )
         sql = query_mock.call_args_list[0].args[0]
         self.assertIn("notEmpty(l.forecast_tickers)", sql)
         self.assertIn("NOT (notEmpty(l.reaction_tickers))", sql)
         self.assertIn("notEmpty(l.history_tickers)", sql)
-        self.assertIn("NOT (l.communication_purpose IN ('recap','explain_move'))", sql)
         self.assertLess(sql.index("news_synthesis_v1"), sql.index("LIMIT 101"))
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
@@ -261,48 +258,6 @@ class TradingNewsTests(unittest.TestCase):
             trading_news_rows(kind="urgent")
         with self.assertRaises(HTTPException):
             trading_news_rows(forecast_eligible="maybe")
-
-    def test_news_kind_classification_is_shared_with_detail_rows(self) -> None:
-        self.assertEqual(classify_news_kind({"provider_tags": ["BenzAI"]}, 1), "ai")
-        self.assertEqual(classify_news_kind({"channels": ["Price Target"]}, 1), "analyst")
-        self.assertEqual(classify_news_kind({"author": "Benzinga Insights", "provider_tags": ["bzi-ia"]}, 1), "insights")
-        self.assertEqual(classify_news_kind({"channels": ["Analyst Ratings"], "provider_tags": ["bzi-ratings"]}, 1), "analyst")
-        self.assertEqual(classify_news_kind({}, 2), "multi")
-        self.assertEqual(classify_news_kind({}, 1), "market")
-        self.assertEqual(classify_news_kind({}, 0), "market")
-
-    def test_single_ticker_editorial_story_is_not_company_news(self) -> None:
-        classification = classify_news(
-            {
-                "author": "Vandana Singh",
-                "channels": ["trading ideas", "movers", "news", "earnings", "guidance", "general", "top stories", "health care", "large cap"],
-                "provider_tags": ["why it's moving"],
-                "title": "HCA Healthcare Trims 2026 Profit Outlook, Stock Falls",
-            },
-            1,
-        )
-
-        self.assertEqual(classification.kind, "why_moving")
-        self.assertEqual(classification.origin, "editorial")
-        self.assertEqual(classification.format, "why_moving")
-        self.assertFalse(classification.is_company_news)
-        self.assertIn("earnings", classification.topics)
-        self.assertIn("guidance", classification.topics)
-
-    def test_direct_issuer_release_is_company_news(self) -> None:
-        classification = classify_news(
-            {
-                "channels": ["contracts"],
-                "links": ["https://www.businesswire.com/news/home/example"],
-                "text": "The company announced today that it was awarded a new contract.",
-                "title": "Acme wins new contract",
-            },
-            1,
-        )
-
-        self.assertEqual(classification.kind, "company")
-        self.assertEqual(classification.origin, "issuer")
-        self.assertTrue(classification.is_company_news)
 
     @patch("src.backend.app.clickhouse_status_query")
     def test_trading_detail_contract_excludes_internal_implementation_fields(self, query_mock) -> None:

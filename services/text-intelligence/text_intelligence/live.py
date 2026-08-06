@@ -23,6 +23,7 @@ from research.mlops.clickhouse import (
 )
 from research.news_labeling.gpt_oss_v1.prompt import build_messages
 from research.news_labeling.gpt_oss_v1.schema import TRANSPORT_SCHEMA, validate_label
+from research.text_intelligence.news_synthesis_v1.storage import LIVE_SEMANTIC_TABLE
 from services.market_hours import get_market_hours_client
 
 
@@ -110,7 +111,7 @@ class LiveNewsRuntime:
             default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=15
         )
         self.database = os.environ.get("NEWS_INTELLIGENCE_DATABASE", "q_live")
-        self.table = os.environ.get("NEWS_INTELLIGENCE_LABEL_TABLE", "news_semantic_label_v2")
+        self.table = os.environ.get("NEWS_INTELLIGENCE_LABEL_TABLE", LIVE_SEMANTIC_TABLE)
         self.market_hours = get_market_hours_client("NEWS_INTELLIGENCE")
         self.loop: asyncio.AbstractEventLoop | None = None
 
@@ -346,7 +347,7 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
   AND ticker={sql_string(ticker)}
   AND unit_id={sql_string(unit_id)}
   AND rendered_text_hash={sql_string(rendered_text_hash)}
-  AND scoped_labeling_version={sql_string(synthesis_version)}
+  AND news_synthesis_version={sql_string(synthesis_version)}
 """
         return int(self.client.execute(sql).strip() or "0") > 0
 
@@ -389,7 +390,7 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
             unit_id String, event_id String, event_tickers Array(LowCardinality(String)),
             issuer_role LowCardinality(String), evidence_scope LowCardinality(String),
             semantic_evidence_text String,
-            scoped_labeling_version LowCardinality(String),
+            news_synthesis_version LowCardinality(String),
             deterministic_version LowCardinality(String), deterministic_json String,
             semantic_contract LowCardinality(String), semantic_json String,
             point_in_time_price Float64, provider LowCardinality(String), model String,
@@ -431,7 +432,7 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
             "issuer_role": scoped.issuer_role,
             "evidence_scope": scoped.evidence_scope,
             "semantic_evidence_text": scoped.semantic_evidence_text,
-            "scoped_labeling_version": scoped.synthesis_version,
+            "news_synthesis_version": scoped.synthesis_version,
             "deterministic_version": scoped.synthesis_version,
             "deterministic_json": json.dumps(deterministic, separators=(",", ":")),
             "semantic_contract": "gpt_oss_news_semantics_v1",

@@ -15,6 +15,7 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
     sql_string,
 )
+from src.backend.news_synthesis import ENGINE_VERSION, SYNTHESIS_TABLE
 from src.backend.trading_runtime_service import (
     SUPPORTED_HISTORICAL_TIMEFRAMES,
     historical_day_coverage,
@@ -30,7 +31,6 @@ from src.backend.historical_scanner_service import (
     historical_scanner_technical_projection,
     historical_scanner_qmd_projection_or_schedule,
 )
-from src.backend.news_classification import news_classification_sql
 from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, BrokerEventType, BrokerProvider, TradingMode
 from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
@@ -363,20 +363,18 @@ def _utc_sql(value: datetime) -> str:
 def _query_news(cutoff: datetime) -> list[dict[str, Any]]:
     start = cutoff - timedelta(days=3)
     ticker_links_sql = "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
-    classification = news_classification_sql(ticker_links_sql, body_sql="r.rendered_text")
     return _clickhouse_rows(
         f"""
         SELECT
             n.canonical_news_id,
             formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
             n.title, n.teaser, {ticker_links_sql} AS tickers, n.channels,
-            {classification["company"]} AS is_company_news,
-            {classification["topics"]} AS news_topics
+            toUInt8(s.information_origin = 'issuer') AS is_company_news,
+            s.concepts AS news_topics
         FROM q_live.benzinga_news_event_v2 AS n FINAL
-        INNER JOIN q_live.benzinga_news_rendered_v2 AS r FINAL
-            ON r.published_date=n.published_date
-            AND r.provider_article_id=n.provider_article_id
-            AND r.source_revision_key=n.source_revision_key
+        LEFT JOIN q_live.{SYNTHESIS_TABLE} AS s FINAL
+            ON s.canonical_news_id=n.canonical_news_id
+            AND s.engine_version={sql_string(ENGINE_VERSION)}
         WHERE n.published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
             AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
         ORDER BY n.published_at_utc DESC
@@ -409,8 +407,6 @@ def _query_sec(cutoff: datetime) -> list[dict[str, Any]]:
 def _query_scanner_news_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
     """Return one causal company-news summary per ticker for scanner enrichment."""
     start = cutoff - timedelta(days=3)
-    ticker_links_sql = "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
-    classification = news_classification_sql(ticker_links_sql, body_sql="r.rendered_text")
     return _clickhouse_rows(
         f"""
         SELECT
@@ -423,14 +419,13 @@ def _query_scanner_news_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
             SELECT
                 n.canonical_news_id,
                 n.published_at_utc,
-                arrayJoin({ticker_links_sql}) AS ticker,
-                {classification["company"]} AS is_company_news,
-                {classification["topics"]} AS news_topics
+                arrayJoin(s.tickers) AS ticker,
+                toUInt8(s.information_origin = 'issuer') AS is_company_news,
+                s.concepts AS news_topics
             FROM q_live.benzinga_news_event_v2 AS n FINAL
-            INNER JOIN q_live.benzinga_news_rendered_v2 AS r FINAL
-                ON r.published_date=n.published_date
-                AND r.provider_article_id=n.provider_article_id
-                AND r.source_revision_key=n.source_revision_key
+            INNER JOIN q_live.{SYNTHESIS_TABLE} AS s FINAL
+                ON s.canonical_news_id=n.canonical_news_id
+                AND s.engine_version={sql_string(ENGINE_VERSION)}
             WHERE n.published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
                 AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
         )

@@ -8,7 +8,8 @@ from typing import Any, Iterable
 
 from pipelines.news.benzinga.core.clickhouse_writer_v2 import NewsV2TargetConfig, assert_v2_ready
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
-from src.backend.news_classification import classify_news
+from research.text_intelligence.news_synthesis_v1.engine import ENGINE_VERSION
+from research.text_intelligence.news_synthesis_v1.storage import SYNTHESIS_TABLE
 
 from .config import LabelingConfig
 from .prompt import build_messages
@@ -45,11 +46,15 @@ SELECT
  arrayDistinct(arrayConcat(e.content_quality_flags, r.quality_flags)) AS quality_flags,
  substring(r.rendered_text, 1, {int(config.max_input_chars)}) AS rendered_text,
  r.rendered_text_hash
+ ,s.synthesis_json
 FROM {db}.{event} AS e FINAL
 INNER JOIN {db}.{rendered} AS r FINAL
  ON r.published_date=e.published_date
  AND r.provider_article_id=e.provider_article_id
  AND r.source_revision_key=e.source_revision_key
+INNER JOIN {db}.{quote_ident(SYNTHESIS_TABLE)} AS s FINAL
+ ON s.canonical_news_id=e.canonical_news_id
+ AND s.engine_version={sql_string(ENGINE_VERSION)}
 WHERE e.renderer_version={sql_string(config.renderer_version)}
  AND r.renderer_version={sql_string(config.renderer_version)}
  AND e.published_at_utc >= toDateTime64({sql_string(config.start_date)}, 9, 'UTC')
@@ -66,20 +71,23 @@ def stratify(candidates: Iterable[dict[str, Any]], sample_size: int) -> list[dic
     buckets: dict[tuple[str, str, str, str], deque[dict[str, Any]]] = defaultdict(deque)
     for row in candidates:
         rendered = str(row.get("rendered_text") or "")
-        classification = classify_news(
-            {
-                **row,
-                "text": rendered,
-                "normalized_full_text": rendered,
-                "links": row.get("links") or [],
-            },
-            len(row.get("tickers") or []),
-        )
-        row["deterministic"] = classification.as_dict()
+        synthesis = _synthesis_document(row.get("synthesis_json"))
+        envelope = synthesis.get("envelope", {})
+        structure = str(envelope.get("document_structure", {}).get("value") or "unknown")
+        origin = str(envelope.get("information_origin", {}).get("value") or "unknown")
+        row["deterministic"] = {
+            "authority": ENGINE_VERSION,
+            "contract_version": synthesis.get("contract_version"),
+            "document_structure": structure,
+            "communication_purpose": envelope.get("communication_purpose", {}).get("value"),
+            "information_origin": origin,
+            "production_method": envelope.get("production_method", {}).get("value"),
+            "quality_flags": synthesis.get("quality_flags", []),
+        }
         row["text_sha256"] = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
         length_bucket = "short" if len(rendered) < 800 else "medium" if len(rendered) < 4_000 else "long"
         quality_bucket = "flagged" if row.get("quality_flags") else "clean"
-        key = (classification.kind, classification.scope, length_bucket, quality_bucket)
+        key = (structure, origin, length_bucket, quality_bucket)
         buckets[key].append(row)
     selected: list[dict[str, Any]] = []
     keys = deque(sorted(buckets))
@@ -95,6 +103,18 @@ def stratify(candidates: Iterable[dict[str, Any]], sample_size: int) -> list[dic
             f"Only {len(selected):,} candidates were available for a requested sample of {sample_size:,}."
         )
     return selected
+
+
+def _synthesis_document(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("News Synthesis V1 output is required for sampling") from exc
+    if not isinstance(parsed, dict) or not parsed.get("envelope"):
+        raise RuntimeError("News Synthesis V1 output is required for sampling")
+    return parsed
 
 
 def fit_sample_to_context(

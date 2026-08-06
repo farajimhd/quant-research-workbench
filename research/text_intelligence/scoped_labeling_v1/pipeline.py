@@ -37,6 +37,18 @@ def classify_news_document(
     *,
     issuer_resolver: NewsIssuerResolver | None = None,
 ) -> tuple[ScopedLabel, ...]:
+    raise RuntimeError(
+        "Scoped Labeling V5 no longer supports News; use "
+        "research.text_intelligence.news_synthesis_v1.NewsSynthesisEngine"
+    )
+
+
+def _historical_classify_news_document(
+    document: SemanticDocument,
+    *,
+    issuer_resolver: NewsIssuerResolver | None = None,
+) -> tuple[ScopedLabel, ...]:
+    """Retained only to reproduce historical V5 evaluation artifacts."""
     analysis = analyze_news_scope(
         source_id=document.source_id,
         title=document.title,

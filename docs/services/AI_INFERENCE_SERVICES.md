@@ -6,12 +6,12 @@ The live AI path uses three independent service authorities:
    It owns provider profiles, fallback, timeouts, concurrency, idempotency,
    route budgets, usage, cost, and metadata-only audit state. It has no news or
    trading policy.
-2. **Text Intelligence (`:8804`)** owns deterministic News/SEC semantics and
-   optional live News eligibility routing. Its deterministic classifier and
+2. **Text Intelligence (`:8804`)** owns News Synthesis V1, the separately
+   versioned SEC semantics, and optional live News eligibility routing. Its
    reconciliation loop run independently of trading state after News Gateway
    or SEC Gateway durably publishes canonical rendered text. Its optional News
    model route operates only while the explicit live-trading session gate is
-   active, applies deterministic kind/scope filters, freezes the QMD ticker
+   active, applies News Synthesis V1 eligibility, freezes the QMD ticker
    snapshot, validates the current `gpt_oss_news_semantics_v1` output, and
    persists it.
 3. **Market AI (`:8803`)** owns deeper contextual hypotheses. It freezes the
@@ -29,9 +29,10 @@ only decision/risk authorities; none of these three services can place orders.
 ```text
 News Gateway canonical V2 publish
   -> Text Intelligence bounded queue
-     -> deterministic scope/kind + active-session + QMD price gate
+     -> News Synthesis V1 persistence
+     -> V1 eligibility + active-session + QMD price gate
      -> Model Gateway: news.semantic_fast.v1
-     -> q_live.news_semantic_label_v1
+     -> q_live.news_live_semantic_v3
      -> Market AI bounded queue
         -> frozen point-in-time context
         -> Model Gateway: news.trade_hypothesis.v2

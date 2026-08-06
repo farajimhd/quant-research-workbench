@@ -1,4 +1,9 @@
-# Issuer-Scoped News and SEC Intelligence V5
+# Historical News / Active SEC Intelligence V5
+
+> News classification in this package is retired. News Synthesis V1 is the
+> sole current News authority. Text Intelligence imports only the SEC surface
+> through `sec_authority.py`; the News sections below are retained solely as a
+> historical implementation record and must not be run as a News fallback.
 
 This package implements the eight-stage authority used to organize News and
 SEC evidence without replacing or duplicating canonical rendered text.
@@ -179,16 +184,7 @@ it requires one complete V5 build; reruns then retain completed V5 periods.
 
 ## Live integration
 
-News Gateway continues to own acquisition and canonical rendering. It sends a
-lightweight post-persistence identity notice to Text Intelligence, which
-reloads the canonical rendered authority. Text Intelligence:
-
-1. runs V5 scoping once;
-2. selects eligible issuer units;
-3. independently applies the point-in-time QMD price gate;
-4. sends the intact article plus issuer-scoped evidence to the model route;
-5. persists one `news_semantic_label_v2` row per issuer unit; and
-6. dispatches Market AI independently per issuer.
-
-The idempotency identity includes article, unit, ticker, rendered-text hash, and
-V5 labeling version.
+The News live path described by earlier versions of this document is retired.
+News Gateway notices are now synthesized by News Synthesis V1 and any optional
+Market AI output is stored in `q_live.news_live_semantic_v3`. This package's
+live responsibility is limited to SEC V5 labels and relationships.

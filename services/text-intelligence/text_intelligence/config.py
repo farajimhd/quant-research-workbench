@@ -52,7 +52,7 @@ class IntelligenceConfig:
             bind=env_string(
                 "TEXT_INTELLIGENCE_BIND", "127.0.0.1:8804", "NEWS_INTELLIGENCE_BIND"
             ),
-            # The deterministic News/SEC classifier is the standard service
+            # News Synthesis V1 and the separate SEC classifier are the standard
             # responsibility. Model Gateway and Market AI are a separate,
             # explicitly authorized live-trading dependency chain.
             enable_live_ai=env_bool(
@@ -63,7 +63,7 @@ class IntelligenceConfig:
             enable_llm=env_bool(
                 "TEXT_INTELLIGENCE_ENABLE_LLM", False, "NEWS_INTELLIGENCE_ENABLE_LLM"
             ),
-            # Deterministic News/SEC V5 labeling is the required service path.
+            # News Synthesis V1 plus SEC V5 labeling is the required service path.
             # Optional local model loading must be an explicit operator choice
             # so a bare service start never allocates model/GPU resources.
             enable_models=env_bool(

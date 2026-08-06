@@ -19,7 +19,7 @@ class TextIntelligenceHealthTests(unittest.TestCase):
             "deterministic_reconcile_error_status": "active",
         }
         with mock.patch.object(
-            main.scoped_runtime, "snapshot_metrics", return_value=deterministic
+            main.canonical_runtime, "snapshot_metrics", return_value=deterministic
         ):
             metrics = main._snapshot_metrics()
 
@@ -40,7 +40,7 @@ class TextIntelligenceHealthTests(unittest.TestCase):
             "deterministic_reconcile_error_status": "resolved",
         }
         with mock.patch.object(
-            main.scoped_runtime, "snapshot_metrics", return_value=deterministic
+            main.canonical_runtime, "snapshot_metrics", return_value=deterministic
         ):
             metrics = main._snapshot_metrics()
 

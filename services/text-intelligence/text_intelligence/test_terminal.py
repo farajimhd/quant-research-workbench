@@ -87,8 +87,8 @@ def metrics() -> dict[str, object]:
         "deterministic_completed": 8,
         "deterministic_skipped_current": 1,
         "deterministic_failed": 0,
-        "deterministic_news_labels": 32,
-        "deterministic_sec_labels": 14,
+        "news_synthesis_documents": 32,
+        "sec_label_rows": 14,
         "deterministic_live_forwarded": 0,
         "deterministic_live_forward_failed": 0,
         "deterministic_recent_work": [

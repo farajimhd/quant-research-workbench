@@ -1,5 +1,10 @@
-"""News Synthesis V1 contract discovery and implementation package."""
+"""News Synthesis V1 production authority.
 
-from .taxonomy_audit import AuditConfig, audit_gold_authority
+Historical taxonomy and migration tools intentionally require explicit module
+imports; importing this package exposes only the active V1 contract and engine.
+"""
 
-__all__ = ["AuditConfig", "audit_gold_authority"]
+from .contracts import CONTRACT_VERSION
+from .engine import ENGINE_VERSION, NewsSynthesisEngine
+
+__all__ = ["CONTRACT_VERSION", "ENGINE_VERSION", "NewsSynthesisEngine"]

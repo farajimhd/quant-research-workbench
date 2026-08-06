@@ -61,8 +61,12 @@ from src.backend.market_data_service import (
     source_scan,
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
-from src.backend.news_synthesis import load_news_synthesis
-from src.backend.scoped_text_labels import scoped_news_summary
+from src.backend.news_synthesis import (
+    LIVE_SEMANTIC_TABLE,
+    SYNTHESIS_TABLE,
+    load_news_synthesis,
+    synthesis_summary,
+)
 from src.backend.sec_canvas_service import (
     sec_document_text_payload,
     sec_filing_detail_payload,
@@ -290,8 +294,8 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
         {"database": "q_live", "table": "ibkr_gateway_supervisor_event_v1", "role": "supervisor events"},
     ],
     "text-intelligence": [
-        {"database": "q_live", "table": "news_semantic_label_v2", "role": "issuer-scoped semantic labels"},
-        {"database": "q_live", "table": "news_synthesis_v1", "role": "News Synthesis V1"},
+        {"database": "q_live", "table": LIVE_SEMANTIC_TABLE, "role": "V1-routed live semantic labels"},
+        {"database": "q_live", "table": SYNTHESIS_TABLE, "role": "News Synthesis V1"},
         {"database": "q_live", "table": "scoped_text_labels_v5", "role": "SEC deterministic scoped labels"},
         {"database": "q_live", "table": "scoped_content_relations_v3", "role": "SEC content relationships"},
     ],
@@ -1450,8 +1454,8 @@ def trading_news_detail(canonical_news_id: str, *, published_at: str = "", query
         synthesis_by_source = {}
         intelligence_status = "unavailable"
     synthesis_payload = synthesis_by_source.get(news_id, {})
-    scoped_labels = synthesis_payload.get("labels", [])
     synthesis_fields = synthesis_payload.get("article_fields", {})
+    synthesis_document = synthesis_payload.get("document")
     # Product APIs expose only decision-relevant presentation fields. Database,
     # table, storage-path, ingestion-diagnostic, and agent/chat implementation
     # details must never cross into a user-facing response contract.
@@ -1478,9 +1482,8 @@ def trading_news_detail(canonical_news_id: str, *, published_at: str = "", query
             "render_status": source_row.get("render_status") or "unrendered",
             "title": source_row.get("title") or "",
             "url_domain": source_row.get("url_domain") or "",
-            "scoped_labels": scoped_labels,
-            "scoped_summary": scoped_news_summary(scoped_labels),
-            "news_synthesis": synthesis_payload.get("document"),
+            "news_synthesis_summary": synthesis_summary(synthesis_document) if synthesis_document else None,
+            "news_synthesis": synthesis_document,
             "intelligence_status": intelligence_status,
         },
         "tickers": sorted({str(row.get("ticker") or "").strip().upper() for row in ticker_rows if str(row.get("ticker") or "").strip()}),
@@ -1508,8 +1511,6 @@ def trading_news_rows(
     forecast_eligible: str = "",
     reaction_eligible: str = "",
     history_eligible: str = "",
-    prior_context_eligible: str = "",
-    followup_eligible: str = "",
 ) -> dict[str, Any]:
     """Return a bounded point-in-time news page for Canvas news containers."""
     safe_limit = max(1, min(limit, 250))
@@ -1552,8 +1553,6 @@ def trading_news_rows(
         "forecast_eligible": forecast_eligible.strip().lower(),
         "reaction_eligible": reaction_eligible.strip().lower(),
         "history_eligible": history_eligible.strip().lower(),
-        "prior_context_eligible": prior_context_eligible.strip().lower(),
-        "followup_eligible": followup_eligible.strip().lower(),
     }
     token_pattern = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
     for name, value in {
@@ -1627,16 +1626,12 @@ def trading_news_rows(
             "forecast_eligible": "forecast_tickers",
             "reaction_eligible": "reaction_tickers",
             "history_eligible": "history_tickers",
-            "prior_context_eligible": "history_tickers",
         }
         for name, value in eligibility_filters.items():
             if not value:
                 continue
-            if name == "followup_eligible":
-                expression = "l.communication_purpose IN ('recap','explain_move')"
-            else:
-                column = eligibility_columns[name]
-                expression = f"has(l.{column}, {ticker_sql})" if ticker_scope else f"notEmpty(l.{column})"
+            column = eligibility_columns[name]
+            expression = f"has(l.{column}, {ticker_sql})" if ticker_scope else f"notEmpty(l.{column})"
             conditions.append(expression if value == "eligible" else f"NOT ({expression})")
         where = " AND ".join(conditions)
         label_exists_sql = (
@@ -1927,12 +1922,13 @@ def trading_news_rows(
     for row in rows:
         source_id = str(row.get("canonical_news_id") or "")
         synthesis_payload = synthesis_by_source.get(source_id, {})
-        labels = synthesis_payload.get("labels", [])
-        row["scoped_labels"] = labels
-        row["scoped_summary"] = scoped_news_summary(
-            labels, ticker=safe_ticker
+        synthesis_document = synthesis_payload.get("document")
+        row["news_synthesis_summary"] = (
+            synthesis_summary(synthesis_document, ticker=safe_ticker)
+            if synthesis_document
+            else None
         )
-        row["news_synthesis"] = synthesis_payload.get("document")
+        row["news_synthesis"] = synthesis_document
         row.update(synthesis_payload.get("article_fields", {}))
         row["intelligence_status"] = intelligence_status if synthesis_payload else "pending"
     response = {
@@ -3218,8 +3214,6 @@ def trading_news(
     forecast_eligible: str = "",
     reaction_eligible: str = "",
     history_eligible: str = "",
-    prior_context_eligible: str = "",
-    followup_eligible: str = "",
 ) -> dict[str, Any]:
     return trading_news_rows(
         as_of=as_of, lookback_hours=lookback_hours, limit=limit, search=search,
@@ -3228,8 +3222,6 @@ def trading_news(
         eligibility=eligibility, label_state=label_state, start_date=start_date,
         end_date=end_date, query_id=query_id, forecast_eligible=forecast_eligible,
         reaction_eligible=reaction_eligible, history_eligible=history_eligible,
-        prior_context_eligible=prior_context_eligible,
-        followup_eligible=followup_eligible,
     )
 
 

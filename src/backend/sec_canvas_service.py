@@ -17,7 +17,7 @@ from research.mlops.clickhouse import (
 )
 from src.backend.scoped_text_labels import (
     load_scoped_sec_labels,
-    scoped_news_summary,
+    scoped_sec_summary,
 )
 from src.backend.text_query_contract import TEXT_QUERY_SESSIONS, resolve_text_query_window
 
@@ -336,7 +336,7 @@ def enrich_sec_intelligence(
             str(row.get("accession_number") or ""), []
         )
         row["scoped_labels"] = labels
-        row["scoped_summary"] = scoped_news_summary(labels)
+        row["scoped_summary"] = scoped_sec_summary(labels)
     return "ready"
 
 

@@ -19,6 +19,7 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
     sql_string,
 )
+from research.text_intelligence.news_synthesis_v1.storage import LIVE_SEMANTIC_TABLE
 from research.news_labeling.gpt_oss_v1.data import read_jsonl
 from src.backend.news_prior_context import prior_news_context, table_exists
 from src.backend.sec_canvas_service import sec_filings_payload
@@ -135,7 +136,7 @@ def build_manifest(
     client = clickhouse_client()
     try:
         semantic_table_available = table_exists(
-            client, database="q_live", table="news_semantic_label_v1"
+            client, database="q_live", table=LIVE_SEMANTIC_TABLE
         )
     finally:
         client.close()

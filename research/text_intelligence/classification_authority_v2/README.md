@@ -1,8 +1,10 @@
-# Source-aware News and SEC Classification Authority V2
+# Historical News / Active SEC Classification Authority V2
 
-V2 combines the existing production News metadata rules with the typed,
-exact-evidence semantic authority. It is a certification-stage authority and
-does not cut over the live News Gateway or overwrite canonical source tables.
+The News branch is retired and now fails explicitly; News Synthesis V1 is the
+only production and evaluation authority for News. The SEC branch remains in
+use behind Text Intelligence's explicit SEC-only boundary. The material below
+documents the historical V2 contract and must not be treated as a News runtime
+or fallback specification.
 
 The contract keeps these concerns independent:
 
@@ -28,7 +30,7 @@ context, and excludes it from reaction-direction scoring. A later issuer-memory
 consumer must extract only the ticker-relevant structured bullet or sentence
 before assigning background semantics.
 
-Run the real, runtime-only certification sample:
+Reproduce the historical certification sample only when investigating lineage:
 
 ```powershell
 C:\Users\g835l\miniconda3\envs\ml4t\python.exe -m research.text_intelligence.classification_authority_v2.run_evaluation

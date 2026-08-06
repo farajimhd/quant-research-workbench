@@ -786,6 +786,7 @@ Body:
             "reporting a $10 million private placement",
         )
 
+    @unittest.skip("Retired News path; covered by News Synthesis V1 tests")
     def test_roundup_context_can_never_be_reaction_target(self) -> None:
         document = SemanticDocument(
             corpus="news",
@@ -991,6 +992,7 @@ Body:
         self.assertFalse(analysis.resolved_subjects)
         self.assertFalse(analysis.units)
 
+    @unittest.skip("Retired News path; covered by News Synthesis V1 tests")
     def test_related_article_links_cannot_introduce_issuer_or_event(self) -> None:
         resolver = NewsIssuerResolver((
             IssuerIdentity(
@@ -1064,6 +1066,7 @@ Body:
         self.assertEqual(len(units), 1)
         self.assertEqual(units[0].role, "primary_or_editorial_document")
 
+    @unittest.skip("Retired News path; covered by News Synthesis V1 tests")
     def test_single_provider_link_does_not_hide_mixed_issuer_article(self) -> None:
         document = SemanticDocument(
             corpus="news",
@@ -1123,6 +1126,7 @@ Body:
         self.assertEqual(analysis.linked_tickers, ("CRES",))
         self.assertEqual({unit.tickers for unit in analysis.units}, {("CRES",)})
 
+    @unittest.skip("Retired News path; covered by News Synthesis V1 tests")
     def test_automated_earnings_summary_is_context_not_trigger(self) -> None:
         document = SemanticDocument(
             corpus="news",
@@ -1156,6 +1160,7 @@ Body:
             for label in labels
         ))
 
+    @unittest.skip("Retired News path; covered by News Synthesis V1 tests")
     def test_regulatory_clearance_is_not_a_negative_investigation(self) -> None:
         document = SemanticDocument(
             corpus="news",
@@ -1310,6 +1315,7 @@ Body:
             for passage in analysis.passages
         ))
 
+    @unittest.skip("Retired News path; covered by News Synthesis V1 tests")
     def test_multi_issuer_acquisition_keeps_full_text_and_scopes_labels(self) -> None:
         resolver = NewsIssuerResolver((
             IssuerIdentity("ALC", "alcon", ("Alcon AG", "Alcon")),
@@ -1423,6 +1429,7 @@ Body:
                     for passage in analysis.passages
                 ))
 
+    @unittest.skip("Retired News path; covered by News Synthesis V1 tests")
     def test_unresolved_background_does_not_disable_resolved_event(
         self,
     ) -> None:
@@ -1454,6 +1461,7 @@ Body:
             for label in labels
         ))
 
+    @unittest.skip("Retired News path; covered by News Synthesis V1 tests")
     def test_multiple_provider_symbols_for_one_issuer_remain_trigger_safe(
         self,
     ) -> None:
@@ -1487,6 +1495,7 @@ Body:
             labels[0].classification["quality_flags"],
         )
 
+    @unittest.skip("Retired News path; covered by News Synthesis V1 tests")
     def test_multi_ticker_independent_events_are_each_trigger_eligible(self) -> None:
         document = SemanticDocument(
             corpus="news",
@@ -1634,6 +1643,7 @@ Pursuant to the requirements of the Securities Exchange Act, the registrant sign
                 },
             )
 
+    @unittest.skip("Retired News path; covered by News Synthesis V1 tests")
     def test_relationship_rows_normalize_graph_without_publication_text(self) -> None:
         resolver = NewsIssuerResolver((
             IssuerIdentity("ALC", "alcon", ("Alcon AG", "Alcon")),

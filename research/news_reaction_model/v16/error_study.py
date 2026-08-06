@@ -43,6 +43,8 @@ from research.news_reaction_model.v16.opportunity import (
     OpportunityClass,
 )
 from research.news_reaction_model.v16.prepared import close_arrays, open_arrays
+from research.text_intelligence.news_synthesis_v1.engine import ENGINE_VERSION
+from research.text_intelligence.news_synthesis_v1.storage import SYNTHESIS_TABLE
 from research.news_reaction_model.v16.stock_state import STOCK_STATE_NAMES
 from research.news_reaction_model.v16.time_features import EXCHANGE_TZ, parse_published_at_utc
 from research.news_reaction_model.v16.prepare_data import q, qi
@@ -524,24 +526,33 @@ def build_article_audit(
 
 def news_enrichment_sql(config: LoaderConfig, start: str, end_exclusive: str) -> str:
     table = f"{qi(config.news_database)}.{qi('benzinga_news_normalized_v1')}"
+    synthesis = f"{qi(config.news_database)}.{qi(SYNTHESIS_TABLE)}"
     return f"""
 SELECT
- canonical_news_id,
- arrayElement(tickers, 1) AS ticker,
- title,
- teaser,
- author,
- url_domain,
- channels,
- provider_tags,
- links,
- content_quality_flags,
- lengthUTF8(normalized_full_text) AS text_length
-FROM {table} FINAL
-WHERE published_at_utc >= toDateTime64({q(start)}, 9, 'UTC')
- AND published_at_utc < toDateTime64({q(end_exclusive)}, 9, 'UTC')
- AND length(tickers) = 1
-ORDER BY published_at_utc, canonical_news_id
+ n.canonical_news_id,
+ arrayElement(n.tickers, 1) AS ticker,
+ n.title,
+ n.teaser,
+ n.author,
+ n.url_domain,
+ n.channels,
+ n.provider_tags,
+ n.links,
+ n.content_quality_flags,
+ lengthUTF8(n.normalized_full_text) AS text_length,
+ s.communication_purpose AS news_kind,
+ s.information_origin AS news_origin,
+ s.document_structure AS news_scope,
+ s.concepts AS news_topics,
+ s.engine_version AS news_classification_version
+FROM {table} AS n FINAL
+INNER JOIN {synthesis} AS s FINAL
+ ON s.canonical_news_id=n.canonical_news_id
+ AND s.engine_version={q(ENGINE_VERSION)}
+WHERE n.published_at_utc >= toDateTime64({q(start)}, 9, 'UTC')
+ AND n.published_at_utc < toDateTime64({q(end_exclusive)}, 9, 'UTC')
+ AND length(n.tickers) = 1
+ORDER BY n.published_at_utc, n.canonical_news_id
 SETTINGS max_threads={config.max_threads_per_query},
  max_memory_usage={q(config.max_memory_usage)}
 FORMAT JSONEachRow
@@ -555,8 +566,6 @@ def enrich_news(
     start: str,
     end_exclusive: str,
 ) -> dict[str, Any]:
-    from src.backend.news_classification import classify_news
-
     client = ClickHouseHttpClient(
         default_clickhouse_url(),
         default_clickhouse_user(),
@@ -594,22 +603,15 @@ def enrich_news(
                 }
             )
             continue
-        classification = classify_news(
-            {
-                **row,
-                "text": row.get("teaser") or "",
-            },
-            ticker_count=1,
-        )
         article.update(
             {
-                "news_kind": classification.kind,
-                "news_origin": classification.origin,
-                "news_scope": classification.scope,
-                "news_topics": list(classification.topics),
-                "news_classification_version": classification.version,
-                "news_classification_confidence": classification.confidence,
-                "news_classification_evidence": list(classification.evidence),
+                "news_kind": str(row.get("news_kind") or "unknown"),
+                "news_origin": str(row.get("news_origin") or "unknown"),
+                "news_scope": str(row.get("news_scope") or "unknown"),
+                "news_topics": list(row.get("news_topics") or []),
+                "news_classification_version": str(row.get("news_classification_version") or ENGINE_VERSION),
+                "news_classification_confidence": 1.0,
+                "news_classification_evidence": ["news_synthesis_v1"],
                 "channels": list(row.get("channels") or []),
                 "provider_tags": list(row.get("provider_tags") or []),
                 "title": str(row.get("title") or ""),
@@ -631,8 +633,6 @@ def enrich_neighbor_metadata(
     end_exclusive: str = "2026-01-01",
     batch_size: int = 1_000,
 ) -> dict[str, int]:
-    from src.backend.news_classification import classify_news
-
     identities = {
         _identity(item["canonical_news_id"], item["ticker"])
         for row in neighbor_rows
@@ -644,19 +644,24 @@ def enrich_neighbor_metadata(
         default_clickhouse_password(),
     )
     table = f"{qi(config.news_database)}.{qi('benzinga_news_normalized_v1')}"
+    synthesis = f"{qi(config.news_database)}.{qi(SYNTHESIS_TABLE)}"
     metadata: dict[tuple[str, str], dict[str, Any]] = {}
     ordered_ids = sorted({canonical_news_id for canonical_news_id, _ in identities})
     for offset in range(0, len(ordered_ids), batch_size):
         values = ordered_ids[offset : offset + batch_size]
         sql = f"""
-SELECT canonical_news_id, arrayElement(tickers, 1) AS ticker, title, teaser,
- author, url_domain, channels, provider_tags, links, content_quality_flags,
- lengthUTF8(normalized_full_text) AS text_length
-FROM {table} FINAL
-WHERE published_at_utc >= toDateTime64({q(start)}, 9, 'UTC')
- AND published_at_utc < toDateTime64({q(end_exclusive)}, 9, 'UTC')
- AND length(tickers) = 1
- AND canonical_news_id IN ({','.join(q(value) for value in values)})
+SELECT n.canonical_news_id, arrayElement(n.tickers, 1) AS ticker, n.title, n.teaser,
+ n.author, n.url_domain, n.channels, n.provider_tags, n.links, n.content_quality_flags,
+ lengthUTF8(n.normalized_full_text) AS text_length,
+ s.communication_purpose AS news_kind, s.concepts AS news_topics
+FROM {table} AS n FINAL
+INNER JOIN {synthesis} AS s FINAL
+ ON s.canonical_news_id=n.canonical_news_id
+ AND s.engine_version={q(ENGINE_VERSION)}
+WHERE n.published_at_utc >= toDateTime64({q(start)}, 9, 'UTC')
+ AND n.published_at_utc < toDateTime64({q(end_exclusive)}, 9, 'UTC')
+ AND length(n.tickers) = 1
+ AND n.canonical_news_id IN ({','.join(q(value) for value in values)})
 FORMAT JSONEachRow
 """
         for line in client.execute(sql).splitlines():
@@ -670,10 +675,6 @@ FORMAT JSONEachRow
             if source is None:
                 item["metadata_available"] = False
                 continue
-            classification = classify_news(
-                {**source, "text": source.get("teaser") or ""},
-                ticker_count=1,
-            )
             item.update(
                 {
                     "metadata_available": True,
@@ -683,8 +684,8 @@ FORMAT JSONEachRow
                     "url_domain": str(source.get("url_domain") or ""),
                     "channels": list(source.get("channels") or []),
                     "provider_tags": list(source.get("provider_tags") or []),
-                    "news_kind": classification.kind,
-                    "news_topics": list(classification.topics),
+                    "news_kind": str(source.get("news_kind") or "unknown"),
+                    "news_topics": list(source.get("news_topics") or []),
                     "text_length": int(source.get("text_length") or 0),
                 }
             )

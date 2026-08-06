@@ -1,21 +1,21 @@
 # Text Intelligence Service
 
-Shared domain service for deterministic News and SEC text labels, with an
-optional live News model path.
+Shared domain service for News Synthesis V1, separately versioned SEC text
+labels, and an optional downstream live News model path.
 
 News Gateway and SEC Gateway own acquisition and canonical persistence. After a
 canonical publish, they send only a corpus, source identity, timestamp, and
 the SEC CIK needed for an exact filing read to this service. Bounded workers
-reload the canonical rendered authority, apply
-the shared `scoped_text_labeling_v5` issuer/event classifier, and persist
-compact versioned rows to `q_live.scoped_text_labels_v5` and
-`q_live.scoped_content_relations_v3`. Canonical rendered text is referenced by
-hash and bounded offsets; the live service does not duplicate full text,
-blocks, or per-span context into production label rows.
+reload canonical source data. News is processed only by
+`news_synthesis_engine_v1` and persisted to `q_live.news_synthesis_v1`. SEC is
+processed by its independent `scoped_text_labeling_v5` authority and persisted
+to `q_live.scoped_text_labels_v5` and `q_live.scoped_content_relations_v3`.
+The SEC classifier is never a News fallback or input.
 
-`q_live.scoped_text_live_status_v2` binds completion to the exact rendered
-source hash. Reconciliation therefore repairs missed notices and reprocesses
-new News or SEC revisions without repeating current work. Deterministic labels
+`q_live.canonical_text_live_status_v1` binds completion to the exact rendered
+source hash and the applicable authority version. Reconciliation therefore
+repairs missed notices and reprocesses new News or SEC revisions without
+repeating current work. Deterministic processing
 run regardless of trading state. Only the optional live News model path
 requires an active Live session and point-in-time QMD price eligibility.
 SEC filings whose canonical document taxonomy is intentionally non-narrative
@@ -25,12 +25,13 @@ next reconciliation cycle rather than misreported as processing failures.
 
 ## Responsibilities
 
-- Classify every completed canonical News and SEC document; never poll a source
-  provider.
+- Synthesize every completed canonical News document with News Synthesis V1;
+  never poll a source provider.
+- Classify SEC documents only through the separately versioned SEC authority.
 - Maintain source-hash idempotency and repair missed gateway notifications.
 - Preserve one canonical publication while separating issuer roles, evidence,
   concepts, eligibility, and direction for multi-issuer events.
-- Persist News and SEC relationships through the same versioned authority.
+- Persist News synthesis and SEC relationships to their distinct authorities.
 - Route only eligible News issuer units into optional live model inference.
 - Freeze the point-in-time QMD snapshot used for price eligibility.
 - Persist validated versioned semantic labels with model/cost/latency lineage.
@@ -58,7 +59,7 @@ next reconciliation cycle rather than misreported as processing failures.
 - `TEXT_INTELLIGENCE_ENABLE_LIVE_AI`, default `false`; when `true`, eligible
   News during an explicitly active Live session is routed through Model
   Gateway and then optionally to Market AI. This setting does not affect the
-  required deterministic News/SEC classifier.
+  required News Synthesis V1 or SEC classifier.
 - `TEXT_INTELLIGENCE_LLM_BASE_URL`, default `http://127.0.0.1:8000/v1`
 - `TEXT_INTELLIGENCE_LLM_MODEL`, default `Qwen/Qwen3-1.7B`
 - `TEXT_INTELLIGENCE_LLM_MAX_TOKENS`, default `512`
@@ -80,7 +81,7 @@ next reconciliation cycle rather than misreported as processing failures.
 - `NEWS_INTELLIGENCE_WORKERS`, default `4`
 - `NEWS_INTELLIGENCE_QUEUE_MAX`, default `4096`
 - `NEWS_INTELLIGENCE_RECONCILE_SECONDS`, default `10`
-- `NEWS_INTELLIGENCE_LABEL_TABLE`, default `news_semantic_label_v2`
+- `NEWS_INTELLIGENCE_LABEL_TABLE`, default `news_live_semantic_v3`
 - `TEXT_INTELLIGENCE_WORKERS`, default `4`, bounded to `16`
 - `TEXT_INTELLIGENCE_QUEUE_MAX`, default `8192`
 - `TEXT_INTELLIGENCE_RECONCILE_SECONDS`, default `30`
@@ -115,8 +116,8 @@ or:
 .\scripts\run_text_intelligence.ps1
 ```
 
-The bare launcher runs the required deterministic News/SEC V5 classifier and
-reconciler only. It does not load local language models and does not call an
+The bare launcher runs News Synthesis V1 plus the separate SEC V5 classifier
+and reconciler. It does not load local language models and does not call an
 LLM, Model Gateway, or Market AI. The standard live-gateway launcher also
 starts this deterministic service as its fifth tab with the shared Rich
 operational terminal. That terminal keeps current reconciliation, worker
@@ -142,18 +143,20 @@ operation.
 
 ### Starting after a historical backfill
 
-The finite V5 backfill and this continuous service may run concurrently because
-their label and relationship identities are idempotent. Delaying the service is
-safe only when no canonical News/SEC rows arrive outside the finite backfill's
-fixed date range, or when every missed row remains inside the service's recent
-reconciliation window when it eventually starts.
+The finite News Synthesis V1 backfill and this continuous service may run
+concurrently because their synthesis identities are idempotent. SEC V5 has a
+separate backfill and storage authority. Delaying the service is safe only when
+no canonical rows arrive outside the finite backfill's fixed date range, or
+when every missed row remains inside the service's recent reconciliation
+window when it eventually starts.
 
 The historical runner fixes `--end-date-exclusive` when it is launched. Rows
 published after that boundary are not part of that run. On service startup,
 `TEXT_INTELLIGENCE_RECONCILE_HOURS` defaults to 72 hours and is bounded to 720
 hours. Therefore, if gateways keep ingesting while a long backfill runs, start
 this service concurrently. Otherwise, post-boundary rows older than the
-reconciliation window require an explicit range-scoped V5 rebuild.
+reconciliation window require an explicit News Synthesis V1 or SEC V5 rebuild,
+depending on the corpus.
 
 ## Download Models
 

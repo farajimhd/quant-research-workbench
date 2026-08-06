@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from research.mlops.clickhouse import ClickHouseHttpClient, sql_string
+from research.text_intelligence.news_synthesis_v1.storage import LIVE_SEMANTIC_TABLE
 
 
 DATABASE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -35,15 +36,13 @@ def prior_news_context(
         return []
     if include_semantic is None:
         include_semantic = table_exists(
-            client, database=database, table="news_semantic_label_v2"
+            client, database=database, table=LIVE_SEMANTIC_TABLE
         )
-    semantic_table = (
-        "news_semantic_label_v2"
-        if table_exists(
-            client, database=database, table="news_semantic_label_v2"
-        )
-        else "news_semantic_label_v1"
-    )
+    semantic_table = LIVE_SEMANTIC_TABLE
+    if include_semantic and not table_exists(
+        client, database=database, table=semantic_table
+    ):
+        include_semantic = False
     cutoff_sql = clickhouse_timestamp(cutoff)
     semantic_column = (
         "ifNull(s.semantic_json, '') AS semantic_json"

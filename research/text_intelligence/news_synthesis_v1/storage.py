@@ -12,6 +12,7 @@ from .engine import ENGINE_VERSION, IssuerIdentity, IssuerIdentityIndex
 
 SYNTHESIS_TABLE = "news_synthesis_v1"
 STATUS_TABLE = "news_synthesis_build_status_v1"
+LIVE_SEMANTIC_TABLE = "news_live_semantic_v3"
 
 
 def create_tables(client: ClickHouseHttpClient, database: str) -> None:

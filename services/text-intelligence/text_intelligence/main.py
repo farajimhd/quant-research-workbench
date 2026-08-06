@@ -19,8 +19,8 @@ from .config import IntelligenceConfig
 from .schemas import IntelligenceResponse, NewsArticleForClassification
 from .tiers import IntelligenceEngine
 from .live import LiveCandidate, LiveCandidateBatch, LiveNewsRuntime, LiveSessionUpdate
-from .scoped_live import (
-    ScopedTextRuntime,
+from .canonical_live import (
+    CanonicalTextRuntime,
     TextDocumentNotice,
     TextDocumentNoticeBatch,
 )
@@ -28,7 +28,7 @@ from .scoped_live import (
 config = IntelligenceConfig.from_env()
 engine = IntelligenceEngine(config)
 live_runtime = LiveNewsRuntime(enabled=config.enable_live_ai)
-scoped_runtime = ScopedTextRuntime(
+canonical_runtime = CanonicalTextRuntime(
     client=ClickHouseHttpClient(
         default_clickhouse_url(),
         default_clickhouse_user(),
@@ -52,22 +52,22 @@ async def lifespan(_app: FastAPI):
             name="text-intelligence-terminal",
         )
     live_started = False
-    scoped_started = False
+    canonical_started = False
     try:
         await live_runtime.start()
         live_started = True
-        await scoped_runtime.start()
-        scoped_started = True
+        await canonical_runtime.start()
+        canonical_started = True
         yield
     finally:
         terminal_stop.set()
         if terminal_task is not None:
             await asyncio.gather(terminal_task, return_exceptions=True)
-        if scoped_started:
-            await scoped_runtime.stop()
+        if canonical_started:
+            await canonical_runtime.stop()
         if live_started:
             await live_runtime.stop()
-        scoped_runtime.client.close()
+        canonical_runtime.client.close()
 
 
 app = FastAPI(title="Text Intelligence Service", lifespan=lifespan)
@@ -115,7 +115,7 @@ def update_live_session(update: LiveSessionUpdate) -> dict[str, object]:
 @app.post("/candidate", status_code=202)
 def enqueue_candidate(candidate: LiveCandidate) -> dict[str, object]:
     try:
-        scoped_runtime.enqueue(
+        canonical_runtime.enqueue(
             TextDocumentNotice(
                 corpus="news",
                 source_id=candidate.canonical_news_id,
@@ -131,7 +131,7 @@ def enqueue_candidate(candidate: LiveCandidate) -> dict[str, object]:
 def enqueue_candidates(batch: LiveCandidateBatch) -> dict[str, object]:
     try:
         for candidate in batch.candidates:
-            scoped_runtime.enqueue(
+            canonical_runtime.enqueue(
                 TextDocumentNotice(
                     corpus="news",
                     source_id=candidate.canonical_news_id,
@@ -147,7 +147,7 @@ def enqueue_candidates(batch: LiveCandidateBatch) -> dict[str, object]:
 def enqueue_documents(batch: TextDocumentNoticeBatch) -> dict[str, object]:
     try:
         for document in batch.documents:
-            scoped_runtime.enqueue(document)
+            canonical_runtime.enqueue(document)
     except asyncio.QueueFull as exc:
         raise HTTPException(status_code=503, detail="text intelligence queue is full") from exc
     return {"status": "queued", "count": len(batch.documents)}
@@ -166,7 +166,7 @@ def _snapshot_metrics() -> dict[str, object]:
         if payload.get("error") or payload.get("load_error"):
             failed += 1
     live_metrics = {**live_runtime.metrics, "queue_size": live_runtime.queue.qsize()}
-    deterministic_metrics = scoped_runtime.snapshot_metrics()
+    deterministic_metrics = canonical_runtime.snapshot_metrics()
     worker_error_active = (
         deterministic_metrics.get("deterministic_worker_error_status") == "active"
     )
@@ -257,10 +257,10 @@ def _snapshot_metrics() -> dict[str, object]:
                 "message": "Find new or revised canonical News and SEC sources.",
             },
             {
-                "name": "persist_scoped_labels_v5",
+                "name": "persist_news_synthesis_v1_and_sec_v5",
                 "status": "failed" if worker_error_active else current_phase,
                 "rows": deterministic_metrics.get("deterministic_completed", 0),
-                "message": "Classify and durably persist issuer-scoped labels.",
+                "message": "Persist News Synthesis V1 and separately versioned SEC labels.",
             },
         ],
         "live_session": vars(live_runtime.session),

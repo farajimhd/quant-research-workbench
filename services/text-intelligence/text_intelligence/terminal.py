@@ -60,15 +60,15 @@ def render_dashboard(
         dependencies=dependencies,
         sources_sinks=[
             {
-                "name": "News V2 to scoped labels V5",
+                "name": "Canonical News to Synthesis V1",
                 "status": "running",
-                "rows": metrics.get("deterministic_news_labels", 0),
-                "detail": "Canonical rendered News to issuer-scoped labels.",
+                "rows": metrics.get("news_synthesis_documents", 0),
+                "detail": "Canonical News to evidence-preserving V1 documents.",
             },
             {
-                "name": "SEC V3 to scoped labels V5",
+                "name": "Canonical SEC to SEC labels V5",
                 "status": "running",
-                "rows": metrics.get("deterministic_sec_labels", 0),
+                "rows": metrics.get("sec_label_rows", 0),
                 "detail": "Canonical eligible SEC documents to issuer-scoped labels.",
             },
         ],
@@ -180,12 +180,12 @@ def counters_panel(metrics: dict[str, Any]) -> Panel:
         ),
     )
     table.add_row(
-        "Scoped label rows",
+        "Authority outputs",
         fmt(
-            int(metrics.get("deterministic_news_labels") or 0)
-            + int(metrics.get("deterministic_sec_labels") or 0)
+            int(metrics.get("news_synthesis_documents") or 0)
+            + int(metrics.get("sec_label_rows") or 0)
         ),
-        f"News {fmt(metrics.get('deterministic_news_labels'))}; SEC {fmt(metrics.get('deterministic_sec_labels'))}",
+        f"News documents {fmt(metrics.get('news_synthesis_documents'))}; SEC labels {fmt(metrics.get('sec_label_rows'))}",
     )
     table.add_row(
         "Optional live forwarding",

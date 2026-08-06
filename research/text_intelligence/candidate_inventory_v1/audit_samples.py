@@ -14,7 +14,8 @@ from research.mlops.clickhouse import (
     quote_ident,
     sql_string,
 )
-from src.backend.news_classification import classify_news
+from research.text_intelligence.news_synthesis_v1.engine import ENGINE_VERSION
+from research.text_intelligence.news_synthesis_v1.storage import SYNTHESIS_TABLE
 
 from .config import INVENTORY_VERSION, NORMALIZER_VERSION, CandidateInventoryConfig
 from .mining import SourceDocument, mining_text
@@ -173,12 +174,16 @@ SELECT
  r.renderer_version,
  r.text_contract,
  r.quality_flags,
- r.rendered_text_hash
+ r.rendered_text_hash,
+ s.synthesis_json
 FROM {db}.{event} AS e FINAL
 INNER JOIN {db}.{rendered} AS r FINAL
  ON r.published_date=e.published_date
  AND r.provider_article_id=e.provider_article_id
  AND r.source_revision_key=e.source_revision_key
+INNER JOIN {db}.{quote_ident(SYNTHESIS_TABLE)} AS s FINAL
+ ON s.canonical_news_id=e.canonical_news_id
+ AND s.engine_version={sql_string(ENGINE_VERSION)}
 WHERE e.published_at_utc >= toDateTime64('2022-01-01', 9, 'UTC')
   AND e.published_at_utc < toDateTime64({sql_string(config.end_date_exclusive)}, 9, 'UTC')
   AND lengthUTF8(r.rendered_text) BETWEEN 1200 AND 20000
@@ -465,9 +470,10 @@ def method_observations(
     ]
     if case.corpus == "news":
         observations.append(
-            "The current production classifier independently emits "
-            f"`{classification.get('kind')}` / `{classification.get('format')}` "
-            f"at confidence `{classification.get('confidence')}`."
+            "News Synthesis V1 emits document structure "
+            f"`{classification.get('document_structure')}`, purpose "
+            f"`{classification.get('communication_purpose')}`, and origin "
+            f"`{classification.get('information_origin')}`."
         )
     else:
         observations.append(
@@ -518,14 +524,24 @@ def current_classification(case: AuditCase, semantic_text: str) -> dict[str, Any
                 "deterministic semantic labeler yet."
             ),
         }
-    row = dict(case.row)
-    row["text"] = semantic_text
-    classification = classify_news(row, len(row.get("tickers") or []))
+    del semantic_text
+    try:
+        synthesis = json.loads(str(case.row.get("synthesis_json") or "{}"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("News Synthesis V1 output is required for a News audit") from exc
+    if not isinstance(synthesis, dict) or not synthesis.get("envelope"):
+        raise RuntimeError("News Synthesis V1 output is required for a News audit")
+    envelope = synthesis["envelope"]
     return {
-        "authority": classification.version,
-        "status": "current_production_rule_output",
+        "authority": ENGINE_VERSION,
+        "contract_version": synthesis.get("contract_version"),
+        "status": "news_synthesis_v1_output",
         "semantic_label_emitted": True,
-        **classification.as_dict(),
+        "document_structure": envelope["document_structure"]["value"],
+        "communication_purpose": envelope["communication_purpose"]["value"],
+        "information_origin": envelope["information_origin"]["value"],
+        "production_method": envelope["production_method"]["value"],
+        "quality_flags": synthesis.get("quality_flags", []),
     }
 
 

@@ -4,10 +4,16 @@ import unittest
 import asyncio
 from unittest import mock
 
-from .scoped_live import LoadedSource, ScopedTextRuntime, TextDocumentNotice
+from .canonical_live import CanonicalTextRuntime, LoadedSource, TextDocumentNotice
 
 
-class ScopedTextRuntimeTests(unittest.TestCase):
+class CanonicalTextRuntimeTests(unittest.TestCase):
+    def test_news_runtime_has_no_legacy_news_classifier_dependency(self) -> None:
+        source = __import__("inspect").getsource(__import__("text_intelligence.canonical_live", fromlist=["*"]))
+        self.assertNotIn("classify_news_document", source)
+        self.assertNotIn("news_classification", source)
+        self.assertNotIn("scoped_labeling_v1", source)
+
     def test_sec_reload_passes_physical_document_partition(self) -> None:
         class Client:
             def iter_json_each_row(self, _sql):
@@ -29,17 +35,17 @@ class ScopedTextRuntimeTests(unittest.TestCase):
                     )
                 )
 
-        runtime = ScopedTextRuntime(
+        runtime = CanonicalTextRuntime(
             client=Client(),
             database="q_live",
             live_news=mock.Mock(),
         )
         with (
             mock.patch(
-                "text_intelligence.scoped_live.extend_sec_ticker_mappings"
+                "text_intelligence.canonical_live.extend_sec_ticker_mappings"
             ),
             mock.patch(
-                "text_intelligence.scoped_live."
+                "text_intelligence.canonical_live."
                 "iter_sec_documents_for_filings",
                 return_value=iter(()),
             ) as documents,
@@ -64,7 +70,7 @@ class ScopedTextRuntimeTests(unittest.TestCase):
                 return iter(())
 
         client = Client()
-        runtime = ScopedTextRuntime(
+        runtime = CanonicalTextRuntime(
             client=client,
             database="q_live",
             live_news=mock.Mock(),
@@ -83,7 +89,7 @@ class ScopedTextRuntimeTests(unittest.TestCase):
         self.assertIn("max_execution_time=25", client.sql)
 
     def test_news_reload_rejects_unbounded_notice(self) -> None:
-        runtime = ScopedTextRuntime(
+        runtime = CanonicalTextRuntime(
             client=mock.Mock(),
             database="q_live",
             live_news=mock.Mock(),
@@ -103,7 +109,7 @@ class ScopedTextRuntimeTests(unittest.TestCase):
                 return iter(())
 
         client = Client()
-        runtime = ScopedTextRuntime(
+        runtime = CanonicalTextRuntime(
             client=client,
             database="q_live",
             live_news=mock.Mock(),
@@ -168,7 +174,7 @@ class ScopedTextRuntimeTests(unittest.TestCase):
                     )
                 )
 
-        runtime = ScopedTextRuntime(
+        runtime = CanonicalTextRuntime(
             client=Client(), database="q_live", live_news=mock.Mock()
         )
         notice = TextDocumentNotice(
@@ -195,7 +201,7 @@ class ScopedTextRuntimeTests(unittest.TestCase):
         )
 
     def test_active_failures_clear_only_when_same_source_recovers(self) -> None:
-        runtime = ScopedTextRuntime(
+        runtime = CanonicalTextRuntime(
             client=mock.Mock(),
             database="q_live",
             live_news=mock.Mock(),
@@ -222,9 +228,9 @@ class ScopedTextRuntimeTests(unittest.TestCase):
         self.assertEqual(snapshot["deterministic_worker_error_status"], "resolved")
 
 
-class ScopedTextRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
+class CanonicalTextRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_stop_defers_queued_canonical_work_for_reconciliation(self) -> None:
-        runtime = ScopedTextRuntime(
+        runtime = CanonicalTextRuntime(
             client=mock.Mock(),
             database="q_live",
             live_news=mock.Mock(),
@@ -260,7 +266,7 @@ class ScopedTextRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         client = Client()
-        runtime = ScopedTextRuntime(
+        runtime = CanonicalTextRuntime(
             client=client,
             database="q_live",
             live_news=mock.Mock(),

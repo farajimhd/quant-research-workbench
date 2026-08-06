@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.backend.scoped_text_labels import scoped_news_summary
+from src.backend.scoped_text_labels import scoped_sec_summary
 
 
 class ScopedTextLabelTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class ScopedTextLabelTests(unittest.TestCase):
                 "issuer_history_context_eligible": True,
             },
         ]
-        summary = scoped_news_summary(labels)
+        summary = scoped_sec_summary(labels)
         self.assertIsNotNone(summary)
         self.assertEqual(summary["semantic_direction"], "mixed")
         self.assertEqual(summary["issuer_count"], 2)
@@ -57,7 +57,7 @@ class ScopedTextLabelTests(unittest.TestCase):
                 "issuer_history_context_eligible": True,
             },
         ]
-        summary = scoped_news_summary(labels, ticker="AAA")
+        summary = scoped_sec_summary(labels, ticker="AAA")
         self.assertEqual(summary["semantic_direction"], "positive")
         self.assertEqual(summary["issuer_count"], 1)
 

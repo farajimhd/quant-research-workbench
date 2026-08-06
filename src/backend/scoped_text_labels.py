@@ -8,54 +8,6 @@ from typing import Any, Callable
 SCOPED_LABELING_VERSION = "scoped_text_labeling_v5"
 
 
-def load_scoped_news_labels(
-    source_ids: list[str],
-    *,
-    query_rows: Callable[[str], list[dict[str, Any]]],
-    quote: Callable[[str], str],
-    source_end: str = "",
-    source_start: str = "",
-    ticker: str = "",
-) -> dict[str, list[dict[str, Any]]]:
-    identities = sorted({value.strip() for value in source_ids if value.strip()})
-    if not identities:
-        return {}
-    values = ",".join(quote(value) for value in identities)
-    prewhere = _label_prewhere(
-        "news", quote=quote, source_end=source_end, source_start=source_start,
-        ticker=ticker,
-    )
-    sql = f"""
-SELECT source_id,unit_id,ticker,unit_role,event_id,event_tickers,issuer_role,
-       evidence_scope,semantic_evidence_text,content_role,source_origin,
-       event_concepts,semantic_direction,semantic_score,
-       forecast_trigger_eligible,reaction_evaluation_eligible,
-       issuer_history_context_eligible,classification_json,labeling_version
-FROM
-(
-    SELECT source_id,unit_id,ticker,unit_role,event_id,event_tickers,issuer_role,
-           evidence_scope,semantic_evidence_text,content_role,source_origin,
-           event_concepts,semantic_direction,semantic_score,
-           forecast_trigger_eligible,reaction_evaluation_eligible,
-           issuer_history_context_eligible,classification_json,labeling_version
-    FROM q_live.scoped_text_labels_v5
-    PREWHERE {prewhere}
-    WHERE labeling_version={quote(SCOPED_LABELING_VERSION)}
-      AND source_id IN ({values})
-    ORDER BY updated_at_utc DESC
-    LIMIT 1 BY corpus,ticker,source_timestamp,source_id,unit_id,labeling_version
-)
-ORDER BY source_id,forecast_trigger_eligible DESC,
-         abs(semantic_score) DESC,ticker,unit_id
-FORMAT JSONEachRow
-"""
-    rows = query_rows(sql)
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        grouped[str(row.get("source_id") or "")].append(label_payload(row))
-    return dict(grouped)
-
-
 def load_scoped_sec_labels(
     source_ids: list[str],
     *,
@@ -193,7 +145,7 @@ def label_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def scoped_news_summary(
+def scoped_sec_summary(
     labels: list[dict[str, Any]], *, ticker: str = ""
 ) -> dict[str, Any] | None:
     relevant = [

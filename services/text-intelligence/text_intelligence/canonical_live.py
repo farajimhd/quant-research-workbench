@@ -22,22 +22,18 @@ from research.mlops.clickhouse import (
 from research.text_intelligence.candidate_inventory_v1.config import (
     CandidateInventoryConfig,
 )
-from research.text_intelligence.scoped_labeling_v1.persistence import (
+from .sec_authority import (
     RELATION_TABLE,
+    SCOPED_LABELING_VERSION,
     TARGET_TABLE,
     attach_sec_ticker,
+    classify_sec_document,
     create_tables,
     extend_sec_ticker_mappings,
     iter_sec_documents_for_filings,
     persistence_row,
     relationship_rows,
     row_to_document,
-)
-from research.text_intelligence.scoped_labeling_v1.pipeline import classify_sec_document
-from research.text_intelligence.scoped_labeling_v1.schema import (
-    SCOPED_LABELING_VERSION,
-)
-from research.text_intelligence.scoped_labeling_v1.sec_extractor import (
     sec_document_labeling_eligible,
 )
 from research.text_intelligence.news_synthesis_v1.engine import (
@@ -54,7 +50,7 @@ from research.text_intelligence.news_synthesis_v1.storage import (
 from .live import LiveCandidate, LiveNewsRuntime, PreparedNewsCandidate, SynthesisLiveLabel
 
 
-STATUS_TABLE = "scoped_text_live_status_v2"
+STATUS_TABLE = "canonical_text_live_status_v1"
 
 
 class TextDocumentNotice(BaseModel):
@@ -77,13 +73,13 @@ class LoadedSource:
 
 
 @dataclass(frozen=True, slots=True)
-class ScopedWorkItem:
+class CanonicalWorkItem:
     notice: TextDocumentNotice
     forward_current: bool = False
 
 
-class ScopedTextRuntime:
-    """One durable deterministic authority for newly completed News and SEC text."""
+class CanonicalTextRuntime:
+    """V1 News Synthesis runtime plus the separately versioned SEC authority."""
 
     def __init__(
         self,
@@ -95,7 +91,7 @@ class ScopedTextRuntime:
         self.client = client
         self.database = database
         self.live_news = live_news
-        self.queue: asyncio.Queue[ScopedWorkItem | None] = asyncio.Queue(
+        self.queue: asyncio.Queue[CanonicalWorkItem | None] = asyncio.Queue(
             maxsize=max(100, int(os.environ.get("TEXT_INTELLIGENCE_QUEUE_MAX", "8192")))
         )
         self.pending: set[tuple[str, str]] = set()
@@ -116,8 +112,8 @@ class ScopedTextRuntime:
             "deterministic_ineligible": 0,
             "deterministic_deferred_not_ready": 0,
             "deterministic_failed": 0,
-            "deterministic_news_labels": 0,
-            "deterministic_sec_labels": 0,
+            "news_synthesis_documents": 0,
+            "sec_label_rows": 0,
             "deterministic_reconciled": 0,
             "deterministic_live_forwarded": 0,
             "deterministic_live_forward_failed": 0,
@@ -185,7 +181,7 @@ class ScopedTextRuntime:
             return
         self.pending.add(identity)
         try:
-            self.queue.put_nowait(ScopedWorkItem(notice=notice))
+            self.queue.put_nowait(CanonicalWorkItem(notice=notice))
         except asyncio.QueueFull:
             self.pending.discard(identity)
             raise
@@ -349,12 +345,7 @@ class ScopedTextRuntime:
                 len(relation_rows),
                 "",
             )
-            key = (
-                "deterministic_news_labels"
-                if notice.corpus == "news"
-                else "deterministic_sec_labels"
-            )
-            self.metrics[key] = int(self.metrics[key]) + len(label_rows)
+            self.metrics["sec_label_rows"] = int(self.metrics["sec_label_rows"]) + len(label_rows)
             self.metrics["deterministic_completed"] = int(
                 self.metrics["deterministic_completed"]
             ) + 1
@@ -398,7 +389,7 @@ class ScopedTextRuntime:
             self._set_worker_stage(worker_index, "writing_synthesis")
             persist_documents(self.client, self.database, documents)
             self._write_status(notice, loaded.source_hash, "complete", len(documents), 0, "")
-            self.metrics["deterministic_news_labels"] = int(self.metrics["deterministic_news_labels"]) + len(documents)
+            self.metrics["news_synthesis_documents"] = int(self.metrics["news_synthesis_documents"]) + len(documents)
             self.metrics["deterministic_completed"] = int(self.metrics["deterministic_completed"]) + 1
         if self.live_news.enabled:
             for source_row, document in zip(loaded.rows, documents):
@@ -672,7 +663,7 @@ FROM `{self.database}`.`{STATUS_TABLE}` FINAL
 WHERE corpus={sql_string(notice.corpus)}
   AND source_id={sql_string(notice.source_id)}
   AND source_hash={sql_string(source_hash)}
-  AND labeling_version={sql_string(version)}
+  AND authority_version={sql_string(version)}
   AND status='complete'
 """).strip()
         return int(value or "0") > 0
@@ -682,7 +673,7 @@ WHERE corpus={sql_string(notice.corpus)}
         notice: TextDocumentNotice,
         source_hash: str,
         status: str,
-        label_rows: int,
+        output_rows: int,
         relation_rows: int,
         error: str,
     ) -> None:
@@ -691,9 +682,9 @@ WHERE corpus={sql_string(notice.corpus)}
             "source_id": notice.source_id,
             "source_timestamp": notice.source_timestamp or "1970-01-01 00:00:00",
             "source_hash": source_hash,
-            "labeling_version": _authority_version(notice.corpus),
+            "authority_version": _authority_version(notice.corpus),
             "status": status,
-            "label_rows": label_rows,
+            "output_rows": output_rows,
             "relation_rows": relation_rows,
             "error": error[:1_000],
             "updated_at_utc": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f"),
@@ -767,7 +758,7 @@ WHERE corpus={sql_string(notice.corpus)}
 WITH
  complete_status AS
  (
-  SELECT corpus,source_id,source_hash,labeling_version,updated_at_utc
+  SELECT corpus,source_id,source_hash,authority_version,updated_at_utc
   FROM `{self.database}`.`{STATUS_TABLE}` FINAL
   WHERE status='complete'
  ),
@@ -810,7 +801,7 @@ LEFT JOIN
 LEFT JOIN complete_status s
  ON s.corpus='news' AND s.source_id=e.canonical_news_id
  AND s.source_hash=if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash)
- AND s.labeling_version={sql_string(NEWS_SYNTHESIS_ENGINE_VERSION)}
+ AND s.authority_version={sql_string(NEWS_SYNTHESIS_ENGINE_VERSION)}
 WHERE empty(s.source_id)
    OR s.source_hash != if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash)
    OR greatest(e.updated_at_utc,r.updated_at_utc) > s.updated_at_utc
@@ -820,7 +811,7 @@ SELECT 'sec' corpus,f.source_id,toString(f.source_timestamp) source_timestamp,
 FROM recent_sec f
 LEFT JOIN complete_status s
  ON s.corpus='sec' AND s.source_id=f.source_id
- AND s.labeling_version={sql_string(SCOPED_LABELING_VERSION)}
+ AND s.authority_version={sql_string(SCOPED_LABELING_VERSION)}
 WHERE empty(s.source_id)
    OR f.source_updated_at_utc > s.updated_at_utc
 )
@@ -838,7 +829,7 @@ FORMAT JSONEachRow
         self.pending.add(identity)
         try:
             self.queue.put_nowait(
-                ScopedWorkItem(notice=notice, forward_current=True)
+                CanonicalWorkItem(notice=notice, forward_current=True)
             )
         except asyncio.QueueFull:
             self.pending.discard(identity)
@@ -883,7 +874,7 @@ LEFT JOIN
 (
  SELECT canonical_news_id,ticker,unit_id,rendered_text_hash
  FROM `{self.database}`.`{self.live_news.table}` FINAL
- WHERE scoped_labeling_version={sql_string(NEWS_SYNTHESIS_ENGINE_VERSION)}
+ WHERE news_synthesis_version={sql_string(NEWS_SYNTHESIS_ENGINE_VERSION)}
    AND published_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
 ) m
  ON m.canonical_news_id=l.source_id
@@ -904,15 +895,15 @@ CREATE TABLE IF NOT EXISTS `{self.database}`.`{STATUS_TABLE}` (
  source_id String,
  source_timestamp DateTime64(9,'UTC'),
  source_hash String,
- labeling_version LowCardinality(String),
+ authority_version LowCardinality(String),
  status LowCardinality(String),
- label_rows UInt32,
+ output_rows UInt32,
  relation_rows UInt32,
  error String,
  updated_at_utc DateTime64(6,'UTC')
 ) ENGINE=ReplacingMergeTree(updated_at_utc)
 PARTITION BY corpus
-ORDER BY (corpus,source_id,labeling_version)
+ORDER BY (corpus,source_id,authority_version)
 """)
 
 
