@@ -21,6 +21,10 @@ WHY_MOVING_RE = re.compile(r"\bwhy\s+(?:is|are|did)\b.*\b(?:stock|shares?)\b.*\b
 ANALYST_RE = re.compile(r"\b(?:analyst|price target|rating|upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?)\b", re.I)
 REGULATORY_RE = re.compile(r"\b(?:SEC|FDA|regulator|regulatory|trading halt|compliance notice|Nasdaq (?:comments|halts|notifies|determines)|NYSE (?:comments|halts|notifies|determines))\b", re.I)
 AUTOMATED_RE = re.compile(r"\b(?:automated market statistics|benzinga pro data|generated automatically)\b", re.I)
+EXCHANGE_PREFIX_RE = re.compile(
+    r"^(?:NASDAQ|NYSE(?:\s+AMERICAN)?|NYSEAMERICAN|AMEX|OTC(?:QX|QB)?)\s*[:\-]\s*",
+    re.I,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,19 +49,21 @@ class IssuerIdentityIndex:
         self._by_ticker: dict[str, list[IssuerIdentity]] = {}
         self._by_alias: dict[str, list[IssuerIdentity]] = {}
         for row in identities:
-            ticker = row.ticker.upper().strip()
+            ticker = _normalize_ticker_identifier(row.ticker)
             if not ticker:
                 continue
             self._by_ticker.setdefault(ticker, []).append(row)
             for alias in row.aliases:
-                key = _normalize_alias(alias)
-                if _safe_alias(key):
-                    self._by_alias.setdefault(key, []).append(row)
+                for key in _alias_variants(alias):
+                    if _safe_alias(key):
+                        self._by_alias.setdefault(key, []).append(row)
 
     def resolve(self, *, text: str, candidates: Sequence[str], timestamp: str) -> list[dict[str, Any]]:
         day = _as_date(timestamp)
-        explicit = {value.upper() for value in EXCHANGE_TICKER_RE.findall(text)} | {value.upper() for value in CASHTAG_RE.findall(text)}
-        candidate_set = {str(value).upper().strip() for value in candidates if value}
+        explicit = {_normalize_ticker_identifier(value) for value in EXCHANGE_TICKER_RE.findall(text)} | {_normalize_ticker_identifier(value) for value in CASHTAG_RE.findall(text)}
+        candidate_set = {_normalize_ticker_identifier(value) for value in candidates if value}
+        explicit.discard("")
+        candidate_set.discard("")
         matches: dict[str, set[str]] = {ticker: {"explicit_ticker_in_text"} for ticker in explicit}
         normalized_text = f" {_normalize_alias(text)} "
         for alias, rows in self._by_alias.items():
@@ -68,6 +74,8 @@ class IssuerIdentityIndex:
             preferred = tickers & candidate_set
             if preferred:
                 tickers = preferred
+            elif candidate_set and len(alias.split()) == 1:
+                continue
             issuer_ids = {row.issuer_id for row in valid if row.ticker in tickers}
             if len(tickers) == 1 or len(issuer_ids) == 1:
                 for ticker in tickers:
@@ -89,9 +97,40 @@ class IssuerIdentityIndex:
             })
         return entities
 
+    def supported_candidates(
+        self,
+        *,
+        candidates: Sequence[str],
+        timestamp: str,
+    ) -> list[dict[str, Any]]:
+        """Resolve exact provider candidates without asserting a text mention.
+
+        The engine admits these rows only when the document independently contains
+        an issuer-scoped semantic statement. Statement binding remains responsible
+        for deciding whether the candidate actually participates in that statement.
+        """
+        day = _as_date(timestamp)
+        entities: list[dict[str, Any]] = []
+        tickers = sorted({_normalize_ticker_identifier(value) for value in candidates if value} - {""})
+        for ticker in tickers:
+            known = list(self._by_ticker.get(ticker, ()))
+            valid = [row for row in known if row.valid_on(day)]
+            identity = valid[0] if len({row.issuer_id for row in valid}) == 1 else None
+            if identity is None:
+                continue
+            entities.append({
+                "entity_id": identity.security_id or f"security:{identity.issuer_id}:{ticker}",
+                "entity_kind": "security",
+                "display_name": identity.display_name,
+                "ticker": ticker,
+                "identity_status": "resolved",
+                "identity_evidence": ["provider_candidate_only"],
+            })
+        return entities
+
     def mention_terms(self, entity: Mapping[str, Any]) -> tuple[str, ...]:
         """Return canonical names that may bind a resolved entity to a statement."""
-        ticker = str(entity.get("ticker") or "").upper().strip()
+        ticker = _normalize_ticker_identifier(entity.get("ticker"))
         entity_id = str(entity.get("entity_id") or "")
         terms: list[str] = [str(entity.get("display_name") or ""), ticker]
         for row in self._by_ticker.get(ticker, ()):
@@ -99,7 +138,12 @@ class IssuerIdentityIndex:
             if entity.get("identity_status") == "resolved" and expected_id != entity_id:
                 continue
             terms.extend((row.display_name, *row.aliases))
-        return tuple(dict.fromkeys(term.strip() for term in terms if term.strip()))
+        return tuple(dict.fromkeys(
+            variant
+            for term in terms
+            for variant in _alias_variants(term)
+            if variant
+        ))
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,19 +178,19 @@ def _rule(
 RULES = (
     _rule("analyst.rating_action", r"\b(?:upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?|rates?|ratings?)\b(?:.{0,100})\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|equal[- ]weight|sector perform|market perform|rating)\b|\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|equal[- ]weight|sector perform|market perform)\s+rating\b|\banalysts? (?:have )?(?:provided|published|offered).{0,60}ratings?\b", "assessment", positive=("upgrade", "buy", "outperform", "overweight"), negative=("downgrade", "sell", "underperform", "underweight")),
     _rule("analyst.price_target_action", r"\b(?:price target|target price|price objective|PO|P/T|\$\d+(?:\.\d+)? target|target on)\b", "forecast", positive=("raises", "raised", "higher", "increases"), negative=("cuts", "cut", "lowers", "lowered")),
-    _rule("earnings.performance", r"\b(?:earnings|EPS|revenues?|sales|net income|profit|quarterly results?|financial results?)\b.{0,180}\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|above|below|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|fell|declin(?:e|ed)|grew|increase[sd]?|decrease[sd]?|loss)\b|\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|rose|fell|grew)\b.{0,100}\b(?:earnings|EPS|revenues?|sales|profit|results?)\b", positive=("beat", "above", "better-than-expected", "grew", "rose", "record", "increase"), negative=("miss", "below", "weaker-than-expected", "fell", "decline", "decrease", "loss")),
+    _rule("earnings.performance", r"\b(?:earnings|EPS|revenues?|sales|net income|profit|quarterly results?|financial results?)\b.{0,180}\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|above|below|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|fell|declin(?:e|ed)|grew|increase[sd]?|decrease[sd]?|loss|up from|down from|narrowed|widened)\b|\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|rose|fell|grew|narrowed|widened)\b.{0,100}\b(?:earnings|EPS|revenues?|sales|profit|results?|loss)\b", positive=("beat", "above", "better-than-expected", "grew", "rose", "record", "increase", "up from", "narrowed"), negative=("miss", "below", "weaker-than-expected", "fell", "decline", "decrease", "loss", "down from", "widened")),
     _rule("guidance.issued", r"\b(?:issues?|provid(?:e|es|ed)|guid(?:e|es|ed)|raises?|lower(?:s|ed)?|cuts?|reaffirms?|withdraws?|updates?)\b.{0,100}\b(?:guidance|outlook|forecast|revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:guidance|outlook)\b.{0,100}\b(?:raised|lowered|cut|reaffirmed|withdrawn|unchanged|expects?)\b|\b(?:sees|expects?|anticipates?|projects?)\b.{0,120}\b(?:revenue|sales|earnings|EPS|EBITDA|growth|margin)\b", "forecast", positive=("raise", "increas", "reaffirm", "higher"), negative=("cut", "lower", "withdraw", "reduce", "weaker")),
-    _rule("corporate_transaction.acquisition", r"\b(?:acquir(?:e|es|ed|ing)|acquisition|merger|takeover)\b|\bbuys?\b.{1,100}\bfor\s+\$|\b(?:rumored?|possible|potential)\s+bid for\b|\b(?:will|would|agrees? to) combine with\b|\bamalgamat(?:e|es|ed|ing) with\b|\b(?:complet(?:e|es|ed|ion) of|proposed) (?:the )?(?:business )?combination\b", positive=("agreed", "complete", "closes", "approved", "will combine", "amalgamat"), negative=("terminate", "withdraw", "no longer pursue", "blocked", "reject", "not in best interest")),
-    _rule("corporate_transaction.asset_sale", r"\b(?:asset sale|divest(?:s|ed|iture)|sell(?:s|ing)? its .*business)\b", positive=("complete", "proceeds"), negative=("distress",)),
-    _rule("capital.financing", r"\b(?:public offering|registered direct offering|private placement|at-the-market|ATM program|convertible (?:senior )?notes?|debt financing|equity financing|prices? .{0,80}(?:offering|notes?|bonds?)|offer(?:s|ed|ing)? .{0,60} shares?|shares? offering|offering of .{0,80}(?:shares?|notes?|units?)|investment from .{0,80}funds?|term sheet .{0,100}investment|conversion price .{0,40}(?:share|stock))\b", positive=("investment from",), negative=("dilution", "offering", "placement", "convertible")),
+    _rule("corporate_transaction.acquisition", r"\b(?:acquir(?:e|es|ed|ing)|acquisition|merger|takeover)\b|\bbuys?\b.{1,100}\bfor\s+\$|\bpurchase(?:s|d)? of .{0,100}\b(?:assets?|business|operations?)\b|\b(?:rumored?|possible|potential)\s+bid for\b|\b(?:will|would|agrees? to) combine with\b|\bamalgamat(?:e|es|ed|ing) with\b|\b(?:complet(?:e|es|ed|ion) of|proposed) (?:the )?(?:business )?combination\b", positive=("agreed", "complete", "closes", "approved", "purchase", "will combine", "amalgamat"), negative=("terminate", "withdraw", "no longer pursue", "blocked", "reject", "not in best interest")),
+    _rule("corporate_transaction.asset_sale", r"\b(?:asset sale|sale of .{0,100}(?:assets?|business|operations?)|closes? (?:the )?sale of|divest(?:s|ed|iture)|sell(?:s|ing)? its .*business)\b", positive=("complete", "closes", "proceeds"), negative=("distress",)),
+    _rule("capital.financing", r"\b(?:public offering|registered direct offering|private placement|mixed shelf|shelf (?:offering|registration)|at-the-market|ATM (?:program|offering)|convertible (?:senior )?notes?|debt financing|equity financing|files? for .{0,80}offering|prices? .{0,80}(?:offering|shares?|notes?|bonds?)|offer(?:s|ed|ing)? .{0,60} shares?|shares? offering|offering of .{0,80}(?:shares?|notes?|units?|securities)|sale (?:by us )?of .{0,80}(?:common stock|preferred stock|debt securities|warrants)|investment from .{0,80}funds?|term sheet .{0,100}investment|conversion price .{0,40}(?:share|stock))\b", positive=("investment from",), negative=("dilution", "offering", "placement", "convertible", "shelf", "prices")),
     _rule("capital.return", r"\b(?:share repurchase|buyback|dividend|capital return)\b", positive=("restart", "increase", "raises", "special dividend", "fund capital return", "capital return"), negative=("suspend", "cut", "reduce")),
     _rule("regulatory.action", r"\b(?:trading halt|halted|resume trading|SEC action|regulatory action|compliance notice|formal investigation|clinical hold|license renewal|crackdown|advisory committee|regulator|letter of authorization|conditions? of authorization|reporting requirements?)\b|\b(?:FDA|FTC|SEC|European Commission|Nuclear Regulatory Commission)\b.{0,180}\b(?:investigation|hold|cancel|issue|renew|order|action|notice|authoriz|reporting requirement)\w*\b", positive=("authorize", "authorization", "renew"), negative=("halt", "suspend", "noncompliance", "investigation", "crackdown", "cancel", "myocarditis", "pericarditis", "adverse")),
-    _rule("clinical.regulatory_milestone", r"\b(?:FDA|EMA|NDA|BLA)\b.{0,180}\b(?:approv|reject|complete response|clinical hold|clearance|accept|authoriz|resubmission|acknowledge)\w*\b|\b(?:complete response letter|clinical hold|primary endpoint|phase [123] (?:study|trial)|letter of authorization)\b", positive=("approve", "approval", "clearance", "accept", "authorize", "authorization", "met primary"), negative=("reject", "complete response", "hold", "did not meet", "missed", "myocarditis", "pericarditis")),
+    _rule("clinical.regulatory_milestone", r"\b(?:FDA|EMA|NDA|BLA)\b.{0,180}\b(?:approv|reject|complete response|clinical hold|clearance|accept|authoriz|resubmission|acknowledge|submission|meeting|grant)\w*\b|\b(?:complete response letter|clinical hold|primary endpoint|phase [123] (?:study|trial)|letter of authorization|regulatory submission)\b", positive=("approve", "approval", "clearance", "accept", "authorize", "authorization", "grant", "met primary"), negative=("reject", "complete response", "hold", "did not meet", "missed", "myocarditis", "pericarditis", "cancel")),
     _rule("clinical.trial_result", r"\b(?:clinical trial|study|Phase [123])\b.*\b(?:endpoint|results?|data|efficacy|safety)\b", positive=("met", "positive", "improved"), negative=("failed", "missed", "adverse")),
     _rule("legal.proceeding", r"\b(?:lawsuit|litigation|investigation|subpoena|settlement|arbitration|legal claim|claim for .{0,60}damages|seeking .{0,40}damages)\b", positive=("seeking damages", "served a request", "files arbitration"), negative=("lawsuit", "investigation", "subpoena", "breach", "discriminatory", "adverse treatment")),
-    _rule("listing.market_structure", r"\b(?:reverse split|stock split|delisting|listing compliance|minimum bid|IPO)\b", positive=("regained compliance", "approved listing"), negative=("delisting", "noncompliance", "reverse split")),
-    _rule("commercial.contract", r"\b(?:awarded|wins?|receives?|secures?|signs?|enters?)\b.{0,100}\b(?:contract|order|award|agreement)\b|\b(?:contract|order|agreement)\b.{0,100}\b(?:awarded|won|received|secured|signed|terminated|cancelled)\b", positive=("awarded", "wins", "received", "secured", "signed"), negative=("cancel", "terminate")),
-    _rule("product.milestone", r"\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|roll(?:s|ed)? out|recall|discontinue|authoriz(?:e|es|ed|ing))\w*\b.{0,100}\b(?:product|platform|service|device|drug|treatment|vaccine|vehicle|system|game|headset|candidate|use)\b|\b(?:product|device|drug|treatment|vaccine|service|game|headset)\b.{0,100}\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|recall|discontinue|delay|authoriz)\w*\b|\b(?:new products?|product delay|(?:lead|investigational) (?:product candidate|drug|treatment|therapy|antibody)|delivery system)\b", positive=("launch", "unveil", "reveal", "debut", "commercializ", "introduc", "approval", "authorize", "new"), negative=("recall", "delay", "discontinue")),
+    _rule("listing.market_structure", r"\b(?:reverse split|stock split|delisting|listing compliance|regains? compliance|regained compliance|continued listing|non[- ]compliance|minimum bid|late filing|failure to timely file|included in .{0,60}(?:Russell|S&P|Nasdaq).{0,20}index|IPO)\b", positive=("regain", "regained compliance", "approved listing", "included"), negative=("delisting", "noncompliance", "non-compliance", "late", "failure", "reverse split")),
+    _rule("commercial.contract", r"\b(?:awarded|wins?|receives?|secures?|signs?|enters?|affirms?)\b.{0,120}\b(?:contract|order|award|agreement|program|initiative)\b|\b(?:follow[- ]on )?(?:contract|order|agreement|program|initiative)\b.{0,120}\b(?:awarded|affirmed|won|win|received|secured|signed|terminated|cancelled)\b", positive=("awarded", "affirmed", "wins", "win", "received", "secured", "signed"), negative=("cancel", "terminate")),
+    _rule("product.milestone", r"\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|roll(?:s|ed)? out|recall|discontinue|authoriz(?:e|es|ed|ing)|release(?:s|d)? (?:final )?pricing|production milestone|assembly line|built? \d+)\w*\b.{0,120}\b(?:product|platform|service|device|drug|treatment|vaccine|vehicle|system|game|headset|candidate|model|factory|use)\b|\b(?:product|device|drug|treatment|vaccine|service|game|headset|vehicle|model)\b.{0,120}\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|recall|discontinue|delay|authoriz|assembly line)\w*\b|\b(?:new products?|product delay|(?:lead|investigational) (?:product candidate|drug|treatment|therapy|antibody)|delivery system|bodies coming down the assembly line)\b", positive=("launch", "unveil", "reveal", "debut", "commercializ", "introduc", "approval", "authorize", "new", "assembly", "built", "affordable"), negative=("recall", "delay", "discontinue")),
     _rule("governance.management_change", r"\b(?:appoints?|names?|elects?|resigns?|retires?|steps down|terminates?|replaces?)\b.{0,100}\b(?:chief executive|chief financial|CEO|CFO|president|director|board)\b|\b(?:chief executive|chief financial|CEO|CFO|president|director)\b.{0,80}\b(?:resigns?|retires?|steps down|appointed|named|terminated|replaced)\b", negative=("resign", "terminated", "steps down")),
     _rule("operations.business_update", r"\b(?:business update|restructur|layoff|shutdown|expansion|job cuts?|workforce reduction|service unaffected|operations? unaffected|opens? (?:a )?(?:store|facility|dispensary)|business performance)\w*\b", positive=("expansion", "growth", "unaffected", "opens"), negative=("layoff", "shutdown", "restructur", "cuts")),
     _rule("earnings.release_schedule", r"\b(?:will (?:report|release|post)|will be reporting|scheduled to report|set to (?:report|announce)|reports? .{0,60} on (?:Monday|Tuesday|Wednesday|Thursday|Friday)|release earnings results|release .{0,40} financial results|earnings (?:date|call beginning|release)|after (?:the )?(?:opening|closing) bell|before (?:the )?opening bell|after market (?:close|hours)|ahead of .{0,30}(?:Q[1-4]|quarterly) earnings .{0,30}(?:Monday|Tuesday|Wednesday|Thursday|Friday))\b", "reference"),
@@ -216,6 +260,16 @@ class NewsSynthesisEngine:
             raise ValueError("source_id, source_timestamp, and source text are required")
         tickers = tuple(str(value) for value in source.get("tickers") or source.get("entity_terms") or () if value)
         entities = self.identity_index.resolve(text=text, candidates=tickers, timestamp=timestamp)
+        if _has_issuer_scoped_rule(text, self.rules):
+            entity_ids = {str(entity["entity_id"]) for entity in entities}
+            for candidate in self.identity_index.supported_candidates(
+                candidates=tickers,
+                timestamp=timestamp,
+            ):
+                if str(candidate["entity_id"]) not in entity_ids:
+                    entities.append(candidate)
+                    entity_ids.add(str(candidate["entity_id"]))
+            entities.sort(key=lambda row: (str(row.get("ticker") or ""), str(row["entity_id"])))
         envelope = _envelope(title, text, source)
         mention_terms = {
             str(entity["entity_id"]): self.identity_index.mention_terms(entity)
@@ -498,6 +552,16 @@ def _sentiment(text: str, rule: ConceptRule, role: str) -> tuple[str, int]:
         if re.search(r"\b(?:cuts?|lowers?|reduc(?:e|es|ed))\b", normalized): return "negative", 2
         if re.search(r"\b(?:raises?|increases?|boosts?)\b", normalized): return "positive", 2
         return "neutral", 0
+    if rule.concept in {"earnings.performance", "financial.operating_performance"}:
+        if re.search(r"\b(?:narrowed|reduced|cut)\b.{0,40}\b(?:net )?loss\b|\b(?:net )?loss\b.{0,40}\bnarrowed\b", normalized):
+            return "positive", 2
+        if re.search(r"\b(?:widened|increased)\b.{0,40}\b(?:net )?loss\b|\b(?:net )?loss\b.{0,40}\bwidened\b", normalized):
+            return "negative", 2
+    if rule.concept == "listing.market_structure":
+        if re.search(r"\bnot (?:yet )?regain(?:ed)? compliance\b|\b(?:delisting|non[- ]compliance)\b", normalized):
+            return "negative", 3
+        if re.search(r"\bregain(?:s|ed)? compliance\b", normalized):
+            return "positive", 2
     if rule.concept == "corporate_transaction.acquisition":
         if role == "target": return "positive", 3
         if re.search(r"\b(?:dilutive|difficult|struggle|overpay|debt burden|reject\w*|not in (?:the )?best interest)\b", normalized): return "negative", 3
@@ -577,6 +641,18 @@ def _issuer_scoped_concept(concept: str) -> bool:
     ))
 
 
+def _has_issuer_scoped_rule(
+    text: str,
+    rules: Sequence[ConceptRule],
+) -> bool:
+    return any(
+        _issuer_scoped_concept(rule.concept)
+        and rule.pattern.search(text)
+        and _rule_applicable(rule, text)
+        for rule in rules
+    )
+
+
 def _boilerplate_sentence(text: str) -> bool:
     """Reject navigation and ingestion metadata without altering authoritative source offsets."""
     value = text.lstrip(" -\t")
@@ -633,7 +709,41 @@ def _semantic_role(text: str, entity: Mapping[str, Any], concept: str) -> str:
 
 
 def _normalize_alias(value: str) -> str: return " ".join(re.findall(r"[a-z0-9]+", str(value).casefold()))
-def _safe_alias(value: str) -> bool: return len(value) >= 5 and value not in {"american", "capital", "global", "group", "international", "national", "united"}
+def _alias_variants(value: str) -> tuple[str, ...]:
+    normalized = _normalize_alias(value)
+    variants = {normalized}
+    # Generate grammatical and corporate-name variants compositionally. This
+    # covers combinations such as "The Alpha" and "Alpha Co" without
+    # issuer-specific exceptions. Candidate scoping still guards ambiguous
+    # one-word aliases.
+    pending = [normalized]
+    while pending:
+        candidate = pending.pop()
+        derived = {
+            re.sub(r"^the\s+", "", candidate).strip(),
+            re.sub(
+                r"\s+(?:incorporated|inc|corporation|corp|company|co|limited|ltd|plc)$",
+                "",
+                candidate,
+            ).strip(),
+            re.sub(r"\bpharmaceuticals?\b", "pharma", candidate).strip(),
+        }
+        for variant in derived - variants - {""}:
+            variants.add(variant)
+            pending.append(variant)
+    return tuple(sorted(variants))
+def _safe_alias(value: str) -> bool:
+    return len(value) >= 5 and value not in {
+        "america", "american", "block", "capital", "company", "credit",
+        "discover", "early", "element", "energy", "equity", "financial",
+        "global", "group", "guidance", "holdings", "international",
+        "investors", "mining", "national", "ordinary shares", "performance",
+        "pharmaceuticals", "public", "securities", "solutions", "standard",
+        "strategy", "target", "technology", "the company", "trading", "united",
+        "western",
+    }
+def _normalize_ticker_identifier(value: Any) -> str:
+    return EXCHANGE_PREFIX_RE.sub("", str(value or "").upper().strip())
 def _as_date(value: str) -> date | None:
     try: return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
     except ValueError:

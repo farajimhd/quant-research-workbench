@@ -44,6 +44,105 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(document["entities"], [])
         self.assertIn("unresolved_identity", document["quality_flags"])
 
+    def test_provider_candidate_can_scope_a_supported_single_issuer_event(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-provider-event",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Prices 750K shares at $67 per share",
+            "text": "Prices 750K shares at $67 per share.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual([row["ticker"] for row in document["entities"]], ["AAA"])
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+        self.assertIn(
+            "provider_candidate_only",
+            document["entities"][0]["identity_evidence"],
+        )
+
+    def test_exchange_prefixed_provider_identifier_is_canonicalized(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-prefixed-provider",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha announces a public offering",
+            "text": "Alpha announces a public offering.",
+            "tickers": ["NYSE:AAA"],
+        })
+        self.assertEqual([row["ticker"] for row in document["entities"]], ["AAA"])
+        self.assertEqual(len(document["issuer_views"]), 1)
+
+    def test_leading_article_and_corporate_suffix_alias_variants_compose(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "The Alpha", ("The Alpha",)),
+            IssuerIdentity("BBB", "issuer:bbb", "Beta Holdings", ("Beta Holdings",)),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-grammatical-alias",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Co paused its share repurchase program following a merger with Beta Holdings",
+            "text": "Alpha Co paused its share repurchase program following a merger with Beta Holdings.",
+            "tickers": ["AAA", "BBB"],
+        })
+        participants = {row["entity_id"] for row in document["participations"]}
+        alpha = next(row for row in document["entities"] if row["ticker"] == "AAA")
+        self.assertIn(alpha["entity_id"], participants)
+
+    def test_unrelated_single_word_alias_does_not_override_provider_scope(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "Alpha Therapeutics", ("Alpha Therapeutics",)),
+            IssuerIdentity("FRO", "issuer:fro", "Frontline", ("Frontline",)),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-provider-alias-scope",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha workforce reduction",
+            "text": "The company announced a workforce reduction affecting frontline roles.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual({row["ticker"] for row in document["entities"]}, {"AAA"})
+
+    def test_generic_compact_event_language_is_covered_by_concept_families(self) -> None:
+        cases = (
+            ("NuCo Q2 EPS (0.04) Up From (0.11) YoY", "earnings.performance"),
+            ("NuCo files for mixed shelf offering up to $75M", "capital.financing"),
+            ("NuCo reports follow-on contract win for $5.5M", "commercial.contract"),
+            ("NuCo closes sale of hardware business for $175M", "corporate_transaction.asset_sale"),
+            ("NuCo receives non-compliance letter for late filing", "listing.market_structure"),
+        )
+        for index, (text, expected) in enumerate(cases):
+            with self.subTest(expected=expected):
+                document = self.engine.synthesize({
+                    "source_id": f"news-compact-family-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertIn(
+                    expected,
+                    {row["concept_leaf"] for row in document["statements"]},
+                )
+                self.assertTrue(document["issuer_views"])
+
+    def test_narrowed_loss_is_positive_earnings_direction(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-narrowed-loss",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha narrowed its net loss",
+            "text": "Alpha Therapeutics narrowed its net loss to $10 million from $20 million.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_failed_listing_compliance_is_not_positive_regain(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-failed-compliance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha receives delisting determination",
+            "text": "Alpha Therapeutics receives a delisting determination; the company has not regained compliance.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
     def test_production_package_has_no_prior_labeler_dependency(self) -> None:
         package_root = Path(__file__).parent
         production_modules = ("engine.py", "storage.py", "backfill.py", "synthesis.py", "facts.py")
