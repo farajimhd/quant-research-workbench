@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
 def _build_day(day: date, database: str, engine: NewsSynthesisEngine, execute: bool) -> tuple[int, int]:
     client = _client(); day_text = day.isoformat()
     try:
-        rows = list(client.iter_json_each_row(f"""SELECT e.canonical_news_id source_id,toString(e.published_at_utc) source_timestamp,e.title,
+        rows = list(client.iter_json_each_row(f"""SELECT e.canonical_news_id source_id,toString(e.published_at_utc) source_timestamp,e.title,e.author,e.article_url,e.url_domain,
 if(empty(r.rendered_text),e.title,r.rendered_text) text,e.tickers,e.channels,e.provider_tags,e.content_quality_flags,r.quality_flags,e.source_revision_key,
 multiIf(empty(r.canonical_news_id),'unrendered',r.source_count=0,'title_only','rendered') render_status,
 if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash) rendered_text_hash
@@ -68,7 +68,7 @@ def _source_revision(rows: list[dict[str, object]]) -> str:
     """Hash every source field that can change synthesis, not merely row count."""
     fields = (
         "source_id", "source_timestamp", "source_revision_key", "rendered_text_hash",
-        "title", "tickers", "channels", "provider_tags", "content_quality_flags",
+        "title", "author", "article_url", "url_domain", "tickers", "channels", "provider_tags", "content_quality_flags",
         "quality_flags", "render_status",
     )
     material = [

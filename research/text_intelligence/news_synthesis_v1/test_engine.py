@@ -61,7 +61,35 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             "tickers": ["AAA", "BBB"],
         })
         self.assertEqual({row["ticker"] for row in document["entities"]}, {"AAA", "BBB"})
-        self.assertEqual(document["envelope"]["document_structure"]["value"], "multi_subject_digest")
+        self.assertEqual(document["envelope"]["document_structure"]["value"], "single_subject")
+
+    def test_envelope_uses_genre_and_source_metadata_not_issuer_count(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-envelope", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports earnings while Beta shares trade higher",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) reported revenue increased. Beta Holdings Corp (NYSE:BBB) shares traded higher.",
+            "tickers": ["AAA", "BBB"], "author": "benzinga neuro",
+        })
+        self.assertEqual(document["envelope"]["document_structure"]["value"], "single_subject")
+        self.assertEqual(document["envelope"]["information_origin"]["value"], "issuer")
+        self.assertEqual(document["envelope"]["production_method"]["value"], "automated")
+
+    def test_high_frequency_concepts_are_source_bound_without_generic_fallback(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-concepts", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha update",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported net income increased. "
+                "The Federal Reserve said monetary policy may ease. "
+                "Alpha shares rallied in the broader market."
+            ),
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("financial.operating_performance", concepts)
+        self.assertIn("macro.policy_outlook", concepts)
+        self.assertIn("market.price_move_observed", concepts)
+        self.assertNotIn("unclassified.semantic_claim", concepts)
 
     def test_prelisting_identity_and_unrendered_text_fail_closed(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((
