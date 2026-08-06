@@ -154,6 +154,63 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertIn("market.currency_move_observed", concepts)
         self.assertNotIn("market.price_move_observed", concepts)
 
+    def test_inflected_moves_and_compact_guidance_are_detected(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-compact-language", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha sees FY27 adjusted EPS $2.10-$2.30 vs $2.00 est.",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) provided fiscal-year guidance projecting revenue growth. "
+                "AAA shares fell 4.2% after the update."
+            ),
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("guidance.issued", concepts)
+        self.assertIn("market.price_move_observed", concepts)
+        self.assertNotIn("financial.operating_performance", concepts)
+
+    def test_background_business_and_unqualified_demand_do_not_create_events(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-background-language", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha company profile",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) is a company that provides research services. "
+                "Demand Holdings is trading lower. Agencies may choose an ordering method."
+            ),
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertNotIn("operations.business_update", concepts)
+        self.assertNotIn("commercial.demand_condition", concepts)
+
+    def test_product_disclosure_and_qualified_customer_demand_are_detected(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-product-demand", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reveals new device",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) revealed a new medical device. "
+                "Management reported strong customer demand for the product."
+            ),
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("product.milestone", concepts)
+        self.assertIn("commercial.demand_condition", concepts)
+
+    def test_headline_moves_closing_prices_and_lower_demand_are_detected(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-price-forms", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Falls After Outlook Update",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) is selling off by 2.9% today. "
+                "Alpha closed Tuesday at $18.40. Management cited lower-than-expected customer demand."
+            ),
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("market.price_move_observed", concepts)
+        self.assertIn("commercial.demand_condition", concepts)
+
     def test_prelisting_identity_and_unrendered_text_fail_closed(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((
             IssuerIdentity("NEW", "issuer:new", "New Company", ("New Company",), "NASDAQ", list_date=date(2026, 8, 5)),
