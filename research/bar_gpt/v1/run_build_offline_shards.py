@@ -6,7 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS, BAR_GPT_VALIDATION_SLICES_2026
+from research.bar_gpt.v1.cohort import (
+    BAR_GPT_IDENTITY_HOLDOUT_TICKERS,
+    BAR_GPT_TRAINING_TICKERS,
+)
 
 
 sys.dont_write_bytecode = True
@@ -31,11 +34,13 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
 
 def main(argv: list[str] | None = None) -> int:
     args, extra = parse_args(argv)
-    validation_tickers = {ticker for ticker, _start, _end in BAR_GPT_VALIDATION_SLICES_2026}
     if args.selection == "train":
-        tickers = tuple(ticker for ticker in BAR_GPT_TRAINING_TICKERS if ticker not in validation_tickers)
+        tickers = tuple(
+            ticker for ticker in BAR_GPT_TRAINING_TICKERS
+            if ticker not in BAR_GPT_IDENTITY_HOLDOUT_TICKERS
+        )
     elif args.selection == "validation":
-        tickers = tuple(ticker for ticker in BAR_GPT_TRAINING_TICKERS if ticker in validation_tickers)
+        tickers = BAR_GPT_TRAINING_TICKERS
     else:
         tickers = tuple(item.strip().upper() for item in str(args.tickers).split(",") if item.strip())
     command = [

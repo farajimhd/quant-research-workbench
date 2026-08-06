@@ -814,10 +814,59 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
             units = [units[index] for index in order]
         return units
 
+    def _iter_validation(self, worker_id: int, workers: int) -> Iterator[CompiledBlock]:
+        if self.resume_cursors:
+            raise RuntimeError("fixed validation sampling does not accept training resume cursors")
+        owned_slices = self.validation_slices[worker_id::workers]
+        units_by_ticker: dict[str, list[OfflineShardUnit]] = {}
+        for unit in self.units:
+            ticker = unit.unit_key.partition(":")[0]
+            units_by_ticker.setdefault(ticker, []).append(unit)
+        requested = int(self.blocks_per_validation_slice)
+        for ticker, start, end in owned_slices:
+            candidates: list[tuple[bytes, OfflineShardUnit, int, int]] = []
+            for unit in units_by_ticker.get(ticker, ()):
+                shard = load_shard(unit.path)
+                for session_index, session in enumerate(shard["sessions"]):
+                    local_date = str(session["local_date"])
+                    if not start <= local_date < end:
+                        continue
+                    for block_index, raw_block in enumerate(session["blocks"]):
+                        block_offset = int(raw_block["block_offset"])
+                        identity = (
+                            f"{self.seed}|validation|{ticker}|{unit.unit_key}|"
+                            f"{local_date}|{block_offset}"
+                        )
+                        candidates.append((
+                            hashlib.sha256(identity.encode("utf-8")).digest(),
+                            unit,
+                            session_index,
+                            block_index,
+                        ))
+            if len(candidates) < requested:
+                raise RuntimeError(
+                    f"validation ticker {ticker} [{start},{end}) has only "
+                    f"{len(candidates)} eligible blocks; {requested} required"
+                )
+            candidates.sort(key=lambda item: item[0])
+            loaded_path: Path | None = None
+            loaded_shard: dict[str, Any] | None = None
+            for _score, unit, session_index, block_index in candidates[:requested]:
+                if loaded_path != unit.path:
+                    loaded_path = unit.path
+                    loaded_shard = load_shard(unit.path)
+                assert loaded_shard is not None
+                block = materialize_block(loaded_shard, session_index, block_index)
+                block.worker_id = worker_id
+                yield block
+
     def __iter__(self) -> Iterator[CompiledBlock]:
         info = get_worker_info()
         worker_id = int(info.id) if info is not None else 0
         workers = int(info.num_workers) if info is not None else 1
+        if self.validation_slices and self.blocks_per_validation_slice > 0:
+            yield from self._iter_validation(worker_id, workers)
+            return
         units = self._ordered_units()[worker_id::workers]
         resume = self.resume_cursors.get(worker_id)
         resume_reached = resume is None
@@ -841,11 +890,6 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
                 ):
                     continue
                 selected.extend((session_index, block_index) for block_index in range(len(session["blocks"])))
-            if validation_range is not None and self.blocks_per_validation_slice > 0:
-                limit = min(self.blocks_per_validation_slice, len(selected))
-                if limit:
-                    positions = torch.linspace(0, len(selected) - 1, steps=limit).round().long().tolist()
-                    selected = [selected[position] for position in dict.fromkeys(positions)]
             for session_index, block_index in selected:
                 block = materialize_block(shard, session_index, block_index)
                 if resume is not None and unit.stable_unit_index == int(resume.unit_index):

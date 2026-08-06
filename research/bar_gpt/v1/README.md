@@ -279,8 +279,8 @@ python -B -m research.bar_gpt.v1.run_train
 The canonical launcher now trains from certified v2 offline shards. Its bounded
 training selection is `[2019-01-01, 2021-01-01)` and its fixed validation
 selection is `[2026-01-01, 2026-08-01)`. One coverage epoch is one deterministic
-exhaustive pass over every stored 04:00-20:00 block in the non-validation
-tickers. Startup reads sidecar metadata—not tensor payloads—to verify every
+exhaustive pass over every stored 04:00-20:00 block in the 90-ticker training
+population. Startup reads sidecar metadata—not tensor payloads—to verify every
 requested ticker-month and derive exact session, block, and origin totals;
 those totals drive progress, scheduling, validation spacing, ETA, and the
 resume-plan hash. The final hour remains an origin
@@ -326,14 +326,17 @@ session/block/origin totals, block shape, epochs, ticker sharding, and worker
 count. Cache depth, retry budget, and per-worker prefetch depth may be tuned on
 resume; worker count may not, because it changes ticker ownership.
 
-Validation is a fixed eight-ticker, eight-week panel spanning liquid,
-high-volatility, sector, event-driven, and illiquid names in 2026. Those
-identities are excluded from training. Each slice contributes four fixed
-stratified blocks. The full panel is materialized once into a bounded host-RAM
-cache on background validation workers while training begins, then the same
-prepared batches are reused for every validation. Validation uses the training
-batch shape and CUDA transfer path, with workers capped at the eight held-out
-tickers. Validation runs 100 times per coverage epoch: an early
+Validation is one fixed 196-block chronological panel spanning all 98 eligible
+identities from January through July 2026. Each ticker contributes exactly two
+deterministic pseudo-random blocks selected across its seven monthly shards;
+the seed, ticker, month, session date, and stable block offset make the sample
+repeatable. The original eight identity holdouts remain excluded from the
+2019--2020 training population, while the other 90 validation identities test
+out-of-time behavior for names seen during training. The full panel is
+materialized once into a bounded host-RAM cache on background validation
+workers while training begins, then the same prepared batches are reused for
+every validation. Validation uses the training batch shape and CUDA transfer
+path. Validation runs 100 times per coverage epoch: an early
 checkpoint-sized health check, evenly spaced intermediate checks, and one at
 completion. It reports loss,
 per-horizon median MAE, return-sign accuracy, binary Brier score, quantile
@@ -492,8 +495,9 @@ one independently addressable block—not the number of blocks collated into a
 training batch.
 
 The current bounded eager build targets both calendar years 2019 and 2020 for
-training and January through July 2026 for chronological validation. The two
-commands intentionally share one root and are independently resumable:
+training and all 98 eligible tickers from January through July 2026 as the
+chronological validation pool. The two commands intentionally share one root
+and are independently resumable:
 
 ```powershell
 python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection train --start-date 2019-01-01 --end-date 2021-01-01 --workers 32

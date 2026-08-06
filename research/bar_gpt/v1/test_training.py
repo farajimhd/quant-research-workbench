@@ -770,12 +770,17 @@ class LoaderTrainerContractTest(unittest.TestCase):
             ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
             split_actions=(), config=config,
         ))
+        later_examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-02-02", session=session_view(), daily=None,
+            split_actions=(), config=config,
+        ))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             write_unit(root, compile_unit(examples, config, "AAA:2026-01"), certify_hash=True)
+            write_unit(root, compile_unit(later_examples, config, "AAA:2026-02"), certify_hash=True)
             units = discover_offline_units(
                 root, config, tickers=("AAA",),
-                start_date="2026-01-01", end_date="2026-02-01",
+                start_date="2026-01-01", end_date="2026-03-01",
             )
             single_config = dataclasses.replace(config, batch_size=1, loader_workers=0, pin_memory=False)
             triple_config = dataclasses.replace(config, batch_size=3, loader_workers=0, pin_memory=False)
@@ -791,13 +796,27 @@ class LoaderTrainerContractTest(unittest.TestCase):
             validation = list(make_offline_dataloader(
                 OfflineShardDataset(
                     units, seed=7, shuffle_units=False,
-                    validation_slices=(("AAA", "2026-01-02", "2026-01-03"),),
+                    validation_slices=(("AAA", "2026-01-01", "2026-03-01"),),
                     blocks_per_validation_slice=2,
                 ),
                 single_config,
                 drop_last=False,
             ))
             self.assertEqual(len(validation), 2)
+            selected = tuple((batch.unit_indices, batch.block_offsets) for batch in validation)
+            repeated = list(make_offline_dataloader(
+                OfflineShardDataset(
+                    units, seed=7, shuffle_units=False,
+                    validation_slices=(("AAA", "2026-01-01", "2026-03-01"),),
+                    blocks_per_validation_slice=2,
+                ),
+                single_config,
+                drop_last=False,
+            ))
+            self.assertEqual(
+                selected,
+                tuple((batch.unit_indices, batch.block_offsets) for batch in repeated),
+            )
             worker_config = dataclasses.replace(
                 config, batch_size=2, loader_workers=2, worker_prefetch_batches=2,
                 pin_memory=False, persistent_workers=False,
@@ -815,6 +834,23 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 shutdown = getattr(worker_iterator, "_shutdown_workers", None)
                 if callable(shutdown):
                     shutdown()
+            validation_worker_loader = make_offline_dataloader(
+                OfflineShardDataset(
+                    units, seed=7, shuffle_units=False,
+                    validation_slices=(("AAA", "2026-01-01", "2026-03-01"),),
+                    blocks_per_validation_slice=2,
+                ),
+                worker_config,
+                drop_last=False,
+            )
+            validation_worker_iterator = iter(validation_worker_loader)
+            try:
+                worker_validation = list(validation_worker_iterator)
+            finally:
+                shutdown = getattr(validation_worker_iterator, "_shutdown_workers", None)
+                if callable(shutdown):
+                    shutdown()
+            self.assertEqual(sum(len(batch.tickers) for batch in worker_validation), 2)
 
     def test_offline_reporter_tracks_known_worker_totals(self) -> None:
         reporter = ShardBuildReporter(
@@ -956,6 +992,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--batch-size"], "16")
+        self.assertEqual(training_launcher_args["--validation-blocks-per-slice"], "2")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
         self.assertEqual(training_launcher_args["--loader-workers"], "16")
         config = TrainConfig(warmup_samples=0, warmup_fraction=0.01)

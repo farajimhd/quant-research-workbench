@@ -2102,14 +2102,13 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
             self._epoch.value = int(value)
 
     def _units(self) -> list[tuple[int, TickerDateUnit]]:
-        validation_tickers = {ticker for ticker, _start, _end in self.data_config.validation_slices}
         if self.split == "validation":
             selected = [TickerDateUnit(*values) for values in self.data_config.validation_slices]
         else:
             tickers = (
                 self.unit_tickers
                 if self.unit_tickers is not None
-                else tuple(ticker for ticker in self.data_config.tickers if ticker not in validation_tickers)
+                else self.data_config.training_tickers
             )
             selected = month_units(
                 self.data_config.start_date,

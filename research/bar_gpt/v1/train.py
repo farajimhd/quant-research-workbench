@@ -1347,7 +1347,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     config.train.run_name = run_name
     run_root = Path(config.train.output_root) / run_name if args.output_root else default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, run_name)
     paths = RunPaths.create(run_root)
-    holdout = tuple(sorted({ticker for ticker, _start, _end in config.data.validation_slices}))
+    validation_tickers = tuple(sorted({ticker for ticker, _start, _end in config.data.validation_slices}))
+    identity_holdouts = tuple(
+        ticker for ticker in config.data.tickers
+        if ticker not in set(config.data.training_tickers)
+    )
     plan = coverage_plan_summary(
         start_date=(str(args.offline_train_start_date) if args.data_source == "offline" else config.data.start_date),
         end_date=(str(args.offline_train_end_date) if args.data_source == "offline" else config.data.validation_start_date),
@@ -1472,7 +1476,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         config={
             **to_dict(config),
             "data_evidence": evidence,
-            "validation_tickers": holdout,
+            "validation_tickers": validation_tickers,
+            "identity_holdout_tickers": identity_holdouts,
             "coverage_plan": plan.to_dict(),
             "resolved_training_limit": training_limit,
             "resolved_validation_interval": validation_interval,
@@ -1574,7 +1579,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             checkpointer.set_message_callback(reporter.message)
             reporter.message(
                 f"Certified source; plan={plan.plan_hash[:12]} units={plan.units:,} "
-                f"blocks={plan.expected_blocks:,}; held-out tickers={len(holdout)}"
+                f"blocks={plan.expected_blocks:,}; validation tickers={len(validation_tickers)}; "
+                f"identity holdouts={len(identity_holdouts)}"
             )
             reporter.message(
                 "Condition targets: active=" + evidence["condition_active_targets"]
@@ -2009,7 +2015,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             "coverage_plan": plan.to_dict(),
             "completed_normally": completed_normally,
             "stopped_at_limit": training_limit < planned_samples and samples_seen >= training_limit,
-            "validation_tickers": holdout,
+            "validation_tickers": validation_tickers,
+            "identity_holdout_tickers": identity_holdouts,
             "parameters": parameter_summary(_unwrap(model)),
         },
     )

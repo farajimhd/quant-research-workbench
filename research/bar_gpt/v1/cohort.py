@@ -31,17 +31,15 @@ BAR_GPT_IDENTITY_QUARANTINE: tuple[str, ...] = ("GOOGL", "MOGO")
 BAR_GPT_TRAINING_TICKERS: tuple[str, ...] = tuple(
     ticker for ticker in BAR_GPT_COHORT_2TB if ticker not in BAR_GPT_IDENTITY_QUARANTINE
 )
-# Fixed out-of-time and out-of-identity acceptance panel.  Each half-open slice
-# is deliberately one trading week so validation remains stable and cheap.
-BAR_GPT_VALIDATION_SLICES_2026: tuple[tuple[str, str, str], ...] = (
-    ("SPY", "2026-01-12", "2026-01-17"),
-    ("AAPL", "2026-02-09", "2026-02-14"),
-    ("NVDA", "2026-03-09", "2026-03-14"),
-    ("TSLA", "2026-04-13", "2026-04-18"),
-    ("XBI", "2026-05-11", "2026-05-16"),
-    ("GME", "2026-06-08", "2026-06-13"),
-    ("XBIO", "2026-07-06", "2026-07-11"),
-    ("LIQT", "2026-07-20", "2026-07-25"),
+# These identities remain excluded from the 2019-2020 training population even
+# though the chronological 2026 validation panel now covers the full cohort.
+BAR_GPT_IDENTITY_HOLDOUT_TICKERS: tuple[str, ...] = (
+    "SPY", "AAPL", "NVDA", "TSLA", "XBI", "GME", "XBIO", "LIQT",
+)
+# Fixed out-of-time panel. The loader chooses two deterministic pseudo-random
+# blocks across all seven ticker-month shards for each eligible identity.
+BAR_GPT_VALIDATION_SLICES_2026: tuple[tuple[str, str, str], ...] = tuple(
+    (ticker, "2026-01-01", "2026-08-01") for ticker in BAR_GPT_TRAINING_TICKERS
 )
 BAR_GPT_SIP_DAILY_SESSION_TABLE = "daily_session_bars_by_symbol_time_v1"
 BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE = "daily_session_bars_manifest_v1"

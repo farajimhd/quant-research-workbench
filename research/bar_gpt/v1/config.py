@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from research.bar_gpt.v1.cohort import (
+    BAR_GPT_IDENTITY_HOLDOUT_TICKERS,
     BAR_GPT_TRAINING_TICKERS,
     BAR_GPT_COHORT_2TB_TABLE,
     BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
@@ -105,7 +106,7 @@ class DataConfig:
     validation_start_date: str = "2026-01-01"
     daily_history_start_date: str = "2019-01-01"
     validation_slices: tuple[tuple[str, str, str], ...] = BAR_GPT_VALIDATION_SLICES_2026
-    validation_blocks_per_slice: int = 4
+    validation_blocks_per_slice: int = 2
     prior_session_halo: bool = True
     context_bars_1s: int = 720
     origin_bars_1s: int = 512
@@ -167,8 +168,8 @@ class DataConfig:
 
     @property
     def training_tickers(self) -> tuple[str, ...]:
-        validation = {ticker for ticker, _start, _end in self.validation_slices}
-        return tuple(ticker for ticker in self.tickers if ticker not in validation)
+        holdout = set(BAR_GPT_IDENTITY_HOLDOUT_TICKERS)
+        return tuple(ticker for ticker in self.tickers if ticker not in holdout)
 
     def validate(self) -> None:
         if self.loader_stream_contract_version not in {3, 4}:
@@ -176,7 +177,7 @@ class DataConfig:
         if "split_adjusted" in self.one_second_table or self.daily_table.endswith("_adjusted"):
             raise ValueError("globally adjusted bar authorities are retired; use raw bars with causal split metadata")
         if len(self.tickers) < 2:
-            raise ValueError("at least two tickers are required for disjoint train/validation populations")
+            raise ValueError("at least two tickers are required")
         if not self.horizons_us:
             raise ValueError("at least one prediction horizon is required")
         if len(self.condition_target_active) != 4:
@@ -206,6 +207,8 @@ class DataConfig:
         if any(value <= 0 or value % self.base_timeframe_us for value in self.horizons_us):
             raise ValueError("every horizon must be a positive integral multiple of the base timeframe")
         validation_tickers = {ticker for ticker, _start, _end in self.validation_slices}
+        if len(validation_tickers) != len(self.validation_slices):
+            raise ValueError("fixed validation requires exactly one slice per ticker")
         if not validation_tickers <= set(self.tickers):
             raise ValueError("fixed validation tickers must belong to the configured cohort")
         for ticker, start, end in self.validation_slices:

@@ -23,7 +23,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--coverage-blocks-per-unit": "16",
     "--origin-fetch-candidate-blocks": "16",
     "--origin-emit-blocks-per-chunk": "16",
-    "--validation-blocks-per-slice": "4",
+    "--validation-blocks-per-slice": "2",
     # Loader-owned shape retained from the full-universe profile. Offline
     # shards contain 4,096-origin blocks but never this batch dimension; tune
     # it from the launcher without rebuilding storage.

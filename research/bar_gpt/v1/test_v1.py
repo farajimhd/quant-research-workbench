@@ -24,10 +24,12 @@ from research.bar_gpt.v1.cohort import (
     BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
     BAR_GPT_COHORT_2TB_SHA256,
     BAR_GPT_COHORT_2TB_TABLE,
+    BAR_GPT_IDENTITY_HOLDOUT_TICKERS,
     BAR_GPT_IDENTITY_QUARANTINE,
     BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE,
     BAR_GPT_SOURCE_ALIAS_TICKERS,
     BAR_GPT_TRAINING_TICKERS,
+    BAR_GPT_VALIDATION_SLICES_2026,
 )
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig
 from research.bar_gpt.v1.data import BarView, causal_asof_indices, densify_one_second_view, horizon_target_indices, rollup_intraday_view
@@ -97,6 +99,21 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertEqual(DataConfig().one_second_table, BAR_GPT_COHORT_2TB_TABLE)
         self.assertEqual(DataConfig().tickers, BAR_GPT_TRAINING_TICKERS)
         self.assertEqual(BAR_GPT_IDENTITY_QUARANTINE, ("GOOGL", "MOGO"))
+        self.assertEqual(len(BAR_GPT_VALIDATION_SLICES_2026), 98)
+        self.assertEqual(
+            tuple(ticker for ticker, _start, _end in BAR_GPT_VALIDATION_SLICES_2026),
+            BAR_GPT_TRAINING_TICKERS,
+        )
+        self.assertTrue(all(
+            (start, end) == ("2026-01-01", "2026-08-01")
+            for _ticker, start, end in BAR_GPT_VALIDATION_SLICES_2026
+        ))
+        self.assertEqual(DataConfig().validation_blocks_per_slice, 2)
+        self.assertEqual(
+            set(BAR_GPT_TRAINING_TICKERS) - set(DataConfig().training_tickers),
+            set(BAR_GPT_IDENTITY_HOLDOUT_TICKERS),
+        )
+        self.assertEqual(len(DataConfig().training_tickers), 90)
 
     def test_custom_tickers_cannot_contaminate_canonical_tables(self) -> None:
         with self.assertRaisesRegex(SystemExit, "Custom --tickers require custom"):
