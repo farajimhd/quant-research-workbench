@@ -348,7 +348,10 @@ Unconsumed training blocks replay safely rather than being marked complete.
 Training refuses to start unless every requested ticker-month has a compatible
 contract-v2 complete or explicitly covered-empty sidecar and every complete
 sidecar has its tensor file. ClickHouse is not contacted by the offline training
-path. Defaults are a 384-wide eight-layer decoder, BF16,
+path. The v2 shard payload remains pinned to source-stream contract 3; offline
+runtime contract 4 changes worker-owned resume cursors only and is normalized
+back to contract 3 for the certified payload-hash comparison. Defaults are a
+384-wide eight-layer decoder, BF16,
 and six horizons from 5 seconds through 1 hour. `--max-samples 0` means the
 complete coverage epoch; a positive value is an operator safety or diagnostic
 cap and does not shorten the full-epoch learning-rate curve.

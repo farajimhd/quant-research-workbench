@@ -20,7 +20,7 @@ from unittest.mock import patch
 import torch
 from rich.console import Console
 
-from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, TrainConfig
+from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig
 from research.bar_gpt.v1.data import FixedBucketHistoryCache, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarView, collate_examples
 from research.bar_gpt.v1.loader import (
     ArrowStreamClient,
@@ -51,6 +51,7 @@ from research.bar_gpt.v1.linear_probe import fit_ridge_probes
 from research.bar_gpt.v1.objectives import _weighted_mean, compute_loss
 from research.bar_gpt.v1.offline_shards import (
     BuildRunLog,
+    OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION,
     OFFLINE_SHARD_CONTRACT_VERSION,
     DEFAULT_OUTPUT_ROOT,
     ShardBuildReporter,
@@ -71,6 +72,8 @@ from research.bar_gpt.v1.offline_shards import (
     materialize_block,
     OfflineShardDataset,
     shard_path,
+    shard_compatibility_hash,
+    stable_unit_index,
     write_unit,
 )
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
@@ -80,13 +83,17 @@ from research.bar_gpt.v1.train import (
     _advance_cursors,
     _batch_eligibility_metrics,
     _checkpoint_policy,
+    _forward,
+    _loaders,
     _mask_inactive_condition_targets,
     _assert_finite_before_step,
     PreparedValidationBatches,
     _validation_milestones,
     _resolved_warmup_samples,
     _resume_data_contract,
+    _training_prefetcher,
     preflight,
+    validate,
 )
 from research.bar_gpt.v1.profile_train import _parse_candidates
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
@@ -753,6 +760,14 @@ class LoaderTrainerContractTest(unittest.TestCase):
             config_hash(dataclasses.replace(DataConfig(), origin_bars_1s=4096)),
             "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619",
         )
+        runtime_config = dataclasses.replace(
+            DataConfig(), loader_stream_contract_version=4, origin_bars_1s=4096,
+        )
+        self.assertEqual(
+            shard_compatibility_hash(runtime_config),
+            "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619",
+        )
+        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 3)
         self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 2)
         self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2"))
         self.assertEqual(
@@ -763,6 +778,28 @@ class LoaderTrainerContractTest(unittest.TestCase):
             shard_path(DEFAULT_OUTPUT_ROOT, "AAA:2026-01"),
             DEFAULT_OUTPUT_ROOT / "tickers" / "AAA" / "2026" / "2026-01.pt",
         )
+
+    def test_offline_discovery_reports_missing_condition_count_metadata(self) -> None:
+        builder_config = self.data_config()
+        runtime_config = dataclasses.replace(builder_config, loader_stream_contract_version=4)
+        examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=builder_config,
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = write_unit(
+                root, compile_unit(examples, builder_config, "AAA:2026-01"), certify_hash=True,
+            )
+            sidecar = Path(evidence["path"]).with_suffix(".json")
+            value = json.loads(sidecar.read_text(encoding="utf-8"))
+            value.pop("condition_positive_counts")
+            sidecar.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "missing_condition_positive_counts=1"):
+                discover_offline_units(
+                    root, runtime_config, tickers=("AAA",),
+                    start_date="2026-01-01", end_date="2026-02-01",
+                )
 
     def test_offline_loader_owns_batch_size_and_validation_selection(self) -> None:
         config = self.data_config()
@@ -851,6 +888,136 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 if callable(shutdown):
                     shutdown()
             self.assertEqual(sum(len(batch.tickers) for batch in worker_validation), 2)
+
+    def test_offline_training_pauses_validates_and_resumes_from_worker_cursors(self) -> None:
+        runtime_data = dataclasses.replace(
+            self.data_config(),
+            loader_stream_contract_version=4,
+            tickers=("AAA", "BBB", "CCC"),
+            start_date="2026-01-01",
+            end_date="2026-03-01",
+            validation_start_date="2026-01-01",
+            validation_slices=(("CCC", "2026-01-01", "2026-03-01"),),
+            validation_blocks_per_slice=2,
+            batch_size=2,
+            loader_workers=2,
+            ready_queue_blocks=4,
+            worker_prefetch_batches=2,
+            pin_memory=False,
+            persistent_workers=False,
+            balance_activity_regimes=False,
+        )
+        builder_data = dataclasses.replace(runtime_data, loader_stream_contract_version=3)
+        model_config = BarGPTConfig(
+            d_model=32, n_layers=1, n_heads=4, n_kv_heads=2,
+            horizon_rank=8, timeframe_fourier_dim=8,
+        )
+        experiment = ExperimentConfig(
+            model=model_config,
+            data=runtime_data,
+            train=TrainConfig(amp=False, cuda_prefetch=False, validation_batches=16),
+        )
+
+        def compiled_examples(ticker: str, local_date: str, key: str):
+            examples = list(build_session_examples(
+                ticker=ticker,
+                local_date=local_date,
+                session=session_view(),
+                daily=None,
+                split_actions=(),
+                config=builder_data,
+            ))
+            for offset, example in enumerate(examples):
+                example.unit_index = stable_unit_index(key)
+                example.block_offset = offset
+            return examples
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for ticker in ("AAA", "BBB"):
+                key = f"{ticker}:2026-01"
+                write_unit(
+                    root,
+                    compile_unit(compiled_examples(ticker, "2026-01-02", key), builder_data, key),
+                    certify_hash=True,
+                )
+            for month, local_date in (("01", "2026-01-02"), ("02", "2026-02-02")):
+                key = f"CCC:2026-{month}"
+                write_unit(
+                    root,
+                    compile_unit(compiled_examples("CCC", local_date, key), builder_data, key),
+                    certify_hash=True,
+                )
+
+            train_units = discover_offline_units(
+                root, runtime_data, tickers=("AAA", "BBB"),
+                start_date="2026-01-01", end_date="2026-02-01",
+            )
+            validation_units = discover_offline_units(
+                root, runtime_data, tickers=("CCC",),
+                start_date="2026-01-01", end_date="2026-03-01",
+            )
+            args = SimpleNamespace(dummy_data=False, data_source="offline")
+            train_loader, validation_loader = _loaders(
+                experiment,
+                args,
+                offline_train_units=train_units,
+                offline_validation_units=validation_units,
+            )
+            device = torch.device("cpu")
+            model = BarGPTV1(model_config).to(device)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+            cursors: dict[int, CoverageCursor] = {}
+            training = _training_prefetcher(train_loader, experiment, device)
+            try:
+                for _ in range(4):
+                    batch = next(training)
+                    optimizer.zero_grad(set_to_none=True)
+                    _output, result = _forward(model, batch, experiment)
+                    result.loss.backward()
+                    optimizer.step()
+                    cursors = _advance_cursors(cursors, batch, latest_per_worker=True)
+                    if len(cursors) == 2:
+                        break
+            finally:
+                training.close()
+            self.assertEqual(set(cursors), {0, 1})
+
+            validation_cache = PreparedValidationBatches(validation_loader)
+            try:
+                metrics = validate(model, validation_cache, experiment, device)
+                self.assertEqual(metrics["val/batches"], 1.0)
+                self.assertGreater(metrics["val/origins"], 0.0)
+                self.assertTrue(model.training)
+            finally:
+                validation_cache.close()
+
+            resumed_loader, _unused_validation = _loaders(
+                experiment,
+                args,
+                resume_cursors=cursors,
+                offline_train_units=train_units,
+                offline_validation_units=validation_units,
+            )
+            resumed = _training_prefetcher(resumed_loader, experiment, device)
+            try:
+                resumed_batch = next(resumed)
+                for worker, unit, block in zip(
+                    resumed_batch.worker_ids,
+                    resumed_batch.unit_indices,
+                    resumed_batch.block_offsets,
+                    strict=True,
+                ):
+                    prior = cursors[int(worker)]
+                    self.assertTrue(
+                        int(unit) != prior.unit_index or int(block) > prior.block_offset
+                    )
+                optimizer.zero_grad(set_to_none=True)
+                _output, resumed_result = _forward(model, resumed_batch, experiment)
+                resumed_result.loss.backward()
+                optimizer.step()
+            finally:
+                resumed.close()
 
     def test_offline_reporter_tracks_known_worker_totals(self) -> None:
         reporter = ShardBuildReporter(

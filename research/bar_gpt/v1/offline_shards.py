@@ -44,6 +44,11 @@ from research.mlops.env import load_env_files
 
 
 OFFLINE_SHARD_CONTRACT_VERSION = 2
+# Contract 3 governs the source/session preparation used to materialize v2
+# shards. Contract 4 changes only the offline runtime's worker-owned resume
+# cursors, so readers normalize that runtime field before comparing the pinned
+# tensor-payload hash.
+OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 3
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2")
 
 
@@ -384,6 +389,14 @@ def config_hash(config: DataConfig) -> str:
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def shard_compatibility_hash(config: DataConfig) -> str:
+    storage_config = dataclasses.replace(
+        config,
+        loader_stream_contract_version=OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION,
+    )
+    return config_hash(storage_config)
 
 
 def completed_units(root: Path, expected_hash: str) -> dict[str, dict[str, Any]]:
@@ -730,7 +743,7 @@ def discover_offline_units(
     end = dt.date.fromisoformat(end_date)
     if start.day != 1 or end.day != 1 or start >= end:
         raise ValueError("offline shard selections must use non-empty month boundaries")
-    expected_hash = config_hash(config)
+    expected_hash = shard_compatibility_hash(config)
     expected: list[str] = []
     cursor = start
     while cursor < end:
@@ -739,6 +752,7 @@ def discover_offline_units(
     units: list[OfflineShardUnit] = []
     missing: list[str] = []
     incompatible: list[str] = []
+    missing_condition_counts: list[str] = []
     for key in expected:
         path = shard_path(root, key)
         sidecar = sidecar_path(path)
@@ -760,6 +774,9 @@ def discover_offline_units(
             missing.append(key)
             continue
         raw_condition_counts = value.get("condition_positive_counts")
+        if raw_condition_counts is None:
+            missing_condition_counts.append(key)
+            continue
         if not isinstance(raw_condition_counts, list) or len(raw_condition_counts) != 4:
             incompatible.append(key)
             continue
@@ -772,12 +789,17 @@ def discover_offline_units(
             stable_unit_index=stable_unit_index(key),
             condition_positive_counts=tuple(int(item) for item in raw_condition_counts),
         ))
-    if missing or incompatible:
+    if missing or incompatible or missing_condition_counts:
         detail = []
         if missing:
             detail.append(f"missing={len(missing)} first={missing[:5]}")
         if incompatible:
             detail.append(f"incompatible={len(incompatible)} first={incompatible[:5]}")
+        if missing_condition_counts:
+            detail.append(
+                "missing_condition_positive_counts="
+                f"{len(missing_condition_counts)} first={missing_condition_counts[:5]}"
+            )
         raise RuntimeError("offline shard coverage is incomplete: " + "; ".join(detail))
     if not units:
         raise RuntimeError("offline shard selection contains no completed trainable units")
