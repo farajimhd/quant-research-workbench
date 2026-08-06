@@ -81,3 +81,14 @@ Certified labels are written separately under
 `manual_certification_v1/certified_labels` and cannot contain unresolved
 quality flags. Production evaluation reads those certified V1 documents, not
 the historical migration or annotation contracts.
+
+Manual review specifications may use `issuer_view_overrides` when independently
+recorded positive and negative strengths support a dominant overall direction
+that the default composition rule would otherwise render as `mixed`. The
+compiler rejects overrides without a non-empty reason or without strength
+dominance consistent with the requested direction. Audited corrections to the
+original annotations and V1 review specifications are applied with:
+
+```powershell
+python -m research.text_intelligence.semantic_calibration_v1.run_apply_news_synthesis_manual_gold_corrections
+```

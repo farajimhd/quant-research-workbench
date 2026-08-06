@@ -216,7 +216,7 @@ class NewsSynthesisEngine:
             raise ValueError("source_id, source_timestamp, and source text are required")
         tickers = tuple(str(value) for value in source.get("tickers") or source.get("entity_terms") or () if value)
         entities = self.identity_index.resolve(text=text, candidates=tickers, timestamp=timestamp)
-        envelope = _envelope(title, text, source, len(entities))
+        envelope = _envelope(title, text, source)
         mention_terms = {
             str(entity["entity_id"]): self.identity_index.mention_terms(entity)
             for entity in entities
@@ -294,7 +294,11 @@ class NewsSynthesisEngine:
         return statements, participations
 
 
-def _envelope(title: str, text: str, source: Mapping[str, Any], entity_count: int) -> dict[str, Any]:
+def _envelope(
+    title: str,
+    text: str,
+    source: Mapping[str, Any],
+) -> dict[str, Any]:
     combined = f"{title}\n{text}"
     metadata = " ".join(str(x) for name in ("channels", "provider_tags") for x in source.get(name) or ())
     author = str(source.get("author") or "").strip().casefold()
@@ -325,14 +329,52 @@ def _envelope(title: str, text: str, source: Mapping[str, Any], entity_count: in
     elif structure in {"market_overview", "multi_subject_digest"}: purpose = "recap"
     elif re.search(r"\b(?:analysis|technical analysis|what investors should know|what you need to know|case for|bull case|bear case|valuation|outlook for)\b", combined, re.I): purpose = "analyze"
     else: purpose = "report"
-    analyst_origin = bool(re.search(r"\b(?:analyst|research firm|brokerage|price target|rating|upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?)\b", combined, re.I))
-    regulator_origin = bool(re.search(r"\b(?:SEC|FDA|FTC|DOJ|regulator|regulatory agency|Federal Reserve|Census Bureau)\s+(?:said|reported|announced|approved|rejected|filed|released|issued|notified|ordered)\b|\b(?:SEC filing|FDA approval|regulatory filing)\b", combined, re.I))
-    issuer_body = bool(re.search(r"\b(?:the company|management|the board|board of directors)\s+(?:announces?|reports?|said|approved|entered|expects?|reaffirms?|rejects?|declared)\b", combined, re.I))
-    issuer_headline = bool(re.search(r"^[^\n:]{2,120}\b(?:announces?|reports?|reaffirms?|expects?|sees|says|provides?|receives?|awarded|wins?|prices?|files?|confirms?|launches?|appoints?|acquires?|enters?|rejects?|declares?|posts?|regains?)\b", title, re.I))
-    origin_evidence = {"analyst": analyst_origin, "regulator": regulator_origin, "issuer": issuer_body or (issuer_headline and not analyst_origin)}
+    analyst_match = _first_match(
+        (
+            r"\b(?:analyst|research firm|price target|rating|upgrade[sd]?|"
+            r"downgrade[sd]?|initiates?|maintains?|reiterates?)\b",
+        ),
+        title,
+        text,
+    )
+    regulator_match = _first_match((
+        r"\b(?:SEC|FDA|FTC|DOJ|regulator|regulatory agency|Federal Reserve|Census Bureau)\s+"
+        r"(?:said|reported|announced|approved|rejected|filed|released|issued|notified|ordered)\b|"
+        r"\b(?:SEC filing|FDA approval|regulatory filing)\b",
+    ), title, text)
+    issuer_body_match = _first_match((
+        r"\b(?:the company|management|the board|board of directors)\s+"
+        r"(?:announces?|reports?|said|approved|entered|expects?|reaffirms?|rejects?|declared)\b",
+    ), title, text)
+    issuer_headline_match = _first_match((
+        r"^[^\n:]{2,120}\b(?:announces?|reports?|reaffirms?|expects?|sees|says|"
+        r"provides?|receives?|awarded|wins?|prices?|files?|confirms?|launches?|"
+        r"appoints?|acquires?|enters?|rejects?|declares?|posts?|regains?)\b",
+    ), title, "")
+    analyst_origin = analyst_match is not None
+    regulator_origin = regulator_match is not None
+    issuer_match = issuer_body_match or (
+        issuer_headline_match if analyst_match is None else None
+    )
+    issuer_origin = issuer_match is not None
+    editorial_origin = purpose == "explain_move" and any(
+        (analyst_origin, regulator_origin, issuer_origin)
+    )
+    editorial_match = _first_match((r".+",), title, "") if editorial_origin else None
+    origin_evidence = {
+        "analyst": analyst_origin,
+        "regulator": regulator_origin,
+        "issuer": issuer_origin,
+        "editorial": editorial_origin,
+    }
     origins = [name for name, present in origin_evidence.items() if present]
     origin = "mixed" if len(origins) > 1 else origins[0] if origins else "editorial"
-    if purpose == "report" and origin == "analyst":
+    if (
+        purpose == "report"
+        and analyst_match is not None
+        and not issuer_origin
+        and not regulator_origin
+    ):
         purpose = "analyze"
     automated = bool(AUTOMATED_RE.search(combined) or author in {"benzinga insights", "benzinga neuro"} or re.search(r"\b(?:benzinga insights|benzinga neuro|automatically generated|here's what the data shows)\b", combined, re.I))
     syndicated = bool(re.search(r"\b(?:press release|business wire|globe newswire|pr newswire|accesswire|zacks investment research)\b", combined, re.I) or re.search(r"businesswire|globenewswire|prnewswire|accesswire", article_url))
@@ -344,9 +386,56 @@ def _envelope(title: str, text: str, source: Mapping[str, Any], entity_count: in
     else: production = "unknown"
     render_status = str(source.get("render_status") or "").strip().lower()
     availability = render_status if render_status in {"rendered", "title_only", "unrendered", "invalid"} else "rendered" if text and text != title else "title_only"
-    evidence = _evidence(title or text)
-    decision = lambda value, rule: {"value": value, "rule_id": rule, "evidence": evidence}
-    return {"document_structure": decision(structure, "envelope.structure.v1"), "communication_purpose": decision(purpose, "envelope.purpose.v1"), "information_origin": decision(origin, "envelope.origin.v1"), "production_method": decision(production, "envelope.production.v1"), "text_availability": decision(availability, "envelope.text.v1")}
+    default_evidence = _evidence(title or text)
+    origin_matches = {
+        "analyst": analyst_match,
+        "regulator": regulator_match,
+        "issuer": issuer_match,
+        "editorial": editorial_match,
+    }
+    exact_origin_evidence = [
+        _match_evidence(match)
+        for name in origins
+        if (match := origin_matches[name]) is not None
+    ]
+    decision = lambda value, rule, evidence=default_evidence: {
+        "value": value,
+        "rule_id": rule,
+        "evidence": evidence,
+    }
+    return {
+        "document_structure": decision(structure, "envelope.structure.v1"),
+        "communication_purpose": decision(
+            purpose,
+            "envelope.purpose.v1",
+            [_match_evidence(analyst_match)] if purpose == "analyze" and analyst_match is not None else default_evidence,
+        ),
+        "information_origin": decision(origin, "envelope.origin.v1", exact_origin_evidence),
+        "production_method": decision(production, "envelope.production.v1"),
+        "text_availability": decision(availability, "envelope.text.v1"),
+    }
+
+
+def _first_match(
+    patterns: Sequence[str],
+    title: str,
+    text: str,
+) -> tuple[str, re.Match[str]] | None:
+    for source_field, value in (("title", title), ("rendered_text", text)):
+        for pattern in patterns:
+            if match := re.search(pattern, value, re.I | re.S):
+                return source_field, match
+    return None
+
+
+def _match_evidence(match: tuple[str, re.Match[str]]) -> dict[str, Any]:
+    source_field, value = match
+    return {
+        "source_field": source_field,
+        "start": value.start(),
+        "end": value.end(),
+        "quote": value.group(0),
+    }
 
 
 def _evidence(text: str) -> list[dict[str, Any]]:

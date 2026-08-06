@@ -4,6 +4,7 @@ import unittest
 
 from research.text_intelligence.news_synthesis_v1.registry import ConceptRegistry, REGISTRY_PATH
 from research.text_intelligence.news_synthesis_v1.review_spec import (
+    _apply_issuer_view_overrides,
     compile_approved_draft,
     compile_review_spec,
 )
@@ -11,6 +12,27 @@ from research.text_intelligence.news_synthesis_v1.run_certify_review_specs impor
 
 
 class ReviewSpecTest(unittest.TestCase):
+    def test_manual_issuer_view_override_requires_dominant_evidence(self) -> None:
+        views = [{
+            "entity_id": "security:ABC",
+            "composite_sentiment": "mixed",
+            "positive_strength": 2,
+            "negative_strength": 3,
+        }]
+        _apply_issuer_view_overrides(views, [{
+            "entity_id": "security:ABC",
+            "composite_sentiment": "negative",
+            "reason": "Negative evidence is materially stronger overall.",
+        }])
+        self.assertEqual(views[0]["composite_sentiment"], "negative")
+
+        with self.assertRaisesRegex(RuntimeError, "dominant positive"):
+            _apply_issuer_view_overrides(views, [{
+                "entity_id": "security:ABC",
+                "composite_sentiment": "positive",
+                "reason": "Invalid reversal.",
+            }])
+
     def test_certification_parser_accepts_multiline_object_with_unindented_children(self) -> None:
         payload = '{"sample_id":"N0001","statements":[\n{"concept_leaf":"market.context"}\n]}'
         self.assertEqual(parse_source_specs(payload)[0]["sample_id"], "N0001")

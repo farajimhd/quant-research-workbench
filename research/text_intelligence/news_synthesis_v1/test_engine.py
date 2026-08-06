@@ -101,6 +101,42 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(document["envelope"]["information_origin"]["value"], "analyst")
         self.assertEqual(document["envelope"]["communication_purpose"]["value"], "analyze")
 
+    def test_offering_brokerage_boilerplate_does_not_override_issuer_origin(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-secondary-offering", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Therapeutics Announces Secondary Public Offering And Repurchase",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) announced a secondary public offering by a selling stockholder. "
+                "The company will repurchase $5 million of shares. "
+                "The underwriters may sell shares through brokers in one or more brokerage transactions."
+            ),
+            "tickers": ["AAA"],
+        })
+        envelope = document["envelope"]
+        self.assertEqual(envelope["information_origin"]["value"], "issuer")
+        self.assertEqual(envelope["communication_purpose"]["value"], "report")
+        self.assertIn("announce", envelope["information_origin"]["evidence"][0]["quote"].lower())
+        self.assertTrue(any(
+            row["product"] == "forecast_trigger" and row["eligible"]
+            for row in document["eligibility"]
+        ))
+
+    def test_why_moving_followup_preserves_editorial_and_cited_source_origins(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-why-moving-sec", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Why Did Alpha Shares Surge After Hours?",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) shares surged after an SEC filing "
+                "disclosed that an investor acquired a material stake."
+            ),
+            "tickers": ["AAA"],
+        })
+        envelope = document["envelope"]
+        self.assertEqual(envelope["communication_purpose"]["value"], "explain_move")
+        self.assertEqual(envelope["information_origin"]["value"], "mixed")
+        fields = {row["source_field"] for row in envelope["information_origin"]["evidence"]}
+        self.assertIn("title", fields)
+
     def test_market_quotes_guidance_and_semicolon_clauses_are_atomic(self) -> None:
         text = (
             "Alpha Therapeutics Inc (NASDAQ:AAA) closed at $17.25; "

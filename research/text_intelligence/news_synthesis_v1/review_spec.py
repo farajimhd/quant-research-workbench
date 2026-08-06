@@ -76,6 +76,7 @@ def compile_review_spec(article: Mapping[str, Any], spec: Mapping[str, Any]) -> 
             )
     quality_flags = sorted({str(value) for value in spec.get("quality_flags", [])})
     issuer_views = derive_issuer_views(entities, participations)
+    _apply_issuer_view_overrides(issuer_views, spec.get("issuer_view_overrides", []))
     document = {
         "contract_version": CONTRACT_VERSION,
         "concept_registry_version": registry.version,
@@ -112,6 +113,40 @@ def compile_review_spec(article: Mapping[str, Any], spec: Mapping[str, Any]) -> 
     if not validation.valid:
         raise RuntimeError(f"Invalid V1 review specification for {sample_id}: {validation.issues}")
     return document
+
+
+def _apply_issuer_view_overrides(
+    issuer_views: list[dict[str, Any]],
+    overrides: Any,
+) -> None:
+    if not isinstance(overrides, list):
+        raise RuntimeError("issuer_view_overrides must be a list")
+    by_entity = {str(view["entity_id"]): view for view in issuer_views}
+    allowed = {"positive", "negative", "neutral", "mixed"}
+    seen: set[str] = set()
+    for override in overrides:
+        if not isinstance(override, Mapping):
+            raise RuntimeError("Each issuer-view override must be an object")
+        entity_id = str(override.get("entity_id") or "")
+        sentiment = str(override.get("composite_sentiment") or "")
+        reason = str(override.get("reason") or "").strip()
+        if entity_id not in by_entity or entity_id in seen:
+            raise RuntimeError(f"Invalid or duplicate issuer-view override: {entity_id}")
+        if sentiment not in allowed or not reason:
+            raise RuntimeError(f"Invalid issuer-view override decision: {entity_id}")
+        view = by_entity[entity_id]
+        positive = int(view["positive_strength"])
+        negative = int(view["negative_strength"])
+        if sentiment == "positive" and positive <= negative:
+            raise RuntimeError(f"Positive override lacks dominant positive evidence: {entity_id}")
+        if sentiment == "negative" and negative <= positive:
+            raise RuntimeError(f"Negative override lacks dominant negative evidence: {entity_id}")
+        if sentiment == "neutral" and (positive > 1 or negative > 1):
+            raise RuntimeError(f"Neutral override has material directional evidence: {entity_id}")
+        if sentiment == "mixed" and (positive < 2 or negative < 2):
+            raise RuntimeError(f"Mixed override lacks two material sides: {entity_id}")
+        view["composite_sentiment"] = sentiment
+        seen.add(entity_id)
 
 
 def _compile_observed_market_move_sources(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
