@@ -115,6 +115,45 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertIn("guidance.issued", concepts)
         self.assertTrue(all(";" not in row["evidence_spans"][0]["quote"].rstrip(";") for row in document["statements"]))
 
+    def test_generic_nouns_and_external_forecasts_do_not_create_issuer_events(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-negative-rules", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha profile",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) provides a platform for researchers. "
+                "Analysts expect revenue growth and hope the company will provide positive guidance."
+            ),
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertNotIn("product.milestone", concepts)
+        self.assertNotIn("guidance.issued", concepts)
+
+    def test_paragraph_local_subject_inheritance_is_issuer_scoped(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-discourse", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha results",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported quarterly results. Revenues increased 18% year over year.\n"
+                "The broader market remained volatile."
+            ),
+            "tickers": ["AAA"],
+        })
+        operating = next(row for row in document["statements"] if row["concept_leaf"] == "financial.operating_performance")
+        issuer_id = next(row["entity_id"] for row in document["entities"] if row["ticker"] == "AAA")
+        self.assertTrue(any(row["statement_id"] == operating["statement_id"] and row["entity_id"] == issuer_id for row in document["participations"]))
+        market = next(row for row in document["statements"] if row["concept_leaf"] == "market.context")
+        self.assertFalse(any(row["statement_id"] == market["statement_id"] for row in document["participations"]))
+
+    def test_currency_observation_is_not_equity_price_move(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-currency", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Dollar update", "text": "The U.S. Dollar Index is trading at 97.81, down 0.76.",
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("market.currency_move_observed", concepts)
+        self.assertNotIn("market.price_move_observed", concepts)
+
     def test_prelisting_identity_and_unrendered_text_fail_closed(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((
             IssuerIdentity("NEW", "issuer:new", "New Company", ("New Company",), "NASDAQ", list_date=date(2026, 8, 5)),
