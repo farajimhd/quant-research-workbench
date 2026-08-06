@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
+import faulthandler
 import hashlib
 import json
 import multiprocessing as mp
@@ -105,6 +106,158 @@ class OfflineShardUnit:
     origins: int
     stable_unit_index: int
     condition_positive_counts: tuple[int, int, int, int]
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if dataclasses.is_dataclass(value):
+        return _json_ready(dataclasses.asdict(value))
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return repr(value)
+
+
+def _process_exit_detail(exit_code: int) -> dict[str, Any]:
+    code = int(exit_code)
+    unsigned = code & 0xFFFFFFFF
+    meanings = {
+        0xC0000005: "STATUS_ACCESS_VIOLATION",
+        0xC0000017: "STATUS_NO_MEMORY",
+        0xC000009A: "STATUS_INSUFFICIENT_RESOURCES",
+        0xC00000FD: "STATUS_STACK_OVERFLOW",
+        0xC000012D: "STATUS_COMMITMENT_LIMIT",
+        0xC0000374: "STATUS_HEAP_CORRUPTION",
+        0xC0000409: "STATUS_STACK_BUFFER_OVERRUN",
+    }
+    return {
+        "value": code,
+        "windows_hex": f"0x{unsigned:08X}",
+        "meaning": meanings.get(unsigned, ""),
+    }
+
+
+class BuildRunLog:
+    """Parent-owned durable event log for one offline-shard invocation."""
+
+    def __init__(self, root: Path, *, arguments: dict[str, Any]) -> None:
+        now = dt.datetime.now().astimezone()
+        self.run_id = f"{now:%Y%m%d-%H%M%S}-p{os.getpid()}-{time.time_ns() % 1_000_000:06d}"
+        self.directory = root / "manifest" / "build_runs" / self.run_id
+        self.directory.mkdir(parents=True, exist_ok=False)
+        self.events_path = self.directory / "events.jsonl"
+        self.summary_path = self.directory / "summary.json"
+        self.workers_directory = self.directory / "workers"
+        self.workers_directory.mkdir()
+        self.latest_path = root / "manifest" / "build_runs" / "latest.json"
+        self.started_at = now.isoformat(timespec="microseconds")
+        self.event_count = 0
+        self._handle = self.events_path.open("a", encoding="utf-8", buffering=1)
+        self.record(
+            "run_started",
+            durable=True,
+            run_id=self.run_id,
+            pid=os.getpid(),
+            arguments=arguments,
+            cwd=str(Path.cwd()),
+        )
+        _atomic_json(
+            self.latest_path,
+            {
+                "run_id": self.run_id,
+                "directory": str(self.directory),
+                "events_path": str(self.events_path),
+                "started_at": self.started_at,
+            },
+        )
+
+    def worker_fault_path(self, worker: int, ticker: str) -> Path:
+        safe_ticker = "".join(character for character in ticker.upper() if character.isalnum() or character in "-._")
+        return self.workers_directory / f"worker-{int(worker):03d}-{safe_ticker}-fatal.log"
+
+    def record(self, event: str, *, durable: bool = False, **fields: Any) -> None:
+        value = {
+            "timestamp": dt.datetime.now().astimezone().isoformat(timespec="microseconds"),
+            "event": str(event),
+            **fields,
+        }
+        self._handle.write(json.dumps(_json_ready(value), sort_keys=True) + "\n")
+        self._handle.flush()
+        self.event_count += 1
+        if durable:
+            os.fsync(self._handle.fileno())
+
+    def record_worker_event(self, value: tuple[Any, ...]) -> None:
+        kind = str(value[0])
+        worker = int(value[1])
+        if kind == "worker":
+            self.record(
+                "worker_state", worker=worker, state=str(value[2]), focus=str(value[3]),
+                assigned_units=int(value[4]) if len(value) > 4 else None,
+                assigned_blocks=int(value[5]) if len(value) > 5 else None,
+            )
+        elif kind == "unit":
+            self.record("unit_stage", worker=worker, stage=str(value[2]), unit_key=str(value[3]))
+        elif kind == "block":
+            self.record(
+                "block_progress", worker=worker, unit_key=str(value[2]), local_date=str(value[3]),
+                unit_blocks=int(value[4]), fetched_blocks=int(value[5]),
+                memory=value[6] if len(value) > 6 else {},
+            )
+        elif kind == "session":
+            self.record(
+                "session_compiled", worker=worker, unit_key=str(value[2]), local_date=str(value[3]),
+                compiled_sessions=int(value[4]), compiled_blocks=int(value[5]),
+            )
+        elif kind == "complete":
+            self.record("unit_certified", worker=worker, unit_key=str(value[2]), evidence=value[3])
+        elif kind == "failure":
+            self.record(
+                "worker_exception", durable=True, worker=worker,
+                exception_type=str(value[2]), message=str(value[3]),
+                traceback=str(value[4]) if len(value) > 4 else "",
+            )
+        elif kind == "process_exit":
+            self.record(
+                "worker_process_exit", durable=True, worker=worker, ticker=str(value[2]),
+                pid=int(value[3]), exit_code=int(value[4]),
+                exit_detail=_process_exit_detail(int(value[4])), fault_log=str(value[5]),
+                last_state=str(value[6]), last_focus=str(value[7]),
+                last_memory=value[8] if len(value) > 8 else {},
+            )
+
+    def finalize(self, *, status: str, exit_code: int, **fields: Any) -> None:
+        finished_at = dt.datetime.now().astimezone().isoformat(timespec="microseconds")
+        self.record("run_finished", durable=True, status=status, exit_code=int(exit_code), **fields)
+        summary = {
+            "run_id": self.run_id,
+            "status": status,
+            "exit_code": int(exit_code),
+            "started_at": self.started_at,
+            "finished_at": finished_at,
+            "events": self.event_count,
+            "events_path": str(self.events_path),
+            **fields,
+        }
+        _atomic_json(self.summary_path, _json_ready(summary))
+        _atomic_json(
+            self.latest_path,
+            {
+                "run_id": self.run_id,
+                "directory": str(self.directory),
+                "events_path": str(self.events_path),
+                "summary_path": str(self.summary_path),
+                "started_at": self.started_at,
+                "finished_at": finished_at,
+                "status": status,
+                "exit_code": int(exit_code),
+            },
+        )
+        self._handle.close()
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -866,7 +1019,16 @@ def _ticker_worker_main(
     cpu_threads: int,
     query_gate: Any,
     progress_block_offset: int,
+    fatal_log_path: str,
 ) -> None:
+    fault_path = Path(fatal_log_path)
+    fault_path.parent.mkdir(parents=True, exist_ok=True)
+    fault_handle = fault_path.open("a", encoding="utf-8", buffering=1)
+    fault_handle.write(
+        f"{dt.datetime.now().astimezone().isoformat(timespec='microseconds')} "
+        f"worker_started pid={os.getpid()} worker={worker_id} ticker={ticker}\n"
+    )
+    faulthandler.enable(file=fault_handle, all_threads=True)
     try:
         from research.bar_gpt.v1.train import _stream_config
 
@@ -967,16 +1129,34 @@ def _ticker_worker_main(
                 current_examples.append(example)
                 fetched_blocks += 1
                 if len(current_examples) == 1 or len(current_examples) % 8 == 0:
-                    events.put(("block", worker_id, current_key, current_date, len(current_examples), fetched_blocks))
+                    events.put((
+                        "block", worker_id, current_key, current_date, len(current_examples), fetched_blocks,
+                        _process_memory_snapshot(),
+                    ))
                 collect_one(wait=False)
             if not stop.is_set():
                 flush_unit(executor)
                 for key in sorted(planned - seen):
                     evidence = _write_empty(Path(root), config, key)
                     events.put(("complete", worker_id, key, evidence))
+        fault_handle.write(
+            f"{dt.datetime.now().astimezone().isoformat(timespec='microseconds')} "
+            f"worker_completed pid={os.getpid()} worker={worker_id} ticker={ticker}\n"
+        )
     except BaseException as exc:
-        events.put(("failure", worker_id, exc.__class__.__name__, str(exc), traceback.format_exc()))
+        formatted_traceback = traceback.format_exc()
+        fault_handle.write(
+            f"{dt.datetime.now().astimezone().isoformat(timespec='microseconds')} "
+            f"worker_exception pid={os.getpid()} worker={worker_id} ticker={ticker} "
+            f"type={exc.__class__.__name__} message={exc}\n{formatted_traceback}\n"
+        )
+        fault_handle.flush()
+        os.fsync(fault_handle.fileno())
+        events.put(("failure", worker_id, exc.__class__.__name__, str(exc), formatted_traceback))
         raise
+    finally:
+        faulthandler.disable()
+        fault_handle.close()
 
 
 class ShardBuildReporter:
@@ -984,6 +1164,7 @@ class ShardBuildReporter:
         self, *, total: int, completed: int, root: Path, workers: int, layout: str, refresh: float,
         initial_bytes: int = 0, initial_blocks: int = 0, initial_origins: int = 0,
         worker_totals: Sequence[int] = (), worker_block_totals: Sequence[int] = (),
+        run_log: BuildRunLog | None = None,
     ) -> None:
         self.total = total
         self.completed = completed
@@ -1001,6 +1182,9 @@ class ShardBuildReporter:
         self.failures = 0
         self.retries = 0
         self.state = "starting"
+        self.run_log = run_log
+        self.failed_workers: set[int] = set()
+        self.worker_memory: dict[int, dict[str, int]] = {}
         self.worker_state: dict[int, tuple[str, str]] = {}
         self.worker_progress: dict[int, list[int]] = {
             worker: [0, int(total), 0, int(worker_block_totals[worker]), 0, 0]
@@ -1041,13 +1225,19 @@ class ShardBuildReporter:
 
     def message(self, value: str) -> None:
         self.messages.append(f"{time.strftime('%H:%M:%S')} {value}")
+        if self.run_log is not None:
+            self.run_log.record("controller_message", message=value)
         self.refresh(force=True)
 
     def event(self, value: tuple[Any, ...]) -> None:
+        if self.run_log is not None:
+            self.run_log.record_worker_event(value)
         kind = value[0]
         worker = int(value[1])
+        force_refresh = False
         if kind == "worker":
-            self.worker_state[worker] = (str(value[2]), str(value[3]))
+            if worker not in self.failed_workers:
+                self.worker_state[worker] = (str(value[2]), str(value[3]))
             if len(value) > 4:
                 block_total = int(value[5]) if len(value) > 5 else 0
                 self.worker_progress[worker] = [0, int(value[4]), 0, block_total, 0, 0]
@@ -1056,6 +1246,10 @@ class ShardBuildReporter:
         elif kind == "block":
             progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0, 0, 0])
             progress[5] = int(value[5])
+            if len(value) > 6:
+                self.worker_memory[worker] = {
+                    str(name): int(amount) for name, amount in dict(value[6]).items()
+                }
             self.worker_state[worker] = ("fetching", f"{value[2]} {value[3]} block {value[4]}")
         elif kind == "session":
             progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0, 0, 0])
@@ -1075,10 +1269,32 @@ class ShardBuildReporter:
             self.worker_state[worker] = ("ready", "")
             self.messages.append(f"{time.strftime('%H:%M:%S')} certified {value[2]} ({int(evidence['bytes']) / 2**30:.2f} GiB)")
         elif kind == "failure":
-            self.failures += 1
+            if worker not in self.failed_workers:
+                self.failures += 1
+                self.failed_workers.add(worker)
+            self.state = "failed"
             self.worker_state[worker] = ("failed", f"{value[2]}: {value[3]}")
             self.messages.append(f"{time.strftime('%H:%M:%S')} worker {worker} failed: {value[2]}: {value[3]}")
-        self.refresh()
+            force_refresh = True
+        elif kind == "process_exit":
+            if worker not in self.failed_workers:
+                self.failures += 1
+                self.failed_workers.add(worker)
+            self.state = "failed"
+            ticker = str(value[2])
+            exit_code = int(value[4])
+            exit_detail = _process_exit_detail(exit_code)
+            exit_label = str(exit_code)
+            if exit_detail["meaning"]:
+                exit_label += f"/{exit_detail['windows_hex']} {exit_detail['meaning']}"
+            fault_log = str(value[5])
+            self.worker_state[worker] = ("failed", f"{ticker} exited {exit_label}")
+            self.messages.append(
+                f"{time.strftime('%H:%M:%S')} worker {worker} {ticker} exited with code {exit_label}; "
+                f"diagnostics: {fault_log}"
+            )
+            force_refresh = True
+        self.refresh(force=force_refresh)
 
     def refresh(self, *, force: bool = False) -> None:
         if self._live is not None:
@@ -1168,7 +1384,9 @@ class ShardBuildReporter:
         if height < 32:
             return Group(primary, Panel(workers, title="Concurrent work", border_style="green"), recent_panel)
         return Group(primary, Panel(workers, title="Concurrent work", border_style="green"), Panel(
-            f"[bold]output[/] {self.root}\n[bold]resume[/] rerun the same command; certified shards are skipped",
+            f"[bold]output[/] {self.root}\n"
+            f"[bold]log[/] {self.run_log.events_path if self.run_log is not None else '-'}\n"
+            "[bold]resume[/] rerun the same command; certified shards are skipped",
             title="Durability", border_style="blue",
         ), recent_panel)
 
@@ -1232,10 +1450,9 @@ def rebuild_catalog(root: Path, expected_hash: str) -> dict[str, Any]:
     return catalog
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _run_main(args: argparse.Namespace, run_log: BuildRunLog | None) -> int:
     from research.bar_gpt.v1.train import preflight, sequential_coverage_counts
 
-    args = parse_args(argv)
     config = build_data_config(args)
     root = args.output_root.resolve()
     expected_hash = config_hash(config)
@@ -1244,6 +1461,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     remaining = [key for key in plan if key not in existing]
     if args.max_shards:
         remaining = remaining[: int(args.max_shards)]
+    if run_log is not None:
+        run_log.record(
+            "build_plan_resolved", durable=True, config_hash=expected_hash,
+            planned_units=len(plan), certified_units=len(existing), remaining_units=len(remaining),
+            output_root=str(root),
+        )
     print(
         f"BarGPT offline shard plan: units={len(plan):,} certified={len(existing):,} "
         f"remaining={len(remaining):,} workers={min(args.workers, len(config.tickers))} output={root}",
@@ -1306,6 +1529,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "clickhouse_prefetch_pages": int(config.clickhouse_prefetch_pages),
         "clickhouse_max_concurrent_pages": max_concurrent_pages,
         "ticker_partitions": [list(tickers) for tickers in partitions],
+        "build_run_id": run_log.run_id if run_log is not None else "",
+        "build_run_events": str(run_log.events_path) if run_log is not None else "",
         "selected_blocks": sum(int(unit_block_plan.get(key, (0, 0))[0]) for key in allowed),
         "selected_origins": sum(int(unit_block_plan.get(key, (0, 0))[1]) for key in allowed),
     })
@@ -1336,11 +1561,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def launch_next_ticker(worker: int) -> None:
         ticker = ticker_queues[worker].popleft()
+        fatal_path = (
+            run_log.worker_fault_path(worker, ticker)
+            if run_log is not None
+            else root / "manifest" / f"worker-{worker:03d}-{ticker}-fatal.log"
+        )
         process = context.Process(
             target=_ticker_worker_main,
             args=(
                 worker, ticker, config, str(root), skipped, not args.skip_hash,
-                events, stop, cpu_threads, query_gate, worker_block_offsets[worker],
+                events, stop, cpu_threads, query_gate, worker_block_offsets[worker], str(fatal_path),
             ),
             name=f"bar-gpt-shard-{worker}-{ticker}",
         )
@@ -1348,6 +1578,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         active_tickers[worker] = ticker
         started_processes.append(process)
         process.start()
+        if run_log is not None:
+            run_log.record(
+                "worker_process_started", durable=True, worker=worker, ticker=ticker,
+                pid=int(process.pid or -1), process_name=process.name, fault_log=str(fatal_path),
+                progress_block_offset=worker_block_offsets[worker], cpu_threads=cpu_threads,
+            )
 
     interrupted = False
     with ShardBuildReporter(
@@ -1358,6 +1594,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         initial_origins=sum(int(item["origins"]) for item in existing.values()),
         worker_totals=partition_totals,
         worker_block_totals=partition_block_totals,
+        run_log=run_log,
     ) as reporter:
         for worker, tickers in enumerate(partitions):
             reporter.event((
@@ -1372,6 +1609,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     reporter.event(event)
                 except queue.Empty:
                     reporter.refresh()
+                while True:
+                    try:
+                        reporter.event(events.get_nowait())
+                    except queue.Empty:
+                        break
                 if reporter.failures:
                     stop.set()
                 for worker, process in tuple(active_processes.items()):
@@ -1381,8 +1623,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                     del active_processes[worker]
                     ticker = active_tickers.pop(worker)
                     if process.exitcode not in {0, None}:
+                        last_state, last_focus = reporter.worker_state.get(worker, ("unknown", ""))
+                        fault_path = (
+                            run_log.worker_fault_path(worker, ticker)
+                            if run_log is not None
+                            else root / "manifest" / f"worker-{worker:03d}-{ticker}-fatal.log"
+                        )
+                        reporter.event((
+                            "process_exit", worker, ticker, int(process.pid or -1), int(process.exitcode),
+                            str(fault_path), last_state, last_focus, reporter.worker_memory.get(worker, {}),
+                        ))
                         stop.set()
                     else:
+                        if run_log is not None:
+                            run_log.record(
+                                "worker_process_completed", worker=worker, ticker=ticker,
+                                pid=int(process.pid or -1), exit_code=0,
+                            )
                         worker_block_offsets[worker] += int(ticker_weights[ticker])
                     if process.exitcode in {0, None} and ticker_queues[worker] and not stop.is_set():
                         launch_next_ticker(worker)
@@ -1399,10 +1656,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         finally:
             for process in active_processes.values():
                 process.join(timeout=30)
-            for process in active_processes.values():
+            for worker, process in active_processes.items():
                 if process.is_alive():
                     process.terminate()
                     process.join(timeout=10)
+                    if run_log is not None:
+                        run_log.record(
+                            "worker_process_terminated", durable=True,
+                            worker=worker, ticker=active_tickers.get(worker, ""),
+                            pid=int(process.pid or -1), process_name=process.name,
+                            exit_code=process.exitcode,
+                        )
             while True:
                 try:
                     reporter.event(events.get_nowait())
@@ -1415,12 +1679,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reporter.message("Build stopped after a worker failure; certified shards remain resumable")
                 reporter.refresh(force=True)
     catalog = rebuild_catalog(root, expected_hash)
+    if run_log is not None:
+        run_log.record("catalog_rebuilt", durable=True, counts=catalog["counts"])
     print(f"Final certified catalog: {catalog['counts']}", flush=True)
     if interrupted:
         return 130
     return 1 if reporter.failures or any(
         process.exitcode not in {0, None} for process in started_processes
     ) else 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    if not args.execute:
+        return _run_main(args, None)
+    root = args.output_root.resolve()
+    run_log = BuildRunLog(root, arguments=vars(args))
+    print(f"Durable build diagnostics: {run_log.directory}", flush=True)
+    try:
+        exit_code = _run_main(args, run_log)
+    except BaseException as exc:
+        formatted_traceback = traceback.format_exc()
+        run_log.record(
+            "controller_exception", durable=True,
+            exception_type=exc.__class__.__name__, message=str(exc), traceback=formatted_traceback,
+        )
+        run_log.finalize(
+            status="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
+            exit_code=130 if isinstance(exc, KeyboardInterrupt) else 1,
+            exception_type=exc.__class__.__name__, message=str(exc),
+        )
+        print(f"Failure diagnostics: {run_log.directory}", file=sys.stderr, flush=True)
+        raise
+    status = "completed" if exit_code == 0 else ("interrupted" if exit_code == 130 else "failed")
+    run_log.finalize(status=status, exit_code=exit_code)
+    print(f"Build diagnostics: {run_log.directory}", flush=True)
+    return exit_code
 
 
 if __name__ == "__main__":

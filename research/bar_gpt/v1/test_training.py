@@ -4,7 +4,9 @@ import io
 import dataclasses
 import datetime as dt
 import http.client
+import json
 import multiprocessing as mp
+import os
 import threading
 import time
 import tempfile
@@ -48,10 +50,12 @@ from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.linear_probe import fit_ridge_probes
 from research.bar_gpt.v1.objectives import _weighted_mean, compute_loss
 from research.bar_gpt.v1.offline_shards import (
+    BuildRunLog,
     OFFLINE_SHARD_CONTRACT_VERSION,
     DEFAULT_OUTPUT_ROOT,
     ShardBuildReporter,
     _partition_tickers,
+    _process_exit_detail,
     _resolve_cpu_threads_per_worker,
     _resolve_max_concurrent_pages,
     _ticker_worker_main,
@@ -62,6 +66,7 @@ from research.bar_gpt.v1.offline_shards import (
     config_hash,
     discover_offline_units,
     load_shard,
+    main as offline_shards_main,
     make_offline_dataloader,
     materialize_block,
     OfflineShardDataset,
@@ -88,6 +93,10 @@ from research.bar_gpt.v1.run_build_conditions_1s import default_argv as conditio
 from research.bar_gpt.v1.run_profile_train import DEFAULT_ARGS as profile_launcher_args
 from research.bar_gpt.v1.run_train import DEFAULT_ARGS as training_launcher_args
 from research.mlops.schedulers import SampleWarmupCosineScheduler
+
+
+def _abrupt_process_exit_for_test() -> None:
+    os._exit(23)
 
 
 def session_view(length: int = 24) -> BarView:
@@ -172,6 +181,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(_resolve_max_concurrent_pages(workers=32, prefetch_pages=4, requested=0), 32)
         self.assertEqual(_resolve_max_concurrent_pages(workers=4, prefetch_pages=4, requested=0), 16)
         self.assertEqual(_resolve_max_concurrent_pages(workers=49, prefetch_pages=4, requested=12), 12)
+        self.assertEqual(_process_exit_detail(-1_073_741_801)["meaning"], "STATUS_NO_MEMORY")
+        self.assertEqual(_process_exit_detail(-1_073_741_523)["meaning"], "STATUS_COMMITMENT_LIMIT")
 
     def test_offline_ticker_partition_balances_planned_blocks(self) -> None:
         partitions = _partition_tickers(
@@ -195,11 +206,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
             validation_slices=(),
         )
         with tempfile.TemporaryDirectory() as directory:
+            fault_path = Path(directory) / "worker-fatal.log"
             process = context.Process(
                 target=_ticker_worker_main,
                 args=(
                     0, "AAA", config, directory, frozenset({"AAA:2026-01"}),
-                    True, events, stop, 1, gate, 0,
+                    True, events, stop, 1, gate, 0, str(fault_path),
                 ),
             )
             process.start()
@@ -209,6 +221,89 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 process.join(timeout=5)
             self.assertEqual(process.exitcode, 0)
             self.assertFalse(list(Path(directory).rglob("*.pt")))
+            self.assertIn("worker_completed", fault_path.read_text(encoding="utf-8"))
+
+    def test_offline_build_log_persists_traceback_and_abrupt_exit(self) -> None:
+        context = mp.get_context("spawn")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_log = BuildRunLog(root, arguments={"workers": 2, "output_root": root})
+            reporter = ShardBuildReporter(
+                total=2, completed=0, root=root, workers=2, layout="text", refresh=60.0,
+                worker_totals=(1, 1), worker_block_totals=(10, 10), run_log=run_log,
+            )
+            text_output = io.StringIO()
+            with redirect_stdout(text_output):
+                reporter.event(("failure", 0, "RuntimeError", "caught failure", "complete traceback detail"))
+                reporter.event((
+                    "process_exit", 0, "AAA", 111, 1,
+                    str(run_log.worker_fault_path(0, "AAA")), "fetching", "AAA:2026-01",
+                ))
+            self.assertEqual(reporter.failures, 1)
+
+            process = context.Process(target=_abrupt_process_exit_for_test)
+            process.start()
+            process.join(timeout=20)
+            self.assertFalse(process.is_alive())
+            self.assertEqual(process.exitcode, 23)
+            with redirect_stdout(text_output):
+                reporter.event((
+                    "process_exit", 1, "BBB", int(process.pid or -1), int(process.exitcode),
+                    str(run_log.worker_fault_path(1, "BBB")), "assembling", "BBB:2026-02",
+                    {"worker_private_bytes": 123_456},
+                ))
+            self.assertEqual(reporter.failures, 2)
+            self.assertEqual(reporter.state, "failed")
+            self.assertIn("BBB exited 23", reporter.worker_state[1][1])
+            self.assertNotIn("\x1b", text_output.getvalue())
+            self.assertIn("failures=2", text_output.getvalue())
+
+            compact_output = io.StringIO()
+            reporter._console = Console(
+                file=compact_output, width=72, height=18, force_terminal=False, color_system=None,
+            )
+            reporter._console.print(reporter._render())
+            compact = " ".join(compact_output.getvalue().split())
+            self.assertIn("failed", compact)
+            self.assertIn("BBB exited with code 23", compact)
+            run_log.finalize(status="failed", exit_code=1)
+
+            events = [json.loads(line) for line in run_log.events_path.read_text(encoding="utf-8").splitlines()]
+            caught = next(item for item in events if item["event"] == "worker_exception")
+            self.assertEqual(caught["traceback"], "complete traceback detail")
+            abrupt = [item for item in events if item["event"] == "worker_process_exit"][-1]
+            self.assertEqual(abrupt["exit_code"], 23)
+            self.assertEqual(abrupt["last_state"], "assembling")
+            self.assertEqual(abrupt["last_memory"]["worker_private_bytes"], 123_456)
+            summary = json.loads(run_log.summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["status"], "failed")
+            self.assertEqual(summary["exit_code"], 1)
+            latest = json.loads(run_log.latest_path.read_text(encoding="utf-8"))
+            self.assertEqual(latest["run_id"], run_log.run_id)
+            self.assertEqual(latest["status"], "failed")
+
+    def test_offline_controller_exception_is_durable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with patch(
+                "research.bar_gpt.v1.offline_shards._run_main",
+                side_effect=RuntimeError("preflight failed"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "preflight failed"):
+                    offline_shards_main(["--execute", "--output-root", directory])
+            run_directories = [
+                path for path in (Path(directory) / "manifest" / "build_runs").iterdir()
+                if path.is_dir()
+            ]
+            self.assertEqual(len(run_directories), 1)
+            summary = json.loads((run_directories[0] / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["status"], "failed")
+            events = [
+                json.loads(line)
+                for line in (run_directories[0] / "events.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            failure = next(item for item in events if item["event"] == "controller_exception")
+            self.assertEqual(failure["message"], "preflight failed")
+            self.assertIn("RuntimeError: preflight failed", failure["traceback"])
 
     def test_validation_milestones_start_early_and_end_at_epoch(self) -> None:
         milestones = _validation_milestones(

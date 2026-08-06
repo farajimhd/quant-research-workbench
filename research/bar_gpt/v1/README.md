@@ -458,6 +458,18 @@ Override it only from measured evidence with `--cpu-threads-per-worker N`.
 This prevents every worker from independently creating a workstation-sized CPU
 thread pool while leaving capacity for ClickHouse and the operating system.
 
+Every executing compiler invocation creates a unique diagnostic directory at
+`offline_shards_v2\manifest\build_runs\<run-id>`. Its parent-owned
+`events.jsonl` records the resolved plan, worker PID/ticker launches, stages,
+bounded progress, certifications, complete caught tracebacks, process exit
+codes, last known work, and final catalog. `summary.json` records the final
+status and exit code, while `workers\worker-<slot>-<ticker>-fatal.log` is wired
+to Python `faulthandler` inside that spawned process. An abrupt native exit may
+not produce a Python traceback, but the parent still records its nonzero exit
+code, PID, ticker, last stage and fatal-log path immediately and counts it as a
+failure in both Rich and text output. These operational files do not enter the
+v2 storage hash and do not change shard payloads or ticker/year/month layout.
+
 Each month stores every session-level 1s, intraday-rollup, and calendar tensor
 once. Block records retain only slices, exact causal prefix corrections,
 autoregressive masks, origin-specific physical-horizon targets, and metadata.
