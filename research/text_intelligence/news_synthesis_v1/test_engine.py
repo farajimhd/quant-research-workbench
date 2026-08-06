@@ -91,6 +91,30 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertIn("market.price_move_observed", concepts)
         self.assertNotIn("unclassified.semantic_claim", concepts)
 
+    def test_analyst_action_is_analysis_without_false_issuer_origin(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-analyst", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Research Firm Maintains Buy on Alpha, Raises Price Target to $35",
+            "text": "Research Firm maintains a Buy rating on Alpha Therapeutics Inc (NASDAQ:AAA) and raises its price target to $35.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["information_origin"]["value"], "analyst")
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "analyze")
+
+    def test_market_quotes_guidance_and_semicolon_clauses_are_atomic(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) closed at $17.25; "
+            "the company sees revenue growth of 15% next year."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-atomic", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha market and outlook update", "text": text, "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("market.price_move_observed", concepts)
+        self.assertIn("guidance.issued", concepts)
+        self.assertTrue(all(";" not in row["evidence_spans"][0]["quote"].rstrip(";") for row in document["statements"]))
+
     def test_prelisting_identity_and_unrendered_text_fail_closed(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((
             IssuerIdentity("NEW", "issuer:new", "New Company", ("New Company",), "NASDAQ", list_date=date(2026, 8, 5)),
