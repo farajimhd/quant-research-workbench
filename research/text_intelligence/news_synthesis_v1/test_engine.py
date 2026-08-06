@@ -211,6 +211,100 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertIn("market.price_move_observed", concepts)
         self.assertIn("commercial.demand_condition", concepts)
 
+    def test_related_links_and_ingestion_metadata_do_not_create_claims(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-boilerplate", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha profile",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) develops research tools. "
+                "Related Links: Alpha Falls On Earnings Miss. "
+                "Also Read: Alpha Acquisition Rumors. "
+                "Source [external:1] Free Stock Analysis."
+            ),
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertNotIn("market.price_move_observed", concepts)
+        self.assertNotIn("earnings.performance", concepts)
+        self.assertNotIn("corporate_transaction.acquisition", concepts)
+
+    def test_estimate_revision_requires_a_change(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-estimates", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha analyst note",
+            "text": (
+                "Analysts estimate Alpha Therapeutics Inc (NASDAQ:AAA) will earn $1.20. "
+                "The research firm is raising its EPS estimates for the next two years."
+            ),
+            "tickers": ["AAA"],
+        })
+        revisions = [row for row in document["statements"] if row["concept_leaf"] == "estimate.revision"]
+        self.assertEqual(len(revisions), 1)
+        self.assertIn("raising", revisions[0]["evidence_spans"][0]["quote"])
+
+    def test_causal_mover_headline_is_explain_move(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-mover-purpose", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Shares Jump After Product Approval",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) shares jumped after regulators approved its product.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "explain_move")
+
+    def test_macro_and_multi_asset_market_headlines_are_market_overviews(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-market-overview", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Stock Futures Fall As Investors Await Jobless Claims",
+            "text": "S&P 500 futures fell while investors awaited the weekly jobless claims report.",
+        })
+        self.assertEqual(document["envelope"]["document_structure"]["value"], "market_overview")
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "recap")
+
+    def test_analyst_rating_and_target_shorthand_are_supported(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-analyst-shorthand", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Research firm maintains Equal-Weight and lowers PO",
+            "text": "The analyst maintains Alpha Therapeutics Inc (NASDAQ:AAA) at Equal-Weight and lowers its PO to $18.",
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("analyst.rating_action", concepts)
+        self.assertIn("analyst.price_target_action", concepts)
+
+    def test_earnings_schedule_requires_calendar_evidence_not_forecast(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-earnings-schedule", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha earnings preview",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) will release earnings results after market close on Tuesday. "
+                "An analyst expects the company will report a strong earnings beat."
+            ),
+            "tickers": ["AAA"],
+        })
+        schedules = [row for row in document["statements"] if row["concept_leaf"] == "earnings.release_schedule"]
+        self.assertEqual(len(schedules), 1)
+        self.assertIn("Tuesday", schedules[0]["evidence_spans"][0]["quote"])
+
+    def test_quantified_cost_reduction_is_cost_efficiency(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-cost-efficiency", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha efficiency update",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) reduced operating expenses and expects $12 million in annualized savings.",
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("operations.cost_efficiency", concepts)
+
+    def test_quantified_job_creation_is_workforce_event(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-workforce", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha expands seasonal workforce",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) is creating 600 seasonal jobs and will convert qualified employees into full-time roles.",
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("operations.workforce", concepts)
+
     def test_prelisting_identity_and_unrendered_text_fail_closed(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((
             IssuerIdentity("NEW", "issuer:new", "New Company", ("New Company",), "NASDAQ", list_date=date(2026, 8, 5)),

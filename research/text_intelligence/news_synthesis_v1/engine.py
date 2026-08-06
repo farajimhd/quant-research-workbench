@@ -102,8 +102,8 @@ def _rule(concept: str, terms: str, kind: str = "event", *, positive: Sequence[s
 
 
 RULES = (
-    _rule("analyst.rating_action", r"\b(?:upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?|rates?|rating)\b(?:.{0,100})\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|rating)\b|\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral)\s+rating\b", "assessment", positive=("upgrade", "buy", "outperform", "overweight"), negative=("downgrade", "sell", "underperform", "underweight")),
-    _rule("analyst.price_target_action", r"\b(?:price target|target price|PT)\b", "forecast", positive=("raises", "raised", "higher", "increases"), negative=("cuts", "cut", "lowers", "lowered")),
+    _rule("analyst.rating_action", r"\b(?:upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?|rates?|ratings?)\b(?:.{0,100})\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|equal[- ]weight|sector perform|market perform|rating)\b|\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|equal[- ]weight|sector perform|market perform)\s+rating\b|\banalysts? (?:have )?(?:provided|published|offered).{0,60}ratings?\b", "assessment", positive=("upgrade", "buy", "outperform", "overweight"), negative=("downgrade", "sell", "underperform", "underweight")),
+    _rule("analyst.price_target_action", r"\b(?:price target|target price|price objective|PO|P/T|\$\d+(?:\.\d+)? target|target on)\b", "forecast", positive=("raises", "raised", "higher", "increases"), negative=("cuts", "cut", "lowers", "lowered")),
     _rule("earnings.performance", r"\b(?:earnings|EPS|revenues?|sales|net income|profit|quarterly results?|financial results?)\b.{0,180}\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|above|below|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|fell|declin(?:e|ed)|grew|increase[sd]?|decrease[sd]?|loss)\b|\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|rose|fell|grew)\b.{0,100}\b(?:earnings|EPS|revenues?|sales|profit|results?)\b", positive=("beat", "above", "better-than-expected", "grew", "rose", "record", "increase"), negative=("miss", "below", "weaker-than-expected", "fell", "decline", "decrease", "loss")),
     _rule("guidance.issued", r"\b(?:issues?|provid(?:e|es|ed)|guid(?:e|es|ed)|raises?|lower(?:s|ed)?|cuts?|reaffirms?|withdraws?|updates?)\b.{0,100}\b(?:guidance|outlook|forecast|revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:guidance|outlook)\b.{0,100}\b(?:raised|lowered|cut|reaffirmed|withdrawn|unchanged|expects?)\b|\b(?:sees|expects?|anticipates?|projects?)\b.{0,120}\b(?:revenue|sales|earnings|EPS|EBITDA|growth|margin)\b", "forecast", positive=("raise", "increas", "reaffirm", "higher"), negative=("cut", "lower", "withdraw", "reduce", "weaker")),
     _rule("corporate_transaction.acquisition", r"\b(?:acquir(?:e|es|ed|ing)|acquisition|merger|takeover)\b", positive=("agreed", "complete", "closes", "approved"), negative=("terminate", "withdraw", "no longer pursue", "blocked")),
@@ -119,7 +119,7 @@ RULES = (
     _rule("product.milestone", r"\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|roll(?:s|ed)? out|recall|discontinue)\w*\b.{0,100}\b(?:product|platform|service|device|drug|treatment|vehicle|system|game|headset|candidate)\b|\b(?:product|device|drug|treatment|service|game|headset)\b.{0,100}\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|recall|discontinue|delay)\w*\b|\b(?:new products?|product delay|(?:lead|investigational) (?:product candidate|drug|treatment|therapy|antibody)|delivery system)\b", positive=("launch", "unveil", "reveal", "debut", "commercializ", "introduc", "approval", "new"), negative=("recall", "delay", "discontinue")),
     _rule("governance.management_change", r"\b(?:appoints?|names?|elects?|resigns?|retires?|steps down|terminates?|replaces?)\b.{0,100}\b(?:chief executive|chief financial|CEO|CFO|president|director|board)\b|\b(?:chief executive|chief financial|CEO|CFO|president|director)\b.{0,80}\b(?:resigns?|retires?|steps down|appointed|named|terminated|replaced)\b", negative=("resign", "terminated", "steps down")),
     _rule("operations.business_update", r"\b(?:business update|restructur|layoff|shutdown|expansion|job cuts?|workforce reduction|service unaffected|operations? unaffected|opens? (?:a )?(?:store|facility|dispensary)|business performance)\w*\b", positive=("expansion", "growth", "unaffected", "opens"), negative=("layoff", "shutdown", "restructur", "cuts")),
-    _rule("earnings.release_schedule", r"\b(?:will report|scheduled to report|set to report|reports? .{0,40} on (?:Monday|Tuesday|Wednesday|Thursday|Friday)|earnings (?:date|call|release)|upcoming earnings)\b", "reference"),
+    _rule("earnings.release_schedule", r"\b(?:will (?:report|release|post)|will be reporting|scheduled to report|set to (?:report|announce)|reports? .{0,60} on (?:Monday|Tuesday|Wednesday|Thursday|Friday)|release earnings results|release .{0,40} financial results|earnings (?:date|call beginning|release)|after (?:the )?(?:opening|closing) bell|before (?:the )?opening bell|after market (?:close|hours)|ahead of .{0,30}(?:Q[1-4]|quarterly) earnings .{0,30}(?:Monday|Tuesday|Wednesday|Thursday|Friday))\b", "reference"),
     _rule("earnings.restatement", r"\b(?:restate|restatement|should no longer be relied upon)\b", negative=("restate", "no longer be relied")),
     _rule("capital.deleveraging", r"\b(?:deleverag|debt repayment|repay(?:s|ed)? .*debt|reduce(?:s|d)? .*debt)\w*\b", positive=("deleverag", "repay", "reduce")),
     _rule("capital.structure", r"\b(?:authorized shares|outstanding shares|share consolidation|capital structure)\b"),
@@ -131,13 +131,13 @@ RULES = (
     _rule("financial.loss_exposure", r"\b(?:impairment|write[- ]?down|charge|loss exposure)\b", negative=("impairment", "write", "charge", "loss")),
     _rule("financial.internal_control", r"\b(?:material weakness|internal controls?|control deficiency)\b", negative=("weakness", "deficiency", "ineffective")),
     _rule("financial.credit_quality", r"\b(?:credit rating|credit quality|rating agency)\b", positive=("upgrade", "improv"), negative=("downgrade", "deterior")),
-    _rule("estimate.revision", r"\b(?:estimate|consensus)\b.{0,180}\b(?:raised|lowered|revised|cut|increased|reduced)\b|\b(?:raised|lowered|revised|cut|increased|reduced)\b.{0,180}\b(?:estimate|consensus)\b|\banalysts? estimate\b", "forecast", positive=("raised", "higher", "increased"), negative=("lowered", "cut", "reduced")),
+    _rule("estimate.revision", r"\b(?:estimates?|consensus)\b.{0,180}\b(?:rais(?:e|ed|ing)|lower(?:ed|ing)?|revis(?:e|ed|ing)|cut|increas(?:e|ed|ing)|reduc(?:e|ed|ing)|come down|adjust(?:ed|ing))\b|\b(?:rais(?:e|ed|ing)|lower(?:ed|ing)?|revis(?:e|ed|ing)|cut|increas(?:e|ed|ing)|reduc(?:e|ed|ing)|adjust(?:ed|ing))\b.{0,180}\b(?:estimates?|consensus)\b", "forecast", positive=("raise", "higher", "increase"), negative=("lower", "cut", "reduce", "come down")),
     _rule("ownership.position_change", r"\b(?:stake|ownership|position in|shares? of)\b.{0,160}\b(?:increased|decreased|sold|bought|acquired|trimmed|exited)\b|\b(?:increased|decreased|sold|bought|acquired|trimmed|exited)\b.{0,160}\b(?:stake|position in|shares? of)\b", positive=("increased", "bought", "acquired"), negative=("decreased", "sold", "trimmed", "exited")),
     _rule("ownership.position", r"\b(?:owns? .{0,80}(?:shares?|stake)|ownership (?:stake|interest)|beneficial owner|stake in|position in .{0,80}(?:stock|shares?|company))\b", "background"),
     _rule("commercial.partnership", r"\b(?:partnership|collaboration|strategic alliance|joint venture)\b", positive=("partnership", "collaboration", "alliance")),
     _rule("commercial.demand_condition", r"\b(?:strong|robust|growing|increas(?:e|ed|ing)|record|higher|weak|soft|slower|lower|declin(?:e|ed|ing)|falling|delayed|pent-up)\b.{0,80}\b(?:demand|bookings|orders?|backlog|customer additions?|subscribers?|appetite)\b|\b(?:customer|consumer|client|market) demand\b|\bdemand (?:for|from)\b|\bappetite for\b|\b(?:bookings|orders?|backlog|subscribers?)\b.{0,80}\b(?:grew|rose|increased|declined|fell|decreased|record|strong|weak)\b|\b(?:customers? lost|shortages?|client purchasing)\b", positive=("strong", "robust", "growing", "increase", "record", "higher", "appetite"), negative=("weak", "soft", "declin", "slow", "lower", "lost", "shortage", "delayed", "falling")),
     _rule("commercial.competitive_position", r"\b(?:market share|competitive position|competition|competitor|competitive advantage|market leader|largest .{0,50}(?:company|provider|operator|producer)|first and only|well-positioned)\b", positive=("gain", "leading", "leader", "largest", "advantage", "first and only", "well-positioned"), negative=("lose", "pressure", "challeng")),
-    _rule("operations.workforce", r"\b(?:layoffs?|job cuts?|workforce reduction|hires?|headcount)\b", negative=("layoff", "cut", "reduction")),
+    _rule("operations.workforce", r"\b(?:layoffs?|job cuts?|workforce reduction|hires?|headcount|seasonal jobs?|creat(?:e|es|ed|ing) .{0,50}jobs?|jobs? (?:created|during construction)|employs? (?:over|approximately|about|more than)?\s*\d|workforce of \d|convert(?:s|ed|ing)? .{0,50}employees? (?:into|to)|welcome back .{0,30}workers?|train .{0,30}(?:new )?(?:workers?|employees?))\b", positive=("hire", "create", "convert", "welcome back"), negative=("layoff", "cut", "reduction")),
     _rule("operations.capacity_change", r"\b(?:capacity|facility|plant|factory)\b.*\b(?:expand|open|close|shutdown|increase|reduce)\w*\b", positive=("expand", "open", "increase"), negative=("close", "shutdown", "reduce")),
     _rule("governance.auditor_change", r"\b(?:auditor|accounting firm)\b.*\b(?:resign|dismiss|appoint|replace)\w*\b", negative=("resign", "dismiss")),
     _rule("governance.shareholder_vote", r"\b(?:shareholder|stockholder)\b.*\b(?:vote|meeting|proposal)\b"),
@@ -157,7 +157,7 @@ RULES = (
     _rule("market.money_flow_observed", r"\b(?:money flows?|fund flows?|inflows?|outflows?|buying pressure|selling pressure)\b", "market_observation", positive=("positive", "inflow", "buying"), negative=("negative", "outflow", "selling")),
     _rule("analyst.issuer_assessment", r"\b(?:analyst|brokerage|research firm|investment firm)\b.{0,180}\b(?:believes?|expects?|sees?|views?|said|positive|negative|bullish|bearish|upside|downside)\b|\b(?:we|the firm)\s+(?:believe|see|recommend|remain confident|expect)\b", "assessment", positive=("positive", "bullish", "upside", "strong", "well-positioned", "recommend", "confident"), negative=("negative", "bearish", "downside", "weak")),
     _rule("strategy.valuation_assessment", r"\b(?:valuation|valued|multiple|price[- ]to[- ]earnings|P/E|PE|PEG ratio|undervalued|overvalued|cheap|expensive|fully reflect|buyer (?:at|around))\b", "assessment", positive=("undervalued", "cheap", "attractive", "buyer"), negative=("overvalued", "expensive", "premium", "fully reflect")),
-    _rule("operations.cost_efficiency", r"\b(?:cost savings?|cost reduction|reduce(?:s|d)? costs?|expense reduction|efficiency program|productivity initiative)\b", positive=("savings", "reduction", "efficiency", "productivity"), negative=("higher costs", "cost pressure")),
+    _rule("operations.cost_efficiency", r"\b(?:cost savings?|cost reduction|reduce(?:s|d|ing)? (?:its )?costs?|reduc(?:e|es|ed|ing) operating expenses?|expense reduction|efficiency program|productivity initiative|annual(?:ized)? savings|savings (?:in|on|from) .{0,50}costs?|lower .{0,40}costs?|costs? (?:dropped|declined|decreased)|contain costs?|control .{0,30}costs?|total cost of ownership|cost[- ]effectiveness)\b", positive=("savings", "reduction", "reduce", "lower", "efficiency", "productivity", "dropped", "declined"), negative=("higher costs", "cost pressure")),
     _rule("macro.policy_outlook", r"\b(?:central bank|Federal Reserve|Fed|government|policy makers?)\b.{0,160}\b(?:policy|stimulus|rate cuts?|rate hikes?|tighten|ease|intervention)\b|\b(?:monetary|fiscal) policy\b", "forecast"),
     _rule("commodity.inventory", r"\b(?:crude oil|oil|natural gas|gasoline) inventor(?:y|ies)\b|\binventor(?:y|ies)\b.{0,80}\b(?:barrels?|crude|oil|gas)\b", "market_observation", positive=("draw", "decline", "fell"), negative=("build", "increase", "rose")),
     _rule("strategy.operational_priority", r"\b(?:strategic priority|operational priority|focus(?:ed|es|ing)? on|plans? to prioritize|key initiative|strategic objective)\b", "assessment"),
@@ -212,6 +212,9 @@ class NewsSynthesisEngine:
         for start, end, quote in _sentence_spans(text):
             if len(quote) < 8:
                 continue
+            if _boilerplate_sentence(quote):
+                previous_end = end
+                continue
             if "\n\n" in text[previous_end:start]:
                 previous_entity_ids = ()
             matched_rules = [rule for rule in self.rules if rule.pattern.search(quote) and _rule_applicable(rule, quote)]
@@ -237,13 +240,27 @@ def _envelope(title: str, text: str, source: Mapping[str, Any], entity_count: in
     author = str(source.get("author") or "").strip().casefold()
     article_url = str(source.get("article_url") or source.get("url_domain") or "").casefold()
     list_title = bool(re.search(r"\b(?:calendar|watch list|stocks to watch|top \d+|\d+ stocks|analyst color|price target changes)\b", title, re.I))
-    market_overview = bool(re.search(r"\b(?:market|morning)\s+(?:wrap|overview|recap|update|capsule)\b|\bbig picture\b", combined, re.I))
+    market_overview = bool(re.search(
+        r"\b(?:market|morning)\s+(?:wrap|overview|recap|update|capsule)\b|\bbig picture\b|"
+        r"\b(?:stock|index|treasury|commodity|currency|forex|cattle|sugar|natural gas|crude oil) futures?\b|"
+        r"\b(?:dollar index|forex:|wall street|what'?s moving markets|S&P 500 (?:turns|futures?|extends?|falls?|rises?))\b|"
+        r"\b(?:jobless claims|gross domestic product|GDP|consumer prices?|CPI|pending home sales|wholesale inventories|crude oil inventories)\b|"
+        r"\bBitcoin\b.{0,120}\bEthereum\b",
+        combined,
+        re.I,
+    ))
     digest = bool(ROUNDUP_RE.search(title) or re.search(r"\b(?:movers|gainers|losers|market roundup|analyst ratings|stocks? to watch|top (?:upgrades|downgrades)|catalysts? to watch|tweets? for)\b", title, re.I))
     if list_title: structure = "reference_list"
     elif market_overview: structure = "market_overview"
     elif digest: structure = "multi_subject_digest"
     else: structure = "single_subject"
-    if WHY_MOVING_RE.search(title) or re.search(r"\bwhy (?:the |is |are )?.{0,80}(?:stock|shares?) (?:is |are )?(?:moving|up|down|trading)\b", title, re.I): purpose = "explain_move"
+    causal_mover = bool(
+        WHY_MOVING_RE.search(title)
+        or re.search(r"\b(?:why|what(?:'s| is) (?:up|going on) with)\b.{0,100}\b(?:shares?|stock)\b", title, re.I)
+        or re.search(r"\b(?:shares?|stock)\b.{0,80}\b(?:up|down|higher|lower|rall(?:y|ies|ied|ying)|surg(?:e|es|ed|ing)|soar(?:s|ed|ing)?|spik(?:e|es|ed|ing)|jump(?:s|ed|ing)?|fall(?:s|ing)?|fell|rose|gain(?:s|ed)?|drop(?:s|ped|ping)?|slid(?:e|ing)?|sink(?:s|ing)?|sank|crash(?:es|ed|ing)?|hammered|unaffected)\b.{0,80}\b(?:after|following|on|as|amid|because|here'?s why)\b", title, re.I)
+        or re.search(r"\b(?:shares?|stock)\s+(?:are\s+)?trading\s+(?:up|down|higher|lower)\b.{0,80}\b(?:after|following|on|as|amid)\b", title, re.I)
+    )
+    if causal_mover and not market_overview: purpose = "explain_move"
     elif list_title or re.search(r"\b(?:ahead of|preview|what to expect|will report|scheduled|to watch)\b", title, re.I): purpose = "preview"
     elif structure in {"market_overview", "multi_subject_digest"}: purpose = "recap"
     elif re.search(r"\b(?:analysis|technical analysis|what investors should know|what you need to know|case for|bull case|bear case|valuation|outlook for)\b", combined, re.I): purpose = "analyze"
@@ -301,6 +318,11 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
         projected = re.search(r"\b(?:forecast|guidance|project(?:s|ed)?|estimate[sd]?|anticipates?|expects?|sees|potential|could|may)\b", text, re.I)
         observed = re.search(r"\b(?:reported|actual|trailing[- ]twelve[- ]month|TTM|beat|miss(?:ed|es)?|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|fell|grew|declined|slipped|climbed|increased|decreased|recovered|record)\b", text, re.I)
         if projected and not observed:
+            return False
+    if rule.concept == "earnings.release_schedule":
+        analyst_prediction = re.search(r"\b(?:analysts?|the analyst|argued|expects?|forecasts?|projects?)\b", text, re.I)
+        concrete_time = re.search(r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|today|tomorrow|before the bell|after (?:the )?bell|market close|market hours|\w+ \d{1,2})\b", text, re.I)
+        if analyst_prediction and not concrete_time:
             return False
     if rule.concept == "market.price_move_observed" and re.search(r"\b(?:dollar index|currency|forex|euro|yen|yuan|pound sterling)\b", text, re.I):
         return False
@@ -364,6 +386,17 @@ def _issuer_scoped_concept(concept: str) -> bool:
         "credit.", "earnings.", "estimate.", "financial.", "governance.", "guidance.",
         "legal.", "listing.", "operations.", "ownership.", "product.", "regulatory.",
         "strategy.", "technology.",
+    ))
+
+
+def _boilerplate_sentence(text: str) -> bool:
+    """Reject navigation and ingestion metadata without altering authoritative source offsets."""
+    value = text.lstrip(" -\t")
+    return bool(re.match(
+        r"(?:related (?:links?|news|articles?)|also read|read more|continue reading|see also|source \[(?:external|provider_body)|"
+        r"image:|disclaimer:|click here|enter a symbol|analyze any stock|free stock analysis|to track all upcoming earnings)\b",
+        value,
+        re.I,
     ))
 
 
