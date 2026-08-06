@@ -4,7 +4,7 @@
 
 - Follow this file and any more-specific `AGENTS.md` files below the files being changed.
 - Start with the requested directory and inspect neighboring areas only when imports, contracts, tests, or runtime behavior require it.
-- Use `docs/codex/REPO_MAP.md` for repository boundaries and `docs/codex/task-profiles/` for task-specific procedures.
+- Consult `docs/codex/REPO_MAP.md` or the applicable `docs/codex/task-profiles/` procedure when scope, ownership, or the required workflow is unclear.
 
 ## Source and runtime authority
 
@@ -28,12 +28,10 @@
 
 ## Continuity and task history
 
-- Read `TASK_HISTORY.md` Current Focus and the relevant rows of `TASK_HISTORY.csv` before substantive work.
-- Read `CHAT_SUMMARIES.md` and only the linked detailed summaries relevant to the requested area; do not load the complete archive.
+- For work that changes a durable architecture, service, data authority, or active task area, read `TASK_HISTORY.md` Current Focus plus only the relevant `TASK_HISTORY.csv` row and linked `CHAT_SUMMARIES.md` narrative. Skip continuity reads for bounded fixes unless continuity is plausibly material; never load the complete archive.
 - Treat the latest user clarification as authoritative and reconcile it explicitly with stale history. Use `docs/codex/CHAT_SUMMARY_PROMPT.md` when creating or refreshing narrative summaries.
 - Read-only questions and transient status checks do not require a new task row.
-- For a durable outcome, create or refresh one `TASK_HISTORY.csv` row near the start, keep `current_focus` accurate, and run `python scripts/render_task_history.py` after editing the CSV.
-- Before a related commit, update the row with progress, validation, remaining dependency, and program contribution; commit the CSV and rendered Markdown together.
+- At the conclusion of substantive work, ask the user whether task history should be updated before creating or changing a `TASK_HISTORY.csv` row. If requested, keep `current_focus` accurate, record progress, validation, remaining dependency, and program contribution, then run `python scripts/render_task_history.py` and commit the CSV and rendered Markdown together.
 
 ## Correctness and validation
 
@@ -49,5 +47,5 @@
 
 ## Delivery
 
-- Stage only relevant durable source files, use a meaningful conventional commit message, commit, and push the configured branch after validation.
+- After validating a file-changing task, stage only the durable source files changed for that task, use a meaningful conventional commit message, commit, and push the configured branch. Never stage, commit, or push unrelated pre-existing user changes.
 - Do not commit generated artifacts, caches, logs, screenshots, temporary files, or secrets.
