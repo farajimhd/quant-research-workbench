@@ -24,8 +24,8 @@ from .engine import (
 from .taxonomy_audit import discover_pairs, load_json
 
 
-AUDIT_VERSION = "direct_trading_sentiment_audit_v9"
-IDENTITY_SNAPSHOT_VERSION = "news_synthesis_benchmark_identity_snapshot_v1"
+AUDIT_VERSION = "direct_trading_sentiment_audit_v10"
+IDENTITY_SNAPSHOT_VERSION = "news_synthesis_benchmark_identity_snapshot_v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +36,11 @@ class AuditPopulation:
     identity_articles: tuple[dict[str, Any], ...]
 
 
-def article_source(article: Mapping[str, Any]) -> dict[str, Any]:
+def article_source(
+    article: Mapping[str, Any],
+    *,
+    additional_tickers: Iterable[str] = (),
+) -> dict[str, Any]:
     publication = article.get("publication", {})
     rendered = article.get("rendered_product", {})
     return {
@@ -47,7 +51,10 @@ def article_source(article: Mapping[str, Any]) -> dict[str, Any]:
         "article_url": publication.get("article_url", ""),
         "url_domain": publication.get("url_domain", ""),
         "text": rendered.get("text", ""),
-        "tickers": publication.get("provider_tickers", []),
+        "tickers": list(dict.fromkeys((
+            *(str(value) for value in publication.get("provider_tickers", []) if value),
+            *(str(value) for value in additional_tickers if value),
+        ))),
         "channels": publication.get("channels", []),
         "provider_tags": publication.get("provider_tags", []),
         "content_quality_flags": publication.get("content_quality_flags", []),
@@ -90,6 +97,8 @@ def load_population() -> AuditPopulation:
 
 def build_benchmark_identity_snapshot(
     articles: Iterable[Mapping[str, Any]],
+    *,
+    supplemental_tickers: Iterable[str] = (),
 ) -> tuple[IssuerIdentityIndex, dict[str, Any]]:
     """Build prediction-blind offline identity evidence for reproducible audits.
 
@@ -100,7 +109,12 @@ def build_benchmark_identity_snapshot(
     """
     articles = tuple(articles)
     aliases_by_ticker: dict[str, set[str]] = defaultdict(set)
-    tickers: set[str] = set()
+    tickers: set[str] = {
+        ticker
+        for value in supplemental_tickers
+        if (ticker := _normalize_ticker_identifier(value))
+        and re.fullmatch(r"(?:(?:TSX|TSXV|CSE):)?[A-Z][A-Z0-9.\-]{0,9}", ticker)
+    }
     for article in articles:
         publication = article.get("publication", {})
         rendered = article.get("rendered_product", {})
@@ -194,7 +208,7 @@ def build_benchmark_identity_snapshot(
     )
     snapshot = {
         "version": IDENTITY_SNAPSHOT_VERSION,
-        "source": "prediction_blind_candidate_contract_and_provider_identifiers",
+        "source": "prediction_blind_candidate_contract_provider_and_reviewed_candidate_identifiers",
         "production_authority": False,
         "article_count": len(articles),
         "identity_count": len(snapshot_rows),
@@ -223,8 +237,15 @@ def generate_audit(
     previous_manifest: Path | None = None,
 ) -> dict[str, Any]:
     population = load_population()
+    reviewed_candidate_tickers = {
+        str(value)
+        for annotation in population.annotations.values()
+        for value in annotation.get("candidate_tickers", ())
+        if value
+    }
     identity_index, snapshot = build_benchmark_identity_snapshot(
-        population.identity_articles
+        population.identity_articles,
+        supplemental_tickers=reviewed_candidate_tickers,
     )
     engine = NewsSynthesisEngine(identity_index)
     if output_root.exists():
@@ -251,7 +272,10 @@ def generate_audit(
         eligible_news.add(sample_id)
         eligible_units += len(units)
         try:
-            prediction = engine.synthesize(article_source(article))
+            prediction = engine.synthesize(article_source(
+                article,
+                additional_tickers=(str(unit.get("ticker") or "") for unit in units),
+            ))
         except Exception as exc:
             prediction = {}
             failures.append(

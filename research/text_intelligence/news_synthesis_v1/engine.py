@@ -13,7 +13,7 @@ from .facts import extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v1"
+ENGINE_VERSION = "news_synthesis_engine_v2"
 EXCHANGE_TICKER_RE = re.compile(r"\b(?:NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*([A-Z][A-Z0-9.\-]{0,9})\b", re.I)
 CASHTAG_RE = re.compile(r"(?<![A-Z0-9])\$([A-Z][A-Z0-9.\-]{0,9})\b")
 ROUNDUP_RE = re.compile(r"\b(?:stocks?|companies|biggest movers?|gainers?|losers?)\s+(?:moving|to watch)|\bmarket\s+(?:wrap|recap|update)\b", re.I)
@@ -255,12 +255,13 @@ class NewsSynthesisEngine:
         title = str(source.get("title") or "").strip()
         body = str(source.get("text") or source.get("rendered_text") or "").strip()
         text = body or title
+        identity_text = text if not title or _normalize_alias(title) in _normalize_alias(text) else f"{title}\n{text}"
         source_field = "rendered_text" if body and body != title else "title"
         if not source_id or not timestamp or not text:
             raise ValueError("source_id, source_timestamp, and source text are required")
         tickers = tuple(str(value) for value in source.get("tickers") or source.get("entity_terms") or () if value)
-        entities = self.identity_index.resolve(text=text, candidates=tickers, timestamp=timestamp)
-        if _has_issuer_scoped_rule(text, self.rules):
+        entities = self.identity_index.resolve(text=identity_text, candidates=tickers, timestamp=timestamp)
+        if _has_issuer_scoped_rule(identity_text, self.rules) or _has_issuer_event_assertion(identity_text):
             entity_ids = {str(entity["entity_id"]) for entity in entities}
             for candidate in self.identity_index.supported_candidates(
                 candidates=tickers,
@@ -275,7 +276,13 @@ class NewsSynthesisEngine:
             str(entity["entity_id"]): self.identity_index.mention_terms(entity)
             for entity in entities
         }
-        statements, participations = self._statements(text, entities, source_field, mention_terms)
+        statements, participations = self._statements(
+            text,
+            entities,
+            source_field,
+            mention_terms,
+            title=title,
+        )
         flags = _quality_flags(source, entities, text)
         views = derive_issuer_views(entities, participations, statements=statements)
         synthesis = derive_synthesis(entities=entities, statements=statements, participations=participations, issuer_views=views)
@@ -300,6 +307,8 @@ class NewsSynthesisEngine:
         entities: Sequence[Mapping[str, Any]],
         source_field: str,
         mention_terms: Mapping[str, Sequence[str]],
+        *,
+        title: str = "",
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         statements: list[dict[str, Any]] = []
         participations: list[dict[str, Any]] = []
@@ -309,6 +318,7 @@ class NewsSynthesisEngine:
         previous_end = 0
         guidance_rule = next(rule for rule in self.rules if rule.concept == "guidance.issued")
         earnings_rule = next(rule for rule in self.rules if rule.concept == "earnings.performance")
+        rules_by_concept = {rule.concept: rule for rule in self.rules}
         for start, end, quote in _semantic_spans(text):
             if len(quote) < 8:
                 continue
@@ -380,6 +390,80 @@ class NewsSynthesisEngine:
             previous_guidance = any(rule.concept == "guidance.issued" for rule, _match in matched_rules)
             previous_performance = any(rule.concept == "earnings.performance" for rule, _match in matched_rules)
             previous_end = end
+
+        issuer_statements = [
+            statement
+            for statement in statements
+            if _issuer_scoped_concept(str(statement.get("concept_leaf") or ""))
+        ]
+        event_probe = text if not title or _normalize_alias(title) in _normalize_alias(text) else f"{title}\n{text}"
+        if entities and not issuer_statements and _has_issuer_event_assertion(event_probe):
+            fallback_rule = rules_by_concept["operations.business_update"]
+            if title and _normalize_alias(title) not in _normalize_alias(text):
+                fallback_start, fallback_end, fallback_quote = 0, len(title), title
+                fallback_source_field = "title"
+            else:
+                fallback_start, fallback_end, fallback_quote = next(
+                    (
+                        span
+                        for span in _semantic_spans(text)
+                        if len(span[2].strip()) >= 8 and not _boilerplate_sentence(span[2])
+                    ),
+                    (0, len(text), text),
+                )
+                fallback_source_field = source_field
+            statement = {
+                "statement_id": f"s{len(statements) + 1:04d}",
+                "statement_kind": fallback_rule.statement_kind,
+                "concept_leaf": fallback_rule.concept,
+                "epistemic_status": _epistemic(fallback_quote),
+                "time_relation": _time_relation(fallback_quote, fallback_rule.statement_kind),
+                "evidence_spans": [{
+                    "source_field": fallback_source_field,
+                    "start": fallback_start,
+                    "end": fallback_end,
+                    "quote": fallback_quote,
+                }],
+                "typed_facts": extract_typed_facts([{
+                    "source_field": fallback_source_field,
+                    "start": fallback_start,
+                    "end": fallback_end,
+                    "quote": fallback_quote,
+                }]),
+            }
+            statements.append(statement)
+            issuer_statements.append(statement)
+
+        participating_ids = {
+            str(participation.get("entity_id") or "")
+            for participation in participations
+        }
+        for entity in entities:
+            entity_id = str(entity.get("entity_id") or "")
+            if not entity_id or entity_id in participating_ids:
+                continue
+            for statement in issuer_statements:
+                rule = rules_by_concept.get(str(statement.get("concept_leaf") or ""))
+                if rule is None:
+                    continue
+                quote = str((statement.get("evidence_spans") or [{}])[0].get("quote") or "")
+                role = _semantic_role(quote, entity, rule.concept)
+                sentiment, strength = _sentiment(
+                    quote,
+                    rule,
+                    role,
+                    statement.get("typed_facts", ()),
+                    entity=entity,
+                    mention_terms=mention_terms.get(entity_id, ()),
+                )
+                participations.append({
+                    "statement_id": statement["statement_id"],
+                    "entity_id": entity_id,
+                    "semantic_role": role,
+                    "discourse_role": "none",
+                    "semantic_sentiment": sentiment,
+                    "sentiment_strength": strength,
+                })
         return statements, participations
 
 
@@ -1183,6 +1267,40 @@ def _has_issuer_scoped_rule(
         and _rule_applicable(rule, text)
         for rule in rules
     )
+
+
+_ISSUER_EVENT_ASSERTION_RE = re.compile(
+    r"\b(?:announc\w*|report\w*|say(?:s|ing)?|said|see(?:s|ing)?|expect\w*|"
+    r"grant\w*|approv\w*|authoriz\w*|launch\w*|introduc\w*|deliver\w*|obtain\w*|"
+    r"secur\w*|enter\w*|expand\w*|partner\w*|acquir\w*|buy(?:s|ing)?|"
+    r"sell\w*|reject\w*|offer\w*|file\w*|rais\w*|cut\w*|"
+    r"increase\w*|decrease\w*|declin\w*|gain\w*|loss(?:es)?|miss\w*|"
+    r"target\w*|activist\b|block\w*|ban\w*|restrict\w*|export\w*|"
+    r"beat\w*|inline|up\s+\d|down\s+\d|outages?|layoffs?|job cuts?|"
+    r"tender offer|takeover|merger|bid\b|stake\b|patent\b|study results?|"
+    r"clinical data|guidance\b|outlook\b|EPS\b|revenues?\b|sales\b|loan\b|"
+    r"(?:soft\w*|weak\w*|lukewarm|strong|rising|declining|slowing|consumer)\s+demand|"
+    r"demand\s+(?:softness|weakness|strength|growth|decline)|"
+    r"price target|rating\b|delisting|non[- ]compliance|special meeting|"
+    r"commercializ\w*|compelling\b|record\b|approval\b|authorization\b|FDA nod\b)\b",
+    re.I,
+)
+
+
+def _has_issuer_event_assertion(text: str) -> bool:
+    """Recognize event-bearing issuer text independently of concept coverage."""
+    if re.search(
+        r"\b(?:inflation|consumer price index|producer price index|unemployment|"
+        r"nonfarm payrolls?|jobless claims|gross domestic product)\b",
+        text,
+        re.I,
+    ) and not re.search(
+        r"\b(?:company|corporation|inc\.?|ltd\.?|plc|shares?|stock|issuer|management|board)\b",
+        text,
+        re.I,
+    ):
+        return False
+    return bool(_ISSUER_EVENT_ASSERTION_RE.search(text))
 
 
 def _boilerplate_sentence(text: str) -> bool:

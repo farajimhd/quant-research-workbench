@@ -49,6 +49,36 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(document["entities"], [])
         self.assertIn("unresolved_identity", document["quality_flags"])
 
+    def test_provider_candidate_event_gets_fallback_issuer_view(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-provider-fallback",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Unfamiliar issuer obtains industry certification",
+            "text": "Unfamiliar issuer obtains industry certification.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual([row["ticker"] for row in document["entities"]], ["AAA"])
+        self.assertEqual(len(document["issuer_views"]), 1)
+        self.assertIn(
+            "operations.business_update",
+            {row["concept_leaf"] for row in document["statements"]},
+        )
+
+    def test_in_scope_provider_candidates_cannot_remain_statement_unbound(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-multi-provider-coverage",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha wins contract involving Beta",
+            "text": "Alpha Therapeutics Inc wins a contract involving Beta Holdings Corp.",
+            "tickers": ["AAA", "BBB"],
+        })
+        views_by_ticker = {
+            next(entity["ticker"] for entity in document["entities"] if entity["entity_id"] == view["entity_id"]): view
+            for view in document["issuer_views"]
+        }
+        self.assertEqual(set(views_by_ticker), {"AAA", "BBB"})
+        self.assertTrue(all(view["statement_ids"] for view in views_by_ticker.values()))
+
     def test_provider_candidate_can_scope_a_supported_single_issuer_event(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-provider-event",

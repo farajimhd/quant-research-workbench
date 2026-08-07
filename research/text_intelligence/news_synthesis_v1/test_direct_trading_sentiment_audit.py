@@ -3,12 +3,37 @@ from __future__ import annotations
 import unittest
 
 from .direct_trading_sentiment_audit import (
+    article_source,
     build_benchmark_identity_snapshot,
     compare_manifests,
 )
 
 
 class DirectTradingSentimentAuditTests(unittest.TestCase):
+    def test_article_source_adds_evaluation_scope_without_replacing_provider_tickers(self) -> None:
+        source = article_source(
+            {
+                "source_id": "source-1",
+                "source_timestamp": "2026-08-03T12:00:00Z",
+                "publication": {"provider_tickers": ["AAA"]},
+                "rendered_product": {"text": "Issuer update"},
+            },
+            additional_tickers=("BBB", "AAA"),
+        )
+        self.assertEqual(source["tickers"], ["AAA", "BBB"])
+
+    def test_snapshot_accepts_reviewed_candidate_identifier_without_article_metadata(self) -> None:
+        index, snapshot = build_benchmark_identity_snapshot(
+            (),
+            supplemental_tickers=("VRNT",),
+        )
+        self.assertEqual([row["ticker"] for row in snapshot["identities"]], ["VRNT"])
+        supported = index.supported_candidates(
+            candidates=("VRNT",),
+            timestamp="2026-08-03T12:00:00Z",
+        )
+        self.assertEqual([row["ticker"] for row in supported], ["VRNT"])
+
     def test_snapshot_repairs_provider_candidates_and_preserves_shared_issuer(self) -> None:
         article = {
             "publication": {
