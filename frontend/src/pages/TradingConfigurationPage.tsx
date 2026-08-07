@@ -1873,9 +1873,9 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
         </div>
       </> : null}
       {activeStage === "overview" ? <>
-        <StrategyStageIntro title="When should the strategy evaluate?">The trigger starts an evaluation; it is not an entry signal. Side sets trade direction. Sessions limit entries, adds, and reentries. Protection of an existing position remains active outside those sessions.</StrategyStageIntro>
-        <TradingBehaviorEditor definition={definition} profile={profile} onChange={onProfileChange} />
-        {advanced.length ? <details className="configuration-advanced strategy-authoring-advanced"><summary><span><strong>Engine-specific parameters</strong><small>{advanced.length} implementation values; change only when the strategy definition requires it</small></span><ChevronRight size={15} /></summary><div className="configuration-field-grid">{advanced.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} value={item.value} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} />)}</div></details> : null}
+        <header className="strategy-identity-intro strategy-observe-intro"><h2>When should the strategy evaluate?</h2></header>
+        <div className="strategy-observe-fields"><TradingBehaviorEditor definition={definition} profile={profile} onChange={onProfileChange} /></div>
+        {advanced.length ? <details className="configuration-advanced strategy-authoring-advanced strategy-observe-advanced"><summary><span><strong>Engine-specific parameters</strong><small>{advanced.length} parameters</small></span><ChevronRight size={15} /></summary><div className="configuration-field-grid">{advanced.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} value={item.value} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} />)}</div></details> : null}
       </> : null}
 
       {activeStage === "entry" ? <>
@@ -1996,7 +1996,6 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
   const sessions = ["premarket", "regular", "after_hours"];
   return (
     <>
-      <p className="configuration-section-guide">Strategy logic is reusable; Run Plans, Portfolio, and OMS own runtime authority.</p>
       <div className="configuration-field-grid">
         <SelectField
           help={{
@@ -2028,7 +2027,6 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
       </div>
       <fieldset className="configuration-choice-set">
         <legend>Eligible sessions</legend>
-        <p>The strategy evaluates entries only during selected sessions. Protective exits remain active whenever a position exists.</p>
         <div>{sessions.map((session) => (
           <label key={session}>
             <input
@@ -2045,7 +2043,6 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
           </label>
         ))}</div>
       </fieldset>
-      <p className="configuration-safety-note"><PencilLine size={15} /> Side changes campaign ownership and order direction. Review every directional rule after changing it; the editor never silently reverses trading logic.</p>
     </>
   );
 }

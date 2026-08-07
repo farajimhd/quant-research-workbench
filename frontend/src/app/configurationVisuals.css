@@ -2481,6 +2481,61 @@
   font-size: 12px;
   line-height: 1.5;
 }
+.strategy-editor-guided .strategy-observe-fields {
+  display: grid;
+  gap: 34px;
+}
+.strategy-editor-guided .strategy-observe-fields > .configuration-field-grid {
+  gap: 28px 24px;
+}
+.strategy-editor-guided .strategy-observe-fields .configuration-field {
+  gap: 9px;
+}
+.strategy-editor-guided .strategy-observe-fields .configuration-field:nth-child(3) {
+  grid-column: 1 / -1;
+}
+.strategy-editor-guided .strategy-observe-fields .configuration-field > span,
+.strategy-editor-guided .strategy-observe-fields .configuration-choice-set > legend {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .055em;
+  text-transform: uppercase;
+}
+.strategy-editor-guided .strategy-observe-fields .configuration-field > small { display: none; }
+.strategy-editor-guided .strategy-observe-fields .configuration-lookup-button {
+  font-size: 15px;
+  height: 52px;
+  padding: 0 16px;
+}
+.strategy-editor-guided .strategy-observe-fields .configuration-boolean {
+  min-height: 54px;
+  padding: 14px 16px;
+}
+.strategy-editor-guided .strategy-observe-fields .configuration-choice-set {
+  border: 0;
+  border-top: 1px solid var(--configuration-rule);
+  border-radius: 0;
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 24px 0 0;
+}
+.strategy-editor-guided .strategy-observe-fields .configuration-choice-set > div {
+  gap: 12px;
+}
+.strategy-editor-guided .strategy-observe-fields .configuration-choice-set > div label {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 14px;
+  min-height: 46px;
+  padding: 10px 14px;
+}
+.strategy-editor-guided .strategy-observe-advanced {
+  background: var(--surface);
+  border-color: var(--border);
+}
 .strategy-editor-guided .strategy-guided-navigation { margin: 0 auto; padding: 22px 0 0; width: 60%; }
 .strategy-editor-guided .strategy-technical-book[hidden] { display: none; }
 
