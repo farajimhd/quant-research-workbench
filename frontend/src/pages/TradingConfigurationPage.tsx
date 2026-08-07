@@ -19,6 +19,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Search,
   Send,
   Settings2,
   ShieldCheck,
@@ -1444,6 +1445,9 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
 }) {
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
   const [activeStage, setActiveStage] = useState<StrategyAuthoringStage>("overview");
+  const [creationMode, setCreationMode] = useState<"blank" | "template" | null>(null);
+  const [creationName, setCreationName] = useState("");
+  const [creationTemplateId, setCreationTemplateId] = useState(section.profile_templates[0]?.profile_id ?? "");
   const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
   const referencingPlans = draft.assignments.deployments.filter((row) => row.profile_id === selected?.profile_id);
   useEffect(() => {
@@ -1466,23 +1470,30 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
     const id = uniqueId(`${selected.profile_id}-copy`, section.profiles.map((row) => row.profile_id));
     const next = { ...deepClone(selected), profile_id: id, name: `${selected.name} copy`, origin: "user" as const, protected: false, revision: 1 };
     onChange({ ...section, profiles: [...section.profiles, next] });
-    setSelectedId(id);
+    setSelectedId(next.profile_id);
   }
 
-  function createProfile(template?: StrategyProfile) {
-    const source = template ?? section.profiles[0];
-    const id = uniqueId("new-strategy-profile", section.profiles.map((row) => row.profile_id));
-    const next = {
-      ...deepClone(source),
-      profile_id: id,
-      name: template ? template.name : "New Strategy Profile",
-      description: template ? template.description : "Describe when and how this configured strategy should trade.",
-      origin: "user" as const,
-      protected: false,
-      revision: 1,
-    };
+  function beginProfileCreation(mode: "blank" | "template") {
+    setCreationMode(mode);
+    if (mode === "blank") setCreationName(uniqueProfileName("Untitled Strategy", section.profiles));
+    else {
+      const template = section.profile_templates.find((row) => row.profile_id === creationTemplateId) ?? section.profile_templates[0];
+      setCreationTemplateId(template?.profile_id ?? "");
+      setCreationName(uniqueProfileName(template?.name ?? "New Strategy", section.profiles));
+    }
+  }
+
+  function createProfile() {
+    const normalizedName = creationName.trim();
+    if (!creationMode || !normalizedName || section.profiles.some((row) => row.name.trim().toLocaleLowerCase() === normalizedName.toLocaleLowerCase())) return;
+    const template = section.profile_templates.find((row) => row.profile_id === creationTemplateId);
+    const next = creationMode === "template" && template
+      ? cloneStrategyProfile(template, section.profiles, normalizedName)
+      : { ...blankStrategyProfile(selected, draft), name: normalizedName };
     onChange({ ...section, profiles: [...section.profiles, next] });
-    setSelectedId(id);
+    setSelectedId(next.profile_id);
+    setCreationMode(null);
+    setCreationName("");
   }
 
   function removeProfile() {
@@ -1511,33 +1522,26 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
     !LEGACY_ENTRY_LOGIC_PATHS.has(row.path)
   ));
   const entryRules = selected.lifecycle.initial_entry;
+  const creationNameConflict = Boolean(creationName.trim()) && section.profiles.some((row) => row.name.trim().toLocaleLowerCase() === creationName.trim().toLocaleLowerCase());
   return (
-    <div className="configuration-workbench">
-      <aside className="configuration-library">
-        <header>
-          <div><span>Strategy Profiles</span><strong>{section.profiles.length} configured</strong></div>
-          <button aria-label="Create Strategy Profile" onClick={() => createProfile()} title="Create Strategy Profile" type="button"><Plus size={15} /></button>
-        </header>
-        <p>System profiles are safe starting points. They remain editable and can be cloned without changing the code definition.</p>
-        <div>
-          {section.profiles.map((profile) => (
-            <button className={profile.profile_id === selected.profile_id ? "active" : ""} key={profile.profile_id} onClick={() => setSelectedId(profile.profile_id)} type="button">
-              <span><strong>{profile.name}</strong><small>{profile.protected ? "Protected default" : profile.origin} · v{profile.revision}</small></span>
-              <ChevronRight size={14} />
-            </button>
-          ))}
-        </div>
-        {section.profile_templates.length ? (
-          <section className="configuration-template-picker">
-            <span>System templates</span>
-            {section.profile_templates.map((template) => (
-              <button key={template.profile_id} onClick={() => createProfile(template)} type="button">
-                <strong>{template.name}</strong><small>Create editable profile</small>
-              </button>
-            ))}
-          </section>
-        ) : null}
-      </aside>
+    <div className="strategy-studio-workspace">
+      <StrategyCreationBar
+        creationMode={creationMode}
+        name={creationName}
+        nameConflict={creationNameConflict}
+        onCancel={() => { setCreationMode(null); setCreationName(""); }}
+        onCreate={createProfile}
+        onModeChange={beginProfileCreation}
+        onNameChange={setCreationName}
+        onProfileChange={setSelectedId}
+        onTemplateChange={(profileId) => { const template = section.profile_templates.find((row) => row.profile_id === profileId); setCreationTemplateId(profileId); setCreationName(uniqueProfileName(template?.name ?? "New Strategy", section.profiles)); }}
+        profiles={section.profiles}
+        selectedId={selected.profile_id}
+        templateId={creationTemplateId}
+        templates={section.profile_templates}
+      />
+      <div className="configuration-workbench">
+      <StrategyParameterCatalog catalog={section.input_catalog} engineParameters={advanced} />
 
       <main className="configuration-detail">
         <section className="configuration-detail-heading">
@@ -1695,7 +1699,84 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
         </details>
       </main>
     </div>
+    </div>
   );
+}
+
+function StrategyCreationBar({ creationMode, name, nameConflict, onCancel, onCreate, onModeChange, onNameChange, onProfileChange, onTemplateChange, profiles, selectedId, templateId, templates }: {
+  creationMode: "blank" | "template" | null;
+  name: string;
+  nameConflict: boolean;
+  onCancel: () => void;
+  onCreate: () => void;
+  onModeChange: (value: "blank" | "template") => void;
+  onNameChange: (value: string) => void;
+  onProfileChange: (value: string) => void;
+  onTemplateChange: (value: string) => void;
+  profiles: StrategyProfile[];
+  selectedId: string;
+  templateId: string;
+  templates: StrategyProfile[];
+}) {
+  return <section className="strategy-profile-command" aria-label="Strategy profile selection and creation">
+    <div className="strategy-profile-current">
+      <span>Current strategy</span>
+      <InventoryFilterSelect ariaLabel="Current strategy profile" className="configuration-lookup-button" onChange={onProfileChange} options={profiles.map((profile) => ({ label: `${profile.name} · ${profile.protected ? "Protected" : "User"}`, value: profile.profile_id }))} searchable={profiles.length > 6} value={selectedId} />
+    </div>
+    <div className="strategy-profile-create-choice">
+      <span>Create a new strategy</span>
+      <div role="group" aria-label="New strategy starting point">
+        <button aria-pressed={creationMode === "blank"} onClick={() => onModeChange("blank")} type="button"><Plus size={15} /><span><strong>Empty strategy</strong><small>No active decisions</small></span></button>
+        <button aria-pressed={creationMode === "template"} disabled={!templates.length} onClick={() => onModeChange("template")} type="button"><Clipboard size={15} /><span><strong>From template</strong><small>Copy a starting structure</small></span></button>
+      </div>
+    </div>
+    {creationMode ? <div className="strategy-profile-create-detail">
+      <header><span>{creationMode === "blank" ? "Empty strategy" : "Template strategy"}</span><strong>{creationMode === "blank" ? "Create a strategy with disabled lifecycle decisions" : "Create an editable copy of a template"}</strong></header>
+      {creationMode === "template" ? <SelectField help="The source remains unchanged." label="Template" onChange={onTemplateChange} options={templates.map((template) => ({ label: template.name, value: template.profile_id }))} value={templateId} /> : null}
+      <TextField help={nameConflict ? "This name is already used." : "You can change it later."} label="Strategy name" onChange={onNameChange} value={name} />
+      <div><button className="button" onClick={onCancel} type="button">Cancel</button><button className="button primary" disabled={!name.trim() || nameConflict || (creationMode === "template" && !templateId)} onClick={onCreate} type="button">Create strategy <ArrowRight size={14} /></button></div>
+    </div> : null}
+  </section>;
+}
+
+function StrategyParameterCatalog({ catalog, engineParameters }: { catalog: StrategyInput[]; engineParameters: Array<{ path: string; value: Primitive }> }) {
+  const [search, setSearch] = useState("");
+  const items = useMemo(() => [
+    ...catalog.map((source) => ({
+      category: source.category,
+      detail: source.summary,
+      id: `evidence:${source.source_id}`,
+      kind: "Evidence source",
+      label: source.label,
+      metadata: [{ label: "Provider", value: source.provider }, { label: "Value type", value: readableLabel(source.value_type) }, { label: "Timeframes", value: source.timeframes.join(", ") || "Event native" }],
+      parameter: source.parameter,
+      usage: "Available to entry, add, reentry, and exit rule builders.",
+    })),
+    ...engineParameters.map((parameter) => ({
+      category: "Engine parameter",
+      detail: "Configuration value read directly by the registered strategy implementation.",
+      id: `engine:${parameter.path}`,
+      kind: "Engine parameter",
+      label: readableLabel(parameter.path),
+      metadata: [{ label: "Value type", value: typeof parameter.value }, { label: "Current value", value: String(parameter.value) }],
+      parameter: parameter.path,
+      usage: "Edit this value from Engine-specific parameters in the Observe step.",
+    })),
+  ], [catalog, engineParameters]);
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const filtered = items.filter((item) => !normalizedSearch || [item.label, item.parameter, item.category, item.kind, item.detail, ...item.metadata.flatMap((row) => [row.label, row.value])].join(" ").toLocaleLowerCase().includes(normalizedSearch));
+  const [selectedId, setSelectedId] = useState(items[0]?.id ?? "");
+  const selected = filtered.find((item) => item.id === selectedId) ?? filtered[0];
+
+  return <aside className="strategy-parameter-catalog">
+    <header><div><span>Parameter catalog</span><strong>{filtered.length} of {items.length}</strong></div><small>Search every available strategy input and engine parameter.</small></header>
+    <label className="strategy-parameter-search"><Search size={14} /><input aria-label="Search strategy parameters" onChange={(event) => setSearch(event.target.value)} placeholder="Search parameters" type="search" value={search} /></label>
+    <div className="strategy-parameter-list">
+      {filtered.map((item) => <button aria-current={selected?.id === item.id ? "true" : undefined} key={item.id} onClick={() => setSelectedId(item.id)} type="button"><span><strong>{item.label}</strong><small>{item.category} · {item.parameter}</small></span><ChevronRight size={13} /></button>)}
+      {!filtered.length ? <div className="strategy-parameter-empty"><Search size={16} /><span>No matching parameters</span></div> : null}
+    </div>
+    {selected ? <footer className="strategy-parameter-detail"><span>{selected.kind}</span><strong>{selected.label}</strong><p>{selected.detail}</p><dl><div><dt>Parameter</dt><dd>{selected.parameter}</dd></div>{selected.metadata.map((row) => <div key={`${selected.id}-${row.label}`}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl><small>{selected.usage}</small></footer> : null}
+  </aside>;
 }
 
 function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onProfileChange, onStageChange, profile, section }: {
