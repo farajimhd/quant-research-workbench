@@ -1671,6 +1671,71 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(views["MTCH"], "negative")
         self.assertEqual(views["BANK"], "neutral")
 
+    def test_compact_earnings_esp_is_not_an_observed_share_price_move(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-earnings-esp-not-price",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha earnings preview",
+            "text": "Alpha Therapeutics has an AAA +3.81% Earnings ESP ahead of results.",
+            "tickers": ["AAA"],
+        })
+        self.assertNotIn(
+            "market.price_move_observed",
+            {row["concept_leaf"] for row in document["statements"]},
+        )
+
+    def test_negated_analyst_recommendations_are_negative(self) -> None:
+        for text in (
+            "The analyst is no longer bullish on Alpha Therapeutics.",
+            "The analyst isn't a buyer of Alpha Therapeutics.",
+            "The analyst is not willing to recommend Alpha Therapeutics.",
+        ):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": "news-negated-analyst-recommendation",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(
+                    document["issuer_views"][0]["composite_sentiment"],
+                    "negative",
+                )
+
+    def test_absent_cost_savings_are_negative_not_efficiency(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-absent-cost-savings",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha lacks savings",
+            "text": "Alpha Therapeutics reported a lack of meaningful cost savings.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_minimum_bid_deficiency_is_negative(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-minimum-bid-deficiency",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha receives minimum bid deficiency notice",
+            "text": "Alpha Therapeutics received a Nasdaq minimum bid deficiency notice.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_executive_death_controls_same_sentence_interim_appointment(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-executive-death",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha announces passing of founder and CEO",
+            "text": (
+                "Alpha Therapeutics announced the passing of its founder and CEO "
+                "and named an interim CEO."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
 
 if __name__ == "__main__":
     unittest.main()

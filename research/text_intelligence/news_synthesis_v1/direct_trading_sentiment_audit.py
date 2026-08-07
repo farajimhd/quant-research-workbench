@@ -24,8 +24,8 @@ from .engine import (
 from .taxonomy_audit import discover_pairs, load_json
 
 
-AUDIT_VERSION = "direct_trading_sentiment_audit_v16"
-IDENTITY_SNAPSHOT_VERSION = "news_synthesis_benchmark_identity_snapshot_v2"
+AUDIT_VERSION = "direct_trading_sentiment_audit_v17"
+IDENTITY_SNAPSHOT_VERSION = "news_synthesis_benchmark_identity_snapshot_v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +115,7 @@ def build_benchmark_identity_snapshot(
     articles: Iterable[Mapping[str, Any]],
     *,
     supplemental_tickers: Iterable[str] = (),
+    reviewed_entities: Iterable[Mapping[str, Any]] = (),
 ) -> tuple[IssuerIdentityIndex, dict[str, Any]]:
     """Build prediction-blind offline identity evidence for reproducible audits.
 
@@ -160,6 +161,29 @@ def build_benchmark_identity_snapshot(
                 alias = str(evidence).split(":", 1)[1].strip()
                 if _benchmark_alias_safe(alias):
                     aliases_by_ticker[ticker].add(alias)
+
+    source_tickers = frozenset(tickers)
+    for entity in reviewed_entities:
+        ticker = _normalize_ticker_identifier(entity.get("ticker"))
+        if (
+            not ticker
+            or ticker in source_tickers
+            or not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker)
+        ):
+            continue
+        tickers.add(ticker)
+        reviewed_aliases = [str(entity.get("display_name") or "")]
+        for evidence in entity.get("identity_evidence") or ():
+            prefix, separator, value = str(evidence).partition(":")
+            if separator and prefix in {
+                "explicit_name",
+                "issuer_alias",
+                "source_name",
+            }:
+                reviewed_aliases.append(value)
+        for alias in reviewed_aliases:
+            if _benchmark_alias_safe(alias):
+                aliases_by_ticker[ticker].add(alias)
 
     parent = {ticker: ticker for ticker in tickers}
 
@@ -296,9 +320,16 @@ def generate_audit(
         for value in annotation.get("candidate_tickers", ())
         if value
     }
+    reviewed_entities = tuple(
+        entity
+        for document in population.certified_documents.values()
+        for entity in document.get("entities", ())
+        if entity.get("identity_status") == "resolved" and entity.get("ticker")
+    )
     identity_index, snapshot = build_benchmark_identity_snapshot(
         population.identity_articles,
         supplemental_tickers=reviewed_candidate_tickers,
+        reviewed_entities=reviewed_entities,
     )
     engine = NewsSynthesisEngine(identity_index)
     if output_root.exists():

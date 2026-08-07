@@ -13,7 +13,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v7"
+ENGINE_VERSION = "news_synthesis_engine_v8"
 EXCHANGE_TICKER_RE = re.compile(r"\b(?:NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*([A-Z][A-Z0-9.\-]{0,9})\b", re.I)
 CASHTAG_RE = re.compile(r"(?<![A-Z0-9])\$([A-Z][A-Z0-9.\-]{0,9})\b")
 ROUNDUP_RE = re.compile(r"\b(?:stocks?|companies|biggest movers?|gainers?|losers?)\s+(?:moving|to watch)|\bmarket\s+(?:wrap|recap|update)\b", re.I)
@@ -191,7 +191,7 @@ RULES = (
     _rule("listing.market_structure", r"\b(?:reverse split|stock split|share consolidation|share combination|delist(?:s|ed|ing)?|deslit|delisting|listing compliance|regains? compliance|regained compliance|continued listing|non[- ]compliance|minimum bid|late filing|failure to timely file|included in .{0,60}(?:Russell|S&P|Nasdaq).{0,20}index|IPO)\b", positive=("regain", "regained compliance", "approved listing", "included"), negative=("delist", "deslit", "noncompliance", "non-compliance", "late", "failure", "reverse split")),
     _rule("commercial.contract", r"\b(?:awarded|wins?|receives?|secures?|signs?|enters?|affirms?)\b.{0,120}\b(?:contract|order|award|agreements?|program|initiative)\b|\b(?:deal with\b.{0,100}\b(?:provid|supply)\w*|named\b.{0,100}\bofficial\b.{0,60}\b(?:broker|provider|supplier|partner))\b|\bcontract award\b|\b(?:waiver and amendment|amendment) agreement\b|\bwaiv(?:e|es|ed|ing)\b.{0,120}\bright to terminate\b.{0,120}\b(?:fund|financ|tranche|obligation)\w*\b|\b(?:contract|agreement)\s+(?:termination|cancellation|non[- ]renewal)\b|\b(?:termination|cancellation|non[- ]renewal)\b.{0,80}\b(?:contract|agreement)\b|\b(?:follow[- ]on )?(?:contract|order|agreement|program|initiative)\b.{0,120}\b(?:awarded|affirmed|won|win|received|secured|signed|terminated|cancelled|canceled|not renewed)\b", positive=("awarded", "affirmed", "wins", "win", "received", "secured", "signed", "contract award"), negative=("cancel", "terminate", "non-renewal", "not renewed")),
     _rule("product.milestone", r"\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|roll(?:s|ed)? out|recall|discontinue|authoriz(?:e|es|ed|ing)|ships? (?:the )?first|first shipment|deliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)|release(?:s|d)? (?:the )?(?:final )?pricing|production milestone|assembly line|built? \d+)\w*\b.{0,120}\b(?:product|platform|service|device|drug|treatment|vaccine|vehicle|system|game|headset|candidate|model|factory|use|panel|test|camera|dressing)\b|\bdeliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)\b|\b(?:product|device|drug|treatment|vaccine|service|game|headset|vehicle|model|panel|test|camera|dressing)\b.{0,120}\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|release|recall|discontinue|delay|authoriz|assembly line|first shipment)\w*\b|\b(?:new products?|product delay|(?:lead|investigational) (?:product candidate|drug|treatment|therapy|antibody)|delivery system|bodies coming down the assembly line)\b", positive=("launch", "unveil", "reveal", "debut", "commercializ", "introduc", "release", "approval", "authorize", "new", "assembly", "built", "affordable", "ships the first", "first shipment", "deliver"), negative=("recall", "delay", "discontinue")),
-    _rule("governance.management_change", r"\b(?:appoints?|names?|elects?|resigns?|retires?|steps down|terminates?|replaces?)\b.{0,100}\b(?:chief executive|chief financial|CEO|CFO|president|director|board)\b|\b(?:chief executive|chief financial|CEO|CFO|president|director)\b.{0,80}\b(?:resigns?|retires?|steps down|appointed|named|terminated|replaced)\b", negative=("resign", "terminated", "steps down")),
+    _rule("governance.management_change", r"\b(?:appoints?|names?|elects?|resigns?|retires?|steps down|terminates?|replaces?|death|dies|died|passing)\b.{0,100}\b(?:chief executive|chief financial|CEO|CFO|president|founder|director|board)\b|\b(?:chief executive|chief financial|CEO|CFO|president|founder|director)\b.{0,80}\b(?:resigns?|retires?|steps down|appointed|named|terminated|replaced|dies|died|death|passing)\b", negative=("resign", "terminated", "steps down", "death", "dies", "died", "passing")),
     _rule("operations.business_update", r"\b(?:business update|restructur|layoff|shutdown|expansion|job cuts?|workforce reduction|cut(?:s|ting)?\s+\d[\d,]*.{0,50}\b(?:jobs?|positions?)|service unaffected|operations? unaffected|opens? (?:a )?(?:store|facility|dispensary)|business performance)\w*\b", positive=("expansion", "growth", "unaffected", "opens"), negative=("layoff", "shutdown", "restructur", "cuts", "cutting")),
     _rule("earnings.release_schedule", r"\b(?:will (?:report|release|post)|will be reporting|scheduled to report|set to (?:report|announce)|reports? .{0,60} on (?:Monday|Tuesday|Wednesday|Thursday|Friday)|release earnings results|release .{0,40} financial results|earnings (?:date|call beginning|release)|after (?:the )?(?:opening|closing) bell|before (?:the )?opening bell|after market (?:close|hours)|ahead of .{0,30}(?:Q[1-4]|quarterly) earnings .{0,30}(?:Monday|Tuesday|Wednesday|Thursday|Friday))\b", "reference"),
     _rule("earnings.restatement", r"\b(?:restate|restatement|should no longer be relied upon)\b", negative=("restate", "no longer be relied")),
@@ -232,7 +232,7 @@ RULES = (
     _rule("market.volume_move_observed", r"\b(?:trading volume|volume spike|unusual volume)\b", "market_observation"),
     _rule("market.trading_status", r"\b(?:halted|trading halt|resumed trading)\b", "market_observation"),
     _rule("market.money_flow_observed", r"\b(?:money flows?|fund flows?|inflows?|outflows?|buying pressure|selling pressure)\b", "market_observation", positive=("positive", "inflow", "buying"), negative=("negative", "outflow", "selling")),
-    _rule("analyst.issuer_assessment", r"\b(?:analysts?|brokerage|research firm|investment firm)\b.{0,180}\b(?:believes?|expects?|sees?|views?|said|claims?|argues?|positive|negative|bullish|bearish|upside|downside|recommend(?:s|ed)?|confident)\b|\b(?:analysts?|[A-Z][a-z]+)\b.{0,40}\b(?:claims?|argues?)\b.{0,180}\b(?:case|claim|lawsuit|action|investigation)\b", "assessment", positive=("positive", "bullish", "upside", "strong", "well-positioned", "recommend", "confident"), negative=("negative", "bearish", "downside", "weak")),
+    _rule("analyst.issuer_assessment", r"\b(?:analysts?|brokerage|research firm|investment firm)\b.{0,180}\b(?:believes?|expects?|sees?|views?|said|claims?|argues?|positive|negative|bullish|bearish|upside|downside|recommend(?:s|ed)?|confident|buyer)\b|\b(?:analysts?|[A-Z][a-z]+)\b.{0,40}\b(?:claims?|argues?)\b.{0,180}\b(?:case|claim|lawsuit|action|investigation)\b|\b(?:is not|isn't|was not|wasn't|not)\s+a buyer\b", "assessment", positive=("positive", "bullish", "upside", "strong", "well-positioned", "recommend", "confident"), negative=("negative", "bearish", "downside", "weak")),
     _rule("strategy.valuation_assessment", r"\b(?:valuation|valued|multiple|price[- ]to[- ]earnings|P/E|PE|PEG ratio|undervalued|overvalued|cheap|expensive|fully reflect|buyer (?:at|around))\b", "assessment", positive=("undervalued", "cheap", "attractive", "buyer"), negative=("overvalued", "expensive", "premium", "fully reflect")),
     _rule("operations.cost_efficiency", r"\b(?:cost savings?|cost reduction|reduce(?:s|d|ing)? (?:its )?costs?|reduc(?:e|es|ed|ing) operating expenses?|expense reduction|efficiency program|productivity initiative|annual(?:ized)? savings|savings (?:in|on|from) .{0,50}costs?|lower .{0,40}costs?|(?:rising|higher|increased) (?:labor )?costs?|costs? (?:rose|risen|rising|increased|dropped|declined|decreased)|contain costs?|control .{0,30}costs?|total cost of ownership|cost[- ]effectiveness)\b", positive=("savings", "reduction", "reduce", "lower", "efficiency", "productivity", "dropped", "declined"), negative=("higher costs", "rising costs", "rising labor costs", "increased costs", "cost pressure")),
     _rule("macro.policy_outlook", r"\b(?:central bank|Federal Reserve|Fed|government|policy makers?)\b.{0,160}\b(?:policy|stimulus|rate cuts?|rate hikes?|tighten|ease|intervention)\b|\b(?:monetary|fiscal) policy\b", "forecast"),
@@ -811,6 +811,12 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
         return False
     if rule.concept == "market.price_move_observed" and re.search(r"\b(?:dollar index|currency|forex|euro|yen|yuan|pound sterling)\b", text, re.I):
         return False
+    if rule.concept == "market.price_move_observed" and re.search(
+        r"\b(?:earnings|revenue|sales)\s+ESP\b",
+        text,
+        re.I,
+    ):
+        return False
     return True
 
 
@@ -863,6 +869,19 @@ def _sentiment(
     if rule.statement_kind == "market_observation":
         return "neutral", 0
     normalized = text.casefold()
+    if (
+        rule.concept == "operations.cost_efficiency"
+        and re.search(
+            r"\b(?:lack|absence) of\b.{0,60}\b(?:cost )?savings?\b|"
+            r"\bno\b.{0,40}\b(?:cost )?savings?\b",
+            normalized,
+        )
+        and (
+            entity is None
+            or _entity_in_quote(entity, text, mention_terms)
+        )
+    ):
+        return "negative", 2
     if rule.concept == "analyst.rating_action":
         rating_counts = {
             label.casefold(): int(count)
@@ -914,6 +933,20 @@ def _sentiment(
             return "negative", 1
         return "neutral", 0
     if rule.concept == "analyst.issuer_assessment":
+        if (
+            re.search(
+                r"\b(?:no longer|not)\s+(?:bullish|positive|a buyer)\b|"
+                r"\b(?:is not|isn't|was not|wasn't)\s+a buyer\b|"
+                r"\b(?:not willing|unable|declines?)\s+to\s+(?:recommend|endorse)\b|"
+                r"\b(?:cannot|can't|does not|doesn't)\s+(?:recommend|endorse)\b",
+                normalized,
+            )
+            and (
+                entity is None
+                or _entity_in_quote(entity, text, mention_terms)
+            )
+        ):
+            return "negative", 2
         if re.search(
             r"\b(?:case|claim|lawsuit|action|investigation)\b.{0,100}"
             r"\b(?:difficult|unlikely)\b.{0,40}\b(?:to pursue|to prove|to win|to succeed)\b|"
@@ -1231,7 +1264,9 @@ def _sentiment(
             return "negative", 3
         if re.search(
             r"\bnot (?:yet )?regain(?:ed)? compliance\b|\b(?:delisting|non[- ]compliance)\b|"
-            r"\b(?:no longer|fail(?:s|ed)? to) meet(?:s)?\b.{0,50}\b(?:minimum bid|listing requirement)\b",
+            r"\b(?:no longer|fail(?:s|ed)? to) meet(?:s)?\b.{0,50}\b(?:minimum bid|listing requirement)\b|"
+            r"\bminimum bid\b.{0,80}\b(?:deficien(?:cy|t)|below|notice)\b|"
+            r"\b(?:deficien(?:cy|t)|below)\b.{0,80}\bminimum bid\b",
             normalized,
         ):
             return "negative", 3
@@ -1392,6 +1427,14 @@ def _sentiment(
             return "negative", 2
         if re.search(r"\b(?:reaches?|announces?|entered into|approved)\b.{0,100}\bsettlement\b|\bsettlement agreement\b", normalized):
             return "positive", 2
+    if rule.concept == "governance.management_change" and re.search(
+        r"\b(?:death of|dies|died|passing of|passed away)\b.{0,100}"
+        r"\b(?:chief executive|chief financial|CEO|CFO|president|founder|director)\b|"
+        r"\b(?:chief executive|chief financial|CEO|CFO|president|founder|director)\b"
+        r".{0,100}\b(?:dies|died|death|passing|passed away)\b",
+        normalized,
+    ):
+        return "negative", 3
     if rule.concept == "governance.management_change" and re.search(
         r"\b(?:resigns?|retires?|steps down)\b.{0,140}\b(?:interim|successor|appoints?|named)\b|"
         r"\b(?:interim|successor|appoints?|named)\b.{0,140}\b(?:resigns?|retires?|steps down)\b",

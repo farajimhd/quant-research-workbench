@@ -66,6 +66,55 @@ class DirectTradingSentimentAuditTests(unittest.TestCase):
         )
         self.assertEqual([row["ticker"] for row in supported], ["VRNT"])
 
+    def test_snapshot_uses_reviewed_identity_without_sentiment_or_eligibility(self) -> None:
+        index, snapshot = build_benchmark_identity_snapshot(
+            (),
+            reviewed_entities=({
+                "ticker": "CWY.AX",
+                "display_name": "Cleanaway Waste Management",
+                "identity_status": "resolved",
+                "identity_evidence": ["source_name:Cleanaway"],
+                "composite_sentiment": "positive",
+                "forecast_trigger_eligible": True,
+            },),
+        )
+        self.assertEqual([row["ticker"] for row in snapshot["identities"]], ["CWY.AX"])
+        self.assertEqual(
+            snapshot["identities"][0]["aliases"],
+            ["Cleanaway", "Cleanaway Waste Management"],
+        )
+        resolved = index.resolve(
+            text="Cleanaway is trialing an electric garbage truck.",
+            candidates=("CWY.AX",),
+            timestamp="2019-12-16T16:19:13Z",
+        )
+        self.assertEqual([row["ticker"] for row in resolved], ["CWY.AX"])
+        self.assertNotIn("composite_sentiment", snapshot["identities"][0])
+        self.assertNotIn("forecast_trigger_eligible", snapshot["identities"][0])
+
+    def test_reviewed_identity_does_not_rewrite_existing_source_identity(self) -> None:
+        article = {
+            "publication": {
+                "title": "Existing Corp update",
+                "provider_tickers": ["AAA"],
+            },
+            "rendered_product": {"text": "Existing Corp update"},
+            "point_in_time_issuer_candidates": [{
+                "ticker": "AAA",
+                "identity_evidence": ["issuer_alias:existing corp"],
+            }],
+        }
+        _index, snapshot = build_benchmark_identity_snapshot(
+            (article,),
+            reviewed_entities=({
+                "ticker": "AAA",
+                "display_name": "Replacement Name",
+                "identity_status": "resolved",
+                "identity_evidence": ["source_name:replacement"],
+            },),
+        )
+        self.assertEqual(snapshot["identities"][0]["aliases"], ["existing corp"])
+
     def test_snapshot_repairs_provider_candidates_and_preserves_shared_issuer(self) -> None:
         article = {
             "publication": {
