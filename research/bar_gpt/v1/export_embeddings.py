@@ -48,7 +48,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     loader = make_dataloader(
         BarGPTIterableDataset(data_config=data, stream_config=stream, split=args.split, seed=17), data, drop_last=False
     )
-    encoder = BarGPTEncoder(model)
+    encoder = BarGPTEncoder(model, data)
     embeddings: list[torch.Tensor] = []
     timestamps: list[torch.Tensor] = []
     tickers: list[str] = []

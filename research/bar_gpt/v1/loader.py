@@ -1544,7 +1544,8 @@ def build_session_examples(
     combined = prepared.combined
     halo_count = prepared.halo_count
     combined_conditions = prepared.combined_conditions
-    first_origin = max(0, context - halo_count) if origin_start_index is None else int(origin_start_index)
+    required_warmup = max(int(config.context_bars_1s), int(config.intraday_warmup_bars_1s))
+    first_origin = max(0, required_warmup - halo_count) if origin_start_index is None else int(origin_start_index)
     if first_origin < 0 or first_origin >= session.features.shape[0]:
         raise ValueError("origin_start_index must identify a row in the current session")
     if origin_count_limit is not None:
@@ -1579,24 +1580,47 @@ def build_session_examples(
         asof: dict[str, torch.Tensor] = {}
         for name in ("5s", "10s", "30s", "1m", "5m", "30m", "1h"):
             view = full_views[name]
-            duration = TIMEFRAME_US_BY_NAME[name]
-            rows = max(8, int(config.intraday_context_by_name[name]) + 4)
-            prefix = _view_prefix(view, last_available_us=last_anchor, max_rows=rows)
-            if prefix is None:
-                raw_views[name] = _dummy_raw()
-                raw_view_start_us[name] = torch.zeros(1, dtype=torch.long)
-                raw_view_available_at_us[name] = torch.zeros(1, dtype=torch.long)
-                asof[name] = torch.full((origin_count,), -1, dtype=torch.long)
-            else:
-                raw_views[name] = prefix.features
-                raw_view_start_us[name] = prefix.bar_start_us
-                raw_view_available_at_us[name] = prefix.available_at_us
-                asof[name] = causal_asof_indices(prefix.available_at_us, anchors)
-                selected = asof[name] >= 0
-                if torch.any(selected):
-                    selected_times = prefix.available_at_us[asof[name].clamp_min(0)]
-                    if torch.any(selected_times[selected] > anchors[selected]):
-                        raise RuntimeError(f"{name} context lookahead detected")
+            context_rows = int(config.intraday_context_by_name[name])
+            # One vectorized prefix serves the complete packed origin block.
+            # Start at the first origin's exact configured history and end at
+            # the last origin's latest completed fixed bucket. This preserves
+            # shared computation without making block geometry truncate early
+            # origins or change their causal context.
+            first_count = int(torch.searchsorted(
+                view.available_at_us,
+                anchors[0].to(dtype=view.available_at_us.dtype),
+                right=True,
+            ))
+            last_count = int(torch.searchsorted(
+                view.available_at_us,
+                anchors[-1].to(dtype=view.available_at_us.dtype),
+                right=True,
+            ))
+            if first_count < context_rows:
+                raise RuntimeError(
+                    f"{name} context underflow for {ticker} {local_date}: "
+                    f"first origin has {first_count} completed bars, requires {context_rows}"
+                )
+            prefix_start = first_count - context_rows
+            prefix = BarView(
+                features=view.features[prefix_start:last_count],
+                bar_start_us=view.bar_start_us[prefix_start:last_count],
+                bar_end_us=view.bar_end_us[prefix_start:last_count],
+                available_at_us=view.available_at_us[prefix_start:last_count],
+            )
+            raw_views[name] = prefix.features
+            raw_view_start_us[name] = prefix.bar_start_us
+            raw_view_available_at_us[name] = prefix.available_at_us
+            asof[name] = causal_asof_indices(prefix.available_at_us, anchors)
+            if torch.any(asof[name] < context_rows - 1):
+                minimum = int(asof[name].min()) + 1
+                raise RuntimeError(
+                    f"{name} context underflow inside {ticker} {local_date}: "
+                    f"minimum {minimum}, requires {context_rows}"
+                )
+            selected_times = prefix.available_at_us[asof[name]]
+            if torch.any(selected_times > anchors):
+                raise RuntimeError(f"{name} context lookahead detected")
         for name in ("1D", "1W", "1MO"):
             view = calendar_views.get(name)
             max_rows = int(config.calendar_context_by_name[name])

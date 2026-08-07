@@ -74,9 +74,10 @@ def load_pretrained(
 class BarGPTEncoder(nn.Module):
     """Stable causal embedding contract for downstream point-in-time modalities."""
 
-    def __init__(self, model: BarGPTV1) -> None:
+    def __init__(self, model: BarGPTV1, data_config: DataConfig) -> None:
         super().__init__()
         self.model = model
+        self.attention_windows = data_config.attention_window_by_name
 
     def forward(self, batch: BarGPTBatch) -> tuple[torch.Tensor, torch.Tensor]:
         embeddings, _scale_states = self.model.embed(
@@ -86,5 +87,6 @@ class BarGPTEncoder(nn.Module):
             base_view="1s",
             origin_indices=batch.origin_indices,
             asof_indices=batch.asof_indices,
+            attention_windows=self.attention_windows,
         )
         return embeddings, batch.origin_mask

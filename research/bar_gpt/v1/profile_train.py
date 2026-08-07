@@ -164,7 +164,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="offline")
-    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -177,7 +177,7 @@ def _device(value: str) -> torch.device:
 def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
     tickers = tuple(item.strip().upper() for item in str(args.tickers).split(",") if item.strip())
     return DataConfig(
-        loader_stream_contract_version=4 if args.data_source == "offline" else 3,
+        loader_stream_contract_version=5,
         tickers=tickers,
         start_date=str(args.start_date),
         end_date=str(args.end_date),
@@ -350,6 +350,7 @@ def _profile_candidate(
                         base_view="1s",
                         origin_indices=batch.origin_indices,
                         asof_indices=batch.asof_indices,
+                        attention_windows=data.attention_window_by_name,
                         horizon_ids=torch.arange(len(data.horizons_us), device=device),
                     )
                     loss = compute_loss(output, batch, train_config, model_config.quantiles).loss / candidate.accumulation

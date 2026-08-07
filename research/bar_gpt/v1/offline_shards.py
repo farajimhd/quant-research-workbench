@@ -43,13 +43,11 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 
 
-OFFLINE_SHARD_CONTRACT_VERSION = 2
-# Contract 3 governs the source/session preparation used to materialize v2
-# shards. Contract 4 changes only the offline runtime's worker-owned resume
-# cursors, so readers normalize that runtime field before comparing the pinned
-# tensor-payload hash.
-OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 3
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2")
+OFFLINE_SHARD_CONTRACT_VERSION = 3
+# Stream contract 5 requires derived ticker-month warmup, complete configured
+# context at every origin, and origin-independent packed-block boundaries.
+OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 5
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
 
 
 _STORAGE_IRRELEVANT_CONFIG_FIELDS = frozenset({
@@ -269,6 +267,18 @@ def _csv(value: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item.strip().upper() for item in value.split(",") if item.strip()))
 
 
+def _named_int_csv(value: str) -> tuple[tuple[str, int], ...]:
+    result: list[tuple[str, int]] = []
+    for raw in value.split(","):
+        name, separator, count = raw.strip().partition("=")
+        if not separator or not name or int(count) <= 0:
+            raise ValueError(f"invalid positive named integer: {raw!r}")
+        result.append((name, int(count)))
+    if len({name for name, _count in result}) != len(result):
+        raise ValueError("named integer keys must be unique")
+    return tuple(result)
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     defaults = DataConfig()
     parser = argparse.ArgumentParser(
@@ -282,6 +292,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=min(12, max(2, (os.cpu_count() or 8) // 4)))
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0, help="Zero auto-partitions CPU threads across workers.")
     parser.add_argument("--origin-bars-1s", type=int, default=4096)
+    parser.add_argument(
+        "--intraday-context-bars",
+        default=",".join(f"{name}={value}" for name, value in defaults.intraday_context_bars),
+    )
+    parser.add_argument(
+        "--calendar-context-bars",
+        default=",".join(f"{name}={value}" for name, value in defaults.calendar_context_bars),
+    )
     parser.add_argument("--clickhouse-query-days", type=int, default=defaults.clickhouse_query_days)
     parser.add_argument("--clickhouse-prefetch-pages", type=int, default=defaults.clickhouse_prefetch_pages)
     parser.add_argument(
@@ -316,6 +334,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def build_data_config(args: argparse.Namespace) -> DataConfig:
     base = DataConfig()
     tickers = _csv(args.tickers)
+    intraday_context = _named_int_csv(str(args.intraday_context_bars))
+    calendar_context = _named_int_csv(str(args.calendar_context_bars))
     validation_start = max(str(args.start_date), min(base.validation_start_date, str(args.end_date)))
     validation_slices = tuple(
         value for value in base.validation_slices
@@ -332,6 +352,10 @@ def build_data_config(args: argparse.Namespace) -> DataConfig:
         end_date=str(args.end_date),
         validation_start_date=validation_start,
         validation_slices=validation_slices,
+        context_bars_1s=dict(intraday_context)["1s"],
+        intraday_context_bars=intraday_context,
+        calendar_context_bars=calendar_context,
+        daily_context_bars=dict(calendar_context)["1D"],
         origin_bars_1s=int(args.origin_bars_1s),
         clickhouse_query_days=int(args.clickhouse_query_days),
         clickhouse_prefetch_pages=int(args.clickhouse_prefetch_pages),
@@ -754,7 +778,7 @@ def discover_offline_units(
     start_date: str,
     end_date: str,
 ) -> tuple[OfflineShardUnit, ...]:
-    """Fail closed unless every requested ticker-month has a certified v2 sidecar."""
+    """Fail closed unless every requested ticker-month has a certified v3 sidecar."""
     start = dt.date.fromisoformat(start_date)
     end = dt.date.fromisoformat(end_date)
     if start.day != 1 or end.day != 1 or start >= end:

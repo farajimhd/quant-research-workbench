@@ -208,7 +208,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume-checkpoint", default="")
     parser.add_argument("--seed", type=int, default=train.seed)
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="clickhouse")
-    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
     parser.add_argument("--offline-train-start-date", default="2019-01-01")
     parser.add_argument("--offline-train-end-date", default="2021-01-01")
     parser.add_argument("--offline-validation-start-date", default="2026-01-01")
@@ -220,7 +220,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
     horizons = _int_csv(args.horizons_us)
     data = DataConfig(
-        loader_stream_contract_version=4 if args.data_source == "offline" else 3,
+        loader_stream_contract_version=5,
         database=str(args.database),
         one_second_table=str(args.one_second_table),
         manifest_table=str(args.manifest_table),
@@ -895,6 +895,7 @@ def _forward(model: torch.nn.Module, batch: BarGPTBatch, config: ExperimentConfi
         base_view="1s",
         origin_indices=batch.origin_indices,
         asof_indices=batch.asof_indices,
+        attention_windows=config.data.attention_window_by_name,
         horizon_ids=torch.arange(len(config.data.horizons_us), device=batch.origin_indices.device),
     )
     _mask_inactive_condition_targets(batch, config.data.condition_target_active)
@@ -1281,7 +1282,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             for index in range(4)
         )
         evidence = {
-            "mode": "offline_shards_v2",
+            "mode": "offline_shards_v3",
             "offline_shard_root": str(root),
             "offline_training_units": str(len(offline_train_units)),
             "offline_training_blocks": str(sum(unit.blocks for unit in offline_train_units)),
@@ -1423,6 +1424,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "base_view": "1s",
             "origin_indices": torch.zeros(batch, 1, dtype=torch.long, device=device),
             "asof_indices": asof,
+            "attention_windows": config.data.attention_window_by_name,
             "horizon_ids": torch.arange(len(config.data.horizons_us), dtype=torch.long, device=device),
         }
     # Durable architecture evidence is created at run start, before the first

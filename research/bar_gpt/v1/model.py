@@ -75,7 +75,7 @@ class CausalSelfAttention(nn.Module):
         self.rope = RotaryEmbedding(self.head_dim, config.rope_base)
         self.dropout = float(config.dropout)
 
-    def forward(self, value: torch.Tensor) -> torch.Tensor:
+    def forward(self, value: torch.Tensor, *, attention_window: int | None = None) -> torch.Tensor:
         batch, length, _ = value.shape
         query = self.q_proj(value).view(batch, length, self.n_heads, self.head_dim).transpose(1, 2)
         key = self.k_proj(value).view(batch, length, self.n_kv_heads, self.head_dim).transpose(1, 2)
@@ -89,13 +89,30 @@ class CausalSelfAttention(nn.Module):
             repeats = self.n_heads // self.n_kv_heads
             key = key.repeat_interleave(repeats, dim=1)
             val = val.repeat_interleave(repeats, dim=1)
-        attended = F.scaled_dot_product_attention(
-            query,
-            key,
-            val,
-            dropout_p=self.dropout if self.training else 0.0,
-            is_causal=True,
-        )
+        if attention_window is None or int(attention_window) >= length:
+            attended = F.scaled_dot_product_attention(
+                query,
+                key,
+                val,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=True,
+            )
+        else:
+            window = int(attention_window)
+            if window <= 0:
+                raise ValueError("attention_window must be positive")
+            positions = torch.arange(length, device=value.device)
+            query_positions = positions[:, None]
+            key_positions = positions[None, :]
+            allowed = (key_positions <= query_positions) & (key_positions > query_positions - window)
+            attended = F.scaled_dot_product_attention(
+                query,
+                key,
+                val,
+                attn_mask=allowed,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=False,
+            )
         attended = attended.transpose(1, 2).contiguous().view(batch, length, -1)
         return self.out_proj(attended)
 
@@ -121,8 +138,8 @@ class DecoderBlock(nn.Module):
         self.ffn_norm = RMSNorm(config.d_model)
         self.ffn = SwiGLU(config)
 
-    def forward(self, value: torch.Tensor) -> torch.Tensor:
-        value = value + self.attention(self.attention_norm(value))
+    def forward(self, value: torch.Tensor, *, attention_window: int | None = None) -> torch.Tensor:
+        value = value + self.attention(self.attention_norm(value), attention_window=attention_window)
         return value + self.ffn(self.ffn_norm(value))
 
 
@@ -191,15 +208,34 @@ class BarGPTV1(nn.Module):
 
         self.horizon_availability_head = nn.Linear(config.horizon_rank, AVAILABILITY_TARGET_COUNT, bias=True)
 
-    def encode(self, features: torch.Tensor, timeframe_us: int, pathway_id: int) -> torch.Tensor:
+    def encode(
+        self,
+        features: torch.Tensor,
+        timeframe_us: int,
+        pathway_id: int,
+        *,
+        attention_window: int | None = None,
+    ) -> torch.Tensor:
         if features.ndim != 3 or features.shape[-1] != self.config.feature_dim:
             raise ValueError(f"features must have shape [B,T,{self.config.feature_dim}]")
         state = self.input_projection(self.input_norm(features))
         scale = self.timeframe_embedding(timeframe_us, device=features.device, dtype=features.dtype).view(1, 1, -1)
         pathway = self.pathway_embedding.weight[int(pathway_id)].view(1, 1, -1)
         state = state + scale + pathway
-        for block in self.blocks:
-            state = block(state)
+        layer_windows: list[int | None]
+        if attention_window is None:
+            layer_windows = [None] * len(self.blocks)
+        else:
+            # A local window repeated unchanged at every layer expands the
+            # stack's effective receptive field. Distribute the total causal
+            # radius across layers so no representation can depend on bars
+            # older than the configured view context, while the full stack
+            # can still connect the newest token to the oldest allowed token.
+            total_radius = max(0, int(attention_window) - 1)
+            radius, extra = divmod(total_radius, max(1, len(self.blocks)))
+            layer_windows = [radius + (1 if index < extra else 0) + 1 for index in range(len(self.blocks))]
+        for block, layer_window in zip(self.blocks, layer_windows, strict=True):
+            state = block(state, attention_window=layer_window)
         return self.output_norm(state)
 
     @staticmethod
@@ -218,6 +254,7 @@ class BarGPTV1(nn.Module):
         base_view: str,
         origin_indices: torch.Tensor,
         asof_indices: Mapping[str, torch.Tensor] | None = None,
+        attention_windows: Mapping[str, int] | None = None,
         horizon_ids: torch.Tensor | None = None,
     ) -> BarGPTOutput:
         fused, encoded = self.embed(
@@ -227,6 +264,7 @@ class BarGPTV1(nn.Module):
             base_view=base_view,
             origin_indices=origin_indices,
             asof_indices=asof_indices,
+            attention_windows=attention_windows,
         )
         autoregressive = {}
         latent_predictions = {}
@@ -282,10 +320,23 @@ class BarGPTV1(nn.Module):
         base_view: str,
         origin_indices: torch.Tensor,
         asof_indices: Mapping[str, torch.Tensor] | None = None,
+        attention_windows: Mapping[str, int] | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         if base_view not in views:
             raise KeyError(f"base view {base_view!r} is absent")
-        encoded = {name: self.encode(value, timeframe_us[name], pathway_ids[name]) for name, value in views.items()}
+        if attention_windows is not None:
+            missing = sorted(set(views) - set(attention_windows))
+            if missing:
+                raise KeyError(f"missing attention windows for views: {missing}")
+        encoded = {
+            name: self.encode(
+                value,
+                timeframe_us[name],
+                pathway_ids[name],
+                attention_window=None if attention_windows is None else int(attention_windows[name]),
+            )
+            for name, value in views.items()
+        }
         fused = self._gather_sequence(encoded[base_view], origin_indices)
         for name, state in encoded.items():
             if name == base_view:

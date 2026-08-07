@@ -81,6 +81,7 @@ def collect_embeddings(
     model: BarGPTV1,
     iterator: Iterator[BarGPTBatch],
     *,
+    data_config: DataConfig,
     device: torch.device,
     limit: int,
     progress_interval: int,
@@ -106,6 +107,7 @@ def collect_embeddings(
                 base_view="1s",
                 origin_indices=batch.origin_indices,
                 asof_indices=batch.asof_indices,
+                attention_windows=data_config.attention_window_by_name,
             )
         if batch.horizon_targets is None or batch.horizon_mask is None:
             raise RuntimeError("probe batch did not materialize physical targets")
@@ -217,11 +219,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         source_checkpoint=checkpoint,
     )
     calibration_data = collect_embeddings(
-        model, iter(calibration), device=device, limit=int(args.calibration_samples),
+        model, iter(calibration), data_config=config.data, device=device, limit=int(args.calibration_samples),
         progress_interval=int(args.progress_interval), label="calibration",
     )
     validation_data = collect_embeddings(
-        model, iter(validation), device=device, limit=int(args.validation_samples),
+        model, iter(validation), data_config=config.data, device=device, limit=int(args.validation_samples),
         progress_interval=int(args.progress_interval), label="validation",
     )
     probe, metrics = fit_ridge_probes(*calibration_data, *validation_data, ridge=float(args.ridge))

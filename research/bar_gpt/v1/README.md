@@ -206,9 +206,26 @@ bounded 64-block RAM cache. The CUDA stream stages the next collated batch while
 the current batch computes. Source predicates remain qualified so the projected
 canonical ticker cannot broaden a ClickHouse scan.
 
-The prior completed session contributes up to 2,048 one-second context rows to
-the first premarket origins. No overnight seconds are fabricated: timestamps
-and `available_at_us` retain the real wall-clock boundary, while targets remain
+The first origin of every built month receives the complete intraday warmup
+derived from the configured view durations and counts:
+
+| View | Configured history | Bars | Required 1s history |
+|---|---:|---:|---:|
+| 1s | 12 minutes | 720 | 720 |
+| 5s | 30 minutes | 360 | 1,800 |
+| 10s | 1 hour | 360 | 3,600 |
+| 30s | 2 hours | 240 | 7,200 |
+| 1m | 4 hours | 240 | 14,400 |
+| 5m | 8 hours | 96 | 28,800 |
+| 30m | 8 hours | 16 | 28,800 |
+| 1h | 8 hours | 8 | 28,800 |
+
+The loader computes the maximum required 1s history from these parameters; it
+does not hardcode 28,800. It fetches bounded 1s ranges, aggregates coarse views
+with vectorized fixed-bucket operations, and uses vectorized timestamp searches
+to select completed context. It does not iterate through the month one second
+at a time in Python. No overnight seconds are fabricated: timestamps and
+`available_at_us` retain the real wall-clock boundary, while targets remain
 inside the target session. Model time channels encode the actual New York
 session-clock position from every bar timestamp, elapsed wall-clock ratio, and
 an explicit sequence-boundary flag; they are not relative to the sampled window.
@@ -222,10 +239,14 @@ last coarse index where coarse.available_at_us <= fine.anchor_us
 ```
 
 The coarse stream is encoded once and gathered causally for fine origins. The
-default block has 2,048 input seconds, 4,096 origins, and a 3,600-second
+workstation shard block has 720 preceding 1s rows, 4,096 origins, and a 3,600-second
 target-only right halo. Horizon targets are built on the GPU from this shared
 support with gathers, prefix differences, and pooling; the right halo is never
-visible to the representation.
+visible to the representation. Each coarse prefix begins with the exact
+configured history for its first origin and extends only with bars completed
+inside the block. The decoder distributes each configured causal radius across
+its layers, so the complete stack cannot propagate information from before an
+origin's rolling context. Block boundaries therefore do not alter context.
 
 Daily rows are normalized to the current anchor basis before weekly and monthly
 aggregation. This prevents a calendar bar spanning a split from combining
@@ -277,7 +298,7 @@ The canonical workstation training command is:
 python -B -m research.bar_gpt.v1.run_train
 ```
 
-The canonical launcher now trains from certified v2 offline shards. Its bounded
+The canonical launcher now trains from certified v3 offline shards. Its bounded
 training selection is `[2019-01-01, 2021-01-01)` and its fixed validation
 selection is `[2026-01-01, 2026-08-01)`. One coverage epoch is one deterministic
 exhaustive pass over every stored 04:00-20:00 block in the 90-ticker training
@@ -297,13 +318,11 @@ default has one epoch, so its epoch and full-run budgets are identical.
 One block is one ticker and one contiguous 4,096-second origin interval. It is
 one efficiently encoded sequence but contributes 4,096 distinct supervised
 origins and target sets—not one example with one target. The visible 1-second
-tensor contains 2,048 preceding context rows plus the 4,096
-origin rows. Causal attention lets the first origin use the preceding 2,048
-rows; each later origin may also use the earlier origin rows because those
-seconds are already known at its as-of time. Thus the last origin has a 6,143-row
-causal prefix. This is standard autoregressive packed-sequence training and is
-equivalent to 4,096 causal examples with shared computation, except that it does
-not impose a strict rolling 2,048-row attention window.
+tensor contains 720 preceding rows plus the 4,096 origin rows. Every origin is
+bounded to its rolling 720 prior 1s bars plus its current bar. Coarser views use
+their own configured counts from the table above. Packed computation shares the
+stored streams, but neither block position nor decoder depth expands an origin's
+receptive field beyond that contract.
 
 The shard stores no microbatch dimension. `--batch-size` is the number of
 independent 4,096-origin blocks collated by the loader and may be tuned without
@@ -327,7 +346,7 @@ session/block/origin totals, block shape, epochs, ticker sharding, and worker
 count. Cache depth, retry budget, and per-worker prefetch depth may be tuned on
 resume; worker count may not, because it changes ticker ownership.
 
-Validation is one fixed 198-block chronological panel spanning all 99 eligible
+Validation is one fixed 196-block chronological panel spanning all 98 eligible
 identities from January through July 2026. Each ticker contributes exactly two
 deterministic pseudo-random blocks selected across its seven monthly shards;
 the seed, ticker, month, session date, and stable block offset make the sample
@@ -347,11 +366,10 @@ prepared host batches, then training restarts from consumed durable cursors.
 Unconsumed training blocks replay safely rather than being marked complete.
 
 Training refuses to start unless every requested ticker-month has a compatible
-contract-v2 complete or explicitly covered-empty sidecar and every complete
+contract-v3 complete or explicitly covered-empty sidecar and every complete
 sidecar has its tensor file. ClickHouse is not contacted by the offline training
-path. The v2 shard payload remains pinned to source-stream contract 3; offline
-runtime contract 4 changes worker-owned resume cursors only and is normalized
-back to contract 3 for the certified payload-hash comparison. Defaults are a
+path. The v3 shard payload is pinned to loader-stream contract 5, including the
+derived warmup and exact per-origin context geometry. Defaults are a
 384-wide eight-layer decoder, BF16,
 and six horizons from 5 seconds through 1 hour. `--max-samples 0` means the
 complete coverage epoch; a positive value is an operator safety or diagnostic
@@ -430,7 +448,7 @@ python -B -m research.bar_gpt.v1.run_build_offline_shards --execute
 The first command is a read-only plan. The execute form balances whole tickers
 by their planned block counts across bounded logical worker slots and writes
 immutable ticker-month shards beneath
-`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2`. Both the requested
+`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3`. Both the requested
 one-second authority and daily-session authority now begin in 2019. The
 compiler fails preflight until those sources are continuously certified and
 never fabricates unavailable intraday sessions or calendar history.
@@ -469,7 +487,7 @@ This prevents every worker from independently creating a workstation-sized CPU
 thread pool while leaving capacity for ClickHouse and the operating system.
 
 Every executing compiler invocation creates a unique diagnostic directory at
-`offline_shards_v2\manifest\build_runs\<run-id>`. Its parent-owned
+`offline_shards_v3\manifest\build_runs\<run-id>`. Its parent-owned
 `events.jsonl` records the resolved plan, worker PID/ticker launches, stages,
 bounded progress, certifications, complete caught tracebacks, process exit
 codes, last known work, and final catalog. `summary.json` records the final
@@ -478,31 +496,32 @@ to Python `faulthandler` inside that spawned process. An abrupt native exit may
 not produce a Python traceback, but the parent still records its nonzero exit
 code, PID, ticker, last stage and fatal-log path immediately and counts it as a
 failure in both Rich and text output. These operational files do not enter the
-v2 storage hash and do not change shard payloads or ticker/year/month layout.
+v3 storage hash and do not change shard payloads or ticker/year/month layout.
 
 Each month stores every session-level 1s, intraday-rollup, and calendar tensor
 once. Block records retain only slices, exact causal prefix corrections,
 autoregressive masks, origin-specific physical-horizon targets, and metadata.
-This reproduces the online collate contract without repeating each 720-bar
-context. Shards use uncompressed PyTorch tensor containers so `torch.load` can
+This reproduces the online collate contract without repeating rolling context
+for every origin. Shards use uncompressed PyTorch tensor containers so `torch.load` can
 memory-map their storage. The runtime reader performs only mmap slicing,
 padding into reusable pinned batches, and asynchronous CUDA handoff.
 
-The v2 storage identity contains only settings that can alter one ticker-month
+The v3 storage identity contains only settings that can alter one ticker-month
 tensor payload. GPU batch size, loader workers, pinning, prefetch depth,
 requested tickers, requested date range, validation ownership, query tuning,
 and progress/concurrency controls are excluded. A stable ticker-month hash
 replaces range-dependent unit numbering inside each shard. Consequently the
 same certified shard can be collated into any loader-time batch size and two
 disjoint build commands can safely accumulate compatible months in one root.
-The loader stream contract remains part of the v2 identity to match the active
-2019--2020 build and its certified sidecars.
+Loader-stream contract 5 is part of the v3 identity, so older shards fail
+discovery instead of being silently interpreted under the corrected context
+contract.
 `origin_bars_1s` remains storage geometry—the number of sequential origins in
 one independently addressable block—not the number of blocks collated into a
 training batch.
 
 The current bounded eager build targets both calendar years 2019 and 2020 for
-training and all 99 eligible tickers from January through July 2026 as the
+training and all 98 eligible tickers from January through July 2026 as the
 chronological validation pool. The two commands intentionally share one root
 and are independently resumable:
 

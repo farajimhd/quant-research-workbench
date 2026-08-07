@@ -9,7 +9,7 @@ from research.bar_gpt.v1.train import main
 
 DEFAULT_ARGS: dict[str, str] = {
     "--data-source": "offline",
-    "--offline-shard-root": r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2",
+    "--offline-shard-root": r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3",
     "--offline-train-start-date": "2019-01-01",
     "--offline-train-end-date": "2021-01-01",
     "--offline-validation-start-date": "2026-01-01",
@@ -17,7 +17,6 @@ DEFAULT_ARGS: dict[str, str] = {
     "--start-date": "2019-01-01",
     "--end-date": "2026-08-01",
     "--validation-start-date": "2026-01-01",
-    "--context-bars-1s": "720",
     "--origin-bars-1s": "4096",
     "--coverage-mode": "sequential",
     "--coverage-blocks-per-unit": "16",

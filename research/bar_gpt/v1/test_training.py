@@ -31,7 +31,7 @@ from research.bar_gpt.v1.loader import (
     SequentialSessionPlan,
     TickerInterval,
     balanced_regime_stream,
-    build_session_examples,
+    build_session_examples as _build_session_examples,
     frame_to_dense_window,
     held_out_tickers,
     month_units,
@@ -109,7 +109,7 @@ def _abrupt_process_exit_for_test() -> None:
     os._exit(23)
 
 
-def session_view(length: int = 24) -> BarView:
+def session_view(length: int = 24, *, start_second: int = 100_000) -> BarView:
     raw = torch.zeros((length, len(FEATURE_NAMES)), dtype=torch.float32)
     price = 100.0 + torch.arange(length) * 0.01
     for prefix, offset in (("trade", 0.0), ("bid", -0.01), ("ask", 0.01)):
@@ -129,8 +129,24 @@ def session_view(length: int = 24) -> BarView:
     raw[:, FEATURE_INDEX["microprice_close"]] = price
     raw[:, FEATURE_INDEX["microprice_sum"]] = price
     raw[:, FEATURE_INDEX["source_event_count"]] = 3
-    starts = torch.arange(length, dtype=torch.long) * 1_000_000
+    starts = (torch.arange(length, dtype=torch.long) + int(start_second)) * 1_000_000
     return BarView(raw, starts, starts + 1_000_000, starts + 1_000_000)
+
+
+def build_session_examples(*args, **kwargs):
+    """Give synthetic tests a complete causal intraday warmup by default."""
+    config = kwargs.get("config")
+    if config is not None and "prior_session" not in kwargs:
+        warmup = int(config.intraday_warmup_bars_1s)
+        session = kwargs.get("session")
+        if session is None and args:
+            session = args[0]
+        first_start_second = int(session.bar_start_us[0].item()) // 1_000_000
+        kwargs["prior_session"] = session_view(
+            warmup,
+            start_second=first_start_second - warmup - 1,
+        )
+    return _build_session_examples(*args, **kwargs)
 
 
 class LoaderTrainerContractTest(unittest.TestCase):
@@ -669,7 +685,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             None,
             ticker="AAPL",
             local_date="2025-01-02",
-            clock_start_second=72000 - config.context_bars_1s,
+            clock_start_second=72000 - config.intraday_warmup_bars_1s,
             clock_end_second=72000,
         )
         session = frame_to_dense_window(
@@ -704,11 +720,89 @@ class LoaderTrainerContractTest(unittest.TestCase):
             horizons_us=(1_000_000, 2_000_000),
             maximum_target_horizon_us=2_000_000,
             context_bars_1s=4,
+            intraday_context_bars=(
+                ("1s", 4), ("5s", 1), ("10s", 1), ("30s", 1),
+                ("1m", 1), ("5m", 1), ("30m", 1), ("1h", 1),
+            ),
             origin_bars_1s=3,
             min_origins_per_block=1,
             batch_size=2,
             loader_workers=0,
         )
+
+    def test_default_intraday_context_contract_derives_28800_second_warmup(self) -> None:
+        config = DataConfig()
+        self.assertEqual(config.intraday_context_by_name, {
+            "1s": 720,
+            "5s": 360,
+            "10s": 360,
+            "30s": 240,
+            "1m": 240,
+            "5m": 96,
+            "30m": 16,
+            "1h": 8,
+        })
+        self.assertEqual(config.intraday_warmup_bars_1s, 28_800)
+        self.assertEqual(config.attention_window_by_name["1s"], 721)
+        config.validate()
+
+    def test_every_origin_has_exact_context_independent_of_block_boundaries(self) -> None:
+        base = self.data_config()
+        session = session_view(13)
+
+        def contexts(origin_bars: int) -> dict[tuple[int, str], torch.Tensor]:
+            config = dataclasses.replace(base, origin_bars_1s=origin_bars)
+            result: dict[tuple[int, str], torch.Tensor] = {}
+            for example in build_session_examples(
+                ticker="AAA",
+                local_date="2026-01-02",
+                session=session,
+                daily=None,
+                split_actions=(),
+                config=config,
+                include_incomplete_horizons=True,
+            ):
+                for position, timestamp in enumerate(example.origin_timestamps_us.tolist()):
+                    base_index = int(example.origin_indices[position])
+                    result[(timestamp, "1s")] = example.raw_view_start_us["1s"][
+                        base_index - config.context_bars_1s:base_index + 1
+                    ].clone()
+                    self.assertEqual(result[(timestamp, "1s")].numel(), config.context_bars_1s + 1)
+                    for name, count in config.intraday_context_by_name.items():
+                        if name == "1s":
+                            continue
+                        end = int(example.asof_indices[name][position]) + 1
+                        result[(timestamp, name)] = example.raw_view_start_us[name][end - count:end].clone()
+                        self.assertEqual(result[(timestamp, name)].numel(), count)
+            return result
+
+        three_origin_blocks = contexts(3)
+        five_origin_blocks = contexts(5)
+        self.assertEqual(set(three_origin_blocks), set(five_origin_blocks))
+        for key in three_origin_blocks:
+            self.assertTrue(torch.equal(three_origin_blocks[key], five_origin_blocks[key]), key)
+
+    def test_decoder_stack_receptive_field_does_not_exceed_configured_window(self) -> None:
+        model = BarGPTV1(BarGPTConfig(
+            d_model=32,
+            n_layers=3,
+            n_heads=4,
+            n_kv_heads=2,
+            horizon_rank=8,
+            timeframe_fourier_dim=8,
+            dropout=0.0,
+        )).eval()
+        features = torch.randn(1, 12, model.config.feature_dim)
+        outside = features.clone()
+        outside[:, 6] += 100.0  # Last token's five-token context starts at index 7.
+        inside = features.clone()
+        inside[:, 7] += 100.0
+        with torch.no_grad():
+            expected = model.encode(features, 1_000_000, 0, attention_window=5)[:, -1]
+            outside_result = model.encode(outside, 1_000_000, 0, attention_window=5)[:, -1]
+            inside_result = model.encode(inside, 1_000_000, 0, attention_window=5)[:, -1]
+        self.assertTrue(torch.allclose(expected, outside_result, atol=1e-6, rtol=1e-6))
+        self.assertFalse(torch.allclose(expected, inside_result, atol=1e-5, rtol=1e-5))
 
     def test_session_rollup_and_targets_are_causal_and_nonredundant(self) -> None:
         examples = list(build_session_examples(
@@ -720,10 +814,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(first.raw_views["1s"].shape[0], 7)  # context plus origins, future halo is target-only
         self.assertEqual(first.origin_indices.tolist(), [4, 5, 6])
         self.assertEqual(first.target_support.shape[0], 9)
-        self.assertEqual(first.asof_indices["5s"].tolist(), [0, 0, 0])
-        self.assertTrue(torch.all(first.asof_indices["1h"] == -1))
+        self.assertTrue(torch.all(first.asof_indices["5s"] >= 0))
+        self.assertTrue(torch.all(first.asof_indices["1h"] >= 0))
         batch = collate_examples([first])
-        self.assertEqual(int(batch.autoregressive_mask["1s"].any(dim=-1).sum()), 3)
+        # The overnight transition into the first current-session origin is
+        # not a contiguous next-bar target; the following two transitions are.
+        self.assertEqual(int(batch.autoregressive_mask["1s"].any(dim=-1).sum()), 2)
         self.assertNotIn("1D", batch.autoregressive_mask)
 
     def test_offline_shard_round_trip_preserves_compiled_targets_without_context_duplication(self) -> None:
@@ -775,26 +871,20 @@ class LoaderTrainerContractTest(unittest.TestCase):
             validation_start_date="2026-01-01",
         )
         geometry_variant = dataclasses.replace(base, origin_bars_1s=base.origin_bars_1s + 1)
-        stream_variant = dataclasses.replace(base, loader_stream_contract_version=4)
+        stream_variant = dataclasses.replace(base, loader_stream_contract_version=6)
         fetch_variant = dataclasses.replace(base, clickhouse_query_days=3, clickhouse_prefetch_pages=2)
         self.assertEqual(config_hash(base), config_hash(loader_variant))
         self.assertNotEqual(config_hash(base), config_hash(stream_variant))
         self.assertEqual(config_hash(base), config_hash(fetch_variant))
         self.assertNotEqual(config_hash(base), config_hash(geometry_variant))
-        self.assertEqual(
-            config_hash(dataclasses.replace(DataConfig(), origin_bars_1s=4096)),
-            "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619",
-        )
-        runtime_config = dataclasses.replace(
-            DataConfig(), loader_stream_contract_version=4, origin_bars_1s=4096,
-        )
-        self.assertEqual(
-            shard_compatibility_hash(runtime_config),
-            "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619",
-        )
-        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 3)
-        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 2)
-        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2"))
+        production = dataclasses.replace(DataConfig(), origin_bars_1s=4096)
+        production_hash = config_hash(production)
+        self.assertEqual(len(production_hash), 64)
+        self.assertNotEqual(production_hash, "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619")
+        self.assertEqual(shard_compatibility_hash(production), production_hash)
+        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 5)
+        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 3)
+        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3"))
         self.assertEqual(
             shard_path(DEFAULT_OUTPUT_ROOT, "AAA:2019-01"),
             DEFAULT_OUTPUT_ROOT / "tickers" / "AAA" / "2019" / "2019-01.pt",
@@ -806,7 +896,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_offline_discovery_reports_missing_condition_count_metadata(self) -> None:
         builder_config = self.data_config()
-        runtime_config = dataclasses.replace(builder_config, loader_stream_contract_version=4)
+        runtime_config = builder_config
         examples = list(build_session_examples(
             ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
             split_actions=(), config=builder_config,
@@ -917,7 +1007,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
     def test_offline_training_pauses_validates_and_resumes_from_worker_cursors(self) -> None:
         runtime_data = dataclasses.replace(
             self.data_config(),
-            loader_stream_contract_version=4,
+            loader_stream_contract_version=5,
             tickers=("AAA", "BBB", "CCC"),
             start_date="2026-01-01",
             end_date="2026-03-01",
@@ -932,7 +1022,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             persistent_workers=False,
             balance_activity_regimes=False,
         )
-        builder_data = dataclasses.replace(runtime_data, loader_stream_contract_version=3)
+        builder_data = runtime_data
         model_config = BarGPTConfig(
             d_model=32, n_layers=1, n_heads=4, n_kv_heads=2,
             horizon_rank=8, timeframe_fourier_dim=8,
@@ -995,7 +1085,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             cursors: dict[int, CoverageCursor] = {}
             training = _training_prefetcher(train_loader, experiment, device)
             try:
-                for _ in range(4):
+                for _ in range(16):
                     batch = next(training)
                     optimizer.zero_grad(set_to_none=True)
                     _output, result = _forward(model, batch, experiment)
@@ -1065,7 +1155,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             ticker="AAA", local_date="2026-01-02", session=session_view(11), daily=None,
             split_actions=(), config=config, include_incomplete_horizons=True,
         ))
-        self.assertEqual(sum(item.origin_indices.numel() for item in examples), 7)
+        self.assertEqual(sum(item.origin_indices.numel() for item in examples), 11)
         last = examples[-1]
         batch = collate_examples([last]).to("cpu", non_blocking=False)
         self.assertFalse(bool(batch.horizon_mask[0, -1, -1].any()))
@@ -1099,7 +1189,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(torch.equal(physical_batch.mask[0], physical_single.mask))
 
     def test_prior_session_halo_enables_first_premarket_origins_without_overlap(self) -> None:
-        prior = session_view(8)
+        prior = session_view(self.data_config().intraday_warmup_bars_1s)
         current = session_view(12)
         offset = 86_400_000_000
         current = BarView(
@@ -1180,7 +1270,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
         self.assertEqual(training_launcher_args["--data-source"], "offline")
-        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v2"))
+        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v3"))
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--batch-size"], "16")

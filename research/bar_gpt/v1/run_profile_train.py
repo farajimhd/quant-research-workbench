@@ -9,7 +9,7 @@ from research.bar_gpt.v1.profile_train import DEFAULT_JOINT_CANDIDATES, main
 
 DEFAULT_ARGS: tuple[str, ...] = (
     "--data-source", "offline",
-    "--offline-shard-root", r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v2",
+    "--offline-shard-root", r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3",
     "--start-date", "2019-01-01",
     "--end-date", "2019-02-01",
     "--candidates",

@@ -78,9 +78,9 @@ class BarGPTConfig:
 @dataclass(slots=True)
 class DataConfig:
     # Versioned because worker-owned iterable cursors are not compatible with
-    # the former map-style global cursor, and v3 corrects month-boundary
-    # coverage plus the rolling calendar-cache reconstruction contract.
-    loader_stream_contract_version: int = 3
+    # the former map-style global cursor. V5 additionally binds derived
+    # multiscale warmup and complete context at every intraday origin.
+    loader_stream_contract_version: int = 5
     database: str = "market_sip_compact"
     one_second_table: str = BAR_GPT_COHORT_2TB_TABLE
     manifest_table: str = BAR_GPT_COHORT_2TB_MANIFEST_TABLE
@@ -113,8 +113,8 @@ class DataConfig:
     context_bars_1s: int = 720
     origin_bars_1s: int = 512
     intraday_context_bars: tuple[tuple[str, int], ...] = (
-        ("1s", 720), ("5s", 720), ("10s", 720), ("30s", 720),
-        ("1m", 720), ("5m", 720), ("30m", 720), ("1h", 720),
+        ("1s", 720), ("5s", 360), ("10s", 360), ("30s", 240),
+        ("1m", 240), ("5m", 96), ("30m", 16), ("1h", 8),
     )
     calendar_context_bars: tuple[tuple[str, int], ...] = (("1D", 90), ("1W", 52), ("1MO", 12))
     calendar_warmup_daily_bars: int = 365
@@ -159,13 +159,21 @@ class DataConfig:
         return dict(self.calendar_context_bars)
 
     @property
+    def attention_window_by_name(self) -> dict[str, int]:
+        """Direct causal attention span for each model-ready view.
+
+        The 1s stream contains the current origin in addition to its configured
+        past context. Coarser and calendar streams gather their latest completed
+        context bar directly, so their configured count is already inclusive.
+        """
+        windows = self.intraday_context_by_name
+        windows["1s"] = int(windows["1s"]) + 1
+        windows.update(self.calendar_context_by_name)
+        return windows
+
+    @property
     def intraday_warmup_bars_1s(self) -> int:
         contexts = self.intraday_context_by_name
-        # Small synthetic/test configurations historically override only the
-        # 1s context. Preserve that bounded contract; production defaults use
-        # the full fixed multiresolution warmup below.
-        if self.context_bars_1s != 720 and all(value == 720 for value in contexts.values()):
-            return int(self.context_bars_1s)
         return max(int(contexts[name]) * (TIMEFRAME_US[name] // self.base_timeframe_us) for name in contexts)
 
     @property
@@ -174,8 +182,8 @@ class DataConfig:
         return tuple(ticker for ticker in self.tickers if ticker not in holdout)
 
     def validate(self) -> None:
-        if self.loader_stream_contract_version not in {3, 4}:
-            raise ValueError("this BarGPT version requires loader_stream_contract_version 3 or 4")
+        if self.loader_stream_contract_version != 5:
+            raise ValueError("this BarGPT version requires loader_stream_contract_version 5")
         if "split_adjusted" in self.one_second_table or self.daily_table.endswith("_adjusted"):
             raise ValueError("globally adjusted bar authorities are retired; use raw bars with causal split metadata")
         if not self.tickers:
@@ -188,6 +196,8 @@ class DataConfig:
             raise ValueError("context and origin bars must be positive")
         if set(self.intraday_context_by_name) != {"1s", "5s", "10s", "30s", "1m", "5m", "30m", "1h"}:
             raise ValueError("intraday_context_bars must define the fixed intraday view contract")
+        if int(self.context_bars_1s) != int(self.intraday_context_by_name["1s"]):
+            raise ValueError("context_bars_1s must equal the authoritative intraday 1s context")
         if set(self.calendar_context_by_name) != {"1D", "1W", "1MO"}:
             raise ValueError("calendar_context_bars must define 1D, 1W, and 1MO")
         if any(int(value) <= 0 for value in (*self.intraday_context_by_name.values(), *self.calendar_context_by_name.values())):
