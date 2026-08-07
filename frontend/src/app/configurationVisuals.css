@@ -2503,13 +2503,18 @@
   text-transform: uppercase;
 }
 .strategy-editor-guided .strategy-observe-fields .configuration-field > small { display: none; }
+.strategy-editor-guided .strategy-observe-fields .configuration-boolean > small {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+}
 .strategy-editor-guided .strategy-observe-fields .configuration-lookup-button {
   font-size: 15px;
   height: 52px;
   padding: 0 16px;
 }
 .strategy-editor-guided .strategy-observe-fields .configuration-boolean {
-  min-height: 54px;
+  min-height: 72px;
   padding: 14px 16px;
 }
 .strategy-editor-guided .strategy-observe-fields .configuration-choice-set {
@@ -2532,7 +2537,7 @@
   min-height: 46px;
   padding: 10px 14px;
 }
-.strategy-editor-guided .strategy-observe-advanced {
+.strategy-editor-guided .strategy-engine-parameter-group {
   background: var(--surface);
   border-color: var(--border);
 }

@@ -1839,6 +1839,12 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
 }) {
   const enabledAdds = profile.lifecycle.initial_entry.add_steps.filter((step) => step.enabled).length;
   const definition = section.definitions.find((row) => row.strategy_id === profile.definition_id);
+  const entryStopParameters = advanced.filter((item) => item.path.startsWith("protection.stop."));
+  const trailingParameters = advanced.filter((item) => item.path.startsWith("protection.trailing."));
+  const luldTargetParameters = advanced.filter((item) => item.path.startsWith("protection.luld_profit_target."));
+  const profitPocketParameters = advanced.filter((item) => item.path.startsWith("profit_pocket."));
+  const assignedParameterPaths = new Set([...entryStopParameters, ...trailingParameters, ...luldTargetParameters, ...profitPocketParameters].map((item) => item.path));
+  const remainingParameters = advanced.filter((item) => !assignedParameterPaths.has(item.path));
   const stages: Array<[StrategyAuthoringStage, string, string, string]> = [
     ["identity", "1", "Identity", "Name and description"],
     ["overview", "2", "Observe", "Evaluation context"],
@@ -1875,13 +1881,13 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
       {activeStage === "overview" ? <>
         <header className="strategy-identity-intro strategy-observe-intro"><h2>When should the strategy evaluate?</h2></header>
         <div className="strategy-observe-fields"><TradingBehaviorEditor definition={definition} profile={profile} onChange={onProfileChange} /></div>
-        {advanced.length ? <details className="configuration-advanced strategy-authoring-advanced strategy-observe-advanced"><summary><span><strong>Engine-specific parameters</strong><small>{advanced.length} parameters</small></span><ChevronRight size={15} /></summary><div className="configuration-field-grid">{advanced.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} value={item.value} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} />)}</div></details> : null}
       </> : null}
 
       {activeStage === "entry" ? <>
         <StrategyStageIntro title="What creates an entry request?">Opportunity finds a setup. Confirmation proves it is actionable. Any passing blocker vetoes the entry. A passing decision creates a request—not an order and not guaranteed capital.</StrategyStageIntro>
         <DecisionRulesEditor catalog={section.input_catalog} rules={entryRules} title="Initial-entry evidence" summary="Entry requires opportunity and confirmation to pass while every blocker remains false." onChange={(value) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, ...value } } })} />
         <details className="configuration-advanced strategy-authoring-advanced"><summary><span><strong>Exposure request and execution preference</strong><small>Consulted only after entry evidence passes</small></span><ChevronRight size={15} /></summary><PhaseOrderEditor capitalRequest={entryRules.capital_request} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} orderIntent={entryRules.order_intent} title="Initial order request" executionPolicies={draft.oms.execution_policies} protectionProfiles={draft.oms.protection_profiles} onCapitalRequest={(capital_request) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, capital_request } } })} onOrderIntent={(order_intent) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, order_intent } } })} /></details>
+        <StrategyEngineParameterGroup items={entryStopParameters} onChange={(path, value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, path, value) })} summary="Initial invalidation and risk boundary" title="Initial stop" />
       </> : null}
 
       {activeStage === "position" ? <>
@@ -1889,10 +1895,13 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
         <details className="strategy-authoring-subsection"><summary><span><strong>Position adds</strong><small>{enabledAdds} enabled · increase an existing position</small></span><ChevronRight size={15} /></summary><div><AddStepsEditor catalog={section.input_catalog} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} executionPolicies={draft.oms.execution_policies} protectionProfiles={draft.oms.protection_profiles} steps={entryRules.add_steps} onChange={(add_steps) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, add_steps } } })} /></div></details>
         <details className="strategy-authoring-subsection"><summary><span><strong>Optional capabilities</strong><small>{profile.capabilities.filter((capability) => capability.enabled).length} enabled · code-defined position behavior</small></span><ChevronRight size={15} /></summary><div><CapabilitiesEditor catalog={section.capability_catalog} profile={profile} onChange={onProfileChange} /></div></details>
         <details className="strategy-authoring-subsection"><summary><span><strong>Reentry after a full exit</strong><small>{profile.lifecycle.reentry.enabled ? `Enabled · maximum ${profile.lifecycle.reentry.maximum_attempts}` : "Disabled"}</small></span><ChevronRight size={15} /></summary><div><ReentryEditor catalog={section.input_catalog} draft={draft} profile={profile} onChange={onProfileChange} /></div></details>
+        <StrategyEngineParameterGroup items={trailingParameters} onChange={(path, value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, path, value) })} summary="Activation and distance while the position is open" title="Position trailing" />
       </> : null}
 
       {activeStage === "exit" ? <>
         <StrategyStageIntro title="What makes the strategy reduce or close?">Each route has independent evidence, timing, and position action. These are strategic exits. Broker-held stops and emergency liquidation remain automatic and independent of these rules.</StrategyStageIntro>
+        <StrategyEngineParameterGroup items={luldTargetParameters} onChange={(path, value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, path, value) })} summary="Target derived from the authoritative volatility band" title="LULD profit target" />
+        <StrategyEngineParameterGroup items={profitPocketParameters} onChange={(path, value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, path, value) })} summary="Conditions and quantity for intentional profit reduction" title="Profit pocket" />
         <ExitRuleSetsEditor catalog={section.input_catalog} draft={draft} profile={profile} onChange={onProfileChange} />
       </> : null}
 
@@ -1900,6 +1909,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
         <StrategyStageIntro title="Which authorities are required after strategy logic passes?">The Strategy Profile ends by emitting intent. The following configuration decides whether it may proceed, how much may trade, where it trades, and how broker orders are protected.</StrategyStageIntro>
         <BooleanField help="Controls whether a Run Plan may select this profile. It does not start a run." label="Available to Run Plans" onChange={(enabled) => onProfileChange({ ...profile, enabled })} value={profile.enabled} />
         <StrategyHandoffLinks draft={draft} profile={profile} />
+        <StrategyEngineParameterGroup items={remainingParameters} onChange={(path, value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, path, value) })} summary="Definition-specific values not assigned to another lifecycle step" title="Other engine parameters" />
       </> : null}
     </section>
     <footer className="strategy-guided-navigation">
@@ -1912,6 +1922,11 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
 
 function StrategyStageIntro({ children, hideDescription = false, title }: { children: ReactNode; hideDescription?: boolean; title: string }) {
   return <header className="strategy-stage-intro"><h2>{title}</h2><p aria-hidden={hideDescription || undefined} data-layout-placeholder={hideDescription || undefined}>{children}</p></header>;
+}
+
+function StrategyEngineParameterGroup({ items, onChange, summary, title }: { items: Array<{ path: string; value: Primitive }>; onChange: (path: string, value: Primitive) => void; summary: string; title: string }) {
+  if (!items.length) return null;
+  return <details className="configuration-advanced strategy-authoring-advanced strategy-engine-parameter-group"><summary><span><strong>{title}</strong><small>{summary} · {items.length} parameters</small></span><ChevronRight size={15} /></summary><div className="configuration-field-grid">{items.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path.split(".").at(-1) ?? item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} value={item.value} onChange={(value) => onChange(item.path, value)} />)}</div></details>;
 }
 
 function StrategyHandoffLinks({ draft, profile }: { draft: Draft; profile: StrategyProfile }) {
@@ -2019,7 +2034,7 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
           value={behavior.evaluation_trigger}
         />
         <BooleanField
-          help="Allow a manually opened position to be adopted by a campaign using this Strategy Profile."
+          help="When enabled, a campaign may take ownership of a manually opened position and manage its adds and exits. When disabled, manual positions remain outside strategy control."
           label="Adopt manual positions"
           onChange={(adopt_manual_positions) => update({ ...behavior, adopt_manual_positions })}
           value={behavior.adopt_manual_positions}
