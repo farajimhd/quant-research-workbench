@@ -24,7 +24,7 @@ from .engine import (
 from .taxonomy_audit import discover_pairs, load_json
 
 
-AUDIT_VERSION = "direct_trading_sentiment_audit_v8"
+AUDIT_VERSION = "direct_trading_sentiment_audit_v9"
 IDENTITY_SNAPSHOT_VERSION = "news_synthesis_benchmark_identity_snapshot_v1"
 
 
@@ -104,6 +104,10 @@ def build_benchmark_identity_snapshot(
     for article in articles:
         publication = article.get("publication", {})
         rendered = article.get("rendered_product", {})
+        for value in publication.get("provider_tickers") or ():
+            ticker = _normalize_ticker_identifier(value)
+            if ticker and re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
+                tickers.add(ticker)
         rows = enrich_candidate_rows(
             article.get("point_in_time_issuer_candidates", []),
             title=str(publication.get("title") or ""),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Any, Iterable, Mapping
 
@@ -52,7 +53,30 @@ def derive_issuer_views(
         ]
         below = guidance_relations.count("below")
         above = guidance_relations.count("above")
-        if below >= 2 and not above:
+        issuer_statements = [
+            statement_by_id.get(str(row["statement_id"]), {}) for row in rows
+        ]
+        ipo_quotes = [
+            str((statement.get("evidence_spans") or [{}])[0].get("quote", ""))
+            for statement in issuer_statements
+            if statement.get("concept_leaf") == "capital.financing"
+            and re.search(r"\b(?:initial public offering|IPO)\b", str((statement.get("evidence_spans") or [{}])[0].get("quote", "")), re.I)
+            and re.match(r"\s*Title:", str((statement.get("evidence_spans") or [{}])[0].get("quote", "")), re.I)
+        ]
+        all_ipo_quotes = [
+            str((statement.get("evidence_spans") or [{}])[0].get("quote", ""))
+            for statement in issuer_statements
+            if statement.get("concept_leaf") == "capital.financing"
+            and re.search(r"\b(?:initial public offering|IPO)\b", str((statement.get("evidence_spans") or [{}])[0].get("quote", "")), re.I)
+        ]
+        if ipo_quotes and any(re.search(r"\babove\b.{0,50}\b(?:expected )?(?:price )?range\b", quote, re.I) for quote in all_ipo_quotes):
+            sentiment = "positive"
+            positive = max(positive, 3)
+        elif ipo_quotes:
+            sentiment = "mixed"
+            positive = max(positive, 2)
+            negative = max(negative, 2)
+        elif below >= 2 and not above:
             sentiment = "negative"
             negative = max(negative, 3)
         elif above >= 2 and not below:

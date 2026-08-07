@@ -41,7 +41,7 @@ _GUIDANCE_METRIC = (
     r"(?:adjusted\s+)?EBITDA|(?:revenue|sales)|(?:gross|operating|EBITDA) margin"
 )
 _COMPARISON_VALUE_ATOM = (
-    r"(?:[$Â£â‚¬]\s*)?\d[\d,]*(?:\.\d+)?\s*"
+    r"(?:(?:E?\$|£|€)\s*)?\(?\d[\d,]*(?:\.\d+)?\)?\s*"
     r"(?:%|percent|trillion|billion|million|thousand|[TBMK])?"
 )
 _COMPARISON_VALUE = (
@@ -84,12 +84,16 @@ _MAGNITUDE = {
 }
 
 
-def extract_typed_facts(spans: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def extract_typed_facts(
+    spans: list[Mapping[str, Any]],
+    *,
+    estimate_subject_role: str = "issuer_guidance",
+) -> list[dict[str, Any]]:
     """Extract typed numeric and temporal facts without treating identifiers as numbers."""
     facts: list[dict[str, Any]] = []
     for span in spans:
         quote = str(span["quote"])
-        facts.extend(_extract_guidance_comparisons(quote))
+        facts.extend(_extract_estimate_comparisons(quote, estimate_subject_role))
         occupied: list[tuple[int, int]] = []
         for match in MONEY_RE.finditer(quote):
             occupied.append(match.span())
@@ -147,7 +151,10 @@ def extract_typed_facts(spans: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return facts
 
 
-def _extract_guidance_comparisons(text: str) -> list[dict[str, Any]]:
+def _extract_estimate_comparisons(
+    text: str,
+    subject_role: str,
+) -> list[dict[str, Any]]:
     comparisons: list[dict[str, Any]] = []
     for match in GUIDANCE_COMPARISON_RE.finditer(text):
         if not match.group("prefix") and not match.group("suffix"):
@@ -167,7 +174,7 @@ def _extract_guidance_comparisons(text: str) -> list[dict[str, Any]]:
         comparisons.append({
             "fact_type": "estimate_comparison",
             "metric": _normalize_comparison_metric(match.group("metric")),
-            "subject_role": "issuer_guidance",
+            "subject_role": subject_role,
             "comparator_role": "consensus_estimate",
             "subject_raw": match.group("subject").strip(),
             "comparator_raw": match.group("comparator").strip(),
@@ -196,6 +203,8 @@ def _comparison_bounds(raw: str) -> tuple[Decimal, Decimal] | None:
     try:
         for match in _COMPARISON_NUMBER_RE.finditer(raw):
             value = Decimal(match.group("value").replace(",", ""))
+            if "(" in raw[max(0, match.start() - 2):match.end() + 1] and ")" in raw[match.start():match.end() + 2]:
+                value = -value
             scale = _COMPARISON_SCALE[(match.group("unit") or "").casefold()]
             values.append(value * scale)
     except (InvalidOperation, KeyError):

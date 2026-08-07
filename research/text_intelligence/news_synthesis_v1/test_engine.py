@@ -550,6 +550,97 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(comparison["subject_upper_value"], "295000000")
         self.assertEqual(comparison["relation"], "in_line")
 
+    def test_reported_numeric_comparisons_split_metrics_and_drive_direction(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-reported-comparisons",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports Q2 EPS $0.40 vs $0.35 est., Sales $28M vs $30M est.",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) reports Q2 EPS $0.40 vs $0.35 est., Sales $28M vs $30M est.",
+            "tickers": ["AAA"],
+        })
+        earnings = [row for row in document["statements"] if row["concept_leaf"] == "earnings.performance"]
+        self.assertEqual(len(earnings), 2)
+        relations = [
+            fact["relation"] for row in earnings for fact in row["typed_facts"]
+            if fact["fact_type"] == "estimate_comparison"
+        ]
+        self.assertEqual(relations, ["above", "below"])
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
+
+    def test_negative_parenthesized_result_beating_estimate_is_positive(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-negative-eps-beat",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports Q2 EPS $(0.06) vs $(0.08) estimate",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) reports Q2 EPS $(0.06) vs $(0.08) estimate.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_guidance_cut_controls_unrelated_higher_impact_language(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-guidance-cut-higher-impact",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha cuts guidance, anticipates higher impact from inventory rebalancing",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) cuts guidance and anticipates a higher impact from inventory rebalancing.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_forward_decline_is_not_positive_growth_guidance(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-negative-growth-guidance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha sees sales growth in a decline of 1% to 0%",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) sees sales growth in a decline of 1% to 0%.",
+            "tickers": ["AAA"],
+        })
+        self.assertNotEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_debt_offering_is_neutral_while_equity_offering_is_negative(self) -> None:
+        debt = self.engine.synthesize({
+            "source_id": "news-debt-offering",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha announces $300 million senior notes offering",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) announces a $300 million senior notes offering.",
+            "tickers": ["AAA"],
+        })
+        equity = self.engine.synthesize({
+            "source_id": "news-equity-offering",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha will offer 3 million shares of common stock",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) will offer 3 million shares of common stock.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(debt["issuer_views"][0]["composite_sentiment"], "neutral")
+        self.assertEqual(equity["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_share_combination_to_regain_compliance_is_negative(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-share-combination",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha announces 1-for-20 share combination to regain Nasdaq compliance",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) announces a 1-for-20 share combination to regain Nasdaq compliance.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_clinical_primary_endpoint_outcomes_are_directional(self) -> None:
+        positive = self.engine.synthesize({
+            "source_id": "news-endpoint-met", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha study met its primary endpoint",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) Phase 3 study met its primary endpoint.",
+            "tickers": ["AAA"],
+        })
+        negative = self.engine.synthesize({
+            "source_id": "news-endpoint-missed", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha study did not demonstrate its primary endpoint",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) Phase 2 study did not demonstrate a statistically significant response on the primary endpoint.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(positive["issuer_views"][0]["composite_sentiment"], "positive")
+        self.assertEqual(negative["issuer_views"][0]["composite_sentiment"], "negative")
+
     def test_fiscal_year_results_are_not_mistaken_for_forward_guidance(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-fiscal-year-results",
@@ -962,6 +1053,92 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         parts = [row for row in document["participations"] if row["statement_id"] == analyst["statement_id"]]
         self.assertEqual([row["entity_id"] for row in parts], [next(row["entity_id"] for row in document["entities"] if row["ticker"] == "BBB")])
         self.assertEqual(parts[0]["semantic_sentiment"], "negative")
+
+    def test_prior_period_metric_values_drive_realized_result_direction(self) -> None:
+        cases = (
+            ("Alpha Q1 sales $8.675B vs $7.16B in same quarter last year", "positive"),
+            ("Alpha Q1 EPS $2.14 down from $7.90 year over year", "negative"),
+        )
+        for index, (headline, expected) in enumerate(cases):
+            with self.subTest(headline=headline):
+                document = self.engine.synthesize({
+                    "source_id": f"news-period-comparison-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": headline,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA) reports {headline.split(' ', 1)[1]}.",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
+    def test_explicit_clinical_outcomes_and_first_dosing_are_directional(self) -> None:
+        cases = (
+            ("Phase 2 study did not demonstrate a significant dose-response relationship on the primary endpoint", "negative"),
+            ("Phase 3 study met its primary safety and efficacy endpoints", "positive"),
+            ("Alpha doses first subject in a Phase 1 study", "positive"),
+        )
+        for index, (outcome, expected) in enumerate(cases):
+            with self.subTest(outcome=outcome):
+                document = self.engine.synthesize({
+                    "source_id": f"news-clinical-outcome-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": outcome,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA) reports: {outcome}.",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
+    def test_takeover_bid_roles_use_canonical_aliases(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "Alpha Pharmaceuticals International", ("Alpha",), "NYSE"),
+            IssuerIdentity("BBB", "issuer:bbb", "BetaBio Incorporated", ("BetaBio",), "NYSE"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-raised-takeover-bid",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha raises BetaBio takeover bid",
+            "text": "Alpha raises its takeover offer for BetaBio above $200 per share.",
+            "tickers": ["AAA", "BBB"],
+        })
+        ticker_by_entity = {row["entity_id"]: row["ticker"] for row in document["entities"]}
+        acquisition = next(row for row in document["statements"] if row["concept_leaf"] == "corporate_transaction.acquisition")
+        sentiments = {
+            ticker_by_entity[row["entity_id"]]: (row["semantic_role"], row["semantic_sentiment"])
+            for row in document["participations"]
+            if row["statement_id"] == acquisition["statement_id"]
+        }
+        self.assertEqual(sentiments["AAA"], ("acquirer", "negative"))
+        self.assertEqual(sentiments["BBB"], ("target", "positive"))
+
+    def test_dotted_initials_preserve_settlement_costs_in_one_clause(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-settlement-cost",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": (
+                "Alpha enters settlement agreement with H.C. Wainwright including "
+                "$0.84M cash payment and warrant issuance"
+            ),
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) enters settlement agreement "
+                "with H.C. Wainwright including $0.84M cash payment and warrant issuance."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+        self.assertTrue(any(
+            "H.C. Wainwright" in span["quote"] and "cash payment" in span["quote"]
+            for statement in document["statements"]
+            for span in statement["evidence_spans"]
+        ))
+
+    def test_beat_and_miss_metric_clauses_are_split_before_sentiment(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-beat-miss-package",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Q3 EPS $0.33 beats $0.12 estimate, revenues $1.12B misses $1.131B estimate",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) Q3 EPS $0.33 beats $0.12 estimate, revenues $1.12B misses $1.131B estimate.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
 
 
 if __name__ == "__main__":
