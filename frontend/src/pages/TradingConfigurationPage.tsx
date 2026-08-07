@@ -50,6 +50,7 @@ type StrategyAuthoringStage = "overview" | "entry" | "position" | "exit" | "hand
 type RuntimeMode = "replay" | "backtest" | "backtest_debug" | "paper" | "live";
 type ActionAuthority = "disabled" | "manual" | "confirm" | "automatic" | "inherit";
 type Primitive = boolean | number | string;
+type CatalogParameterValue = Primitive | null;
 type ParameterMap = Record<string, unknown>;
 
 type CapabilityParameter = {
@@ -1562,6 +1563,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
   const advanced = flattenPrimitives(selected.parameters).filter((row) => (
     !LEGACY_ENTRY_LOGIC_PATHS.has(row.path)
   ));
+  const catalogParameters = strategyEditableParameters(selected);
   const entryRules = selected.lifecycle.initial_entry;
   const creationNameConflict = Boolean(creationName.trim()) && section.profiles.some((row) => row.name.trim().toLocaleLowerCase() === creationName.trim().toLocaleLowerCase());
 
@@ -1591,9 +1593,9 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
       </nav>
       <div className={`configuration-workbench strategy-editor-${editorMode}`}>
       {editorMode === "catalog" ? <>
-      <StrategyParameterCatalog engineParameters={advanced} onSelect={setCatalogItem} selectedId={catalogItem?.id ?? null} />
+      <StrategyParameterCatalog parameters={catalogParameters} onSelect={setCatalogItem} selectedId={catalogItem?.id ?? null} />
 
-      {catalogItem ? <StrategyParameterDetail item={catalogItem} onChange={(value) => replaceProfile({ ...selected, parameters: setPath(selected.parameters, catalogItem.parameter, value) })} value={advanced.find((row) => row.path === catalogItem.parameter)?.value} /> : <main className="strategy-parameter-empty-detail"><Search size={24} /><h2>Select a parameter</h2><p>Choose any strategy parameter from the catalog to review and edit its current value.</p></main>}
+      {catalogItem ? <StrategyParameterDetail item={catalogItem} onChange={(value) => replaceProfile(setStrategyProfilePath(selected, catalogItem.parameter, value))} value={catalogParameters.find((row) => row.path === catalogItem.parameter)?.value} /> : <main className="strategy-parameter-empty-detail"><Search size={24} /><h2>Select a parameter</h2><p>Choose any strategy parameter from the catalog to review and edit its current value.</p></main>}
       </> : <main className="configuration-detail">
         <section className="configuration-detail-heading">
           <div>
@@ -1799,33 +1801,21 @@ function StrategySelectionPage({ creationMode, name, nameConflict, onCancel, onC
   </main>;
 }
 
-function strategyCatalogGroup(item: Omit<StrategyCatalogItem, "group" | "groupOrder" | "importance">): Pick<StrategyCatalogItem, "group" | "groupOrder" | "importance"> {
-  const key = `${item.id} ${item.category} ${item.label} ${item.parameter}`.toLocaleLowerCase();
-  const rank = (...patterns: string[]) => {
-    const index = patterns.findIndex((pattern) => key.includes(pattern));
-    return index < 0 ? 50 : index;
-  };
-  if (item.category === "Market") return { group: "Market anchors", groupOrder: 0, importance: rank("last_price", "previous_close", "previous_high") };
-  if (key.includes("protection") || key.includes("stop") || key.includes("trailing") || key.includes("risk")) return { group: "Protection and risk", groupOrder: 4, importance: rank("minimum_stop", "stop", "trailing", "target", "risk") };
-  if (key.includes("profit_pocket") || key.includes("position") || key.includes("reentry") || key.includes("add_")) return { group: "Position management", groupOrder: 5, importance: rank("profit_pocket.enabled", "activation", "minimum_gain", "allocation", "reentry", "add_") };
-  if (key.includes("structure") || key.includes("swing") || key.includes("choch") || key.includes("flow")) return { group: "Structure and flow", groupOrder: 1, importance: rank("swing_high", "swing_low", "choch", "flow_structure", "flow_price") };
-  if (key.includes("vwap") || key.includes("macd")) return { group: "Momentum indicators", groupOrder: 2, importance: rank("vwap.value", "vwap.slope", "macd.line", "macd.signal", "macd.histogram") };
-  if (item.kind === "Evidence source") return { group: "Decision signals", groupOrder: 3, importance: rank("price_volume", "vwap_transition", "liquidity", "news") };
-  return { group: "Strategy engine", groupOrder: 6, importance: rank("entry", "exit", "maximum", "minimum") };
-}
-
-function StrategyParameterCatalog({ engineParameters, onSelect, selectedId }: { engineParameters: Array<{ path: string; value: Primitive }>; onSelect: (item: StrategyCatalogItem) => void; selectedId: string | null }) {
+function StrategyParameterCatalog({ parameters, onSelect, selectedId }: { parameters: Array<{ group: string; groupOrder: number; importance: number; path: string; value: CatalogParameterValue }>; onSelect: (item: StrategyCatalogItem) => void; selectedId: string | null }) {
   const [search, setSearch] = useState("");
-  const items = useMemo(() => engineParameters.map((parameter) => ({
-      category: "Engine parameter",
+  const items = useMemo(() => parameters.map((parameter) => ({
+      category: parameter.group,
       detail: helpForPath(parameter.path),
-      id: `engine:${parameter.path}`,
-      kind: "Engine parameter",
-      label: readableLabel(parameter.path),
-      metadata: [{ label: "Value type", value: typeof parameter.value }, { label: "Current value", value: String(parameter.value) }],
+      group: parameter.group,
+      groupOrder: parameter.groupOrder,
+      id: `strategy:${parameter.path}`,
+      importance: parameter.importance,
+      kind: "Strategy parameter",
+      label: strategyParameterLabel(parameter.path),
+      metadata: [{ label: "Value type", value: parameter.value === null ? "unset" : typeof parameter.value }, { label: "Current value", value: parameter.value === null ? "Unset" : String(parameter.value) }],
       parameter: parameter.path,
-      usage: "The registered strategy implementation reads this value when it evaluates the corresponding behavior.",
-    })).map((item) => ({ ...item, ...strategyCatalogGroup(item) })).sort((left, right) => left.groupOrder - right.groupOrder || left.importance - right.importance || left.label.localeCompare(right.label)), [engineParameters]);
+      usage: "This value is part of the Strategy Profile and is read when the corresponding stage of the strategy lifecycle runs.",
+    })).sort((left, right) => left.groupOrder - right.groupOrder || left.importance - right.importance), [parameters]);
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filtered = items.filter((item) => !normalizedSearch || [item.label, item.parameter, item.category, item.kind, item.detail, ...item.metadata.flatMap((row) => [row.label, row.value])].join(" ").toLocaleLowerCase().includes(normalizedSearch));
   const groups = filtered.reduce<Array<{ label: string; items: StrategyCatalogItem[] }>>((result, item) => {
@@ -1845,7 +1835,7 @@ function StrategyParameterCatalog({ engineParameters, onSelect, selectedId }: { 
   </aside>;
 }
 
-function StrategyParameterDetail({ item, onChange, value }: { item: StrategyCatalogItem; onChange: (value: Primitive) => void; value: Primitive | undefined }) {
+function StrategyParameterDetail({ item, onChange, value }: { item: StrategyCatalogItem; onChange: (value: Primitive) => void; value: CatalogParameterValue | undefined }) {
   return <main className="strategy-parameter-detail-page">
     <header><span>{item.group}</span><h2>{item.label}</h2><p>{item.detail}</p></header>
     <section className="strategy-parameter-editor"><ParameterField definition={field(item.parameter, item.label, item.detail, controlFor(value ?? ""), choicesFor(item.parameter), unitFor(item.parameter), stepFor(value ?? ""))} onChange={onChange} value={value ?? ""} /></section>
@@ -3718,6 +3708,109 @@ function flattenPrimitives(value: ParameterMap, prefix = ""): Array<{ path: stri
     if (["boolean", "number", "string"].includes(typeof item)) return [{ path, value: item as Primitive }];
     return [];
   });
+}
+
+const STRATEGY_CATALOG_GROUPS = [
+  "Profile",
+  "Observe",
+  "Initial entry · Opportunity",
+  "Initial entry · Confirmation",
+  "Initial entry · Blockers",
+  "Initial entry · Request",
+  "Position adds",
+  "Reentry",
+  "Strategic exits",
+  "Capabilities",
+  "Engine parameters",
+] as const;
+
+const STRATEGY_CATALOG_OMITTED_KEYS = new Set([
+  "profile_id", "definition_id", "definition_revision", "origin", "protected", "editable", "revision",
+  "condition_id", "group_id", "step_id", "rule_set_id", "capability_id",
+]);
+
+function flattenStrategyPrimitives(value: unknown, prefix = "", result: Array<{ path: string; value: CatalogParameterValue }> = []): Array<{ path: string; value: CatalogParameterValue }> {
+  if (value === null && prefix) {
+    result.push({ path: prefix, value: null });
+    return result;
+  }
+  if (["boolean", "number", "string"].includes(typeof value)) {
+    result.push({ path: prefix, value: value as Primitive });
+    return result;
+  }
+  if (!value || typeof value !== "object") return result;
+  Object.entries(value).forEach(([key, item]) => {
+    if (STRATEGY_CATALOG_OMITTED_KEYS.has(key)) return;
+    flattenStrategyPrimitives(item, prefix ? `${prefix}.${key}` : key, result);
+  });
+  return result;
+}
+
+function strategyCatalogGroupForPath(path: string): { group: string; groupOrder: number } {
+  let groupOrder = 0;
+  if (path.startsWith("lifecycle.trading_behavior")) groupOrder = 1;
+  else if (path.startsWith("lifecycle.initial_entry.opportunity")) groupOrder = 2;
+  else if (path.startsWith("lifecycle.initial_entry.confirmation")) groupOrder = 3;
+  else if (path.startsWith("lifecycle.initial_entry.blockers")) groupOrder = 4;
+  else if (path.startsWith("lifecycle.initial_entry.capital_request") || path.startsWith("lifecycle.initial_entry.order_intent")) groupOrder = 5;
+  else if (path.startsWith("lifecycle.initial_entry.add_steps")) groupOrder = 6;
+  else if (path.startsWith("lifecycle.reentry")) groupOrder = 7;
+  else if (path.startsWith("lifecycle.exit")) groupOrder = 8;
+  else if (path.startsWith("capabilities")) groupOrder = 9;
+  else if (path.startsWith("parameters")) groupOrder = 10;
+  return { group: STRATEGY_CATALOG_GROUPS[groupOrder], groupOrder };
+}
+
+function strategyEditableParameters(profile: StrategyProfile) {
+  const editableProfile = {
+    name: profile.name,
+    description: profile.description,
+    enabled: profile.enabled,
+    lifecycle: profile.lifecycle,
+    capabilities: profile.capabilities,
+    parameters: profile.parameters,
+  };
+  return flattenStrategyPrimitives(editableProfile).map((parameter, importance) => ({
+    ...parameter,
+    ...strategyCatalogGroupForPath(parameter.path),
+    importance,
+  }));
+}
+
+function strategyParameterLabel(path: string) {
+  const parts = path.split(".");
+  const leaf = readableLabel(parts.at(-1) ?? path);
+  const indexedParent = parts.findIndex((part) => /^\d+$/.test(part));
+  if (indexedParent < 1) return leaf;
+  const index = Number(parts[indexedParent]) + 1;
+  const parent = parts[indexedParent - 1];
+  if (parent === "conditions") return `Condition ${index} · ${leaf}`;
+  if (parent === "groups") return `Evidence group ${index} · ${leaf}`;
+  if (parent === "add_steps") return `Add ${index} · ${leaf}`;
+  if (parent === "rule_sets") return `Exit route ${index} · ${leaf}`;
+  if (parent === "capabilities") return `Capability ${index} · ${leaf}`;
+  if (parent === "eligible_sessions") return `Session ${index}`;
+  return `${readableLabel(parent)} ${index} · ${leaf}`;
+}
+
+function setStrategyProfilePath(profile: StrategyProfile, path: string, value: Primitive): StrategyProfile {
+  const result = deepClone(profile) as unknown as ParameterMap;
+  const parts = path.split(".");
+  let cursor: unknown = result;
+  parts.slice(0, -1).forEach((part, index) => {
+    const nextPart = parts[index + 1];
+    if (Array.isArray(cursor)) {
+      cursor = cursor[Number(part)];
+      return;
+    }
+    const record = cursor as ParameterMap;
+    if (!record[part] || typeof record[part] !== "object") record[part] = /^\d+$/.test(nextPart) ? [] : {};
+    cursor = record[part];
+  });
+  const finalPart = parts.at(-1) ?? path;
+  if (Array.isArray(cursor)) cursor[Number(finalPart)] = value;
+  else (cursor as ParameterMap)[finalPart] = value;
+  return result as unknown as StrategyProfile;
 }
 
 function getPath(source: ParameterMap, path: string): unknown {
