@@ -157,6 +157,20 @@ type EntryRules = {
   opportunity: RuleStage;
 };
 
+type EntryAuthoringPage = keyof EntryRules | "capital" | "priority" | "execution" | "partial_fill" | "protection" | "initial_stop";
+
+const ENTRY_AUTHORING_PAGES: Array<{ description: string; id: EntryAuthoringPage; label: string; title: string }> = [
+  { description: "Define the evidence paths that identify a candidate setup before confirmation is considered.", id: "opportunity", label: "Opportunity", title: "What identifies a possible entry?" },
+  { description: "Define the independent evidence paths that must validate an identified opportunity.", id: "confirmation", label: "Confirmation", title: "What proves the entry is actionable?" },
+  { description: "Define the conditions that veto entry even when opportunity and confirmation have passed.", id: "blockers", label: "Blockers", title: "What must prevent the entry?" },
+  { description: "Express the desired exposure before Portfolio applies account capacity, mandates, and risk limits.", id: "capital", label: "Capital", title: "How much exposure should Strategy request?" },
+  { description: "Permit or prohibit Portfolio from considering a stronger opportunity as a replacement candidate.", id: "priority", label: "Replacement", title: "May Portfolio propose a replacement?" },
+  { description: "Choose the broker-neutral execution behavior OMS applies after Portfolio approves quantity.", id: "execution", label: "Execution", title: "How should OMS seek the entry fill?" },
+  { description: "Choose how OMS handles an incomplete fill without exceeding Portfolio's approved quantity.", id: "partial_fill", label: "Partial fill", title: "What should happen after a partial fill?" },
+  { description: "Select the independently versioned protection contract attached to confirmed entry fills.", id: "protection", label: "Protection", title: "Which protection follows the entry fill?" },
+  { description: "Set the definition-specific invalidation values used by the strategy's initial risk boundary.", id: "initial_stop", label: "Initial stop", title: "What defines the initial invalidation boundary?" },
+];
+
 type ReEvaluationRuleSet = {
   campaign_states: Array<"flat" | "position_open">;
   enabled: boolean;
@@ -1849,6 +1863,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
   profile: StrategyProfile;
   section: StrategySection;
 }) {
+  const [activeEntryPage, setActiveEntryPage] = useState<EntryAuthoringPage>("opportunity");
   const enabledAdds = profile.lifecycle.initial_entry.add_steps.filter((step) => step.enabled).length;
   const definition = section.definitions.find((row) => row.strategy_id === profile.definition_id);
   const entryStopParameters = advanced.filter((item) => item.path.startsWith("protection.stop."));
@@ -1867,6 +1882,29 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
     ["handoff", "7", "Run", "External authorities"],
   ];
   const activeIndex = stages.findIndex(([stage]) => stage === activeStage);
+  const activeEntryIndex = ENTRY_AUTHORING_PAGES.findIndex((page) => page.id === activeEntryPage);
+  const activeEntry = ENTRY_AUTHORING_PAGES[activeEntryIndex];
+  const activeEntryRuleStage = activeEntryPage === "opportunity" || activeEntryPage === "confirmation" || activeEntryPage === "blockers" ? activeEntryPage : null;
+
+  function replaceInitialEntry(value: Partial<StrategyLifecycle["initial_entry"]>) {
+    onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, ...value } } });
+  }
+
+  function previousQuestion() {
+    if (activeStage === "entry" && activeEntryIndex > 0) {
+      setActiveEntryPage(ENTRY_AUTHORING_PAGES[activeEntryIndex - 1].id);
+      return;
+    }
+    if (activeIndex > 0) onStageChange(stages[activeIndex - 1][0]);
+  }
+
+  function nextQuestion() {
+    if (activeStage === "entry" && activeEntryIndex < ENTRY_AUTHORING_PAGES.length - 1) {
+      setActiveEntryPage(ENTRY_AUTHORING_PAGES[activeEntryIndex + 1].id);
+      return;
+    }
+    if (activeIndex < stages.length - 1) onStageChange(stages[activeIndex + 1][0]);
+  }
 
   return <article className="strategy-authoring" aria-label={`${profile.name} strategy authoring flow`}>
     <nav aria-label="Strategy configuration steps" className="strategy-authoring-steps">
@@ -1902,10 +1940,17 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
       </> : null}
 
       {activeStage === "entry" ? <>
-        <StrategyStageIntro title="What creates an entry request?">Opportunity finds a setup. Confirmation proves it is actionable. Any passing blocker vetoes the entry. A passing decision creates a request—not an order and not guaranteed capital.</StrategyStageIntro>
-        <DecisionRulesEditor catalog={section.input_catalog} rules={entryRules} title="Initial-entry evidence" summary="Entry requires opportunity and confirmation to pass while every blocker remains false." onChange={(value) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, ...value } } })} />
-        <details className="configuration-advanced strategy-authoring-advanced"><summary><span><strong>Exposure request and execution preference</strong><small>Consulted only after entry evidence passes</small></span><ChevronRight size={15} /></summary><PhaseOrderEditor capitalRequest={entryRules.capital_request} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} orderIntent={entryRules.order_intent} title="Initial order request" executionPolicies={draft.oms.execution_policies} protectionProfiles={draft.oms.protection_profiles} onCapitalRequest={(capital_request) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, capital_request } } })} onOrderIntent={(order_intent) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, order_intent } } })} /></details>
-        <StrategyEngineParameterGroup items={entryStopParameters} onChange={(path, value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, path, value) })} summary="Initial invalidation and risk boundary" title="Initial stop" />
+        <header className="strategy-identity-intro strategy-entry-intro"><h2>{activeEntry.title}</h2><p>{activeEntry.description}</p></header>
+        <nav aria-label="Initial entry questions" className="strategy-entry-navigation">
+          {ENTRY_AUTHORING_PAGES.map((page, index) => <button aria-current={page.id === activeEntryPage ? "step" : undefined} aria-label={page.label} key={page.id} onClick={() => setActiveEntryPage(page.id)} title={page.label} type="button"><span>{index + 1}</span><strong>{page.label}</strong></button>)}
+        </nav>
+        {activeEntryRuleStage ? <DecisionRulesEditor catalog={section.input_catalog} rules={entryRules} stageName={activeEntryRuleStage} title="Initial-entry evidence" summary="" onChange={(value) => replaceInitialEntry(value)} /> : null}
+        {activeEntryPage === "capital" ? <div className="strategy-entry-fields"><GuidedCapitalRequestFields onChange={(capital_request) => replaceInitialEntry({ capital_request })} segment="amount" value={entryRules.capital_request} /></div> : null}
+        {activeEntryPage === "priority" ? <div className="strategy-entry-fields"><GuidedCapitalRequestFields onChange={(capital_request) => replaceInitialEntry({ capital_request })} segment="priority" value={entryRules.capital_request} /></div> : null}
+        {activeEntryPage === "execution" ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceInitialEntry({ order_intent })} segment="execution" value={entryRules.order_intent} /></div> : null}
+        {activeEntryPage === "partial_fill" ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceInitialEntry({ order_intent })} segment="partial-fill" value={entryRules.order_intent} /></div> : null}
+        {activeEntryPage === "protection" ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceInitialEntry({ order_intent })} segment="protection" value={entryRules.order_intent} /></div> : null}
+        {activeEntryPage === "initial_stop" ? <div className="configuration-field-grid strategy-entry-engine-fields">{entryStopParameters.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path.split(".").at(-1) ?? item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} value={item.value} />)}{!entryStopParameters.length ? <EmptyState detail="This strategy definition does not expose initial-stop engine parameters." title="No initial-stop parameters" /> : null}</div> : null}
       </> : null}
 
       {activeStage === "position" ? <>
@@ -1931,9 +1976,9 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
       </> : null}
     </section>
     <footer className="strategy-guided-navigation">
-      <button className="button" disabled={activeIndex <= 0} onClick={() => onStageChange(stages[activeIndex - 1][0])} type="button"><ArrowLeft size={14} /> Previous question</button>
-      <span>Question {activeIndex + 1} of {stages.length}</span>
-      <button className="button primary" disabled={activeIndex >= stages.length - 1} onClick={() => onStageChange(stages[activeIndex + 1][0])} type="button">Next question <ArrowRight size={14} /></button>
+      <button className="button" disabled={activeIndex <= 0 && activeStage !== "entry"} onClick={previousQuestion} type="button"><ArrowLeft size={14} /> Previous question</button>
+      <span>{activeStage === "entry" ? `Enter question ${activeEntryIndex + 1} of ${ENTRY_AUTHORING_PAGES.length}` : `Question ${activeIndex + 1} of ${stages.length}`}</span>
+      <button className="button primary" disabled={activeIndex >= stages.length - 1 && activeStage !== "entry"} onClick={nextQuestion} type="button">Next question <ArrowRight size={14} /></button>
     </footer>
   </article>;
 }
@@ -2385,11 +2430,12 @@ const COMPARATOR_OPTIONS = [
   { label: "Is true", value: "is_true" },
 ];
 
-function DecisionRulesEditor({ catalog, importRules, onChange, rules, summary, title }: {
+function DecisionRulesEditor({ catalog, importRules, onChange, rules, stageName, summary, title }: {
   catalog: StrategyInput[];
   importRules?: EntryRules;
   onChange: (value: EntryRules) => void;
   rules: EntryRules;
+  stageName?: keyof EntryRules;
   summary: string;
   title: string;
 }) {
@@ -2456,37 +2502,55 @@ function DecisionRulesEditor({ catalog, importRules, onChange, rules, summary, t
     setOpenedGroupIds((current) => new Set([...current, ...imported.map((row) => row.group_id)]));
   }
 
+  const stageNames = stageName ? [stageName] : (Object.keys(RULE_STAGE_META) as Array<keyof EntryRules>);
+
   return (
-    <div className="strategy-rule-editor">
-      <div className="strategy-source-legend">
+    <div className={`strategy-rule-editor${stageName ? " strategy-entry-rule-editor" : ""}`}>
+      {!stageName ? <div className="strategy-source-legend">
         <GitBranch size={18} />
         <div>
           <strong>{title}</strong>
           <p>{summary}</p>
         </div>
-      </div>
-      {(Object.keys(RULE_STAGE_META) as Array<keyof EntryRules>).map((stageName) => {
-        const stage = rules[stageName];
-        const meta = RULE_STAGE_META[stageName];
+      </div> : null}
+      {stageNames.map((currentStageName) => {
+        const stage = rules[currentStageName];
+        const meta = RULE_STAGE_META[currentStageName];
+        if (stageName) return <section className="strategy-entry-rule-page" key={currentStageName}>
+          <header className="strategy-entry-rule-toolbar">
+            <SelectField
+              help={{ role: "Combines the enabled rule sets on this page.", values: { "Any rule set": "The page passes when one enabled rule set passes.", "All rule sets": "Every enabled rule set must pass." } }}
+              label="Rule-set logic"
+              onChange={(operator) => replaceStage(currentStageName, { ...stage, operator: operator as "all" | "any" })}
+              options={[{ label: "Any rule set", value: "any" }, { label: "All rule sets", value: "all" }]}
+              value={stage.operator}
+            />
+            <button className="button compact" onClick={() => addGroup(currentStageName)} type="button"><Plus size={14} /> Add rule set</button>
+          </header>
+          <div className="strategy-rule-groups">
+            {stage.groups.map((group) => <RuleGroupEditor catalog={catalog} defaultOpen={openedGroupIds.has(group.group_id)} group={group} key={group.group_id} onChange={(next) => replaceGroup(currentStageName, group.group_id, next)} onRemove={() => replaceStage(currentStageName, { ...stage, groups: stage.groups.filter((row) => row.group_id !== group.group_id) })} removable={stage.groups.length > 1} />)}
+            {!stage.groups.length ? <EmptyState detail={`Add the first ${readableLabel(currentStageName)} rule set to define this part of entry evidence.`} title="No rule sets configured" /> : null}
+          </div>
+        </section>;
         return (
-          <section className="strategy-rule-stage-chapter" key={stageName}>
-          <ConfigurationNarrative heading={meta.label} paragraphs={RULE_STAGE_STORY[stageName]} />
-          <details className="strategy-rule-stage" data-stage={stageName}>
-            <summary><div><span>{stageName}</span><strong>{meta.label}</strong><p>{meta.summary}</p></div><span>{stage.groups.length} rule sets</span><ChevronDown size={16} /></summary>
+          <section className="strategy-rule-stage-chapter" key={currentStageName}>
+          <ConfigurationNarrative heading={meta.label} paragraphs={RULE_STAGE_STORY[currentStageName]} />
+          <details className="strategy-rule-stage" data-stage={currentStageName}>
+            <summary><div><span>{currentStageName}</span><strong>{meta.label}</strong><p>{meta.summary}</p></div><span>{stage.groups.length} rule sets</span><ChevronDown size={16} /></summary>
             <div className="strategy-rule-stage-body">
             <header>
-              <div><span>{stageName}</span><strong>{meta.label}</strong><p>{meta.summary}</p></div>
+              <div><span>{currentStageName}</span><strong>{meta.label}</strong><p>{meta.summary}</p></div>
               <div className="strategy-stage-controls">
                   <SelectField
                     help={{ role: "Combines the enabled rule sets in this phase group.", values: { "Any rule set": "The phase group passes when one enabled rule set passes.", "All rule sets": "Every enabled rule set must pass." } }}
                     label="Stage logic"
-                    onChange={(operator) => replaceStage(stageName, { ...stage, operator: operator as "all" | "any" })}
+                    onChange={(operator) => replaceStage(currentStageName, { ...stage, operator: operator as "all" | "any" })}
                     options={[{ label: "Any rule set", value: "any" }, { label: "All rule sets", value: "all" }]}
                     value={stage.operator}
                   />
-                <button className="button compact" onClick={() => addGroup(stageName)} type="button"><Plus size={14} /> Add rule set</button>
-                {importRules?.[stageName]?.groups?.length ? (
-                  <button className="button compact secondary" onClick={() => importStage(stageName)} type="button"><FileInput size={14} /> Add initial rules</button>
+                <button className="button compact" onClick={() => addGroup(currentStageName)} type="button"><Plus size={14} /> Add rule set</button>
+                {importRules?.[currentStageName]?.groups?.length ? (
+                  <button className="button compact secondary" onClick={() => importStage(currentStageName)} type="button"><FileInput size={14} /> Add initial rules</button>
                 ) : null}
               </div>
             </header>
@@ -2497,8 +2561,8 @@ function DecisionRulesEditor({ catalog, importRules, onChange, rules, summary, t
                   group={group}
                   key={group.group_id}
                   defaultOpen={openedGroupIds.has(group.group_id)}
-                  onChange={(next) => replaceGroup(stageName, group.group_id, next)}
-                  onRemove={() => replaceStage(stageName, { ...stage, groups: stage.groups.filter((row) => row.group_id !== group.group_id) })}
+                  onChange={(next) => replaceGroup(currentStageName, group.group_id, next)}
+                  onRemove={() => replaceStage(currentStageName, { ...stage, groups: stage.groups.filter((row) => row.group_id !== group.group_id) })}
                   removable={stage.groups.length > 1}
                 />
               ))}

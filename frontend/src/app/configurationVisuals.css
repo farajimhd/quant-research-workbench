@@ -2501,6 +2501,7 @@
   font-size: 11px;
   font-weight: 700;
   letter-spacing: .055em;
+  line-height: 1.35;
   text-transform: uppercase;
 }
 .strategy-editor-guided .strategy-observe-fields .configuration-field > small { display: none; }
@@ -2529,21 +2530,129 @@
 }
 .strategy-editor-guided .strategy-observe-fields > .configuration-field-grid > .configuration-choice-set {
   align-content: start;
+  align-self: start;
   border: 0;
   gap: 9px;
+  min-inline-size: 0;
   padding: 0;
 }
+.strategy-editor-guided .strategy-observe-fields > .configuration-field-grid > .configuration-choice-set > legend {
+  display: block;
+  float: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
 .strategy-editor-guided .strategy-observe-fields .configuration-choice-set > div {
-  gap: 12px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 .strategy-editor-guided .strategy-observe-fields .configuration-choice-set > div label {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 9px;
-  font-size: 14px;
+  font-size: 12px;
+  justify-content: center;
   min-height: 46px;
-  padding: 10px 14px;
+  padding: 8px 6px;
+  width: 100%;
 }
+.strategy-editor-guided .strategy-entry-intro { display: grid; gap: 10px; }
+.strategy-editor-guided .strategy-entry-intro p {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0;
+  max-width: 760px;
+}
+.strategy-entry-navigation {
+  border-bottom: 1px solid var(--configuration-rule);
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+}
+.strategy-entry-navigation button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: flex;
+  gap: 7px;
+  justify-content: center;
+  min-height: 48px;
+  min-width: 0;
+  padding: 8px 7px;
+  white-space: nowrap;
+}
+.strategy-entry-navigation button > span {
+  align-items: center;
+  background: var(--configuration-soft);
+  border-radius: 50%;
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 10px;
+  height: 20px;
+  justify-content: center;
+  width: 20px;
+}
+.strategy-entry-navigation button > strong { font-size: 11px; font-weight: 620; }
+.strategy-entry-navigation button:hover { color: var(--foreground); }
+.strategy-entry-navigation button[aria-current="step"] {
+  border-bottom-color: var(--canvas-link-blue);
+  color: var(--foreground);
+}
+.strategy-entry-navigation button[aria-current="step"] > span { background: var(--canvas-link-blue); color: white; }
+.strategy-entry-rule-editor,
+.strategy-entry-rule-page { display: grid; gap: 22px; }
+.strategy-entry-rule-toolbar {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(220px, 360px) auto;
+  justify-content: space-between;
+}
+.strategy-entry-rule-toolbar .configuration-field { gap: 9px; }
+.strategy-entry-rule-toolbar .configuration-field > span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .055em;
+  text-transform: uppercase;
+}
+.strategy-entry-rule-toolbar .configuration-field > small { display: none; }
+.strategy-entry-rule-toolbar .configuration-lookup-button { min-height: 48px; }
+.strategy-entry-rule-editor .strategy-rule-groups { gap: 12px; padding: 0; }
+.strategy-entry-rule-editor .strategy-rule-group { border-radius: 10px; padding: 0; }
+.strategy-entry-rule-editor .strategy-rule-group > summary { min-height: 68px; padding: 12px 16px; }
+.strategy-entry-rule-editor .strategy-rule-group-body { border-top: 1px solid var(--configuration-rule); padding: 18px; }
+.strategy-entry-rule-editor .strategy-rule-group-body,
+.strategy-entry-rule-editor .strategy-rule-conditions,
+.strategy-entry-rule-editor .strategy-rule-condition { box-sizing: border-box; min-width: 0; width: 100%; }
+.strategy-entry-rule-editor .strategy-rule-condition { grid-template-columns: auto repeat(2, minmax(0, 1fr)); }
+.strategy-entry-rule-editor .strategy-source-detail { grid-column: 2 / -1; }
+.strategy-entry-fields { display: grid; gap: 18px; }
+.strategy-entry-fields > .configuration-field { max-width: 620px; }
+.strategy-entry-fields .guided-form-grid { gap: 28px 24px; }
+.strategy-entry-fields .configuration-field { gap: 9px; }
+.strategy-entry-fields .configuration-field > span,
+.strategy-entry-engine-fields .configuration-field > span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .055em;
+  text-transform: uppercase;
+}
+.strategy-entry-fields .configuration-field > small,
+.strategy-entry-engine-fields .configuration-field > small { font-size: 12px; line-height: 1.5; }
+.strategy-entry-fields .configuration-lookup-button,
+.strategy-entry-fields .configuration-field input:not([type="checkbox"]),
+.strategy-entry-engine-fields .configuration-lookup-button,
+.strategy-entry-engine-fields .configuration-field input:not([type="checkbox"]) { min-height: 52px; }
+.strategy-entry-engine-fields { gap: 28px 24px; }
+.strategy-entry-engine-fields > .configuration-empty { grid-column: 1 / -1; }
 .strategy-re-evaluation-editor { display: grid; gap: 22px; }
 .strategy-re-evaluation-toolbar { align-items: end; border-bottom: 1px solid var(--configuration-rule); display: flex; justify-content: space-between; padding-bottom: 16px; }
 .strategy-re-evaluation-toolbar > span { display: grid; gap: 3px; }
@@ -2576,6 +2685,24 @@
   .strategy-editor-guided .strategy-authoring-stage,
   .strategy-editor-guided .strategy-guided-navigation { width: 100%; }
   .strategy-re-evaluation-rule-heading { grid-template-columns: 1fr; }
+  .strategy-entry-rule-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
+}
+
+@media (max-width: 1600px) {
+  .strategy-entry-navigation button > strong { display: none; }
+}
+
+@media (min-width: 1601px) {
+  .strategy-entry-rule-editor .strategy-rule-condition { grid-template-columns: auto repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 620px) {
+  .strategy-editor-guided .strategy-observe-fields .configuration-choice-set > div,
+  .strategy-entry-rule-toolbar { grid-template-columns: 1fr; }
+  .strategy-entry-rule-toolbar .button { justify-self: start; }
+  .strategy-entry-rule-editor .strategy-rule-condition { grid-template-columns: minmax(0, 1fr); }
+  .strategy-entry-rule-editor .strategy-condition-index { display: none; }
+  .strategy-entry-rule-editor .strategy-source-detail { grid-column: 1; }
 }
 
 .strategy-profile-command {
