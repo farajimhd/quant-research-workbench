@@ -238,6 +238,7 @@ following period proves it closed.
 
 - RMSNorm pre-normalized decoder blocks;
 - grouped-query causal attention and rotary positions;
+- 0.08 attention dropout for V1 training;
 - SwiGLU feed-forward blocks;
 - one shared backbone for every timeframe;
 - continuous log-duration Fourier conditioning for unseen timeframes;

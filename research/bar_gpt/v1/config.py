@@ -51,7 +51,7 @@ class BarGPTConfig:
     n_heads: int = 8
     n_kv_heads: int = 4
     ff_multiplier: float = 8.0 / 3.0
-    dropout: float = 0.0
+    dropout: float = 0.08
     rope_base: float = 10_000.0
     max_timeframes: int = 16
     max_horizons: int = 32
@@ -65,6 +65,8 @@ class BarGPTConfig:
             raise ValueError("d_model must be divisible by n_heads")
         if self.n_heads % self.n_kv_heads:
             raise ValueError("n_heads must be divisible by n_kv_heads")
+        if not 0.0 <= self.dropout < 1.0:
+            raise ValueError("dropout must satisfy 0 <= dropout < 1")
         if (self.d_model // self.n_heads) % 2:
             raise ValueError("attention head dimension must be even for RoPE")
         if not self.quantiles:

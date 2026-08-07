@@ -1411,6 +1411,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         resolved = {name: _model_config(_parse_candidates(f"{name}:4096:1:1:16:1:0")[0]) for name in MODEL_SIZE_PRESETS}
         self.assertEqual((resolved["current"].d_model, resolved["current"].n_layers), (384, 8))
         self.assertEqual((resolved["xlarge"].d_model, resolved["xlarge"].n_layers), (1024, 16))
+        self.assertEqual({config.dropout for config in resolved.values()}, {0.08})
 
     def test_training_launcher_uses_selected_worker_owned_profile(self) -> None:
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
