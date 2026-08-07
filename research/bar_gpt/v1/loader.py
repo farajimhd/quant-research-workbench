@@ -1634,12 +1634,20 @@ def build_session_examples(
                 raw_views[name] = prefix.features
                 raw_view_start_us[name] = prefix.bar_start_us
                 raw_view_available_at_us[name] = prefix.available_at_us
-                asof[name] = causal_asof_indices(prefix.available_at_us, anchors)
-                selected = asof[name] >= 0
+                indices = causal_asof_indices(prefix.available_at_us, anchors)
+                selected = indices >= 0
                 if torch.any(selected):
-                    selected_times = prefix.available_at_us[asof[name].clamp_min(0)]
+                    selected_times = prefix.available_at_us[indices.clamp_min(0)]
                     if torch.any(selected_times[selected] > anchors[selected]):
                         raise RuntimeError(f"{name} calendar context lookahead detected")
+                # Keep the available calendar bars in the shard, but do not
+                # expose a partial history to the model.  The existing -1
+                # as-of value is the authoritative unavailable mask.
+                asof[name] = torch.where(
+                    indices >= max_rows - 1,
+                    indices,
+                    torch.full_like(indices, -1),
+                )
         activity = float(base_raw[origins, FEATURE_INDEX["source_event_count"]].float().mean())
         regime = 0 if activity < config.activity_regime_low else (2 if activity >= config.activity_regime_high else 1)
         yield BarGPTExample(

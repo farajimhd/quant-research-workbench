@@ -81,8 +81,11 @@ quote, and size geometry of the SIP contract. Training begins in 2019. At that
 authority boundary, missing 1D/1W/1MO history is represented by a zero padding
 row plus causal `asof=-1`, never by a fabricated completed bar. As completed
 2019 daily sessions become available, the loader grows the calendar prefixes
-from 1 to their 90-day, 52-week, and 12-month caps. Dates on or after the
-current session remain excluded.
+from the available data. A view remains masked with `asof=-1` until it has its
+complete configured history: 90 completed daily bars, 52 completed weekly bars
+(approximately 250 trading days), or 24 completed monthly bars (approximately
+two trading years). Weekly and monthly views are aggregated from a rolling
+500-daily-bar warm-up. Dates on or after the current session remain excluded.
 
 Build and certify the missing 2019 one-second authority before requesting 2019
 training or offline shards. The end date is exclusive:
@@ -536,23 +539,31 @@ separate pilot root:
 ```powershell
 python -B -m research.bar_gpt.v1.run_pilot_offline_shards
 python -B -m research.bar_gpt.v1.run_pilot_offline_shards --execute
+python -B -m research.bar_gpt.v1.run_pilot_offline_shards --execute --force-rebuild
 ```
 
 The first command prints the exact build and audit plan. The execute form builds
-`AAPL:2019-01` and `GOOGL:2019-01` beneath `offline_shards_v3_pilot`, verifies
-both complete-file SHA-256 digests, and fails unless shard/sidecar identities,
+`AAPL:2019-01` and `GOOGL:2019-01`, then a bounded one-session
+`AAPL:2026-01` context-check shard, beneath `offline_shards_v3_pilot`. It
+verifies all complete-file SHA-256 digests and fails unless shard/sidecar identities,
 counts, configured context, causal as-of indices, horizon tensors, and condition
 positive-count metadata agree. The audit also scans every stored value in all
 46 feature columns of every view for finiteness and records per-feature
 nonzero fractions, standard deviations, minima, and maxima. Its JSON report is
 written beneath the pilot root's `manifest/audits` directory. The pilot root is
 never used by the default training or production-build launchers.
+Use `--force-rebuild` only when replacing pilot shards after a contract change,
+such as the 24-month calendar-context correction.
+The 2026 audit additionally requires every origin to expose complete 90/52/24
+calendar context; an `asof=-1` that is correct at the 2019 boundary fails the
+2026 context check.
 
 The offline compiler fails closed before writing a shard when any origin lacks
-the configured 720/360/360/240/240/96/16/8 intraday histories or the configured
-90/52/12 daily/weekly/monthly histories. The daily-session authority must
-therefore contain sufficient history before the first requested training date;
-an unavailable calendar view is not accepted as padded context.
+the configured 720/360/360/240/240/96/16/8 intraday histories. Calendar rows
+are stored from the history actually available at the 2019 authority boundary,
+but the model-facing as-of index remains `-1` until the complete 90/52/24
+daily/weekly/monthly context exists. The audit rejects any partially populated
+calendar view that is accidentally exposed as available.
 
 To add only the repaired GOOGL Class A identity to an existing compatible
 catalog, use `--selection all`; the named `train` and `validation` selections

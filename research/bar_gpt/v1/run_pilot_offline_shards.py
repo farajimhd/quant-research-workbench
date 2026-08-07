@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import os
 import subprocess
 import sys
@@ -12,13 +13,21 @@ from research.bar_gpt.v1.audit_offline_shards import DEFAULT_PILOT_ROOT
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build two isolated BarGPT pilot shards and fail-closed audit both outputs."
+        description="Build two 2019 pilot shards plus one bounded 2026 context-check shard."
     )
     parser.add_argument("--execute", action="store_true", help="Required to build; omit for a read-only plan.")
+    parser.add_argument(
+        "--force-rebuild",
+        action="store_true",
+        help="Replace existing pilot shards when the model-ready shard contract changed.",
+    )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_PILOT_ROOT)
     parser.add_argument("--tickers", default="AAPL,GOOGL")
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="2019-02-01")
+    parser.add_argument("--context-check-ticker", default="AAPL")
+    parser.add_argument("--context-check-start-date", default="2026-01-02")
+    parser.add_argument("--context-check-end-date", default="2026-01-03")
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
     parser.add_argument("--clickhouse-max-concurrent-pages", type=int, default=0)
@@ -30,11 +39,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("the pilot tickers must be distinct")
     if args.workers <= 0:
         parser.error("--workers must be positive")
+    args.context_check_ticker = str(args.context_check_ticker).strip().upper()
+    if args.context_check_ticker not in tickers:
+        parser.error("--context-check-ticker must be one of the two pilot tickers")
+    context_start = dt.date.fromisoformat(str(args.context_check_start_date))
+    context_end = dt.date.fromisoformat(str(args.context_check_end_date))
+    if context_start >= context_end:
+        parser.error("the context-check date range must be non-empty")
+    if context_start.strftime("%Y-%m") != (context_end - dt.timedelta(days=1)).strftime("%Y-%m"):
+        parser.error("the context-check date range must stay within one month")
     args.tickers = tickers
     return args
 
 
-def commands(args: argparse.Namespace) -> tuple[list[str], list[str]]:
+def commands(args: argparse.Namespace) -> tuple[list[str], list[str], list[str], list[str]]:
     build = [
         sys.executable,
         "-B",
@@ -61,6 +79,8 @@ def commands(args: argparse.Namespace) -> tuple[list[str], list[str]]:
     ]
     if args.execute:
         build.append("--execute")
+    if args.force_rebuild:
+        build.append("--force-rebuild")
     audit = [
         sys.executable,
         "-B",
@@ -78,24 +98,76 @@ def commands(args: argparse.Namespace) -> tuple[list[str], list[str]]:
         "2",
         "--verify-sha256",
     ]
-    return build, audit
+    context_build = [
+        sys.executable,
+        "-B",
+        "-m",
+        "research.bar_gpt.v1.run_build_offline_shards",
+        "--output-root",
+        str(args.output_root),
+        "--selection",
+        "all",
+        "--tickers",
+        str(args.context_check_ticker),
+        "--start-date",
+        str(args.context_check_start_date),
+        "--end-date",
+        str(args.context_check_end_date),
+        "--workers",
+        "1",
+        "--cpu-threads-per-worker",
+        str(args.cpu_threads_per_worker),
+        "--clickhouse-max-concurrent-pages",
+        str(args.clickhouse_max_concurrent_pages),
+        "--max-shards",
+        "1",
+    ]
+    if args.execute:
+        context_build.append("--execute")
+    if args.force_rebuild:
+        context_build.append("--force-rebuild")
+    context_day = dt.date.fromisoformat(str(args.context_check_start_date))
+    context_month_start = context_day.replace(day=1)
+    context_month_end = (context_month_start + dt.timedelta(days=32)).replace(day=1)
+    context_audit = [
+        sys.executable,
+        "-B",
+        "-m",
+        "research.bar_gpt.v1.audit_offline_shards",
+        "--root",
+        str(args.output_root),
+        "--tickers",
+        str(args.context_check_ticker),
+        "--start-date",
+        context_month_start.isoformat(),
+        "--end-date",
+        context_month_end.isoformat(),
+        "--max-shards",
+        "1",
+        "--verify-sha256",
+        "--require-calendar-context",
+    ]
+    return build, audit, context_build, context_audit
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    build, audit = commands(args)
+    build, audit, context_build, context_audit = commands(args)
     print("Pilot build command:", subprocess.list2cmdline(build), flush=True)
     print("Pilot audit command:", subprocess.list2cmdline(audit), flush=True)
+    print("2026 context build command:", subprocess.list2cmdline(context_build), flush=True)
+    print("2026 context audit command:", subprocess.list2cmdline(context_audit), flush=True)
     if not args.execute:
-        print("Plan only; add --execute to build and audit two isolated shards.", flush=True)
+        print("Plan only; add --execute to build and audit all three pilot shards.", flush=True)
         return 0
     repo_root = next(parent for parent in Path(__file__).resolve().parents if (parent / "research").exists())
     environment = dict(os.environ)
     environment.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-    status = subprocess.call(build, cwd=repo_root, env=environment)
-    if status:
-        return int(status)
-    return int(subprocess.call(audit, cwd=repo_root, env=environment))
+    for command in (build, audit, context_build, context_audit):
+        status = subprocess.call(command, cwd=repo_root, env=environment)
+        if status:
+            return int(status)
+    return 0
 
 
 if __name__ == "__main__":

@@ -634,16 +634,15 @@ def _compile_session_timed(examples: Sequence[BarGPTExample]) -> tuple[dict[str,
     return compile_session(examples), time.perf_counter() - started
 
 
-def validate_complete_context(example: BarGPTExample, config: DataConfig) -> None:
-    """Fail before persistence if any origin lacks its configured causal history."""
+def validate_origin_context(example: BarGPTExample, config: DataConfig) -> None:
+    """Require full intraday history and mask incomplete calendar history."""
     if int(example.origin_indices.min()) < int(config.intraday_context_by_name["1s"]):
         raise RuntimeError(
             f"1s context underflow for {example.ticker} {example.local_date}: "
             f"minimum origin index {int(example.origin_indices.min())}, "
             f"requires {int(config.intraday_context_by_name['1s'])}"
         )
-    required = config.intraday_context_by_name | config.calendar_context_by_name
-    for name, count in required.items():
+    for name, count in config.intraday_context_by_name.items():
         if name == "1s":
             continue
         indices = example.asof_indices[name]
@@ -653,6 +652,14 @@ def validate_complete_context(example: BarGPTExample, config: DataConfig) -> Non
                 f"{name} context underflow for {example.ticker} {example.local_date}: "
                 f"first origin has {minimum + 1 if minimum >= 0 else 0} completed bars, "
                 f"requires {int(count)}"
+            )
+    for name, count in config.calendar_context_by_name.items():
+        indices = example.asof_indices[name]
+        partial = (indices >= 0) & (indices < int(count) - 1)
+        if bool(partial.any()):
+            raise RuntimeError(
+                f"{name} partial calendar context is exposed for "
+                f"{example.ticker} {example.local_date}"
             )
 
 
@@ -1250,7 +1257,7 @@ def _ticker_worker_main(
             for example in dataset:
                 if stop.is_set():
                     break
-                validate_complete_context(example, config)
+                validate_origin_context(example, config)
                 key = unit_key(example.ticker, example.local_date)
                 if current_key and key != current_key:
                     flush_unit(executor)

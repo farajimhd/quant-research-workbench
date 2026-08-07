@@ -116,8 +116,8 @@ class DataConfig:
         ("1s", 720), ("5s", 360), ("10s", 360), ("30s", 240),
         ("1m", 240), ("5m", 96), ("30m", 16), ("1h", 8),
     )
-    calendar_context_bars: tuple[tuple[str, int], ...] = (("1D", 90), ("1W", 52), ("1MO", 12))
-    calendar_warmup_daily_bars: int = 365
+    calendar_context_bars: tuple[tuple[str, int], ...] = (("1D", 90), ("1W", 52), ("1MO", 24))
+    calendar_warmup_daily_bars: int = 500
     daily_context_bars: int = 90
     batch_size: int = 2
     maximum_target_horizon_us: int = 3_600_000_000

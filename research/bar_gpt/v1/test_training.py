@@ -75,7 +75,7 @@ from research.bar_gpt.v1.offline_shards import (
     shard_path,
     shard_compatibility_hash,
     stable_unit_index,
-    validate_complete_context,
+    validate_origin_context,
     write_unit,
 )
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
@@ -602,7 +602,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             )
         )
         self.assertEqual(example.raw_views["1D"].shape[0], 3)
-        self.assertTrue(bool(torch.all(example.asof_indices["1D"] >= 0)))
+        self.assertTrue(bool(torch.all(example.asof_indices["1D"] == -1)))
         batch = collate_examples([example])
         self.assertNotIn("1D", batch.autoregressive_mask)
         metrics = _batch_eligibility_metrics(batch)
@@ -626,8 +626,13 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(empty.raw_views[name].shape[0], 1)
             self.assertTrue(torch.all(empty.raw_views[name] == 0))
             self.assertTrue(torch.all(empty.asof_indices[name] == -1))
-        with self.assertRaisesRegex(RuntimeError, "1D context underflow"):
-            validate_complete_context(empty, config)
+        validate_origin_context(empty, config)
+        exposed_partial = dataclasses.replace(
+            empty,
+            asof_indices={**empty.asof_indices, "1D": torch.zeros_like(empty.asof_indices["1D"])},
+        )
+        with self.assertRaisesRegex(RuntimeError, "partial calendar context"):
+            validate_origin_context(exposed_partial, config)
 
         daily_raw = session_view(3)
         daily_starts = torch.tensor([base - 86_400_000_000, base, base + 86_400_000_000])
@@ -644,13 +649,42 @@ class LoaderTrainerContractTest(unittest.TestCase):
         ))
         for name in ("1D", "1W", "1MO"):
             self.assertEqual(partial.raw_views[name].shape[0], 1)
-            self.assertTrue(torch.all(partial.asof_indices[name] >= 0))
+            self.assertTrue(torch.all(partial.asof_indices[name] == -1))
         complete_config = dataclasses.replace(
             config,
             calendar_context_bars=(("1D", 1), ("1W", 1), ("1MO", 1)),
             daily_context_bars=1,
         )
-        validate_complete_context(partial, complete_config)
+        complete = next(build_session_examples(
+            ticker="AAA", local_date="2019-01-02", session=current,
+            daily=(("2019-01-01", "2019-01-02", "2019-01-03"), daily),
+            split_actions=(), config=complete_config,
+        ))
+        for name in ("1D", "1W", "1MO"):
+            self.assertTrue(torch.all(complete.asof_indices[name] >= 0))
+        validate_origin_context(complete, complete_config)
+
+    def test_default_calendar_context_becomes_available_at_90_52_24_bars(self) -> None:
+        config = self.data_config()
+        day = dt.date(2026, 1, 1)
+        dates: list[str] = []
+        while len(dates) < config.calendar_warmup_daily_bars:
+            if day.weekday() < 5:
+                dates.append(day.isoformat())
+            day -= dt.timedelta(days=1)
+        dates.reverse()
+        example = next(build_session_examples(
+            ticker="AAA",
+            local_date="2026-01-02",
+            session=session_view(),
+            daily=(dates, session_view(len(dates), start_second=0)),
+            split_actions=(),
+            config=config,
+        ))
+        for name, count in config.calendar_context_by_name.items():
+            self.assertEqual(example.raw_views[name].shape[0], count)
+            self.assertTrue(torch.all(example.asof_indices[name] >= count - 1), name)
+        validate_origin_context(example, config)
 
     def test_origin_schedule_is_bounded_phase_spread_and_condition_first(self) -> None:
         dates = ["2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07"]
@@ -756,6 +790,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         })
         self.assertEqual(config.intraday_warmup_bars_1s, 28_800)
         self.assertEqual(config.attention_window_by_name["1s"], 721)
+        self.assertEqual(config.calendar_context_by_name, {"1D": 90, "1W": 52, "1MO": 24})
+        self.assertEqual(config.calendar_warmup_daily_bars, 500)
         config.validate()
 
     def test_every_origin_has_exact_context_independent_of_block_boundaries(self) -> None:
@@ -867,7 +903,11 @@ class LoaderTrainerContractTest(unittest.TestCase):
             cached_batch = collate_compiled_blocks(
                 compiled, horizons_us=config.horizons_us, base_timeframe_us=config.base_timeframe_us,
             ).to("cpu", non_blocking=False)
-            audit = audit_shard(Path(evidence["path"]).with_suffix(".json"), verify_sha256=True)
+            audit = audit_shard(
+                Path(evidence["path"]).with_suffix(".json"),
+                verify_sha256=True,
+                require_calendar_context=True,
+            )
             self.assertEqual(audit["status"], "passed")
             self.assertEqual(audit["unit_key"], "AAA:2026-01")
             self.assertEqual(audit["origins"], sum(item.origin_indices.numel() for item in examples))
@@ -882,17 +922,44 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(torch.equal(cached_batch.horizon_targets, live_batch.horizon_targets))
         self.assertTrue(torch.equal(cached_batch.horizon_mask, live_batch.horizon_mask))
 
-    def test_pilot_launcher_builds_and_audits_exactly_two_isolated_shards(self) -> None:
+    def test_strict_2026_audit_rejects_masked_calendar_context(self) -> None:
+        config = self.data_config()
+        examples = list(build_session_examples(
+            ticker="AAA",
+            local_date="2026-01-02",
+            session=session_view(),
+            daily=None,
+            split_actions=(),
+            config=config,
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = write_unit(
+                Path(directory),
+                compile_unit(examples, config, "AAA:2026-01"),
+                certify_hash=True,
+            )
+            sidecar = Path(evidence["path"]).with_suffix(".json")
+            self.assertEqual(audit_shard(sidecar, verify_sha256=True)["status"], "passed")
+            with self.assertRaisesRegex(RuntimeError, "required calendar context is unavailable"):
+                audit_shard(sidecar, verify_sha256=True, require_calendar_context=True)
+
+    def test_pilot_launcher_builds_two_2019_shards_and_one_2026_context_shard(self) -> None:
         args = parse_pilot_args([
-            "--execute", "--tickers", "AAPL,GOOGL",
+            "--execute", "--force-rebuild", "--tickers", "AAPL,GOOGL",
             "--start-date", "2019-01-01", "--end-date", "2019-02-01",
         ])
-        build, audit = pilot_commands(args)
+        build, audit, context_build, context_audit = pilot_commands(args)
         self.assertEqual(build[build.index("--max-shards") + 1], "2")
         self.assertIn("--execute", build)
+        self.assertIn("--force-rebuild", build)
         self.assertIn("offline_shards_v3_pilot", " ".join(build))
         self.assertIn("research.bar_gpt.v1.audit_offline_shards", audit)
         self.assertIn("--verify-sha256", audit)
+        self.assertEqual(context_build[context_build.index("--tickers") + 1], "AAPL")
+        self.assertEqual(context_build[context_build.index("--start-date") + 1], "2026-01-02")
+        self.assertEqual(context_build[context_build.index("--end-date") + 1], "2026-01-03")
+        self.assertEqual(context_build[context_build.index("--max-shards") + 1], "1")
+        self.assertIn("--require-calendar-context", context_audit)
 
     def test_offline_shard_identity_excludes_loader_batch_and_selection_settings(self) -> None:
         base = self.data_config()

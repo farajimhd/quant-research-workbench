@@ -45,6 +45,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=True,
         help="Verify the full tensor-file digest recorded by each sidecar.",
     )
+    parser.add_argument(
+        "--require-calendar-context",
+        action="store_true",
+        help="Require every audited origin to have complete 1D, 1W, and 1MO context.",
+    )
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.max_shards <= 0:
@@ -102,7 +107,12 @@ def _strictly_increasing(value: torch.Tensor) -> bool:
     return value.numel() <= 1 or bool(torch.all(value[1:] > value[:-1]))
 
 
-def audit_shard(sidecar_path: Path, *, verify_sha256: bool = True) -> dict[str, Any]:
+def audit_shard(
+    sidecar_path: Path,
+    *,
+    verify_sha256: bool = True,
+    require_calendar_context: bool = False,
+) -> dict[str, Any]:
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
     unit_key = str(sidecar.get("unit_key", ""))
     shard_path = sidecar_path.with_suffix(".pt")
@@ -142,7 +152,6 @@ def audit_shard(sidecar_path: Path, *, verify_sha256: bool = True) -> dict[str, 
         set(calendar_context) == set(DataConfig().calendar_context_by_name),
         f"{unit_key}: calendar context view set mismatch",
     )
-    required_context = intraday_context | calendar_context
     expected_warmup = max(
         int(count) * (int(TIMEFRAME_US_BY_NAME[name]) // int(shard.get("base_timeframe_us", 1)))
         for name, count in intraday_context.items()
@@ -232,9 +241,21 @@ def audit_shard(sidecar_path: Path, *, verify_sha256: bool = True) -> dict[str, 
                     continue
                 indices = asof[name]
                 _require(isinstance(indices, torch.Tensor) and indices.shape == origin_timestamps.shape, f"{block_label}/{name}: as-of shape mismatch")
-                if name in required_context:
-                    required = int(required_context[name])
+                if name in intraday_context:
+                    required = int(intraday_context[name])
                     _require(int(indices.min()) >= required - 1, f"{block_label}/{name}: configured context underflow")
+                elif name in calendar_context:
+                    required = int(calendar_context[name])
+                    partial = (indices >= 0) & (indices < required - 1)
+                    _require(
+                        not bool(partial.any()),
+                        f"{block_label}/{name}: partial calendar context is exposed",
+                    )
+                    if require_calendar_context:
+                        _require(
+                            int(indices.min()) >= required - 1,
+                            f"{block_label}/{name}: required calendar context is unavailable",
+                        )
                 selected = indices >= 0
                 if bool(selected.any()):
                     _require(int(indices[selected].max()) < length, f"{block_label}/{name}: as-of index outside slice")
@@ -329,6 +350,7 @@ def run_audit(
     end_date: str = "",
     limit: int = 2,
     verify_sha256: bool = True,
+    require_calendar_context: bool = False,
     output: Path | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -339,11 +361,19 @@ def run_audit(
         end_date=end_date,
         limit=limit,
     )
-    audited = [audit_shard(path, verify_sha256=verify_sha256) for path in sidecars]
+    audited = [
+        audit_shard(
+            path,
+            verify_sha256=verify_sha256,
+            require_calendar_context=require_calendar_context,
+        )
+        for path in sidecars
+    ]
     payload = {
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "root": str(root),
         "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
+        "require_calendar_context": bool(require_calendar_context),
         "elapsed_seconds": time.perf_counter() - started,
         "audited_shards": len(audited),
         "status": "passed",
@@ -366,6 +396,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         end_date=str(args.end_date),
         limit=int(args.max_shards),
         verify_sha256=bool(args.verify_sha256),
+        require_calendar_context=bool(args.require_calendar_context),
         output=args.output.resolve() if args.output is not None else None,
     )
     for shard in report["shards"]:
