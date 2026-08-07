@@ -27124,11 +27124,11 @@ button {
 .trading-configuration-page[data-configuration-section="strategy"] .strategy-smart-session span { font-size: calc(10px * var(--app-readable-scale, 1)); }
 
 /* Neutralize the remaining workflow selection and lifecycle accents. */
-.trading-configuration-page[data-configuration-section="strategy"] .configuration-page-icon,
-.trading-configuration-page[data-configuration-section="strategy"] .configuration-page-icon svg,
 .trading-configuration-page[data-configuration-section="strategy"] .configuration-journey a[aria-current="step"] > span:first-child,
 .trading-configuration-page[data-configuration-section="strategy"] .configuration-journey a[aria-current="step"] > svg,
 .trading-configuration-page[data-configuration-section="strategy"] .configuration-guide > svg { color: var(--muted-foreground); }
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-page-icon,
+.trading-configuration-page[data-configuration-section="strategy"] .configuration-page-icon svg { color: var(--canvas-link-blue); }
 .trading-configuration-page[data-configuration-section="strategy"] .configuration-journey a[aria-current="step"] {
   background: var(--surface-alt);
   box-shadow: inset 0 -2px 0 var(--muted-foreground);

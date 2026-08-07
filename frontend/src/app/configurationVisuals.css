@@ -2362,8 +2362,8 @@
 }
 
 .trading-configuration-page[data-configuration-section="strategy"] .configuration-page-icon {
-  background: color-mix(in oklab, var(--canvas-link-blue) 12%, var(--surface));
-  border-color: color-mix(in oklab, var(--canvas-link-blue) 34%, var(--border));
+  background: transparent;
+  border-color: transparent;
   color: var(--canvas-link-blue);
 }
 
