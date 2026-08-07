@@ -2367,10 +2367,10 @@
   color: var(--canvas-link-blue);
 }
 
-.strategy-studio-workspace { display: grid; gap: 16px; min-width: 0; }
-.strategy-studio-workspace > .configuration-workbench { grid-template-columns: 360px minmax(0, 1fr); }
+.strategy-studio-workspace { --strategy-workspace-max: 1904px; display: grid; gap: 16px; min-width: 0; }
+.strategy-studio-workspace > .configuration-workbench { grid-template-columns: 360px minmax(0, 1fr); margin-left: auto; margin-right: auto; max-width: var(--strategy-workspace-max); width: 100%; }
 
-.strategy-selection-page { display: grid; gap: 20px; margin: 18px auto 0; max-width: 1120px; width: 100%; }
+.strategy-selection-page { display: grid; gap: 20px; margin: 18px auto 0; max-width: var(--strategy-workspace-max); width: 100%; }
 .strategy-selection-page > header { display: grid; gap: 5px; }
 .strategy-selection-page > header > span { color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
 .strategy-selection-page > header h2,
@@ -2396,15 +2396,14 @@
 .strategy-selection-actions > button.danger:hover { border-color: color-mix(in oklab, var(--destructive) 45%, var(--border)); color: var(--destructive); }
 .strategy-selection-actions > button:focus-visible { outline: 2px solid var(--canvas-link-blue); outline-offset: 2px; }
 .strategy-selection-icon { align-items: center; background: color-mix(in oklab, var(--canvas-link-blue) 10%, var(--surface)); border: 1px solid color-mix(in oklab, var(--canvas-link-blue) 28%, var(--border)); border-radius: 8px; color: var(--canvas-link-blue); display: flex; height: 40px; justify-content: center; width: 40px; }
-.strategy-editor-toolbar { align-items: center; border-bottom: 1px solid var(--configuration-rule); display: flex; gap: 12px; padding-bottom: 12px; }
+.strategy-editor-toolbar { align-items: center; border-bottom: 1px solid var(--configuration-rule); display: flex; gap: 12px; margin-left: auto; margin-right: auto; max-width: var(--strategy-workspace-max); padding-bottom: 12px; width: 100%; }
 .strategy-editor-toolbar > span { display: grid; gap: 1px; }
 .strategy-editor-toolbar > span small { color: var(--muted-foreground); }
 .strategy-editor-modes { align-items: center; background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 8px; display: flex; gap: 3px; margin-left: auto; padding: 3px; }
 .strategy-editor-modes button { align-items: center; background: transparent; border: 0; border-radius: 6px; color: var(--muted-foreground); cursor: pointer; display: inline-flex; gap: 6px; min-height: 32px; padding: 6px 10px; }
 .strategy-editor-modes button[aria-selected="true"] { background: var(--surface); box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 10%, transparent); color: var(--foreground); }
 .strategy-studio-workspace > .configuration-workbench.strategy-editor-guided { grid-template-columns: minmax(0, 1fr); }
-.strategy-studio-workspace > .configuration-workbench.strategy-editor-guided { margin: 18px auto 0; max-width: 1120px; width: 100%; }
-.strategy-studio-workspace:has(.strategy-editor-guided) .strategy-editor-toolbar { margin: 0 auto; max-width: 1120px; width: 100%; }
+.strategy-studio-workspace > .configuration-workbench.strategy-editor-guided { margin-top: 18px; }
 .strategy-studio-workspace:has(.strategy-editor-guided) .strategy-editor-toolbar > span small { display: none; }
 .strategy-editor-guided .strategy-authoring { background: transparent; border: 0; border-radius: 0; gap: 34px; padding: 0; }
 .strategy-editor-guided .strategy-authoring-steps { background: transparent; border: 0; border-bottom: 1px solid var(--configuration-rule); border-radius: 0; grid-template-columns: repeat(6, minmax(0, 1fr)); overflow-x: auto; }
