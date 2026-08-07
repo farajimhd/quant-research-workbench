@@ -1482,10 +1482,19 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
   }
 
   function cloneProfile() {
-    const id = uniqueId(`${selected.profile_id}-copy`, section.profiles.map((row) => row.profile_id));
-    const next = { ...deepClone(selected), profile_id: id, name: `${selected.name} copy`, origin: "user" as const, protected: false, revision: 1 };
+    const next = cloneStrategyProfile(selected, section.profiles, uniqueProfileName(`${selected.name} copy`, section.profiles));
     onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(next.profile_id);
+  }
+
+  function cloneProfileFromSelection(profileId: string) {
+    const source = section.profiles.find((row) => row.profile_id === profileId);
+    if (!source) return;
+    const next = cloneStrategyProfile(source, section.profiles, uniqueProfileName(`${source.name} copy`, section.profiles));
+    onChange({ ...section, profiles: [...section.profiles, next] });
+    setSelectedId(next.profile_id);
+    setCatalogItem(null);
+    setStudioView("configure");
   }
 
   function beginProfileCreation() {
@@ -1539,8 +1548,9 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
     onCancel={() => { setCreationMode(null); setCreationName(""); }}
     onCreate={createProfile}
     onCreateStart={beginProfileCreation}
+    onClone={cloneProfileFromSelection}
     onNameChange={setCreationName}
-    onOpen={(profileId) => { setSelectedId(profileId); setCatalogItem(null); setStudioView("configure"); }}
+    onModify={(profileId) => { setSelectedId(profileId); setCatalogItem(null); setStudioView("configure"); }}
     profiles={section.profiles}
   />;
 
@@ -1713,15 +1723,16 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
   );
 }
 
-function StrategySelectionPage({ creationMode, name, nameConflict, onCancel, onCreate, onCreateStart, onNameChange, onOpen, profiles }: {
+function StrategySelectionPage({ creationMode, name, nameConflict, onCancel, onClone, onCreate, onCreateStart, onModify, onNameChange, profiles }: {
   creationMode: "blank" | null;
   name: string;
   nameConflict: boolean;
   onCancel: () => void;
+  onClone: (value: string) => void;
   onCreate: () => void;
   onCreateStart: () => void;
+  onModify: (value: string) => void;
   onNameChange: (value: string) => void;
-  onOpen: (value: string) => void;
   profiles: StrategyProfile[];
 }) {
   return <main className="strategy-selection-page" aria-label="Choose a strategy">
@@ -1740,12 +1751,15 @@ function StrategySelectionPage({ creationMode, name, nameConflict, onCancel, onC
     </section>
     <header className="strategy-selection-heading"><span>Available strategies</span><h2>Choose a strategy to configure</h2><p>The protected template and every strategy you create appear here.</p></header>
     <section className="strategy-selection-list" aria-label="Available strategies">
-      {profiles.map((profile) => <button key={profile.profile_id} onClick={() => onOpen(profile.profile_id)} type="button">
+      {profiles.map((profile) => <article key={profile.profile_id}>
         <span className="strategy-selection-icon"><GitBranch size={18} /></span>
         <span><strong>{profile.name}</strong><small>{profile.description || "No description"}</small></span>
         <em>{profile.protected ? "Template" : "User"} · V{profile.revision}</em>
-        <ChevronRight size={17} />
-      </button>)}
+        <span className="strategy-selection-actions">
+          {profile.origin === "user" && profile.editable ? <button onClick={() => onModify(profile.profile_id)} type="button"><PencilLine size={14} /> Modify</button> : null}
+          <button onClick={() => onClone(profile.profile_id)} type="button"><Clipboard size={14} /> Clone</button>
+        </span>
+      </article>)}
     </section>
   </main>;
 }
