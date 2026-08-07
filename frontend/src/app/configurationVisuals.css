@@ -2441,8 +2441,9 @@
    and non-Canvas configuration pages; Live, Replay, Backtest, and Canvas content
    retain their existing typography. */
 .sidebar {
-  --sidebar-type-section: calc(12px * var(--app-readable-scale, 1));
-  --sidebar-type-item: calc(14px * var(--app-readable-scale, 1));
+  --sidebar-readable-scale: min(var(--app-readable-scale, 1), 1.1);
+  --sidebar-type-section: calc(12px * var(--sidebar-readable-scale));
+  --sidebar-type-item: calc(14px * var(--sidebar-readable-scale));
   font-family: var(--font-body);
   font-optical-sizing: auto;
 }
@@ -2461,6 +2462,13 @@
   font-size: var(--sidebar-type-item);
   font-weight: 520;
   line-height: 1.35;
+  white-space: nowrap;
+}
+
+.nav-item > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .trading-configuration-page {
@@ -2589,6 +2597,9 @@
 .strategy-profile-create-choice button strong {
   font-size: var(--configuration-type-control);
 }
+
+.strategy-parameter-list strong { font-weight: 520; }
+.strategy-parameter-list > button[aria-current="true"] strong { font-weight: 580; }
 
 .strategy-parameter-list small,
 .strategy-parameter-catalog > header small,
