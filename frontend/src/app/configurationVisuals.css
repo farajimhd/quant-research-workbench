@@ -2399,6 +2399,7 @@
 .strategy-selection-icon { align-items: center; background: color-mix(in oklab, var(--canvas-link-blue) 10%, var(--surface)); border: 1px solid color-mix(in oklab, var(--canvas-link-blue) 28%, var(--border)); border-radius: 8px; color: var(--canvas-link-blue); display: flex; height: 40px; justify-content: center; width: 40px; }
 .strategy-editor-toolbar { align-items: center; border-bottom: 1px solid var(--configuration-rule); display: flex; gap: 12px; margin-left: auto; margin-right: auto; max-width: var(--strategy-workspace-max); padding-bottom: 12px; width: 100%; }
 .strategy-editor-toolbar > span { display: grid; gap: 1px; }
+.strategy-editor-toolbar > span strong { color: var(--canvas-link-blue); }
 .strategy-editor-toolbar > span small { color: var(--muted-foreground); }
 .strategy-editor-modes { align-items: center; background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 8px; display: flex; gap: 3px; margin-left: auto; padding: 3px; }
 .strategy-editor-modes button { align-items: center; background: transparent; border: 0; border-radius: 6px; color: var(--muted-foreground); cursor: pointer; display: inline-flex; gap: 6px; min-height: 32px; padding: 6px 10px; }
@@ -2525,6 +2526,12 @@
   gap: 14px;
   margin: 0;
   padding: 24px 0 0;
+}
+.strategy-editor-guided .strategy-observe-fields > .configuration-field-grid > .configuration-choice-set {
+  align-content: start;
+  border: 0;
+  gap: 9px;
+  padding: 0;
 }
 .strategy-editor-guided .strategy-observe-fields .configuration-choice-set > div {
   gap: 12px;

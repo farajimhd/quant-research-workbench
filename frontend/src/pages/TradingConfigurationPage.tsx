@@ -2127,6 +2127,24 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
           options={supportedSides.map((value) => ({ label: readableLabel(value), value }))}
           value={behavior.side}
         />
+        <fieldset className="configuration-choice-set">
+          <legend>Eligible sessions</legend>
+          <div>{sessions.map((session) => (
+            <label key={session}>
+              <input
+                checked={behavior.eligible_sessions.includes(session)}
+                onChange={(event) => update({
+                  ...behavior,
+                  eligible_sessions: event.target.checked
+                    ? [...behavior.eligible_sessions, session]
+                    : behavior.eligible_sessions.filter((value) => value !== session),
+                })}
+                type="checkbox"
+              />
+              {readableLabel(session)}
+            </label>
+          ))}</div>
+        </fieldset>
         <BooleanField
           help="When enabled, a campaign may take ownership of a manually opened position and manage its adds and exits. When disabled, manual positions remain outside strategy control."
           label="Adopt manual positions"
@@ -2134,24 +2152,6 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
           value={behavior.adopt_manual_positions}
         />
       </div>
-      <fieldset className="configuration-choice-set">
-        <legend>Eligible sessions</legend>
-        <div>{sessions.map((session) => (
-          <label key={session}>
-            <input
-              checked={behavior.eligible_sessions.includes(session)}
-              onChange={(event) => update({
-                ...behavior,
-                eligible_sessions: event.target.checked
-                  ? [...behavior.eligible_sessions, session]
-                  : behavior.eligible_sessions.filter((value) => value !== session),
-              })}
-              type="checkbox"
-            />
-            {readableLabel(session)}
-          </label>
-        ))}</div>
-      </fieldset>
     </>
   );
 }
