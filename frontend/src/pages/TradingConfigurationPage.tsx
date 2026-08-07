@@ -1481,7 +1481,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
 }) {
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
   const [studioView, setStudioView] = useState<"select" | "configure">("select");
-  const [editorMode, setEditorMode] = useState<"catalog" | "guided">("catalog");
+  const [editorMode, setEditorMode] = useState<"catalog" | "guided">("guided");
   const [activeStage, setActiveStage] = useState<StrategyAuthoringStage>("identity");
   const [catalogItem, setCatalogItem] = useState<StrategyCatalogItem | null>(null);
   const [creationMode, setCreationMode] = useState<"blank" | null>(null);
@@ -1502,7 +1502,8 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
     onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(next.profile_id);
     setCatalogItem(null);
-    setEditorMode("catalog");
+    setActiveStage("identity");
+    setEditorMode("guided");
     setStudioView("configure");
   }
 
@@ -1517,6 +1518,8 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
     const next = { ...blankStrategyProfile(selected, draft), name: normalizedName };
     onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(next.profile_id);
+    setActiveStage("identity");
+    setEditorMode("guided");
     setStudioView("configure");
     setCreationMode(null);
     setCreationName("");
@@ -1562,7 +1565,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
     onDelete={(profileId) => void removeProfile(profileId)}
     onClone={cloneProfileFromSelection}
     onNameChange={setCreationName}
-    onModify={(profileId) => { setSelectedId(profileId); setCatalogItem(null); setEditorMode("catalog"); setStudioView("configure"); }}
+    onModify={(profileId) => { setSelectedId(profileId); setCatalogItem(null); setActiveStage("identity"); setEditorMode("guided"); setStudioView("configure"); }}
     profiles={section.profiles}
   />;
 
@@ -1593,7 +1596,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
           section={section}
         />
 
-        <details className="strategy-technical-book">
+        <details className="strategy-technical-book" hidden>
           <summary><span><strong>Complete technical configuration</strong><small>All Strategy, Run Plan, Portfolio, OMS, account, and release fields</small></span><ChevronRight size={15} /></summary>
         <article className="strategy-book" aria-label={`${selected.name} complete technical configuration`}>
           <header className="strategy-book-cover">
@@ -1834,9 +1837,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
   profile: StrategyProfile;
   section: StrategySection;
 }) {
-  const activeGroups = (stage: RuleStage) => stage.groups.filter((group) => group.enabled).length;
   const enabledAdds = profile.lifecycle.initial_entry.add_steps.filter((step) => step.enabled).length;
-  const enabledExits = profile.lifecycle.exit.rule_sets.filter((route) => route.enabled).length;
   const definition = section.definitions.find((row) => row.strategy_id === profile.definition_id);
   const stages: Array<[StrategyAuthoringStage, string, string, string]> = [
     ["identity", "1", "Identity", "Name and description"],
@@ -1849,19 +1850,6 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
   const activeIndex = stages.findIndex(([stage]) => stage === activeStage);
 
   return <article className="strategy-authoring" aria-label={`${profile.name} strategy authoring flow`}>
-    {activeStage !== "identity" ? <><header className="strategy-authoring-header">
-      <div><span>Strategy behavior</span><h2>Configure one decision at a time</h2><p>Define what the strategy observes, what permits entry, how it may change a position, and what ends the position. Runtime infrastructure is configured after the behavior is clear.</p></div>
-      <BooleanField help="Controls whether a Run Plan may select this profile. It does not start a run." label="Available to Run Plans" onChange={(enabled) => onProfileChange({ ...profile, enabled })} value={profile.enabled} />
-    </header>
-
-    <StrategyMechanismOverview />
-
-    <section className="strategy-behavior-summary" aria-label="Current strategy behavior">
-      <header><span>Current behavior</span><strong>What this profile will attempt</strong></header>
-      <p>On <b>{readableLabel(profile.lifecycle.trading_behavior.evaluation_trigger)}</b> during <b>{profile.lifecycle.trading_behavior.eligible_sessions.map(readableLabel).join(", ") || "no enabled session"}</b>, evaluate a <b>{profile.lifecycle.trading_behavior.side}</b> entry using {activeGroups(entryRules.opportunity)} opportunity path{activeGroups(entryRules.opportunity) === 1 ? "" : "s"}, {activeGroups(entryRules.confirmation)} confirmation path{activeGroups(entryRules.confirmation) === 1 ? "" : "s"}, and {activeGroups(entryRules.blockers)} blocker{activeGroups(entryRules.blockers) === 1 ? "" : "s"}.</p>
-      <div><span><strong>{readableLabel(entryRules.capital_request.mode)}</strong><small>requested exposure</small></span><span><strong>{enabledAdds}</strong><small>enabled add actions</small></span><span><strong>{profile.lifecycle.reentry.enabled ? `${profile.lifecycle.reentry.maximum_attempts} max` : "Off"}</strong><small>reentry</small></span><span><strong>{enabledExits}</strong><small>strategic exit routes</small></span></div>
-    </section></> : null}
-
     <nav aria-label="Strategy configuration steps" className="strategy-authoring-steps">
       {stages.map(([stage, number, title, detail]) => <button aria-current={activeStage === stage ? "step" : undefined} key={stage} onClick={() => onStageChange(stage)} type="button"><span>{number}</span><strong>{title}</strong><small>{detail}</small></button>)}
     </nav>
@@ -1900,6 +1888,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
 
       {activeStage === "handoff" ? <>
         <StrategyStageIntro step="6 · Run" title="Which authorities are required after strategy logic passes?">The Strategy Profile ends by emitting intent. The following configuration decides whether it may proceed, how much may trade, where it trades, and how broker orders are protected.</StrategyStageIntro>
+        <BooleanField help="Controls whether a Run Plan may select this profile. It does not start a run." label="Available to Run Plans" onChange={(enabled) => onProfileChange({ ...profile, enabled })} value={profile.enabled} />
         <StrategyHandoffLinks draft={draft} profile={profile} />
       </> : null}
     </section>
