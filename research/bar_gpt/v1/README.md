@@ -523,15 +523,24 @@ contract.
 one independently addressable block—not the number of blocks collated into a
 training batch.
 
-The current bounded eager build targets both calendar years 2019 and 2020 for
-training and all 99 eligible tickers from January through July 2026 as the
-chronological validation pool. The two commands intentionally share one root
-and are independently resumable:
+The production eager build targets calendar years 2019, 2020, and 2021 for
+training and all eligible tickers from January through July 2026 as the
+chronological validation pool. One restart-safe launcher builds both condition
+authority ranges and both shard ranges in sequence beneath the same production
+root. It does not rerun the already certified pilot:
 
 ```powershell
-python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection train --start-date 2019-01-01 --end-date 2021-01-01 --workers 32
-python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection validation --start-date 2026-01-01 --end-date 2026-08-01 --workers 8
+python -B -m research.bar_gpt.v1.run_build_offline_dataset
+python -B -m research.bar_gpt.v1.run_build_offline_dataset --execute
 ```
+
+The first command prints all four exact commands without writing. The execute
+form repairs or certifies the sparse condition ranges first, then resumes the
+2019-2021 training shards and 2026 validation shards. Every tensor file is
+SHA-256 certified during its normal atomic write, so this launcher does not add
+a second full-catalog validation pass. Use `--force-rebuild` only to replace
+existing compatible production shards deliberately; normal execution skips
+already certified units.
 
 Before the full build, create and audit two isolated ticker-month shards in a
 separate pilot root:

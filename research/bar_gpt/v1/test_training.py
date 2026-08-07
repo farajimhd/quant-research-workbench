@@ -103,6 +103,10 @@ from research.bar_gpt.v1.train import (
 )
 from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS, _model_config, _parse_candidates
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
+from research.bar_gpt.v1.run_build_offline_dataset import (
+    commands as offline_dataset_commands,
+    parse_args as parse_offline_dataset_args,
+)
 from research.bar_gpt.v1.run_profile_train import DEFAULT_ARGS as profile_launcher_args
 from research.bar_gpt.v1.run_pilot_offline_shards import commands as pilot_commands, parse_args as parse_pilot_args
 from research.bar_gpt.v1.run_train import DEFAULT_ARGS as training_launcher_args
@@ -960,6 +964,30 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(context_build[context_build.index("--end-date") + 1], "2026-01-03")
         self.assertEqual(context_build[context_build.index("--max-shards") + 1], "1")
         self.assertIn("--require-calendar-context", context_audit)
+
+    def test_complete_offline_dataset_launcher_owns_disjoint_ranges(self) -> None:
+        args = parse_offline_dataset_args(["--execute", "--workers", "32"])
+        stages = offline_dataset_commands(args)
+        self.assertEqual([label for label, _command in stages], [
+            "2019-2021 condition authority",
+            "2019-2021 training shards",
+            "2026 condition authority",
+            "2026 validation shards",
+        ])
+        train_conditions = stages[0][1]
+        train_shards = stages[1][1]
+        validation_conditions = stages[2][1]
+        validation_shards = stages[3][1]
+        self.assertEqual(train_conditions[train_conditions.index("--start-date") + 1], "2019-01-01")
+        self.assertEqual(train_conditions[train_conditions.index("--end-date") + 1], "2022-01-01")
+        self.assertEqual(train_shards[train_shards.index("--selection") + 1], "train")
+        self.assertEqual(train_shards[train_shards.index("--workers") + 1], "32")
+        self.assertIn("--execute", train_shards)
+        self.assertEqual(validation_conditions[validation_conditions.index("--start-date") + 1], "2026-01-01")
+        self.assertEqual(validation_conditions[validation_conditions.index("--end-date") + 1], "2026-08-01")
+        self.assertEqual(validation_shards[validation_shards.index("--selection") + 1], "validation")
+        self.assertIn("--execute", validation_shards)
+        self.assertNotIn("run_pilot_offline_shards", " ".join(item for _label, command in stages for item in command))
 
     def test_offline_shard_identity_excludes_loader_batch_and_selection_settings(self) -> None:
         base = self.data_config()
