@@ -53,7 +53,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             self.assertEqual(_resolved_source_account_id(accounts["paper"]), "DU-PAPER-TEST")
             self.assertEqual(_resolved_source_account_id(accounts["cash"]), "U-CASH-TEST")
 
-    def test_schema_v9_migration_removes_legacy_session_overrides_and_adds_policy_catalogs(self) -> None:
+    def test_schema_v10_migration_replaces_global_evaluation_trigger_with_rule_sets(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
@@ -75,7 +75,13 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 9)
+        self.assertEqual(migrated["schema_version"], 10)
+        lifecycle = migrated["strategy"]["profiles"][0]["lifecycle"]
+        self.assertNotIn("evaluation_trigger", lifecycle["trading_behavior"])
+        self.assertEqual(
+            lifecycle["re_evaluation"]["rule_sets"][0]["event_type"],
+            "indicator_update",
+        )
         migrated_intent = migrated["strategy"]["profiles"][0]["lifecycle"][
             "initial_entry"
         ]["order_intent"]
@@ -102,7 +108,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 9)
+        self.assertEqual(draft["schema_version"], 10)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(

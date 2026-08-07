@@ -95,6 +95,59 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertIn("signal.vwap_transition.score", {
             row["source_id"] for row in config["input_catalog"]
         })
+        self.assertIn("signal.sec_filing.score", {
+            row["source_id"] for row in config["input_catalog"]
+        })
+
+    def test_re_evaluation_rules_gate_by_event_source_and_campaign_state(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["re_evaluation"] = {
+            "rule_sets": [{
+                "rule_set_id": "company-news",
+                "name": "Company news",
+                "enabled": True,
+                "event_type": "signal_event",
+                "source_id": "signal.company_news.score",
+                "campaign_states": ["flat"],
+            }]
+        }
+        engine = LongMomentumStrategyEngine()
+
+        blocked = engine.evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(),
+        )
+        self.assertEqual(
+            blocked.evaluation.signals[0].reason,
+            "re_evaluation_rules_not_matched",
+        )
+
+        admitted = engine.evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(
+                changed_source_ids=("signal.company_news.score",),
+                evaluation_events=("signal_event",),
+                news_score=0.9,
+            ),
+        )
+        self.assertNotEqual(
+            admitted.evaluation.signals[0].reason,
+            "re_evaluation_rules_not_matched",
+        )
+
+    def test_order_and_position_events_bypass_configurable_re_evaluation_rules(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["re_evaluation"] = {"rule_sets": []}
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(evaluation_events=("order_event",)),
+        )
+
+        self.assertNotEqual(
+            result.evaluation.signals[0].reason,
+            "re_evaluation_rules_not_matched",
+        )
 
     def test_entry_rules_support_or_logic_across_explicit_sources(self) -> None:
         parameters = default_long_momentum_parameters()

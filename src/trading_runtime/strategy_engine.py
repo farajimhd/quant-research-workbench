@@ -64,6 +64,7 @@ def strategy_input_catalog() -> list[dict[str, Any]]:
         _input("signal.flow_price_divergence.score", "Flow-price divergence score", "QMD market signal", "qmd", "flow_price_divergence_score", "score", ["100ms"], parameter="score"),
         _input("signal.liquidity_dislocation.score", "Liquidity dislocation score", "QMD market signal", "qmd", "liquidity_dislocation_score", "score", ["100ms"], parameter="score"),
         _input("signal.company_news.score", "Company news score", "News signal", "news", "news_score", "score", ["event"], parameter="score"),
+        _input("signal.sec_filing.score", "SEC filing score", "SEC signal", "sec", "sec_filing_score", "score", ["event"], parameter="score"),
     ]
 
 
@@ -230,6 +231,7 @@ class StrategyObservation:
     price_volume_expansion_score: float = 0.0
     vwap_transition_score: float = 0.0
     news_score: float = 0.0
+    sec_filing_score: float = 0.0
     flow_price_divergence_score: float = 0.0
     liquidity_dislocation_score: float = 0.0
     volatility: float = 0.0
@@ -238,6 +240,8 @@ class StrategyObservation:
     market_open: bool = True
     manual_entry_request: bool = False
     force_entry: bool = False
+    evaluation_events: tuple[str, ...] = ("indicator_update",)
+    changed_source_ids: tuple[str, ...] = ()
     source_signal_ids: tuple[str, ...] = ()
     source_timeframe: str = ""
     source_values: dict[str, Any] = field(default_factory=dict)
@@ -298,6 +302,7 @@ def long_momentum_strategy_definition() -> dict[str, Any]:
                     {"key": "flow_price_divergence", "timeframe": "100ms", "role": "veto", "required": False, "maximum_age_ms": 500},
                     {"key": "liquidity_dislocation", "timeframe": "100ms", "role": "veto", "required": False, "maximum_age_ms": 500},
                     {"key": "company_news", "role": "trigger", "required": False, "maximum_age_ms": 60000, "minimum_score": 0.7},
+                    {"key": "sec_filing", "role": "trigger", "required": False, "maximum_age_ms": 60000},
                 ],
                 "allow_developing_inputs": False,
                 "evaluation_trigger": "indicator_update",
@@ -365,6 +370,18 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "minimum_remaining_quantity": 1.0,
         },
         "reentry": {"enabled": True, "cooldown_ms": 0, "maximum_attempts": 3, "require_new_confirmation": True},
+        "re_evaluation": {
+            "rule_sets": [
+                {
+                    "rule_set_id": "indicator-updates",
+                    "name": "Indicator updates",
+                    "enabled": True,
+                    "event_type": "indicator_update",
+                    "source_id": "",
+                    "campaign_states": ["flat", "position_open"],
+                }
+            ]
+        },
         "final_exit": {
             "qmd_score": -0.35,
             "qmd_confidence": 0.55,
@@ -463,6 +480,7 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
         raise ValueError("Unsupported profit-pocket trigger")
     if int(parameters["reentry"]["cooldown_ms"]) < 0 or int(parameters["reentry"]["maximum_attempts"]) < 0:
         raise ValueError("Re-entry cooldown and maximum attempts cannot be negative")
+    _validate_re_evaluation_policy(dict(parameters.get("re_evaluation") or {}))
     supported_urgencies = {
         "passive_limit",
         "aggressive_limit",
@@ -495,6 +513,52 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
     return parameters
 
 
+def _validate_re_evaluation_policy(policy: dict[str, Any]) -> None:
+    supported_events = {"indicator_update", "signal_event", "bar_close"}
+    supported_states = {"flat", "position_open"}
+    seen_ids: set[str] = set()
+    for rule_set in policy.get("rule_sets") or []:
+        rule_set_id = str(rule_set.get("rule_set_id") or "")
+        if not rule_set_id or rule_set_id in seen_ids:
+            raise ValueError("Re-evaluation rule-set IDs must be present and unique")
+        seen_ids.add(rule_set_id)
+        if str(rule_set.get("event_type") or "") not in supported_events:
+            raise ValueError("Unsupported strategy re-evaluation event type")
+        states = set(rule_set.get("campaign_states") or [])
+        if not states or not states <= supported_states:
+            raise ValueError("Unsupported strategy re-evaluation campaign state")
+
+
+def _re_evaluation_matches(
+    parameters: dict[str, Any],
+    observation: StrategyObservation,
+) -> bool:
+    evaluation_events = set(observation.evaluation_events)
+    if evaluation_events & {"manual", "position_event", "order_event"}:
+        return True
+    policy = dict(parameters.get("re_evaluation") or {})
+    rule_sets = list(policy.get("rule_sets") or [])
+    if not rule_sets:
+        return False
+    campaign_state = "position_open" if observation.position_quantity else "flat"
+    changed_sources = set(observation.changed_source_ids)
+    for rule_set in rule_sets:
+        if not bool(rule_set.get("enabled", True)):
+            continue
+        if str(rule_set.get("event_type") or "") not in evaluation_events:
+            continue
+        if campaign_state not in set(rule_set.get("campaign_states") or []):
+            continue
+        source_id = str(rule_set.get("source_id") or "")
+        if source_id and not any(
+            changed == source_id or changed.startswith(f"{source_id}@")
+            for changed in changed_sources
+        ):
+            continue
+        return True
+    return False
+
+
 class LongMomentumStrategyEngine:
     """Deterministic long-only policy engine over causal point-in-time observations."""
 
@@ -510,6 +574,8 @@ class LongMomentumStrategyEngine:
             return self._result(assignment, observation, "wait", "assignment_paused", 0.0, 1.0, state, status)
         if not assignment.permissions.observe:
             return self._result(assignment, observation, "wait", "observation_not_authorized", 0.0, 1.0, state, status)
+        if not _re_evaluation_matches(parameters, observation):
+            return self._result(assignment, observation, "wait", "re_evaluation_rules_not_matched", 0.0, 1.0, state, status)
 
         state["last_observed_at"] = observation.observed_at.isoformat()
         state["last_price"] = observation.price

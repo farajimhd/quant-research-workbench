@@ -47,6 +47,7 @@ from src.trading_runtime.strategy_engine import (
     StrategyObservation,
     StrategyPermissions,
     entry_rule_timeframes,
+    strategy_input_catalog,
     strategy_observation_source_values,
 )
 from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
@@ -768,8 +769,30 @@ class ReplayRunController:
             source_timeframe=frame.timeframe,
         )
         source_cache = self._strategy_source_values.setdefault(frame.ticker, {})
-        source_cache.update(strategy_observation_source_values(base, frame.timeframe))
-        base = replace(base, source_values=deepcopy(source_cache))
+        changed_source_values = strategy_observation_source_values(base, frame.timeframe)
+        source_cache.update(changed_source_values)
+        evaluation_events = ["indicator_update", "bar_close"]
+        changed_source_ids = [
+            source_key
+            for source_key in changed_source_values
+            if not source_key.startswith("signal.")
+        ]
+        if frame.signals:
+            evaluation_events.append("signal_event")
+            for source in strategy_input_catalog():
+                source_id = str(source["source_id"])
+                if not source_id.startswith("signal."):
+                    continue
+                runtime_field = str(source["runtime_field"])
+                signal_key = runtime_field.removesuffix("_score")
+                if f"{signal_key}@{frame.timeframe}" in frame.signals:
+                    changed_source_ids.append(f"{source_id}@{frame.timeframe}")
+        base = replace(
+            base,
+            changed_source_ids=tuple(changed_source_ids),
+            evaluation_events=tuple(evaluation_events),
+            source_values=deepcopy(source_cache),
+        )
         for assignment in self._strategy.assignments():
             if assignment.ticker != frame.ticker:
                 continue

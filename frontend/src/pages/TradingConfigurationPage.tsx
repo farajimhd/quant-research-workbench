@@ -45,7 +45,7 @@ export type TradingConfigurationSection =
   | "accounts"
   | "revisions";
 
-type StrategyAuthoringStage = "identity" | "overview" | "entry" | "position" | "exit" | "handoff";
+type StrategyAuthoringStage = "identity" | "overview" | "re_evaluation" | "entry" | "position" | "exit" | "handoff";
 
 type RuntimeMode = "replay" | "backtest" | "backtest_debug" | "paper" | "live";
 type ActionAuthority = "disabled" | "manual" | "confirm" | "automatic" | "inherit";
@@ -157,6 +157,15 @@ type EntryRules = {
   opportunity: RuleStage;
 };
 
+type ReEvaluationRuleSet = {
+  campaign_states: Array<"flat" | "position_open">;
+  enabled: boolean;
+  event_type: "indicator_update" | "signal_event" | "bar_close";
+  name: string;
+  rule_set_id: string;
+  source_id: string;
+};
+
 type CapitalRequestConfig = {
   allow_replacement: boolean;
   mode: "fixed_quantity" | "mandate_fraction" | "risk_fraction" | "all_available";
@@ -196,9 +205,9 @@ type StrategyLifecycle = {
   trading_behavior: {
     adopt_manual_positions: boolean;
     eligible_sessions: string[];
-    evaluation_trigger: string;
     side: "long" | "short";
   };
+  re_evaluation: { rule_sets: ReEvaluationRuleSet[] };
   initial_entry: EntryRules & {
     add_steps: AddStep[];
     capital_request: CapitalRequestConfig;
@@ -1099,10 +1108,10 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
       content: <DecisionOptions onChange={(side) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, side: side as "long" | "short" } } })} options={supportedSides.map((side) => ({ detail: side === "long" ? "Buy to open; sell to reduce or close." : "Short-sell to open; buy to cover.", label: readableLabel(side), recommended: side === "long", value: side }))} value={profile.lifecycle.trading_behavior.side} />,
     },
     {
-      id: "evaluation", section: "Behavior", title: "Which event should trigger strategy evaluation?",
-      description: "Choose the causal event that makes the engine re-check active ticker campaigns.",
-      guide: "This is an evaluation clock, not an entry signal. Entry still requires its opportunity, confirmation, and blocker logic to pass.",
-      content: <DecisionOptions onChange={(evaluation_trigger) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, evaluation_trigger } } })} options={[{ label: "Indicator update", detail: "Re-evaluate when a configured indicator publishes a new value.", recommended: true, value: "indicator_update" }, { label: "Signal event", detail: "Re-evaluate when a scored signal changes lifecycle state.", value: "signal_event" }, { label: "Bar close", detail: "Re-evaluate only when the selected calculation bar closes.", value: "bar_close" }]} value={profile.lifecycle.trading_behavior.evaluation_trigger} />,
+      id: "evaluation", section: "Re-evaluation", title: "Which causal rule sets may start evaluation?",
+      description: "Define separate rules for indicator publications, discrete signals, and completed bars.",
+      guide: "Each rule set limits an event by source and campaign state. Entry and exit evidence still decide whether the strategy acts.",
+      content: <ReEvaluationRulesEditor catalog={draft.strategy.input_catalog} onChange={(re_evaluation) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, re_evaluation } })} value={profile.lifecycle.re_evaluation} />,
     },
     {
       id: "manual-adoption", section: "Behavior", title: "May this plan take over a manually opened position?",
@@ -1343,7 +1352,8 @@ function StrategyProfileFeaturePreview({ profile, section }: { profile: Strategy
   return <div className="strategy-feature-preview">
     <header><span>{profile.protected ? "Protected source" : "Editable source"}</span><strong>{profile.name}</strong><p>{profile.description || "No strategy description has been provided."}</p></header>
     <dl>
-      <div><dt>Trading behavior</dt><dd><strong>{readableLabel(behavior.side)}</strong><span>{behavior.eligible_sessions.map(readableLabel).join(", ")} · {readableLabel(behavior.evaluation_trigger)}</span></dd></div>
+      <div><dt>Trading behavior</dt><dd><strong>{readableLabel(behavior.side)}</strong><span>{behavior.eligible_sessions.map(readableLabel).join(", ")}</span></dd></div>
+      <div><dt>Re-evaluation</dt><dd><strong>{profile.lifecycle.re_evaluation.rule_sets.filter((row) => row.enabled).length} rule sets</strong><span>Source and campaign-state scoped</span></dd></div>
       <div><dt>Initial entry</dt><dd><strong>{opportunityCount} opportunity · {confirmationCount} confirmation</strong><span>{blockerCount} blocker rule set{blockerCount === 1 ? "" : "s"} · {readableLabel(initial.capital_request.mode)}</span></dd></div>
       <div><dt>Position lifecycle</dt><dd><strong>{addCount} add action{addCount === 1 ? "" : "s"} · {exitCount} strategic exit{exitCount === 1 ? "" : "s"}</strong><span>{profile.lifecycle.reentry.enabled ? `Reentry up to ${profile.lifecycle.reentry.maximum_attempts} times` : "Reentry disabled"}</span></dd></div>
       <div><dt>Order behavior</dt><dd><strong>{executionPolicies.size} execution polic{executionPolicies.size === 1 ? "y" : "ies"}</strong><span>{readableLabel(initial.order_intent.partial_fill_policy)} · OMS applies tested terminal timing</span></dd></div>
@@ -1384,6 +1394,7 @@ function strategySetupRows(profile: StrategyProfile) {
   return [
     { label: "Trading plan", value: profile.name },
     { label: "Behavior", value: `${readableLabel(profile.lifecycle.trading_behavior.side)} · ${profile.lifecycle.trading_behavior.eligible_sessions.map(readableLabel).join(", ")}` },
+    { label: "Re-evaluation", value: `${profile.lifecycle.re_evaluation.rule_sets.filter((row) => row.enabled).length} enabled rule sets` },
     { label: "Initial entry", value: `${readableLabel(profile.lifecycle.initial_entry.capital_request.mode)} · ${profile.lifecycle.initial_entry.opportunity.groups.length}/${profile.lifecycle.initial_entry.confirmation.groups.length}/${profile.lifecycle.initial_entry.blockers.groups.length} rule groups` },
     { label: "Position adds", value: `${profile.lifecycle.initial_entry.add_steps.filter((row) => row.enabled).length} enabled` },
     { label: "Reentry", value: profile.lifecycle.reentry.enabled ? `${profile.lifecycle.reentry.maximum_attempts} attempts · ${profile.lifecycle.reentry.cooldown_ms} ms` : "Disabled" },
@@ -1406,7 +1417,8 @@ function blankStrategyProfile(source: StrategyProfile, draft: Draft): StrategyPr
     editable: true,
     enabled: false,
     lifecycle: {
-      trading_behavior: { adopt_manual_positions: false, eligible_sessions: ["regular"], evaluation_trigger: "indicator_update", side: source.lifecycle.trading_behavior.side },
+      trading_behavior: { adopt_manual_positions: false, eligible_sessions: ["regular"], side: source.lifecycle.trading_behavior.side },
+      re_evaluation: { rule_sets: [{ campaign_states: ["flat", "position_open"], enabled: true, event_type: "indicator_update", name: "Indicator updates", rule_set_id: "indicator-updates", source_id: "" }] },
       initial_entry: { add_steps: [], blockers: emptyStage(), capital_request: deepClone(capitalRequest), confirmation: emptyStage(), opportunity: emptyStage(), order_intent: deepClone(orderIntent) },
       reentry: { capital_request: deepClone(capitalRequest), cooldown_ms: 0, enabled: false, maximum_attempts: 0, order_intent: deepClone(orderIntent), require_new_confirmation: true, rules: { blockers: emptyStage(), confirmation: emptyStage(), opportunity: emptyStage() } },
       exit: { rule_sets: [{ action: "close", enabled: false, name: "Strategic exit", order_intent: deepClone(orderIntent), position_fraction: 1, rule_set_id: "strategic-exit", rules: emptyStage(), summary: "Define the evidence that should close the position.", timing: { active_after_ms: 0, expires_after_ms: 0 } }] },
@@ -1847,11 +1859,12 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
   const remainingParameters = advanced.filter((item) => !assignedParameterPaths.has(item.path));
   const stages: Array<[StrategyAuthoringStage, string, string, string]> = [
     ["identity", "1", "Identity", "Name and description"],
-    ["overview", "2", "Observe", "Evaluation context"],
-    ["entry", "3", "Enter", "Evidence and request"],
-    ["position", "4", "Manage", "Adds and reentry"],
-    ["exit", "5", "Exit", "Reduction conditions"],
-    ["handoff", "6", "Run", "External authorities"],
+    ["overview", "2", "Observe", "Market context"],
+    ["re_evaluation", "3", "Re-evaluate", "Causal rule sets"],
+    ["entry", "4", "Enter", "Evidence and request"],
+    ["position", "5", "Manage", "Adds and reentry"],
+    ["exit", "6", "Exit", "Reduction conditions"],
+    ["handoff", "7", "Run", "External authorities"],
   ];
   const activeIndex = stages.findIndex(([stage]) => stage === activeStage);
 
@@ -1879,8 +1892,13 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
         </div>
       </> : null}
       {activeStage === "overview" ? <>
-        <header className="strategy-identity-intro strategy-observe-intro"><h2>When should the strategy evaluate?</h2></header>
+        <header className="strategy-identity-intro strategy-observe-intro"><h2>What market context does the strategy use?</h2></header>
         <div className="strategy-observe-fields"><TradingBehaviorEditor definition={definition} profile={profile} onChange={onProfileChange} /></div>
+      </> : null}
+
+      {activeStage === "re_evaluation" ? <>
+        <header className="strategy-identity-intro"><h2>What should cause the strategy to re-evaluate?</h2></header>
+        <ReEvaluationRulesEditor catalog={section.input_catalog} onChange={(re_evaluation) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, re_evaluation } })} value={profile.lifecycle.re_evaluation} />
       </> : null}
 
       {activeStage === "entry" ? <>
@@ -1997,6 +2015,89 @@ function BookConfigurationSurface({ children, label }: { children: ReactNode; la
   );
 }
 
+function ReEvaluationRulesEditor({ catalog, onChange, value }: {
+  catalog: StrategyInput[];
+  onChange: (value: StrategyLifecycle["re_evaluation"]) => void;
+  value: StrategyLifecycle["re_evaluation"];
+}) {
+  const ruleSets = value.rule_sets;
+
+  function replace(ruleSetId: string, next: ReEvaluationRuleSet) {
+    onChange({ rule_sets: ruleSets.map((row) => row.rule_set_id === ruleSetId ? next : row) });
+  }
+
+  function addRuleSet() {
+    const ruleSetId = uniqueId("re-evaluation-rule", ruleSets.map((row) => row.rule_set_id));
+    onChange({ rule_sets: [...ruleSets, {
+      campaign_states: ["flat", "position_open"],
+      enabled: true,
+      event_type: "indicator_update",
+      name: "New re-evaluation rule",
+      rule_set_id: ruleSetId,
+      source_id: "",
+    }] });
+  }
+
+  function sourcesFor(eventType: ReEvaluationRuleSet["event_type"]) {
+    const candidates = catalog.filter((source) => (
+      eventType === "signal_event"
+        ? source.source_id.startsWith("signal.")
+        : !source.source_id.startsWith("signal.")
+    ));
+    const anyLabel = eventType === "signal_event"
+      ? "Any configured signal"
+      : eventType === "bar_close"
+        ? "Any configured closed-bar source"
+        : "Any configured indicator";
+    return [
+      { label: anyLabel, value: "" },
+      ...candidates.map((source) => ({ label: source.label, value: source.source_id })),
+    ];
+  }
+
+  return <section className="strategy-re-evaluation-editor">
+    <div className="strategy-re-evaluation-toolbar">
+      <span><strong>Re-evaluation rule sets</strong><small>{ruleSets.filter((row) => row.enabled).length} enabled</small></span>
+      <button className="button compact" onClick={addRuleSet} type="button"><Plus size={14} /> Add rule set</button>
+    </div>
+    <div className="strategy-re-evaluation-rules">
+      {ruleSets.map((ruleSet) => <article key={ruleSet.rule_set_id}>
+        <div className="strategy-re-evaluation-rule-heading">
+          <TextField help="A concise name for this causal evaluation rule." label="Rule set name" onChange={(name) => replace(ruleSet.rule_set_id, { ...ruleSet, name })} value={ruleSet.name} />
+          <BooleanField help="Disabled rule sets remain saved but cannot initiate evaluation." label="Enabled" onChange={(enabled) => replace(ruleSet.rule_set_id, { ...ruleSet, enabled })} value={ruleSet.enabled} />
+          <button aria-label={`Remove ${ruleSet.name}`} className="button compact danger" onClick={() => onChange({ rule_sets: ruleSets.filter((row) => row.rule_set_id !== ruleSet.rule_set_id) })} type="button"><Trash2 size={14} /> Remove</button>
+        </div>
+        <div className="configuration-field-grid">
+          <SelectField
+            help="The causal publication event this rule set listens for. It starts evaluation but does not make an entry or exit condition pass."
+            label="Event type"
+            onChange={(event_type) => replace(ruleSet.rule_set_id, { ...ruleSet, event_type: event_type as ReEvaluationRuleSet["event_type"], source_id: "" })}
+            options={[{ label: "Indicator update", value: "indicator_update" }, { label: "Signal event", value: "signal_event" }, { label: "Bar close", value: "bar_close" }]}
+            value={ruleSet.event_type}
+          />
+          <SelectField
+            help="Restrict this rule to one configured source, or accept any source of the selected event type. News and SEC belong under Signal event."
+            label="Source"
+            onChange={(source_id) => replace(ruleSet.rule_set_id, { ...ruleSet, source_id })}
+            options={sourcesFor(ruleSet.event_type)}
+            value={ruleSet.source_id}
+          />
+        </div>
+        <fieldset className="configuration-choice-set">
+          <legend>Campaign state</legend>
+          <ModeChoices
+            onChange={(campaign_states) => replace(ruleSet.rule_set_id, { ...ruleSet, campaign_states: campaign_states as ReEvaluationRuleSet["campaign_states"] })}
+            options={["flat", "position_open"]}
+            values={ruleSet.campaign_states}
+          />
+        </fieldset>
+      </article>)}
+      {!ruleSets.length ? <EmptyState title="No re-evaluation rules" detail="Add a rule set to allow market data or external signals to initiate strategy evaluation. Position and order state changes remain mandatory runtime events." /> : null}
+    </div>
+    <p className="strategy-re-evaluation-runtime-note"><ShieldCheck size={15} /> Position fills, order-state changes, and explicit manual actions always re-evaluate campaign state and cannot be disabled here.</p>
+  </section>;
+}
+
 function TradingBehaviorEditor({ definition, onChange, profile }: {
   definition?: StrategySection["definitions"][number];
   onChange: (value: StrategyProfile) => void;
@@ -2025,13 +2126,6 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
           onChange={(side) => update({ ...behavior, side: side as StrategyLifecycle["trading_behavior"]["side"] })}
           options={supportedSides.map((value) => ({ label: readableLabel(value), value }))}
           value={behavior.side}
-        />
-        <SelectField
-          help="Causal event that causes this strategy to re-evaluate its current ticker campaigns."
-          label="Evaluation trigger"
-          onChange={(evaluation_trigger) => update({ ...behavior, evaluation_trigger })}
-          options={["indicator_update", "signal_event", "bar_close"].map((value) => ({ label: readableLabel(value), value }))}
-          value={behavior.evaluation_trigger}
         />
         <BooleanField
           help="When enabled, a campaign may take ownership of a manually opened position and manage its adds and exits. When disabled, manual positions remain outside strategy control."
@@ -3712,6 +3806,7 @@ function flattenPrimitives(value: ParameterMap, prefix = ""): Array<{ path: stri
 const STRATEGY_CATALOG_GROUPS = [
   "Profile",
   "Observe",
+  "Re-evaluation",
   "Initial entry · Opportunity",
   "Initial entry · Confirmation",
   "Initial entry · Blockers",
@@ -3748,15 +3843,16 @@ function flattenStrategyPrimitives(value: unknown, prefix = "", result: Array<{ 
 function strategyCatalogGroupForPath(path: string): { group: string; groupOrder: number } {
   let groupOrder = 0;
   if (path.startsWith("lifecycle.trading_behavior")) groupOrder = 1;
-  else if (path.startsWith("lifecycle.initial_entry.opportunity")) groupOrder = 2;
-  else if (path.startsWith("lifecycle.initial_entry.confirmation")) groupOrder = 3;
-  else if (path.startsWith("lifecycle.initial_entry.blockers")) groupOrder = 4;
-  else if (path.startsWith("lifecycle.initial_entry.capital_request") || path.startsWith("lifecycle.initial_entry.order_intent")) groupOrder = 5;
-  else if (path.startsWith("lifecycle.initial_entry.add_steps")) groupOrder = 6;
-  else if (path.startsWith("lifecycle.reentry")) groupOrder = 7;
-  else if (path.startsWith("lifecycle.exit")) groupOrder = 8;
-  else if (path.startsWith("capabilities")) groupOrder = 9;
-  else if (path.startsWith("parameters")) groupOrder = 10;
+  else if (path.startsWith("lifecycle.re_evaluation")) groupOrder = 2;
+  else if (path.startsWith("lifecycle.initial_entry.opportunity")) groupOrder = 3;
+  else if (path.startsWith("lifecycle.initial_entry.confirmation")) groupOrder = 4;
+  else if (path.startsWith("lifecycle.initial_entry.blockers")) groupOrder = 5;
+  else if (path.startsWith("lifecycle.initial_entry.capital_request") || path.startsWith("lifecycle.initial_entry.order_intent")) groupOrder = 6;
+  else if (path.startsWith("lifecycle.initial_entry.add_steps")) groupOrder = 7;
+  else if (path.startsWith("lifecycle.reentry")) groupOrder = 8;
+  else if (path.startsWith("lifecycle.exit")) groupOrder = 9;
+  else if (path.startsWith("capabilities")) groupOrder = 10;
+  else if (path.startsWith("parameters")) groupOrder = 11;
   return { group: STRATEGY_CATALOG_GROUPS[groupOrder], groupOrder };
 }
 
@@ -3878,7 +3974,7 @@ function strategyParameterDocumentation(path: string, group: string, value: Cata
   if (path === "description") return { ...base, role: ["The description records the strategy's intended setup, market context, and operating purpose for reviewers and operators."], timing: ["It is shown during configuration and review but is not evaluated by the Strategy Engine."], impact: ["A precise description makes later changes auditable and helps users distinguish expected behavior from a defect. It has no direct trading effect."], caution: ["Describe intent and boundaries, not implementation guesses. Keep behavior-changing facts in typed parameters where the runtime can enforce them."], cautionTone: "information" };
   if (path === "enabled") return { ...base, role: ["This switch controls whether a Run Plan may select the Strategy Profile for a new run."], timing: ["It is checked before a new Strategy Run is admitted. It does not start, stop, or mutate an already running campaign."], impact: [value ? "The profile is currently available to eligible Run Plans." : "The profile is currently unavailable for new Strategy Runs."], caution: ["Disabling availability is not an emergency stop. Use the shared safety authority to halt active trading or block new account risk."], cautionTone: "warning" };
 
-  if (path.includes("evaluation_trigger")) return { ...base, role: ["The evaluation trigger defines which runtime event asks the strategy to reevaluate its current campaigns. A trigger starts computation; it is not evidence that an entry or exit should occur."], timing: ["The runtime invokes the strategy when this event arrives. Evidence stages then read their configured sources and decide whether their conditions pass."], impact: ["More frequent triggers react sooner but evaluate more often and may observe noisier intermediate states. Event-specific triggers reduce unnecessary evaluation but can delay a decision until that event is emitted."], caution: ["Do not treat Indicator Update and Signal Event as equivalent. Indicator Update reacts to a recalculated input; Signal Event reacts only when a producer emits a discrete semantic event."], cautionTone: "warning" };
+  if (path.includes("re_evaluation")) return { ...base, role: ["A re-evaluation rule set decides whether a causal publication event may ask the strategy to inspect its current campaign state."], timing: ["The event type, optional source, and campaign-state scope must all match. Entry and exit evidence is evaluated only after this gate passes."], impact: ["Specific rules reduce unnecessary evaluation while preserving independent rules for indicators, news, SEC, models, and completed bars."], caution: ["Position fills, order-state changes, and explicit manual actions are mandatory lifecycle events and cannot be disabled by these rules."], cautionTone: "warning" };
   if (path.includes("eligible_sessions")) return { ...base, role: ["This session is one of the time windows in which the strategy may create exposure-increasing actions."], timing: ["The session gate is checked before initial entry, position adds, and reentry. Existing-position protection and emergency action remain active outside eligible sessions."], impact: ["Adding a session expands when the strategy may take risk; removing it narrows opportunity and can prevent otherwise valid evidence from producing an entry request."], caution: ["Session eligibility is not a protection schedule. Broker-held stops and account safety supervision must remain active regardless of this value."], cautionTone: "safety" };
   if (path.endsWith(".side")) return { ...base, role: ["Side reserves the campaign's trade direction and determines whether entry intent seeks long or short exposure."], timing: ["It is applied when the campaign is created and is carried into entry, add, reentry, and exit interpretation."], impact: ["Changing side reverses the economic meaning of price movement, evidence comparisons, and closing orders. It is a fundamental strategy change, not a display preference."], caution: ["Review every directional evidence source and exit rule after changing side. A rule written for long behavior may be logically wrong for short behavior even if the schema accepts it."], cautionTone: "warning" };
   if (path.includes("adopt_manual_positions")) return { ...base, role: ["This setting allows a strategy campaign to adopt a compatible position that was opened outside the strategy."], timing: ["Adoption is considered when runtime ownership reconciliation finds an unowned position matching this profile's direction and account scope."], impact: [value ? "Compatible manual positions may enter the strategy lifecycle and become subject to its management and strategic exits." : "Manual positions remain outside this strategy's campaign ownership."], caution: ["Adoption changes ownership and automated behavior. Confirm account, symbol, side, and protection state before enabling it."], cautionTone: "warning" };

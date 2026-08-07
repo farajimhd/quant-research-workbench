@@ -285,6 +285,13 @@ def evaluate_strategy_assignment(assignment_id: str, payload: dict[str, Any]) ->
     observation_payload["force_entry"] = bool(
         observation_payload.get("force_entry") or state.pop("force_entry_requested", False)
     )
+    evaluation_events = list(observation_payload.get("evaluation_events") or ["indicator_update"])
+    if observation_payload["manual_entry_request"] or observation_payload["force_entry"]:
+        evaluation_events.append("manual")
+    observation_payload["evaluation_events"] = tuple(dict.fromkeys(evaluation_events))
+    observation_payload["changed_source_ids"] = tuple(
+        observation_payload.get("changed_source_ids") or ()
+    )
     observation_payload["observed_at"] = _aware_datetime(observation_payload.get("observed_at"))
     assignment = replace(assignment, state=state)
     observation = StrategyObservation(**observation_payload)

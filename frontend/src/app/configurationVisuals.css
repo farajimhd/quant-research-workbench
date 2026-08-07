@@ -2407,7 +2407,7 @@
 .strategy-studio-workspace > .configuration-workbench.strategy-editor-guided { margin-top: 18px; }
 .strategy-studio-workspace:has(.strategy-editor-guided) .strategy-editor-toolbar > span small { display: none; }
 .strategy-editor-guided .strategy-authoring { background: transparent; border: 0; border-radius: 0; gap: 34px; padding: 0; }
-.strategy-editor-guided .strategy-authoring-steps { background: transparent; border: 0; border-bottom: 1px solid var(--configuration-rule); border-radius: 0; grid-template-columns: repeat(6, minmax(0, 1fr)); overflow-x: auto; }
+.strategy-editor-guided .strategy-authoring-steps { background: transparent; border: 0; border-bottom: 1px solid var(--configuration-rule); border-radius: 0; grid-template-columns: repeat(7, minmax(0, 1fr)); overflow-x: auto; }
 .strategy-editor-guided .strategy-authoring-steps button { background: transparent; border: 0; color: var(--muted-foreground); display: flex; gap: 8px; justify-content: center; min-width: 120px; padding: 14px 10px; text-align: center; }
 .strategy-editor-guided .strategy-authoring-steps button[aria-current="step"] { background: transparent; box-shadow: inset 0 -2px var(--canvas-link-blue); color: var(--foreground); }
 .strategy-editor-guided .strategy-authoring-steps button > span { background: var(--configuration-soft); flex: 0 0 auto; grid-row: auto; height: 20px; width: 20px; }
@@ -2537,6 +2537,26 @@
   min-height: 46px;
   padding: 10px 14px;
 }
+.strategy-re-evaluation-editor { display: grid; gap: 22px; }
+.strategy-re-evaluation-toolbar { align-items: end; border-bottom: 1px solid var(--configuration-rule); display: flex; justify-content: space-between; padding-bottom: 16px; }
+.strategy-re-evaluation-toolbar > span { display: grid; gap: 3px; }
+.strategy-re-evaluation-toolbar > span strong { font-size: 15px; }
+.strategy-re-evaluation-toolbar > span small { color: var(--muted-foreground); font-size: 12px; }
+.strategy-re-evaluation-rules { display: grid; gap: 18px; }
+.strategy-re-evaluation-rules > article { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 22px; padding: 20px; }
+.strategy-re-evaluation-rule-heading { align-items: end; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(180px, .35fr) auto; }
+.strategy-re-evaluation-rule-heading .configuration-field,
+.strategy-re-evaluation-rules .configuration-field { gap: 8px; }
+.strategy-re-evaluation-rule-heading .configuration-field > span,
+.strategy-re-evaluation-rules .configuration-field > span,
+.strategy-re-evaluation-rules .configuration-choice-set > legend { color: var(--muted-foreground); font-size: 11px; font-weight: 700; letter-spacing: .055em; text-transform: uppercase; }
+.strategy-re-evaluation-rule-heading .configuration-field > small,
+.strategy-re-evaluation-rules .configuration-field > small { display: none; }
+.strategy-re-evaluation-rules .configuration-lookup-button,
+.strategy-re-evaluation-rules .configuration-field input:not([type="checkbox"]) { min-height: 48px; }
+.strategy-re-evaluation-rules .configuration-choice-set { border: 0; border-top: 1px solid var(--configuration-rule); border-radius: 0; margin: 0; padding: 18px 0 0; }
+.strategy-re-evaluation-runtime-note { align-items: center; color: var(--muted-foreground); display: flex; font-size: 12px; gap: 8px; line-height: 1.5; margin: 0; }
+.strategy-re-evaluation-runtime-note svg { color: var(--success); flex: 0 0 auto; }
 .strategy-editor-guided .strategy-engine-parameter-group {
   background: var(--surface);
   border-color: var(--border);
@@ -2548,6 +2568,7 @@
   .strategy-selection-page { padding-left: 0; padding-right: 0; }
   .strategy-editor-guided .strategy-authoring-stage,
   .strategy-editor-guided .strategy-guided-navigation { width: 100%; }
+  .strategy-re-evaluation-rule-heading { grid-template-columns: 1fr; }
 }
 
 .strategy-profile-command {

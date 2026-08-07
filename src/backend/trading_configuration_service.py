@@ -36,7 +36,7 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 9
+CONFIGURATION_SCHEMA_VERSION = 10
 CONFIGURATION_SECTIONS = {"strategy", "run_plans", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
@@ -603,8 +603,19 @@ def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
         "trading_behavior": {
             "side": "long",
             "eligible_sessions": ["regular"],
-            "evaluation_trigger": "indicator_update",
             "adopt_manual_positions": True,
+        },
+        "re_evaluation": {
+            "rule_sets": [
+                {
+                    "rule_set_id": "indicator-updates",
+                    "name": "Indicator updates",
+                    "enabled": True,
+                    "event_type": "indicator_update",
+                    "source_id": "",
+                    "campaign_states": ["flat", "position_open"],
+                }
+            ]
         },
         "initial_entry": {
             **deepcopy(initial_rules),
@@ -789,7 +800,7 @@ def _default_exit_rule_sets(final_exit: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _parameters_without_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(parameters)
-    for key in ("entry_rules", "reentry", "final_exit", "exit_routes", "sizing", "add", "execution"):
+    for key in ("entry_rules", "re_evaluation", "strategy_behavior", "reentry", "final_exit", "exit_routes", "sizing", "add", "execution"):
         result.pop(key, None)
     return result
 
@@ -973,6 +984,32 @@ def _migrate_lifecycle_v7(
             dict(rule_set.get("order_intent") or {})
         )
     result["exit"] = exit_config
+    return result
+
+
+def _migrate_lifecycle_v10(
+    lifecycle: dict[str, Any],
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    result = _migrate_lifecycle_v7(lifecycle, parameters)
+    behavior = dict(result.get("trading_behavior") or {})
+    legacy_trigger = str(behavior.pop("evaluation_trigger", "") or "indicator_update")
+    result["trading_behavior"] = behavior
+    result.setdefault(
+        "re_evaluation",
+        {
+            "rule_sets": [
+                {
+                    "rule_set_id": f"{legacy_trigger.replace('_', '-')}-events",
+                    "name": legacy_trigger.replace("_", " ").title(),
+                    "enabled": True,
+                    "event_type": legacy_trigger,
+                    "source_id": "",
+                    "campaign_states": ["flat", "position_open"],
+                }
+            ]
+        },
+    )
     return result
 
 
@@ -1622,7 +1659,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 lifecycle["reentry"]["enabled"] = bool(
                     legacy_reentry.get("enabled", True)
                 )
-            lifecycle = _migrate_lifecycle_v7(lifecycle, parameters)
+            lifecycle = _migrate_lifecycle_v10(lifecycle, parameters)
             initial_entry = dict(lifecycle.get("initial_entry") or {})
             initial_capital = dict(initial_entry.get("capital_request") or {})
             initial_capital.pop("priority", None)
@@ -1943,7 +1980,7 @@ def _lifecycle_order_intents(lifecycle: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
-    required = {"trading_behavior", "initial_entry", "reentry", "exit"}
+    required = {"trading_behavior", "re_evaluation", "initial_entry", "reentry", "exit"}
     missing = required - set(lifecycle)
     if missing:
         raise ValueError(
@@ -1955,6 +1992,17 @@ def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
     sessions = set(behavior.get("eligible_sessions") or [])
     if not sessions or not sessions <= {"premarket", "regular", "after_hours"}:
         raise ValueError("Strategy eligible sessions are unsupported")
+    re_evaluation = dict(lifecycle["re_evaluation"])
+    rule_sets = list(re_evaluation.get("rule_sets") or [])
+    _unique_ids(rule_sets, "rule_set_id", "Strategy re-evaluation rule set")
+    supported_events = {"indicator_update", "signal_event", "bar_close"}
+    supported_states = {"flat", "position_open"}
+    for rule_set in rule_sets:
+        if str(rule_set.get("event_type") or "") not in supported_events:
+            raise ValueError("Strategy re-evaluation event type is unsupported")
+        states = set(rule_set.get("campaign_states") or [])
+        if not states or not states <= supported_states:
+            raise ValueError("Strategy re-evaluation campaign states are unsupported")
     initial_entry = dict(lifecycle["initial_entry"])
     runtime_rules = {
         "trigger": deepcopy(dict(initial_entry.get("opportunity") or {})),
@@ -2188,6 +2236,7 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
         "veto": deepcopy(dict(initial_entry.get("blockers") or {})),
     }
     behavior = deepcopy(dict(lifecycle.get("trading_behavior") or {}))
+    re_evaluation = deepcopy(dict(lifecycle.get("re_evaluation") or {}))
     reentry = deepcopy(dict(lifecycle.get("reentry") or {}))
     reentry_rules = dict(reentry.pop("rules", {}) or {})
     parameters["reentry"] = reentry
@@ -2195,6 +2244,7 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
         dict(lifecycle.get("exit") or {}).get("rule_sets") or []
     )
     parameters["strategy_behavior"] = behavior
+    parameters["re_evaluation"] = re_evaluation
     parameters["phase_policy"] = {
         "initial_entry": {
             "capital_request": deepcopy(dict(initial_entry.get("capital_request") or {})),
