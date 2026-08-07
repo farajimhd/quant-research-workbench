@@ -16,6 +16,7 @@ from services.reference_gateway.market_publications import (
 )
 from services.reference_gateway.table_groups import REFERENCE_TABLE_GROUPS
 from services.reference_gateway.ticker_events import ticker_event_audit
+from services.reference_gateway.tradability import non_otc_venue_predicate_sql, otc_venue_predicate_sql
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,13 +142,13 @@ def check_table_group_counts(client: ClickHouseHttpClient, read_database: str, w
 
 
 def check_issuer_identifier_coverage(client: ClickHouseHttpClient, database: str) -> AuditCheck:
+    scoped_candidates = active_stock_base_query(database)
     count = scalar_int(
         client,
         f"""
         SELECT count()
-        FROM {table(database, 'id_issuer_v1')} issuer FINAL
-        WHERE issuer.status = 'active'
-          AND issuer.issuer_id NOT IN (
+        FROM (SELECT DISTINCT issuer_id FROM ({scoped_candidates})) scoped
+        WHERE scoped.issuer_id NOT IN (
               SELECT issuer_id
               FROM {table(database, 'id_issuer_identifier_v1')} FINAL
               WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
@@ -158,10 +159,10 @@ def check_issuer_identifier_coverage(client: ClickHouseHttpClient, database: str
     rows = query_json_each_row(
         client,
         f"""
-        SELECT issuer_id, issuer_name, status
-        FROM {table(database, 'id_issuer_v1')} issuer FINAL
-        WHERE issuer.status = 'active'
-          AND issuer.issuer_id NOT IN (
+        SELECT issuer.issuer_id, issuer.issuer_name, issuer.status
+        FROM (SELECT DISTINCT issuer_id FROM ({scoped_candidates})) scoped
+        INNER JOIN {table(database, 'id_issuer_v1')} issuer FINAL USING issuer_id
+        WHERE scoped.issuer_id NOT IN (
               SELECT issuer_id
               FROM {table(database, 'id_issuer_identifier_v1')} FINAL
               WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
@@ -177,9 +178,9 @@ def check_issuer_identifier_coverage(client: ClickHouseHttpClient, database: str
         status="ok" if count == 0 else "failed",
         count=count,
         message=(
-            "Every active issuer has at least one durable identifier."
+            "Every active in-scope non-OTC US-stock issuer has at least one durable identifier."
             if count == 0
-            else "Active issuers without CIK/LEI/EIN must be treated as weak identity rows."
+            else "In-scope non-OTC US-stock issuers without CIK/LEI/EIN must be treated as weak identity rows."
         ),
         sample_rows=rows,
     )
@@ -328,12 +329,14 @@ def check_missing_or_invalid_conid(client: ClickHouseHttpClient, database: str) 
 
 
 def check_open_mapping_issues(client: ClickHouseHttpClient, database: str) -> AuditCheck:
+    scope_predicate = scoped_open_mapping_issue_predicate_sql(database)
     count = scalar_int(
         client,
         f"""
         SELECT count()
         FROM {table(database, 'id_mapping_issue_v1')} FINAL
         WHERE lower(issue_status) NOT IN ('resolved', 'closed', 'ignored')
+          AND {scope_predicate}
         """,
     )
     rows = query_json_each_row(
@@ -342,6 +345,7 @@ def check_open_mapping_issues(client: ClickHouseHttpClient, database: str) -> Au
         SELECT source_system, source_entity_kind, source_entity_key, mapped_entity_kind, issue_type, issue_status, issue_message
         FROM {table(database, 'id_mapping_issue_v1')} FINAL
         WHERE lower(issue_status) NOT IN ('resolved', 'closed', 'ignored')
+          AND {scope_predicate}
         ORDER BY opened_at_utc DESC
         LIMIT 25
         """,
@@ -361,10 +365,20 @@ def check_open_mapping_issues(client: ClickHouseHttpClient, database: str) -> Au
 
 
 def check_unsupported_us_stock_shape(client: ClickHouseHttpClient, database: str) -> AuditCheck:
-    count = scalar_int(
+    otc_predicate = otc_venue_predicate_sql("l.exchange_code", "ex.acronym", "ex.mic", "ex.operating_mic", "ex.name")
+    rows = query_json_each_row(
         client,
         f"""
-        SELECT count()
+        SELECT exclusion_reason, count() AS rows
+        FROM
+        (
+        SELECT multiIf(
+              {otc_predicate}, 'out_of_scope_otc',
+              upper(sec.product_type) NOT IN ('STK', 'STOCK', 'STOCKS'), 'unsupported_product_type',
+              upper(l.currency_code) != 'USD', 'non_usd_currency',
+              upper(ifNull(ex.iso_country_code, '')) != 'US', 'non_us_exchange',
+              ''
+          ) AS exclusion_reason
         FROM {table(database, 'id_symbol_v1')} s FINAL
         INNER JOIN {table(database, 'id_listing_v1')} l FINAL ON l.listing_id = s.listing_id
         INNER JOIN {table(database, 'id_security_v1')} sec FINAL ON sec.security_id = l.security_id
@@ -372,23 +386,20 @@ def check_unsupported_us_stock_shape(client: ClickHouseHttpClient, database: str
         WHERE s.status = 'active'
           AND s.primary_symbol_flag = 1
           AND l.listing_status = 'active'
-          AND (
-              upper(sec.product_type) NOT IN ('STK', 'STOCK', 'STOCKS')
-              OR upper(l.currency_code) != 'USD'
-              OR upper(ifNull(ex.iso_country_code, '')) != 'US'
-          )
+        )
+        WHERE exclusion_reason != ''
+        GROUP BY exclusion_reason
+        ORDER BY rows DESC
         """,
     )
+    count = sum(int(row.get("rows") or 0) for row in rows)
     return AuditCheck(
         name="unsupported_us_stock_shape",
-        severity="warning",
-        status="ok" if count == 0 else "failed",
+        severity="info",
+        status="ok",
         count=count,
-        message=(
-            "No active primary symbols violate the US stock/USD/exchange shape."
-            if count == 0
-            else "Rows outside the supported US-stock shape are excluded from tradable universe."
-        ),
+        message="Active primary symbols outside the configured non-OTC US-listed-stock scope are retained as reference data and excluded from trading.",
+        sample_rows=rows,
     )
 
 
@@ -419,6 +430,7 @@ def check_active_symbols_without_tradable_universe(client: ClickHouseHttpClient,
 
 
 def check_tradable_universe_hard_rule_violations(client: ClickHouseHttpClient, database: str) -> AuditCheck:
+    otc_predicate = otc_venue_predicate_sql("u.exchange_code", "ex.acronym", "ex.mic", "ex.operating_mic", "ex.name")
     rows = query_json_each_row(
         client,
         f"""
@@ -466,6 +478,7 @@ def check_tradable_universe_hard_rule_violations(client: ClickHouseHttpClient, d
                     NOT match(ifNull(u.ibkr_conid, ''), '^[1-9][0-9]*$'), 'missing_or_invalid_ibkr_conid',
                     upper(u.currency_code) != 'USD', 'non_usd_currency',
                     upper(ifNull(ex.iso_country_code, '')) != 'US', 'non_us_exchange',
+                    {otc_predicate}, 'unsupported_otc_venue',
                     upper(u.product_type) NOT IN ('STK', 'STOCK', 'STOCKS'), 'unsupported_product_type',
                     durable.issuer_id = '', 'weak_issuer_identity',
                     dup.issuer_id != '', 'duplicate_durable_issuer_identifier',
@@ -593,6 +606,7 @@ def check_ticker_event_identity(
 
 
 def active_stock_base_query(database: str) -> str:
+    non_otc_predicate = non_otc_venue_predicate_sql("l.exchange_code", "ex.acronym", "ex.mic", "ex.operating_mic", "ex.name")
     return f"""
     SELECT
         s.symbol_id AS symbol_id,
@@ -618,6 +632,29 @@ def active_stock_base_query(database: str) -> str:
       AND upper(sec.product_type) IN ('STK', 'STOCK', 'STOCKS')
       AND upper(l.currency_code) = 'USD'
       AND upper(ifNull(ex.iso_country_code, '')) = 'US'
+      AND {non_otc_predicate}
+    """
+
+
+def scoped_open_mapping_issue_predicate_sql(database: str) -> str:
+    scoped_candidates = active_stock_base_query(database)
+    evidence_exchange = "coalesce(nullIf(JSONExtractString(evidence_json, 'primary_exchange'), ''), nullIf(JSONExtractString(JSONExtractRaw(evidence_json, 'overview'), 'primary_exchange'), ''), '')"
+    non_otc_evidence = non_otc_venue_predicate_sql(evidence_exchange)
+    return f"""
+    (
+        source_entity_key IN (
+            SELECT symbol_id FROM ({scoped_candidates})
+            UNION ALL SELECT listing_id FROM ({scoped_candidates})
+            UNION ALL SELECT security_id FROM ({scoped_candidates})
+            UNION ALL SELECT issuer_id FROM ({scoped_candidates})
+            UNION ALL SELECT ticker FROM ({scoped_candidates})
+        )
+        OR (
+            source_system = 'reference_gateway'
+            AND source_entity_kind = 'massive_active_ticker'
+            AND {non_otc_evidence}
+        )
+    )
     """
 
 

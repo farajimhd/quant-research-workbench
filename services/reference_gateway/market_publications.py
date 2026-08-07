@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
+
+
+SCHEMA_QUERY_MAX_ATTEMPTS = 3
+SCHEMA_QUERY_RETRY_BASE_SECONDS = 1.0
+TRANSIENT_SCHEMA_ERROR_MARKERS = ("QUERY_WAS_CANCELLED", "TOO_MANY_SIMULTANEOUS_QUERIES")
 
 
 PUBLICATION_SOURCE_KINDS: tuple[str, ...] = (
@@ -74,11 +80,12 @@ def ensure_market_publication_schema(
     read_database: str | None = None,
     storage_policy: str = "",
 ) -> None:
-    client.execute(f"CREATE DATABASE IF NOT EXISTS {qn(database)}")
+    execute_idempotent_schema_query(client, f"CREATE DATABASE IF NOT EXISTS {qn(database)}")
     if read_database and read_database != database:
         clone_market_publication_source_tables(client, read_database=read_database, write_database=database)
     settings = mergetree_settings(storage_policy)
-    client.execute(
+    execute_idempotent_schema_query(
+        client,
         f"""
 CREATE TABLE IF NOT EXISTS {table(database, 'market_reference_publication_coverage_v1')}
 (
@@ -104,7 +111,8 @@ ORDER BY (coverage_kind, source_system, coverage_start_date, coverage_id)
 SETTINGS {settings}
 """.strip()
     )
-    client.execute(
+    execute_idempotent_schema_query(
+        client,
         f"""
 CREATE TABLE IF NOT EXISTS {table(database, 'market_fails_to_deliver_v1')}
 (
@@ -131,7 +139,8 @@ ORDER BY (provider_ticker, settlement_date, source_system, ftd_id)
 SETTINGS {settings}
 """.strip()
     )
-    client.execute(
+    execute_idempotent_schema_query(
+        client,
         f"""
 CREATE TABLE IF NOT EXISTS {table(database, 'market_reg_sho_threshold_v1')}
 (
@@ -156,7 +165,8 @@ ORDER BY (provider_ticker, threshold_date, source_system, threshold_id)
 SETTINGS {settings}
 """.strip()
     )
-    client.execute(
+    execute_idempotent_schema_query(
+        client,
         f"""
 CREATE TABLE IF NOT EXISTS {table(database, 'market_security_borrow_v1')}
 (
@@ -186,7 +196,8 @@ ORDER BY (provider_ticker, observed_at_utc, broker, borrow_id)
 SETTINGS {settings}
 """.strip()
     )
-    client.execute(
+    execute_idempotent_schema_query(
+        client,
         f"""
 CREATE TABLE IF NOT EXISTS {table(database, 'market_security_country_v1')}
 (
@@ -219,7 +230,26 @@ SETTINGS {settings}
     for table_name, statement in publication_alters(database):
         if not table_exists(client, database, table_name):
             continue
-        client.execute(statement)
+        execute_idempotent_schema_query(client, statement)
+
+
+def execute_idempotent_schema_query(client: ClickHouseHttpClient, sql: str) -> str:
+    for attempt in range(1, SCHEMA_QUERY_MAX_ATTEMPTS + 1):
+        try:
+            return client.execute(sql)
+        except RuntimeError as exc:
+            message = str(exc).upper()
+            if not any(marker in message for marker in TRANSIENT_SCHEMA_ERROR_MARKERS) or attempt >= SCHEMA_QUERY_MAX_ATTEMPTS:
+                raise
+            delay = SCHEMA_QUERY_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            print(
+                "reference_gateway_schema_retry="
+                f"attempt={attempt} next_attempt={attempt + 1} delay_seconds={delay:.1f} "
+                f"reason={next(marker for marker in TRANSIENT_SCHEMA_ERROR_MARKERS if marker in message)}",
+                flush=True,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def clone_market_publication_source_tables(

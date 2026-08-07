@@ -61,6 +61,7 @@ all required relationships are resolved and unambiguous:
 - supported US stock/common-stock shape
 - USD listing currency
 - US exchange
+- non-OTC listing venue; OTC reference rows are retained but never promoted into the tracked/tradable scope
 - valid positive IBKR conid
 - durable issuer identity when required
 - no duplicate durable issuer identifier
@@ -70,6 +71,12 @@ all required relationships are resolved and unambiguous:
 
 If any check fails, the row may remain visible for review, but it must publish
 as `is_tradable = 0` with an `exclusion_reason`.
+
+The configured trading scope is US-listed stocks excluding OTC venues. The
+canonical identity layer may retain OTC and formerly listed rows for provenance
+and point-in-time history, but active-ticker discovery, identity-gap audits,
+mapping-issue blockers, scanner publications, and `is_tradable = 1` all use the
+shared non-OTC venue predicate.
 
 ## Public Controls
 

@@ -25,6 +25,7 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from research.mlops.paths import machine_name  # noqa: E402
+from services.reference_gateway.tradability import non_otc_venue_predicate_sql  # noqa: E402
 
 
 DEFAULT_TARGET_DATABASE = "q_live"
@@ -122,6 +123,7 @@ def main() -> None:
 def weak_candidate_report_sql(target_database: str, sec_core_database: str) -> str:
     db = quote_ident(target_database)
     sec_db = quote_ident(sec_core_database)
+    non_otc_predicate = non_otc_venue_predicate_sql("l.exchange_code", "ex.acronym", "ex.mic", "ex.operating_mic", "ex.name")
     return f"""
 WITH durable_issuers AS
 (
@@ -159,6 +161,7 @@ weak_candidates AS
       AND l.listing_status = 'active'
       AND upper(l.currency_code) = 'USD'
       AND upper(ifNull(ex.iso_country_code, '')) = 'US'
+      AND {non_otc_predicate}
       AND upper(sec.product_type) IN ('STK', 'STOCK', 'STOCKS')
       AND sec.issuer_id NOT IN (SELECT issuer_id FROM durable_issuers)
 ),
@@ -200,7 +203,6 @@ canonical_name_groups AS
 )
 SELECT
     multiIf(
-        upper(w.exchange_code) = 'OTCLNKECN' OR positionCaseInsensitive(w.exchange_code, 'OTC') > 0, 'weak_identity_otc',
         upper(w.exchange_code) NOT IN ('NYSE', 'NASDAQ', 'AMEX', 'BATS'), 'weak_identity_secondary_venue',
         startsWith(w.issuer_id, 'issuer:ibkr_public:'), 'weak_identity_ibkr_only',
         'weak_identity_needs_manual_review'

@@ -208,6 +208,11 @@ Example: an old weak issuer issue points to an issuer that no longer has active
 US stock candidates. The resolver can close the current blocker as historical
 housekeeping.
 
+OTC securities are outside the configured active trading scope. Their
+canonical rows and raw source history remain available for provenance, while
+the resolver closes OTC-only active-ticker mapping blockers as out-of-scope and
+the publication layer always emits them as non-tradable.
+
 ## Why Resolved Issues Delete Open Rows
 
 `id_mapping_issue_v1` is a `ReplacingMergeTree` ordered by fields that include

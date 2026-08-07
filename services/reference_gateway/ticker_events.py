@@ -18,6 +18,7 @@ from services.reference_gateway.ticker_event_corrections import (
     load_ticker_event_corrections,
     validate_provider_signature,
 )
+from services.reference_gateway.tradability import non_otc_venue_predicate_sql
 
 
 TICKER_EVENT_HISTORY_START = date(2003, 9, 10)
@@ -1129,6 +1130,7 @@ def ticker_event_audit(
     }
     if len(existing) != len(required):
         return [{"check": "schema", "count": len(required) - len(existing), "status": "failed", "missing": sorted(set(required) - existing)}]
+    non_otc_inventory = non_otc_venue_predicate_sql("primary_exchange")
     checks = [
         (
             "entity_coverage_gaps",
@@ -1144,7 +1146,7 @@ def ticker_event_audit(
         ),
         (
             "source_conflict_entities",
-            f"SELECT count() FROM {table(database, TICKER_EVENT_COVERAGE_TABLE)} FINAL WHERE mapping_status = 'source_conflict'",
+            f"SELECT count() FROM {table(database, TICKER_EVENT_COVERAGE_TABLE)} FINAL WHERE mapping_status = 'source_conflict' AND provider_entity_key IN (SELECT provider_entity_key FROM {table(database, TICKER_EVENT_ENTITY_TABLE)} FINAL WHERE is_deleted = 0 AND {non_otc_inventory})",
         ),
         (
             "orphan_intervals",

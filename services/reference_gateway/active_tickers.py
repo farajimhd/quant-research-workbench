@@ -10,6 +10,7 @@ from typing import Any, Callable
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.providers import IbkrReferenceClient, MassiveReferenceClient
+from services.reference_gateway.tradability import is_otc_venue
 
 
 SourceProgressCallback = Callable[[str, str, str, int | None], None]
@@ -48,6 +49,7 @@ class ActiveTickerPlan:
     wall_seconds: float
     skipped_open_issue_tickers: int = 0
     open_issue_tickers: list[str] = field(default_factory=list)
+    excluded_otc_tickers: int = 0
 
     def public_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -80,7 +82,10 @@ def run_active_ticker_plan(
     known = {row["ticker"].upper() for row in current}
     open_issue_tickers = load_open_active_ticker_issue_tickers(config)
     open_issue_set = set(open_issue_tickers)
-    missing = [normalize_massive_ticker(row) for row in provider.tickers]
+    normalized_provider = [normalize_massive_ticker(row) for row in provider.tickers]
+    excluded_otc = [row for row in normalized_provider if is_otc_venue(row.get("primary_exchange"))]
+    excluded_otc_count = len(excluded_otc)
+    missing = [row for row in normalized_provider if not is_otc_venue(row.get("primary_exchange"))]
     missing = [row for row in missing if row.get("ticker") and row["ticker"].upper() not in known]
     blocked_missing = [row for row in missing if row["ticker"].upper() in open_issue_set]
     missing = [row for row in missing if row["ticker"].upper() not in open_issue_set]
@@ -90,7 +95,8 @@ def run_active_ticker_plan(
         "massive_overview",
         "running" if candidate_rows else "completed",
         (
-            f"Found {len(missing):,} unresolved provider ticker(s) not in canonical symbols; "
+            f"Found {len(missing):,} unresolved non-OTC provider ticker(s) not in canonical symbols; "
+            f"excluded {len(excluded_otc):,} OTC ticker(s); "
             f"skipped {len(blocked_missing):,} with existing open issue(s); resolving first {len(candidate_rows):,}."
         ),
         0,
@@ -116,6 +122,16 @@ def run_active_ticker_plan(
             overview_fetched += 1
         except Exception as exc:  # noqa: BLE001
             overview = {"error": repr(exc)}
+        if is_otc_venue(row.get("primary_exchange"), overview.get("primary_exchange")):
+            excluded_otc_count += 1
+            emit_progress(
+                on_progress,
+                "ticker_reconciliation",
+                "running",
+                f"Excluded {ticker} because its detailed provider venue is OTC.",
+                index,
+            )
+            continue
         if ibkr is not None:
             emit_progress(on_progress, "ibkr_conids", "running", f"Searching IBKR stock contracts for {ticker} ({index:,}/{len(candidate_rows):,}).", ibkr_searched)
             try:
@@ -172,7 +188,7 @@ def run_active_ticker_plan(
         provider_pages=provider.pages,
         provider_saturated=provider.saturated,
         known_active_symbols=len(known),
-        missing_tickers=len(missing),
+        missing_tickers=max(0, len(missing) - (excluded_otc_count - len(excluded_otc))),
         overview_fetched=overview_fetched,
         ibkr_searched=ibkr_searched,
         candidate_limit=config.active_ticker_new_candidate_limit,
@@ -180,6 +196,7 @@ def run_active_ticker_plan(
         wall_seconds=time.perf_counter() - started,
         skipped_open_issue_tickers=len(blocked_missing),
         open_issue_tickers=open_issue_tickers,
+        excluded_otc_tickers=excluded_otc_count,
     )
 
 

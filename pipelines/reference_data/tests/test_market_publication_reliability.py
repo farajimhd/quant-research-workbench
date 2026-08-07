@@ -4,7 +4,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pipelines.reference_data.market_publications_historical_gap_fill import (
     SEC_FTD_PAGE,
@@ -12,6 +12,7 @@ from pipelines.reference_data.market_publications_historical_gap_fill import (
     parse_sec_ftd_links,
 )
 from services.reference_gateway.main import publication_schedule_details
+from services.reference_gateway.market_publications import execute_idempotent_schema_query
 from services.reference_gateway.publication_maintenance import PublicationMaintenanceResult, run_recent_publication_gap_fill
 from services.reference_gateway.source_schedule import record_source_schedule, schedule_decision
 from services.reference_gateway.state import coverage_status, latest_publication_coverage
@@ -118,6 +119,26 @@ class MarketPublicationReliabilityTests(unittest.TestCase):
         self.assertEqual(len(client.sql), 2)
         self.assertEqual(client.sql[0], client.sql[1])
         sleep.assert_called_once_with(1.0)
+
+    def test_schema_query_retries_only_explicit_transient_clickhouse_cancellation(self) -> None:
+        client = SimpleNamespace(execute=Mock(side_effect=[RuntimeError("QUERY_WAS_CANCELLED pending"), "ok"]))
+
+        with patch("services.reference_gateway.market_publications.time.sleep") as sleep:
+            result = execute_idempotent_schema_query(client, "CREATE TABLE IF NOT EXISTS q_live.example (id UInt8) ENGINE=MergeTree ORDER BY id")
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(client.execute.call_count, 2)
+        sleep.assert_called_once_with(1.0)
+
+    def test_schema_query_does_not_retry_arbitrary_http_500(self) -> None:
+        client = SimpleNamespace(execute=Mock(side_effect=RuntimeError("ClickHouse HTTP 500 syntax failure")))
+
+        with patch("services.reference_gateway.market_publications.time.sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "syntax failure"):
+                execute_idempotent_schema_query(client, "broken")
+
+        self.assertEqual(client.execute.call_count, 1)
+        sleep.assert_not_called()
 
     def test_failed_source_schedule_is_immediately_retryable(self) -> None:
         class FailedScheduleClient:

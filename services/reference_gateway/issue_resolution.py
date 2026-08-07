@@ -8,6 +8,7 @@ from typing import Any
 from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password, quote_ident, sql_string
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.market_publications import clone_table_schema, table_exists
+from services.reference_gateway.tradability import non_otc_venue_predicate_sql, otc_venue_predicate_sql
 
 
 OPEN_STATUS_FILTER = "lower(issue_status) NOT IN ('resolved', 'closed', 'ignored')"
@@ -55,6 +56,7 @@ def resolve_mapping_issues(config: ReferenceGatewayConfig) -> IssueResolutionRes
 
     rule_results = [
         resolve_massive_active_ticker_issues(client, config),
+        close_out_of_scope_otc_issues(client, config),
         resolve_weak_issuer_identity_with_durable_id(client, config),
         close_stale_weak_issuer_identity_issues(client, config),
     ]
@@ -72,6 +74,41 @@ def resolve_mapping_issues(config: ReferenceGatewayConfig) -> IssueResolutionRes
         human_review_required=classified["human_review_required"],
         historical_repair=classified["historical_repair"],
         rule_results=rule_results,
+    )
+
+
+def close_out_of_scope_otc_issues(client: ClickHouseHttpClient, config: ReferenceGatewayConfig) -> IssueResolutionRuleResult:
+    evidence_exchange = "coalesce(nullIf(JSONExtractString(evidence_json, 'primary_exchange'), ''), nullIf(JSONExtractString(JSONExtractRaw(evidence_json, 'overview'), 'primary_exchange'), ''), '')"
+    otc_predicate = otc_venue_predicate_sql(evidence_exchange)
+    open_issues = query_json_each_row(
+        client,
+        f"""
+        SELECT *
+        FROM {table(config.clickhouse_read_database, 'id_mapping_issue_v1')} FINAL
+        WHERE source_system = 'reference_gateway'
+          AND source_entity_kind = 'massive_active_ticker'
+          AND {OPEN_STATUS_FILTER}
+          AND {otc_predicate}
+        """,
+    )
+    rows = [resolved_issue_row(row, "out_of_scope_otc") for row in open_issues]
+    write_resolved_rows_and_delete_open(
+        client,
+        config,
+        rows,
+        where_sql=f"""
+source_system = 'reference_gateway'
+AND source_entity_kind = 'massive_active_ticker'
+AND {OPEN_STATUS_FILTER}
+AND {otc_predicate}
+""",
+    )
+    return rule_result(
+        "out_of_scope_otc",
+        "historical_repair",
+        len(open_issues),
+        len(rows),
+        "closed_because_otc_is_outside_configured_scope" if rows else "none",
     )
 
 
@@ -233,6 +270,7 @@ def classify_remaining_open_issues(client: ClickHouseHttpClient, database: str) 
 def load_resolved_tickers(client: ClickHouseHttpClient, database: str, tickers: list[str]) -> set[str]:
     if not tickers:
         return set()
+    non_otc_predicate = non_otc_venue_predicate_sql("l.exchange_code", "ex.acronym", "ex.mic", "ex.operating_mic", "ex.name")
     rows = query_json_each_row(
         client,
         f"""
@@ -248,6 +286,7 @@ def load_resolved_tickers(client: ClickHouseHttpClient, database: str, tickers: 
           AND match(ifNull(l.ibkr_conid, ''), '^[1-9][0-9]*$')
           AND upper(l.currency_code) = 'USD'
           AND upper(ifNull(ex.iso_country_code, '')) = 'US'
+          AND {non_otc_predicate}
           AND upper(sec.product_type) IN ('STK', 'STOCK', 'STOCKS')
         """,
     )
@@ -335,6 +374,7 @@ def durable_issuer_subquery(database: str) -> str:
 
 
 def active_weak_candidate_issuer_subquery(database: str) -> str:
+    non_otc_predicate = non_otc_venue_predicate_sql("listing.exchange_code", "ex.acronym", "ex.mic", "ex.operating_mic", "ex.name")
     return f"""
     SELECT DISTINCT sec.issuer_id
     FROM {table(database, 'id_symbol_v1')} AS sym FINAL
@@ -346,6 +386,7 @@ def active_weak_candidate_issuer_subquery(database: str) -> str:
       AND listing.listing_status = 'active'
       AND upper(listing.currency_code) = 'USD'
       AND upper(ifNull(ex.iso_country_code, '')) = 'US'
+      AND {non_otc_predicate}
       AND upper(sec.product_type) IN ('STK', 'STOCK', 'STOCKS')
       AND sec.issuer_id NOT IN ({durable_issuer_subquery(database)})
     """

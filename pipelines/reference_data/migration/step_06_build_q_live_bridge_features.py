@@ -28,6 +28,7 @@ from research.mlops.clickhouse import (  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from research.mlops.paths import machine_name  # noqa: E402
 from pipelines.reference_data.sec_market_bridge import us_market_listing_predicate_sql  # noqa: E402
+from services.reference_gateway.tradability import otc_venue_predicate_sql  # noqa: E402
 
 
 DEFAULT_TARGET_DATABASE = "q_live"
@@ -203,6 +204,7 @@ def build_specs(target_db: str, run_id: str, inserted_at: str, feature_date: dat
     literal_inserted_at = sql_string(inserted_at)
     literal_feature_date = sql_string(feature_date.isoformat())
     inserted_expr = f"toDateTime64({literal_inserted_at}, 3, 'UTC')"
+    otc_predicate = otc_venue_predicate_sql("exchange_code")
     return [
         BuildSpec(
             name="sec_market_bridge",
@@ -339,6 +341,7 @@ SELECT
         AND match(ifNull(ibkr_conid, ''), '^[1-9][0-9]*$')
         AND currency_code = 'USD'
         AND upper(exchange_country) = 'US'
+        AND NOT {otc_predicate}
         AND upper(product_type) IN ('STK', 'STOCK', 'STOCKS')
         AND has_durable_issuer_id
         AND NOT has_duplicate_durable_issuer_identifier
@@ -352,8 +355,8 @@ SELECT
         NOT match(ifNull(ibkr_conid, ''), '^[1-9][0-9]*$'), 'missing_or_invalid_ibkr_conid',
         currency_code != 'USD', 'non_usd_currency',
         upper(exchange_country) != 'US', 'non_us_exchange',
+        {otc_predicate}, 'unsupported_otc_venue',
         upper(product_type) NOT IN ('STK', 'STOCK', 'STOCKS'), 'unsupported_product_type',
-        NOT has_durable_issuer_id AND (upper(exchange_code) = 'OTCLNKECN' OR positionCaseInsensitive(exchange_code, 'OTC') > 0), 'weak_identity_otc',
         NOT has_durable_issuer_id AND upper(exchange_code) NOT IN ('NYSE', 'NASDAQ', 'AMEX', 'BATS'), 'weak_identity_secondary_venue',
         NOT has_durable_issuer_id AND startsWith(issuer_id, 'issuer:ibkr_public:'), 'weak_identity_ibkr_only',
         NOT has_durable_issuer_id, 'weak_identity_needs_manual_review',

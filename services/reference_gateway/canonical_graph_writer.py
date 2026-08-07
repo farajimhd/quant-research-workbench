@@ -10,6 +10,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_p
 from services.reference_gateway.active_tickers import ActiveTickerPlan, MissingTickerCandidate
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.market_publications import clone_table_schema, table_exists
+from services.reference_gateway.tradability import is_otc_venue
 
 
 IDENTITY_TABLES: tuple[str, ...] = (
@@ -133,6 +134,9 @@ def build_candidate_rows(
     ticker = candidate.ticker.upper()
     evidence = compact_candidate_evidence(candidate)
     issues: list[GraphWriteIssue] = []
+    if is_otc_venue(candidate.primary_exchange, candidate.overview.get("primary_exchange")):
+        issues.append(issue(candidate, "out_of_scope_otc", "OTC securities are outside the configured US-listed-stock scope.", evidence))
+        return {table: [] for table in IDENTITY_TABLES}, issues
     if ticker in existing.symbol_tickers:
         issues.append(issue(candidate, "symbol_already_exists", "Ticker already exists in the canonical symbol graph.", evidence))
     cik = normalize_cik(candidate.cik or candidate.overview.get("cik"))
