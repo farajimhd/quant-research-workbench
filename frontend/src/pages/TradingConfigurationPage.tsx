@@ -1445,11 +1445,18 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
   const [activeStage, setActiveStage] = useState<StrategyAuthoringStage>("overview");
   const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
-  const profileInUse = draft.assignments.deployments.some((row) => row.profile_id === selected?.profile_id);
+  const referencingPlans = draft.assignments.deployments.filter((row) => row.profile_id === selected?.profile_id);
   useEffect(() => {
     if (!section.profiles.some((row) => row.profile_id === selectedId)) setSelectedId(section.profiles[0]?.profile_id ?? "");
   }, [section.profiles, selectedId]);
   if (!selected) return <EmptyState title="No Strategy Profiles" detail="Create a profile from a registered strategy definition." />;
+  const fallbackProfile = section.profiles.find((row) => row.profile_id === section.default_profile_id && row.profile_id !== selected.profile_id)
+    ?? section.profiles.find((row) => row.protected && row.profile_id !== selected.profile_id)
+    ?? section.profiles.find((row) => row.profile_id !== selected.profile_id);
+  const canDeleteProfile = !selected.protected
+    && selected.profile_id !== section.default_profile_id
+    && section.profiles.length > 1
+    && Boolean(fallbackProfile);
 
   function replaceProfile(next: StrategyProfile) {
     onChange({ ...section, profiles: section.profiles.map((row) => row.profile_id === selected.profile_id ? next : row) });
@@ -1479,10 +1486,25 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
   }
 
   function removeProfile() {
-    if (selected.protected || selected.profile_id === section.default_profile_id || profileInUse || section.profiles.length <= 1) return;
+    if (!canDeleteProfile || !fallbackProfile) return;
+    const confirmed = window.confirm(
+      referencingPlans.length
+        ? `Delete “${selected.name}” and move ${referencingPlans.length} referencing Run Plan${referencingPlans.length === 1 ? "" : "s"} to “${fallbackProfile.name}”?`
+        : `Delete “${selected.name}”?`,
+    );
+    if (!confirmed) return;
     const remaining = section.profiles.filter((row) => row.profile_id !== selected.profile_id);
-    onChange({ ...section, profiles: remaining });
-    setSelectedId(remaining[0]?.profile_id ?? "");
+    onDraftChange({
+      ...draft,
+      assignments: {
+        ...draft.assignments,
+        deployments: draft.assignments.deployments.map((plan) => plan.profile_id === selected.profile_id
+          ? { ...plan, profile_id: fallbackProfile.profile_id }
+          : plan),
+      },
+      strategy: { ...section, profiles: remaining },
+    });
+    setSelectedId(fallbackProfile.profile_id);
   }
 
   const advanced = flattenPrimitives(selected.parameters).filter((row) => (
@@ -1529,9 +1551,9 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
             <button
               aria-label="Delete Strategy Profile"
               className="button compact danger"
-              disabled={selected.protected || selected.profile_id === section.default_profile_id || profileInUse || section.profiles.length <= 1}
+              disabled={!canDeleteProfile}
               onClick={removeProfile}
-              title={selected.protected ? "The protected default profile cannot be removed" : profileInUse ? "Remove or change the referencing Run Plan first" : "Delete profile"}
+              title={selected.protected || selected.profile_id === section.default_profile_id ? "The protected default profile cannot be removed" : referencingPlans.length ? `Delete profile and move ${referencingPlans.length} Run Plan${referencingPlans.length === 1 ? "" : "s"} to the protected default` : "Delete profile"}
               type="button"
             ><Trash2 size={14} /></button>
           </div>
