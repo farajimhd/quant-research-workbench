@@ -2,6 +2,12 @@
 
 ## 2026
 
+### [2026-08-07 (UNKNOWN time) - Complete the 945-news review and repair News Synthesis identity and polarity gaps](docs/codex/chat-summaries/2026/CHAT-20260807-UNKNOWN-news-synthesis-945-review-repair.md)
+- Chat/task ID: `019fd8c9-0491-7d52-addb-34dbd167adee`
+- Related task: `TASK-0182`
+- Summary written: 2026-08-07 12:36 PDT
+- Scope: complete the 2,000-news certification authority, evaluate the new 945 population, repair generic missing-prediction and polarity defects, manually review mismatches, and preserve the unresolved gold-correction queue.
+
 ### [2026-08-04 (UNKNOWN time) - Durable chat-independent history for this repository and News Synthesis lineage](docs/codex/chat-summaries/2026/CHAT-20260804-UNKNOWN-repository-task-history.md)
 - Chat/task ID: N/A (not provided in this stream)
 - Related tasks: `TASK-0183`, `TASK-0182`, `TASK-0180`, `TASK-0179`, `TASK-0178`, `TASK-0177`, `TASK-0164`, `TASK-0163`
