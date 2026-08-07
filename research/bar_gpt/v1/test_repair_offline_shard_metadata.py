@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 
+from research.bar_gpt.v1.config import DataConfig
 from research.bar_gpt.v1.offline_shards import (
     OFFLINE_SHARD_CONTRACT_VERSION,
     condition_positive_counts,
@@ -20,6 +21,7 @@ from research.bar_gpt.v1.repair_offline_shard_metadata import (
 
 
 def _payload(*, include_embedded_counts: bool = True) -> dict[str, object]:
+    data = DataConfig()
     targets = torch.zeros((2, 1, 6), dtype=torch.float32)
     targets[0, 0, -4:] = torch.tensor([1.0, 0.0, -1.0, 2.0])
     targets[1, 0, -4:] = torch.tensor([0.0, 3.0, 4.0, 5.0])
@@ -41,6 +43,12 @@ def _payload(*, include_embedded_counts: bool = True) -> dict[str, object]:
         "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
         "config_hash": "a" * 64,
         "unit_key": "AAA:2019-01",
+        "context_contract": {
+            "intraday_context_bars": data.intraday_context_by_name,
+            "calendar_context_bars": data.calendar_context_by_name,
+            "attention_windows": data.attention_window_by_name,
+            "intraday_warmup_bars_1s": data.intraday_warmup_bars_1s,
+        },
         "sessions": sessions,
         "counts": counts,
     }

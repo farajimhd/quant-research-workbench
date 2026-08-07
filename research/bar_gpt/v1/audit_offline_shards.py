@@ -1,0 +1,318 @@
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any, Sequence
+
+import torch
+
+from research.bar_gpt.v1.config import DataConfig
+from research.bar_gpt.v1.data import TIMEFRAME_US_BY_NAME
+from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
+from research.bar_gpt.v1.offline_shards import (
+    OFFLINE_SHARD_CONTRACT_VERSION,
+    _atomic_json,
+    _sha256,
+    condition_positive_counts,
+    load_shard,
+)
+from research.bar_gpt.v1.targets import TARGET_NAMES
+
+
+DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3_pilot")
+
+
+def _csv(value: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(item.strip().upper() for item in value.split(",") if item.strip()))
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Fail-closed structural and causal audit of a bounded BarGPT offline-shard sample."
+    )
+    parser.add_argument("--root", type=Path, default=DEFAULT_PILOT_ROOT)
+    parser.add_argument("--tickers", default="", help="Optional comma-separated ticker filter.")
+    parser.add_argument("--start-date", default="", help="Optional inclusive YYYY-MM-DD month boundary.")
+    parser.add_argument("--end-date", default="", help="Optional exclusive YYYY-MM-DD month boundary.")
+    parser.add_argument("--max-shards", type=int, default=2)
+    parser.add_argument(
+        "--verify-sha256",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Verify the full tensor-file digest recorded by each sidecar.",
+    )
+    parser.add_argument("--output", type=Path, default=None)
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    if args.max_shards <= 0:
+        parser.error("--max-shards must be positive")
+    if bool(args.start_date) != bool(args.end_date):
+        parser.error("--start-date and --end-date must be provided together")
+    if args.start_date:
+        start = dt.date.fromisoformat(str(args.start_date))
+        end = dt.date.fromisoformat(str(args.end_date))
+        if start.day != 1 or end.day != 1 or start >= end:
+            parser.error("date filters must be non-empty month boundaries")
+    return args
+
+
+def discover_sidecars(
+    root: Path,
+    *,
+    tickers: Sequence[str] = (),
+    start_date: str = "",
+    end_date: str = "",
+    limit: int = 2,
+) -> tuple[Path, ...]:
+    allowed = {ticker.upper() for ticker in tickers}
+    start = dt.date.fromisoformat(start_date) if start_date else None
+    end = dt.date.fromisoformat(end_date) if end_date else None
+    selected: list[Path] = []
+    for path in sorted(root.glob("tickers/*/*/*.json")):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if value.get("status") != "complete":
+            continue
+        unit_key = str(value.get("unit_key", ""))
+        try:
+            ticker, month = unit_key.split(":", 1)
+            month_date = dt.date.fromisoformat(f"{month}-01")
+        except ValueError as exc:
+            raise RuntimeError(f"invalid unit_key in {path}: {unit_key!r}") from exc
+        if allowed and ticker.upper() not in allowed:
+            continue
+        if start is not None and not (start <= month_date < end):
+            continue
+        selected.append(path)
+        if len(selected) >= int(limit):
+            break
+    if not selected:
+        raise RuntimeError(f"no complete shard sidecars matched beneath {root}")
+    return tuple(selected)
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def _strictly_increasing(value: torch.Tensor) -> bool:
+    return value.numel() <= 1 or bool(torch.all(value[1:] > value[:-1]))
+
+
+def audit_shard(sidecar_path: Path, *, verify_sha256: bool = True) -> dict[str, Any]:
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    unit_key = str(sidecar.get("unit_key", ""))
+    shard_path = sidecar_path.with_suffix(".pt")
+    _require(sidecar.get("status") == "complete", f"{unit_key}: sidecar is not complete")
+    _require(
+        int(sidecar.get("contract_version", -1)) == OFFLINE_SHARD_CONTRACT_VERSION,
+        f"{unit_key}: sidecar contract is not v{OFFLINE_SHARD_CONTRACT_VERSION}",
+    )
+    _require(shard_path.is_file(), f"{unit_key}: tensor file is absent: {shard_path}")
+    _require(int(sidecar.get("bytes", -1)) == shard_path.stat().st_size, f"{unit_key}: byte count mismatch")
+    expected_digest = str(sidecar.get("sha256", ""))
+    if verify_sha256:
+        _require(bool(expected_digest), f"{unit_key}: certified SHA-256 is absent")
+        _require(_sha256(shard_path) == expected_digest, f"{unit_key}: SHA-256 mismatch")
+    shard = load_shard(shard_path)
+    _require(shard.get("unit_key") == unit_key, f"{unit_key}: payload identity mismatch")
+    _require(shard.get("config_hash") == sidecar.get("config_hash"), f"{unit_key}: config hash mismatch")
+    sessions = shard.get("sessions")
+    _require(isinstance(sessions, list), f"{unit_key}: sessions must be a list")
+    expected_views = set(TIMEFRAME_US_BY_NAME)
+    context_contract = shard.get("context_contract")
+    _require(isinstance(context_contract, dict), f"{unit_key}: context contract is absent")
+    _require(context_contract == sidecar.get("context_contract"), f"{unit_key}: context contract mismatch")
+    intraday_context = {
+        str(name): int(count)
+        for name, count in dict(context_contract.get("intraday_context_bars", {})).items()
+    }
+    _require(
+        set(intraday_context) == set(DataConfig().intraday_context_by_name),
+        f"{unit_key}: intraday context view set mismatch",
+    )
+    expected_warmup = max(
+        int(count) * (int(TIMEFRAME_US_BY_NAME[name]) // int(shard.get("base_timeframe_us", 1)))
+        for name, count in intraday_context.items()
+    )
+    _require(
+        int(context_contract.get("intraday_warmup_bars_1s", -1)) == expected_warmup,
+        f"{unit_key}: derived warmup mismatch",
+    )
+    horizon_count = len(tuple(shard.get("horizons_us", ())))
+    origins = 0
+    blocks = 0
+    view_rows: dict[str, int] = {name: 0 for name in expected_views}
+    target_valid = torch.zeros((horizon_count, len(TARGET_NAMES)), dtype=torch.long)
+    target_total = torch.zeros_like(target_valid)
+    for session_index, session in enumerate(sessions):
+        label = f"{unit_key}/session-{session_index}"
+        views = session.get("views")
+        session_blocks = session.get("blocks")
+        _require(isinstance(views, dict) and set(views) == expected_views, f"{label}: view set mismatch")
+        _require(isinstance(session_blocks, list) and session_blocks, f"{label}: blocks are absent")
+        for name, view in views.items():
+            features = view.get("features")
+            starts = view.get("start_us")
+            available = view.get("available_at_us")
+            _require(isinstance(features, torch.Tensor), f"{label}/{name}: features are absent")
+            _require(
+                features.ndim == 2 and features.shape[1] == len(MODEL_FEATURE_NAMES),
+                f"{label}/{name}: invalid feature shape {tuple(features.shape)}",
+            )
+            _require(
+                isinstance(starts, torch.Tensor) and isinstance(available, torch.Tensor)
+                and starts.shape == available.shape == (features.shape[0],),
+                f"{label}/{name}: timestamp shape mismatch",
+            )
+            _require(_strictly_increasing(starts), f"{label}/{name}: starts are not strictly increasing")
+            _require(_strictly_increasing(available), f"{label}/{name}: availability is not strictly increasing")
+            _require(bool(torch.all(available >= starts)), f"{label}/{name}: availability precedes bar start")
+            sample = torch.cat((features[:2], features[-2:]), dim=0)
+            _require(bool(torch.isfinite(sample).all()), f"{label}/{name}: sampled features are non-finite")
+            view_rows[name] += int(features.shape[0])
+        for block_index, block in enumerate(session_blocks):
+            block_label = f"{label}/block-{block_index}"
+            origin_timestamps = block.get("origin_timestamps_us")
+            origin_indices = block.get("origin_indices")
+            _require(
+                isinstance(origin_timestamps, torch.Tensor) and origin_timestamps.ndim == 1
+                and origin_timestamps.numel() > 0,
+                f"{block_label}: origins are absent",
+            )
+            _require(_strictly_increasing(origin_timestamps), f"{block_label}: origins are not strictly increasing")
+            _require(
+                isinstance(origin_indices, torch.Tensor) and origin_indices.shape == origin_timestamps.shape,
+                f"{block_label}: origin-index shape mismatch",
+            )
+            slices = block.get("view_slices")
+            asof = block.get("asof_indices")
+            _require(isinstance(slices, dict) and set(slices) == expected_views, f"{block_label}: slice set mismatch")
+            _require(isinstance(asof, dict) and set(asof) == expected_views - {"1s"}, f"{block_label}: as-of set mismatch")
+            for name, raw_slice in slices.items():
+                start, length = (int(raw_slice[0]), int(raw_slice[1]))
+                available = views[name]["available_at_us"]
+                _require(start >= 0 and length > 0 and start + length <= available.shape[0], f"{block_label}/{name}: slice out of range")
+                if name == "1s":
+                    _require(int(origin_indices.min()) >= intraday_context["1s"], f"{block_label}/1s: context underflow")
+                    _require(int(origin_indices.max()) < length, f"{block_label}/1s: origin outside slice")
+                    continue
+                indices = asof[name]
+                _require(isinstance(indices, torch.Tensor) and indices.shape == origin_timestamps.shape, f"{block_label}/{name}: as-of shape mismatch")
+                if name in intraday_context:
+                    required = int(intraday_context[name])
+                    _require(int(indices.min()) >= required - 1, f"{block_label}/{name}: configured context underflow")
+                selected = indices >= 0
+                if bool(selected.any()):
+                    _require(int(indices[selected].max()) < length, f"{block_label}/{name}: as-of index outside slice")
+                    local_available = available[start : start + length]
+                    _require(
+                        bool(torch.all(local_available[indices[selected]] <= origin_timestamps[selected])),
+                        f"{block_label}/{name}: future bar is visible",
+                    )
+            horizon_targets = block.get("horizon_targets")
+            horizon_mask = block.get("horizon_mask")
+            expected_shape = (origin_timestamps.numel(), horizon_count, len(TARGET_NAMES))
+            _require(
+                isinstance(horizon_targets, torch.Tensor) and isinstance(horizon_mask, torch.Tensor)
+                and tuple(horizon_targets.shape) == expected_shape
+                and horizon_mask.shape == horizon_targets.shape,
+                f"{block_label}: horizon target shape mismatch",
+            )
+            target_valid += horizon_mask.to(torch.long).sum(dim=0)
+            target_total += int(origin_timestamps.numel())
+            origins += int(origin_timestamps.numel())
+            blocks += 1
+    counts = shard.get("counts", {})
+    recomputed_conditions = condition_positive_counts(sessions)
+    _require(int(counts.get("sessions", -1)) == len(sessions), f"{unit_key}: session count mismatch")
+    _require(int(counts.get("blocks", -1)) == blocks == int(sidecar.get("blocks", -2)), f"{unit_key}: block count mismatch")
+    _require(int(counts.get("origins", -1)) == origins == int(sidecar.get("origins", -2)), f"{unit_key}: origin count mismatch")
+    _require(
+        tuple(int(value) for value in counts.get("condition_positive_counts", ())) == recomputed_conditions
+        == tuple(int(value) for value in sidecar.get("condition_positive_counts", ())),
+        f"{unit_key}: condition-positive metadata mismatch",
+    )
+    return {
+        "unit_key": unit_key,
+        "path": str(shard_path),
+        "bytes": shard_path.stat().st_size,
+        "sha256_verified": bool(verify_sha256),
+        "sessions": len(sessions),
+        "blocks": blocks,
+        "origins": origins,
+        "view_rows": view_rows,
+        "condition_positive_counts": list(recomputed_conditions),
+        "target_valid_fraction": {
+            f"{int(horizon) // 1_000_000}s": {
+                name: float(target_valid[horizon_index, target_index] / target_total[horizon_index, target_index].clamp_min(1))
+                for target_index, name in enumerate(TARGET_NAMES)
+            }
+            for horizon_index, horizon in enumerate(shard.get("horizons_us", ()))
+        },
+        "status": "passed",
+    }
+
+
+def run_audit(
+    root: Path,
+    *,
+    tickers: Sequence[str] = (),
+    start_date: str = "",
+    end_date: str = "",
+    limit: int = 2,
+    verify_sha256: bool = True,
+    output: Path | None = None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    sidecars = discover_sidecars(
+        root,
+        tickers=tickers,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+    )
+    audited = [audit_shard(path, verify_sha256=verify_sha256) for path in sidecars]
+    payload = {
+        "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "root": str(root),
+        "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
+        "elapsed_seconds": time.perf_counter() - started,
+        "audited_shards": len(audited),
+        "status": "passed",
+        "shards": audited,
+    }
+    destination = output or (
+        root / "manifest" / "audits" / f"audit-{dt.datetime.now():%Y%m%d-%H%M%S}-p{os.getpid()}.json"
+    )
+    _atomic_json(destination, payload)
+    payload["output"] = str(destination)
+    return payload
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    report = run_audit(
+        args.root.resolve(),
+        tickers=_csv(str(args.tickers)),
+        start_date=str(args.start_date),
+        end_date=str(args.end_date),
+        limit=int(args.max_shards),
+        verify_sha256=bool(args.verify_sha256),
+        output=args.output.resolve() if args.output is not None else None,
+    )
+    for shard in report["shards"]:
+        print(
+            f"PASS {shard['unit_key']} blocks={shard['blocks']:,} origins={shard['origins']:,} "
+            f"conditions={shard['condition_positive_counts']}",
+            flush=True,
+        )
+    print(f"offline shard audit passed: {report['output']}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

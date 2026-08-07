@@ -20,6 +20,7 @@ from unittest.mock import patch
 import torch
 from rich.console import Console
 
+from research.bar_gpt.v1.audit_offline_shards import audit_shard
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig
 from research.bar_gpt.v1.data import FixedBucketHistoryCache, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarView, collate_examples
 from research.bar_gpt.v1.loader import (
@@ -101,6 +102,7 @@ from research.bar_gpt.v1.train import (
 from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS, _model_config, _parse_candidates
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
 from research.bar_gpt.v1.run_profile_train import DEFAULT_ARGS as profile_launcher_args
+from research.bar_gpt.v1.run_pilot_offline_shards import commands as pilot_commands, parse_args as parse_pilot_args
 from research.bar_gpt.v1.run_train import DEFAULT_ARGS as training_launcher_args
 from research.mlops.schedulers import SampleWarmupCosineScheduler
 
@@ -849,6 +851,10 @@ class LoaderTrainerContractTest(unittest.TestCase):
             cached_batch = collate_compiled_blocks(
                 compiled, horizons_us=config.horizons_us, base_timeframe_us=config.base_timeframe_us,
             ).to("cpu", non_blocking=False)
+            audit = audit_shard(Path(evidence["path"]).with_suffix(".json"), verify_sha256=True)
+            self.assertEqual(audit["status"], "passed")
+            self.assertEqual(audit["unit_key"], "AAA:2026-01")
+            self.assertEqual(audit["origins"], sum(item.origin_indices.numel() for item in examples))
         live_batch = collate_examples(examples).to("cpu", non_blocking=False)
         for name in live_batch.views:
             self.assertTrue(torch.equal(cached_batch.views[name], live_batch.views[name]), name)
@@ -857,6 +863,18 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertTrue(torch.equal(cached_batch.autoregressive_mask[name], live_batch.autoregressive_mask[name]), name)
         self.assertTrue(torch.equal(cached_batch.horizon_targets, live_batch.horizon_targets))
         self.assertTrue(torch.equal(cached_batch.horizon_mask, live_batch.horizon_mask))
+
+    def test_pilot_launcher_builds_and_audits_exactly_two_isolated_shards(self) -> None:
+        args = parse_pilot_args([
+            "--execute", "--tickers", "AAPL,GOOGL",
+            "--start-date", "2019-01-01", "--end-date", "2019-02-01",
+        ])
+        build, audit = pilot_commands(args)
+        self.assertEqual(build[build.index("--max-shards") + 1], "2")
+        self.assertIn("--execute", build)
+        self.assertIn("offline_shards_v3_pilot", " ".join(build))
+        self.assertIn("research.bar_gpt.v1.audit_offline_shards", audit)
+        self.assertIn("--verify-sha256", audit)
 
     def test_offline_shard_identity_excludes_loader_batch_and_selection_settings(self) -> None:
         base = self.data_config()
