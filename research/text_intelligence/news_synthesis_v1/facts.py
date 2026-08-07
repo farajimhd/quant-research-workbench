@@ -140,7 +140,7 @@ _REGULATORY_OUTCOME_PATTERNS = (
 _GUIDANCE_METRIC = (
     r"(?:adjusted\s+|diluted\s+)?EPS|earnings per share|"
     r"(?:core\s+|organic\s+)?(?:revenue|sales) growth|"
-    r"(?:adjusted\s+)?EBITDA|(?:revenue|sales)|(?:gross|operating|EBITDA) margin"
+    r"(?:adjusted\s+)?EBITDA|(?:revenue|sales|profit)|(?:gross|operating|EBITDA) margin"
 )
 _COMPARISON_VALUE_ATOM = (
     r"(?:(?:E?\$|£|€)\s*)?\(?\d[\d,]*(?:\.\d+)?\)?\s*"
@@ -159,6 +159,64 @@ GUIDANCE_COMPARISON_RE = re.compile(
     rf"(?P<comparator>{_COMPARISON_VALUE})"
     rf"(?:\s*(?P<suffix>{_ESTIMATE_LABEL}))?",
     re.I,
+)
+ANALYST_ESTIMATE_COMPARISON_RE = re.compile(
+    rf"\b(?P<metric>{_GUIDANCE_METRIC})\b\s*(?:estimate|forecast)s?\b"
+    rf".{{0,100}}?\b(?:to|at|of)\s*(?P<subject>{_COMPARISON_VALUE})"
+    rf".{{0,100}}?\b(?P<relation>below|above|in[- ]line with|in line with)\s+"
+    rf"(?:the\s+)?(?P<label>consensus|street)(?:\s+(?:estimate|forecast))?\s*"
+    rf"(?:of|at)?\s*(?P<comparator>{_COMPARISON_VALUE})",
+    re.I,
+)
+OUTLOOK_ESTIMATE_COMPARISON_RE = re.compile(
+    rf"\b(?P<metric>{_GUIDANCE_METRIC})\b\s+(?:forecast|outlook|guidance)\b"
+    rf".{{0,60}}?\b(?:is|at|of|between)\s*(?P<subject>{_COMPARISON_VALUE})"
+    rf".{{0,100}}?\b(?:while|vs\.?|versus|compared (?:with|to))\s+"
+    rf"(?:(?:analysts?'?\s+)?(?:estimates?|consensus|street)(?:\s+(?:estimate|view))?\s*)"
+    rf"(?:stand(?:s|ing)?\s+)?(?:at|of)?\s*(?P<comparator>{_COMPARISON_VALUE})",
+    re.I,
+)
+MANAGEMENT_RANGE_POSITION_RE = re.compile(
+    rf"\b(?:at|near)\s+(?:the\s+)?(?P<position>low(?:er)?|bottom|high(?:er)?|top|mid(?:dle)?)\s+"
+    rf"(?:end\s+)?of\s+(?:(?:management|mgt)\s*'?s?\s+)?"
+    rf"(?P<range>{_COMPARISON_VALUE})\s+range\b",
+    re.I,
+)
+_ESTIMATE_REVISION_PATTERNS = (
+    re.compile(
+        rf"\b(?P<action>rais(?:e|es|ed|ing)|increas(?:e|es|ed|ing)|boost(?:s|ed|ing)?|"
+        rf"lower(?:s|ed|ing)?|cut(?:s|ting)?|reduc(?:e|es|ed|ing))\b"
+        rf".{{0,80}}?\b(?P<metric>{_GUIDANCE_METRIC})\b\s*(?:estimate|forecast)s?\b",
+        re.I,
+    ),
+    re.compile(
+        rf"\b(?P<metric>{_GUIDANCE_METRIC})\b\s*(?:estimate|forecast)s?\b"
+        rf".{{0,60}}?\b(?:was|were|is|are|has been|have been)?\s*"
+        rf"(?P<action>rais(?:e|es|ed|ing)|increas(?:e|es|ed|ing)|boost(?:s|ed|ing)?|"
+        rf"lower(?:s|ed|ing)?|cut|reduc(?:e|es|ed|ing))\b",
+        re.I,
+    ),
+)
+_OPERATING_RISK_PATTERNS = (
+    (
+        "margin_pressure",
+        re.compile(
+            r"\b(?:gross|operating|EBITDA|profit)?\s*margins?\b.{0,50}\b"
+            r"(?:pressure|pressured|compression|compressing|headwind|deterioration)\b|"
+            r"\b(?:pressure|compression|headwind)\b.{0,50}\b(?:gross|operating|EBITDA|profit)?\s*margins?\b",
+            re.I,
+        ),
+    ),
+    (
+        "input_cost_pressure",
+        re.compile(
+            r"\b(?:escalating|rising|higher|increasing|inflationary)\b.{0,50}\b"
+            r"(?:input|raw material|commodity|labor|freight) costs?\b|"
+            r"\b(?:input|raw material|commodity|labor|freight) costs?\b.{0,50}\b"
+            r"(?:pressure|headwind|inflation|rising|higher|increasing|escalating)\b",
+            re.I,
+        ),
+    ),
 )
 _COMPARISON_NUMBER_RE = re.compile(
     r"(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
@@ -197,6 +255,9 @@ def extract_typed_facts(
         quote = str(span["quote"])
         facts.extend(extract_regulatory_decision_facts(quote))
         facts.extend(_extract_estimate_comparisons(quote, estimate_subject_role))
+        facts.extend(_extract_estimate_revision_facts(quote))
+        facts.extend(_extract_management_range_positions(quote, estimate_subject_role))
+        facts.extend(_extract_operating_risks(quote))
         occupied: list[tuple[int, int]] = []
         for match in MONEY_RE.finditer(quote):
             occupied.append(match.span())
@@ -364,7 +425,133 @@ def _extract_estimate_comparisons(
             "relation": relation,
             **({"horizon": horizon} if (horizon := _comparison_horizon(text, match.start())) else {}),
         })
+    for match in ANALYST_ESTIMATE_COMPARISON_RE.finditer(text):
+        subject = _comparison_bounds(match.group("subject"))
+        comparator = _comparison_bounds(match.group("comparator"))
+        if subject is None or comparator is None:
+            continue
+        subject_low, subject_high = subject
+        comparator_low, comparator_high = comparator
+        relation_word = match.group("relation").casefold()
+        relation = (
+            "below" if relation_word == "below"
+            else "above" if relation_word == "above"
+            else "in_line"
+        )
+        numeric_relation = (
+            "below" if subject_high < comparator_low
+            else "above" if subject_low > comparator_high
+            else "in_line"
+        )
+        if relation != numeric_relation:
+            continue
+        comparisons.append({
+            "fact_type": "estimate_comparison",
+            "metric": _normalize_comparison_metric(match.group("metric")),
+            "subject_role": subject_role,
+            "comparator_role": "consensus_estimate",
+            "subject_raw": match.group("subject").strip(),
+            "comparator_raw": match.group("comparator").strip(),
+            "subject_lower_value": _decimal_text(subject_low),
+            "subject_upper_value": _decimal_text(subject_high),
+            "comparator_lower_value": _decimal_text(comparator_low),
+            "comparator_upper_value": _decimal_text(comparator_high),
+            "relation": relation,
+            **({"horizon": horizon} if (horizon := _comparison_horizon(text, match.start())) else {}),
+        })
+    for match in OUTLOOK_ESTIMATE_COMPARISON_RE.finditer(text):
+        subject = _comparison_bounds(match.group("subject"))
+        comparator = _comparison_bounds(match.group("comparator"))
+        if subject is None or comparator is None:
+            continue
+        subject_low, subject_high = subject
+        comparator_low, comparator_high = comparator
+        relation = (
+            "below" if subject_high < comparator_low
+            else "above" if subject_low > comparator_high
+            else "in_line"
+        )
+        comparisons.append({
+            "fact_type": "estimate_comparison",
+            "metric": _normalize_comparison_metric(match.group("metric")),
+            "subject_role": subject_role,
+            "comparator_role": "consensus_estimate",
+            "subject_raw": match.group("subject").strip(),
+            "comparator_raw": match.group("comparator").strip(),
+            "subject_lower_value": _decimal_text(subject_low),
+            "subject_upper_value": _decimal_text(subject_high),
+            "comparator_lower_value": _decimal_text(comparator_low),
+            "comparator_upper_value": _decimal_text(comparator_high),
+            "relation": relation,
+            **({"horizon": horizon} if (horizon := _comparison_horizon(text, match.start())) else {}),
+        })
     return comparisons
+
+
+def _extract_estimate_revision_facts(text: str) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    occupied: list[tuple[int, int]] = []
+    for pattern in _ESTIMATE_REVISION_PATTERNS:
+        for match in pattern.finditer(text):
+            if _overlaps(match.span(), occupied):
+                continue
+            occupied.append(match.span())
+            action = match.group("action").casefold()
+            direction = "up" if re.match(r"(?:rais|increas|boost)", action) else "down"
+            suffix = text[match.end():match.end() + 120]
+            new_value = re.search(rf"\bto\s*(?P<value>{_COMPARISON_VALUE})", suffix, re.I)
+            delta = re.search(
+                r"\bby\s+(?P<delta>(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)"
+                r"(?:\s+(?:penn(?:y|ies)|cents?|points?|percent|%))?)",
+                suffix,
+                re.I,
+            )
+            facts.append({
+                "fact_type": "estimate_revision",
+                "metric": _normalize_comparison_metric(match.group("metric")),
+                "direction": direction,
+                "raw": match.group(0),
+                **({"new_value_raw": new_value.group("value").strip()} if new_value else {}),
+                **({"delta_raw": delta.group("delta").strip()} if delta else {}),
+            })
+    return facts
+
+
+def _extract_management_range_positions(text: str, subject_role: str) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    for match in MANAGEMENT_RANGE_POSITION_RE.finditer(text):
+        bounds = _comparison_bounds(match.group("range"))
+        if bounds is None:
+            continue
+        raw_position = match.group("position").casefold()
+        position = (
+            "low_end" if raw_position in {"low", "lower", "bottom"}
+            else "high_end" if raw_position in {"high", "higher", "top"}
+            else "mid_range"
+        )
+        facts.append({
+            "fact_type": "estimate_range_position",
+            "subject_role": subject_role,
+            "comparator_role": "management_guidance",
+            "position": position,
+            "range_raw": match.group("range").strip(),
+            "range_lower_value": _decimal_text(bounds[0]),
+            "range_upper_value": _decimal_text(bounds[1]),
+        })
+    return facts
+
+
+def _extract_operating_risks(text: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "fact_type": "operating_risk",
+            "risk_type": risk_type,
+            "direction": "adverse",
+            "raw": match.group(0),
+        }
+        for risk_type, pattern in _OPERATING_RISK_PATTERNS
+        if (match := pattern.search(text))
+    ]
 
 
 def _comparison_horizon(text: str, metric_start: int) -> str | None:

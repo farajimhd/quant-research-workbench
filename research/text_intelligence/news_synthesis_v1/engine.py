@@ -13,7 +13,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v3"
+ENGINE_VERSION = "news_synthesis_engine_v4"
 EXCHANGE_TICKER_RE = re.compile(r"\b(?:NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*([A-Z][A-Z0-9.\-]{0,9})\b", re.I)
 CASHTAG_RE = re.compile(r"(?<![A-Z0-9])\$([A-Z][A-Z0-9.\-]{0,9})\b")
 ROUNDUP_RE = re.compile(r"\b(?:stocks?|companies|biggest movers?|gainers?|losers?)\s+(?:moving|to watch)|\bmarket\s+(?:wrap|recap|update)\b", re.I)
@@ -179,7 +179,7 @@ RULES = (
     _rule("analyst.rating_action", r"\b(?:upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?|rates?|ratings?)\b(?:.{0,100})\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|equal[- ]weight|sector perform|market perform|rating)\b|\banalysts?\b.{0,80}\b(?:upgrade[sd]?|downgrade[sd]?)\b|\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|equal[- ]weight|sector perform|market perform)\s+rating\b|\banalysts? (?:have )?(?:provided|published|offered).{0,60}ratings?\b", "assessment", positive=("upgrade", "buy", "outperform", "overweight"), negative=("downgrade", "sell", "underperform", "underweight")),
     _rule("analyst.price_target_action", r"\b(?:price target|target price|price objective|PT|PO|P/T|\$\d+(?:\.\d+)? target|target on)\b", "forecast", positive=("raises", "raised", "higher", "increases"), negative=("cuts", "cut", "lowers", "lowered")),
     _rule("earnings.performance", r"\b(?:earnings|EPS|revenues?|sales|net income|profit|quarterly results?|financial results?)\b.{0,180}\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|above|below|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|fell|declin(?:e|ed)|grew|increase[sd]?|decrease[sd]?|loss|up from|down(?: from)?|narrowed|widened)\b|\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|rose|fell|grew|narrowed|widened|disappointing)\b.{0,100}\b(?:earnings|EPS|revenues?|sales|profit|results?|loss)\b", positive=("beat", "above", "better-than-expected", "grew", "rose", "record", "increase", "up from", "narrowed"), negative=("miss", "below", "weaker-than-expected", "fell", "decline", "decrease", "loss", "down from", "widened", "disappointing")),
-    _rule("guidance.issued", r"\b(?:issues?|provid(?:e|es|ed)|guid(?:e|es|ed)|raises?|lower(?:s|ed)?|cuts?|reaffirm(?:s|ed|ing)?|withdraws?|updates?)\b.{0,100}\b(?:guidance|outlook|forecast|revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:guidance|outlook)\b.{0,100}\b(?:raised|lowered|cut|reaffirmed|withdrawn|unchanged|expects?|projection|projecting)\b|\b(?:sees|expects?|anticipates?|project(?:s|ed|ing)?|is looking for)\b.{0,120}\b(?:revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:revenue|sales|earnings|EPS|EBITDA|growth|margin|free cash flow)\b.{0,160}\bprojection\s*=", "forecast", positive=("raise", "increas", "higher"), negative=("cut", "lower", "withdraw", "reduce", "weaker")),
+    _rule("guidance.issued", r"\b(?:issues?|provid(?:e|es|ed)|guid(?:e|es|ed)|raises?|lower(?:s|ed)?|cuts?|reaffirm(?:s|ed|ing)?|withdraws?|updates?)\b.{0,100}\b(?:guidance|outlook|forecast|revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:guidance|outlook)\b.{0,100}\b(?:raised|lowered|cut|reaffirmed|withdrawn|unchanged|expects?|projection|projecting)\b|\b(?:sees|expects?|anticipates?|project(?:s|ed|ing)?|is looking for)\b.{0,120}\b(?:revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:revenue|sales|earnings|EPS|EBITDA|growth|margin|free cash flow)\b.{0,160}\bprojection\s*=|\b(?:profit|EPS|earnings|revenue|sales)\s+(?:forecast|outlook|guidance)\b.{0,160}\b(?:fell short|below|miss(?:es|ed)?|above|beat[sd]?)\b.{0,80}\b(?:street|consensus|analysts?'? estimates?|view)\b|\b(?:profit|EPS|earnings|revenue|sales)\s+(?:forecast|outlook|guidance)\b.{0,120}\bwhile\s+(?:analysts?'? estimates?|consensus)\b", "forecast", positive=("raise", "increas", "higher"), negative=("cut", "lower", "withdraw", "reduce", "weaker")),
     _rule("corporate_transaction.acquisition", r"\b(?:acquir(?:e|es|ed|ing)|acquisition|merger|takeover)\b|\bbuys?\b.{1,100}\bfor\s+\$|\bpurchase(?:s|d)? of .{0,100}\b(?:assets?|business|operations?)\b|\b(?:rumored?|possible|potential)\s+bid for\b|\b(?:will|would|agrees? to) combine with\b|\bamalgamat(?:e|es|ed|ing) with\b|\b(?:complet(?:e|es|ed|ion) of|proposed) (?:the )?(?:business )?combination\b", positive=("agreed", "complete", "closes", "approved", "purchase", "will combine", "amalgamat"), negative=("terminate", "withdraw", "no longer pursue", "blocked", "reject", "not in best interest")),
     _rule("corporate_transaction.asset_sale", r"\b(?:asset sale|sale of .{0,100}(?:assets?|business|operations?)|closes? (?:the )?sale of|divest(?:s|ed|iture)|sell(?:s|ing)? its .*business)\b", positive=("complete", "closes", "proceeds"), negative=("distress",)),
     _rule("capital.financing", r"\b(?:public offering|registered direct offering|private placement|mixed shelf|shelf (?:offering|registration)|at-the-market|ATM (?:program|offering)|convertible (?:senior )?notes?|(?:convertible |senior )?notes? offering|bond offering|debt financing|equity financing|issues? .{0,60}(?:debt|notes?|bonds?)|launch(?:es|ed)? .{0,60}(?:bond|notes?|debt)|files? for .{0,80}offering|prices? .{0,80}(?:offering|shares?|notes?|bonds?)|offer(?:s|ed|ing)? .{0,60} shares?|shares? offering|offering of .{0,80}(?:shares?|notes?|units?|securities)|sale (?:by us )?of .{0,80}(?:common stock|preferred stock|debt securities|warrants)|investment from .{0,80}funds?|term sheet .{0,100}investment|conversion price .{0,40}(?:share|stock))\b", positive=("investment from",), negative=("dilution", "offering", "placement", "convertible", "shelf", "prices")),
@@ -377,6 +377,8 @@ class NewsSynthesisEngine:
                 estimate_role = (
                     "issuer_guidance"
                     if rule.concept == "guidance.issued"
+                    else "analyst_estimate"
+                    if rule.concept == "estimate.revision"
                     else "reported_result"
                     if rule.concept in {"earnings.performance", "financial.operating_performance"}
                     else "issuer_guidance"
@@ -662,10 +664,34 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
         )
         if external_expectation and not explicit_issuer_action:
             return False
-    if rule.concept in {"earnings.performance", "financial.operating_performance", "financial.margin", "financial.cash_flow", "financial.liquidity"}:
+    if rule.concept == "earnings.performance" and re.search(
+        r"\b(?:estimate|forecast)s?\b|\b(?:note to clients|research note|out with (?:its|a) report)\b",
+        text,
+        re.I,
+    ):
+        realized_metric = re.search(
+            r"\b(?:reports?|reported|posted)\b.{0,60}\b(?:EPS|earnings|revenue|sales|net income|profit)\b"
+            r"\s*(?:of|at|=)?\s*(?:E?\$|Ã‚Â£|Ã¢â€šÂ¬|\(?-?\d)|"
+            r"\b(?:beats?|miss(?:ed|es)?|actual|quarterly results?|financial results?)\b",
+            text,
+            re.I,
+        )
+        if realized_metric is None:
+            return False
+    if rule.concept in {"earnings.performance", "financial.operating_performance", "financial.cash_flow", "financial.liquidity"}:
         projected = re.search(r"\b(?:forecast|guidance|project(?:s|ed|ing|ion)s?|estimate[sd]?|anticipates?|expects?|sees|reaffirm(?:s|ed|ing)?|is looking for|potential|could|may)\b", text, re.I)
         observed = re.search(r"\b(?:reports?|reported|actual|trailing[- ]twelve[- ]month|TTM|beats?|miss(?:ed|es)?|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|fell|grew|declined|slipped|climbed|increased|decreased|recovered|record)\b", text, re.I)
         if projected and not observed:
+            return False
+    if rule.concept == "financial.margin":
+        projected = re.search(r"\b(?:forecast|guidance|project(?:s|ed|ing|ion)s?|estimate[sd]?|anticipates?|expects?|cautious|could|may)\b", text, re.I)
+        explicit_condition = re.search(
+            r"\b(?:margin pressure|margins? (?:under pressure|pressured|compress\w*|expand\w*|improv\w*|declin\w*)|"
+            r"pressure on margins?|input cost (?:pressure|inflation)|(?:rising|higher|escalating) input costs?)\b",
+            text,
+            re.I,
+        )
+        if projected and explicit_condition is None:
             return False
     if rule.concept == "commercial.demand_condition" and re.search(r"\bin order to\b", text, re.I):
         # "Increase X in order to Y" contains neither an order event nor order
@@ -755,8 +781,58 @@ def _sentiment(
         if re.search(r"\b(?:buy|outperform|overweight)\b", normalized): return "positive", 2
         return "neutral", 0
     if rule.concept == "analyst.price_target_action":
-        if re.search(r"\b(?:cuts?|lowers?|reduc(?:e|es|ed))\b", normalized): return "negative", 2
-        if re.search(r"\b(?:rais(?:e|es|ed|ing)|increas(?:e|es|ed|ing)|boost(?:s|ed|ing)?)\b", normalized): return "positive", 2
+        target_term = r"(?:price target|target price|price objective|PT|PO|P/T|\$\d+(?:\.\d+)? target)"
+        if re.search(
+            rf"\b(?:cuts?|lowers?|reduc(?:e|es|ed))\b.{{0,60}}\b{target_term}\b|"
+            rf"\b{target_term}\b.{{0,60}}\b(?:cut|lowered?|reduced?)\b",
+            normalized,
+            re.I,
+        ):
+            return "negative", 2
+        if re.search(
+            rf"\b(?:rais(?:e|es|ed|ing)|increas(?:e|es|ed|ing)|boost(?:s|ed|ing)?)\b.{{0,60}}\b{target_term}\b|"
+            rf"\b{target_term}\b.{{0,60}}\b(?:raised?|increased?|boosted?)\b",
+            normalized,
+            re.I,
+        ):
+            return "positive", 2
+        if re.search(
+            rf"\b(?:maintain(?:s|ed|ing)?|reiterate(?:s|d|ing)?|unchanged)\b.{{0,60}}\b{target_term}\b|"
+            rf"\b{target_term}\b.{{0,60}}\b(?:maintain(?:s|ed|ing)?|reiterate(?:s|d|ing)?|unchanged)\b",
+            normalized,
+            re.I,
+        ):
+            return "neutral", 0
+        return "neutral", 0
+    if rule.concept == "estimate.revision":
+        relations = {
+            str(fact.get("relation"))
+            for fact in typed_facts
+            if fact.get("fact_type") == "estimate_comparison"
+            and fact.get("subject_role") == "analyst_estimate"
+            and fact.get("comparator_role") == "consensus_estimate"
+        }
+        if "below" in relations and "above" not in relations:
+            return "negative", 2
+        if "above" in relations and "below" not in relations:
+            return "positive", 2
+        range_positions = {
+            str(fact.get("position"))
+            for fact in typed_facts
+            if fact.get("fact_type") == "estimate_range_position"
+            and fact.get("subject_role") == "analyst_estimate"
+        }
+        if "low_end" in range_positions and "high_end" not in range_positions:
+            return "negative", 1
+        revision_directions = {
+            str(fact.get("direction"))
+            for fact in typed_facts
+            if fact.get("fact_type") == "estimate_revision"
+        }
+        if revision_directions == {"up"}:
+            return "positive", 1
+        if revision_directions == {"down"}:
+            return "negative", 2
         return "neutral", 0
     if rule.concept == "capital.financing":
         if re.search(r"\b(?:initial public offering|IPO)\b", normalized):
@@ -792,6 +868,13 @@ def _sentiment(
             return "positive", 3
         if relations:
             return "neutral", 0
+        if re.search(
+            r"\b(?:profit|EPS|earnings|revenue|sales)\s+(?:forecast|outlook|guidance)\b"
+            r".{0,120}\b(?:fell short of|below|miss(?:es|ed)?)\b.{0,60}"
+            r"\b(?:the )?(?:street|consensus|analysts?'? estimates?|view)\b",
+            normalized,
+        ):
+            return "negative", 3
         if re.search(
             r"\b(?:negative impact|decline|decrease)\b.{0,100}\b(?:EPS|earnings|revenue|sales|growth|margin)\b|"
             r"\b(?:EPS|earnings|revenue|sales|growth|margin)\b.{0,100}\b(?:negative impact|decline|decrease)\b",
@@ -891,6 +974,12 @@ def _sentiment(
         normalized,
     ):
         return "positive", 1
+    if rule.concept == "financial.margin" and any(
+        fact.get("fact_type") == "operating_risk"
+        and fact.get("direction") == "adverse"
+        for fact in typed_facts
+    ):
+        return "negative", 2
     if rule.concept in {"earnings.performance", "financial.operating_performance"}:
         relations = {
             str(fact.get("relation"))

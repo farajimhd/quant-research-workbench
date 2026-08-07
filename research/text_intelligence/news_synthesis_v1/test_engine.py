@@ -765,6 +765,109 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(len(revisions), 1)
         self.assertIn("raising", revisions[0]["evidence_spans"][0]["quote"])
 
+    def test_analyst_estimate_package_uses_benchmarks_and_operating_rationale(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-analyst-estimate-package",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Research firm increases EPS estimate on Alpha",
+            "text": (
+                "The research firm is out with its report today on Alpha Therapeutics Inc "
+                "(NASDAQ:AAA), increasing its 2026 EPS estimate. In a note to clients, the firm "
+                "writes, 'We are slightly raising our 2026E ongoing EPS estimate by two pennies "
+                "to $1.67, below consensus $1.69 and at the low end of management's $1.67-$1.70 "
+                "range as we remain cautious on gross margin pressure from escalating input costs.' "
+                "The firm maintains Hold and a $20 price target."
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "negative")
+        self.assertEqual(view["positive_strength"], 1)
+        self.assertEqual(view["negative_strength"], 2)
+        concepts = {statement["concept_leaf"] for statement in document["statements"]}
+        self.assertNotIn("earnings.performance", concepts)
+        self.assertIn("estimate.revision", concepts)
+        self.assertIn("financial.margin", concepts)
+        facts = [
+            fact
+            for statement in document["statements"]
+            for fact in statement["typed_facts"]
+        ]
+        self.assertTrue(any(
+            fact.get("fact_type") == "estimate_comparison"
+            and fact.get("subject_role") == "analyst_estimate"
+            and fact.get("relation") == "below"
+            for fact in facts
+        ))
+        self.assertTrue(any(
+            fact.get("fact_type") == "estimate_range_position"
+            and fact.get("position") == "low_end"
+            for fact in facts
+        ))
+        self.assertTrue(any(
+            fact.get("fact_type") == "operating_risk"
+            and fact.get("risk_type") == "margin_pressure"
+            for fact in facts
+        ))
+
+    def test_analyst_estimate_above_consensus_remains_positive(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-analyst-estimate-above-consensus",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Research firm raises Alpha estimate",
+            "text": (
+                "The analyst is raising Alpha Therapeutics Inc (NASDAQ:AAA)'s EPS estimate "
+                "to $2.10, above consensus $2.00."
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "positive")
+        self.assertEqual(view["positive_strength"], 2)
+
+    def test_actual_reported_eps_is_not_suppressed_as_an_estimate(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-actual-eps-with-estimate-context",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports results",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reports Q2 EPS of $1.20, above consensus $1.10, "
+                "and management discusses its full-year estimate."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertIn(
+            "earnings.performance",
+            {statement["concept_leaf"] for statement in document["statements"]},
+        )
+
+    def test_profit_outlook_below_analyst_estimate_is_negative_guidance(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-profit-outlook-below-estimate",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha forecast misses estimates",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) announced a Q2 profit forecast that fell short "
+                "of the Street view. The company's Q2 profit outlook is at $0.57-$0.59 a share, "
+                "while analyst estimates stand at $0.61 a share."
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "negative")
+        guidance = [
+            statement
+            for statement in document["statements"]
+            if statement["concept_leaf"] == "guidance.issued"
+        ]
+        self.assertTrue(guidance)
+        self.assertTrue(any(
+            fact.get("fact_type") == "estimate_comparison"
+            and fact.get("relation") == "below"
+            for statement in guidance
+            for fact in statement["typed_facts"]
+        ))
+
     def test_causal_mover_headline_is_explain_move(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-mover-purpose", "source_timestamp": "2026-08-03T12:00:00Z",
