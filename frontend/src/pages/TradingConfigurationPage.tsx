@@ -44,6 +44,8 @@ export type TradingConfigurationSection =
   | "accounts"
   | "revisions";
 
+type StrategyAuthoringStage = "overview" | "entry" | "position" | "exit" | "handoff";
+
 type RuntimeMode = "replay" | "backtest" | "backtest_debug" | "paper" | "live";
 type ActionAuthority = "disabled" | "manual" | "confirm" | "automatic" | "inherit";
 type Primitive = boolean | number | string;
@@ -1441,6 +1443,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
   section: StrategySection;
 }) {
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
+  const [activeStage, setActiveStage] = useState<StrategyAuthoringStage>("overview");
   const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
   const profileInUse = draft.assignments.deployments.some((row) => row.profile_id === selected?.profile_id);
   useEffect(() => {
@@ -1534,7 +1537,20 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
           </div>
         </section>
 
-        <article className="strategy-book" aria-label={`${selected.name} configuration handbook`}>
+        <StrategyAuthoringFlow
+          activeStage={activeStage}
+          advanced={advanced}
+          draft={draft}
+          entryRules={entryRules}
+          onProfileChange={replaceProfile}
+          onStageChange={setActiveStage}
+          profile={selected}
+          section={section}
+        />
+
+        <details className="strategy-technical-book">
+          <summary><span><strong>Complete technical configuration</strong><small>All Strategy, Run Plan, Portfolio, OMS, account, and release fields</small></span><ChevronRight size={15} /></summary>
+        <article className="strategy-book" aria-label={`${selected.name} complete technical configuration`}>
           <header className="strategy-book-cover">
             <BookOpenCheck aria-hidden="true" size={24} />
             <div>
@@ -1654,9 +1670,99 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
             </div>
           </StoryChapter>
         </article>
+        </details>
       </main>
     </div>
   );
+}
+
+function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onProfileChange, onStageChange, profile, section }: {
+  activeStage: StrategyAuthoringStage;
+  advanced: Array<{ path: string; value: Primitive }>;
+  draft: Draft;
+  entryRules: EntryRules & { add_steps: AddStep[]; capital_request: CapitalRequestConfig; order_intent: OrderIntentConfig };
+  onProfileChange: (value: StrategyProfile) => void;
+  onStageChange: (value: StrategyAuthoringStage) => void;
+  profile: StrategyProfile;
+  section: StrategySection;
+}) {
+  const activeGroups = (stage: RuleStage) => stage.groups.filter((group) => group.enabled).length;
+  const enabledAdds = profile.lifecycle.initial_entry.add_steps.filter((step) => step.enabled).length;
+  const enabledExits = profile.lifecycle.exit.rule_sets.filter((route) => route.enabled).length;
+  const definition = section.definitions.find((row) => row.strategy_id === profile.definition_id);
+
+  return <article className="strategy-authoring" aria-label={`${profile.name} strategy authoring flow`}>
+    <header className="strategy-authoring-header">
+      <div><span>Strategy behavior</span><h2>Configure one decision at a time</h2><p>Define what the strategy observes, what permits entry, how it may change a position, and what ends the position. Runtime infrastructure is configured after the behavior is clear.</p></div>
+      <BooleanField help="Controls whether a Run Plan may select this profile. It does not start a run." label="Available to Run Plans" onChange={(enabled) => onProfileChange({ ...profile, enabled })} value={profile.enabled} />
+    </header>
+
+    <StrategyMechanismOverview />
+
+    <section className="strategy-behavior-summary" aria-label="Current strategy behavior">
+      <header><span>Current behavior</span><strong>What this profile will attempt</strong></header>
+      <p>On <b>{readableLabel(profile.lifecycle.trading_behavior.evaluation_trigger)}</b> during <b>{profile.lifecycle.trading_behavior.eligible_sessions.map(readableLabel).join(", ") || "no enabled session"}</b>, evaluate a <b>{profile.lifecycle.trading_behavior.side}</b> entry using {activeGroups(entryRules.opportunity)} opportunity path{activeGroups(entryRules.opportunity) === 1 ? "" : "s"}, {activeGroups(entryRules.confirmation)} confirmation path{activeGroups(entryRules.confirmation) === 1 ? "" : "s"}, and {activeGroups(entryRules.blockers)} blocker{activeGroups(entryRules.blockers) === 1 ? "" : "s"}.</p>
+      <div><span><strong>{readableLabel(entryRules.capital_request.mode)}</strong><small>requested exposure</small></span><span><strong>{enabledAdds}</strong><small>enabled add actions</small></span><span><strong>{profile.lifecycle.reentry.enabled ? `${profile.lifecycle.reentry.maximum_attempts} max` : "Off"}</strong><small>reentry</small></span><span><strong>{enabledExits}</strong><small>strategic exit routes</small></span></div>
+    </section>
+
+    <nav aria-label="Strategy configuration steps" className="strategy-authoring-steps">
+      {([
+        ["overview", "1", "Observe", "Evaluation context"],
+        ["entry", "2", "Enter", "Evidence and request"],
+        ["position", "3", "Manage", "Adds and reentry"],
+        ["exit", "4", "Exit", "Reduction conditions"],
+        ["handoff", "5", "Run", "External authorities"],
+      ] as Array<[StrategyAuthoringStage, string, string, string]>).map(([stage, number, title, detail]) => <button aria-current={activeStage === stage ? "step" : undefined} key={stage} onClick={() => onStageChange(stage)} type="button"><span>{number}</span><strong>{title}</strong><small>{detail}</small></button>)}
+    </nav>
+
+    <section className="strategy-authoring-stage">
+      {activeStage === "overview" ? <>
+        <StrategyStageIntro step="1 · Observe" title="When should the strategy evaluate?">The trigger starts an evaluation; it is not an entry signal. Side sets trade direction. Sessions limit entries, adds, and reentries. Protection of an existing position remains active outside those sessions.</StrategyStageIntro>
+        <TradingBehaviorEditor definition={definition} profile={profile} onChange={onProfileChange} />
+        {advanced.length ? <details className="configuration-advanced strategy-authoring-advanced"><summary><span><strong>Engine-specific parameters</strong><small>{advanced.length} implementation values; change only when the strategy definition requires it</small></span><ChevronRight size={15} /></summary><div className="configuration-field-grid">{advanced.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} value={item.value} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} />)}</div></details> : null}
+      </> : null}
+
+      {activeStage === "entry" ? <>
+        <StrategyStageIntro step="2 · Enter" title="What creates an entry request?">Opportunity finds a setup. Confirmation proves it is actionable. Any passing blocker vetoes the entry. A passing decision creates a request—not an order and not guaranteed capital.</StrategyStageIntro>
+        <DecisionRulesEditor catalog={section.input_catalog} rules={entryRules} title="Initial-entry evidence" summary="Entry requires opportunity and confirmation to pass while every blocker remains false." onChange={(value) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, ...value } } })} />
+        <details className="configuration-advanced strategy-authoring-advanced"><summary><span><strong>Exposure request and execution preference</strong><small>Consulted only after entry evidence passes</small></span><ChevronRight size={15} /></summary><PhaseOrderEditor capitalRequest={entryRules.capital_request} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} orderIntent={entryRules.order_intent} title="Initial order request" executionPolicies={draft.oms.execution_policies} protectionProfiles={draft.oms.protection_profiles} onCapitalRequest={(capital_request) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, capital_request } } })} onOrderIntent={(order_intent) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, order_intent } } })} /></details>
+      </> : null}
+
+      {activeStage === "position" ? <>
+        <StrategyStageIntro step="3 · Manage" title="What may happen after the first fill?">An add increases an open position. Reentry opens a new position after the campaign becomes flat. Capabilities enable optional code-defined behavior. Disabled actions have no runtime effect.</StrategyStageIntro>
+        <details className="strategy-authoring-subsection"><summary><span><strong>Position adds</strong><small>{enabledAdds} enabled · increase an existing position</small></span><ChevronRight size={15} /></summary><div><AddStepsEditor catalog={section.input_catalog} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} executionPolicies={draft.oms.execution_policies} protectionProfiles={draft.oms.protection_profiles} steps={entryRules.add_steps} onChange={(add_steps) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, add_steps } } })} /></div></details>
+        <details className="strategy-authoring-subsection"><summary><span><strong>Optional capabilities</strong><small>{profile.capabilities.filter((capability) => capability.enabled).length} enabled · code-defined position behavior</small></span><ChevronRight size={15} /></summary><div><CapabilitiesEditor catalog={section.capability_catalog} profile={profile} onChange={onProfileChange} /></div></details>
+        <details className="strategy-authoring-subsection"><summary><span><strong>Reentry after a full exit</strong><small>{profile.lifecycle.reentry.enabled ? `Enabled · maximum ${profile.lifecycle.reentry.maximum_attempts}` : "Disabled"}</small></span><ChevronRight size={15} /></summary><div><ReentryEditor catalog={section.input_catalog} draft={draft} profile={profile} onChange={onProfileChange} /></div></details>
+      </> : null}
+
+      {activeStage === "exit" ? <>
+        <StrategyStageIntro step="4 · Exit" title="What makes the strategy reduce or close?">Each route has independent evidence, timing, and position action. These are strategic exits. Broker-held stops and emergency liquidation remain automatic and independent of these rules.</StrategyStageIntro>
+        <ExitRuleSetsEditor catalog={section.input_catalog} draft={draft} profile={profile} onChange={onProfileChange} />
+      </> : null}
+
+      {activeStage === "handoff" ? <>
+        <StrategyStageIntro step="5 · Run" title="Which authorities are required after strategy logic passes?">The Strategy Profile ends by emitting intent. The following configuration decides whether it may proceed, how much may trade, where it trades, and how broker orders are protected.</StrategyStageIntro>
+        <StrategyHandoffLinks draft={draft} profile={profile} />
+      </> : null}
+    </section>
+  </article>;
+}
+
+function StrategyStageIntro({ children, step, title }: { children: ReactNode; step: string; title: string }) {
+  return <header className="strategy-stage-intro"><span>{step}</span><h2>{title}</h2><p>{children}</p></header>;
+}
+
+function StrategyHandoffLinks({ draft, profile }: { draft: Draft; profile: StrategyProfile }) {
+  const runPlans = draft.assignments.deployments.filter((plan) => plan.profile_id === profile.profile_id);
+  const mandateCount = draft.portfolio.mandates.filter((mandate) => runPlans.some((plan) => plan.run_plan_id === mandate.run_plan_id)).length;
+  const links = [
+    { detail: `${runPlans.length} linked`, href: "#assignment-configuration", icon: Network, outcome: "Selects universe, action authority, environment, OMS profile, and campaign ownership.", title: "Run Plan" },
+    { detail: `${mandateCount} linked`, href: "#portfolio-configuration", icon: WalletCards, outcome: "Chooses the account and approves, reduces, or rejects requested exposure.", title: "Portfolio & Risk" },
+    { detail: `${draft.oms.profiles.length} profiles`, href: "#oms-configuration", icon: Send, outcome: "Turns approved quantity into broker orders and maintains protection.", title: "OMS & Protection" },
+    { detail: `${draft.accounts.bindings.filter((account) => account.enabled).length} enabled`, href: "#account-configuration", icon: Boxes, outcome: "Provides the runtime account identity, session, mode, and broker capabilities.", title: "Accounts & Sessions" },
+    { detail: "Required", href: "#revision-configuration", icon: LockKeyhole, outcome: "Freezes all referenced revisions. A new run pins this release and cannot change underneath itself.", title: "Approved release" },
+  ];
+  return <div className="strategy-handoff-links">{links.map(({ detail, href, icon: Icon, outcome, title }) => <a href={href} key={title}><span><Icon size={18} /></span><div><strong>{title}</strong><p>{outcome}</p></div><small>{detail}</small><ChevronRight size={15} /></a>)}</div>;
 }
 
 function StoryChapter({ children, eyebrow, marker, title }: { children: ReactNode; eyebrow: string; marker: string; title: string }) {
@@ -1680,39 +1786,17 @@ function BookPart({ label, title }: { label: string; title: string }) {
 function StrategyMechanismOverview() {
   return (
     <section className="strategy-mechanism-overview" aria-label="Strategy configuration and runtime mechanism">
-      <header><span>System map</span><h2>Authority and data flow</h2><p>Arrows show what each abstraction produces for the next authority. Side connections are required dependencies, not execution order.</p></header>
+      <header><span>Runtime path</span><h2>A strategy decides; other authorities permit and execute</h2><p>Every exposure-increasing action follows this path. Failure at any step stops the action.</p></header>
       <div className="strategy-mechanism-grid">
         <figure className="strategy-mechanism-diagram">
-          <figcaption><strong>Configuration dependencies</strong><span>One approved release freezes all referenced revisions.</span></figcaption>
-          <div className="strategy-mechanism-flow configuration-flow">
-            <MechanismNode detail="Tested strategy code" icon={GitBranch} label="Definition" tone="strategy" />
-            <MechanismArrow label="configured by" />
-            <MechanismNode detail="Rules and parameters" icon={Settings2} label="Profile" tone="strategy" />
-            <MechanismArrow label="selected by" />
-            <MechanismNode detail="Universe, authority, OMS" icon={Network} label="Run Plan" tone="run" />
-            <MechanismArrow label="validated into" />
-            <MechanismNode detail="Immutable revisions" icon={LockKeyhole} label="Approved release" tone="release" />
-          </div>
-          <div className="strategy-mechanism-dependencies" aria-label="Run Plan dependencies">
-            <span>Run Plan also requires</span>
-            <div><MechanismNode detail="Eligible tickers" icon={Target} label="Watch universe" tone="dependency" /><MechanismNode detail="Execution and protection" icon={Send} label="OMS profile" tone="dependency" /><MechanismNode detail="Account and risk limits" icon={WalletCards} label="Portfolio mandate" tone="dependency" /></div>
-          </div>
-        </figure>
-
-        <figure className="strategy-mechanism-diagram">
-          <figcaption><strong>Runtime decision path</strong><span>Exposure increases only after every authority in the path passes.</span></figcaption>
           <div className="strategy-mechanism-flow runtime-flow">
-            <MechanismNode detail="Causal inputs" icon={Target} label="Evidence" tone="source" />
-            <MechanismArrow label="evaluated by" />
-            <MechanismNode detail="Produces intent" icon={GitBranch} label="Strategy Engine" tone="strategy" />
-            <MechanismArrow label="permission" />
-            <MechanismNode detail="Manual, confirm, auto" icon={CircleHelp} label="Action authority" tone="run" />
-            <MechanismArrow label="sizes" />
-            <MechanismNode detail="Account allocation" icon={BriefcaseBusiness} label="Portfolio" tone="portfolio" />
-            <MechanismArrow label="executes" />
-            <MechanismNode detail="Orders and protection" icon={Send} label="OMS" tone="oms" />
+            <MechanismNode detail="Rules pass" icon={GitBranch} label="Strategy intent" tone="strategy" />
+            <MechanismArrow label="Run Plan permits" />
+            <MechanismNode detail="Account quantity" icon={BriefcaseBusiness} label="Portfolio approval" tone="portfolio" />
+            <MechanismArrow label="OMS executes" />
+            <MechanismNode detail="Orders and stops" icon={Send} label="Broker state" tone="oms" />
           </div>
-          <div className="strategy-mechanism-safety"><ShieldCheck size={16} /><div><strong>Safety Supervisor</strong><span>Continuously blocks new risk or triggers emergency action when account, portfolio, data, broker, or order-health limits fail.</span></div></div>
+          <div className="strategy-mechanism-safety"><ShieldCheck size={16} /><div><strong>Portfolio and Safety Supervisor remain active</strong><span>Account exposure, loss, drawdown, market-data, broker, and order-health failures can block new risk or trigger emergency action.</span></div></div>
         </figure>
       </div>
     </section>

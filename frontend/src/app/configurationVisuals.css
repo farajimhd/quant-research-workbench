@@ -2295,3 +2295,68 @@
   border-color: var(--strategy-neutral-focus);
   box-shadow: 0 0 0 3px var(--strategy-neutral-focus-soft);
 }
+
+.strategy-authoring { background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 9px; display: grid; gap: 18px; padding: 22px; }
+.strategy-authoring-header { align-items: start; display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); }
+.strategy-authoring-header > div:first-child > span,
+.strategy-stage-intro > span,
+.strategy-behavior-summary header span { color: var(--muted-foreground); font-family: var(--font-mono); font-size: 9px; font-weight: 720; letter-spacing: .09em; text-transform: uppercase; }
+.strategy-authoring-header h2,
+.strategy-stage-intro h2 { color: var(--foreground); margin: 4px 0 6px; }
+.configuration-expert-editor .strategy-authoring-header p,
+.configuration-expert-editor .strategy-stage-intro p,
+.configuration-expert-editor .strategy-behavior-summary p,
+.configuration-expert-editor .strategy-handoff-links p { color: var(--muted-foreground); display: block; font-size: 12px; line-height: 1.55; margin: 0; }
+.strategy-authoring .strategy-mechanism-overview { border: 1px solid var(--configuration-rule); border-radius: 8px; padding: 18px; }
+
+.strategy-behavior-summary { background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-left: 3px solid var(--primary); border-radius: 7px; display: grid; gap: 10px; padding: 16px; }
+.strategy-behavior-summary header { align-items: baseline; display: flex; gap: 8px; }
+.strategy-behavior-summary > div { display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.strategy-behavior-summary > div > span { border-top: 1px solid var(--configuration-rule); display: grid; gap: 2px; padding-top: 8px; }
+.strategy-behavior-summary small,
+.strategy-authoring-steps small,
+.strategy-technical-book summary small { color: var(--muted-foreground); }
+
+.strategy-authoring-steps { border: 1px solid var(--configuration-rule); border-radius: 8px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); overflow: hidden; }
+.strategy-authoring-steps button { background: var(--configuration-soft); border: 0; border-right: 1px solid var(--configuration-rule); color: var(--foreground); column-gap: 8px; cursor: pointer; display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; padding: 11px; text-align: left; }
+.strategy-authoring-steps button:last-child { border-right: 0; }
+.strategy-authoring-steps button[aria-current="step"] { background: var(--surface); box-shadow: inset 0 -2px var(--primary); }
+.strategy-authoring-steps button > span { align-items: center; background: var(--surface); border-radius: 50%; color: var(--muted-foreground); display: flex; font-weight: 700; grid-row: 1 / 3; height: 22px; justify-content: center; width: 22px; }
+.strategy-authoring-steps button[aria-current="step"] > span { background: var(--primary); color: var(--primary-foreground); }
+.strategy-authoring-stage { display: grid; gap: 16px; min-width: 0; }
+.strategy-stage-intro { border-bottom: 1px solid var(--configuration-rule); padding-bottom: 12px; }
+.strategy-authoring-stage .configuration-narrative,
+.strategy-authoring-stage .configuration-section-guide { display: none; }
+
+.strategy-authoring-advanced,
+.strategy-authoring-subsection,
+.strategy-technical-book { background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 8px; }
+.strategy-authoring-advanced > summary,
+.strategy-authoring-subsection > summary,
+.strategy-technical-book > summary { align-items: center; cursor: pointer; display: flex; gap: 12px; justify-content: space-between; list-style: none; padding: 13px; }
+.strategy-authoring-advanced > summary span,
+.strategy-authoring-subsection > summary span,
+.strategy-technical-book > summary span { display: grid; gap: 2px; }
+.strategy-authoring-advanced[open] > summary svg,
+.strategy-authoring-subsection[open] > summary svg,
+.strategy-technical-book[open] > summary svg { transform: rotate(90deg); }
+.strategy-authoring-advanced > :not(summary) { margin: 0 13px 13px; }
+.strategy-authoring-subsection > div { border-top: 1px solid var(--configuration-rule); padding: 13px; }
+.strategy-technical-book { margin-top: 14px; }
+.strategy-technical-book > .strategy-book { border: 0; border-radius: 0; border-top: 1px solid var(--configuration-rule); }
+
+.strategy-handoff-links { display: grid; gap: 8px; }
+.strategy-handoff-links a { align-items: center; background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 7px; color: var(--foreground); display: grid; gap: 12px; grid-template-columns: auto minmax(0, 1fr) auto auto; padding: 13px; text-decoration: none; }
+.strategy-handoff-links a:hover { background: var(--surface); border-color: var(--border); }
+.strategy-handoff-links a > span { align-items: center; background: var(--surface); border-radius: 7px; color: var(--primary); display: flex; height: 34px; justify-content: center; width: 34px; }
+.strategy-handoff-links a > small { color: var(--muted-foreground); white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .strategy-authoring-header { grid-template-columns: 1fr; }
+  .strategy-authoring-steps { grid-template-columns: 1fr; }
+  .strategy-authoring-steps button { border-bottom: 1px solid var(--configuration-rule); border-right: 0; }
+  .strategy-authoring-steps button:last-child { border-bottom: 0; }
+  .strategy-behavior-summary > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .strategy-handoff-links a { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .strategy-handoff-links a > small { grid-column: 2; }
+}
