@@ -217,7 +217,7 @@ RULES = (
     _rule("operations.capacity_change", r"\b(?:capacity|facility|plant|factory|fleet|operational scale|operating footprint|development inventory)\b.{0,160}\b(?:add|expand|open|close|shutdown|increase|reduce|double|order)\w*\b|\b(?:add|expand|open|close|shutdown|increase|reduce|double|order)\w*\b.{0,160}\b(?:capacity|facility|plant|factory|fleet|aircraft|airplanes?|operational scale|operating footprint|development inventory)\b", positive=("add", "expand", "open", "increase", "double", "order"), negative=("close", "shutdown", "reduce")),
     _rule("governance.auditor_change", r"\b(?:auditor|accounting firm)\b.*\b(?:resign|dismiss|appoint|replace)\w*\b", negative=("resign", "dismiss")),
     _rule("governance.shareholder_vote", r"\b(?:shareholders?|stockholders?)\b.*\b(?:vote|meeting|proposal|proxy|director nominees?)\b|\b(?:proxy|director nominees?)\b.*\b(?:shareholders?|stockholders?)\b"),
-    _rule("index.membership", r"\b(?:added to|removed from|join(?:s|ed)?|delete(?:d)?)\b.*\b(?:index|S&P|Russell|Nasdaq-100)\b", positive=("added", "join"), negative=("removed", "delete")),
+    _rule("index.membership", r"\b(?:added to|removed from|join(?:s|ed)?|delete(?:d)?|replac(?:e|es|ed|ing))\b.*\b(?:index|S&P|Russell|Nasdaq-100)\b|\b(?:index|S&P|Russell|Nasdaq-100)\b.*\b(?:added|removed|join(?:s|ed)?|delete(?:d)?|replac(?:e|es|ed|ing))\b", positive=("added", "join"), negative=("removed", "delete")),
     _rule("technology.cybersecurity_incident", r"\b(?:cyberattack|data breach|ransomware|security incident)\b", negative=("attack", "breach", "ransomware", "incident")),
     _rule("market.options_activity", r"\b(?:options activity|call volume|put volume|unusual options)\b", "market_observation"),
     _rule("market.short_interest_observed", r"\b(?:short interest|short volume|days to cover)\b", "market_observation"),
@@ -343,7 +343,14 @@ class NewsSynthesisEngine:
                 statements.append({"statement_id": sid, "statement_kind": rule.statement_kind, "concept_leaf": rule.concept, "epistemic_status": _epistemic(quote), "time_relation": _time_relation(quote, rule.statement_kind), "evidence_spans": [span], "typed_facts": typed_facts})
                 for entity in scoped_entities:
                     role = _semantic_role(quote, entity, rule.concept)
-                    sentiment, strength = _sentiment(statement_quote, rule, role, typed_facts)
+                    sentiment, strength = _sentiment(
+                        statement_quote,
+                        rule,
+                        role,
+                        typed_facts,
+                        entity=entity,
+                        mention_terms=mention_terms.get(str(entity["entity_id"]), ()),
+                    )
                     participations.append({"statement_id": sid, "entity_id": entity["entity_id"], "semantic_role": role, "discourse_role": "none", "semantic_sentiment": sentiment, "sentiment_strength": strength})
             previous_end = end
         return statements, participations
@@ -380,7 +387,12 @@ def _envelope(
         or re.search(r"\b(?:shares?|stock)\s+(?:are\s+)?trading\s+(?:up|down|higher|lower)\b.{0,80}\b(?:after|following|on|as|amid)\b", title, re.I)
     )
     if causal_mover and not market_overview: purpose = "explain_move"
-    elif list_title or re.search(r"\b(?:ahead of|preview|what to expect|will report|scheduled|to watch)\b", title, re.I): purpose = "preview"
+    elif list_title or re.search(
+        r"\b(?:ahead of|preview|what to expect|will report|to watch)\b|"
+        r"\bscheduled to (?:report|announce|release|publish)\b",
+        title,
+        re.I,
+    ): purpose = "preview"
     elif structure in {"market_overview", "multi_subject_digest"}: purpose = "recap"
     elif re.search(r"\b(?:analysis|technical analysis|what investors should know|what you need to know|case for|bull case|bear case|valuation|outlook for)\b", combined, re.I): purpose = "analyze"
     else: purpose = "report"
@@ -603,6 +615,9 @@ def _sentiment(
     rule: ConceptRule,
     role: str,
     typed_facts: Sequence[Mapping[str, Any]] = (),
+    *,
+    entity: Mapping[str, Any] | None = None,
+    mention_terms: Sequence[str] = (),
 ) -> tuple[str, int]:
     if rule.statement_kind == "market_observation":
         return "neutral", 0
@@ -617,6 +632,12 @@ def _sentiment(
         if re.search(r"\b(?:cuts?|lowers?|reduc(?:e|es|ed))\b", normalized): return "negative", 2
         if re.search(r"\b(?:raises?|increases?|boosts?)\b", normalized): return "positive", 2
         return "neutral", 0
+    if rule.concept == "index.membership" and entity is not None:
+        direction = _index_membership_direction(normalized, entity, mention_terms)
+        if direction == "addition":
+            return "positive", 2
+        if direction == "removal":
+            return "negative", 2
     if rule.concept == "guidance.issued":
         relations = {
             str(fact.get("relation"))
@@ -729,6 +750,45 @@ def _sentiment(
     if positive > negative: return "positive", min(4, 1 + positive)
     if negative > positive: return "negative", min(4, 1 + negative)
     return "neutral", 0
+
+
+def _index_membership_direction(
+    normalized_text: str,
+    entity: Mapping[str, Any],
+    mention_terms: Sequence[str],
+) -> str | None:
+    aliases = {
+        alias
+        for value in (*mention_terms, str(entity.get("display_name") or ""), str(entity.get("ticker") or ""))
+        if (alias := _normalize_alias(value))
+        and (_safe_alias(alias) or alias == _normalize_alias(entity.get("ticker") or ""))
+    }
+    if not aliases:
+        return None
+    entity_pattern = "(?:" + "|".join(
+        re.escape(alias).replace(r"\ ", r"\s+")
+        for alias in sorted(aliases, key=len, reverse=True)
+    ) + ")"
+    subject = rf"\b{entity_pattern}\b"
+    index = r"\b(?:index|s p|russell|nasdaq 100)\b"
+    if re.search(rf"\breplaced by\b.{{0,100}}{subject}", normalized_text):
+        return "addition"
+    if re.search(rf"{subject}.{{0,100}}\b(?:to be|will be|is|was) replaced by\b", normalized_text):
+        return "removal"
+    if re.search(rf"\breplac(?:e|es|ed|ing)\b.{{0,100}}{subject}", normalized_text):
+        return "removal"
+    if re.search(
+        rf"{subject}.{{0,140}}\b(?:to join|join(?:s|ed)?|added to|included in)\b.{{0,100}}{index}|"
+        rf"{subject}.{{0,140}}\breplac(?:e|es|ed|ing)\b",
+        normalized_text,
+    ):
+        return "addition"
+    if re.search(
+        rf"{subject}.{{0,140}}\b(?:removed from|deleted from|leaves?|exits?)\b.{{0,100}}{index}",
+        normalized_text,
+    ):
+        return "removal"
+    return None
 
 
 def _sentiment_term_present(term: str, normalized_text: str) -> bool:

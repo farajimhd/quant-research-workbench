@@ -808,6 +808,37 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         concepts = {row["concept_leaf"] for row in document["statements"]}
         self.assertIn("governance.shareholder_vote", concepts)
 
+    def test_index_replacement_assigns_opposite_sentiment_by_issuer_role(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:alpha", "Alpha Retail", ("Alpha Retail",), "NYSE"),
+            IssuerIdentity("BBB", "issuer:beta", "Beta Pharma", ("Beta Pharma",), "NYSE"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-index-replacement",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": (
+                "Alpha Retail To Join Nasdaq-100 Index Beginning August 10, "
+                "Replacing Beta Pharma Following The Scheduled Index Rebalance"
+            ),
+            "text": (
+                "Alpha Retail To Join Nasdaq-100 Index Beginning August 10, "
+                "Replacing Beta Pharma Following The Scheduled Index Rebalance"
+            ),
+            "tickers": ["AAA", "BBB"],
+        })
+        views = {
+            next(row["ticker"] for row in document["entities"] if row["entity_id"] == view["entity_id"]): view
+            for view in document["issuer_views"]
+        }
+        self.assertEqual(views["AAA"]["composite_sentiment"], "positive")
+        self.assertEqual(views["BBB"]["composite_sentiment"], "negative")
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "report")
+        self.assertTrue(all(
+            row["eligible"]
+            for row in document["eligibility"]
+            if row["product"] in {"forecast_trigger", "reaction_study"}
+        ))
+
     def test_prelisting_identity_and_unrendered_text_fail_closed(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((
             IssuerIdentity("NEW", "issuer:new", "New Company", ("New Company",), "NASDAQ", list_date=date(2026, 8, 5)),
