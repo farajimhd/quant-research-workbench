@@ -624,6 +624,26 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     }
   }
 
+  async function deleteStrategyProfile(profileId: string) {
+    setStatus("saving");
+    setMessage("");
+    try {
+      const saved = await api<Draft>(`/api/trading/configuration/draft/strategy/profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
+      const normalized = normalizeDraft(saved);
+      setDraft(normalized);
+      setDirtySection(null);
+      setStatus("saved");
+      setMessageTone("success");
+      setMessage("Strategy deleted permanently. Referencing Run Plans now use the protected template.");
+      return normalized;
+    } catch (reason) {
+      setStatus("error");
+      setMessageTone("error");
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+      throw reason;
+    }
+  }
+
   async function publish() {
     if (!draft) return;
     setStatus("saving");
@@ -710,7 +730,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       ) : draft ? (
         <div className="configuration-expert-workspace">
           <div className="configuration-expert-editor">
-            {section === "strategy" ? <StrategyStudio approved={approved} draft={draft} label={label} onChange={(value) => updateDraft("strategy", value)} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
+            {section === "strategy" ? <StrategyStudio approved={approved} draft={draft} label={label} onChange={(value) => updateDraft("strategy", value)} onDeleteProfile={deleteStrategyProfile} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
             {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
             {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
             {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
@@ -1445,11 +1465,12 @@ function GuidedEmpty({ onSwitchToExpert }: { onSwitchToExpert: () => void }) {
   return <div className="guided-empty"><TriangleAlert size={20} /><h2>This step needs a base object</h2><p>Create the missing profile, Run Plan, mandate, OMS profile, policy, protection profile, or account in Expert mode. Guided setup does not create a Live-critical object implicitly.</p><button className="button primary" onClick={onSwitchToExpert} type="button"><Settings2 size={15} /> Open Expert editor</button></div>;
 }
 
-function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLabelChange, onPublish, publishing, revisions, section }: {
+function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onDraftChange, onLabelChange, onPublish, publishing, revisions, section }: {
   approved: Revision | null;
   draft: Draft;
   label: string;
   onChange: (value: StrategySection) => void;
+  onDeleteProfile: (profileId: string) => Promise<Draft>;
   onDraftChange: (value: Draft) => void;
   onLabelChange: (value: string) => void;
   onPublish: () => void;
@@ -1513,7 +1534,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
     setCreationName("");
   }
 
-  function removeProfile() {
+  async function removeProfile() {
     if (!canDeleteProfile || !fallbackProfile) return;
     const confirmed = window.confirm(
       referencingPlans.length
@@ -1521,18 +1542,14 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
         : `Delete “${selected.name}”?`,
     );
     if (!confirmed) return;
-    const remaining = section.profiles.filter((row) => row.profile_id !== selected.profile_id);
-    onDraftChange({
-      ...draft,
-      assignments: {
-        ...draft.assignments,
-        deployments: draft.assignments.deployments.map((plan) => plan.profile_id === selected.profile_id
-          ? { ...plan, profile_id: fallbackProfile.profile_id }
-          : plan),
-      },
-      strategy: { ...section, profiles: remaining },
-    });
-    setSelectedId(fallbackProfile.profile_id);
+    try {
+      const saved = await onDeleteProfile(selected.profile_id);
+      setSelectedId(saved.strategy.default_profile_id);
+      setCatalogItem(null);
+      setStudioView("select");
+    } catch {
+      // The parent displays the backend error and preserves the current profile.
+    }
   }
 
   const advanced = flattenPrimitives(selected.parameters).filter((row) => (
@@ -1753,8 +1770,8 @@ function StrategySelectionPage({ creationMode, name, nameConflict, onCancel, onC
     <section className="strategy-selection-list" aria-label="Available strategies">
       {profiles.map((profile) => <article key={profile.profile_id}>
         <span className="strategy-selection-icon"><GitBranch size={18} /></span>
-        <span><strong>{profile.name}</strong><small>{profile.description || "No description"}</small></span>
-        <em>{profile.protected ? "Template" : "User"} · V{profile.revision}</em>
+        <span className="strategy-selection-copy"><strong>{profile.name}</strong><small>{profile.description || "No description"}</small></span>
+        <span className="strategy-selection-meta"><strong>{profile.protected ? "Template" : "User"}</strong><small>Version {profile.revision}</small></span>
         <span className="strategy-selection-actions">
           {profile.origin === "user" && profile.editable ? <button onClick={() => onModify(profile.profile_id)} type="button"><PencilLine size={14} /> Modify</button> : null}
           <button onClick={() => onClone(profile.profile_id)} type="button"><Clipboard size={14} /> Clone</button>

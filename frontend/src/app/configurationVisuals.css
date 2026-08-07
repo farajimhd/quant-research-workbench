@@ -2379,18 +2379,20 @@
 .configuration-expert-editor .strategy-parameter-detail-page > header p,
 .configuration-expert-editor .strategy-parameter-detail-page > footer p { color: var(--muted-foreground); display: block; line-height: 1.5; }
 .strategy-selection-list { display: grid; gap: 10px; }
-.strategy-selection-list > article { align-items: center; background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 9px; color: var(--foreground); display: grid; gap: 14px; grid-template-columns: auto minmax(0, 1fr) auto auto; min-height: 78px; padding: 14px 16px; text-align: left; }
+.strategy-selection-list > article { align-items: center; background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 10px; color: var(--foreground); display: grid; gap: 16px; grid-template-columns: auto minmax(0, 1fr) 100px 150px; min-height: 82px; padding: 15px 16px; text-align: left; }
 .strategy-selection-list > article:hover,
 .strategy-selection-list > article:focus-within { background: var(--configuration-soft); border-color: color-mix(in oklab, var(--canvas-link-blue) 40%, var(--border)); }
-.strategy-selection-list > article > span:nth-child(2) { display: grid; gap: 4px; min-width: 0; }
+.strategy-selection-copy { display: grid; gap: 4px; min-width: 0; }
 .strategy-selection-list > article strong { font-size: 15px; font-weight: 620; }
 .strategy-selection-list > article small { color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.strategy-selection-list > article > em { color: var(--muted-foreground); font-size: 12px; font-style: normal; white-space: nowrap; }
-.strategy-selection-actions { display: flex; gap: 7px; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+.strategy-selection-meta { align-items: flex-start; display: grid; gap: 2px; justify-items: start; }
+.strategy-selection-list > article .strategy-selection-meta strong { color: var(--foreground); font-size: 11px; font-weight: 600; }
+.strategy-selection-meta small { font-size: 10px; }
+.strategy-selection-actions { display: flex; gap: 5px; justify-content: flex-end; min-width: 150px; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .strategy-selection-list > article:hover .strategy-selection-actions,
 .strategy-selection-list > article:focus-within .strategy-selection-actions { opacity: 1; pointer-events: auto; }
-.strategy-selection-actions > button { align-items: center; background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 6px; color: var(--foreground); cursor: pointer; display: inline-flex; font: inherit; font-size: 11px; font-weight: 600; gap: 5px; min-height: 32px; padding: 6px 9px; }
-.strategy-selection-actions > button:hover { border-color: color-mix(in oklab, var(--canvas-link-blue) 45%, var(--border)); color: var(--canvas-link-blue); }
+.strategy-selection-actions > button { align-items: center; background: transparent; border: 1px solid transparent; border-radius: 7px; color: var(--muted-foreground); cursor: pointer; display: inline-flex; font: inherit; font-size: 11px; font-weight: 600; gap: 5px; min-height: 34px; padding: 7px 9px; }
+.strategy-selection-actions > button:hover { background: var(--surface); border-color: color-mix(in oklab, var(--canvas-link-blue) 35%, var(--border)); color: var(--canvas-link-blue); }
 .strategy-selection-actions > button:focus-visible { outline: 2px solid var(--canvas-link-blue); outline-offset: 2px; }
 .strategy-selection-icon { align-items: center; background: color-mix(in oklab, var(--canvas-link-blue) 10%, var(--surface)); border: 1px solid color-mix(in oklab, var(--canvas-link-blue) 28%, var(--border)); border-radius: 8px; color: var(--canvas-link-blue); display: flex; height: 40px; justify-content: center; width: 40px; }
 .strategy-editor-toolbar { align-items: center; border-bottom: 1px solid var(--configuration-rule); display: flex; gap: 12px; padding-bottom: 12px; }
@@ -2491,7 +2493,7 @@
 
 @media (max-width: 760px) {
   .strategy-selection-list > article { grid-template-columns: auto minmax(0, 1fr) auto; }
-  .strategy-selection-list > article > em { grid-column: 2; }
+  .strategy-selection-meta { grid-column: 2; }
   .strategy-selection-actions { grid-column: 2 / -1; opacity: 1; pointer-events: auto; }
   .strategy-parameter-detail-page > section { grid-template-columns: 1fr; }
   .strategy-parameter-detail-page > section > div:nth-child(n) { border-left: 0; padding-left: 0; padding-right: 0; }

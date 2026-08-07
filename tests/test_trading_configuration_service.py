@@ -14,6 +14,8 @@ from src.backend.trading_configuration_service import (
     _validate_draft,
     approved_configuration,
     capability_catalog,
+    configuration_draft,
+    delete_strategy_profile,
     publish_configuration,
     replay_configuration_snapshot,
     replace_configuration_draft,
@@ -506,6 +508,37 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             return_value=long_momentum_strategy_definition(),
         ), self.assertRaisesRegex(ValueError, "action authority cap"):
             _validate_draft(draft, require_runtime_ready=False)
+
+    def test_profile_deletion_persists_despite_unrelated_authority_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            draft = self._draft()
+            source = draft["strategy"]["profiles"][0]
+            user_profile = deepcopy(source)
+            user_profile.update({
+                "profile_id": "user-momentum",
+                "name": "User momentum",
+                "origin": "user",
+                "protected": False,
+            })
+            draft["strategy"]["profiles"].append(user_profile)
+            draft["run_plans"]["plans"][0]["profile_id"] = user_profile["profile_id"]
+            draft["portfolio"]["mandates"][0]["maximum_action_authority"] = "confirm"
+            draft["run_plans"]["plans"][0]["action_authority"]["strategic_exit"] = "automatic"
+            journal.save_trading_configuration_draft(draft)
+            with self._service_patches(journal):
+                saved = delete_strategy_profile(user_profile["profile_id"])
+                reloaded = configuration_draft()
+            journal.close()
+
+        self.assertNotIn(user_profile["profile_id"], {
+            row["profile_id"] for row in saved["strategy"]["profiles"]
+        })
+        self.assertEqual(
+            saved["run_plans"]["plans"][0]["profile_id"],
+            saved["strategy"]["default_profile_id"],
+        )
+        self.assertEqual(saved, reloaded)
 
     def test_schema_v9_migration_removes_generic_priorities(self) -> None:
         raw = self._draft()

@@ -189,6 +189,66 @@ def replace_configuration_draft(payload: Any) -> dict[str, Any]:
     return trading_journal().save_trading_configuration_draft(candidate)
 
 
+def delete_strategy_profile(profile_id: str) -> dict[str, Any]:
+    """Delete one user profile and atomically move its Run Plans to the default."""
+    candidate = _without_timestamp(configuration_draft())
+    strategy = dict(candidate.get("strategy") or {})
+    profiles = list(strategy.get("profiles") or [])
+    profile = next(
+        (row for row in profiles if str(row.get("profile_id")) == profile_id),
+        None,
+    )
+    if profile is None:
+        raise ValueError(f"Unknown Strategy Profile: {profile_id}")
+    default_profile_id = str(strategy.get("default_profile_id") or "")
+    if profile_id == default_profile_id or bool(profile.get("protected")):
+        raise ValueError("The protected default Strategy Profile cannot be deleted")
+    if not any(str(row.get("profile_id")) == default_profile_id for row in profiles):
+        raise ValueError("The protected default Strategy Profile is unavailable")
+
+    strategy["profiles"] = [
+        row for row in profiles if str(row.get("profile_id")) != profile_id
+    ]
+    candidate["strategy"] = strategy
+    run_plans = dict(candidate.get("run_plans") or {})
+    run_plans["plans"] = [
+        {
+            **row,
+            "profile_id": default_profile_id
+            if str(row.get("profile_id")) == profile_id
+            else row.get("profile_id"),
+        }
+        for row in run_plans.get("plans") or []
+    ]
+    candidate["run_plans"] = run_plans
+    _validate_strategy_profile_references(candidate)
+    return trading_journal().save_trading_configuration_draft(candidate)
+
+
+def _validate_strategy_profile_references(draft: dict[str, Any]) -> None:
+    """Validate the identities changed by an atomic profile deletion."""
+    strategy = dict(draft.get("strategy") or {})
+    profiles = list(strategy.get("profiles") or [])
+    profile_ids = [str(row.get("profile_id") or "") for row in profiles]
+    profile_id_set = set(profile_ids)
+    if not profile_ids or "" in profile_ids or len(profile_ids) != len(profile_id_set):
+        raise ValueError("Strategy Profile IDs must be present and unique")
+    default_profile_id = str(strategy.get("default_profile_id") or "")
+    default_profile = next(
+        (row for row in profiles if str(row.get("profile_id")) == default_profile_id),
+        None,
+    )
+    if default_profile is None or not bool(default_profile.get("protected")):
+        raise ValueError("The default Strategy Profile must exist and remain protected")
+    missing = sorted({
+        str(row.get("profile_id") or "")
+        for row in dict(draft.get("run_plans") or {}).get("plans") or []
+        if str(row.get("profile_id") or "") not in profile_id_set
+    })
+    if missing:
+        raise ValueError(f"Run Plans reference missing Strategy Profiles: {', '.join(missing)}")
+
+
 def configuration_revisions() -> list[dict[str, Any]]:
     return trading_journal().trading_configuration_revisions()
 

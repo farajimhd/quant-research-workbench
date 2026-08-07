@@ -140,6 +140,7 @@ from src.backend.trading_configuration_service import (
     approved_configuration,
     configuration_draft,
     configuration_revisions,
+    delete_strategy_profile,
     effective_configuration_snapshot,
     publish_configuration,
     replace_configuration_draft,
@@ -4455,6 +4456,14 @@ def trading_configuration_section_update(
 ) -> dict[str, Any]:
     try:
         return update_configuration_section(section, payload.payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/trading/configuration/draft/strategy/profiles/{profile_id}")
+def trading_configuration_strategy_profile_delete(profile_id: str) -> dict[str, Any]:
+    try:
+        return delete_strategy_profile(profile_id)
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
