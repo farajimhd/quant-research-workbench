@@ -13,12 +13,22 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v8"
+ENGINE_VERSION = "news_synthesis_engine_v9"
 EXCHANGE_TICKER_RE = re.compile(r"\b(?:NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*([A-Z][A-Z0-9.\-]{0,9})\b", re.I)
 CASHTAG_RE = re.compile(r"(?<![A-Z0-9])\$([A-Z][A-Z0-9.\-]{0,9})\b")
 ROUNDUP_RE = re.compile(r"\b(?:stocks?|companies|biggest movers?|gainers?|losers?)\s+(?:moving|to watch)|\bmarket\s+(?:wrap|recap|update)\b", re.I)
 WHY_MOVING_RE = re.compile(r"\bwhy\s+(?:is|are|did)\b.*\b(?:stock|shares?)\b.*\bmov", re.I)
 ANALYST_RE = re.compile(r"\b(?:analyst|price target|rating|upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?)\b", re.I)
+ATTRIBUTED_ASSESSMENT_RE = re.compile(
+    r"\b(?:short|bear|bull)\s+thesis\b|"
+    r"\b(?:research|short seller)\b.{0,180}\b(?:accus\w*|scam\w*|fraud\w*|challenge\w*)\b|"
+    r"\b(?:out\s+)?in\s+defen[cs]e\s+of\b|"
+    r"\b[A-Z][A-Za-z&.-]+'s\s+[A-Z][A-Za-z'.-]+\s+"
+    r"(?:tells?|writes?|publishes?|discuss(?:es|ing))\b|"
+    r"\b[A-Z][A-Za-z&.-]+(?:\s+[A-Z][A-Za-z&.-]+){1,3}\s+"
+    r"(?:publishes?|writes?)\b.{0,80}\b(?:evidence|thesis|view|case)\b",
+    re.I,
+)
 REGULATORY_RE = re.compile(r"\b(?:SEC|FDA|regulator|regulatory|trading halt|compliance notice|Nasdaq (?:comments|halts|notifies|determines)|NYSE (?:comments|halts|notifies|determines))\b", re.I)
 AUTOMATED_RE = re.compile(r"\b(?:automated market statistics|benzinga pro data|generated automatically)\b", re.I)
 EXCHANGE_PREFIX_RE = re.compile(
@@ -80,6 +90,29 @@ class IssuerIdentityIndex:
             if len(tickers) == 1 or len(issuer_ids) == 1:
                 for ticker in tickers:
                     matches.setdefault(ticker, set()).add(f"issuer_alias:{alias}")
+        # Provider candidates may use a distinctive public brand while the
+        # point-in-time authority stores a longer legal name. Admit an exact
+        # candidate-scoped brand mention without making the short alias a
+        # global resolver key. This preserves provider scope and prevents a
+        # common word from binding unrelated securities.
+        for ticker in candidate_set:
+            valid = [row for row in self._by_ticker.get(ticker, ()) if row.valid_on(day)]
+            if len({row.issuer_id for row in valid}) != 1:
+                continue
+            candidate_aliases = {
+                alias
+                for row in valid
+                for alias in _candidate_scoped_alias_variants(
+                    (row.display_name, *row.aliases)
+                )
+            }
+            mentioned = sorted(
+                alias for alias in candidate_aliases if f" {alias} " in normalized_text
+            )
+            if mentioned:
+                matches.setdefault(ticker, set()).add(
+                    f"candidate_alias:{max(mentioned, key=len)}"
+                )
         for ticker in candidate_set & set(matches):
             matches[ticker].add("provider_candidate_supported")
         entities: list[dict[str, Any]] = []
@@ -138,6 +171,12 @@ class IssuerIdentityIndex:
             if entity.get("identity_status") == "resolved" and expected_id != entity_id:
                 continue
             terms.extend((row.display_name, *row.aliases))
+            terms.extend(
+                alias
+                for alias in _candidate_scoped_alias_variants(
+                    (row.display_name, *row.aliases)
+                )
+            )
         return tuple(dict.fromkeys(
             variant
             for term in terms
@@ -187,7 +226,7 @@ RULES = (
     _rule("regulatory.action", r"\b(?:trading halt|halted|resume trading|SEC action|regulatory action|compliance notice|formal investigation|clinical hold|license renewal|crackdown|advisory committee|regulator|letter of authorization|conditions? of authorization|reporting requirements?|(?:grant|grants|granted)\b.{0,100}\b(?:terrestrial|commercial|marketing|regulatory) authorization)\b|\b(?:FDA|FTC|SEC|European Commission|Nuclear Regulatory Commission)\b.{0,180}\b(?:investigation|inquiry|subpoena|request(?:s|ed)? information|hold|cancel|issue|renew|order|action|notice|authoriz|reporting requirement)\w*\b", positive=("authorize", "authorization", "renew", "grant"), negative=("halt", "suspend", "noncompliance", "investigation", "inquiry", "subpoena", "crackdown", "cancel", "myocarditis", "pericarditis", "adverse")),
     _rule("clinical.regulatory_milestone", r"\b(?:FDA|EMA|NDA|BLA|USDA)\b.{0,180}\b(?:approv|reject|complete response|clinical hold|clearance|accept|authoriz|resubmission|acknowledge|submission|meeting|grant|nod)\w*\b|\b(?:grant(?:s|ed)?|agree(?:s|d)?)\b.{0,100}\b(?:meet|meeting)\b.{0,80}\bFDA\b|\b(?:receiv(?:e|es|ed)|secur(?:e|es|ed))\b.{0,80}\bCE mark\b|\b(?:complete response letter|clinical hold|primary endpoint|phase [123] (?:study|trial)|letter of authorization|regulatory submission|FDA nod|CE mark)\b", positive=("approve", "approval", "clearance", "accept", "authorize", "authorization", "grant", "nod", "CE mark", "met primary"), negative=("reject", "complete response", "hold", "did not meet", "missed", "myocarditis", "pericarditis", "cancel")),
     _rule("clinical.trial_result", r"\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b.*\b(?:endpoint|results?|data|efficacy|safety|survival|viral suppression)\b|\b(?:results?|data)\b.{0,120}\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b|\bpositive clinical (?:data|results?)\b|\b(?:met|achieved|did not meet|failed to meet|did not demonstrate)\b.{0,120}\b(?:primary\b.{0,60})?(?:endpoint|goal|dose[- ]response)\b|\b(?:statistically significant(?: and clinically meaningful)? improvement|significantly reduces?|\d+(?:\.\d+)?%\s+reduction in (?:the )?risk|\d+(?:\.\d+)?%\s+of patients?.{0,80}\bachieved\b|first (?:patient|subject) (?:enrolled|dosed)|(?:enrolls?|doses?) (?:the )?first (?:patient|subject)|high efficacy|durable viral suppression|overall survival|sustained virologic response)\b", positive=("met", "positive", "improved"), negative=("failed", "missed", "adverse")),
-    _rule("legal.proceeding", r"\b(?:lawsuit|litigation|investigation|subpoena|settlement|arbitration|legal claim|claim for .{0,60}damages|seeking .{0,40}damages|patent peace|(?:grant(?:s|ed)?|receiv(?:e|es|ed))\b.{0,80}\bpatent)\b", positive=("seeking damages", "served a request", "files arbitration", "patent peace"), negative=("lawsuit", "investigation", "subpoena", "breach", "discriminatory", "adverse treatment")),
+    _rule("legal.proceeding", r"\b(?:lawsuit|litigation|investigation|subpoena|settlement|arbitration|legal claim|claim for .{0,60}damages|seeking .{0,40}damages|patent peace|(?:grant(?:s|ed)?|receiv(?:e|es|ed))\b.{0,80}\bpatent)\b|\b(?:judge|court)\b.{0,140}\b(?:rules?|ruled|finds?|found|calls?|called|strikes? down|invalidates?)\b.{0,100}\b(?:restriction|limitation|ban|rule|regulation)s?\b|\b(?:judge|court)\b.{0,140}\b(?:restriction|limitation|ban|rule|regulation)s?\b.{0,100}\b(?:arbitrary|unlawful|invalid|struck down)\b", positive=("seeking damages", "served a request", "files arbitration", "patent peace"), negative=("lawsuit", "investigation", "subpoena", "breach", "discriminatory", "adverse treatment")),
     _rule("listing.market_structure", r"\b(?:reverse split|stock split|share consolidation|share combination|delist(?:s|ed|ing)?|deslit|delisting|listing compliance|regains? compliance|regained compliance|continued listing|non[- ]compliance|minimum bid|late filing|failure to timely file|included in .{0,60}(?:Russell|S&P|Nasdaq).{0,20}index|IPO)\b", positive=("regain", "regained compliance", "approved listing", "included"), negative=("delist", "deslit", "noncompliance", "non-compliance", "late", "failure", "reverse split")),
     _rule("commercial.contract", r"\b(?:awarded|wins?|receives?|secures?|signs?|enters?|affirms?)\b.{0,120}\b(?:contract|order|award|agreements?|program|initiative)\b|\b(?:deal with\b.{0,100}\b(?:provid|supply)\w*|named\b.{0,100}\bofficial\b.{0,60}\b(?:broker|provider|supplier|partner))\b|\bcontract award\b|\b(?:waiver and amendment|amendment) agreement\b|\bwaiv(?:e|es|ed|ing)\b.{0,120}\bright to terminate\b.{0,120}\b(?:fund|financ|tranche|obligation)\w*\b|\b(?:contract|agreement)\s+(?:termination|cancellation|non[- ]renewal)\b|\b(?:termination|cancellation|non[- ]renewal)\b.{0,80}\b(?:contract|agreement)\b|\b(?:follow[- ]on )?(?:contract|order|agreement|program|initiative)\b.{0,120}\b(?:awarded|affirmed|won|win|received|secured|signed|terminated|cancelled|canceled|not renewed)\b", positive=("awarded", "affirmed", "wins", "win", "received", "secured", "signed", "contract award"), negative=("cancel", "terminate", "non-renewal", "not renewed")),
     _rule("product.milestone", r"\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|roll(?:s|ed)? out|recall|discontinue|authoriz(?:e|es|ed|ing)|ships? (?:the )?first|first shipment|deliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)|release(?:s|d)? (?:the )?(?:final )?pricing|production milestone|assembly line|built? \d+)\w*\b.{0,120}\b(?:product|platform|service|device|drug|treatment|vaccine|vehicle|system|game|headset|candidate|model|factory|use|panel|test|camera|dressing)\b|\bdeliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)\b|\b(?:product|device|drug|treatment|vaccine|service|game|headset|vehicle|model|panel|test|camera|dressing)\b.{0,120}\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|release|recall|discontinue|delay|authoriz|assembly line|first shipment)\w*\b|\b(?:new products?|product delay|(?:lead|investigational) (?:product candidate|drug|treatment|therapy|antibody)|delivery system|bodies coming down the assembly line)\b", positive=("launch", "unveil", "reveal", "debut", "commercializ", "introduc", "release", "approval", "authorize", "new", "assembly", "built", "affordable", "ships the first", "first shipment", "deliver"), negative=("recall", "delay", "discontinue")),
@@ -232,7 +271,12 @@ RULES = (
     _rule("market.volume_move_observed", r"\b(?:trading volume|volume spike|unusual volume)\b", "market_observation"),
     _rule("market.trading_status", r"\b(?:halted|trading halt|resumed trading)\b", "market_observation"),
     _rule("market.money_flow_observed", r"\b(?:money flows?|fund flows?|inflows?|outflows?|buying pressure|selling pressure)\b", "market_observation", positive=("positive", "inflow", "buying"), negative=("negative", "outflow", "selling")),
+    _rule("analyst.short_thesis", r"\b(?:short|bear)\s+(?:seller\s+)?(?:thesis|report)\b|\b(?:research|short seller)\b.{0,180}\b(?:accus\w*|scam\w*|fraud\w*|challenge\w*)\b", "assessment", negative=("short thesis", "short report", "bear thesis", "accus", "scam", "fraud", "challenge")),
     _rule("analyst.issuer_assessment", r"\b(?:analysts?|brokerage|research firm|investment firm)\b.{0,180}\b(?:believes?|expects?|sees?|views?|said|claims?|argues?|positive|negative|bullish|bearish|upside|downside|recommend(?:s|ed)?|confident|buyer)\b|\b(?:analysts?|[A-Z][a-z]+)\b.{0,40}\b(?:claims?|argues?)\b.{0,180}\b(?:case|claim|lawsuit|action|investigation)\b|\b(?:is not|isn't|was not|wasn't|not)\s+a buyer\b", "assessment", positive=("positive", "bullish", "upside", "strong", "well-positioned", "recommend", "confident"), negative=("negative", "bearish", "downside", "weak")),
+    _rule("analyst.issuer_assessment", r"\b(?:out\s+)?in\s+defen[cs]e\s+of\b|\bdefends?\b.{0,100}\b(?:company|issuer|stock|shares?)\b", "assessment", positive=("defense", "defence", "defend"), local_evidence=True),
+    _rule("analyst.issuer_assessment", r"\b(?:unlikely|not expected|not likely)\b.{0,40}\b(?:to be |to become )?profitable\b|\bunprofitable\b", "assessment", negative=("unlikely", "not expected", "not likely", "unprofitable"), local_evidence=True),
+    _rule("analyst.issuer_assessment", r"\b(?:great|strong|excellent|well)[- ]position(?:ed)?\b", "assessment", positive=("great position", "strong position", "excellent position", "well positioned", "well-positioned"), local_evidence=True),
+    _rule("analyst.issuer_assessment", r"\bpublishes?\b.{0,50}\bevidence\b.{0,140}\b(?:hitting|hurting|pressuring|displacing|eroding)\b.{0,80}\b(?:incumbents?|industry|business(?:es)?|demand|sales|rentals?|rental cars?)\b", "assessment", negative=("hitting", "hurting", "pressuring", "displacing", "eroding")),
     _rule("strategy.valuation_assessment", r"\b(?:valuation|valued|multiple|price[- ]to[- ]earnings|P/E|PE|PEG ratio|undervalued|overvalued|cheap|expensive|fully reflect|buyer (?:at|around))\b", "assessment", positive=("undervalued", "cheap", "attractive", "buyer"), negative=("overvalued", "expensive", "premium", "fully reflect")),
     _rule("operations.cost_efficiency", r"\b(?:cost savings?|cost reduction|reduce(?:s|d|ing)? (?:its )?costs?|reduc(?:e|es|ed|ing) operating expenses?|expense reduction|efficiency program|productivity initiative|annual(?:ized)? savings|savings (?:in|on|from) .{0,50}costs?|lower .{0,40}costs?|(?:rising|higher|increased) (?:labor )?costs?|costs? (?:rose|risen|rising|increased|dropped|declined|decreased)|contain costs?|control .{0,30}costs?|total cost of ownership|cost[- ]effectiveness)\b", positive=("savings", "reduction", "reduce", "lower", "efficiency", "productivity", "dropped", "declined"), negative=("higher costs", "rising costs", "rising labor costs", "increased costs", "cost pressure")),
     _rule("macro.policy_outlook", r"\b(?:central bank|Federal Reserve|Fed|government|policy makers?)\b.{0,160}\b(?:policy|stimulus|rate cuts?|rate hikes?|tighten|ease|intervention)\b|\b(?:monetary|fiscal) policy\b", "forecast"),
@@ -287,6 +331,13 @@ class NewsSynthesisEngine:
             source_field,
             mention_terms,
             title=title,
+        )
+        participations = _apply_attributed_claim_sources(
+            statements,
+            participations,
+            entities,
+            mention_terms,
+            candidate_tickers=tickers,
         )
         participations = _apply_event_supersession(statements, participations)
         statements, participations = _apply_intrinsic_event_tradeoffs(
@@ -587,6 +638,7 @@ def _envelope(
         (
             r"\b(?:analysts?(?!\s+(?:est\.?|estimates?|consensus|expectations)\b)|research firm|price target|rating|upgrade[sd]?|"
             r"downgrade[sd]?|initiates?|maintains?|reiterates?)\b",
+            ATTRIBUTED_ASSESSMENT_RE.pattern,
         ),
         title,
         text,
@@ -809,6 +861,16 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
         # as "positive" in "downgraded from positive to neutral" as a separate
         # opinion reverses or dilutes the action itself.
         return False
+    if rule.concept == "analyst.issuer_assessment" and re.search(
+        r"\b(?:unlikely|not expected|not likely)\b.{0,40}\b(?:to be |to become )?profitable\b|"
+        r"\bunprofitable\b|\b(?:great|strong|excellent|well)[- ]position(?:ed)?\b",
+        text,
+        re.I,
+    ) and not (ANALYST_RE.search(text) or ATTRIBUTED_ASSESSMENT_RE.search(text)):
+        # These phrases are assessments only when an external source is
+        # actually attributed. Issuer self-description must not be relabeled
+        # as analyst commentary merely because it uses the same adjective.
+        return False
     if rule.concept == "market.price_move_observed" and re.search(r"\b(?:dollar index|currency|forex|euro|yen|yuan|pound sterling)\b", text, re.I):
         return False
     if rule.concept == "market.price_move_observed" and re.search(
@@ -956,6 +1018,10 @@ def _sentiment(
             normalized,
         ):
             return "positive", 2
+    if rule.concept == "analyst.short_thesis":
+        if re.search(r"\b(?:scam\w*|fraud\w*|short thesis|short report|bear thesis)\b", normalized):
+            return "negative", 3
+        return "negative", 2
     if rule.concept == "estimate.revision":
         relations = {
             str(fact.get("relation"))
@@ -1403,6 +1469,14 @@ def _sentiment(
             return "positive", 3
         return "negative", 3
     if rule.concept == "legal.proceeding":
+        if re.search(
+            r"\b(?:judge|court)\b.{0,180}\b(?:restriction|limitation|ban|rule|regulation)s?\b"
+            r".{0,100}\b(?:arbitrary|unlawful|invalid|struck down)\b|"
+            r"\b(?:judge|court)\b.{0,180}\b(?:strikes? down|invalidates?)\b"
+            r".{0,100}\b(?:restriction|limitation|ban|rule|regulation)s?\b",
+            normalized,
+        ):
+            return "positive", 1
         filing = re.search(
             r"\b(?:files?|filed|brings?|brought|initiates?|initiated)\b.{0,80}\b(?:lawsuit|complaint|action)\b.{0,100}\bagainst\b",
             normalized,
@@ -1799,6 +1873,58 @@ def _entities_for_quote(
     if inherit_subject and inherited:
         return inherited
     return inherited if len(inherited) == 1 else []
+
+
+def _apply_attributed_claim_sources(
+    statements: Sequence[Mapping[str, Any]],
+    participations: Sequence[Mapping[str, Any]],
+    entities: Sequence[Mapping[str, Any]],
+    mention_terms: Mapping[str, Sequence[str]],
+    *,
+    candidate_tickers: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Keep a named external analyst source out of issuer sentiment.
+
+    A listed research firm named before an attribution verb is not an affected
+    issuer merely because its name identifies the source. The deterministic
+    identity layer represents it as a security, while the contract reserves
+    ``claim_source`` for organization/person entities, so this unrelated
+    participation is omitted. Provider candidates remain eligible subjects.
+    """
+    statement_by_id = {str(row["statement_id"]): row for row in statements}
+    entity_by_id = {str(row["entity_id"]): row for row in entities}
+    candidates = {
+        _normalize_ticker_identifier(value) for value in candidate_tickers if value
+    }
+    result: list[dict[str, Any]] = []
+    for participation in participations:
+        row = dict(participation)
+        statement = statement_by_id.get(str(row.get("statement_id") or ""), {})
+        if not str(statement.get("concept_leaf") or "").startswith("analyst."):
+            result.append(row)
+            continue
+        quote = str((statement.get("evidence_spans") or [{}])[0].get("quote") or "")
+        attribution = re.search(
+            r"\b(?:publishes?|writes?|tells?|discuss(?:es|ing)|defends?)\b|"
+            r"\b(?:out\s+)?in\s+defen[cs]e\s+of\b",
+            quote,
+            re.I,
+        )
+        entity = entity_by_id.get(str(row.get("entity_id") or ""))
+        ticker = _normalize_ticker_identifier(entity.get("ticker") if entity else "")
+        if (
+            attribution is not None
+            and entity is not None
+            and ticker not in candidates
+            and _entity_in_quote(
+                entity,
+                quote[:attribution.start()],
+                mention_terms.get(str(entity["entity_id"]), ()),
+            )
+        ):
+            continue
+        result.append(row)
+    return result
 
 
 def _regulatory_entities_for_facts(
@@ -2321,6 +2447,59 @@ def _safe_alias(value: str) -> bool:
         "strategy", "target", "technology", "the company", "trading", "united",
         "western",
     }
+
+
+def _candidate_scoped_alias_variants(values: Iterable[str]) -> tuple[str, ...]:
+    """Return exact public-name variants safe only inside provider scope.
+
+    Global one-word alias matching remains deliberately strict. Within an
+    already supplied provider candidate, a leading brand token can bind a
+    headline that omits a recognized legal/descriptive tail. A three-token
+    brand group may also shorten to its first brand. Arbitrary names, dates,
+    and noisy leading prose are not shortened.
+    """
+    normalized_values = {
+        normalized
+        for value in values
+        if (normalized := _normalize_alias(value))
+    }
+    variants = {
+        alias
+        for value in normalized_values
+        for alias in _alias_variants(value)
+    }
+    descriptive_tail_tokens = {
+        "co", "company", "corp", "corporation", "global", "group", "holding",
+        "holdings", "inc", "incorporated", "industries", "industry", "limited",
+        "ltd", "pharma", "pharmaceutical", "pharmaceuticals", "plc", "system",
+        "systems", "technologies", "technology", "therapeutic", "therapeutics",
+    }
+    excluded_leading_tokens = {
+        "american", "capital", "global", "international", "national", "north",
+        "public", "standard", "the", "united",
+    }
+    for normalized in normalized_values:
+        tokens = normalized.split()
+        legal_tail = len(tokens) >= 2 and all(
+            token in descriptive_tail_tokens for token in tokens[1:]
+        )
+        compound_group = (
+            len(tokens) == 3 and tokens[-1] in {"group", "holding", "holdings"}
+        )
+        if legal_tail or compound_group:
+            leading = tokens[0]
+            if len(leading) >= 4 and leading not in excluded_leading_tokens:
+                variants.add(leading)
+    return tuple(sorted(
+        variant
+        for variant in variants
+        if len(variant) >= 4
+        and variant not in {
+            "capital", "company", "global", "group", "holdings",
+            "international", "pharmaceutical", "pharmaceuticals",
+            "solutions", "technology", "therapeutics",
+        }
+    ))
 def _normalize_ticker_identifier(value: Any) -> str:
     return EXCHANGE_PREFIX_RE.sub("", str(value or "").upper().strip())
 def _as_date(value: str) -> date | None:

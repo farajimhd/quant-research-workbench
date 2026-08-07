@@ -174,6 +174,165 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         })
         self.assertEqual({row["ticker"] for row in document["entities"]}, {"AAA"})
 
+    def test_candidate_scoped_public_brand_aliases_bind_long_legal_names(self) -> None:
+        index = IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "Alpha Budget Group", ("Alpha Budget Group",)),
+            IssuerIdentity("BBB", "issuer:bbb", "Bravo Global Holdings", ("Bravo Global Holdings",)),
+            IssuerIdentity("CCC", "issuer:ccc", "Ceta Pharmaceutical Industries", ("Ceta Pharmaceutical Industries",)),
+        ))
+
+        entities = index.resolve(
+            text="Watch Alpha, Bravo and Ceta shares.",
+            candidates=("AAA", "BBB", "CCC"),
+            timestamp="2026-08-03T12:00:00Z",
+        )
+
+        self.assertEqual({row["ticker"] for row in entities}, {"AAA", "BBB", "CCC"})
+        self.assertTrue(all(
+            any(value.startswith("candidate_alias:") for value in row["identity_evidence"])
+            for row in entities
+        ))
+
+    def test_candidate_scoped_brand_alias_never_resolves_outside_provider_scope(self) -> None:
+        index = IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "Alpha Budget Group", ("Alpha Budget Group",)),
+            IssuerIdentity("BBB", "issuer:bbb", "Bravo Systems", ("Bravo Systems",)),
+        ))
+
+        entities = index.resolve(
+            text="Alpha announced an update.",
+            candidates=("BBB",),
+            timestamp="2026-08-03T12:00:00Z",
+        )
+
+        self.assertNotIn("AAA", {row["ticker"] for row in entities})
+
+    def test_candidate_scoped_alias_rejects_noisy_leading_modifier(self) -> None:
+        index = IssuerIdentityIndex((
+            IssuerIdentity(
+                "WMT",
+                "issuer:wmt",
+                "Meanwhile Wal Mart Stores",
+                ("Meanwhile Wal Mart Stores", "Walmart"),
+            ),
+        ))
+
+        entities = index.resolve(
+            text="Meanwhile, retail demand improved.",
+            candidates=("WMT",),
+            timestamp="2026-08-03T12:00:00Z",
+        )
+
+        self.assertEqual(entities, [])
+
+    def test_title_only_attributed_assessment_language_is_directional(self) -> None:
+        cases = (
+            ("Hearing Northstar Securities out in defense of Alpha Therapeutics", "positive"),
+            ("Northstar discusses its Alpha Therapeutics short thesis", "negative"),
+            ("Northstar Research challenges Alpha Therapeutics; says $AAA is scamming customers", "negative"),
+        )
+        for index, (title, expected) in enumerate(cases):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-attributed-assessment-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": title,
+                    "tickers": ["AAA"],
+                    "render_status": "title_only",
+                    "quality_flags": ["no_renderable_sources"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+                self.assertEqual(document["envelope"]["information_origin"]["value"], "analyst")
+                self.assertTrue(any(
+                    row["product"] == "analyst_evaluation" and row["eligible"]
+                    for row in document["eligibility"]
+                ))
+
+    def test_attributed_profitability_and_position_assessments_remain_two_sided(self) -> None:
+        title = (
+            "Northstar's Lee tells the media Alpha projects are unlikely to be profitable, "
+            "but Alpha is in a great position to lead the market."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-two-sided-attributed-assessment",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": title,
+            "text": title,
+            "tickers": ["AAA"],
+            "render_status": "title_only",
+        })
+
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
+        self.assertEqual(
+            {row["semantic_sentiment"] for row in document["participations"]},
+            {"positive", "negative"},
+        )
+
+    def test_issuer_self_description_is_not_recast_as_analyst_assessment(self) -> None:
+        title = "Alpha says it is in a great position to serve customers"
+        document = self.engine.synthesize({
+            "source_id": "news-issuer-self-description",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": title,
+            "text": title,
+            "tickers": ["AAA"],
+        })
+
+        self.assertNotIn(
+            "analyst.issuer_assessment",
+            {row["concept_leaf"] for row in document["statements"]},
+        )
+        self.assertNotEqual(document["envelope"]["information_origin"]["value"], "analyst")
+
+    def test_published_displacement_evidence_binds_affected_provider_candidates(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "Alpha Rental Group", ("Alpha Rental Group",)),
+            IssuerIdentity("BBB", "issuer:bbb", "Bravo Global Holdings", ("Bravo Global Holdings",)),
+            IssuerIdentity("NSS", "issuer:nss", "Northstar Securities", ("Northstar Securities",)),
+        )))
+        title = (
+            "Northstar Securities publishes evidence that sharing models are already "
+            "hitting rental cars; watch Alpha and Bravo shares"
+        )
+        document = engine.synthesize({
+            "source_id": "news-displacement-assessment",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": title,
+            "text": title,
+            "tickers": ["AAA", "BBB"],
+            "render_status": "title_only",
+        })
+        views = {
+            next(entity["ticker"] for entity in document["entities"] if entity["entity_id"] == view["entity_id"]): view["composite_sentiment"]
+            for view in document["issuer_views"]
+        }
+
+        self.assertEqual(views["AAA"], "negative")
+        self.assertEqual(views["BBB"], "negative")
+        self.assertNotIn("NSS", views)
+
+    def test_judicial_invalidation_of_named_regulatory_limit_is_weak_positive_event(self) -> None:
+        title = "Watch Alpha and Beta after court called the regulator's limitations arbitrary"
+        document = self.engine.synthesize({
+            "source_id": "news-judicial-regulatory-limit",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": title,
+            "text": title,
+            "tickers": ["AAA", "BBB"],
+            "render_status": "title_only",
+        })
+        views = {
+            next(entity["ticker"] for entity in document["entities"] if entity["entity_id"] == view["entity_id"]): view["composite_sentiment"]
+            for view in document["issuer_views"]
+        }
+
+        self.assertEqual(views, {"AAA": "positive", "BBB": "positive"})
+        self.assertTrue(all(
+            row["product"] != "forecast_trigger" or row["eligible"]
+            for row in document["eligibility"]
+        ))
+
     def test_generic_compact_event_language_is_covered_by_concept_families(self) -> None:
         cases = (
             ("NuCo Q2 EPS (0.04) Up From (0.11) YoY", "earnings.performance"),
