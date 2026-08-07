@@ -37,6 +37,27 @@ from research.mlops.env import load_env_files
 
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\profile_train")
 
+MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
+    "current": {"d_model": 384, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
+    "medium": {"d_model": 512, "n_layers": 12, "n_heads": 8, "n_kv_heads": 4},
+    "large": {"d_model": 768, "n_layers": 12, "n_heads": 12, "n_kv_heads": 4},
+    "xlarge": {"d_model": 1024, "n_layers": 16, "n_heads": 16, "n_kv_heads": 8},
+}
+
+# The joint default deliberately uses one microbatch per optimizer step. This
+# bounds the fit/throughput sweep across four architectures; the result records
+# the accumulation needed to recover the production target effective batch.
+DEFAULT_JOINT_CANDIDATES = ",".join(
+    f"{model}:4096:{microbatch}:1:16:1:0"
+    for model, microbatches in (
+        ("current", (8, 16, 24, 32)),
+        ("medium", (4, 8, 12, 16)),
+        ("large", (2, 4, 8, 12)),
+        ("xlarge", (1, 2, 4, 8)),
+    )
+    for microbatch in microbatches
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ProfileCandidate:
@@ -46,11 +67,12 @@ class ProfileCandidate:
     workers: int
     cuda_prefetch: bool
     compile_model: bool = False
+    model_size: str = "current"
 
     @property
     def name(self) -> str:
         return (
-            f"origins-{self.origin_bars}_micro-{self.microbatch}_accum-{self.accumulation}_"
+            f"model-{self.model_size}_origins-{self.origin_bars}_micro-{self.microbatch}_accum-{self.accumulation}_"
             f"workers-{self.workers}_cuda-prefetch-{int(self.cuda_prefetch)}_compile-{int(self.compile_model)}"
         )
 
@@ -71,18 +93,49 @@ class ProfileResult:
     peak_reserved_bytes: int
     total_device_bytes: int
     memory_fraction: float
+    model_parameters: int
+    effective_blocks_per_update: int
+    recommended_accumulation: int
     message: str = ""
 
 
 def _parse_candidates(value: str) -> tuple[ProfileCandidate, ...]:
     candidates = []
     for item in value.split(","):
-        parts = tuple(int(part) for part in item.split(":"))
-        if len(parts) not in (5, 6):
-            raise ValueError("profile candidates use origin:microbatch:accumulation:workers:prefetch[:compile]")
+        raw_parts = item.split(":")
+        if raw_parts[0].isdigit():
+            if len(raw_parts) not in (5, 6):
+                raise ValueError(
+                    "legacy profile candidates use origin:microbatch:accumulation:workers:prefetch[:compile]"
+                )
+            model_size = "current"
+            parts = tuple(int(part) for part in raw_parts)
+        else:
+            if len(raw_parts) not in (6, 7):
+                raise ValueError(
+                    "joint profile candidates use model:origin:microbatch:accumulation:workers:prefetch[:compile]"
+                )
+            model_size = raw_parts[0].strip().lower()
+            if model_size not in MODEL_SIZE_PRESETS:
+                raise ValueError(
+                    f"unknown model size {model_size!r}; expected one of {tuple(MODEL_SIZE_PRESETS)}"
+                )
+            parts = tuple(int(part) for part in raw_parts[1:])
         origin, micro, accumulation, workers, prefetch = parts[:5]
         compile_model = bool(parts[5]) if len(parts) == 6 else False
-        candidates.append(ProfileCandidate(origin, micro, accumulation, workers, bool(prefetch), compile_model))
+        if min(origin, micro, accumulation, workers) <= 0:
+            raise ValueError("origin, microbatch, accumulation, and workers must be positive")
+        candidates.append(
+            ProfileCandidate(
+                origin,
+                micro,
+                accumulation,
+                workers,
+                bool(prefetch),
+                compile_model,
+                model_size,
+            )
+        )
     if not candidates:
         raise ValueError("at least one profiler candidate is required")
     return tuple(candidates)
@@ -95,15 +148,17 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tickers", default=",".join(DataConfig().training_tickers))
     parser.add_argument(
         "--candidates",
-        default=(
-            "4096:16:2:12:1:0,4096:16:2:16:1:0,4096:16:2:24:1:0"
+        default=DEFAULT_JOINT_CANDIDATES,
+        help=(
+            "model:origin:microbatch:accumulation:workers:cuda_prefetch[:compile] entries; "
+            "the legacy format without model remains current-size compatible"
         ),
-        help="origin:microbatch:accumulation:workers:cuda_prefetch:compile entries",
     )
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument("--measured-steps", type=int, default=8)
     parser.add_argument("--ready-queue-blocks", type=int, default=512)
     parser.add_argument("--worker-prefetch-batches", type=int, default=4)
+    parser.add_argument("--target-effective-blocks", type=int, default=32)
     parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=1)
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -137,6 +192,10 @@ def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
         coverage_mode="sequential",
         coverage_blocks_per_unit=16,
     )
+
+
+def _model_config(candidate: ProfileCandidate) -> BarGPTConfig:
+    return BarGPTConfig(**MODEL_SIZE_PRESETS[candidate.model_size])
 
 
 def _atomic_json(path: Path, value: object) -> None:
@@ -244,8 +303,9 @@ def _profile_candidate(
         )
         dataset = BarGPTIterableDataset(data_config=data, stream_config=stream, split="train", seed=17)
         loader = make_dataloader(dataset, data, drop_last=True)
-    model_config = BarGPTConfig()
+    model_config = _model_config(candidate)
     model = BarGPTV1(model_config).to(device)
+    model_parameters = sum(parameter.numel() for parameter in model.parameters())
     if candidate.compile_model:
         if not hasattr(torch, "compile"):
             raise RuntimeError("torch.compile is unavailable in this PyTorch build")
@@ -262,68 +322,70 @@ def _profile_candidate(
     measured_origins = measured_tokens = 0
     measured_loader = measured_gpu = 0.0
     measured_started = 0.0
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
-    for step in range(total_steps):
-        if step == int(args.warmup_steps):
-            measured_started = time.perf_counter()
-            if device.type == "cuda":
-                torch.cuda.reset_peak_memory_stats(device)
-        optimizer.zero_grad(set_to_none=True)
-        step_origins = step_tokens = 0
-        step_loader = step_gpu = 0.0
-        gpu_event_pairs: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
-        for _micro in range(candidate.accumulation):
-            batch, wait = prefetcher.next()
+    try:
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
+        for step in range(total_steps):
+            if step == int(args.warmup_steps):
+                measured_started = time.perf_counter()
+                if device.type == "cuda":
+                    torch.cuda.reset_peak_memory_stats(device)
+            optimizer.zero_grad(set_to_none=True)
+            step_origins = step_tokens = 0
+            step_loader = step_gpu = 0.0
+            gpu_event_pairs: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
+            for _micro in range(candidate.accumulation):
+                batch, wait = prefetcher.next()
+                started = time.perf_counter()
+                gpu_start_event = gpu_end_event = None
+                if device.type == "cuda":
+                    gpu_start_event = torch.cuda.Event(enable_timing=True)
+                    gpu_end_event = torch.cuda.Event(enable_timing=True)
+                    gpu_start_event.record()
+                with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+                    output = model(
+                        batch.views,
+                        timeframe_us=TIMEFRAME_US_BY_NAME,
+                        pathway_ids=PATHWAY_ID_BY_NAME,
+                        base_view="1s",
+                        origin_indices=batch.origin_indices,
+                        asof_indices=batch.asof_indices,
+                        horizon_ids=torch.arange(len(data.horizons_us), device=device),
+                    )
+                    loss = compute_loss(output, batch, train_config, model_config.quantiles).loss / candidate.accumulation
+                loss.backward()
+                if gpu_end_event is not None and gpu_start_event is not None:
+                    gpu_end_event.record()
+                    gpu_event_pairs.append((gpu_start_event, gpu_end_event))
+                else:
+                    step_gpu += time.perf_counter() - started
+                step_loader += wait
+                step_origins += batch.origin_count
+                step_tokens += sum(int(value.shape[0] * value.shape[1]) for value in batch.views.values())
             started = time.perf_counter()
-            gpu_start_event = gpu_end_event = None
+            step_start_event = step_end_event = None
             if device.type == "cuda":
-                gpu_start_event = torch.cuda.Event(enable_timing=True)
-                gpu_end_event = torch.cuda.Event(enable_timing=True)
-                gpu_start_event.record()
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-                output = model(
-                    batch.views,
-                    timeframe_us=TIMEFRAME_US_BY_NAME,
-                    pathway_ids=PATHWAY_ID_BY_NAME,
-                    base_view="1s",
-                    origin_indices=batch.origin_indices,
-                    asof_indices=batch.asof_indices,
-                    horizon_ids=torch.arange(len(data.horizons_us), device=device),
-                )
-                loss = compute_loss(output, batch, train_config, model_config.quantiles).loss / candidate.accumulation
-            loss.backward()
-            if gpu_end_event is not None and gpu_start_event is not None:
-                gpu_end_event.record()
-                gpu_event_pairs.append((gpu_start_event, gpu_end_event))
+                step_start_event = torch.cuda.Event(enable_timing=True)
+                step_end_event = torch.cuda.Event(enable_timing=True)
+                step_start_event.record()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            if step_end_event is not None and step_start_event is not None:
+                step_end_event.record()
+                gpu_event_pairs.append((step_start_event, step_end_event))
+                step_end_event.synchronize()
+                step_gpu += sum(start.elapsed_time(end) / 1_000.0 for start, end in gpu_event_pairs)
             else:
                 step_gpu += time.perf_counter() - started
-            step_loader += wait
-            step_origins += batch.origin_count
-            step_tokens += sum(int(value.shape[0] * value.shape[1]) for value in batch.views.values())
-        started = time.perf_counter()
-        step_start_event = step_end_event = None
-        if device.type == "cuda":
-            step_start_event = torch.cuda.Event(enable_timing=True)
-            step_end_event = torch.cuda.Event(enable_timing=True)
-            step_start_event.record()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        if step_end_event is not None and step_start_event is not None:
-            step_end_event.record()
-            gpu_event_pairs.append((step_start_event, step_end_event))
-            step_end_event.synchronize()
-            step_gpu += sum(start.elapsed_time(end) / 1_000.0 for start, end in gpu_event_pairs)
-        else:
-            step_gpu += time.perf_counter() - started
-        if step >= int(args.warmup_steps):
-            measured_origins += step_origins
-            measured_tokens += step_tokens
-            measured_loader += step_loader
-            measured_gpu += step_gpu
-            reporter.step(candidate, step - int(args.warmup_steps) + 1, int(args.measured_steps))
+            if step >= int(args.warmup_steps):
+                measured_origins += step_origins
+                measured_tokens += step_tokens
+                measured_loader += step_loader
+                measured_gpu += step_gpu
+                reporter.step(candidate, step - int(args.warmup_steps) + 1, int(args.measured_steps))
+    finally:
+        prefetcher.close()
     elapsed = max(time.perf_counter() - measured_started, 1e-9)
-    prefetcher.close()
     if device.type == "cuda":
         allocated = int(torch.cuda.max_memory_allocated(device))
         reserved = int(torch.cuda.max_memory_reserved(device))
@@ -345,12 +407,15 @@ def _profile_candidate(
         peak_reserved_bytes=reserved,
         total_device_bytes=total_device,
         memory_fraction=reserved / total_device if total_device else 0.0,
+        model_parameters=model_parameters,
+        effective_blocks_per_update=candidate.microbatch * candidate.accumulation,
+        recommended_accumulation=max(1, math.ceil(int(args.target_effective_blocks) / candidate.microbatch)),
     )
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.warmup_steps < 0 or args.measured_steps <= 0:
+    if args.warmup_steps < 0 or args.measured_steps <= 0 or args.target_effective_blocks <= 0:
         raise ValueError("warmup steps cannot be negative and measured steps must be positive")
     if args.data_source == "clickhouse":
         load_env_files(discover_clickhouse_env_files(), verbose=True)
@@ -361,6 +426,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     run_root.mkdir(parents=True, exist_ok=True)
     reporter = ProfileReporter(str(args.progress_layout))
     results: list[ProfileResult] = []
+    oom_microbatch: dict[tuple[str, int, int, bool], int] = {}
     jsonl = run_root / "profile.jsonl"
     # Candidates vary only loader/model shape; the authority/schema audit is
     # invariant.  Run it once so the measured sweep does not pay the same
@@ -374,17 +440,62 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
     for index, candidate in enumerate(candidates, start=1):
         reporter.start(candidate, index, len(candidates))
-        try:
-            result = _profile_candidate(
-                args,
-                candidate,
-                device=device,
-                reporter=reporter,
-                preflight_complete=True,
+        oom_key = (candidate.model_size, candidate.origin_bars, candidate.workers, candidate.compile_model)
+        threshold = oom_microbatch.get(oom_key)
+        if threshold is not None and candidate.microbatch >= threshold:
+            result = ProfileResult(
+                candidate=candidate,
+                state="skipped_after_oom",
+                optimizer_steps=0,
+                origins=0,
+                encoded_tokens=0,
+                elapsed_seconds=0.0,
+                loader_wait_seconds=0.0,
+                gpu_seconds=0.0,
+                origins_per_second=0.0,
+                encoded_tokens_per_second=0.0,
+                peak_allocated_bytes=0,
+                peak_reserved_bytes=0,
+                total_device_bytes=0,
+                memory_fraction=0.0,
+                model_parameters=0,
+                effective_blocks_per_update=candidate.microbatch * candidate.accumulation,
+                recommended_accumulation=max(1, math.ceil(int(args.target_effective_blocks) / candidate.microbatch)),
+                message=f"skipped because microbatch {threshold} already exhausted this model/device shape",
             )
-        except (torch.cuda.OutOfMemoryError, RuntimeError, OSError) as exc:
-            state = "oom" if "out of memory" in str(exc).lower() else "failed"
-            result = ProfileResult(candidate, state, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0.0, str(exc))
+        else:
+            try:
+                result = _profile_candidate(
+                    args,
+                    candidate,
+                    device=device,
+                    reporter=reporter,
+                    preflight_complete=True,
+                )
+            except (torch.cuda.OutOfMemoryError, RuntimeError, OSError) as exc:
+                state = "oom" if "out of memory" in str(exc).lower() else "failed"
+                if state == "oom":
+                    oom_microbatch[oom_key] = candidate.microbatch
+                result = ProfileResult(
+                    candidate=candidate,
+                    state=state,
+                    optimizer_steps=0,
+                    origins=0,
+                    encoded_tokens=0,
+                    elapsed_seconds=0.0,
+                    loader_wait_seconds=0.0,
+                    gpu_seconds=0.0,
+                    origins_per_second=0.0,
+                    encoded_tokens_per_second=0.0,
+                    peak_allocated_bytes=0,
+                    peak_reserved_bytes=0,
+                    total_device_bytes=0,
+                    memory_fraction=0.0,
+                    model_parameters=0,
+                    effective_blocks_per_update=candidate.microbatch * candidate.accumulation,
+                    recommended_accumulation=max(1, math.ceil(int(args.target_effective_blocks) / candidate.microbatch)),
+                    message=str(exc),
+                )
         results.append(result)
         with jsonl.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(asdict(result), default=str, sort_keys=True) + "\n")
@@ -395,10 +506,20 @@ def main(argv: Iterable[str] | None = None) -> int:
             torch.cuda.empty_cache()
     eligible = [result for result in results if result.state == "passed" and result.memory_fraction <= 0.90]
     selected = max(eligible, key=lambda result: result.origins_per_second, default=None)
+    selected_by_model = {
+        model_size: asdict(best)
+        for model_size in MODEL_SIZE_PRESETS
+        if (best := max(
+            (result for result in eligible if result.candidate.model_size == model_size),
+            key=lambda result: result.origins_per_second,
+            default=None,
+        )) is not None
+    }
     summary = {
         "device": str(device),
         "args": vars(args),
         "selected": asdict(selected) if selected else None,
+        "selected_by_model": selected_by_model,
         "results": [asdict(result) for result in results],
     }
     _atomic_json(run_root / "summary.json", summary)

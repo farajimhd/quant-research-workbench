@@ -399,18 +399,21 @@ Profile the complete Arrow-to-optimizer path before the first full run:
 python -B -m research.bar_gpt.v1.run_profile_train
 ```
 
-The candidate sweep measures loader wait, GPU time, origins/second, encoded
-tokens/second, and peak device memory. OOM candidates fail independently; only
-candidates at or below 90% reserved memory are eligible. `torch.compile` remains an
-explicit opt-in candidate because Windows compilation can stall before the first measured
-update; it is not part of the bounded default sweep. The current default uses
-twelve single-thread ClickHouse workers instead of increasing server threads
-per query. The bounded follow-up sweep compares that baseline with sixteen and
-twenty-four workers on the complete training ticker universe.
-Twelve measured updates cross
-the initial worker/unit buffer so results include
-ticker-month turnover rather than only warm-queue throughput. Promote the selected profile
-into launcher defaults only after measuring it on the training workstation.
+The joint candidate sweep measures loader wait, GPU time, origins/second,
+encoded tokens/second, parameter count, effective blocks per update, the
+recommended accumulation for a 32-block target update, and peak device memory.
+It crosses Current (13.7M), Medium (38.9M), Large (78.0M), and XLarge (193.2M)
+architectures with bounded model-appropriate microbatches. There is no Small
+candidate. The default fit sweep uses one microbatch per optimizer step so all
+four architectures finish in bounded time; use its recommended accumulation
+for an equal-effective-batch follow-up. OOM candidates fail independently and
+larger microbatches of the same model/device shape are skipped; only candidates
+at or below 90% reserved memory are eligible. `torch.compile` remains an
+explicit opt-in because Windows compilation can stall before the first measured
+update. Sixteen worker-owned offline mmap streams are held fixed so the sweep
+isolates model and GPU microbatch effects. Promote a selected per-model profile
+into a controlled equal-origin training comparison only after measuring it on
+the training workstation.
 
 ### Offline training-ready tensor shards
 

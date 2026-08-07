@@ -4,7 +4,7 @@ import os
 import shlex
 import sys
 
-from research.bar_gpt.v1.profile_train import main
+from research.bar_gpt.v1.profile_train import DEFAULT_JOINT_CANDIDATES, main
 
 
 DEFAULT_ARGS: tuple[str, ...] = (
@@ -13,13 +13,12 @@ DEFAULT_ARGS: tuple[str, ...] = (
     "--start-date", "2019-01-01",
     "--end-date", "2019-02-01",
     "--candidates",
-    (
-        "4096:16:2:12:1:0,4096:16:2:16:1:0,4096:16:2:24:1:0"
-    ),
+    DEFAULT_JOINT_CANDIDATES,
     "--ready-queue-blocks", "512",
     "--worker-prefetch-batches", "4",
-    "--warmup-steps", "2",
-    "--measured-steps", "12",
+    "--target-effective-blocks", "32",
+    "--warmup-steps", "1",
+    "--measured-steps", "3",
     "--progress-layout", "auto",
 )
 

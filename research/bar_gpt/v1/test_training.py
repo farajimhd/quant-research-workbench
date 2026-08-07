@@ -98,7 +98,7 @@ from research.bar_gpt.v1.train import (
     preflight,
     validate,
 )
-from research.bar_gpt.v1.profile_train import _parse_candidates
+from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS, _model_config, _parse_candidates
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
 from research.bar_gpt.v1.run_profile_train import DEFAULT_ARGS as profile_launcher_args
 from research.bar_gpt.v1.run_train import DEFAULT_ARGS as training_launcher_args
@@ -1393,14 +1393,24 @@ class LoaderTrainerContractTest(unittest.TestCase):
     def test_profiler_candidate_contract_is_explicit(self) -> None:
         candidates = _parse_candidates("256:1:8:4:1,512:2:4:4:0:1")
         self.assertEqual(candidates[0].origin_bars, 256)
+        self.assertEqual(candidates[0].model_size, "current")
         self.assertTrue(candidates[0].cuda_prefetch)
         self.assertFalse(candidates[1].cuda_prefetch)
         self.assertTrue(candidates[1].compile_model)
+        joint = _parse_candidates("xlarge:4096:2:1:16:1:0")
+        self.assertEqual(joint[0].model_size, "xlarge")
+        self.assertEqual(joint[0].microbatch, 2)
         launcher_candidates = profile_launcher_args[profile_launcher_args.index("--candidates") + 1]
         parsed = _parse_candidates(launcher_candidates)
-        shapes = [(item.origin_bars, item.microbatch, item.accumulation) for item in parsed]
-        self.assertIn((4096, 16, 2), shapes)
-        self.assertEqual({item.workers for item in parsed}, {12, 16, 24})
+        self.assertEqual({item.model_size for item in parsed}, {"current", "medium", "large", "xlarge"})
+        self.assertNotIn("small", {item.model_size for item in parsed})
+        self.assertEqual({item.workers for item in parsed}, {16})
+        self.assertEqual({item.microbatch for item in parsed if item.model_size == "current"}, {8, 16, 24, 32})
+        self.assertEqual({item.microbatch for item in parsed if item.model_size == "xlarge"}, {1, 2, 4, 8})
+        self.assertEqual(profile_launcher_args[profile_launcher_args.index("--target-effective-blocks") + 1], "32")
+        resolved = {name: _model_config(_parse_candidates(f"{name}:4096:1:1:16:1:0")[0]) for name in MODEL_SIZE_PRESETS}
+        self.assertEqual((resolved["current"].d_model, resolved["current"].n_layers), (384, 8))
+        self.assertEqual((resolved["xlarge"].d_model, resolved["xlarge"].n_layers), (1024, 16))
 
     def test_training_launcher_uses_selected_worker_owned_profile(self) -> None:
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
