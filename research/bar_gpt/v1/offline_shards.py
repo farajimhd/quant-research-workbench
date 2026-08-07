@@ -618,6 +618,29 @@ def compile_unit(examples: Sequence[BarGPTExample], config: DataConfig, key: str
     return compile_prepared_unit(sessions, config, key)
 
 
+def condition_positive_counts(sessions: Sequence[dict[str, Any]]) -> tuple[int, int, int, int]:
+    """Count valid positive values in the four condition-target channels."""
+    counts = [0, 0, 0, 0]
+    for session in sessions:
+        for block in session["blocks"]:
+            targets = block["horizon_targets"]
+            mask = block["horizon_mask"]
+            if not isinstance(targets, torch.Tensor) or not isinstance(mask, torch.Tensor):
+                raise TypeError("offline shard horizon targets and masks must be tensors")
+            if targets.shape != mask.shape or targets.ndim < 1 or targets.shape[-1] < 4:
+                raise ValueError(
+                    "offline shard horizon targets and masks must have matching shapes "
+                    "with at least four target channels"
+                )
+            values = targets[..., -4:]
+            valid = mask[..., -4:].to(dtype=torch.bool)
+            dimensions = tuple(range(values.ndim - 1))
+            positive = ((values > 0) & valid).sum(dim=dimensions).tolist()
+            for index, count in enumerate(positive):
+                counts[index] += int(count)
+    return counts[0], counts[1], counts[2], counts[3]
+
+
 def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig, key: str) -> dict[str, Any]:
     """Assemble already compiled sessions without retaining a month of raw examples."""
     sessions = list(sessions)
@@ -629,14 +652,7 @@ def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig
         int(block["origin_indices"].numel())
         for session in sessions for block in session["blocks"]
     )
-    condition_positive_counts = [0, 0, 0, 0]
-    for session in sessions:
-        for block in session["blocks"]:
-            values = block["horizon_targets"][..., -4:]
-            mask = block["horizon_mask"][..., -4:]
-            counts = ((values > 0) & mask).sum(dim=tuple(range(values.ndim - 1))).tolist()
-            for index, count in enumerate(counts):
-                condition_positive_counts[index] += int(count)
+    positive_counts = condition_positive_counts(sessions)
     return {
         "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
         "config_hash": config_hash(config),
@@ -649,7 +665,7 @@ def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig
             "sessions": len(sessions),
             "blocks": sum(len(session["blocks"]) for session in sessions),
             "origins": origins,
-            "condition_positive_counts": condition_positive_counts,
+            "condition_positive_counts": list(positive_counts),
         },
     }
 

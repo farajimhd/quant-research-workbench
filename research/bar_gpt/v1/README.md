@@ -507,6 +507,24 @@ python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection 
 python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection validation --start-date 2026-01-01 --end-date 2026-08-01 --workers 8
 ```
 
+Sidecars created before condition-positive metadata was emitted can be repaired
+from their immutable horizon target and mask tensors without rebuilding a shard
+or contacting ClickHouse. Run the read-only catalog first, and do not overlap
+the repair with an active shard compiler in the same runtime root:
+
+```powershell
+python -B -m research.bar_gpt.v1.repair_offline_shard_metadata
+python -B -m research.bar_gpt.v1.repair_offline_shard_metadata --execute
+```
+
+The execute form verifies contract, unit identity, config hash, certified byte
+size, and any embedded counts before atomically adding the four derived counts
+to each missing 2019--2020 training sidecar. It is restart-safe because repaired
+sidecars are skipped. `--max-shards N` provides a bounded smoke. The optional
+`--verify-sha256` re-reads every byte of each selected tensor file and can add
+substantial I/O to the 2.3 TB catalog; without it, the original certified digest
+is preserved while tensor structure and metadata are still checked.
+
 Completion advances only after the shard is atomically renamed, SHA-256
 certified, and accompanied by its sidecar manifest. Rerunning the same command
 skips compatible certified or explicitly covered-empty ticker-months. A changed
