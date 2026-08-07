@@ -537,6 +537,13 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     setStatus("ready");
   }
 
+  function updateConfigurationBook(value: Draft) {
+    setDraft(value);
+    setDirtySection("strategy");
+    setMessage("");
+    setStatus("ready");
+  }
+
   function setExperience(value: ConfigurationExperience) {
     window.localStorage.setItem("trading-configuration-experience", value);
     window.sessionStorage.setItem("configuration-studio-started", "true");
@@ -581,8 +588,9 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     setStatus("saving");
     setMessage("");
     try {
-      const nextDraft = await api<Draft>(`/api/trading/configuration/draft/${section}`, {
-        body: JSON.stringify({ payload: serializeSection(section, draft[section]) }),
+      const saveWholeBook = section === "strategy";
+      const nextDraft = await api<Draft>(saveWholeBook ? "/api/trading/configuration/draft" : `/api/trading/configuration/draft/${section}`, {
+        body: JSON.stringify({ payload: saveWholeBook ? serializeDraft(draft) : serializeSection(section, draft[section]) }),
         method: "PUT",
       });
       setDraft(normalizeDraft(nextDraft));
@@ -596,28 +604,6 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       setMessageTone("error");
       setMessage(reason instanceof Error ? reason.message : String(reason));
       return false;
-    }
-  }
-
-  async function persistStrategy(value: StrategySection) {
-    setStatus("saving");
-    setMessage("");
-    try {
-      const nextDraft = await api<Draft>("/api/trading/configuration/draft/strategy", {
-        body: JSON.stringify({ payload: value }),
-        method: "PUT",
-      });
-      setDraft(normalizeDraft(nextDraft));
-      setDirtySection(null);
-      setStatus("saved");
-      setMessageTone("success");
-      setMessage("Strategy clone saved to the configuration draft.");
-      return nextDraft.strategy;
-    } catch (reason) {
-      setStatus("error");
-      setMessageTone("error");
-      setMessage(reason instanceof Error ? reason.message : String(reason));
-      throw reason;
     }
   }
 
@@ -707,7 +693,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       ) : draft ? (
         <div className="configuration-expert-workspace">
           <div className="configuration-expert-editor">
-            {section === "strategy" ? <StrategyStudio draft={draft} section={draft.strategy} onChange={(value) => updateDraft("strategy", value)} onPersist={persistStrategy} /> : null}
+            {section === "strategy" ? <StrategyStudio approved={approved} draft={draft} label={label} onChange={(value) => updateDraft("strategy", value)} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
             {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
             {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
             {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
@@ -1442,9 +1428,19 @@ function GuidedEmpty({ onSwitchToExpert }: { onSwitchToExpert: () => void }) {
   return <div className="guided-empty"><TriangleAlert size={20} /><h2>This step needs a base object</h2><p>Create the missing profile, deployment, mandate, OMS profile, policy, protection profile, or account in Expert mode. Guided setup never invents a live-critical object.</p><button className="button primary" onClick={onSwitchToExpert} type="button"><Settings2 size={15} /> Open Expert editor</button></div>;
 }
 
-function StrategyStudio({ draft, onChange, onPersist, section }: { draft: Draft; onChange: (value: StrategySection) => void; onPersist: (value: StrategySection) => Promise<StrategySection>; section: StrategySection }) {
+function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLabelChange, onPublish, publishing, revisions, section }: {
+  approved: Revision | null;
+  draft: Draft;
+  label: string;
+  onChange: (value: StrategySection) => void;
+  onDraftChange: (value: Draft) => void;
+  onLabelChange: (value: string) => void;
+  onPublish: () => void;
+  publishing: boolean;
+  revisions: Revision[];
+  section: StrategySection;
+}) {
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
-  const [cloning, setCloning] = useState(false);
   const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
   const profileInUse = draft.assignments.deployments.some((row) => row.profile_id === selected?.profile_id);
   useEffect(() => {
@@ -1456,16 +1452,11 @@ function StrategyStudio({ draft, onChange, onPersist, section }: { draft: Draft;
     onChange({ ...section, profiles: section.profiles.map((row) => row.profile_id === selected.profile_id ? next : row) });
   }
 
-  async function cloneProfile() {
+  function cloneProfile() {
     const id = uniqueId(`${selected.profile_id}-copy`, section.profiles.map((row) => row.profile_id));
     const next = { ...deepClone(selected), profile_id: id, name: `${selected.name} copy`, origin: "user" as const, protected: false, revision: 1 };
-    setCloning(true);
-    try {
-      await onPersist({ ...section, profiles: [...section.profiles, next] });
-      setSelectedId(id);
-    } finally {
-      setCloning(false);
-    }
+    onChange({ ...section, profiles: [...section.profiles, next] });
+    setSelectedId(id);
   }
 
   function createProfile(template?: StrategyProfile) {
@@ -1531,7 +1522,7 @@ function StrategyStudio({ draft, onChange, onPersist, section }: { draft: Draft;
             <textarea aria-label="Strategy Profile summary" onChange={(event) => replaceProfile({ ...selected, description: event.target.value })} rows={2} value={selected.description} />
           </div>
           <div className="configuration-heading-actions">
-            <button className="button compact" disabled={cloning} onClick={cloneProfile} type="button"><Clipboard size={14} /> {cloning ? "Cloning…" : "Clone"}</button>
+            <button className="button compact" onClick={cloneProfile} type="button"><Clipboard size={14} /> Clone</button>
             <button
               aria-label="Delete Strategy Profile"
               className="button compact danger"
@@ -1543,134 +1534,133 @@ function StrategyStudio({ draft, onChange, onPersist, section }: { draft: Draft;
           </div>
         </section>
 
-        <article className="strategy-story" aria-label={`${selected.name} lifecycle story`}>
-          <header className="strategy-story-introduction">
-            <BookOpenCheck aria-hidden="true" size={20} />
+        <article className="strategy-book" aria-label={`${selected.name} configuration handbook`}>
+          <header className="strategy-book-cover">
+            <BookOpenCheck aria-hidden="true" size={24} />
             <div>
-              <span>Configuration to execution</span>
-              <h2>The life of this strategy</h2>
-              <p className="strategy-story-copy">Read from top to bottom. Every control changes the Strategy Profile at the exact moment its value matters; links lead to the separate authority that completes the handoff.</p>
+              <span>Configuration handbook</span>
+              <h2>From a trading idea to a governed Strategy Run</h2>
+              <p>The story starts with a Strategy Definition because it is the first durable abstraction: tested code that knows how to evaluate market evidence. Everything that follows configures, constrains, connects, and finally authorizes that code. Work downward in order; the controls inside the text edit the same application draft used by every configuration page.</p>
             </div>
           </header>
 
-          <StoryChapter marker="01" eyebrow="Before launch" title="The reusable profile is prepared">
-            <p className="strategy-story-copy">The Strategy Engine supplies the code-defined behavior. This profile configures that behavior without choosing an account, claiming a ticker, or creating an order. New Run Plans may select it only while it remains available.</p>
-            <div className="strategy-story-fields compact">
-              <BooleanField help="Allow new or edited Run Plans to select this configured Strategy Profile." label="Available for use" onChange={(enabled) => replaceProfile({ ...selected, enabled })} value={selected.enabled} />
+          <BookPart label="Part I" title="Teach the strategy what its idea means" />
+
+          <StoryChapter marker="01" eyebrow="The real beginning" title="A Strategy Definition becomes a reusable Profile">
+            <div className="strategy-book-prose">
+              <p>A Strategy Definition is implementation, not a deployment. It declares the calculations and supported direction that the Strategy Engine can execute. The selected Strategy Profile is the editable interpretation of that definition: it gives the idea an operator-facing identity and supplies the parameters the implementation expects.</p>
+              <p>The profile deliberately knows nothing about broker accounts or competing strategies. That separation is what allows one tested idea to be reused by many Run Plans without letting one run silently alter another. Keep the profile available when new Run Plans may use it; disabling it preserves history while preventing new selection.</p>
             </div>
-            {advanced.length ? (
-              <details className="configuration-advanced strategy-story-advanced">
-                <summary><span><strong>Engine parameters</strong><small>Signal, protection, and implementation values read by the strategy code</small></span><ChevronRight size={15} /></summary>
-                <div className="configuration-field-grid">
-                  {advanced.map((item) => (
-                    <ParameterField
-                      definition={field(item.path, readableLabel(item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))}
-                      key={item.path}
-                      value={item.value}
-                      onChange={(value) => replaceProfile({ ...selected, parameters: setPath(selected.parameters, item.path, value) })}
-                    />
-                  ))}
-                </div>
-              </details>
-            ) : null}
+            <BookConfigurationSurface label="Configure the reusable profile">
+              <div className="strategy-story-fields compact">
+                <BooleanField help="Allow new or edited Run Plans to select this configured Strategy Profile." label="Available for use" onChange={(enabled) => replaceProfile({ ...selected, enabled })} value={selected.enabled} />
+              </div>
+              {advanced.length ? (
+                <details className="configuration-advanced strategy-story-advanced">
+                  <summary><span><strong>Engine parameters</strong><small>Signal, protection, and implementation values read by the strategy code</small></span><ChevronRight size={15} /></summary>
+                  <div className="configuration-field-grid">
+                    {advanced.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} value={item.value} onChange={(value) => replaceProfile({ ...selected, parameters: setPath(selected.parameters, item.path, value) })} />)}
+                  </div>
+                </details>
+              ) : null}
+            </BookConfigurationSurface>
           </StoryChapter>
 
-          <StoryChapter marker="02" eyebrow="A run is requested" title="A Run Plan gives the profile a job">
-            <p className="strategy-story-copy">A Run Plan selects this profile, a watch universe, permitted environments, action authority, an OMS profile, and the campaign lifetime. Portfolio mandates then bind eligible accounts. Those settings remain outside this profile so several runs can use the same logic without competing inside the strategy.</p>
-            <StoryHandoffs items={[
-              { href: "#assignment-configuration", label: "Run Plans", detail: "Universe, environment, action authority and campaign lifetime" },
-              { href: "#portfolio-configuration", label: "Portfolio & Risk", detail: "Account mandates, allocation and cross-run arbitration" },
-            ]} />
+          <StoryChapter marker="02" eyebrow="Observation" title="Define when the strategy is awake and what it is allowed to recognize">
+            <div className="strategy-book-prose">
+              <p>A run does not evaluate continuously merely because market data exists. The profile defines the causal event that wakes its logic, the market sessions in which a new position may be considered, and the directional position it understands. These choices form the vocabulary for every later rule.</p>
+              <p>Manual-position adoption is separate from entry. When enabled, a campaign may assume management of exposure that already exists; it does not pretend the strategy generated the original fill. Protective exits remain active whenever exposure exists, even outside the sessions selected for new entries.</p>
+            </div>
+            <BookConfigurationSurface label="Configure observation behavior">
+              <TradingBehaviorEditor definition={section.definitions.find((row) => row.strategy_id === selected.definition_id)} profile={selected} onChange={replaceProfile} />
+            </BookConfigurationSurface>
           </StoryChapter>
 
-          <StoryChapter marker="03" eyebrow="The run starts" title="The campaign begins observing">
-            <p className="strategy-story-copy">After an approved release starts a Strategy Run, the shared control plane grants one ticker campaign for the configured direction. The campaign evaluates only on its chosen causal trigger and during its eligible sessions. It may adopt an existing manual position only when explicitly allowed.</p>
-          <TradingBehaviorEditor
-            definition={section.definitions.find((row) => row.strategy_id === selected.definition_id)}
-            profile={selected}
-            onChange={replaceProfile}
-          />
+          <StoryChapter marker="03" eyebrow="Decision" title="Turn causal evidence into an initial Strategy Intent">
+            <div className="strategy-book-prose">
+              <p>The entry decision is a sequence. Opportunity rules first recognize that a candidate may exist. Confirmation rules then demand the evidence required to act. Blockers are evaluated last and may veto the entry even when the positive thesis is otherwise complete.</p>
+              <p>A passing decision produces a Strategy Intent. It is still neither quantity nor broker order. The profile describes its desired capital envelope and execution character; Portfolio may reduce or reject the request, and OMS alone may translate an approval into orders.</p>
+            </div>
+            <BookConfigurationSurface label="Configure the first entry">
+              <DecisionRulesEditor catalog={section.input_catalog} rules={entryRules} title="Initial-entry evidence" summary="Opportunity, confirmation, and blockers are evaluated in that order from causal inputs." onChange={(value) => replaceProfile({ ...selected, lifecycle: { ...selected.lifecycle, initial_entry: { ...selected.lifecycle.initial_entry, ...value } } })} />
+              <PhaseOrderEditor capitalRequest={selected.lifecycle.initial_entry.capital_request} eligibleSessions={selected.lifecycle.trading_behavior.eligible_sessions} orderIntent={selected.lifecycle.initial_entry.order_intent} title="Initial order request" executionPolicies={draft.oms.execution_policies} protectionProfiles={draft.oms.protection_profiles} onCapitalRequest={(capital_request) => replaceProfile({ ...selected, lifecycle: { ...selected.lifecycle, initial_entry: { ...selected.lifecycle.initial_entry, capital_request } } })} onOrderIntent={(order_intent) => replaceProfile({ ...selected, lifecycle: { ...selected.lifecycle, initial_entry: { ...selected.lifecycle.initial_entry, order_intent } } })} />
+            </BookConfigurationSurface>
           </StoryChapter>
 
-          <StoryChapter marker="04" eyebrow="Evidence arrives" title="The strategy decides whether an entry exists">
-            <p className="strategy-story-copy">Opportunity evidence identifies a candidate. Confirmation rule sets must then pass, while any passing blocker prevents entry. The result is a Strategy Intent—not a broker order—and action authority in the Run Plan decides whether it proceeds automatically, waits for confirmation, or remains manual.</p>
-          <DecisionRulesEditor
-            catalog={section.input_catalog}
-            rules={entryRules}
-            title="Initial-entry evidence"
-            summary="Opportunity, confirmation, and blockers are evaluated in that order from causal inputs."
-            onChange={(value) => replaceProfile({
-              ...selected,
-              lifecycle: {
-                ...selected.lifecycle,
-                initial_entry: { ...selected.lifecycle.initial_entry, ...value },
-              },
-            })}
-          />
+          <StoryChapter marker="04" eyebrow="Position lifecycle" title="Explain how the idea behaves after the first fill">
+            <div className="strategy-book-prose">
+              <p>An open position changes the problem. Adds are ordered position-building decisions: each requires its own fresh evidence, usage limit, capital request, and OMS intent. Capabilities are reusable functions supplied by code and attached to the campaign; they may extend management behavior but cannot bypass Portfolio or OMS.</p>
+              <p>A reentry begins only after the position is fully flat while the campaign still owns the ticker. It has independent evidence and a cooldown because it is a new risk decision, not an add. Strategic exits express why the thesis should reduce or end. Broker-held protection and emergency liquidation remain independent of these strategic rules.</p>
+            </div>
+            <BookConfigurationSurface label="Configure position management, reentry, and exit">
+              <AddStepsEditor catalog={section.input_catalog} eligibleSessions={selected.lifecycle.trading_behavior.eligible_sessions} executionPolicies={draft.oms.execution_policies} protectionProfiles={draft.oms.protection_profiles} steps={selected.lifecycle.initial_entry.add_steps} onChange={(add_steps) => replaceProfile({ ...selected, lifecycle: { ...selected.lifecycle, initial_entry: { ...selected.lifecycle.initial_entry, add_steps } } })} />
+              <CapabilitiesEditor catalog={section.capability_catalog} profile={selected} onChange={replaceProfile} />
+              <ReentryEditor catalog={section.input_catalog} draft={draft} profile={selected} onChange={replaceProfile} />
+              <ExitRuleSetsEditor catalog={section.input_catalog} draft={draft} profile={selected} onChange={replaceProfile} />
+            </BookConfigurationSurface>
           </StoryChapter>
 
-          <StoryChapter marker="05" eyebrow="The intent is approved" title="Portfolio sizes it; OMS executes and protects it">
-            <p className="strategy-story-copy">The strategy asks for capital in relative terms. Portfolio checks the account mandate, reservations, exposure, loss limits, and competing runs before returning an approved quantity and account allocation. OMS alone translates that approval into broker orders, manages partial fills, and attaches independent protection.</p>
-            <PhaseOrderEditor
-              capitalRequest={selected.lifecycle.initial_entry.capital_request}
-              eligibleSessions={selected.lifecycle.trading_behavior.eligible_sessions}
-              orderIntent={selected.lifecycle.initial_entry.order_intent}
-              title="Initial order request"
-              executionPolicies={draft.oms.execution_policies}
-              protectionProfiles={draft.oms.protection_profiles}
-              onCapitalRequest={(capital_request) => replaceProfile({ ...selected, lifecycle: { ...selected.lifecycle, initial_entry: { ...selected.lifecycle.initial_entry, capital_request } } })}
-              onOrderIntent={(order_intent) => replaceProfile({ ...selected, lifecycle: { ...selected.lifecycle, initial_entry: { ...selected.lifecycle.initial_entry, order_intent } } })}
-            />
-            <StoryHandoffs items={[
-              { href: "#oms-configuration", label: "OMS & Protection", detail: "Execution, broker reconciliation and protective orders" },
-              { href: "#account-configuration", label: "Accounts & Sessions", detail: "Broker capability and active-session readiness" },
-            ]} />
+          <BookPart label="Part II" title="Connect the profile to the trading system" />
+
+          <StoryChapter marker="05" eyebrow="Runtime identity" title="Establish the accounts and sessions that may carry exposure">
+            <div className="strategy-book-prose">
+              <p>An account binding gives the application a stable internal account key and tells the runtime how to find the matching simulated or broker session. Strategy Profiles never contain broker identities. Run Plans and Portfolio mandates refer only to the stable key, while Paper and Live resolve protected environment references during backend preflight.</p>
+              <p>Modes describe where an account is eligible to operate; they do not prove that a broker session is healthy. Paper and Live still require exact account discovery, compatible capabilities, an enabled session, and the safety checks enforced at run start.</p>
+            </div>
+            <BookConfigurationSurface label="Configure account bindings">
+              <AccountsEditor draft={draft} onChange={(accounts) => onDraftChange({ ...draft, accounts })} />
+            </BookConfigurationSurface>
           </StoryChapter>
 
-          <StoryChapter marker="06" eyebrow="The position is open" title="The campaign may build and manage the position">
-            <p className="strategy-story-copy">While exposure remains open, each configured add step owns fresh evidence, a usage limit, a new capital request, and an OMS order intent. Capabilities provide reusable code-defined functions during the campaign; neither can bypass Portfolio approval or OMS protection.</p>
-          <AddStepsEditor
-            catalog={section.input_catalog}
-            eligibleSessions={selected.lifecycle.trading_behavior.eligible_sessions}
-            executionPolicies={draft.oms.execution_policies}
-            protectionProfiles={draft.oms.protection_profiles}
-            steps={selected.lifecycle.initial_entry.add_steps}
-            onChange={(add_steps) => replaceProfile({
-              ...selected,
-              lifecycle: {
-                ...selected.lifecycle,
-                initial_entry: { ...selected.lifecycle.initial_entry, add_steps },
-              },
-            })}
-          />
-            <CapabilitiesEditor catalog={section.capability_catalog} profile={selected} onChange={replaceProfile} />
+          <StoryChapter marker="06" eyebrow="Execution authority" title="Define how approved intent becomes a protected broker position">
+            <div className="strategy-book-prose">
+              <p>The Order Management System begins where strategy authority ends. It selects broker-compatible instructions, works the approved quantity, handles partial fills, reconciles broker truth, and maintains protective orders. The strategy may request an execution policy and protection profile, but it never creates, modifies, or cancels a broker order directly.</p>
+              <p>Protection belongs here because it must survive a paused strategy, delayed confirmation, or strategy bug. Stops, profit slices, trailing transitions, catastrophic backstops, and repair deadlines are versioned independently and remain automatic for risk-reducing actions.</p>
+            </div>
+            <BookConfigurationSurface label="Configure OMS execution and protection">
+              <OmsEditor section={draft.oms} onChange={(oms) => onDraftChange({ ...draft, oms })} />
+            </BookConfigurationSurface>
           </StoryChapter>
 
-          <StoryChapter marker="07" eyebrow="After a full exit" title="The campaign may earn another entry">
-            <p className="strategy-story-copy">A reentry is a new flat-to-open transition inside the same ticker campaign. It has independent evidence, capital, and execution settings. The cooldown, attempt limit, and fresh-confirmation gate must pass before Portfolio is asked again.</p>
-            <ReentryEditor catalog={section.input_catalog} draft={draft} profile={selected} onChange={replaceProfile} />
+          <StoryChapter marker="07" eyebrow="Launch contract" title="Create the Run Plan that turns a reusable profile into a runnable job">
+            <div className="strategy-book-prose">
+              <p>The Run Plan is the launch contract. It selects the Strategy Profile, watch universe, OMS profile, portfolio book, and permitted environments. It also defines action authority for initial entry, adds, reentry, strategic exits, and the campaign rules that determine how long ticker ownership is retained.</p>
+              <p>Authority belongs here because it varies by run. The same profile may enter automatically in one plan and require confirmation in another. Protective and emergency exits remain automatic regardless of those choices. Competing runs are arbitrated by the shared control plane and Portfolio, never by a priority stored inside the Strategy Profile.</p>
+            </div>
+            <BookConfigurationSurface label="Configure Run Plans and watch universes">
+              <DeploymentEditor draft={draft} onChange={(assignments) => onDraftChange({ ...draft, assignments })} />
+            </BookConfigurationSurface>
           </StoryChapter>
 
-          <StoryChapter marker="08" eyebrow="The thesis ends" title="Strategic exits release exposure">
-            <p className="strategy-story-copy">Strategic exit rule sets are checked in order. A passing route applies its timing window and position action, then emits an OMS intent. Broker-held protective exits and emergency liquidation remain automatic and independent, even when strategic entry or exit authority is manual.</p>
-            <ExitRuleSetsEditor catalog={section.input_catalog} draft={draft} profile={selected} onChange={replaceProfile} />
+          <StoryChapter marker="08" eyebrow="Capital authority" title="Give Portfolio the mandate and guardrails for every eligible account">
+            <div className="strategy-book-prose">
+              <p>A Portfolio mandate joins a Run Plan to an account. It decides how capital may be allocated, how many positions may coexist, the largest planned risk, and the strongest action authority that account accepts. Account groups then apply shared exposure limits across several accounts or runs.</p>
+              <p>Portfolio is also the racing authority. When several Strategy Runs request the same scarce capital or incompatible exposure, Portfolio considers current positions, reservations, replacement improvement, account rules, and global limits before approving quantity. A strategy can ask; it cannot reserve or award capital to itself.</p>
+            </div>
+            <BookConfigurationSurface label="Configure portfolio policies, mandates, groups, and safety">
+              <PortfolioEditor draft={draft} onChange={(portfolio) => onDraftChange({ ...draft, portfolio })} />
+            </BookConfigurationSurface>
           </StoryChapter>
 
-          <StoryChapter marker="09" eyebrow="Throughout the run" title="Shared guardrails remain above every strategy">
-            <p className="strategy-story-copy">Portfolio continuously arbitrates capital and account exposure across all runs. The Safety Supervisor watches account and portfolio loss, stale data, broker health, rejected orders, and other global limits. OMS reconciles the broker. A latched breach blocks new risk and can trigger emergency actions; it is mandatory for Paper and Live and cannot be disabled by this profile.</p>
-            <StoryHandoffs items={[
-              { href: "#portfolio-configuration", label: "Portfolio & Risk", detail: "Continuous limits, reservations and safety latches" },
-              { href: "#oms-configuration", label: "OMS & Protection", detail: "Order state, broker truth and emergency execution" },
-              { href: "#account-configuration", label: "Accounts & Sessions", detail: "Connectivity, capabilities and session ownership" },
-            ]} />
+          <StoryChapter marker="09" eyebrow="Immutable authority" title="Save the complete draft, then publish one approved release">
+            <div className="strategy-book-prose">
+              <p>The draft is a workspace and has no runtime authority. Save it after completing the chapters above. Publication validates the connected Strategy Profiles, Run Plans, mandates, accounts, OMS policies, protection, safety coverage, and Canvas, then freezes them into one immutable release.</p>
+              <p>Every new Strategy Run pins that release. Later edits may prepare a different future release, but they cannot change a run already in progress. This boundary makes Replay, Backtest, Paper, and Live evidence reproducible and auditable.</p>
+            </div>
+            <BookConfigurationSurface label="Review and publish the release">
+              <RevisionPublisher approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} />
+            </BookConfigurationSurface>
           </StoryChapter>
 
-          <StoryChapter marker="10" eyebrow="The run closes" title="The campaign releases its claim and leaves evidence">
-            <p className="strategy-story-copy">The Run Plan decides when an unfilled watch expires, what happens at session end, and whether a paused campaign retains ticker ownership. When the run ends, reservations and control-plane claims are released. The approved release, Strategy Run, intents, Portfolio decisions, OMS events, fills, protection changes, and safety actions remain linked for replay and audit.</p>
-            <StoryHandoffs items={[
-              { href: "#assignment-configuration", label: "Run Plans", detail: "Campaign stop conditions and action authority" },
-              { href: "#release-configuration", label: "Approved Releases", detail: "Immutable configuration and runtime evidence" },
-            ]} />
+          <BookPart label="Part III" title="What happens after the operator starts a run" />
+
+          <StoryChapter marker="10" eyebrow="Runtime story" title="The release becomes a governed Strategy Run">
+            <div className="strategy-book-prose">
+              <p>At launch, the runtime resolves the approved Run Plan and eligible account mandates. Account and session preflight must succeed. The shared control plane then creates a Strategy Run and grants ticker campaigns according to universe observations and current ownership. A campaign wakes on the profile’s configured causal trigger and evaluates only evidence available at that time.</p>
+              <p>When entry evidence passes, action authority decides whether an operator must participate. An authorized Strategy Intent reaches Portfolio, which either rejects it with a reason or returns an account-specific quantity. OMS plans and submits the broker order, reconciles fills, and immediately maintains the selected protection contract.</p>
+              <p>During the position, adds and reentries repeat the same authority chain. Strategic exits may depend on profile evidence, but protective and emergency exits do not wait for strategy permission. Portfolio continuously checks account and group exposure while the Safety Supervisor watches loss, stale data, broker health, order failures, and global limits. Safety is enabled by default in simulation and cannot be disabled for Paper or Live.</p>
+              <p>Finally, the Run Plan’s campaign policy decides when a watch expires, what session end means, and when ticker ownership is released. The completed run leaves one connected record: release, run, campaigns, evidence, intents, Portfolio decisions, OMS events, broker fills, protection changes, and safety actions. That record is what makes the same behavior explainable in Replay and governable in Live trading.</p>
+            </div>
           </StoryChapter>
         </article>
       </main>
@@ -1690,17 +1680,18 @@ function StoryChapter({ children, eyebrow, marker, title }: { children: ReactNod
   );
 }
 
-function StoryHandoffs({ items }: { items: Array<{ detail: string; href: string; label: string }> }) {
+function BookPart({ label, title }: { label: string; title: string }) {
   return (
-    <nav aria-label="Continue configuration in another authority" className="strategy-story-handoffs">
-      {items.map((item) => (
-        <a href={item.href} key={`${item.href}-${item.label}`}>
-          <span><Network aria-hidden="true" size={15} /><strong>{item.label}</strong></span>
-          <small>{item.detail}</small>
-          <ChevronRight aria-hidden="true" size={15} />
-        </a>
-      ))}
-    </nav>
+    <header className="strategy-book-part"><span>{label}</span><h2>{title}</h2></header>
+  );
+}
+
+function BookConfigurationSurface({ children, label }: { children: ReactNode; label: string }) {
+  return (
+    <section className="strategy-book-configuration">
+      <header><PencilLine aria-hidden="true" size={15} /><span>{label}</span></header>
+      <div>{children}</div>
+    </section>
   );
 }
 

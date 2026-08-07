@@ -605,6 +605,100 @@
   .configuration-expert-editor .strategy-story-copy { font-size: 12.5px; line-height: 1.65; }
 }
 
+/* Book presentation: prose establishes meaning before the canonical editor appears. */
+.strategy-book {
+  background: var(--surface);
+  border: 1px solid var(--configuration-rule);
+  border-radius: 8px;
+  overflow: clip;
+}
+
+.strategy-book-cover {
+  align-items: flex-start;
+  background: var(--configuration-soft);
+  border-bottom: 1px solid var(--configuration-rule);
+  display: flex;
+  gap: 16px;
+  padding: 34px 42px 38px;
+}
+
+.strategy-book-cover > svg { color: var(--configuration-accent); flex: 0 0 auto; margin-top: 4px; }
+.strategy-book-cover > div { display: grid; gap: 8px; max-width: 850px; }
+.strategy-book-cover span,
+.strategy-book-part span {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.strategy-book-cover h2 { font-size: 28px; font-weight: 670; letter-spacing: -.025em; line-height: 1.14; margin: 0; }
+.configuration-expert-editor .strategy-book-cover p,
+.configuration-expert-editor .strategy-book-prose p {
+  color: var(--foreground);
+  display: block;
+  font-size: 15px;
+  line-height: 1.82;
+  margin: 0;
+}
+.configuration-expert-editor .strategy-book-cover p { color: var(--muted-foreground); max-width: 780px; }
+.strategy-book-prose { display: grid; gap: 14px; max-width: 790px; }
+
+.strategy-book-part {
+  border-bottom: 1px solid var(--configuration-rule);
+  border-top: 1px solid var(--configuration-rule);
+  display: grid;
+  gap: 5px;
+  padding: 26px 42px 24px;
+}
+.strategy-book-cover + .strategy-book-part { border-top: 0; }
+.strategy-book-part h2 { font-size: 21px; font-weight: 650; letter-spacing: -.015em; margin: 0; }
+
+.strategy-book .strategy-story-chapter { grid-template-columns: 70px minmax(0, 1fr); }
+.strategy-book .strategy-story-chapter::before { left: 34px; }
+.strategy-book .strategy-story-marker { height: 32px; margin-top: 40px; width: 32px; }
+.strategy-book .strategy-story-chapter-body { gap: 22px; padding: 38px 42px 46px 6px; }
+.strategy-book .strategy-story-chapter-body > header { gap: 6px; max-width: 820px; }
+.strategy-book .strategy-story-chapter-body > header h2 { font-size: 23px; letter-spacing: -.018em; line-height: 1.25; }
+
+.strategy-book-configuration {
+  border-top: 1px solid var(--configuration-rule);
+  display: grid;
+  gap: 0;
+  margin-top: 4px;
+  min-width: 0;
+  padding-top: 14px;
+}
+.strategy-book-configuration > header { align-items: center; color: var(--muted-foreground); display: flex; gap: 7px; padding: 0 2px 12px; }
+.strategy-book-configuration > header span { font-family: var(--font-mono); font-size: 9.5px; font-weight: 720; letter-spacing: .08em; text-transform: uppercase; }
+.strategy-book-configuration > div { display: grid; gap: 16px; min-width: 0; }
+.strategy-book-configuration .configuration-workbench { grid-template-columns: 205px minmax(0, 1fr); }
+.strategy-book-configuration .configuration-library { position: static; }
+.strategy-book-configuration .configuration-detail-heading { padding-top: 0; }
+.strategy-book-configuration .configuration-revision-layout { grid-template-columns: minmax(0, 1fr); }
+
+@container configuration-workbench (max-width: 980px) {
+  .strategy-book-configuration .configuration-workbench { grid-template-columns: minmax(0, 1fr); }
+  .strategy-book-configuration .configuration-library { max-height: none; }
+  .strategy-book-configuration .configuration-library > div { display: flex; overflow-x: auto; }
+  .strategy-book-configuration .configuration-library > div > button { flex: 0 0 210px; }
+}
+
+@container configuration-workbench (max-width: 680px) {
+  .strategy-book-cover { padding: 26px 22px 30px; }
+  .strategy-book-cover h2 { font-size: 23px; }
+  .strategy-book-part { padding: 22px; }
+  .strategy-book .strategy-story-chapter { grid-template-columns: 46px minmax(0, 1fr); }
+  .strategy-book .strategy-story-chapter::before { left: 22px; }
+  .strategy-book .strategy-story-marker { height: 26px; margin-top: 28px; width: 26px; }
+  .strategy-book .strategy-story-chapter-body { padding: 28px 18px 34px 2px; }
+  .strategy-book .strategy-story-chapter-body > header h2 { font-size: 20px; }
+  .configuration-expert-editor .strategy-book-cover p,
+  .configuration-expert-editor .strategy-book-prose p { font-size: 14px; line-height: 1.72; }
+}
+
 @media (max-width: 840px) {
   .trading-configuration-page { padding: 12px 12px 76px; }
   .configuration-page-header { gap: 10px; padding: 11px 12px; }
