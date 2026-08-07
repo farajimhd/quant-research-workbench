@@ -35,19 +35,25 @@ lengths are data/training hyperparameters and may be changed for experiments.
 
 ### Intraday views
 
-Every intraday view is calculated from the one-second authority. The default
-context length is 720 completed bars per view:
+Every intraday view is calculated from the one-second authority. Each view has
+its own configured number of completed context bars. The BarGPT v1 defaults
+are:
 
-| View | Context bars | Physical lookback |
-|---|---:|---:|
-| 1s | 720 | 12 minutes |
-| 5s | 720 | 1 hour |
-| 10s | 720 | 2 hours |
-| 30s | 720 | 6 hours |
-| 1m | 720 | 12 hours |
-| 5m | 720 | 2.5 days |
-| 30m | 720 | 15 days |
-| 1h | 720 | 30 days |
+| View | Physical lookback | Context bars | Prior 1s bars required |
+|---|---:|---:|---:|
+| 1s | 12 minutes | 720 | 720 |
+| 5s | 30 minutes | 360 | 1,800 |
+| 10s | 1 hour | 360 | 3,600 |
+| 30s | 2 hours | 240 | 7,200 |
+| 1m | 4 hours | 240 | 14,400 |
+| 5m | 8 hours | 96 | 28,800 |
+| 30m | 8 hours | 16 | 28,800 |
+| 1h | 8 hours | 8 | 28,800 |
+
+The `Prior 1s bars required` column is the context count multiplied by the
+view duration. For example, 360 completed 5-second bars cover 30 minutes and
+require 1,800 prior one-second bars. Context counts are independent
+hyperparameters; they must not be replaced by one shared literal.
 
 The loader calculates the required one-second warmup dynamically:
 
@@ -55,10 +61,12 @@ The loader calculates the required one-second warmup dynamically:
 max(context_bars[view] * timeframe_duration[view])
 ```
 
-With the defaults above, the 1-hour view determines the maximum intraday
-lookback: 720 one-hour bars, or 30 days of the configured one-second market
-clock. The exact number of raw rows is derived from the session clock and
-availability, not assumed to be a continuous 24-hour clock.
+With the defaults above, the 5-minute, 30-minute, and 1-hour views tie for the
+maximum intraday lookback: 28,800 one-second market-clock bars, or 8 market
+hours. A ticker-month worker must load and consume this causal warmup before
+its first training origin. Overnight gaps are not fabricated as one-second
+rows; the loader traverses prior sessions until it has the required number of
+eligible market-clock bars.
 
 ### Calendar views
 
@@ -116,10 +124,10 @@ For each ticker-month work unit:
    bars, and initialize daily, weekly, and monthly as-of state.
 5. Retain the bounded rolling one-second history required by the largest
    intraday physical lookback, plus completed-bar state and current
-   in-progress aggregation buckets. With the default 720 one-hour bars, this
-   is 30 market-clock days (2,592,000 one-second rows). Evict only rows older
-   than that moving maximum; they must remain available while they can still
-   contribute to a requested intraday context bar.
+   in-progress aggregation buckets. With the defaults above, this is 28,800
+   one-second market-clock bars. Evict only rows older than that moving
+   maximum; they must remain available while they can still contribute to a
+   requested intraday context bar.
 
 ### Origin streaming
 
@@ -139,6 +147,19 @@ The implementation should process origins in bounded chunks for GPU efficiency,
 but chunking must not change the per-origin causal state. A chunk may share
 rollup work; it must not use the last origin in the chunk as the as-of boundary
 for earlier origins.
+
+If a compiled block stores view prefixes rather than streaming ring snapshots,
+the stored prefix must cover both the first origin's complete history and all
+coarse bars that can complete across the block. For view duration `d` seconds
+and `O` consecutive one-second origins, the minimum planning bound is:
+
+```text
+stored_rows[view] >= context_bars[view] + ceil(O / d) + alignment_guard
+```
+
+The exact implementation may use tighter fixed-bucket boundary calculations,
+but retaining only `context_bars[view] + guard` rows ending at the block's last
+origin is invalid: early origins would lose part of their configured history.
 
 ## Efficiency requirements
 
@@ -181,3 +202,29 @@ The following components need coordinated changes:
 
 This design requires a fresh checkpoint contract. Existing checkpoints trained
 with the former view set or context semantics must not be resumed silently.
+
+## Current implementation drift to correct
+
+The current BarGPT v1 implementation does not yet match this table:
+
+- `config.py` assigns 720 context bars to every intraday view and contains a
+  720-specific compatibility branch. Replace those values with the table above
+  and keep one authoritative per-view mapping.
+- `run_train.py` separately hardcodes `--context-bars-1s 720`. The launcher must
+  resolve the 1-second value from the same data contract rather than becoming a
+  second authority.
+- The dynamic warmup calculation already uses
+  `max(context_bars[view] * timeframe_duration[view])`; after correcting the
+  configuration it must resolve to exactly 28,800 prior one-second bars.
+- `loader.py` currently caps a coarse block prefix at the configured context
+  count plus four rows while ending that prefix at the block's last origin.
+  It must retain the origin-span rows described above or implement true
+  per-origin streaming rings.
+- Offline shard identity and certification include this data contract. Shards
+  compiled under the all-720 contract cannot be relabeled or repaired through
+  sidecar metadata; they must be rebuilt under a new contract/configuration
+  hash.
+- Focused tests must verify the exact table, 28,800-row warmup, complete context
+  at the first/middle/last origin of a packed block, fixed-bucket availability,
+  calendar as-of-yesterday behavior, and rejection of incompatible shards and
+  checkpoints.
