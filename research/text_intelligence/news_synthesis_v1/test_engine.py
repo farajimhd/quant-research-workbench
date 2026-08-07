@@ -6,7 +6,12 @@ from datetime import date
 
 from .contracts import validate_document
 from .backfill import _source_revision
-from .engine import IssuerIdentity, IssuerIdentityIndex, NewsSynthesisEngine
+from .engine import (
+    IssuerIdentity,
+    IssuerIdentityIndex,
+    NewsSynthesisEngine,
+    _sentiment_term_present,
+)
 from .facts import extract_typed_facts
 from .storage import persistence_row
 
@@ -58,6 +63,43 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             "provider_candidate_only",
             document["entities"][0]["identity_evidence"],
         )
+
+    def test_contract_termination_dominates_reactive_mitigation(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-contract-loss",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha receives contract termination notice from Beta",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) received a termination notice "
+                "for its customer contract. The company is reducing costs associated "
+                "with the lost customer and adapting operations. Management said, "
+                "'We remain confident in our platform.'"
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "negative")
+        self.assertEqual(view["negative_strength"], 4)
+        self.assertNotIn(
+            "analyst.issuer_assessment",
+            {row["concept_leaf"] for row in document["statements"]},
+        )
+
+    def test_polarity_cues_match_word_families_not_inner_substrings(self) -> None:
+        cases = (
+            ("terminate", "contract termination notice", True),
+            ("cancel", "agreement cancellation", True),
+            ("received", "company receives an award", True),
+            ("decline", "revenue declined", True),
+            ("accept", "the FDA accepted the application", True),
+            ("order", "the customer orders twelve aircraft", True),
+            ("weakness", "unremediated material weaknesses", True),
+            ("win", "following the announcement", False),
+            ("advantage", "competitive disadvantage", False),
+        )
+        for cue, text, expected in cases:
+            with self.subTest(cue=cue, text=text):
+                self.assertEqual(_sentiment_term_present(cue, text), expected)
 
     def test_exchange_prefixed_provider_identifier_is_canonicalized(self) -> None:
         document = self.engine.synthesize({
@@ -123,6 +165,25 @@ class NewsSynthesisEngineTests(unittest.TestCase):
                 )
                 self.assertTrue(document["issuer_views"])
 
+    def test_acquisition_funding_and_operational_scale_are_constructive(self) -> None:
+        cases = (
+            "Alpha will use the proceeds to fund its pending acquisition.",
+            "The transaction will increase Alpha's operational scale and add development inventory.",
+        )
+        for index, text in enumerate(cases):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"news-acquisition-benefit-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(
+                    document["issuer_views"][0]["composite_sentiment"],
+                    "positive",
+                )
+
     def test_narrowed_loss_is_positive_earnings_direction(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-narrowed-loss",
@@ -141,6 +202,29 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             "text": "Alpha Therapeutics receives a delisting determination; the company has not regained compliance.",
             "tickers": ["AAA"],
         })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_minimum_bid_deficiency_is_negative(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-minimum-bid-deficiency",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha no longer meets Nasdaq minimum bid requirement",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) no longer meets the minimum bid listing requirement.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_rating_endpoint_is_not_double_counted_as_issuer_assessment(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-rating-endpoint",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Analyst downgrades Alpha from Positive to Neutral",
+            "text": "An analyst downgrades Alpha Therapeutics Inc (NASDAQ:AAA) from Positive to Neutral.",
+            "tickers": ["AAA"],
+        })
+        concepts = [row["concept_leaf"] for row in document["statements"]]
+        self.assertIn("analyst.rating_action", concepts)
+        self.assertNotIn("analyst.issuer_assessment", concepts)
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
 
     def test_production_package_has_no_prior_labeler_dependency(self) -> None:

@@ -24,7 +24,7 @@ from .engine import (
 from .taxonomy_audit import discover_pairs, load_json
 
 
-AUDIT_VERSION = "direct_trading_sentiment_audit_v2"
+AUDIT_VERSION = "direct_trading_sentiment_audit_v3"
 IDENTITY_SNAPSHOT_VERSION = "news_synthesis_benchmark_identity_snapshot_v1"
 
 
