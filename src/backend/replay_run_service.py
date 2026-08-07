@@ -659,6 +659,22 @@ class ReplayRunController:
                 account_ids=self.account_ids,
                 anchor_date=self.definition.session_date,
                 run_id=self.run_id,
+                run_plan_id=str(
+                    dict(configuration.get("run_plan") or {}).get("run_plan_id")
+                    or dict(configuration.get("deployment") or {}).get("deployment_id")
+                    or ""
+                ),
+                safety_supervisor_enabled=bool(
+                    dict(
+                        dict(
+                            dict(configuration.get("run_plan") or {}).get(
+                                "safety_supervisor"
+                            )
+                            or {}
+                        ).get("enabled_by_environment")
+                        or {}
+                    ).get("replay", True)
+                ),
                 checkpoint_interval_events=1_000,
             ),
             broker,

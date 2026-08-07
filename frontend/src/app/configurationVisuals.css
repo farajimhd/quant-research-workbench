@@ -75,6 +75,7 @@
 .configuration-expert-guide dd > span + span { margin-top: 3px; }
 .configuration-expert-guide dd svg { color: var(--success); }
 .configuration-expert-editor { display: grid; gap: 16px; min-width: 0; }
+.configuration-expert-editor p { display: none; }
 
 .configuration-expert-workspace .configuration-group {
   display: block;

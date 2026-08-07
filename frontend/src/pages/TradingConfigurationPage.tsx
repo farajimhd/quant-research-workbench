@@ -45,6 +45,7 @@ export type TradingConfigurationSection =
   | "revisions";
 
 type RuntimeMode = "replay" | "backtest" | "backtest_debug" | "paper" | "live";
+type ActionAuthority = "disabled" | "manual" | "confirm" | "automatic" | "inherit";
 type Primitive = boolean | number | string;
 type ParameterMap = Record<string, unknown>;
 
@@ -141,7 +142,6 @@ type EntryRules = {
 type CapitalRequestConfig = {
   allow_replacement: boolean;
   mode: "fixed_quantity" | "mandate_fraction" | "risk_fraction" | "all_available";
-  priority: number;
   value: number;
 };
 
@@ -217,9 +217,19 @@ type RuntimeAssignment = {
   ticker: string;
 };
 
-type Deployment = {
+type StrategyRunPlan = {
+  action_authority: {
+    add: ActionAuthority;
+    default: Exclude<ActionAuthority, "disabled" | "inherit">;
+    emergency_exit: "automatic";
+    initial_entry: ActionAuthority;
+    protective_exit: "automatic";
+    reentry: ActionAuthority;
+    strategic_exit: ActionAuthority;
+  };
+  allowed_environments: RuntimeMode[];
   book_id: string;
-  campaign_policy: {
+  campaign_lifecycle: {
     exit_authority: string;
     initial_entry_authority: string;
     maximum_initial_watch_ms: number;
@@ -230,16 +240,15 @@ type Deployment = {
     retain_ticker_while_paused: boolean;
     session_end_behavior: string;
   };
-  deployment_id: string;
+  run_plan_id: string;
   description: string;
   enabled: boolean;
   mandate_ids: string[];
-  modes: RuntimeMode[];
   name: string;
   oms_profile_id: string;
   profile_id: string;
   runtime_assignments: RuntimeAssignment[];
-  selection_priority: number;
+  safety_supervisor: { enabled_by_environment: Record<RuntimeMode, boolean> };
   universe_id: string;
 };
 
@@ -253,21 +262,22 @@ type WatchUniverse = {
   universe_id: string;
 };
 
-type AssignmentSection = { deployments: Deployment[]; universes: WatchUniverse[] };
+type AssignmentSection = { deployments: StrategyRunPlan[]; universes: WatchUniverse[] };
 
 type PortfolioPolicy = Record<string, Primitive | string[]>;
 type Mandate = {
   account_key: string;
   allow_replacement: boolean;
-  autonomy: "manual" | "confirm" | "automatic";
-  deployment_id: string;
+  assignment_mode: "single" | "replicated" | "weighted" | "partitioned";
+  maximum_action_authority: "manual" | "confirm" | "automatic";
+  run_plan_id: string;
   enabled: boolean;
   mandate_id: string;
   maximum_cash_fraction: number;
   maximum_planned_risk_fraction: number;
   maximum_positions: number;
   minimum_replacement_improvement_pct: number;
-  priority: number;
+  allocation_weight: number;
 };
 type PortfolioSection = { groups: ParameterMap[]; mandates: Mandate[]; policies: PortfolioPolicy[] };
 
@@ -387,6 +397,28 @@ type Draft = {
   updated_at?: string;
 };
 
+function normalizeDraft(payload: any): Draft {
+  const runPlans = payload?.run_plans ?? payload?.assignments ?? { plans: [], universes: [] };
+  return {
+    ...payload,
+    assignments: {
+      deployments: runPlans.plans ?? runPlans.deployments ?? [],
+      universes: runPlans.universes ?? [],
+    },
+  } as Draft;
+}
+
+function serializeDraft(draft: Draft) {
+  const { assignments, ...rest } = draft;
+  return { ...rest, run_plans: { plans: assignments.deployments, universes: assignments.universes } };
+}
+
+function serializeSection(section: TradingConfigurationSection, value: unknown) {
+  if (section !== "assignments") return value;
+  const runPlans = value as AssignmentSection;
+  return { plans: runPlans.deployments, universes: runPlans.universes };
+}
+
 type ConfigurationExperience = "guided" | "expert";
 type OmsGuidedStage = "execution" | "protection";
 type GuidedStep = TradingConfigurationSection | OmsGuidedStage;
@@ -410,8 +442,8 @@ const SECTION_META = {
   assignments: {
     eyebrow: "Step 2 · Make it usable",
     icon: Network,
-    title: "Strategy Deployments",
-    description: "Bind a Strategy Profile to its universe, OMS profile, runtime modes, and accounts.",
+    title: "Strategy Run Plans",
+    description: "Bind a Strategy Profile to environments, action authority, OMS, and account mandates.",
   },
   portfolio: {
     eyebrow: "Step 3 · Allocate capital",
@@ -467,8 +499,8 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   const [status, setStatus] = useState<"loading" | "ready" | "saving" | "saved" | "error">("loading");
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"success" | "error">("success");
-  const [experience, setExperienceState] = useState<ConfigurationExperience>(() => readStoredExperience());
-  const [showStudioHome, setShowStudioHome] = useState(() => section === "strategy" && !window.sessionStorage.getItem("configuration-studio-started"));
+  const [experience, setExperienceState] = useState<ConfigurationExperience>("expert");
+  const [showStudioHome, setShowStudioHome] = useState(false);
   const [omsGuidedStage, setOmsGuidedStageState] = useState<OmsGuidedStage>(() => readStoredOmsStage());
   const meta = SECTION_META[section];
   const Icon = meta.icon;
@@ -483,9 +515,9 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     ])
       .then(([nextDraft, approvedPayload, revisionPayload]) => {
         if (cancelled) return;
-        setDraft(nextDraft);
-        setApproved(approvedPayload.approved);
-        setRevisions(revisionPayload.rows);
+        setDraft(normalizeDraft(nextDraft));
+        setApproved(approvedPayload.approved ? { ...approvedPayload.approved, payload: normalizeDraft(approvedPayload.approved.payload) as Revision["payload"] } : null);
+        setRevisions(revisionPayload.rows.map((row) => ({ ...row, payload: normalizeDraft(row.payload) as Revision["payload"] })));
         setDirtySection(null);
         setStatus("ready");
       })
@@ -522,14 +554,15 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     setMessage("");
     try {
       const saved = sections.length > 1
-        ? await api<Draft>("/api/trading/configuration/draft", { body: JSON.stringify({ payload: next }), method: "PUT" })
-        : await api<Draft>(`/api/trading/configuration/draft/${sections[0]}`, { body: JSON.stringify({ payload: next[sections[0]] }), method: "PUT" });
-      setDraft(saved);
+        ? await api<Draft>("/api/trading/configuration/draft", { body: JSON.stringify({ payload: serializeDraft(next) }), method: "PUT" })
+        : await api<Draft>(`/api/trading/configuration/draft/${sections[0]}`, { body: JSON.stringify({ payload: serializeSection(sections[0], next[sections[0]]) }), method: "PUT" });
+      const normalized = normalizeDraft(saved);
+      setDraft(normalized);
       setDirtySection(null);
       setStatus("saved");
       setMessageTone("success");
       setMessage(successMessage);
-      return saved;
+      return normalized;
     } catch (reason) {
       setStatus("error");
       setMessageTone("error");
@@ -549,10 +582,10 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     setMessage("");
     try {
       const nextDraft = await api<Draft>(`/api/trading/configuration/draft/${section}`, {
-        body: JSON.stringify({ payload: draft[section] }),
+        body: JSON.stringify({ payload: serializeSection(section, draft[section]) }),
         method: "PUT",
       });
-      setDraft(nextDraft);
+      setDraft(normalizeDraft(nextDraft));
       setDirtySection(null);
       setStatus("saved");
       setMessageTone("success");
@@ -574,7 +607,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         body: JSON.stringify({ payload: value }),
         method: "PUT",
       });
-      setDraft(nextDraft);
+      setDraft(normalizeDraft(nextDraft));
       setDirtySection(null);
       setStatus("saved");
       setMessageTone("success");
@@ -624,13 +657,6 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         </div>
         <div className="configuration-header-controls">
           <RevisionBadge approved={approved} />
-          {draft ? (
-            <ConfigurationExperienceBar
-              experience={experience}
-              onExperienceChange={setExperience}
-              onOpenHome={() => { window.sessionStorage.setItem("configuration-studio-started", "true"); setShowStudioHome(true); }}
-            />
-          ) : null}
         </div>
       </header>
 
@@ -645,8 +671,6 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         />
       ) : (
         <>
-      <ConfigurationJourney active={section === "oms" ? omsGuidedStage : section} draft={draft} experience={experience} onOmsStageChange={setOmsGuidedStage} />
-
       {message ? (
         <div className={`configuration-message ${messageTone}`}>
           {messageTone === "error" ? <TriangleAlert size={17} /> : <CheckCircle2 size={17} />}
@@ -682,7 +706,6 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         /></div>
       ) : draft ? (
         <div className="configuration-expert-workspace">
-          <ExpertWorkspaceGuide section={section} />
           <div className="configuration-expert-editor">
             {section === "strategy" ? <StrategyStudio draft={draft} section={draft.strategy} onChange={(value) => updateDraft("strategy", value)} onPersist={persistStrategy} /> : null}
             {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
@@ -690,14 +713,12 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
             {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
             {section === "accounts" ? <AccountsEditor draft={draft} onChange={(value) => updateDraft("accounts", value)} /> : null}
           </div>
-          {["assignments", "portfolio", "oms", "accounts"].includes(section) ? <EffectiveConfigurationPreview updatedAt={draft.updated_at || ""} /> : null}
           <div className="configuration-save-bar">
             <span>{dirtySection === section ? "Unsaved draft changes" : "Draft matches saved configuration"}</span>
             <button className="button primary" disabled={dirtySection !== section || status === "saving"} onClick={saveSection} type="button">
               <Save size={15} /> {status === "saving" ? "Saving…" : "Save draft"}
             </button>
           </div>
-          <JsonInspector label={`${meta.title} generated JSON`} value={draft[section]} />
         </div>
       ) : <ConfigurationLoading />}
         </>
@@ -725,7 +746,7 @@ function ConfigurationExperienceBar({ experience, onExperienceChange, onOpenHome
 
 const EXPERT_GUIDANCE: Record<Exclude<TradingConfigurationSection, "revisions">, { authority: string; outcome: string; subjects: string[] }> = {
   strategy: { authority: "Strategy owns trading decisions. Portfolio sizes approved intent; OMS executes it.", outcome: "A reusable Strategy Profile with explicit lifecycle rules and optional capabilities.", subjects: ["Behavior and evaluation", "Entry, add, and reentry", "Exit and capabilities"] },
-  assignments: { authority: "Deployment binds reusable objects to modes and a watch universe; it does not redefine them.", outcome: "A runnable deployment with an explicit universe, profile, OMS profile, and campaign authority.", subjects: ["Watch universe", "Profile and OMS bindings", "Campaign lifecycle"] },
+  assignments: { authority: "Run Plan binds reusable objects to environments and authority.", outcome: "A runnable plan with explicit strategy, accounts, OMS, and safety.", subjects: ["Watch universe", "Profile and OMS", "Action authority"] },
   portfolio: { authority: "Portfolio is the sole authority for account allocation, capital approval, and continuous risk.", outcome: "Per-account mandates and risk limits that can approve, reduce, or reject requests.", subjects: ["Capital policy", "Account mandates", "Risk groups"] },
   oms: { authority: "OMS may use current market data to execute approved intent; it never creates trading intent or capital.", outcome: "Versioned execution and protection policies selected by Strategy or deployment defaults.", subjects: ["OMS defaults", "Execution policies", "Protection profiles"] },
   accounts: { authority: "IBKR remains authoritative for live and paper account state; configuration binds discovered identity and permissions.", outcome: "Mode-specific account bindings that fail closed when broker identity or capability differs.", subjects: ["Broker identity", "Mode permissions", "Safety limits"] },
@@ -796,7 +817,7 @@ function ConfigurationStudioHome({ approved, draft, onApplyRecommended, onCloneA
       <header><div><span>Recommended patch preview</span><strong>Two references change; account-specific limits remain untouched</strong></div><button aria-label="Close preview" onClick={() => setSelectedPath(null)} type="button"><X size={16} /></button></header>
       <div className="configuration-change-preview">
         <span><GitBranch size={15} /><span><small>Default Strategy Profile</small><strong>{systemProfile?.name ?? "No protected profile available"}</strong></span></span>
-        <span><ShieldCheck size={15} /><span><small>{deployment?.name ?? "Deployment"} OMS</small><strong>{systemOms?.name ?? "No system OMS available"}</strong></span></span>
+        <span><ShieldCheck size={15} /><span><small>{deployment?.name ?? "Run Plan"} OMS</small><strong>{systemOms?.name ?? "No system OMS available"}</strong></span></span>
         <span><BriefcaseBusiness size={15} /><span><small>Portfolio and accounts</small><strong>Preserved for review</strong></span></span>
       </div>
       <footer><p>This does not publish or enable Live. You will review all inherited mandate, protection, and broker bindings before approval.</p><button className="button primary" disabled={pending || !systemProfile || !systemOms || !deployment} onClick={() => void onApplyRecommended(recommended).then(() => onStart("guided"))} type="button">{pending ? "Applying…" : "Apply and review"}<ArrowRight size={15} /></button></footer>
@@ -828,7 +849,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   const [activeStrategyProfileId, setActiveStrategyProfileId] = useState(() => window.sessionStorage.getItem("guided-strategy-profile-id") || draft.strategy.default_profile_id);
   const profile = draft.strategy.profiles.find((row) => row.profile_id === activeStrategyProfileId) ?? draft.strategy.profiles.find((row) => row.profile_id === draft.strategy.default_profile_id) ?? draft.strategy.profiles[0];
   const deployment = draft.assignments.deployments.find((row) => row.enabled) ?? draft.assignments.deployments[0];
-  const mandate = draft.portfolio.mandates.find((row) => row.deployment_id === deployment?.deployment_id) ?? draft.portfolio.mandates[0];
+  const mandate = draft.portfolio.mandates.find((row) => row.run_plan_id === deployment?.run_plan_id) ?? draft.portfolio.mandates[0];
   const omsProfile = draft.oms.profiles.find((row) => row.profile_id === deployment?.oms_profile_id) ?? draft.oms.profiles[0];
   const executionPolicy = draft.oms.execution_policies.find((row) => row.policy_id === omsProfile?.settings.entry_execution_policy_id) ?? draft.oms.execution_policies[0];
   const protectionProfile = draft.oms.protection_profiles.find((row) => row.profile_id === omsProfile?.settings.protection_profile_id) ?? draft.oms.protection_profiles[0];
@@ -851,8 +872,8 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
     window.sessionStorage.setItem("guided-strategy-profile-id", profileId);
   }
 
-  function replaceDeployment(nextDeployment: Deployment) {
-    onChange("assignments", { ...draft.assignments, deployments: draft.assignments.deployments.map((row) => row.deployment_id === deployment.deployment_id ? nextDeployment : row) });
+  function replaceDeployment(nextDeployment: StrategyRunPlan) {
+    onChange("assignments", { ...draft.assignments, deployments: draft.assignments.deployments.map((row) => row.run_plan_id === deployment.run_plan_id ? nextDeployment : row) });
   }
   function replaceMandate(nextMandate: Mandate) {
     onChange("portfolio", { ...draft.portfolio, mandates: draft.portfolio.mandates.map((row) => row.mandate_id === mandate.mandate_id ? nextMandate : row) });
@@ -885,8 +906,8 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
     <GuidedQuestion description="The OMS profile supplies reusable execution and protection defaults after Portfolio approves quantity. It cannot change Strategy intent or Portfolio limits." key="deployment-oms" label="Which execution profile should the deployment use?" status="Configured">
       <SelectField help="Select the reusable OMS profile that resolves execution policy and protection defaults for this deployment." label="OMS profile" onChange={(oms_profile_id) => replaceDeployment({ ...deployment, oms_profile_id })} options={draft.oms.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.oms_profile_id} />
     </GuidedQuestion>,
-    <GuidedQuestion description="Enable only runtime modes whose account, mandate, market-data, and broker bindings you intend to validate and publish." key="deployment-modes" label="Where may this deployment run?" status={deployment.modes.length ? "Configured" : "Needs decision"}>
-      <ModeSelector modes={deployment.modes} onChange={(modes) => replaceDeployment({ ...deployment, modes })} />
+    <GuidedQuestion description="Select environments whose bindings will be validated before publication." key="deployment-modes" label="Where may this Run Plan run?" status={deployment.allowed_environments.length ? "Configured" : "Needs decision"}>
+      <ModeSelector modes={deployment.allowed_environments} onChange={(allowed_environments) => replaceDeployment({ ...deployment, allowed_environments })} />
     </GuidedQuestion>,
   );
   if (step === "portfolio") questions.push(
@@ -900,7 +921,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
     <GuidedQuestion description="This limits simultaneous positions for this deployment. Pending reservations and already open positions are counted before another entry is approved." key="portfolio-positions" label="How many positions may be open at once?" status="Review limit">
       <NumberField help="Set the maximum number of simultaneous positions attributable to this deployment on the selected account." label="Maximum open positions" minimum={1} onChange={(maximum_positions) => replaceMandate({ ...mandate, maximum_positions })} step={1} unit="positions" value={mandate.maximum_positions} />
     </GuidedQuestion>,
-    <GuidedQuestion description="Autonomy controls whether a valid capital decision becomes a proposal, waits for confirmation, or may proceed automatically. Every account, risk, broker, and protection gate still applies." key="portfolio-autonomy" label="How much autonomy should Portfolio have?" status={mandate.autonomy === "automatic" ? "Needs review" : "Configured"}><DecisionOptions onChange={(autonomy) => replaceMandate({ ...mandate, autonomy: autonomy as Mandate["autonomy"] })} options={[{ detail: "Prepare a proposal; an operator submits the capital action.", label: "Manual", value: "manual" }, { detail: "Require an operator confirmation after Portfolio approves the quantity.", label: "Confirm", recommended: true, value: "confirm" }, { detail: "Proceed without confirmation only while every published limit remains satisfied.", label: "Automatic", value: "automatic" }]} value={mandate.autonomy} /></GuidedQuestion>,
+    <GuidedQuestion description="Caps the action authority granted by the Run Plan for this account." key="portfolio-autonomy" label="Maximum action authority" status={mandate.maximum_action_authority === "automatic" ? "Needs review" : "Configured"}><DecisionOptions onChange={(maximum_action_authority) => replaceMandate({ ...mandate, maximum_action_authority: maximum_action_authority as Mandate["maximum_action_authority"] })} options={[{ detail: "Operator initiates the action.", label: "Manual", value: "manual" }, { detail: "Operator confirms an exact proposal.", label: "Confirm", recommended: true, value: "confirm" }, { detail: "Proceed while every guardrail passes.", label: "Automatic", value: "automatic" }]} value={mandate.maximum_action_authority} /></GuidedQuestion>,
   );
   if (step === "execution") questions.push(
     <GuidedQuestion description="This controls how quickly OMS follows the market while staying inside the policy's approved price and time envelope. It never changes Portfolio's approved quantity." key="execution-pace" label="How aggressively should entries seek a fill?" status="Choose a pace"><DecisionOptions onChange={(entry_execution_policy_id) => replaceOmsProfile({ ...omsProfile, settings: { ...omsProfile.settings, entry_execution_policy_id } })} options={draft.oms.execution_policies.filter((row) => ["adaptive_patient", "adaptive_regular", "adaptive_urgent", executionPolicy.policy_id].includes(row.policy_id)).map((row) => ({ detail: row.policy_id === "adaptive_patient" ? "Wait longer for a favorable price before moving." : row.policy_id === "adaptive_urgent" ? "Follow the market quickly when completing the entry matters most." : row.policy_id === "adaptive_regular" ? "Balance price quality with a timely fill." : `Keep the current ${readableLabel(row.name)} policy.`, label: row.policy_id === "adaptive_patient" ? "Patient" : row.policy_id === "adaptive_urgent" ? "Fast" : row.policy_id === "adaptive_regular" ? "Balanced" : readableLabel(row.name), recommended: row.policy_id === "adaptive_regular", value: row.policy_id }))} value={omsProfile.settings.entry_execution_policy_id} /></GuidedQuestion>,
@@ -1003,7 +1024,7 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     if (!source) return;
     const stepId = uniqueId("position-add", initial.add_steps.map((row) => row.step_id));
     replaceInitial({ ...initial, add_steps: [{
-      capital_request: { allow_replacement: false, mode: "mandate_fraction", priority: 50, value: 0.1 },
+      capital_request: { allow_replacement: false, mode: "mandate_fraction", value: 0.1 },
       enabled: true,
       maximum_uses: 1,
       name: "New position add",
@@ -1135,7 +1156,7 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     }, {
       id: "reentry-capital", section: "Reentry", title: "How much capital should a reentry request?", description: "Choose only the reentry sizing method and amount. Reentry owns a request independent from the first entry.", guide: "Portfolio recalculates capacity from current synchronized account state; the previous position size is never reused automatically.", content: <GuidedCapitalRequestFields onChange={(capital_request) => replaceReentry({ ...reentry, capital_request })} segment="amount" value={reentry.capital_request} />,
     }, {
-      id: "reentry-priority", section: "Reentry", title: "How should reentry compete for capital?", description: "Set only its request priority and whether a replacement proposal is allowed.", guide: "These settings order or reshape proposals; they cannot bypass Portfolio risk, account, or protection limits.", content: <GuidedCapitalRequestFields onChange={(capital_request) => replaceReentry({ ...reentry, capital_request })} segment="priority" value={reentry.capital_request} />,
+      id: "reentry-replacement", section: "Reentry", title: "May reentry propose a replacement?", description: "Portfolio may propose releasing a weaker position when policy permits.", guide: "Replacement never bypasses account risk or protection limits.", content: <GuidedCapitalRequestFields onChange={(capital_request) => replaceReentry({ ...reentry, capital_request })} segment="priority" value={reentry.capital_request} />,
     }, {
       id: "reentry-execution", section: "Reentry", title: "How should OMS execute an approved reentry?", description: "Choose the execution policy for the new approved quantity.", guide: "A reentry may use a different pace from the first entry, but OMS still stays inside the same broker, quote-freshness, and tested terminal-timing safety contracts.", content: <GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceReentry({ ...reentry, order_intent })} segment="execution" value={reentry.order_intent} />,
     }, {
@@ -1309,7 +1330,7 @@ function StrategyProfileFeaturePreview({ profile, section }: { profile: Strategy
 
 function GuidedCapitalRequestFields({ onChange, segment, value }: { onChange: (value: CapitalRequestConfig) => void; segment: "amount" | "priority"; value: CapitalRequestConfig }) {
   const request = { fixed_quantity: { label: "Shares requested", maximum: undefined, minimum: 1, step: 1, unit: "shares" }, mandate_fraction: { label: "Mandate capacity", maximum: 1, minimum: .01, step: .05, unit: "fraction" }, risk_fraction: { label: "Risk budget", maximum: 1, minimum: .01, step: .05, unit: "fraction" }, all_available: { label: "", maximum: undefined, minimum: 0, step: 1, unit: "" } }[value.mode];
-  if (segment === "priority") return <div className="guided-form-grid"><NumberField help="Set how this request is ordered against other valid requests when account capital is constrained. Risk and mandate limits always take precedence." label="Request priority" maximum={100} minimum={0} onChange={(priority) => onChange({ ...value, priority })} step={1} unit="0–100" value={value.priority} /><BooleanField help="Allow Portfolio to propose releasing a weaker position only when the published account policy permits replacement." label="Allow replacement proposal" onChange={(allow_replacement) => onChange({ ...value, allow_replacement })} value={value.allow_replacement} /></div>;
+  if (segment === "priority") return <BooleanField help="Allow Portfolio to propose releasing a weaker position when policy permits." label="Allow replacement proposal" onChange={(allow_replacement) => onChange({ ...value, allow_replacement })} value={value.allow_replacement} />;
   return <div className="guided-form-grid"><SelectField help="Choose how Strategy expresses the desired size before Portfolio evaluates account-specific capacity and risk." label="Request method" onChange={(mode) => onChange({ ...value, mode: mode as CapitalRequestConfig["mode"], value: mode === "fixed_quantity" ? 100 : mode === "all_available" ? 1 : .2 })} options={[{ label: "Fixed shares", value: "fixed_quantity" }, { label: "Fraction of mandate cash", value: "mandate_fraction" }, { label: "Fraction of risk budget", value: "risk_fraction" }, { label: "All remaining mandate capacity", value: "all_available" }]} value={value.mode} />{value.mode !== "all_available" ? <NumberField help="Enter the desired amount in the units implied by the selected request method. Portfolio may approve less or reject it." label={request.label} maximum={request.maximum} minimum={request.minimum} onChange={(requestValue) => onChange({ ...value, value: requestValue })} step={request.step} unit={request.unit} value={value.value} /> : <div className="guided-readonly-value"><span>Request amount</span><strong>All capacity still allowed by the mandate</strong><small>Portfolio computes the actual quantity after every current account and risk check.</small></div>}</div>;
 }
 
@@ -1352,7 +1373,7 @@ function blankStrategyProfile(source: StrategyProfile, draft: Draft): StrategyPr
   const emptyStage = (): RuleStage => ({ groups: [], operator: "all" });
   const executionPolicy = draft.oms.execution_policies.find((row) => row.policy_id === "adaptive_regular")?.policy_id ?? draft.oms.execution_policies[0]?.policy_id ?? "";
   const protectionProfile = draft.oms.protection_profiles[0]?.profile_id ?? "";
-  const capitalRequest: CapitalRequestConfig = { allow_replacement: false, mode: "mandate_fraction", priority: 50, value: 0.1 };
+  const capitalRequest: CapitalRequestConfig = { allow_replacement: false, mode: "mandate_fraction", value: 0.1 };
   const orderIntent: OrderIntentConfig = { deadline_ms: 750, execution_policy: executionPolicy, partial_fill_policy: "complete_remainder", protection_profile: protectionProfile };
   return {
     ...deepClone(source),
@@ -1683,7 +1704,7 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
   const sessions = ["premarket", "regular", "after_hours"];
   return (
     <>
-      <p className="configuration-section-guide">These settings describe the strategy itself. Account autonomy, concrete cash allocation, and broker execution remain in Deployment, Portfolio, and OMS.</p>
+      <p className="configuration-section-guide">Strategy logic is reusable; Run Plans, Portfolio, and OMS own runtime authority.</p>
       <div className="configuration-field-grid">
         <SelectField
           help={{
@@ -2335,7 +2356,6 @@ function CapitalRequestEditor({ onChange, value }: {
           },
           parameters: {
             "Request value": "Shares for fixed quantity, or a fraction for mandate and risk modes. All available has no independent value.",
-            "Request priority": "Portfolio uses 0–100 when several requests compete; risk and mandate limits remain authoritative.",
             "Allow replacement": "Permits Portfolio to propose releasing a weaker position when the new request materially improves the account plan.",
           },
         }}
@@ -2361,7 +2381,6 @@ function CapitalRequestEditor({ onChange, value }: {
       ) : (
         <div className="configuration-context-value"><span>Request value</span><strong>Portfolio resolves remaining mandate capacity</strong><small>No stale quantity field is retained.</small></div>
       )}
-        <NumberField help={{ role: "Ranks this request when several strategies compete for limited account capacity.", values: { "Higher value": "Portfolio evaluates the request earlier.", "Lower value": "The request yields to stronger opportunities." }, note: "Priority never overrides cash, mandate, concentration, or risk controls." }} label="Request priority" maximum={100} minimum={0} onChange={(priority) => onChange({ ...value, priority })} step={1} unit="0–100" value={value.priority} />
         <BooleanField help={{ role: "Allows Portfolio to propose funding this request by reducing or closing a weaker position.", parameters: { "Replacement threshold": "Configured on the Portfolio mandate and must show sufficient improvement before displacement is allowed." }, note: "The strategy grants permission; Portfolio decides whether replacement is safe and beneficial." }} label="Allow replacement" onChange={(allow_replacement) => onChange({ ...value, allow_replacement })} value={value.allow_replacement} />
       </div>
       <div className="strategy-handoff-result"><span>Portfolio output</span><strong>Approved quantity and account allocation</strong><small>The approved result may be smaller than requested or rejected with a reason.</small></div>
@@ -2430,7 +2449,7 @@ function AddStepsEditor({ catalog, eligibleSessions, executionPolicies, onChange
     const stepId = uniqueId("position-add", steps.map((row) => row.step_id));
     const source = catalog[0];
     onChange([{
-      capital_request: { allow_replacement: false, mode: "mandate_fraction", priority: 50, value: 0.1 },
+      capital_request: { allow_replacement: false, mode: "mandate_fraction", value: 0.1 },
       enabled: true,
       maximum_uses: 1,
       name: "New position add",
@@ -2471,34 +2490,33 @@ function AddStepsEditor({ catalog, eligibleSessions, executionPolicies, onChange
 
 function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value: AssignmentSection) => void }) {
   const section = draft.assignments;
-  const [selectedId, setSelectedId] = useState(section.deployments[0]?.deployment_id ?? "");
-  const selected = section.deployments.find((row) => row.deployment_id === selectedId) ?? section.deployments[0];
-  if (!selected) return <EmptyState title="No deployments" detail="Create a deployment to connect a Strategy Profile to accounts, Portfolio mandates, and OMS." />;
-  const linkedMandates = draft.portfolio.mandates.filter((row) => row.deployment_id === selected.deployment_id);
+  const [selectedId, setSelectedId] = useState(section.deployments[0]?.run_plan_id ?? "");
+  const selected = section.deployments.find((row) => row.run_plan_id === selectedId) ?? section.deployments[0];
+  if (!selected) return <EmptyState title="No Run Plans" detail="Create a Run Plan to connect a Strategy Profile to runtime authority." />;
+  const linkedMandates = draft.portfolio.mandates.filter((row) => row.run_plan_id === selected.run_plan_id);
   const readiness = [
     { label: "Watch Universe selected", ready: section.universes.some((row) => row.universe_id === selected.universe_id) },
     { label: "Strategy Profile selected", ready: draft.strategy.profiles.some((row) => row.profile_id === selected.profile_id) },
     { label: "OMS profile selected", ready: draft.oms.profiles.some((row) => row.profile_id === selected.oms_profile_id) },
     { label: "Account mandate configured", ready: linkedMandates.length > 0 },
-    { label: "Replay enabled", ready: selected.modes.includes("replay") },
+    { label: "Replay enabled", ready: selected.allowed_environments.includes("replay") },
   ];
 
-  function replace(next: Deployment) {
-    onChange({ ...section, deployments: section.deployments.map((row) => row.deployment_id === selected.deployment_id ? next : row) });
+  function replace(next: StrategyRunPlan) {
+    onChange({ ...section, deployments: section.deployments.map((row) => row.run_plan_id === selected.run_plan_id ? next : row) });
   }
 
   function createDeployment() {
-    const id = uniqueId("new-deployment", section.deployments.map((row) => row.deployment_id));
-    const next: Deployment = {
-      deployment_id: id,
-      name: "New deployment",
-      description: "Connect this deployment to account mandates before publishing.",
+    const id = uniqueId("new-run-plan", section.deployments.map((row) => row.run_plan_id));
+    const next: StrategyRunPlan = {
+      run_plan_id: id,
+      name: "New Run Plan",
+      description: "",
       profile_id: draft.strategy.profiles[0]?.profile_id ?? "",
       oms_profile_id: draft.oms.profiles[0]?.profile_id ?? "",
       universe_id: section.universes[0]?.universe_id ?? "",
       book_id: "default",
-      selection_priority: 50,
-      campaign_policy: {
+      campaign_lifecycle: {
         initial_entry_authority: "confirm",
         reentry_authority: "confirm",
         exit_authority: "automatic",
@@ -2511,7 +2529,9 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
       },
       mandate_ids: [],
       enabled: true,
-      modes: ["replay"],
+      allowed_environments: ["replay"],
+      action_authority: { default: "confirm", initial_entry: "inherit", add: "inherit", reentry: "inherit", strategic_exit: "inherit", protective_exit: "automatic", emergency_exit: "automatic" },
+      safety_supervisor: { enabled_by_environment: { replay: true, backtest: true, backtest_debug: true, paper: true, live: true } },
       runtime_assignments: [],
     };
     onChange({ ...section, deployments: [...section.deployments, next] });
@@ -2521,13 +2541,12 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
   return (
     <div className="configuration-workbench">
       <aside className="configuration-library">
-        <header><div><span>Deployments</span><strong>{section.deployments.length} configured</strong></div><button onClick={createDeployment} title="Create deployment" type="button"><Plus size={15} /></button></header>
-        <p>A deployment is the usable unit selected by Replay, Backtest, Live, or Order Entry.</p>
-        <div>{section.deployments.map((row) => <button className={row.deployment_id === selected.deployment_id ? "active" : ""} key={row.deployment_id} onClick={() => setSelectedId(row.deployment_id)} type="button"><span><strong>{row.name}</strong><small>{row.enabled ? "Enabled" : "Disabled"} · {row.modes.join(", ")}</small></span><ChevronRight size={14} /></button>)}</div>
+        <header><div><span>Run Plans</span><strong>{section.deployments.length} configured</strong></div><button onClick={createDeployment} title="Create Run Plan" type="button"><Plus size={15} /></button></header>
+        <div>{section.deployments.map((row) => <button className={row.run_plan_id === selected.run_plan_id ? "active" : ""} key={row.run_plan_id} onClick={() => setSelectedId(row.run_plan_id)} type="button"><span><strong>{row.name}</strong><small>{row.enabled ? "Enabled" : "Disabled"} · {row.allowed_environments.map(readableLabel).join(", ")}</small></span><ChevronRight size={14} /></button>)}</div>
       </aside>
       <main className="configuration-detail">
         <section className="configuration-detail-heading">
-          <div><span>Usable Strategy Deployment</span><input aria-label="Deployment name" onChange={(event) => replace({ ...selected, name: event.target.value })} value={selected.name} /><textarea aria-label="Deployment summary" onChange={(event) => replace({ ...selected, description: event.target.value })} rows={2} value={selected.description} /></div>
+          <div><span>Strategy Run Plan</span><input aria-label="Run Plan name" onChange={(event) => replace({ ...selected, name: event.target.value })} value={selected.name} /><textarea aria-label="Run Plan summary" onChange={(event) => replace({ ...selected, description: event.target.value })} rows={2} value={selected.description} /></div>
           <label className="configuration-enabled"><input checked={selected.enabled} onChange={(event) => replace({ ...selected, enabled: event.target.checked })} type="checkbox" /> Enabled</label>
         </section>
         <GuideCallout icon={<Network size={17} />} title="Profile → Deployment → Strategy Campaign">
@@ -2535,16 +2554,15 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
         </GuideCallout>
         <ConfigGroup summary="Select which approved stock universe this strategy may evaluate. Several strategies may observe a stock, but only one active campaign may own it." title="1. Watch Universe">
           <div className="configuration-field-grid">
-            <SelectField help="Configured source of eligible symbols for this deployment." label="Universe" onChange={(universe_id) => replace({ ...selected, universe_id })} options={section.universes.map((row) => ({ label: row.name, value: row.universe_id }))} value={selected.universe_id} />
+            <SelectField help="Configured source of eligible symbols for this Run Plan." label="Universe" onChange={(universe_id) => replace({ ...selected, universe_id })} options={section.universes.map((row) => ({ label: row.name, value: row.universe_id }))} value={selected.universe_id} />
             <SelectField help="Ticker ownership is exclusive inside one portfolio book and runtime mode." label="Portfolio book" onChange={(book_id) => replace({ ...selected, book_id })} options={[{ label: "Default book", value: "default" }]} value={selected.book_id} />
-            <NumberField help="Higher values win deterministic selection when multiple eligible deployments request the same unowned ticker." label="Selection priority" maximum={100} minimum={0} onChange={(selection_priority) => replace({ ...selected, selection_priority })} step={1} unit="0–100" value={selected.selection_priority} />
           </div>
           <WatchUniverseEditor section={section} onChange={onChange} selectedId={selected.universe_id} />
         </ConfigGroup>
         <div className="configuration-two-column">
           <ConfigGroup summary="Select the configured behavior and shared execution profile." title="2. Strategy and execution">
             <div className="configuration-field-grid one-column">
-              <SelectField help="Published Strategy Profile whose decision behavior this deployment runs." label="Strategy Profile" onChange={(value) => replace({ ...selected, profile_id: value })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={selected.profile_id} />
+              <SelectField help="Published Strategy Profile evaluated by this Run Plan." label="Strategy Profile" onChange={(value) => replace({ ...selected, profile_id: value })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={selected.profile_id} />
               <SelectField help="Reusable shared OMS and protection profile used to execute approved requests." label="OMS profile" onChange={(value) => replace({ ...selected, oms_profile_id: value })} options={draft.oms.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={selected.oms_profile_id} />
             </div>
           </ConfigGroup>
@@ -2552,16 +2570,19 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
             <div className="configuration-readiness">{readiness.map((item) => <span data-ready={item.ready ? "true" : "false"} key={item.label}>{item.ready ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />}{item.label}</span>)}</div>
           </ConfigGroup>
         </div>
-        <ConfigGroup summary="Initial entry, reentry, and normal exit authority are independent. Protective exits always remain automatic." title="3. Campaign lifecycle authority">
+        <ConfigGroup summary="Set a default, then override individual actions." title="3. Action authority">
           <CampaignPolicyEditor deployment={selected} onChange={replace} />
         </ConfigGroup>
-        <ConfigGroup summary="Choose where this deployment may run. Live and Paper still require their independent operational gates." title="4. Runtime modes">
-          <ModeSelector modes={selected.modes} onChange={(modes) => replace({ ...selected, modes })} />
+        <ConfigGroup summary="Select eligible environments and safety enforcement." title="4. Environments & safety">
+          <ModeSelector modes={selected.allowed_environments} onChange={(allowed_environments) => replace({ ...selected, allowed_environments })} />
+          <div className="configuration-field-grid">
+            {(["replay", "backtest", "backtest_debug", "paper", "live"] as RuntimeMode[]).map((mode) => <BooleanField disabled={mode === "paper" || mode === "live"} help={mode === "paper" || mode === "live" ? "Mandatory in this environment." : "Enabled by default for historical analysis."} key={mode} label={`${readableLabel(mode)} safety`} onChange={(enabled) => replace({ ...selected, safety_supervisor: { enabled_by_environment: { ...selected.safety_supervisor.enabled_by_environment, [mode]: enabled } } })} value={selected.safety_supervisor.enabled_by_environment[mode]} />)}
+          </div>
         </ConfigGroup>
         <ConfigGroup summary="Capital authority is configured on Portfolio & Risk. This page shows the linked account mandates." title="5. Account mandates">
           <div className="deployment-mandates">
-            {linkedMandates.map((mandate) => <article key={mandate.mandate_id}><strong>{accountName(draft.accounts, mandate.account_key)}</strong><span>{percent(mandate.maximum_cash_fraction)} cash ceiling · {mandate.autonomy} · priority {mandate.priority}</span></article>)}
-            {!linkedMandates.length ? <EmptyState title="No account mandate" detail="Open Portfolio & Risk and add an account mandate for this deployment." /> : null}
+            {linkedMandates.map((mandate) => <article key={mandate.mandate_id}><strong>{accountName(draft.accounts, mandate.account_key)}</strong><span>{percent(mandate.maximum_cash_fraction)} cash · {readableLabel(mandate.assignment_mode)} · max {readableLabel(mandate.maximum_action_authority)}</span></article>)}
+            {!linkedMandates.length ? <EmptyState title="No account mandate" detail="Add an account mandate for this Run Plan." /> : null}
           </div>
           <a className="configuration-inline-link" href="#portfolio-configuration">Configure account mandates <ChevronRight size={13} /></a>
         </ConfigGroup>
@@ -2576,7 +2597,7 @@ function WatchUniverseEditor({ onChange, section, selectedId }: {
   selectedId: string;
 }) {
   const universe = section.universes.find((row) => row.universe_id === selectedId);
-  if (!universe) return <EmptyState title="Universe unavailable" detail="Select or create a Watch Universe before publishing this deployment." />;
+  if (!universe) return <EmptyState title="Universe unavailable" detail="Select or create a Watch Universe before publishing this Run Plan." />;
   const universeId = universe.universe_id;
   function replace(next: WatchUniverse) {
     onChange({ ...section, universes: section.universes.map((row) => row.universe_id === universeId ? next : row) });
@@ -2607,31 +2628,25 @@ function WatchUniverseEditor({ onChange, section, selectedId }: {
 }
 
 function CampaignPolicyEditor({ deployment, onChange }: {
-  deployment: Deployment;
-  onChange: (value: Deployment) => void;
+  deployment: StrategyRunPlan;
+  onChange: (value: StrategyRunPlan) => void;
 }) {
-  const policy = deployment.campaign_policy;
-  const replace = (campaign_policy: Deployment["campaign_policy"]) => onChange({ ...deployment, campaign_policy });
-  const authorities = ["disabled", "manual", "confirm", "automatic"].map((value) => ({ label: readableLabel(value), value }));
+  const policy = deployment.campaign_lifecycle;
+  const replace = (campaign_lifecycle: StrategyRunPlan["campaign_lifecycle"]) => onChange({ ...deployment, campaign_lifecycle });
+  const authorities = ["inherit", "disabled", "manual", "confirm", "automatic"].map((value) => ({ label: readableLabel(value), value }));
   return (
     <>
-      <div className="campaign-authority-flow" aria-label="Campaign lifecycle authority">
-        <span><strong>1</strong> Initial entry</span><ChevronRight size={15} />
-        <span><strong>2</strong> Reentry</span><ChevronRight size={15} />
-        <span><strong>3</strong> Exit</span><ChevronRight size={15} />
-        <span><strong>✓</strong> Stop or keep watching</span>
-      </div>
       <div className="configuration-field-grid">
-        <SelectField help="Who may authorize the first flat-to-open transition in a ticker campaign." label="Initial-entry authority" onChange={(initial_entry_authority) => replace({ ...policy, initial_entry_authority })} options={authorities.filter((row) => row.value !== "disabled")} value={policy.initial_entry_authority} />
-        <SelectField help="Who may authorize a later entry after a confirmed full exit." label="Reentry authority" onChange={(reentry_authority) => replace({ ...policy, reentry_authority })} options={authorities} value={policy.reentry_authority} />
-        <SelectField help="Who may authorize normal strategic exits. Protective exits remain automatic." label="Exit authority" onChange={(exit_authority) => replace({ ...policy, exit_authority })} options={authorities.filter((row) => row.value !== "disabled")} value={policy.exit_authority} />
+        <SelectField help="Inherited by actions without an override." label="Default authority" onChange={(value) => onChange({ ...deployment, action_authority: { ...deployment.action_authority, default: value as StrategyRunPlan["action_authority"]["default"] } })} options={["manual", "confirm", "automatic"].map((value) => ({ label: readableLabel(value), value }))} value={deployment.action_authority.default} />
+        {(["initial_entry", "add", "reentry", "strategic_exit"] as const).map((action) => <SelectField help="Overrides the Run Plan default for this action." key={action} label={readableLabel(action)} onChange={(value) => onChange({ ...deployment, action_authority: { ...deployment.action_authority, [action]: value as ActionAuthority } })} options={action === "reentry" ? authorities : authorities.filter((row) => row.value !== "disabled")} value={deployment.action_authority[action]} />)}
+        <SelectField disabled help="Cannot be weakened." label="Protective exit" onChange={() => undefined} options={[{ label: "Automatic", value: "automatic" }]} value="automatic" />
+        <SelectField disabled help="Cannot be weakened." label="Emergency exit" onChange={() => undefined} options={[{ label: "Automatic", value: "automatic" }]} value="automatic" />
         <SelectField help="What happens to the ticker campaign at the configured session boundary." label="Session-end behavior" onChange={(session_end_behavior) => replace({ ...policy, session_end_behavior })} options={["keep_watching", "stop_when_flat", "exit_and_stop"].map((value) => ({ label: readableLabel(value), value }))} value={policy.session_end_behavior} />
         <NumberField help="Operational ceiling applied even if the Strategy Profile permits more reentries." label="Campaign reentry ceiling" minimum={0} onChange={(maximum_reentries) => replace({ ...policy, maximum_reentries })} step={1} unit="entries" value={policy.maximum_reentries} />
         <NumberField help="Operational cooldown applied before the Strategy Profile may evaluate another entry." label="Campaign cooldown" minimum={0} onChange={(reentry_cooldown_ms) => replace({ ...policy, reentry_cooldown_ms })} step={100} unit="ms" value={policy.reentry_cooldown_ms} />
         <NumberField help="Maximum time to retain a newly armed ticker while waiting for its initial entry. Zero means no time limit." label="Initial watch limit" minimum={0} onChange={(maximum_initial_watch_ms) => replace({ ...policy, maximum_initial_watch_ms })} step={60000} unit="ms" value={policy.maximum_initial_watch_ms} />
         <BooleanField help="A paused campaign keeps exclusive ticker ownership. Releasing it requires a separate safe handoff while flat." label="Retain ticker while paused" onChange={(retain_ticker_while_paused) => replace({ ...policy, retain_ticker_while_paused })} value={policy.retain_ticker_while_paused} />
       </div>
-      <div className="configuration-safety-note"><ShieldCheck size={15} /><span><strong>Protective exits: Automatic</strong> — this authority is fixed and cannot be weakened by a strategy or deployment.</span></div>
     </>
   );
 }
@@ -2658,17 +2673,18 @@ function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: 
     const deployment = draft.assignments.deployments[0];
     const account = draft.accounts.bindings[0];
     if (!deployment || !account) return;
-    const mandateId = uniqueId(`${deployment.deployment_id}-${account.account_key}`, section.mandates.map((row) => row.mandate_id));
+    const mandateId = uniqueId(`${deployment.run_plan_id}-${account.account_key}`, section.mandates.map((row) => row.mandate_id));
     const mandate: Mandate = {
       mandate_id: mandateId,
-      deployment_id: deployment.deployment_id,
+      run_plan_id: deployment.run_plan_id,
       account_key: account.account_key,
       enabled: true,
       maximum_cash_fraction: 0.3,
       maximum_planned_risk_fraction: 0.01,
       maximum_positions: 10,
-      priority: 50,
-      autonomy: "confirm",
+      assignment_mode: "single",
+      allocation_weight: 1,
+      maximum_action_authority: "confirm",
       allow_replacement: false,
       minimum_replacement_improvement_pct: 20,
     };
@@ -2751,23 +2767,24 @@ function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: 
       </ConfigGroup>
       <ConfigGroup
         action={<button className="button compact" onClick={addMandate} type="button"><Plus size={14} /> Add mandate</button>}
-        summary="Many-to-many account rules: the same deployment may receive different capital, risk, priority, and autonomy on each account."
+        summary="Assign each Run Plan to one or more governed accounts."
         title="Strategy-account mandates"
       >
         <div className="mandate-grid">
           {section.mandates.map((mandate) => (
             <article className="mandate-card" key={mandate.mandate_id}>
               <header>
-                <div><strong>{deploymentName(draft.assignments, mandate.deployment_id)}</strong><span>{accountName(draft.accounts, mandate.account_key)}</span></div>
+                <div><strong>{deploymentName(draft.assignments, mandate.run_plan_id)}</strong><span>{accountName(draft.accounts, mandate.account_key)}</span></div>
                 <button aria-label="Delete mandate" onClick={() => onChange({ ...section, mandates: section.mandates.filter((row) => row.mandate_id !== mandate.mandate_id) })} title="Delete mandate" type="button"><Trash2 size={14} /></button>
               </header>
               <div className="configuration-field-grid one-column">
-                <SelectField help="Deployment allowed to request capital." label="Deployment" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, deployment_id: value })} options={draft.assignments.deployments.map((row) => ({ label: row.name, value: row.deployment_id }))} value={mandate.deployment_id} />
+                <SelectField help="Run Plan allowed to request capital." label="Run Plan" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, run_plan_id: value })} options={draft.assignments.deployments.map((row) => ({ label: row.name, value: row.run_plan_id }))} value={mandate.run_plan_id} />
                 <SelectField help="Account whose cash, positions, and risk state govern the request." label="Account" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, account_key: value })} options={draft.accounts.bindings.map((row) => ({ label: row.name, value: row.account_key }))} value={mandate.account_key} />
-                <NumberField help="Maximum account cash this strategy deployment may use." label="Maximum cash" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, maximum_cash_fraction: value })} step={0.05} unit="fraction" value={mandate.maximum_cash_fraction} />
+                <NumberField help="Maximum account cash this Run Plan may use." label="Maximum cash" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, maximum_cash_fraction: value })} step={0.05} unit="fraction" value={mandate.maximum_cash_fraction} />
                 <NumberField help="Maximum planned loss admitted for one request under this mandate." label="Planned risk" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, maximum_planned_risk_fraction: value })} step={0.001} unit="fraction" value={mandate.maximum_planned_risk_fraction} />
-                <NumberField help="Higher values are considered first when capital requests compete." label="Priority" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, priority: value })} step={1} unit="0–100" value={mandate.priority} />
-                <SelectField help="Whether actions execute automatically or require operator involvement." label="Autonomy" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, autonomy: value as Mandate["autonomy"] })} options={["manual", "confirm", "automatic"].map((value) => ({ label: readableLabel(value), value }))} value={mandate.autonomy} />
+                <SelectField help="How this Run Plan uses its assigned accounts." label="Assignment mode" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, assignment_mode: value as Mandate["assignment_mode"] })} options={["single", "replicated", "weighted", "partitioned"].map((value) => ({ label: readableLabel(value), value }))} value={mandate.assignment_mode} />
+                {mandate.assignment_mode === "weighted" ? <NumberField help="Relative allocation weight across assigned accounts." label="Allocation weight" minimum={0.01} onChange={(allocation_weight) => replaceMandate(mandate.mandate_id, { ...mandate, allocation_weight })} step={0.1} value={mandate.allocation_weight} /> : null}
+                <SelectField help="Caps Run Plan action authority on this account." label="Maximum action authority" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, maximum_action_authority: value as Mandate["maximum_action_authority"] })} options={["manual", "confirm", "automatic"].map((value) => ({ label: readableLabel(value), value }))} value={mandate.maximum_action_authority} />
                 <BooleanField help="Allows Portfolio to propose reductions or exits to fund a stronger request." label="Allow replacement proposals" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, allow_replacement: value })} value={mandate.allow_replacement} />
                 {mandate.allow_replacement ? <NumberField help="Required improvement over an existing position before replacement can be proposed." label="Minimum improvement" onChange={(value) => replaceMandate(mandate.mandate_id, { ...mandate, minimum_replacement_improvement_pct: value })} step={1} unit="%" value={mandate.minimum_replacement_improvement_pct} /> : null}
               </div>
@@ -2965,9 +2982,9 @@ function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: A
   return (
     <div className="configuration-stack">
       <GuideCallout icon={<Boxes size={17} />} title="One stable key, mode-specific session binding">
-        Deployments and Portfolio mandates reference the stable account key. Replay and Backtest bind simulated accounts; Paper and Live require the exact externally discovered IBKR account ID and consume the same published policy contract.
+        Run Plans and Portfolio mandates reference the stable account key. Replay and Backtest bind simulated accounts; Paper and Live require the exact externally discovered IBKR account ID.
       </GuideCallout>
-      <ConfigGroup action={<button className="button compact" onClick={addAccount} type="button"><Plus size={14} /> Add account</button>} summary="Account settings change less frequently than strategy behavior and remain reusable across deployments." title="Configured accounts">
+      <ConfigGroup action={<button className="button compact" onClick={addAccount} type="button"><Plus size={14} /> Add account</button>} summary="Account settings are reusable across Run Plans." title="Configured accounts">
         <div className="account-config-grid">
           {section.bindings.map((account, index) => (
             <article className="account-config-card" key={account.account_key}>
@@ -3009,7 +3026,7 @@ function RevisionPublisher({ approved, draft, guided = false, label, onLabelChan
   const canvas = useMemo(canvasApprovalSnapshot, [approved, draft]);
   const checks = draft ? releaseReadiness(draft) : [];
   const configurationReady = checks.every((check) => check.ready);
-  const visibleChecks = guided ? checks.filter((check) => ["Deployments", "Mode coverage", "Paper and Live bindings"].includes(check.label)) : checks;
+  const visibleChecks = guided ? checks.filter((check) => ["Run Plans", "Mode coverage", "Paper and Live bindings"].includes(check.label)) : checks;
   return (
     <div className="configuration-revision-layout">
       <section className="configuration-publish-card">
@@ -3039,22 +3056,22 @@ function releaseReadiness(draft: Draft) {
   const deploymentsReady = deployments.length > 0 && deployments.every((deployment) => (
     profileIds.has(deployment.profile_id)
     && omsIds.has(deployment.oms_profile_id)
-    && draft.portfolio.mandates.some((mandate) => mandate.enabled && mandate.deployment_id === deployment.deployment_id)
+    && draft.portfolio.mandates.some((mandate) => mandate.enabled && mandate.run_plan_id === deployment.run_plan_id)
   ));
   const mandatesReady = draft.portfolio.mandates.length > 0 && draft.portfolio.mandates.every((mandate) => (
-    deployments.some((deployment) => deployment.deployment_id === mandate.deployment_id)
+    deployments.some((deployment) => deployment.run_plan_id === mandate.run_plan_id)
     && accountKeys.has(mandate.account_key)
   ));
   const configuredModes = new Set(draft.accounts.bindings.filter((account) => account.enabled).flatMap((account) => account.modes));
   const modeCoverageReady = draft.accounts.bindings.filter((account) => account.enabled).every((account) => account.modes.every((mode) => deployments.some((deployment) => (
     deployment.enabled
-    && deployment.modes.includes(mode)
-    && draft.portfolio.mandates.some((mandate) => mandate.enabled && mandate.account_key === account.account_key && mandate.deployment_id === deployment.deployment_id)
+    && deployment.allowed_environments.includes(mode)
+    && draft.portfolio.mandates.some((mandate) => mandate.enabled && mandate.account_key === account.account_key && mandate.run_plan_id === deployment.run_plan_id)
   ))));
   const liveBindingsReady = draft.accounts.bindings.every((account) => !account.enabled || !account.modes.some((mode) => mode === "paper" || mode === "live") || Boolean((account.source_account_env || account.source_account_id.trim()) && account.session_key.trim()));
   return [
     { detail: String(draft.strategy.profiles.length), label: "Strategy Profiles", ready: draft.strategy.profiles.length > 0 },
-    { detail: deploymentsReady ? `${deployments.length} ready` : "needs mandate or profile", label: "Deployments", ready: deploymentsReady },
+    { detail: deploymentsReady ? `${deployments.length} ready` : "needs mandate or profile", label: "Run Plans", ready: deploymentsReady },
     { detail: String(draft.portfolio.mandates.length), label: "Account mandates", ready: mandatesReady },
     { detail: String(draft.oms.profiles.length), label: "OMS profiles", ready: draft.oms.profiles.length > 0 },
     { detail: String(draft.accounts.bindings.length), label: "Accounts", ready: draft.accounts.bindings.length > 0 },
@@ -3065,7 +3082,7 @@ function releaseReadiness(draft: Draft) {
 }
 
 function publishCheckLabel(label: string) {
-  if (label === "Deployments") return "Trading setup";
+  if (label === "Run Plans") return "Trading setup";
   if (label === "Mode coverage") return "Selected modes";
   if (label === "Paper and Live bindings") return "Broker connection";
   return label;
@@ -3086,7 +3103,7 @@ function EffectiveConfigurationPreview({ updatedAt }: { updatedAt: string }) {
   return <ConfigGroup summary="Backend-resolved saved-draft evidence. This is the exact account, policy, deployment, and mode projection that a new runtime will consume after publication." title="Effective configuration preview">
     <div className="configuration-toolbar"><SelectField help="Resolve the saved draft for one runtime mode." label="Runtime mode" onChange={(value) => setMode(value as RuntimeMode)} options={["replay", "backtest", "backtest_debug", "paper", "live"].map((value) => ({ label: readableLabel(value), value }))} value={mode} /></div>
     {error ? <p className="configuration-safety-note"><TriangleAlert size={15} /> {error}</p> : null}
-    {payload ? <><p className="configuration-section-guide">{payload.runtime_count} eligible deployment{payload.runtime_count === 1 ? "" : "s"} · {payload.accounts.length} bound account{payload.accounts.length === 1 ? "" : "s"} · {readableLabel(payload.source)}</p><div className="mandate-grid">{payload.accounts.map((account) => <article className="mandate-card" key={String(account.account_key)}><header><div><strong>{String(account.name || account.account_key)}</strong><span>{String(account.account_key)} · {String(account.account_class)}</span></div></header><div className="configuration-fixed-value"><span>Broker/session binding</span><strong>{String(account.source_account_env || account.source_account_id || "Simulated")}</strong><small>{String(account.session_key)} · {String(account.policy_identity)}</small></div><div className="configuration-fixed-value"><span>Eligible deployments</span><strong>{Array.isArray(account.deployment_ids) ? account.deployment_ids.length : 0}</strong><small>{Array.isArray(account.deployment_ids) ? account.deployment_ids.join(", ") || "None for this mode" : "None for this mode"}</small></div></article>)}</div></> : null}
+    {payload ? <><p className="configuration-section-guide">{payload.runtime_count} eligible Run Plan{payload.runtime_count === 1 ? "" : "s"} · {payload.accounts.length} bound account{payload.accounts.length === 1 ? "" : "s"} · {readableLabel(payload.source)}</p><div className="mandate-grid">{payload.accounts.map((account) => <article className="mandate-card" key={String(account.account_key)}><header><div><strong>{String(account.name || account.account_key)}</strong><span>{String(account.account_key)} · {String(account.account_class)}</span></div></header><div className="configuration-fixed-value"><span>Broker/session binding</span><strong>{String(account.source_account_env || account.source_account_id || "Simulated")}</strong><small>{String(account.session_key)} · {String(account.policy_identity)}</small></div><div className="configuration-fixed-value"><span>Eligible Run Plans</span><strong>{Array.isArray(account.run_plan_ids) ? account.run_plan_ids.length : 0}</strong><small>{Array.isArray(account.run_plan_ids) ? account.run_plan_ids.join(", ") || "None for this mode" : "None for this mode"}</small></div></article>)}</div></> : null}
   </ConfigGroup>;
 }
 
@@ -3110,7 +3127,10 @@ function configGroupVisual(title: string) {
 }
 
 function GuideCallout({ children, icon, title }: { children: ReactNode; icon: ReactNode; title: string }) {
-  return <aside className="configuration-guide">{icon}<div><strong>{title}</strong><p>{children}</p></div></aside>;
+  void children;
+  void icon;
+  void title;
+  return null;
 }
 
 type HelpContent = string | {
@@ -3201,24 +3221,24 @@ function CapabilityField({ definition, onChange, value }: { definition: Capabili
 }
 
 function TextField({ help, label, nextAction = false, onChange, value }: { help: HelpContent; label: string; nextAction?: boolean; onChange: (value: string) => void; value: string }) {
-  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><input data-next-action-control={nextAction ? "true" : undefined} onChange={(event) => onChange(event.target.value)} value={value} /></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}</span><small>{fieldSummary(help)}</small><input data-next-action-control={nextAction ? "true" : undefined} onChange={(event) => onChange(event.target.value)} value={value} /></label>;
 }
 
 function NumberField({ help, label, maximum, minimum, onChange, step, unit, value }: { help: HelpContent; label: string; maximum?: number; minimum?: number; onChange: (value: number) => void; step: number; unit?: string; value: number }) {
   const fraction = unit === "fraction";
-  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><div className="configuration-number"><input max={fraction ? 100 : maximum} min={fraction ? 0 : minimum} onChange={(event) => onChange(fraction ? Number(event.target.value) / 100 : Number(event.target.value))} step={fraction ? step * 100 : step} type="number" value={fraction ? round(value * 100) : value} />{unit ? <em>{fraction ? "%" : unit}</em> : null}</div></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}</span><small>{fieldSummary(help)}</small><div className="configuration-number"><input max={fraction ? 100 : maximum} min={fraction ? 0 : minimum} onChange={(event) => onChange(fraction ? Number(event.target.value) / 100 : Number(event.target.value))} step={fraction ? step * 100 : step} type="number" value={fraction ? round(value * 100) : value} />{unit ? <em>{fraction ? "%" : unit}</em> : null}</div></label>;
 }
 
 function OptionalNumberField({ help, label, minimum, onChange, step, unit, value }: { help: HelpContent; label: string; minimum?: number; onChange: (value: number | null) => void; step: number; unit?: string; value: number | null }) {
-  return <label className="configuration-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><div className="configuration-number"><input min={minimum} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} placeholder="Automatic" step={step} type="number" value={value ?? ""} />{unit ? <em>{unit}</em> : null}</div></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}</span><small>{fieldSummary(help)}</small><div className="configuration-number"><input min={minimum} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} placeholder="Automatic" step={step} type="number" value={value ?? ""} />{unit ? <em>{unit}</em> : null}</div></label>;
 }
 
-function SelectField({ help, label, onChange, options, searchable, value }: { help: HelpContent; label: string; onChange: (value: string) => void; options: Array<{ label: string; value: string }>; searchable?: boolean; value: string }) {
-  return <div className="configuration-field configuration-lookup-field" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><InventoryFilterSelect ariaLabel={label} className="configuration-lookup-button" onChange={onChange} options={options} searchable={searchable ?? options.length > 7} searchPlaceholder={`Find ${label.toLowerCase()}…`} value={value} /></div>;
+function SelectField({ disabled = false, help, label, onChange, options, searchable, value }: { disabled?: boolean; help: HelpContent; label: string; onChange: (value: string) => void; options: Array<{ label: string; value: string }>; searchable?: boolean; value: string }) {
+  return <div className="configuration-field configuration-lookup-field" data-editable={disabled ? "false" : "true"}><span>{label}</span><small>{fieldSummary(help)}</small>{disabled ? <strong>{options.find((option) => option.value === value)?.label ?? value}</strong> : <InventoryFilterSelect ariaLabel={label} className="configuration-lookup-button" onChange={onChange} options={options} searchable={searchable ?? options.length > 7} searchPlaceholder={`Find ${label.toLowerCase()}…`} value={value} />}</div>;
 }
 
-function BooleanField({ help, label, onChange, value }: { help: HelpContent; label: string; onChange: (value: boolean) => void; value: boolean }) {
-  return <label className="configuration-field configuration-boolean" data-editable="true"><span>{label}<FieldHelp content={help} title={label} /></span><small><em>Controls</em>{fieldSummary(help)}</small><input checked={value} onChange={(event) => onChange(event.target.checked)} type="checkbox" /></label>;
+function BooleanField({ disabled = false, help, label, onChange, value }: { disabled?: boolean; help: HelpContent; label: string; onChange: (value: boolean) => void; value: boolean }) {
+  return <label className="configuration-field configuration-boolean" data-editable={disabled ? "false" : "true"}><span>{label}</span><small>{fieldSummary(help)}</small><input checked={value} disabled={disabled} onChange={(event) => onChange(event.target.checked)} type="checkbox" /></label>;
 }
 
 function fieldSummary(help: HelpContent) {
@@ -3332,7 +3352,7 @@ function uniqueId(base: string, existing: string[]) { let value = base; let inde
 function round(value: number) { return Math.round(value * 10_000) / 10_000; }
 function percent(value: number) { return `${round(value * 100)}%`; }
 function accountName(section: AccountSection, id: string) { return section.bindings.find((row) => row.account_key === id)?.name ?? id; }
-function deploymentName(section: AssignmentSection, id: string) { return section.deployments.find((row) => row.deployment_id === id)?.name ?? id; }
+function deploymentName(section: AssignmentSection, id: string) { return section.deployments.find((row) => row.run_plan_id === id)?.name ?? id; }
 function urgencyOptions() { return ["patient", "regular", "urgent", "very_urgent"].map((value) => ({ label: readableLabel(value), value })); }
 
 function readStoredExperience(): ConfigurationExperience {
@@ -3403,7 +3423,7 @@ function guidedStepDescription(step: GuidedStep) {
 function guidedContextRows(draft: Draft, step: GuidedStep) {
   const profile = draft.strategy.profiles.find((row) => row.profile_id === draft.strategy.default_profile_id) ?? draft.strategy.profiles[0];
   const deployment = draft.assignments.deployments.find((row) => row.enabled) ?? draft.assignments.deployments[0];
-  const mandate = draft.portfolio.mandates.find((row) => row.deployment_id === deployment?.deployment_id) ?? draft.portfolio.mandates[0];
+  const mandate = draft.portfolio.mandates.find((row) => row.run_plan_id === deployment?.run_plan_id) ?? draft.portfolio.mandates[0];
   const oms = draft.oms.profiles.find((row) => row.profile_id === deployment?.oms_profile_id) ?? draft.oms.profiles[0];
   const execution = draft.oms.execution_policies.find((row) => row.policy_id === oms?.settings.entry_execution_policy_id) ?? draft.oms.execution_policies[0];
   const protection = draft.oms.protection_profiles.find((row) => row.profile_id === oms?.settings.protection_profile_id) ?? draft.oms.protection_profiles[0];
@@ -3414,15 +3434,15 @@ function guidedContextRows(draft: Draft, step: GuidedStep) {
     { label: "Sessions", value: profile?.lifecycle.trading_behavior.eligible_sessions.map(readableLabel).join(", ") || "None" },
   ];
   if (step === "assignments") return [
-    { label: "Deployment", value: deployment?.name ?? "Missing" },
+    { label: "Run Plan", value: deployment?.name ?? "Missing" },
     { label: "Universe", value: draft.assignments.universes.find((row) => row.universe_id === deployment?.universe_id)?.name ?? "Missing" },
-    { label: "Modes", value: deployment?.modes.map(readableLabel).join(", ") || "None" },
+    { label: "Environments", value: deployment?.allowed_environments.map(readableLabel).join(", ") || "None" },
   ];
   if (step === "portfolio") return [
     { label: "Account", value: account?.name ?? mandate?.account_key ?? "Missing" },
     { label: "Cash ceiling", value: mandate ? percent(mandate.maximum_cash_fraction) : "Missing" },
     { label: "Risk ceiling", value: mandate ? percent(mandate.maximum_planned_risk_fraction) : "Missing" },
-    { label: "Autonomy", value: mandate ? readableLabel(mandate.autonomy) : "Missing" },
+    { label: "Authority cap", value: mandate ? readableLabel(mandate.maximum_action_authority) : "Missing" },
   ];
   if (step === "execution") return [
     { label: "OMS profile", value: oms?.name ?? "Missing" },
@@ -3447,7 +3467,7 @@ function guidedContextRows(draft: Draft, step: GuidedStep) {
 function reviewRows(draft: Draft, approved: Revision | null) {
   const profile = draft.strategy.profiles.find((row) => row.profile_id === draft.strategy.default_profile_id) ?? draft.strategy.profiles[0];
   const deployment = draft.assignments.deployments.find((row) => row.enabled) ?? draft.assignments.deployments[0];
-  const mandate = draft.portfolio.mandates.find((row) => row.deployment_id === deployment?.deployment_id) ?? draft.portfolio.mandates[0];
+  const mandate = draft.portfolio.mandates.find((row) => row.run_plan_id === deployment?.run_plan_id) ?? draft.portfolio.mandates[0];
   const oms = draft.oms.profiles.find((row) => row.profile_id === deployment?.oms_profile_id) ?? draft.oms.profiles[0];
   const execution = draft.oms.execution_policies.find((row) => row.policy_id === oms?.settings.entry_execution_policy_id) ?? draft.oms.execution_policies[0];
   const protection = draft.oms.protection_profiles.find((row) => row.profile_id === oms?.settings.protection_profile_id) ?? draft.oms.protection_profiles[0];
@@ -3457,7 +3477,7 @@ function reviewRows(draft: Draft, approved: Revision | null) {
   const state = (key: keyof Draft, valid: boolean, recommended: boolean): "Inherited" | "Invalid" | "Using recommended" | "Customized" => !valid ? "Invalid" : inherited(key) ? "Inherited" : recommended ? "Using recommended" : "Customized";
   return [
     { icon: GitBranch, label: "Strategy", selection: profile?.name ?? "Missing", state: state("strategy", Boolean(profile), Boolean(profile?.protected)), step: "strategy" as GuidedStep },
-    { icon: Network, label: "Deployment", selection: deployment?.name ?? "Missing", state: state("assignments", Boolean(deployment && checks[1]?.ready), false), step: "assignments" as GuidedStep },
+    { icon: Network, label: "Run Plan", selection: deployment?.name ?? "Missing", state: state("assignments", Boolean(deployment && checks[1]?.ready), false), step: "assignments" as GuidedStep },
     { icon: BriefcaseBusiness, label: "Portfolio", selection: mandate ? `${account?.name ?? mandate.account_key} · ${percent(mandate.maximum_planned_risk_fraction)} risk` : "Missing", state: state("portfolio", Boolean(checks[2]?.ready), false), step: "portfolio" as GuidedStep },
     { icon: Send, label: "Execution", selection: execution ? readableLabel(execution.name) : "Missing", state: state("oms", Boolean(execution), execution?.origin === "system"), step: "execution" as GuidedStep },
     { icon: ShieldCheck, label: "Protection", selection: protection?.name ?? "Missing", state: state("oms", Boolean(protection?.mandatory_catastrophic_backstop), protection?.origin === "system"), step: "protection" as GuidedStep },

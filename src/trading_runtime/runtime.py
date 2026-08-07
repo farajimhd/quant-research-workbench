@@ -10,6 +10,7 @@ from uuid import uuid4
 from src.market_engine.events import MarketEvent, QuoteEvent
 from src.trading_runtime.broker import BrokerAdapter
 from src.trading_runtime.canonical_session import CanonicalBrokerSession
+from src.trading_runtime.control_plane import TradingControlPlane, shared_trading_control_plane
 from src.trading_runtime.domain import BrokerProvider, TradingMode
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.execution_policies import (
@@ -71,11 +72,15 @@ class RunConfig:
     account_ids: tuple[str, ...]
     anchor_date: date
     run_id: str = ""
+    run_plan_id: str = ""
+    safety_supervisor_enabled: bool = True
     checkpoint_interval_events: int = 1
 
     def __post_init__(self) -> None:
         if self.checkpoint_interval_events <= 0:
             raise ValueError("checkpoint_interval_events must be positive")
+        if self.mode in {RunMode.LIVE, RunMode.PAPER} and not self.safety_supervisor_enabled:
+            raise ValueError("Trading Safety Supervisor cannot be disabled for Live or Paper")
 
     def resolved_run_id(self) -> str:
         return self.run_id or str(uuid4())
@@ -94,6 +99,7 @@ class TradingRuntime:
         intent_planner: RuntimeIntentPlanner | None = None,
         portfolio: PortfolioManagementEngine | None = None,
         portfolio_configuration: Mapping[str, Any] | None = None,
+        control_plane: TradingControlPlane | None = None,
     ) -> None:
         if config.strategy_id != strategy.strategy_id or config.strategy_revision != strategy.revision:
             raise ValueError("Run strategy identity does not match loaded strategy revision")
@@ -104,6 +110,10 @@ class TradingRuntime:
         self.broker = broker
         self.strategy = strategy
         self.journal = journal
+        self.control_plane = control_plane or shared_trading_control_plane(broker)
+        bind_campaigns = getattr(strategy, "bind_campaign_registry", None)
+        if bind_campaigns is not None:
+            bind_campaigns(self.control_plane.campaigns)
         self.risk = risk or RiskAuthority()
         self.intent_planner = intent_planner
         if portfolio is None:
@@ -119,7 +129,12 @@ class TradingRuntime:
                 strategy_id=config.strategy_id,
                 strategy_revision=config.strategy_revision,
                 groups=groups,
+                control_plane=self.control_plane,
+                allocation_identity=config.run_plan_id or config.strategy_id,
             )
+        else:
+            portfolio.allocation_identity = config.run_plan_id or config.strategy_id
+            portfolio.bind_control_plane(self.control_plane)
         self.portfolio = portfolio
         self.execution_market_data = ExecutionMarketDataProvider()
         self.order_manager = (
@@ -143,6 +158,7 @@ class TradingRuntime:
                     config.mode in {RunMode.LIVE, RunMode.PAPER}
                     and bool(getattr(broker, "requires_fresh_execution_state", False))
                 ),
+                control_plane=self.control_plane,
             )
             if intent_planner is not None
             else None
@@ -152,6 +168,9 @@ class TradingRuntime:
             journal=journal,
             run_id=self.run_id,
             emergency_callback=self._on_emergency_risk,
+            mode=config.mode.value,
+            enabled=config.safety_supervisor_enabled,
+            control_plane=self.control_plane,
         )
         self.last_event_time: datetime | None = None
         self.processed_events = 0

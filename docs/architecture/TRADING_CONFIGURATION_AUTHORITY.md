@@ -28,9 +28,10 @@ The product deliberately separates concepts that were previously grouped under
 | OMS Profile | Reusable versioned execution and protection behavior |
 | Account | Stable application identity mapped to broker or simulated sessions |
 | Portfolio Policy | Reusable account safety, exposure, capital, and loss envelope |
-| Strategy-account mandate | Many-to-many rule governing how one deployment may use one account |
-| Watch Universe | Versioned source of symbols that deployments may evaluate; configured symbols, an approved Scanner view, or a Watchlist |
-| Strategy Deployment | Usable unit combining a Strategy Profile, Watch Universe, selection priority, campaign authority, OMS profile, runtime modes, and account mandates |
+| Strategy-account mandate | Rule assigning a Run Plan to an account, with allocation topology, risk limits, and a maximum action-authority cap |
+| Watch Universe | Versioned source of symbols that Run Plans may evaluate; configured symbols, an approved Scanner view, or a Watchlist |
+| Strategy Run Plan | Reusable launch contract combining a Strategy Profile, Watch Universe, environment eligibility, per-action authority, OMS profile, and account mandates |
+| Strategy Run | One actual execution of a Run Plan, pinned to an Approved Release |
 | Strategy Campaign | One durable runtime lifecycle that exclusively owns one ticker-side pair in one portfolio book across initial entry, exits, and zero or more reentries |
 | Campaign account leg | Account-specific execution and position state belonging to one Strategy Campaign; several legs may share the same ticker lease |
 | Strategy Orchestrator | Shared runtime authority that grants and releases ticker leases and prevents conflicting active campaigns |
@@ -90,7 +91,7 @@ an activation delay and an expiry measured from the confirmed entry, so a
 failed-entry thesis cannot silently remain valid forever. Protective stops are
 not strategy exit rule sets: the deployed OMS Profile calculates, submits,
 repairs, and reconciles protection independently. Neither a Strategy Profile,
-Deployment, Portfolio mandate, nor account permission can weaken protective
+Run Plan, Portfolio mandate, nor account permission can weaken protective
 execution.
 
 A profile can therefore define price breaking either a confirmed QMD swing
@@ -114,7 +115,7 @@ Backtest adapters must populate the same typed observation contract.
 ```text
 Watch Universes + Strategy Definition + Capability Definitions
     -> configured Strategy Profile
-    -> Strategy Deployment + campaign authority + Strategy-account mandates + OMS Profile
+    -> Strategy Run Plan + action authority + Strategy-account mandates + OMS Profile
     -> approved application release
     -> passive strategy evaluation
     -> Strategy Orchestrator grants one ticker lease
@@ -139,7 +140,7 @@ quantity and applies account policy, the strategy-account mandate, current
 positions, reservations, and arbitration rules. When an explicitly permitted
 request lacks capacity, Portfolio may create an auditable rebalance proposal.
 The proposal names the candidate position, evidence, improvement threshold,
-and autonomy requirement. It does not silently release capital or bypass OMS.
+and required action authority. It does not silently release capital or bypass OMS.
 
 ## Configuration pages
 
@@ -147,7 +148,7 @@ and autonomy requirement. It does not silently release capital or bypass OMS.
 |---|---|
 | Canvas | Canvases, layouts, groups, containers, link contexts, and presentation settings |
 | Strategy Studio | Protected default and user Strategy Profiles, Trading Behavior, Initial Entry, Reentry, ordered Exit routes, typed inputs, and Capability Bindings |
-| Strategy Deployments | Watch Universes, profile-to-OMS composition, deterministic selection priority, campaign lifecycle authority, runtime modes, and readiness |
+| Strategy Run Plans | Watch Universes, profile-to-OMS composition, environment eligibility, per-action authority, Safety Supervisor policy, and readiness |
 | Portfolio & Risk | Account policies and Strategy-account mandates |
 | OMS & Protection | Versioned execution-policy and protection-profile catalogs, plus reusable OMS routing profiles |
 | Accounts & Sessions | Stable application accounts and mode-specific session bindings |
@@ -176,7 +177,7 @@ every operator into the full field inventory:
   account-specific mandates, risk limits, and broker bindings for explicit
   review.
 - **Guided setup** asks one question at a time in authority order: Strategy,
-  Deployment, Portfolio, Execution, Protection, Accounts, and Review. Strategy
+  Run Plan, Portfolio, Execution, Protection, Accounts, and Review. Strategy
   coverage is generated from the complete selected profile: trading behavior,
   initial-entry capital/order/rules, every position add, reentry, every
   strategic exit, registered capabilities, and published advanced parameters.
@@ -187,9 +188,9 @@ every operator into the full field inventory:
 - **Clone approved release** previews the immutable source release and replaces
   the complete mutable draft atomically. The approved release and active runs
   remain unchanged.
-- **Expert editor** retains every existing field, rule set, catalog, advanced
-  parameter, and generated JSON inspector. Guided and Expert are views over the
-  same schema-v8 model, not separate configuration systems.
+- **Expert editor** retains every existing field, rule set, catalog, and
+  advanced parameter. Guided and Expert are views over the same schema-v9
+  model, not separate configuration systems.
 
 Guided mode is a focused decision document: it presents one question, its
 consequence and provenance, the current choices, and Previous/Continue actions.
@@ -236,7 +237,7 @@ subjects, and release behavior for the active route. Editors are then organized
 as full-width subject sections with a readable two-column control grid; shared
 lookups and field guidance remain identical to Guided mode. The save action stays
 available in a sticky footer, profile libraries remain supporting navigation,
-and generated JSON stays visually subordinate to the human-readable editor.
+and canonical JSON remains an API and release artifact rather than page copy.
 
 Recommended, inherited, customized, incomplete, invalid, and approved states
 are shown as explicit provenance/status text rather than inferred from color.
@@ -382,7 +383,7 @@ migrated through the shared resolver. A mode is operationally complete only
 when its controller:
 
 - loads one approved release through the shared configuration service;
-- selects a valid Strategy Deployment;
+- selects a valid Strategy Run Plan;
 - uses the shared Strategy, Portfolio, and OMS contracts;
 - renders the approved Canvas profile with `CanvasWorkspaceSurface`;
 - records the pinned release and deployment identities; and

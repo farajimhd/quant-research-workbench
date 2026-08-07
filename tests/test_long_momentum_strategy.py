@@ -366,6 +366,17 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertEqual(confirmed.evaluation.signals[0].action, "enter_long")
 
+    def test_confirm_authority_proposes_only_after_strategy_rules_pass(self) -> None:
+        waiting = assignment(state={"campaign_policy": {"initial_entry_authority": "confirm"}})
+        result = LongMomentumStrategyEngine().evaluate(
+            waiting,
+            confirmed_observation(price=99.0, swing_high=101.0, vwap=100.0),
+        )
+        self.assertNotEqual(
+            result.evaluation.signals[0].reason,
+            "initial_entry_confirmation_required",
+        )
+
     def test_veto_blocks_entry_even_when_breakout_is_confirmed(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(
             assignment(), confirmed_observation(liquidity_dislocation_score=0.9)

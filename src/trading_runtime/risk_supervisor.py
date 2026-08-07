@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Awaitable, Callable
 
+from src.trading_runtime.control_plane import TradingControlPlane
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.portfolio import (
-    PortfolioControlMode,
     PortfolioControlMode,
     PortfolioManagementEngine,
     PortfolioSyncState,
@@ -54,12 +54,23 @@ class ContinuousRiskSupervisor:
         journal: TradingJournal,
         run_id: str,
         emergency_callback: EmergencyCallback | None = None,
+        mode: str = "live",
+        enabled: bool = True,
+        control_plane: TradingControlPlane | None = None,
     ) -> None:
+        if mode in {"live", "paper"} and not enabled:
+            raise ValueError("Trading Safety Supervisor cannot be disabled for Live or Paper")
         self.portfolio = portfolio
         self.journal = journal
         self.run_id = run_id
         self.emergency_callback = emergency_callback
-        self.states: dict[str, RiskEvaluation] = {}
+        self.mode = mode
+        self.enabled = enabled
+        self.states: dict[str, RiskEvaluation] = (
+            control_plane.risk_states
+            if control_plane is not None
+            else {}
+        )
         self._broker_connected = True
 
     async def evaluate(
@@ -76,6 +87,26 @@ class ContinuousRiskSupervisor:
         observed_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         account = self.portfolio.account_payload(account_id)
         metrics = {key: float(value) for key, value in account.get("metrics", {}).items()}
+        if not self.enabled:
+            evaluation = RiskEvaluation(
+                account_id=account_id,
+                account_key=str(account["account_key"]),
+                state=AccountRiskState.NORMAL,
+                reasons=("safety_supervisor_disabled", reason),
+                metrics=metrics,
+                observed_at=observed_at,
+            )
+            self.states[account_id] = evaluation
+            self.journal.append(
+                run_id=self.run_id,
+                category="risk",
+                entity_type="continuous_risk_state",
+                entity_id=account_id,
+                account_id=account_id,
+                event_time=observed_at,
+                payload={**asdict(evaluation), "enforced": False, "mode": self.mode},
+            )
+            return evaluation
         portfolio_state = self.portfolio.states[account_id]
         policy = portfolio_state.policy_override or portfolio_state.profile.policy
         sync_state = PortfolioSyncState(str(account["sync_state"]))

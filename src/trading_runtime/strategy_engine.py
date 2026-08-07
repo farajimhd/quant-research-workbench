@@ -555,19 +555,11 @@ class LongMomentumStrategyEngine:
                 state,
                 AssignmentStatus.COMPLETED,
             )
-        if (
-            authority in {"manual", "confirm"}
-            and not observation.manual_entry_request
-            and not observation.force_entry
-        ):
+        if authority == "manual" and not observation.manual_entry_request and not observation.force_entry:
             reason = (
                 "reentry_manual_request_required"
-                if authority == "manual" and reentries
-                else "initial_entry_manual_request_required"
-                if authority == "manual"
-                else "reentry_confirmation_required"
                 if reentries
-                else "initial_entry_confirmation_required"
+                else "initial_entry_manual_request_required"
             )
             return self._result(
                 assignment,
@@ -626,6 +618,18 @@ class LongMomentumStrategyEngine:
                 _confirmation_confidence(observation),
                 state,
                 AssignmentStatus.WATCHING,
+                metadata={"triggers": triggered, "vetoes": vetoes, "confirmation": confirmation, "entry_rules": rule_result},
+            )
+        if authority == "confirm" and not observation.manual_entry_request and not observation.force_entry:
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                "reentry_confirmation_required" if reentries else "initial_entry_confirmation_required",
+                confirmation_score,
+                _confirmation_confidence(observation),
+                state,
+                AssignmentStatus.REENTRY_COOLDOWN if reentries else AssignmentStatus.WATCHING,
                 metadata={"triggers": triggered, "vetoes": vetoes, "confirmation": confirmation, "entry_rules": rule_result},
             )
 
@@ -1117,7 +1121,6 @@ def _capital_request(
     return CapitalRequest(
         mode=mode,  # type: ignore[arg-type]
         value=value,
-        priority=int(sizing.get("priority") or 50),
         allow_replacement=bool(sizing.get("allow_replacement", False)),
     )
 
@@ -1128,7 +1131,6 @@ def _capital_request_from_payload(payload: dict[str, Any]) -> CapitalRequest:
     return CapitalRequest(
         mode=mode,  # type: ignore[arg-type]
         value=value,
-        priority=int(payload.get("priority") or 50),
         allow_replacement=bool(payload.get("allow_replacement", False)),
     )
 
@@ -1431,6 +1433,15 @@ class AssignedLongMomentumStrategy:
                 "A Strategy Campaign may have only one active account leg per ticker and account"
             )
         self._engine = LongMomentumStrategyEngine()
+
+    def bind_campaign_registry(
+        self, registry: StrategyCampaignOrchestrator
+    ) -> None:
+        """Bind this run to the process-wide campaign lease authority."""
+
+        for assignment in self._assignments.values():
+            registry.register(assignment)
+        self._campaigns = registry
 
     async def on_event(self, event: MarketEvent, account_id: str) -> StrategyEvaluation:
         # Raw trades and quotes update QMD and bar authorities. The strategy

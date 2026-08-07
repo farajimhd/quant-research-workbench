@@ -96,9 +96,12 @@ def portfolio_profiles_from_configuration(
         key = str(raw.get("account_key") or raw.get("key") or "").strip()
         if key:
             discovered[key] = raw
-    deployments = {
-        str(row.get("deployment_id") or ""): row
-        for row in dict(configuration.get("assignments") or {}).get("deployments") or []
+    run_plan_section = dict(
+        configuration.get("run_plans") or configuration.get("assignments") or {}
+    )
+    run_plans = {
+        str(row.get("run_plan_id") or row.get("deployment_id") or ""): row
+        for row in (run_plan_section.get("plans") or run_plan_section.get("deployments") or [])
     }
     strategy_profiles = {
         str(row.get("profile_id") or ""): row
@@ -142,17 +145,26 @@ def portfolio_profiles_from_configuration(
         allocations: dict[str, float] = {}
         strategy_mandates: dict[str, dict[str, Any]] = {}
         for mandate in mandates_by_account.get(account_key, []):
-            deployment = deployments.get(str(mandate.get("deployment_id") or "")) or {}
+            run_plan_id = str(
+                mandate.get("run_plan_id") or mandate.get("deployment_id") or ""
+            )
+            run_plan = run_plans.get(run_plan_id) or {}
             if (
-                not bool(deployment.get("enabled", True))
-                or mode not in {str(value) for value in deployment.get("modes") or []}
+                not bool(run_plan.get("enabled", True))
+                or mode
+                not in {
+                    str(value)
+                    for value in (
+                        run_plan.get("allowed_environments")
+                        or run_plan.get("modes")
+                        or []
+                    )
+                }
             ):
                 continue
-            strategy_profile = strategy_profiles.get(str(deployment.get("profile_id") or "")) or {}
-            strategy_id = str(strategy_profile.get("definition_id") or deployment.get("profile_id") or "")
-            if strategy_id:
-                allocations[strategy_id] = float(mandate.get("maximum_cash_fraction") or 0)
-                strategy_mandates[strategy_id] = mandate
+            if run_plan_id:
+                allocations[run_plan_id] = float(mandate.get("maximum_cash_fraction") or 0)
+                strategy_mandates[run_plan_id] = mandate
         profiles.append(PortfolioAccountProfile(
             account_key=account_key,
             account_id=account_id,

@@ -193,9 +193,13 @@ def _approved_configuration_checks(
         str(row.get("account_key") or ""): row
         for row in dict(payload.get("accounts") or {}).get("bindings") or []
     }
-    deployments = list(dict(payload.get("assignments") or {}).get("deployments") or [])
+    run_plan_section = dict(payload.get("run_plans") or payload.get("assignments") or {})
+    run_plans = list(run_plan_section.get("plans") or run_plan_section.get("deployments") or [])
     mandate_pairs = {
-        (str(row.get("account_key") or ""), str(row.get("deployment_id") or ""))
+        (
+            str(row.get("account_key") or ""),
+            str(row.get("run_plan_id") or row.get("deployment_id") or ""),
+        )
         for row in dict(payload.get("portfolio") or {}).get("mandates") or []
         if bool(row.get("enabled", True))
     }
@@ -204,9 +208,13 @@ def _approved_configuration_checks(
         binding = bindings.get(account.account_key)
         mode_ready = any(
             bool(row.get("enabled", True))
-            and account.trading_mode in set(row.get("modes") or [])
-            and (account.account_key, str(row.get("deployment_id") or "")) in mandate_pairs
-            for row in deployments
+            and account.trading_mode
+            in set(row.get("allowed_environments") or row.get("modes") or [])
+            and (
+                account.account_key,
+                str(row.get("run_plan_id") or row.get("deployment_id") or ""),
+            ) in mandate_pairs
+            for row in run_plans
         )
         configured_account_id = str(binding.get("source_account_id") or "").strip() if binding else ""
         if binding and not configured_account_id:
@@ -222,9 +230,9 @@ def _approved_configuration_checks(
             "name": f"approved_configuration:{account.account_key}",
             "status": "ready" if ready else "blocked",
             "detail": (
-                f"Release {approved.get('revision')} binds this {account.trading_mode} account and deployment."
+                f"Release {approved.get('revision')} binds this {account.trading_mode} account and Run Plan."
                 if ready
-                else "The approved release must bind the exact broker account and include an enabled deployment for this mode."
+                else "The approved release must bind the exact broker account and include an enabled Run Plan for this mode."
             ),
         })
     return checks

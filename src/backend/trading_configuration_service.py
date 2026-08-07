@@ -36,8 +36,8 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 8
-CONFIGURATION_SECTIONS = {"strategy", "assignments", "portfolio", "oms", "accounts"}
+CONFIGURATION_SCHEMA_VERSION = 9
+CONFIGURATION_SECTIONS = {"strategy", "run_plans", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
     "aggressive_limit",
@@ -48,6 +48,7 @@ SUPPORTED_URGENCIES = {
     "very_urgent",
 }
 SUPPORTED_MODES = {"replay", "backtest", "backtest_debug", "paper", "live"}
+ACTION_AUTHORITIES = {"disabled", "manual", "confirm", "automatic", "inherit"}
 
 
 def _load_configuration_env() -> None:
@@ -160,6 +161,16 @@ def configuration_draft() -> dict[str, Any]:
 
 
 def update_configuration_section(section: str, payload: Any) -> dict[str, Any]:
+    if section == "assignments":
+        section = "run_plans"
+        payload = {
+            "universes": deepcopy(dict(payload or {}).get("universes") or []),
+            "plans": deepcopy(
+                dict(payload or {}).get("plans")
+                or dict(payload or {}).get("deployments")
+                or []
+            ),
+        }
     if section not in CONFIGURATION_SECTIONS:
         raise ValueError(f"Unknown trading configuration section: {section}")
     draft = configuration_draft()
@@ -243,10 +254,10 @@ def approved_runtime_configuration_snapshot(mode: str) -> dict[str, Any]:
         raise ValueError("The approved trading configuration does not contain a Canvas profile")
     runtimes = resolve_runtime_configurations(model, mode=mode)
     if not runtimes:
-        raise ValueError(f"No enabled strategy deployment supports {mode}")
+        raise ValueError(f"No enabled Strategy Run Plan supports {mode}")
     runtime_payload = deepcopy(runtimes[0])
-    runtime_payload["deployments"] = [
-        deepcopy(runtime["deployment"]) for runtime in runtimes
+    runtime_payload["run_plans"] = [
+        deepcopy(runtime["run_plan"]) for runtime in runtimes
     ]
     runtime_payload["universes"] = [
         deepcopy(runtime["universe"]) for runtime in runtimes
@@ -276,7 +287,7 @@ def approved_runtime_configuration_snapshot(mode: str) -> dict[str, Any]:
         "approved_at": approved["approved_at"],
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "mode": mode,
-        "deployment_id": runtime_payload["deployment"]["deployment_id"],
+        "run_plan_id": runtime_payload["run_plan"]["run_plan_id"],
         "configuration_model": model,
         "payload": runtime_payload,
     }
@@ -310,8 +321,8 @@ def effective_configuration_snapshot(
         accounts.append({
             **deepcopy(binding),
             "policy_identity": policy.identity if policy else "",
-            "deployment_ids": [
-                str(runtime["deployment"]["deployment_id"])
+            "run_plan_ids": [
+                str(runtime["run_plan"]["run_plan_id"])
                 for runtime in runtimes
                 if any(
                     str(row.get("account_key")) == str(binding.get("account_key"))
@@ -338,57 +349,59 @@ def resolve_runtime_configurations(
     migrated = _migrate_draft(model)
     eligible = [
         row
-        for row in dict(migrated["assignments"]).get("deployments") or []
-        if bool(row.get("enabled", True)) and mode in set(row.get("modes") or [])
+        for row in dict(migrated["run_plans"]).get("plans") or []
+        if bool(row.get("enabled", True))
+        and mode in set(row.get("allowed_environments") or [])
     ]
     eligible.sort(
         key=lambda row: (
-            -int(row.get("selection_priority") or 0),
-            str(row.get("deployment_id") or ""),
+            str(row.get("run_plan_id") or ""),
         )
     )
     return [
         resolve_runtime_configuration(
             migrated,
             mode=mode,
-            deployment_id=str(row["deployment_id"]),
+            run_plan_id=str(row["run_plan_id"]),
         )
         for row in eligible
     ]
 
 
-def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deployment_id: str = "") -> dict[str, Any]:
-    """Resolve one approved deployment into the existing shared runtime contracts."""
+def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, run_plan_id: str = "", deployment_id: str = "") -> dict[str, Any]:
+    """Resolve one approved Strategy Run Plan into shared runtime contracts."""
 
     model = _migrate_draft(model)
-    deployments = list(dict(model["assignments"]).get("deployments") or [])
+    run_plans = list(dict(model["run_plans"]).get("plans") or [])
     eligible = [
-        row for row in deployments
-        if bool(row.get("enabled", True)) and mode in set(row.get("modes") or [])
+        row for row in run_plans
+        if bool(row.get("enabled", True))
+        and mode in set(row.get("allowed_environments") or [])
     ]
-    deployment = next(
-        (row for row in eligible if str(row.get("deployment_id")) == deployment_id),
+    requested_id = run_plan_id or deployment_id
+    run_plan = next(
+        (row for row in eligible if str(row.get("run_plan_id")) == requested_id),
         eligible[0] if eligible else None,
     )
-    if deployment is None:
-        raise ValueError(f"No enabled strategy deployment supports {mode}")
+    if run_plan is None:
+        raise ValueError(f"No enabled Strategy Run Plan supports {mode}")
     profiles = {
         str(row["profile_id"]): row
         for row in dict(model["strategy"]).get("profiles") or []
     }
-    profile = profiles.get(str(deployment.get("profile_id") or ""))
+    profile = profiles.get(str(run_plan.get("profile_id") or ""))
     if profile is None:
-        raise ValueError(f"Deployment {deployment.get('deployment_id')} references an unknown Strategy Profile")
+        raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} references an unknown Strategy Profile")
     oms_profiles = {
         str(row["profile_id"]): row
         for row in dict(model["oms"]).get("profiles") or []
     }
-    oms = oms_profiles.get(str(deployment.get("oms_profile_id") or ""))
+    oms = oms_profiles.get(str(run_plan.get("oms_profile_id") or ""))
     if oms is None:
-        raise ValueError(f"Deployment {deployment.get('deployment_id')} references an unknown OMS profile")
+        raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} references an unknown OMS profile")
     mandates = [
         row for row in dict(model["portfolio"]).get("mandates") or []
-        if str(row.get("deployment_id")) == str(deployment["deployment_id"])
+        if str(row.get("run_plan_id")) == str(run_plan["run_plan_id"])
         and bool(row.get("enabled", True))
     ]
     account_keys = {str(row["account_key"]) for row in mandates}
@@ -397,21 +410,28 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deploymen
         if str(row.get("account_key")) in account_keys
     ]
     mandate_by_account = {str(row["account_key"]): row for row in mandates}
+    assignment_mode = str(mandates[0].get("assignment_mode") or "single") if mandates else "single"
+    total_weight = sum(float(row.get("allocation_weight") or 1.0) for row in mandates)
     for binding in bindings:
         mandate = mandate_by_account[str(binding["account_key"])]
-        binding["strategy_allocation"] = float(mandate.get("maximum_cash_fraction", 1.0))
+        allocation = float(mandate.get("maximum_cash_fraction", 1.0))
+        if assignment_mode == "weighted":
+            allocation *= float(mandate.get("allocation_weight") or 1.0) / max(total_weight, 1e-12)
+        binding["strategy_allocation"] = allocation
+        binding["run_plan_assignment_mode"] = assignment_mode
+        binding["allocation_weight"] = float(mandate.get("allocation_weight") or 1.0)
     runtime_assignments = [
-        deepcopy(row) for row in deployment.get("runtime_assignments") or []
+        deepcopy(row) for row in run_plan.get("runtime_assignments") or []
         if str(row.get("account_key")) in account_keys
     ]
     universes = {
         str(row["universe_id"]): row
-        for row in dict(model["assignments"]).get("universes") or []
+        for row in dict(model["run_plans"]).get("universes") or []
     }
-    universe = universes.get(str(deployment.get("universe_id") or ""))
+    universe = universes.get(str(run_plan.get("universe_id") or ""))
     if universe is None:
         raise ValueError(
-            f"Deployment {deployment.get('deployment_id')} references an unknown Watch Universe"
+            f"Run Plan {run_plan.get('run_plan_id')} references an unknown Watch Universe"
         )
     for assignment in runtime_assignments:
         ticker = str(assignment.get("ticker") or "").upper()
@@ -421,9 +441,9 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deploymen
         )
         assignment.setdefault(
             "campaign_id",
-            f"{deployment['deployment_id']}:{ticker}:{side}",
+            f"{run_plan['run_plan_id']}:{ticker}:{side}",
         )
-        policy = dict(deployment.get("campaign_policy") or {})
+        policy = _effective_campaign_policy(run_plan)
         existing_permissions = dict(assignment.get("permissions") or {})
         assignment["permissions"] = {
             **existing_permissions,
@@ -435,9 +455,10 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deploymen
         assignment["strategy_id"] = str(profile["definition_id"])
         assignment["strategy_revision"] = int(profile["definition_revision"])
         assignment["profile_id"] = str(profile["profile_id"])
-        assignment["deployment_id"] = str(deployment["deployment_id"])
-        assignment["universe_id"] = str(deployment["universe_id"])
-        assignment["book_id"] = str(deployment["book_id"])
+        assignment["run_plan_id"] = str(run_plan["run_plan_id"])
+        assignment["deployment_id"] = str(run_plan["run_plan_id"])
+        assignment["universe_id"] = str(run_plan["universe_id"])
+        assignment["book_id"] = str(run_plan["book_id"])
         assignment["side"] = side
         assignment["campaign_policy"] = deepcopy(policy)
         assignment["resolved_parameters"] = merged_assignment_parameters(
@@ -458,11 +479,24 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, deploymen
         )
     return {
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
-        "deployment": deepcopy(deployment),
+        "run_plan": deepcopy(run_plan),
+        "deployment": {**deepcopy(run_plan), "deployment_id": str(run_plan["run_plan_id"])},
         "universe": deepcopy(universe),
         "campaign_policy": deepcopy(
-            dict(deployment.get("campaign_policy") or {})
+            _effective_campaign_policy(run_plan)
         ),
+        "account_topology": {
+            "mode": assignment_mode,
+            "legs": [
+                {
+                    "account_key": str(row.get("account_key") or ""),
+                    "allocation_weight": float(row.get("allocation_weight") or 1.0),
+                    "maximum_cash_fraction": float(row.get("maximum_cash_fraction") or 0),
+                    "maximum_action_authority": str(row.get("maximum_action_authority") or "manual"),
+                }
+                for row in mandates
+            ],
+        },
         "strategy_profile": deepcopy(profile),
         "strategy": {
             "strategy_id": profile["definition_id"],
@@ -556,7 +590,6 @@ def _default_capital_request(mode: str, value: float) -> dict[str, Any]:
     return {
         "mode": mode,
         "value": value,
-        "priority": 50,
         "allow_replacement": False,
     }
 
@@ -897,6 +930,62 @@ def _default_campaign_policy() -> dict[str, Any]:
     }
 
 
+def _default_action_authority() -> dict[str, str]:
+    return {
+        "default": "confirm",
+        "initial_entry": "inherit",
+        "add": "inherit",
+        "reentry": "inherit",
+        "strategic_exit": "automatic",
+        "protective_exit": "automatic",
+        "emergency_exit": "automatic",
+    }
+
+
+def _default_safety_supervisor() -> dict[str, Any]:
+    return {
+        "enabled_by_environment": {
+            "replay": True,
+            "backtest": True,
+            "backtest_debug": True,
+            "paper": True,
+            "live": True,
+        }
+    }
+
+
+def _effective_campaign_policy(run_plan: dict[str, Any]) -> dict[str, Any]:
+    lifecycle = dict(
+        run_plan.get("campaign_lifecycle")
+        or run_plan.get("campaign_policy")
+        or {}
+    )
+    authority = dict(run_plan.get("action_authority") or {})
+    default = str(authority.get("default") or "confirm")
+
+    def resolved(key: str, legacy_key: str, fallback: str) -> str:
+        value = str(authority.get(key) or lifecycle.get(legacy_key) or "inherit")
+        if value == "inherit":
+            value = default
+        return value or fallback
+
+    return {
+        **_default_campaign_policy(),
+        **lifecycle,
+        "default_action_authority": default,
+        "initial_entry_authority": resolved(
+            "initial_entry", "initial_entry_authority", "confirm"
+        ),
+        "add_authority": resolved("add", "add_authority", "confirm"),
+        "reentry_authority": resolved("reentry", "reentry_authority", "confirm"),
+        "exit_authority": resolved(
+            "strategic_exit", "exit_authority", "automatic"
+        ),
+        "protective_exit_authority": "automatic",
+        "emergency_exit_authority": "automatic",
+    }
+
+
 def _default_universe(runtime_assignments: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "universe_id": "configured-watch-universe",
@@ -985,14 +1074,15 @@ def _default_draft() -> dict[str, Any]:
     mandates = [
         {
             "mandate_id": f"balanced-{binding['account_key']}",
-            "deployment_id": "balanced-replay",
+            "run_plan_id": "balanced-replay",
             "account_key": binding["account_key"],
             "enabled": True,
             "maximum_cash_fraction": 1.0,
             "maximum_planned_risk_fraction": 0.01,
             "maximum_positions": 10,
-            "priority": 50,
-            "autonomy": "confirm",
+            "assignment_mode": "single",
+            "allocation_weight": 1.0,
+            "maximum_action_authority": "automatic",
             "allow_replacement": False,
             "minimum_replacement_improvement_pct": 20.0,
         }
@@ -1019,21 +1109,22 @@ def _default_draft() -> dict[str, Any]:
             "profile_templates": profile_templates,
             "profiles": system_profiles,
         },
-        "assignments": {
+        "run_plans": {
             "universes": [_default_universe(runtime_assignments)],
-            "deployments": [{
-                "deployment_id": "balanced-replay",
+            "plans": [{
+                "run_plan_id": "balanced-replay",
                 "name": "Balanced Replay",
                 "description": "Approved balanced strategy prepared for historical simulation.",
                 "profile_id": "long-momentum-balanced",
                 "oms_profile_id": "adaptive-regular",
                 "universe_id": "configured-watch-universe",
                 "book_id": "default",
-                "selection_priority": 50,
-                "campaign_policy": _default_campaign_policy(),
+                "action_authority": _default_action_authority(),
+                "campaign_lifecycle": _default_campaign_policy(),
+                "safety_supervisor": _default_safety_supervisor(),
                 "mandate_ids": [row["mandate_id"] for row in mandates],
                 "enabled": True,
-                "modes": ["replay", "backtest", "backtest_debug"],
+                "allowed_environments": ["replay", "backtest", "backtest_debug"],
                 "runtime_assignments": runtime_assignments,
             }]
         },
@@ -1152,11 +1243,11 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         if unknown_protection:
             raise ValueError(f"Portfolio policy {policy.identity} allows unknown protection profiles")
 
-    deployments = list(dict(draft["assignments"]).get("deployments") or [])
-    if require_runtime_ready and not deployments:
-        raise ValueError("At least one Strategy Deployment is required")
-    deployment_ids = _unique_ids(deployments, "deployment_id", "Strategy Deployment")
-    universes = list(dict(draft["assignments"]).get("universes") or [])
+    run_plans = list(dict(draft["run_plans"]).get("plans") or [])
+    if require_runtime_ready and not run_plans:
+        raise ValueError("At least one Strategy Run Plan is required")
+    run_plan_ids = _unique_ids(run_plans, "run_plan_id", "Strategy Run Plan")
+    universes = list(dict(draft["run_plans"]).get("universes") or [])
     if require_runtime_ready and not universes:
         raise ValueError("At least one Watch Universe is required")
     universe_ids = _unique_ids(universes, "universe_id", "Watch Universe")
@@ -1177,40 +1268,54 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
     mandates = list(dict(draft["portfolio"]).get("mandates") or [])
     mandate_ids = _unique_ids(mandates, "mandate_id", "Strategy-account mandate")
     for mandate in mandates:
-        if str(mandate.get("deployment_id") or "") not in deployment_ids:
-            raise ValueError(f"Mandate {mandate.get('mandate_id')} references an unknown deployment")
+        if str(mandate.get("run_plan_id") or "") not in run_plan_ids:
+            raise ValueError(f"Mandate {mandate.get('mandate_id')} references an unknown Run Plan")
         if str(mandate.get("account_key") or "") not in account_keys:
             raise ValueError(f"Mandate {mandate.get('mandate_id')} references an unknown account")
         fraction = float(mandate.get("maximum_cash_fraction") or 0)
         if not 0 < fraction <= 1:
             raise ValueError(f"Mandate {mandate.get('mandate_id')} maximum cash must be between 0 and 100 percent")
-        if str(mandate.get("autonomy") or "") not in {"manual", "confirm", "automatic"}:
-            raise ValueError(f"Mandate {mandate.get('mandate_id')} has unsupported autonomy")
-    for deployment in deployments:
-        deployment_modes = set(deployment.get("modes") or [])
-        if not deployment_modes or not deployment_modes <= SUPPORTED_MODES:
-            raise ValueError(f"Deployment {deployment.get('deployment_id')} has unsupported runtime modes")
-        if str(deployment.get("profile_id") or "") not in profile_ids:
-            raise ValueError(f"Deployment {deployment.get('deployment_id')} references an unknown Strategy Profile")
-        if str(deployment.get("oms_profile_id") or "") not in oms_ids:
-            raise ValueError(f"Deployment {deployment.get('deployment_id')} references an unknown OMS profile")
-        if str(deployment.get("universe_id") or "") not in universe_ids:
+        if str(mandate.get("assignment_mode") or "") not in {"single", "replicated", "weighted", "partitioned"}:
+            raise ValueError(f"Mandate {mandate.get('mandate_id')} has unsupported account assignment mode")
+        if float(mandate.get("allocation_weight") or 0) <= 0:
+            raise ValueError(f"Mandate {mandate.get('mandate_id')} allocation weight must be positive")
+        if str(mandate.get("maximum_action_authority") or "") not in {"manual", "confirm", "automatic"}:
+            raise ValueError(f"Mandate {mandate.get('mandate_id')} has unsupported maximum action authority")
+    for run_plan in run_plans:
+        environments = set(run_plan.get("allowed_environments") or [])
+        if not environments or not environments <= SUPPORTED_MODES:
+            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} has unsupported environments")
+        if str(run_plan.get("profile_id") or "") not in profile_ids:
+            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} references an unknown Strategy Profile")
+        if str(run_plan.get("oms_profile_id") or "") not in oms_ids:
+            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} references an unknown OMS profile")
+        if str(run_plan.get("universe_id") or "") not in universe_ids:
             raise ValueError(
-                f"Deployment {deployment.get('deployment_id')} references an unknown Watch Universe"
+                f"Run Plan {run_plan.get('run_plan_id')} references an unknown Watch Universe"
             )
-        if not str(deployment.get("book_id") or "").strip():
+        if not str(run_plan.get("book_id") or "").strip():
             raise ValueError(
-                f"Deployment {deployment.get('deployment_id')} requires a portfolio book"
+                f"Run Plan {run_plan.get('run_plan_id')} requires a portfolio book"
             )
-        priority = int(deployment.get("selection_priority") or 0)
-        if priority < 0 or priority > 100:
-            raise ValueError("Deployment selection priority must be between 0 and 100")
-        validate_campaign_policy(dict(deployment.get("campaign_policy") or {}))
-        policy = dict(deployment.get("campaign_policy") or {})
+        action_authority = dict(run_plan.get("action_authority") or {})
+        if set(str(value) for value in action_authority.values()) - ACTION_AUTHORITIES:
+            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} has unsupported action authority")
+        if str(action_authority.get("default") or "") not in {"manual", "confirm", "automatic"}:
+            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} requires a default action authority")
+        for action in ("initial_entry", "add", "reentry", "strategic_exit"):
+            if action != "reentry" and str(action_authority.get(action) or "") == "disabled":
+                raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} cannot disable {action}")
+        if str(action_authority.get("protective_exit")) != "automatic" or str(action_authority.get("emergency_exit")) != "automatic":
+            raise ValueError("Protective and emergency exits must remain automatic")
+        safety = dict(dict(run_plan.get("safety_supervisor") or {}).get("enabled_by_environment") or {})
+        if not bool(safety.get("live", True)) or not bool(safety.get("paper", True)):
+            raise ValueError("Trading Safety Supervisor cannot be disabled for Live or Paper")
+        policy = _effective_campaign_policy(run_plan)
+        validate_campaign_policy(policy)
         if require_runtime_ready and str(policy.get("initial_entry_authority") or "") == "automatic":
             universe = next(
                 row for row in universes
-                if str(row.get("universe_id")) == str(deployment.get("universe_id"))
+                if str(row.get("universe_id")) == str(run_plan.get("universe_id"))
             )
             universe_symbols = {
                 str(value).strip().upper()
@@ -1219,28 +1324,44 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
             }
             identity_bound_symbols = {
                 str(row.get("ticker") or "").strip().upper()
-                for row in deployment.get("runtime_assignments") or []
+                for row in run_plan.get("runtime_assignments") or []
                 if str(row.get("ticker") or "").strip() and int(row.get("conid") or 0) > 0
             }
             missing_identity = sorted(universe_symbols - identity_bound_symbols)
             if missing_identity:
                 raise ValueError(
-                    f"Automatic deployment {deployment.get('name')} requires identity-bound assignments for: {', '.join(missing_identity)}"
+                    f"Automatic Run Plan {run_plan.get('name')} requires identity-bound assignments for: {', '.join(missing_identity)}"
                 )
         referenced_mandates = [
             row for row in mandates
-            if str(row.get("deployment_id")) == str(deployment.get("deployment_id"))
+            if str(row.get("run_plan_id")) == str(run_plan.get("run_plan_id"))
         ]
         if require_runtime_ready and not referenced_mandates:
-            raise ValueError(f"Deployment {deployment.get('deployment_id')} requires at least one account mandate")
-        for assignment in deployment.get("runtime_assignments") or []:
+            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} requires at least one account mandate")
+        enabled_mandates = [row for row in referenced_mandates if bool(row.get("enabled", True))]
+        assignment_modes = {str(row.get("assignment_mode") or "") for row in enabled_mandates}
+        if len(assignment_modes) > 1:
+            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} account mandates must use one assignment mode")
+        if assignment_modes == {"single"} and len(enabled_mandates) != 1:
+            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} single assignment mode requires exactly one account")
+        authority_rank = {"disabled": 0, "manual": 1, "confirm": 2, "automatic": 3}
+        default_authority = str(action_authority.get("default") or "confirm")
+        effective_authorities = [
+            default_authority if str(action_authority.get(action) or "inherit") == "inherit" else str(action_authority.get(action))
+            for action in ("initial_entry", "add", "reentry", "strategic_exit")
+        ]
+        for mandate in enabled_mandates:
+            maximum_authority = str(mandate.get("maximum_action_authority") or "manual")
+            if any(authority_rank.get(value, 99) > authority_rank[maximum_authority] for value in effective_authorities):
+                raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} exceeds mandate {mandate.get('mandate_id')} action authority cap")
+        for assignment in run_plan.get("runtime_assignments") or []:
             if str(assignment.get("account_key") or "") not in account_keys:
                 raise ValueError(f"Runtime assignment {assignment.get('assignment_id')} references an unknown account")
             if not str(assignment.get("ticker") or "").strip() or int(assignment.get("conid") or 0) <= 0:
                 raise ValueError(f"Runtime assignment {assignment.get('assignment_id')} requires ticker and conid")
     if require_runtime_ready:
         mandate_pairs = {
-            (str(mandate.get("account_key") or ""), str(mandate.get("deployment_id") or ""))
+            (str(mandate.get("account_key") or ""), str(mandate.get("run_plan_id") or ""))
             for mandate in mandates
             if bool(mandate.get("enabled", True))
         }
@@ -1249,17 +1370,17 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
                 continue
             for mode in account.get("modes") or []:
                 eligible = any(
-                    bool(deployment.get("enabled", True))
-                    and mode in set(deployment.get("modes") or [])
+                    bool(run_plan.get("enabled", True))
+                    and mode in set(run_plan.get("allowed_environments") or [])
                     and (
                         str(account.get("account_key") or ""),
-                        str(deployment.get("deployment_id") or ""),
+                        str(run_plan.get("run_plan_id") or ""),
                     ) in mandate_pairs
-                    for deployment in deployments
+                    for run_plan in run_plans
                 )
                 if not eligible:
                     raise ValueError(
-                        f"Account {account.get('account_key')} requires an enabled {mode} deployment mandate"
+                        f"Account {account.get('account_key')} requires an enabled {mode} Run Plan mandate"
                     )
     for raw in dict(draft["portfolio"]).get("groups") or []:
         group = PortfolioGroupPolicy(
@@ -1335,10 +1456,76 @@ def _policy_catalog_payload(
 
 
 def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
-    if isinstance(raw.get("assignments"), dict) and isinstance(raw.get("strategy"), dict):
+    if (
+        isinstance(raw.get("run_plans"), dict)
+        or isinstance(raw.get("assignments"), dict)
+    ) and isinstance(raw.get("strategy"), dict):
         result = deepcopy(raw)
         defaults = _default_draft()
         result["schema_version"] = CONFIGURATION_SCHEMA_VERSION
+        legacy_run_plans = dict(
+            result.get("run_plans") or result.pop("assignments", {}) or {}
+        )
+        result["run_plans"] = {
+            "universes": deepcopy(legacy_run_plans.get("universes") or []),
+            "plans": deepcopy(
+                legacy_run_plans.get("plans")
+                or legacy_run_plans.get("deployments")
+                or []
+            ),
+        }
+        result.pop("assignments", None)
+        for run_plan in result["run_plans"]["plans"]:
+            legacy_policy = dict(run_plan.pop("campaign_policy", {}) or {})
+            run_plan["run_plan_id"] = str(
+                run_plan.get("run_plan_id")
+                or run_plan.pop("deployment_id", "")
+            )
+            run_plan["allowed_environments"] = list(
+                run_plan.get("allowed_environments")
+                or run_plan.pop("modes", [])
+                or []
+            )
+            run_plan.pop("selection_priority", None)
+            authority = dict(run_plan.get("action_authority") or {})
+            authority.setdefault("default", "confirm")
+            authority.setdefault(
+                "initial_entry",
+                str(legacy_policy.get("initial_entry_authority") or "inherit"),
+            )
+            authority.setdefault("add", str(legacy_policy.get("add_authority") or "inherit"))
+            authority.setdefault(
+                "reentry", str(legacy_policy.get("reentry_authority") or "inherit")
+            )
+            authority.setdefault(
+                "strategic_exit", str(legacy_policy.get("exit_authority") or "automatic")
+            )
+            authority["protective_exit"] = "automatic"
+            authority["emergency_exit"] = "automatic"
+            run_plan["action_authority"] = authority
+            run_plan["campaign_lifecycle"] = {
+                **_default_campaign_policy(),
+                **dict(run_plan.get("campaign_lifecycle") or legacy_policy),
+            }
+            safety = dict(run_plan.get("safety_supervisor") or {})
+            run_plan["safety_supervisor"] = {
+                "enabled_by_environment": {
+                    **_default_safety_supervisor()["enabled_by_environment"],
+                    **dict(safety.get("enabled_by_environment") or {}),
+                    "paper": True,
+                    "live": True,
+                }
+            }
+        for mandate in dict(result.get("portfolio") or {}).get("mandates") or []:
+            mandate["run_plan_id"] = str(
+                mandate.get("run_plan_id")
+                or mandate.pop("deployment_id", "")
+            )
+            mandate.setdefault("assignment_mode", "single")
+            mandate.setdefault("allocation_weight", 1.0)
+            mandate.setdefault("maximum_action_authority", "automatic")
+            mandate.pop("autonomy", None)
+            mandate.pop("priority", None)
         result["strategy"].setdefault("profiles", [])
         result["strategy"].setdefault("capability_catalog", [])
         result["strategy"]["default_profile_id"] = str(
@@ -1390,6 +1577,20 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                     legacy_reentry.get("enabled", True)
                 )
             lifecycle = _migrate_lifecycle_v7(lifecycle, parameters)
+            initial_entry = dict(lifecycle.get("initial_entry") or {})
+            initial_capital = dict(initial_entry.get("capital_request") or {})
+            initial_capital.pop("priority", None)
+            initial_entry["capital_request"] = initial_capital
+            for step in initial_entry.get("add_steps") or []:
+                step_capital = dict(step.get("capital_request") or {})
+                step_capital.pop("priority", None)
+                step["capital_request"] = step_capital
+            lifecycle["initial_entry"] = initial_entry
+            reentry = dict(lifecycle.get("reentry") or {})
+            reentry_capital = dict(reentry.get("capital_request") or {})
+            reentry_capital.pop("priority", None)
+            reentry["capital_request"] = reentry_capital
+            lifecycle["reentry"] = reentry
             for intent in _lifecycle_order_intents(lifecycle):
                 intent.setdefault("protection_profile", "hybrid-single")
             initial_entry = dict(lifecycle.get("initial_entry") or {})
@@ -1427,7 +1628,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         }
         referenced_profile_ids = {
             str(row.get("profile_id"))
-            for row in dict(result.get("assignments") or {}).get("deployments") or []
+            for row in dict(result.get("run_plans") or {}).get("plans") or []
         }
         migrated_profiles: list[dict[str, Any]] = []
         for profile in result["strategy"]["profiles"]:
@@ -1462,24 +1663,22 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             for row in result["strategy"]["capability_catalog"]
             if str(row.get("capability_id")) != "exit-watch-reenter"
         ]
-        result["assignments"].setdefault(
+        result["run_plans"].setdefault(
             "universes",
-            deepcopy(defaults["assignments"]["universes"]),
+            deepcopy(defaults["run_plans"]["universes"]),
         )
         universe_ids = {
             str(row.get("universe_id"))
-            for row in result["assignments"]["universes"]
+            for row in result["run_plans"]["universes"]
         }
         fallback_universe = (
             next(iter(universe_ids))
             if universe_ids
             else "configured-watch-universe"
         )
-        for deployment in result["assignments"].get("deployments") or []:
-            deployment.setdefault("universe_id", fallback_universe)
-            deployment.setdefault("book_id", "default")
-            deployment.setdefault("selection_priority", 50)
-            deployment.setdefault("campaign_policy", _default_campaign_policy())
+        for run_plan in result["run_plans"].get("plans") or []:
+            run_plan.setdefault("universe_id", fallback_universe)
+            run_plan.setdefault("book_id", "default")
         existing_oms = {
             str(row.get("profile_id"))
             for row in dict(result.get("oms") or {}).get("profiles") or []
@@ -1554,33 +1753,35 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
     account_keys = [str(row["account_key"]) for row in dict(old["accounts"]).get("bindings") or []]
     mandates = [{
         "mandate_id": f"migrated-{key}",
-        "deployment_id": "migrated-deployment",
+        "run_plan_id": "migrated-run-plan",
         "account_key": key,
         "enabled": True,
         "maximum_cash_fraction": 1.0,
         "maximum_planned_risk_fraction": 0.01,
         "maximum_positions": 10,
-        "priority": 50,
-        "autonomy": "confirm",
+        "assignment_mode": "single" if len(account_keys) == 1 else "replicated",
+        "allocation_weight": 1.0,
+        "maximum_action_authority": "automatic",
         "allow_replacement": False,
         "minimum_replacement_improvement_pct": 20.0,
     } for key in account_keys]
     base["portfolio"]["mandates"] = mandates
-    base["assignments"] = {
-        "universes": deepcopy(base["assignments"]["universes"]),
-        "deployments": [{
-        "deployment_id": "migrated-deployment",
-        "name": "Migrated deployment",
-        "description": "Runtime deployment migrated from the original assignment configuration.",
+    base["run_plans"] = {
+        "universes": deepcopy(base["run_plans"]["universes"]),
+        "plans": [{
+        "run_plan_id": "migrated-run-plan",
+        "name": "Migrated Run Plan",
+        "description": "Run Plan migrated from the original assignment configuration.",
         "profile_id": profile["profile_id"],
         "oms_profile_id": "migrated-oms",
         "universe_id": "configured-watch-universe",
         "book_id": "default",
-        "selection_priority": 50,
-        "campaign_policy": _default_campaign_policy(),
+        "action_authority": _default_action_authority(),
+        "campaign_lifecycle": _default_campaign_policy(),
+        "safety_supervisor": _default_safety_supervisor(),
         "mandate_ids": [row["mandate_id"] for row in mandates],
         "enabled": True,
-        "modes": ["replay", "backtest", "backtest_debug"],
+        "allowed_environments": ["replay", "backtest", "backtest_debug"],
         "runtime_assignments": deepcopy(old.get("assignments") or []),
     }]}
     if "canvas" in old:
@@ -1786,8 +1987,6 @@ def _validate_capital_request(request: dict[str, Any], label: str) -> None:
         raise ValueError(f"{label} fixed quantity must be positive")
     if mode == "all_available" and value not in {0.0, 1.0}:
         raise ValueError(f"{label} all-available requests do not accept a custom value")
-    if not 0 <= int(request.get("priority") or 0) <= 100:
-        raise ValueError(f"{label} capital request priority must be between zero and 100")
 
 
 def _validate_order_intent(intent: dict[str, Any], label: str) -> None:

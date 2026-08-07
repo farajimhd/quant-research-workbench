@@ -10,6 +10,13 @@ reservations, portfolio controls, and reconciliation, while
 emit semantic intents and cannot place or modify orders directly. Runtime modes
 change only three dependencies:
 
+All Strategy Runs attached to one broker/session adapter share one
+`TradingControlPlane`. It owns ticker campaign leases, account and group
+Portfolio locks, per-account OMS command lanes, broker-warning serialization,
+and account Safety Supervisor latches. A run cannot create private copies of
+these authorities and race another run around account limits, order sequencing,
+or overall loss controls.
+
 | Mode | Market source | Broker | Clock |
 |---|---|---|---|
 | Live / Paper | live `qmd-gateway` | `IbkrClientPortalAdapter` | wall clock |
@@ -30,8 +37,8 @@ Replay, Backtest, Backtest Debug, Live, and Paper consume approved revisions
 and must never contain copied configuration or mode-specific implementations
 of the same rules.
 
-One approved revision contains the immutable strategy identity, revision, and
-parameters; strategy-to-account assignments; portfolio allocation and risk
+One approved revision contains the immutable Strategy Profile and Run Plan;
+Strategy-account mandates; portfolio allocation and risk
 policies; OMS execution and protection settings; stable account/session
 bindings; and the complete Canvas registry. Draft sections are mutable but
 non-executable. Publishing validates and hashes the complete profile. A run

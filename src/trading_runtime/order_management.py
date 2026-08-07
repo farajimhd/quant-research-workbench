@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from src.market_engine.events import MarketEvent
 from src.trading_runtime.broker import BrokerAdapter
+from src.trading_runtime.control_plane import TradingControlPlane
 from src.trading_runtime.domain import OrderLifecycleState, OrderState
 from src.trading_runtime.execution_policies import (
     AddProtectionPolicy,
@@ -304,6 +305,7 @@ class OrderManagementEngine:
         state_callback: StateCallback | None = None,
         execution_market_data: ExecutionMarketDataProvider | None = None,
         enforce_wall_clock_quote_freshness: bool = False,
+        control_plane: TradingControlPlane | None = None,
     ) -> None:
         self.broker = broker
         self.planner = planner
@@ -318,8 +320,13 @@ class OrderManagementEngine:
         self.state_callback = state_callback
         self.execution_market_data = execution_market_data or ExecutionMarketDataProvider()
         self.enforce_wall_clock_quote_freshness = enforce_wall_clock_quote_freshness
+        self.control_plane = control_plane
         self._command_lanes: dict[str, asyncio.Lock] = {}
-        self._warning_lane = asyncio.Lock()
+        self._warning_lane = (
+            control_plane.warning_reply_lane
+            if control_plane is not None
+            else asyncio.Lock()
+        )
         self._groups: dict[str, _ManagedOrderGroup] = {}
         self._group_by_client_id: dict[str, str] = {}
         self._group_by_broker_id: dict[str, str] = {}
@@ -327,6 +334,8 @@ class OrderManagementEngine:
         self._broker_connected = True
 
     def _command_lane(self, account_id: str) -> asyncio.Lock:
+        if self.control_plane is not None:
+            return self.control_plane.order_lane(account_id)
         return self._command_lanes.setdefault(account_id, asyncio.Lock())
 
     def on_market_snapshot(self, snapshot: ExecutionMarketSnapshot) -> None:

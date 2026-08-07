@@ -51,7 +51,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             self.assertEqual(_resolved_source_account_id(accounts["paper"]), "DU-PAPER-TEST")
             self.assertEqual(_resolved_source_account_id(accounts["cash"]), "U-CASH-TEST")
 
-    def test_schema_v8_migration_removes_legacy_session_overrides_and_adds_policy_catalogs(self) -> None:
+    def test_schema_v9_migration_removes_legacy_session_overrides_and_adds_policy_catalogs(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
@@ -73,7 +73,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 8)
+        self.assertEqual(migrated["schema_version"], 9)
         migrated_intent = migrated["strategy"]["profiles"][0]["lifecycle"][
             "initial_entry"
         ]["order_intent"]
@@ -100,7 +100,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 8)
+        self.assertEqual(draft["schema_version"], 9)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 2)
         self.assertTrue(all(profile["editable"] for profile in draft["strategy"]["profiles"]))
@@ -161,9 +161,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertNotIn("sizing", default_profile["parameters"])
         self.assertNotIn("maximum_position_quantity", str(default_profile))
-        self.assertTrue(draft["assignments"]["universes"])
+        self.assertTrue(draft["run_plans"]["universes"])
         self.assertEqual(
-            draft["assignments"]["deployments"][0]["campaign_policy"][
+            draft["run_plans"]["plans"][0]["campaign_lifecycle"][
                 "protective_exit_authority"
             ],
             "automatic",
@@ -193,7 +193,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             "urgent",
         )
         self.assertEqual(pinned["payload"]["canvas"]["revision"], "canvas-1")
-        self.assertEqual(pinned["deployment_id"], "balanced-replay")
+        self.assertEqual(pinned["run_plan_id"], "balanced-replay")
         self.assertEqual(
             pinned["payload"]["strategy"]["profile_id"],
             "long-momentum-balanced",
@@ -226,23 +226,23 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             journal.save_trading_configuration_draft(original)
             replacement = deepcopy(original)
             replacement["strategy"]["profiles"][0]["name"] = "Cloned profile"
-            replacement["assignments"]["deployments"][0]["name"] = "Cloned deployment"
+            replacement["run_plans"]["plans"][0]["name"] = "Cloned Run Plan"
             with self._service_patches(journal):
                 saved = replace_configuration_draft(replacement)
                 invalid = deepcopy(replacement)
-                invalid["assignments"]["deployments"][0]["profile_id"] = "missing-profile"
+                invalid["run_plans"]["plans"][0]["profile_id"] = "missing-profile"
                 with self.assertRaisesRegex(ValueError, "unknown Strategy Profile"):
                     replace_configuration_draft(invalid)
                 reloaded = journal.trading_configuration_draft()
             journal.close()
 
         self.assertEqual(saved["strategy"]["profiles"][0]["name"], "Cloned profile")
-        self.assertEqual(saved["assignments"]["deployments"][0]["name"], "Cloned deployment")
-        self.assertEqual(reloaded["assignments"]["deployments"][0]["name"], "Cloned deployment")
+        self.assertEqual(saved["run_plans"]["plans"][0]["name"], "Cloned Run Plan")
+        self.assertEqual(reloaded["run_plans"]["plans"][0]["name"], "Cloned Run Plan")
 
     def test_runtime_projection_uses_account_mandate_and_capability_settings(self) -> None:
         draft = self._draft()
-        draft["assignments"]["deployments"][0]["runtime_assignments"] = [{
+        draft["run_plans"]["plans"][0]["runtime_assignments"] = [{
             "assignment_id": "configured-aapl",
             "account_key": "replay",
             "ticker": "AAPL",
@@ -251,7 +251,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             "permissions": {},
             "parameters": {},
         }]
-        draft["assignments"]["universes"][0]["symbols"] = ["AAPL"]
+        draft["run_plans"]["universes"][0]["symbols"] = ["AAPL"]
         cloned_execution = deepcopy(next(
             row for row in draft["oms"]["execution_policies"]
             if row["policy_id"] == "adaptive_urgent"
@@ -274,7 +274,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         self.assertEqual(runtime["accounts"]["bindings"][0]["strategy_allocation"], 0.3)
         self.assertEqual(runtime["strategy"]["parameters"]["profit_pocket"]["quantity_fraction"], 0.4)
-        self.assertEqual(runtime["deployment"]["deployment_id"], "balanced-replay")
+        self.assertEqual(runtime["run_plan"]["run_plan_id"], "balanced-replay")
         resolved = runtime["assignments"][0]["resolved_parameters"]
         self.assertEqual(
             resolved["execution_policy_catalog"]["adaptive_urgent"]["policy_id"],
@@ -295,8 +295,8 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         binding["modes"] = ["paper"]
         binding["account_class"] = "margin"
         binding["source_account_id"] = ""
-        deployment = draft["assignments"]["deployments"][0]
-        deployment["modes"] = ["paper"]
+        deployment = draft["run_plans"]["plans"][0]
+        deployment["allowed_environments"] = ["paper"]
 
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
@@ -311,13 +311,12 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             _validate_draft(draft)
 
-    def test_runtime_resolves_every_eligible_deployment_by_selection_priority(self) -> None:
+    def test_runtime_resolves_every_eligible_run_plan_by_stable_identity(self) -> None:
         draft = self._draft()
         second = {
-            **draft["assignments"]["deployments"][0],
-            "deployment_id": "second-replay",
+            **draft["run_plans"]["plans"][0],
+            "run_plan_id": "second-replay",
             "name": "Second Replay",
-            "selection_priority": 80,
             "runtime_assignments": [
                 {
                     "assignment_id": "second-msft",
@@ -330,12 +329,14 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 }
             ],
         }
-        draft["assignments"]["deployments"].append(second)
+        draft["run_plans"]["plans"].append(second)
+        draft["portfolio"]["mandates"][0]["assignment_mode"] = "replicated"
         draft["portfolio"]["mandates"].append(
             {
                 **draft["portfolio"]["mandates"][0],
                 "mandate_id": "second-replay",
-                "deployment_id": "second-replay",
+                "run_plan_id": "second-replay",
+                "assignment_mode": "replicated",
             }
         )
         with patch(
@@ -345,10 +346,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             runtimes = resolve_runtime_configurations(draft, mode="replay")
 
         self.assertEqual(
-            [row["deployment"]["deployment_id"] for row in runtimes],
-            ["second-replay", "balanced-replay"],
+            [row["run_plan"]["run_plan_id"] for row in runtimes],
+            ["balanced-replay", "second-replay"],
         )
-        assignment = runtimes[0]["assignments"][0]
+        assignment = runtimes[1]["assignments"][0]
         self.assertEqual(assignment["campaign_id"], "second-replay:MSFT:long")
         self.assertEqual(assignment["profile_id"], "long-momentum-balanced")
         self.assertIn("entry_rules", assignment["resolved_parameters"])
@@ -360,7 +361,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             draft["portfolio"]["mandates"] = []
             journal.save_trading_configuration_draft(draft)
             with self._service_patches(journal):
-                saved = update_configuration_section("assignments", draft["assignments"])
+                saved = update_configuration_section("run_plans", draft["run_plans"])
                 with self.assertRaisesRegex(ValueError, "requires at least one account mandate"):
                     publish_configuration(
                         label="Incomplete release",
@@ -369,7 +370,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                     )
             journal.close()
 
-        self.assertEqual(saved["assignments"]["deployments"][0]["deployment_id"], "balanced-replay")
+        self.assertEqual(saved["run_plans"]["plans"][0]["run_plan_id"], "balanced-replay")
 
     def test_unknown_strategy_input_cannot_enter_runtime_projection(self) -> None:
         draft = self._draft()
@@ -458,7 +459,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
     def test_external_universe_source_is_draftable_but_not_publishable(self) -> None:
         draft = self._draft()
-        draft["assignments"]["universes"][0].update(
+        draft["run_plans"]["universes"][0].update(
             {"source": "scanner_view", "scanner_view_id": "momentum-open"}
         )
         with patch(
@@ -471,15 +472,47 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
     def test_automatic_initial_entry_requires_identity_bound_universe(self) -> None:
         draft = self._draft()
-        draft["assignments"]["universes"][0]["symbols"] = ["NVDA"]
-        draft["assignments"]["deployments"][0]["campaign_policy"][
-            "initial_entry_authority"
-        ] = "automatic"
+        draft["run_plans"]["universes"][0]["symbols"] = ["NVDA"]
+        draft["run_plans"]["plans"][0]["action_authority"]["initial_entry"] = "automatic"
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
         ), self.assertRaisesRegex(ValueError, "identity-bound assignments for: NVDA"):
             _validate_draft(draft)
+
+    def test_safety_can_be_disabled_only_for_historical_environments(self) -> None:
+        draft = self._draft()
+        safety = draft["run_plans"]["plans"][0]["safety_supervisor"]["enabled_by_environment"]
+        safety["replay"] = False
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ):
+            _validate_draft(draft, require_runtime_ready=False)
+            safety["paper"] = False
+            with self.assertRaisesRegex(ValueError, "cannot be disabled"):
+                _validate_draft(draft, require_runtime_ready=False)
+
+    def test_account_mandate_caps_run_plan_action_authority(self) -> None:
+        draft = self._draft()
+        draft["portfolio"]["mandates"][0]["maximum_action_authority"] = "confirm"
+        draft["run_plans"]["plans"][0]["action_authority"]["initial_entry"] = "automatic"
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), self.assertRaisesRegex(ValueError, "action authority cap"):
+            _validate_draft(draft, require_runtime_ready=False)
+
+    def test_schema_v9_migration_removes_generic_priorities(self) -> None:
+        raw = self._draft()
+        plan = raw["run_plans"]["plans"][0]
+        plan["selection_priority"] = 99
+        raw["portfolio"]["mandates"][0]["priority"] = 88
+        raw["strategy"]["profiles"][0]["lifecycle"]["initial_entry"]["capital_request"]["priority"] = 77
+        migrated = _migrate_draft(raw)
+        self.assertNotIn("selection_priority", migrated["run_plans"]["plans"][0])
+        self.assertNotIn("priority", migrated["portfolio"]["mandates"][0])
+        self.assertNotIn("priority", migrated["strategy"]["profiles"][0]["lifecycle"]["initial_entry"]["capital_request"])
 
     def _draft(self) -> dict:
         with patch(

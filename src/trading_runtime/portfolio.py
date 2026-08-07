@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from src.trading_runtime.broker import BrokerAdapter
+from src.trading_runtime.control_plane import TradingControlPlane
 from src.trading_runtime.domain import OrderState, TradingStateSnapshot
 from src.trading_runtime.execution_policies import AddProtectionPolicy, StopOrderType
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary, LiveOrder, PortfolioPosition
@@ -262,7 +263,7 @@ class PortfolioRebalanceProposal:
     candidate_unrealized_return_pct: float
     opportunity_score: float
     minimum_improvement_pct: float
-    autonomy: str
+    required_action_authority: str
     status: str
     reasons: tuple[str, ...]
     proposed_at: datetime
@@ -342,6 +343,8 @@ class PortfolioManagementEngine:
         strategy_id: str,
         strategy_revision: int,
         groups: list[PortfolioGroupPolicy] | tuple[PortfolioGroupPolicy, ...] = (),
+        control_plane: TradingControlPlane | None = None,
+        allocation_identity: str = "",
     ) -> None:
         if not profiles:
             raise ValueError("Portfolio management requires at least one account profile")
@@ -349,6 +352,7 @@ class PortfolioManagementEngine:
         self.run_id = run_id
         self.strategy_id = strategy_id
         self.strategy_revision = strategy_revision
+        self.allocation_identity = allocation_identity or strategy_id
         self.states = {profile.account_id: PortfolioAccountState(profile=profile) for profile in profiles}
         if len(self.states) != len(profiles):
             raise ValueError("Portfolio broker account ids must be unique")
@@ -369,10 +373,38 @@ class PortfolioManagementEngine:
         self.rebalance_proposals: list[PortfolioRebalanceProposal] = []
         self.differences: dict[tuple[str, str], PortfolioReconciliationDifference] = {}
         self.decisions: list[PortfolioDecision] = []
-        self._account_locks = {account_id: asyncio.Lock() for account_id in self.states}
-        self._group_locks = {group_id: asyncio.Lock() for group_id in self.groups}
+        self.control_plane = control_plane
+        self._account_locks = {
+            account_id: (
+                control_plane.account_lock(account_id)
+                if control_plane is not None
+                else asyncio.Lock()
+            )
+            for account_id in self.states
+        }
+        self._group_locks = {
+            group_id: (
+                control_plane.group_lock(group_id)
+                if control_plane is not None
+                else asyncio.Lock()
+            )
+            for group_id in self.groups
+        }
         self._last_filled_by_reservation: dict[str, float] = {}
         self._restore()
+
+    def bind_control_plane(self, control_plane: TradingControlPlane) -> None:
+        """Promote this engine's admission locks to shared account authorities."""
+
+        self.control_plane = control_plane
+        self._account_locks = {
+            account_id: control_plane.account_lock(account_id)
+            for account_id in self.states
+        }
+        self._group_locks = {
+            group_id: control_plane.group_lock(group_id)
+            for group_id in self.groups
+        }
 
     async def synchronize(self, broker: BrokerAdapter) -> None:
         """Create one coherent multi-account snapshot from broker authorities."""
@@ -576,6 +608,11 @@ class PortfolioManagementEngine:
             await lock.acquire()
         try:
             async with self._account_locks[account_id]:
+                # Another Strategy Run may have committed account reservations
+                # while this run was evaluating market evidence. Refresh the
+                # durable account state inside the shared admission lock.
+                if self.control_plane is not None:
+                    self._restore()
                 return self._approve_locked(intent, state)
         finally:
             for lock in reversed(locks):
@@ -663,6 +700,8 @@ class PortfolioManagementEngine:
         if not state.profile.enabled and control != PortfolioControlMode.DISABLED:
             raise ValueError("A disabled account profile cannot be enabled by an operational command")
         state.control_mode = control
+        if self.control_plane is not None:
+            self.control_plane.account_control_modes[state.profile.account_id] = control.value
         self._record(
             "portfolio_control",
             account_key,
@@ -816,13 +855,21 @@ class PortfolioManagementEngine:
         reasons: list[str] = []
         entry = intent.action in ENTRY_ACTIONS
         reduction = intent.action in REDUCTION_ACTIONS
+        control_mode = state.control_mode
+        if self.control_plane is not None:
+            control_mode = PortfolioControlMode(
+                self.control_plane.account_control_modes.get(
+                    state.profile.account_id,
+                    control_mode.value,
+                )
+            )
         if entry and intent.capital_request is not None:
             requested = self._capital_request_quantity(intent, state)
-        if not state.profile.enabled or state.control_mode == PortfolioControlMode.DISABLED:
+        if not state.profile.enabled or control_mode == PortfolioControlMode.DISABLED:
             reasons.append("account_disabled")
-        if entry and state.control_mode in {PortfolioControlMode.ENTRIES_PAUSED, PortfolioControlMode.REDUCE_ONLY}:
+        if entry and control_mode in {PortfolioControlMode.ENTRIES_PAUSED, PortfolioControlMode.REDUCE_ONLY}:
             reasons.append("entries_paused")
-        if entry and self.strategy_id in state.disabled_strategy_allocations:
+        if entry and self.allocation_identity in state.disabled_strategy_allocations:
             reasons.append("strategy_allocation_disabled")
         if not entry and not reduction:
             reasons.append("unsupported_portfolio_action")
@@ -1069,7 +1116,11 @@ class PortfolioManagementEngine:
         now: datetime,
     ) -> PortfolioRebalanceProposal | None:
         request = intent.capital_request
-        mandate = dict(state.profile.strategy_mandates.get(self.strategy_id) or {})
+        mandate = dict(
+            state.profile.strategy_mandates.get(self.allocation_identity)
+            or state.profile.strategy_mandates.get(self.strategy_id)
+            or {}
+        )
         if (
             request is None
             or not request.allow_replacement
@@ -1118,7 +1169,11 @@ class PortfolioManagementEngine:
             candidate_unrealized_return_pct=candidate_return_pct,
             opportunity_score=opportunity_score,
             minimum_improvement_pct=minimum_improvement,
-            autonomy=str(mandate.get("autonomy") or "confirm"),
+            required_action_authority=str(
+                mandate.get("maximum_action_authority")
+                or mandate.get("autonomy")
+                or "confirm"
+            ),
             status="proposed",
             reasons=(
                 "insufficient_capacity",
@@ -1168,14 +1223,20 @@ class PortfolioManagementEngine:
         net = sum(float(row.mktValue) for row in state.positions.values())
         strategy_fraction = float(
             state.profile.strategy_allocations.get(
-                self.strategy_id,
-                state.profile.strategy_allocations.get("default", policy.maximum_strategy_fraction),
+                self.allocation_identity,
+                state.profile.strategy_allocations.get(
+                    self.strategy_id,
+                    state.profile.strategy_allocations.get(
+                        "default", policy.maximum_strategy_fraction
+                    ),
+                ),
             )
         )
         attributed = sum(
             abs(row.quantity * row.average_price)
             for row in self.allocations.values()
-            if row.account_id == state.profile.account_id and row.strategy_id == self.strategy_id
+            if row.account_id == state.profile.account_id
+            and row.strategy_id in {self.strategy_id, self.allocation_identity}
         )
         broker_cash_capacity = float(summary.availablefunds)
         if not policy.allow_margin and not policy.allow_unsettled_cash and state.ledger is not None:

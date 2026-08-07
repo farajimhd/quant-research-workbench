@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary, PortfolioPosition
+from src.trading_runtime.control_plane import TradingControlPlane
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.order_management import OrderGroupSnapshot, OrderManagementState
 from src.trading_runtime.portfolio import (
@@ -21,6 +22,7 @@ from src.trading_runtime.portfolio import (
 from src.trading_runtime.portfolio_config import (
     configured_portfolio_profiles,
     configured_portfolio_profiles_for_runtime,
+    portfolio_profiles_from_configuration,
 )
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 
@@ -152,6 +154,27 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cash_intent.quantity, 50)
         self.assertEqual(margin_decision.status, PortfolioDecisionStatus.APPROVED)
         self.assertEqual(margin_intent.quantity, 1_000)
+
+    async def test_account_guardrail_latch_blocks_other_strategy_runs(self) -> None:
+        profile = PortfolioAccountProfile("cash", "CASH1", "live", "cash", PortfolioPolicy())
+        plane = TradingControlPlane()
+        first = PortfolioManagementEngine(
+            [profile], journal=self.journal, run_id="run-a", strategy_id="strategy-a",
+            strategy_revision=1, control_plane=plane,
+        )
+        second = PortfolioManagementEngine(
+            [profile], journal=self.journal, run_id="run-b", strategy_id="strategy-b",
+            strategy_revision=1, control_plane=plane,
+        )
+        for engine in (first, second):
+            engine.synchronize_snapshot(
+                "CASH1", summary=summary("CASH1"), ledger=ledger("CASH1"), positions=[]
+            )
+        first.set_control("cash", PortfolioControlMode.ENTRIES_PAUSED, reason="daily_loss")
+        decision, approved = await second.approve(intent("cross-run-request"), account_id="CASH1")
+        self.assertIsNone(approved)
+        self.assertEqual(decision.status, PortfolioDecisionStatus.REJECTED)
+        self.assertIn("entries_paused", decision.reasons)
 
     async def test_reservations_prevent_two_requests_from_spending_the_same_capacity(self) -> None:
         policy = PortfolioPolicy(
@@ -389,6 +412,37 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PortfolioConfigurationTests(unittest.TestCase):
+    def test_run_plans_using_one_strategy_profile_keep_distinct_allocations(self) -> None:
+        configuration = {
+            "accounts": {"bindings": [{
+                "account_key": "paper",
+                "account_class": "paper",
+                "base_currency": "USD",
+                "enabled": True,
+                "modes": ["paper"],
+                "portfolio_policy_id": "default",
+                "session_key": "ibkr-paper",
+            }]},
+            "portfolio": {
+                "policies": [{"policy_id": "default", "revision": 1}],
+                "groups": [],
+                "mandates": [
+                    {"account_key": "paper", "enabled": True, "run_plan_id": "plan-a", "maximum_cash_fraction": 0.2},
+                    {"account_key": "paper", "enabled": True, "run_plan_id": "plan-b", "maximum_cash_fraction": 0.4},
+                ],
+            },
+            "run_plans": {"plans": [
+                {"enabled": True, "run_plan_id": "plan-a", "profile_id": "same-profile", "allowed_environments": ["paper"]},
+                {"enabled": True, "run_plan_id": "plan-b", "profile_id": "same-profile", "allowed_environments": ["paper"]},
+            ]},
+            "strategy": {"profiles": [{"profile_id": "same-profile"}]},
+        }
+        profiles, _ = portfolio_profiles_from_configuration(
+            [{"account_key": "paper", "account_id": "DU1", "account_class": "paper", "trading_mode": "paper"}],
+            configuration,
+        )
+        self.assertEqual(profiles[0].strategy_allocations, {"plan-a": 0.2, "plan-b": 0.4})
+
     def test_durable_config_uses_stable_keys_and_cannot_broaden_registered_account(self) -> None:
         raw = """
         {
