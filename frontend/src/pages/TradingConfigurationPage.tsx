@@ -1856,15 +1856,18 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
 
     <section className="strategy-authoring-stage">
       {activeStage === "identity" ? <>
+        <header className="strategy-identity-intro">
+          <h2>Name and describe this strategy</h2>
+        </header>
         <div className="strategy-identity-fields">
           <label className="strategy-identity-field">
             <span>Strategy name</span>
-            <input autoComplete="off" onChange={(event) => onProfileChange({ ...profile, name: event.target.value })} value={profile.name} />
+            <input autoComplete="off" className="strategy-identity-name" onChange={(event) => onProfileChange({ ...profile, name: event.target.value })} value={profile.name} />
             <small>This name identifies the profile in Run Plans and runtime views.</small>
           </label>
           <label className="strategy-identity-field">
             <span>Strategy description</span>
-            <textarea onChange={(event) => onProfileChange({ ...profile, description: event.target.value })} rows={4} value={profile.description} />
+            <textarea className="strategy-identity-description" onChange={(event) => onProfileChange({ ...profile, description: event.target.value })} rows={4} value={profile.description} />
             <small>Summarize the setup, intended market behavior, and purpose.</small>
           </label>
         </div>
