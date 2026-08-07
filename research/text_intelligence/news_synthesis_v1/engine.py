@@ -529,6 +529,20 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
         observed = re.search(r"\b(?:reported|actual|trailing[- ]twelve[- ]month|TTM|beat|miss(?:ed|es)?|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|fell|grew|declined|slipped|climbed|increased|decreased|recovered|record)\b", text, re.I)
         if projected and not observed:
             return False
+    if rule.concept == "commercial.demand_condition" and re.search(r"\bin order to\b", text, re.I):
+        # "Increase X in order to Y" contains neither an order event nor order
+        # demand. Remove the purpose idiom and require the demand rule to still
+        # match substantive commercial language in the remaining sentence.
+        if not rule.pattern.search(re.sub(r"\bin order to\b", "", text, flags=re.I)):
+            return False
+    if rule.concept == "capital.financing" and re.search(r"\bmarket price per share\b", text, re.I):
+        if not re.search(
+            r"\b(?:offering|placement|financing|convertible|notes?|bonds?|shelf|"
+            r"sale of (?:common|preferred) stock|investment from)\b",
+            text,
+            re.I,
+        ):
+            return False
     if rule.concept == "earnings.release_schedule":
         analyst_prediction = re.search(r"\b(?:analysts?|the analyst|argued|expects?|forecasts?|projects?)\b", text, re.I)
         concrete_time = re.search(r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|today|tomorrow|before the bell|after (?:the )?bell|market close|market hours|\w+ \d{1,2})\b", text, re.I)
@@ -633,13 +647,37 @@ def _sentiment(
             return "negative", 2
     if rule.concept == "listing.market_structure":
         if re.search(
+            r"\b(?:gets?|got|receiv(?:e[sd]?|ing)|receipt|grant(?:s|ed|ing)|extension)\b"
+            r".{0,140}\b(?:extension|additional \d+ (?:calendar )?day period)\b"
+            r".{0,140}\b(?:regain compliance|minimum bid)",
+            normalized,
+        ):
+            return "positive", 2
+        if re.search(
+            r"\b(?:to|will|seeks? to|aims? to|expects? to|in order to)\s+regain compliance\b",
+            normalized,
+        ):
+            return "negative", 3
+        if re.search(
             r"\bnot (?:yet )?regain(?:ed)? compliance\b|\b(?:delisting|non[- ]compliance)\b|"
             r"\b(?:no longer|fail(?:s|ed)? to) meet(?:s)?\b.{0,50}\b(?:minimum bid|listing requirement)\b",
             normalized,
         ):
             return "negative", 3
-        if re.search(r"\bregain(?:s|ed)? compliance\b", normalized):
+        if re.search(r"\b(?:has |have |had )?regained compliance\b|\bregains compliance\b", normalized):
             return "positive", 2
+        reverse_split = r"(?:reverse(?:\s+(?:stock|share))?\s+split|share consolidation)"
+        reverse_split_action = (
+            r"(?:announc\w*|approv\w*|authoriz\w*|implement\w*|complet\w*|effectuat\w*|"
+            r"takes? effect|will become effective|will reduce)"
+        )
+        if re.search(
+            rf"\btitle:\s*[^\n]*\b{reverse_split}\b|"
+            rf"\b{reverse_split_action}\b.{{0,140}}\b{reverse_split}\b|"
+            rf"\b{reverse_split}\b.{{0,140}}\b{reverse_split_action}\b",
+            normalized,
+        ):
+            return "negative", 3
     if rule.concept == "commercial.contract":
         if re.search(
             r"\b(?:contract|agreement)\s+(?:termination|cancellation|non[- ]renewal)\b|"

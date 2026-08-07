@@ -214,6 +214,51 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         })
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
 
+    def test_reverse_stock_split_to_regain_compliance_is_negative(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-reverse-stock-split",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha announces 1-for-20 reverse stock split",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) approved a 1-for-20 reverse stock split. "
+                "The company expects the split will increase the market price per share in order "
+                "to regain compliance with Nasdaq's minimum bid listing requirement."
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "negative")
+        self.assertEqual(view["negative_strength"], 3)
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertNotIn("commercial.demand_condition", concepts)
+        self.assertNotIn("capital.financing", concepts)
+
+    def test_achieved_listing_compliance_recovery_remains_positive(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-regained-listing-compliance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha regains Nasdaq compliance",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) has regained compliance with Nasdaq listing "
+                "requirements following a previously completed reverse stock split."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_granted_listing_extension_to_regain_compliance_is_positive(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-listing-extension",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha receives Nasdaq compliance extension",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) received a letter from Nasdaq granting an "
+                "additional 180 calendar day period to regain minimum bid compliance."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
     def test_rating_endpoint_is_not_double_counted_as_issuer_assessment(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-rating-endpoint",
