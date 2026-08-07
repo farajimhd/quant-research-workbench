@@ -2436,3 +2436,172 @@
   .strategy-profile-create-detail > div:last-child { justify-content: stretch; }
   .strategy-profile-create-detail > div:last-child .button { flex: 1; }
 }
+
+/* Reading-first typography trial. Deliberately scoped to the application sidebar
+   and non-Canvas configuration pages; Live, Replay, Backtest, and Canvas content
+   retain their existing typography. */
+.sidebar {
+  --sidebar-type-section: calc(12px * var(--app-readable-scale, 1));
+  --sidebar-type-item: calc(14px * var(--app-readable-scale, 1));
+  font-family: var(--font-body);
+  font-optical-sizing: auto;
+}
+
+.nav-group-label {
+  font-family: var(--font-body);
+  font-size: var(--sidebar-type-section);
+  font-weight: 600;
+  letter-spacing: .015em;
+  line-height: 1.35;
+  text-transform: none;
+}
+
+.nav-item {
+  font-family: var(--font-body);
+  font-size: var(--sidebar-type-item);
+  font-weight: 520;
+  line-height: 1.35;
+}
+
+.trading-configuration-page {
+  --configuration-type-caption: calc(12px * var(--app-readable-scale, 1));
+  --configuration-type-supporting: calc(13px * var(--app-readable-scale, 1));
+  --configuration-type-control: calc(14px * var(--app-readable-scale, 1));
+  --configuration-type-body: calc(15px * var(--app-readable-scale, 1));
+  --configuration-type-subheading: calc(17px * var(--app-readable-scale, 1));
+  --configuration-type-heading: calc(21px * var(--app-readable-scale, 1));
+  --configuration-type-title: calc(28px * var(--app-readable-scale, 1));
+  font-family: var(--font-body);
+  font-optical-sizing: auto;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+.trading-configuration-page :is(button, input, select, textarea) {
+  font-family: var(--font-body);
+  font-size: var(--configuration-type-control);
+  line-height: 1.35;
+}
+
+.trading-configuration-page :is(p, .configuration-field > small) {
+  font-family: var(--font-body);
+  font-size: var(--configuration-type-supporting);
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.trading-configuration-page p { max-width: 70ch; }
+
+.trading-configuration-page small {
+  font-family: var(--font-body);
+  font-size: var(--configuration-type-caption);
+  line-height: 1.45;
+}
+
+.trading-configuration-page :is(label, dt, .configuration-field > span) {
+  font-family: var(--font-body);
+  font-size: var(--configuration-type-supporting);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.trading-configuration-page h1 {
+  font-family: var(--font-display);
+  font-size: var(--configuration-type-title);
+  font-weight: 680;
+  letter-spacing: -.025em;
+  line-height: 1.15;
+}
+
+.trading-configuration-page h2 {
+  font-family: var(--font-display);
+  font-size: var(--configuration-type-heading);
+  font-weight: 650;
+  letter-spacing: -.018em;
+  line-height: 1.25;
+}
+
+.trading-configuration-page h3 {
+  font-family: var(--font-display);
+  font-size: var(--configuration-type-subheading);
+  font-weight: 630;
+  letter-spacing: -.01em;
+  line-height: 1.3;
+}
+
+.trading-configuration-page :is(code, pre, kbd, samp),
+.trading-configuration-page .strategy-parameter-detail dd {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+
+.trading-configuration-page :is(input, output, .configuration-number, .metric-value, [data-numeric="true"]) {
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+/* Kicker text remains a quiet navigational label, but no longer uses tiny,
+   widely tracked monospace capitals. */
+.configuration-page-header > div:nth-child(2) > span,
+.configuration-revision-copy small,
+.configuration-expert-guide > div > span,
+.guided-prompt-label,
+.guided-question > header > div > small,
+.configuration-guidance dt,
+.configuration-field > small > em,
+.strategy-book-configuration > header span,
+.strategy-authoring-header > div:first-child > span,
+.strategy-stage-intro > span,
+.strategy-behavior-summary header span,
+.strategy-profile-current > span,
+.strategy-profile-create-choice > span,
+.strategy-profile-create-detail header > span,
+.strategy-parameter-catalog > header span,
+.strategy-parameter-detail > span,
+.strategy-start-paths > button small,
+.strategy-create-workflow > header > span,
+.strategy-clone-workflow > header > span,
+.guided-action-step > header > span,
+.strategy-feature-preview > header > span,
+.strategy-feature-preview dt,
+.strategy-feature-preview > section > span {
+  font-family: var(--font-body);
+  font-size: var(--configuration-type-caption);
+  font-weight: 600;
+  letter-spacing: .01em;
+  line-height: 1.35;
+  text-transform: none;
+}
+
+.configuration-page-header p,
+.configuration-group > header p,
+.configuration-expert-editor .strategy-authoring-header p,
+.configuration-expert-editor .strategy-stage-intro p,
+.configuration-expert-editor .strategy-behavior-summary p,
+.configuration-expert-editor .strategy-handoff-links p {
+  font-size: var(--configuration-type-supporting);
+  line-height: 1.5;
+}
+
+.configuration-detail-heading textarea,
+.strategy-parameter-search input,
+.strategy-parameter-list strong,
+.strategy-profile-create-choice button strong {
+  font-size: var(--configuration-type-control);
+}
+
+.strategy-parameter-list small,
+.strategy-parameter-catalog > header small,
+.configuration-expert-editor .strategy-parameter-detail > p,
+.strategy-parameter-detail dt,
+.strategy-parameter-detail dd,
+.strategy-parameter-detail > small,
+.strategy-profile-create-choice button small {
+  font-size: var(--configuration-type-caption);
+  line-height: 1.45;
+}
+
+.strategy-parameter-detail dl > div {
+  gap: 10px;
+  grid-template-columns: 88px minmax(0, 1fr);
+}
