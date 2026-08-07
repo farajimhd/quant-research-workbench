@@ -13,11 +13,21 @@ def main() -> int:
     )
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--previous-manifest", type=Path)
+    parser.add_argument(
+        "--population-ids",
+        type=Path,
+        help="Optional JSON array of certified sample IDs for an identity-stable audit.",
+    )
     args = parser.parse_args()
     manifest = generate_audit(
         args.output_root.resolve(),
         previous_manifest=(
             args.previous_manifest.resolve() if args.previous_manifest else None
+        ),
+        population_ids=(
+            json.loads(args.population_ids.read_text(encoding="utf-8"))
+            if args.population_ids
+            else None
         ),
     )
     print(

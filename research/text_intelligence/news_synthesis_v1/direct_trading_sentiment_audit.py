@@ -24,13 +24,14 @@ from .engine import (
 from .taxonomy_audit import discover_pairs, load_json
 
 
-AUDIT_VERSION = "direct_trading_sentiment_audit_v15"
+AUDIT_VERSION = "direct_trading_sentiment_audit_v16"
 IDENTITY_SNAPSHOT_VERSION = "news_synthesis_benchmark_identity_snapshot_v2"
 
 
 @dataclass(frozen=True, slots=True)
 class AuditPopulation:
     certified_ids: frozenset[str]
+    certified_documents: Mapping[str, dict[str, Any]]
     annotations: Mapping[str, dict[str, Any]]
     articles: Mapping[str, dict[str, Any]]
     identity_articles: tuple[dict[str, Any], ...]
@@ -64,12 +65,26 @@ def article_source(
     }
 
 
-def load_population() -> AuditPopulation:
+def load_population(population_ids: Iterable[str] | None = None) -> AuditPopulation:
     config = default_certification_config()
-    certified_ids = frozenset(
-        path.stem
+    certified_documents = {
+        path.stem: load_json(path)
         for path in (config.output_root / "certified_labels").glob("*.json")
+    }
+    available_ids = frozenset(certified_documents)
+    certified_ids = (
+        frozenset(str(value) for value in population_ids)
+        if population_ids is not None
+        else available_ids
     )
+    if not certified_ids <= available_ids:
+        raise RuntimeError(
+            f"Requested uncertified population IDs: {sorted(certified_ids - available_ids)[:20]}"
+        )
+    certified_documents = {
+        sample_id: certified_documents[sample_id]
+        for sample_id in certified_ids
+    }
     annotations: dict[str, dict[str, Any]] = {}
     articles: dict[str, dict[str, Any]] = {}
     identity_articles: list[dict[str, Any]] = []
@@ -82,13 +97,14 @@ def load_population() -> AuditPopulation:
         if sample_id in certified_ids:
             annotations[sample_id] = load_json(annotation_path)
             articles[sample_id] = article
-    if len(certified_ids) != 1045 or set(annotations) != set(certified_ids):
+    if not certified_ids or len(certified_ids) > config.expected_articles or set(annotations) != set(certified_ids):
         raise RuntimeError(
             "Certified population identity mismatch: "
             f"certified={len(certified_ids)} annotations={len(annotations)}"
         )
     return AuditPopulation(
         certified_ids=certified_ids,
+        certified_documents=certified_documents,
         annotations=annotations,
         articles=articles,
         identity_articles=tuple(identity_articles),
@@ -231,12 +247,49 @@ def prediction_sentiments(document: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def certified_direct_trading_units(document: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Read issuer sentiment and eligibility from the certified V1 authority."""
+    entities = {
+        str(row["entity_id"]): row
+        for row in document.get("entities", [])
+        if row.get("entity_id")
+    }
+    views = {
+        str(row["entity_id"]): row
+        for row in document.get("issuer_views", [])
+        if row.get("entity_id")
+    }
+    eligibility: dict[str, dict[str, bool]] = defaultdict(dict)
+    for row in document.get("eligibility", []):
+        eligibility[str(row.get("entity_id"))][str(row.get("product"))] = bool(row.get("eligible"))
+    units = []
+    for entity_id, view in views.items():
+        entity = entities.get(entity_id, {})
+        ticker = str(entity.get("ticker") or "").upper()
+        products = eligibility.get(entity_id, {})
+        forecast = bool(products.get("forecast_trigger"))
+        analyst = bool(products.get("analyst_evaluation"))
+        if not ticker or not (forecast or analyst):
+            continue
+        units.append({
+            "entity_id": entity_id,
+            "ticker": ticker,
+            "semantic_direction": str(view.get("composite_sentiment") or ""),
+            "positive_evidence_level": int(view.get("positive_strength") or 0),
+            "negative_evidence_level": int(view.get("negative_strength") or 0),
+            "forecast_trigger_eligible": forecast,
+            "analyst_evaluation_eligible": analyst,
+        })
+    return sorted(units, key=lambda row: (row["ticker"], row["entity_id"]))
+
+
 def generate_audit(
     output_root: Path,
     *,
     previous_manifest: Path | None = None,
+    population_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    population = load_population()
+    population = load_population(population_ids)
     reviewed_candidate_tickers = {
         str(value)
         for annotation in population.annotations.values()
@@ -263,13 +316,9 @@ def generate_audit(
     missing_dispositions = Counter()
     for sample_id in sorted(population.certified_ids):
         annotation = population.annotations[sample_id]
+        gold_document = population.certified_documents[sample_id]
         article = population.articles[sample_id]
-        units = [
-            unit
-            for unit in annotation.get("issuer_units", [])
-            if unit.get("forecast_trigger_eligible")
-            or unit.get("analyst_evaluation_eligible")
-        ]
+        units = certified_direct_trading_units(gold_document)
         if not units:
             continue
         eligible_news.add(sample_id)
@@ -335,6 +384,7 @@ def generate_audit(
                 _render_packet(
                     article=article,
                     annotation=annotation,
+                    gold_document=gold_document,
                     unit=unit,
                     prediction=prediction,
                     predicted=predicted,
@@ -368,8 +418,8 @@ def generate_audit(
             "sentiment_mismatches": len(records),
             "missing_sentiments": sum(row["predicted_sentiment"] == "missing" for row in records),
         },
-        "selection": "Corrected manually reviewed issuer units where forecast_trigger_eligible or analyst_evaluation_eligible is true.",
-        "error_definition": "Current News Synthesis issuer-view sentiment for the same ticker differs from corrected manual semantic_direction; absent views are missing errors with explicit failure stages.",
+        "selection": "Certified News Synthesis V1 issuer views where certified forecast_trigger or analyst_evaluation eligibility is true.",
+        "error_definition": "Current production News Synthesis issuer-view sentiment for the same ticker differs from the certified V1 composite_sentiment; absent views are missing errors with explicit failure stages.",
         "error_counts": dict(sorted(error_counts.items())),
         "prediction_distribution": dict(sorted(prediction_counts.items())),
         "manual_distribution": dict(sorted(manual_counts.items())),
@@ -480,6 +530,7 @@ def _render_packet(
     *,
     article: Mapping[str, Any],
     annotation: Mapping[str, Any],
+    gold_document: Mapping[str, Any],
     unit: Mapping[str, Any],
     prediction: Mapping[str, Any],
     predicted: str,
@@ -492,8 +543,11 @@ def _render_packet(
     ticker = str(unit["ticker"]).upper()
     manual = str(unit["semantic_direction"])
     source_text = str(rendered.get("text") or publication.get("title") or "")
-    focused_annotation = dict(annotation)
-    focused_annotation["issuer_units"] = [dict(unit)]
+    legacy_units = [
+        dict(row)
+        for row in annotation.get("issuer_units", [])
+        if str(row.get("ticker") or "").upper() == ticker
+    ]
     return (
         f"# Direct-trading sentiment audit — {sample_id} / {ticker}\n\n"
         "## Error summary\n\n"
@@ -511,8 +565,10 @@ def _render_packet(
         f"- **URL:** {publication.get('article_url', '')}\n\n"
         "## Original news\n\n"
         f"### {publication.get('title') or 'Untitled'}\n\n{source_text}\n\n"
-        "## Corrected manually reviewed ground truth\n\n"
-        f"```json\n{json.dumps(focused_annotation, indent=2, ensure_ascii=False)}\n```\n\n"
+        "## Certified News Synthesis V1 ground truth\n\n"
+        f"```json\n{json.dumps(gold_document, indent=2, ensure_ascii=False)}\n```\n\n"
+        "## Legacy annotation context for the audited ticker\n\n"
+        f"```json\n{json.dumps(legacy_units, indent=2, ensure_ascii=False)}\n```\n\n"
         "## News Synthesis labels\n\n"
         f"```json\n{json.dumps(prediction, indent=2, ensure_ascii=False)}\n```\n"
     )

@@ -5,11 +5,43 @@ import unittest
 from .direct_trading_sentiment_audit import (
     article_source,
     build_benchmark_identity_snapshot,
+    certified_direct_trading_units,
     compare_manifests,
+    prediction_sentiments,
 )
 
 
 class DirectTradingSentimentAuditTests(unittest.TestCase):
+    def test_prediction_sentiments_reads_ticker_bound_issuer_views(self) -> None:
+        self.assertEqual(prediction_sentiments({
+            "entities": [{"entity_id": "security:AAA", "ticker": "AAA"}],
+            "issuer_views": [{"entity_id": "security:AAA", "composite_sentiment": "positive"}],
+        }), {"AAA": "positive"})
+
+    def test_certified_v1_document_is_the_sentiment_and_eligibility_authority(self) -> None:
+        document = {
+            "entities": [{"entity_id": "security:AAA", "ticker": "AAA"}],
+            "issuer_views": [{
+                "entity_id": "security:AAA",
+                "composite_sentiment": "negative",
+                "positive_strength": 1,
+                "negative_strength": 4,
+            }],
+            "eligibility": [
+                {"entity_id": "security:AAA", "product": "forecast_trigger", "eligible": True},
+                {"entity_id": "security:AAA", "product": "analyst_evaluation", "eligible": False},
+            ],
+        }
+        self.assertEqual(certified_direct_trading_units(document), [{
+            "entity_id": "security:AAA",
+            "ticker": "AAA",
+            "semantic_direction": "negative",
+            "positive_evidence_level": 1,
+            "negative_evidence_level": 4,
+            "forecast_trigger_eligible": True,
+            "analyst_evaluation_eligible": False,
+        }])
+
     def test_article_source_adds_evaluation_scope_without_replacing_provider_tickers(self) -> None:
         source = article_source(
             {
