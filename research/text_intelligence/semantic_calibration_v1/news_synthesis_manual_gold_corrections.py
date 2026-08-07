@@ -22,7 +22,7 @@ from research.text_intelligence.news_synthesis_v1.certification import (
     render_review_packet,
 )
 from research.text_intelligence.news_synthesis_v1.review_spec import compile_review_spec
-from research.text_intelligence.news_synthesis_v1.taxonomy_audit import discover_pairs
+from research.text_intelligence.news_synthesis_v1.source_authority import discover_pairs
 
 
 CORRECTION_VERSION = "news_synthesis_manual_gold_corrections_v3"
@@ -295,6 +295,7 @@ def apply_manual_gold_corrections() -> list[dict[str, Any]]:
         spec = read_json(spec_path)
         _correct_review_spec(spec, correction)
         write_json_atomic(spec_path, spec)
+        reviewed_spec_sample_ids.add(correction.sample_id)
         changes.append({
             "sample_id": correction.sample_id,
             "ticker": correction.ticker,
@@ -320,6 +321,7 @@ def apply_manual_gold_corrections() -> list[dict[str, Any]]:
         spec = read_json(spec_path)
         _correct_historical_recap_review_spec(spec, correction)
         write_json_atomic(spec_path, spec)
+        reviewed_spec_sample_ids.add(correction.sample_id)
         changes.append({
             "sample_id": correction.sample_id,
             "ticker": correction.ticker,
@@ -659,8 +661,10 @@ def _correct_review_spec(spec: dict[str, Any], correction: GoldCorrection) -> No
                 found_reverse_split = True
             if correction.review_policy == "evidence_balance":
                 if participation.get("semantic_sentiment") == "negative":
+                    participation["sentiment_strength"] = correction.negative_strength
                     found_negative = True
                 if participation.get("semantic_sentiment") == "positive":
+                    participation["sentiment_strength"] = correction.positive_strength
                     found_positive = True
     if correction.review_policy == "secondary_with_repurchase" and (
         not found_negative or not found_positive

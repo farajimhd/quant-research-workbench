@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .direct_trading_sentiment_audit import generate_audit
+from .source_authority import sha256_file
 
 
 def main() -> int:
@@ -13,6 +14,11 @@ def main() -> int:
     )
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--previous-manifest", type=Path)
+    parser.add_argument(
+        "--publish-current",
+        action="store_true",
+        help="Atomically publish this successful full-population run as the current audit authority.",
+    )
     parser.add_argument(
         "--population-ids",
         type=Path,
@@ -30,6 +36,25 @@ def main() -> int:
             else None
         ),
     )
+    if args.publish_current:
+        population = manifest["population"]
+        if population["certified_news"] != 2_000 or manifest["engine_failures"]:
+            raise RuntimeError(
+                "Current authority requires the complete 2,000-news population and zero engine failures"
+            )
+        manifest_path = args.output_root.resolve() / "manifest.json"
+        pointer = {
+            "authority_version": "news_synthesis_current_audit_v1",
+            "audit_root": str(args.output_root.resolve()),
+            "manifest_path": str(manifest_path),
+            "manifest_sha256": sha256_file(manifest_path),
+            "authority": manifest["authority"],
+            "population": population,
+        }
+        pointer_path = args.output_root.resolve().parent / "current_audit.json"
+        temporary = pointer_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(pointer, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(pointer_path)
     print(
         json.dumps(
             {

@@ -28,6 +28,7 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
 )
 from research.mlops.env import discover_env_files, load_env_files
+from research.text_intelligence.news_synthesis_v1.engine import ENGINE_VERSION
 from research.news_reaction_model.v15.stock_state import STOCK_STATE_NAMES
 from research.news_reaction_model.v15.time_features import TIME_FEATURE_NAMES
 from research.news_reaction_model.v17.prepare_targets import event_rows_for_tickers
@@ -710,7 +711,7 @@ def _json_list(value: Any) -> str:
 def _news_label(row: Mapping[str, Any], ticker: str) -> dict[str, Any]:
     del ticker
     return {
-        "authority": str(row.get("news_classification_version") or "news_synthesis_engine_v1"),
+        "authority": str(row.get("news_classification_version") or ENGINE_VERSION),
         "kind": str(row.get("news_kind") or "unknown"),
         "origin": str(row.get("news_origin") or "unknown"),
         "scope": str(row.get("news_scope") or "unknown"),

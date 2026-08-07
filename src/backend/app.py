@@ -62,6 +62,7 @@ from src.backend.market_data_service import (
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.news_synthesis import (
+    ENGINE_VERSION,
     LIVE_SEMANTIC_TABLE,
     SYNTHESIS_TABLE,
     load_news_synthesis,
@@ -1474,7 +1475,10 @@ def trading_news_detail(canonical_news_id: str, *, published_at: str = "", query
                 "is_company_news": synthesis_fields.get("is_company_news", False),
                 "confidence": synthesis_fields.get("classification_confidence", 0.0),
                 "evidence": synthesis_fields.get("classification_evidence", ["news_synthesis_pending"]),
-                "version": "news_synthesis_engine_v1" if synthesis_fields else "pending",
+                "version": str(
+                    synthesis_document.get("production", {}).get("engine_version")
+                    or ENGINE_VERSION
+                ) if synthesis_fields else "pending",
             }),
             "news_kind": synthesis_fields.get("news_kind", "market"),
             "provider_tags": source_row.get("provider_tags") or [],
@@ -1512,6 +1516,7 @@ def trading_news_rows(
     forecast_eligible: str = "",
     reaction_eligible: str = "",
     history_eligible: str = "",
+    analyst_eligible: str = "",
 ) -> dict[str, Any]:
     """Return a bounded point-in-time news page for Canvas news containers."""
     safe_limit = max(1, min(limit, 250))
@@ -1554,6 +1559,7 @@ def trading_news_rows(
         "forecast_eligible": forecast_eligible.strip().lower(),
         "reaction_eligible": reaction_eligible.strip().lower(),
         "history_eligible": history_eligible.strip().lower(),
+        "analyst_eligible": analyst_eligible.strip().lower(),
     }
     token_pattern = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
     for name, value in {
@@ -1563,7 +1569,7 @@ def trading_news_rows(
     }.items():
         if value and not token_pattern.fullmatch(value):
             raise HTTPException(status_code=400, detail=f"{name} is invalid")
-    if safe_eligibility not in {"", "forecast", "reaction", "history"}:
+    if safe_eligibility not in {"", "forecast", "reaction", "history", "analyst"}:
         raise HTTPException(status_code=400, detail="eligibility is invalid")
     for name, value in eligibility_filters.items():
         if value not in {"", "eligible", "ineligible"}:
@@ -1596,7 +1602,7 @@ def trading_news_rows(
     def label_predicates(ticker_scope: str = "") -> tuple[str, str]:
         """Build V1-only semantic predicates; canonical News remains independently visible."""
         conditions = [
-            "l.engine_version = 'news_synthesis_engine_v1'",
+            f"l.engine_version = {sql_string(ENGINE_VERSION)}",
             "l.published_at_utc >= window_start",
             "l.published_at_utc <= window_end",
         ]
@@ -1619,6 +1625,7 @@ def trading_news_rows(
             "forecast": "forecast_tickers",
             "reaction": "reaction_tickers",
             "history": "history_tickers",
+            "analyst": "analyst_tickers",
         }
         if safe_eligibility:
             column = product_columns[safe_eligibility]
@@ -1627,6 +1634,7 @@ def trading_news_rows(
             "forecast_eligible": "forecast_tickers",
             "reaction_eligible": "reaction_tickers",
             "history_eligible": "history_tickers",
+            "analyst_eligible": "analyst_tickers",
         }
         for name, value in eligibility_filters.items():
             if not value:
@@ -1643,7 +1651,7 @@ def trading_news_rows(
         quality_exists_sql = (
             "n.canonical_news_id IN (SELECT canonical_news_id "
             "FROM q_live.news_synthesis_v1 AS l FINAL "
-            "WHERE l.engine_version = 'news_synthesis_engine_v1' "
+            f"WHERE l.engine_version = {sql_string(ENGINE_VERSION)} "
             "AND l.published_at_utc >= window_start AND l.published_at_utc <= window_end "
             "AND notEmpty(l.quality_flags))"
         )
@@ -1717,7 +1725,7 @@ def trading_news_rows(
         kind_filter = (
             "n.canonical_news_id IN (SELECT canonical_news_id "
             "FROM q_live.news_synthesis_v1 AS l FINAL "
-            "WHERE l.engine_version='news_synthesis_engine_v1' "
+            f"WHERE l.engine_version={sql_string(ENGINE_VERSION)} "
             f"AND l.published_at_utc>=window_start AND l.published_at_utc<=window_end AND ({condition}))"
         )
         filters.append(kind_filter)
@@ -3215,6 +3223,7 @@ def trading_news(
     forecast_eligible: str = "",
     reaction_eligible: str = "",
     history_eligible: str = "",
+    analyst_eligible: str = "",
 ) -> dict[str, Any]:
     return trading_news_rows(
         as_of=as_of, lookback_hours=lookback_hours, limit=limit, search=search,
@@ -3223,6 +3232,7 @@ def trading_news(
         eligibility=eligibility, label_state=label_state, start_date=start_date,
         end_date=end_date, query_id=query_id, forecast_eligible=forecast_eligible,
         reaction_eligible=reaction_eligible, history_eligible=history_eligible,
+        analyst_eligible=analyst_eligible,
     )
 
 

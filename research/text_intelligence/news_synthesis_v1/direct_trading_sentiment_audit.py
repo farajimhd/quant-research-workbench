@@ -6,6 +6,7 @@ import re
 import shutil
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -13,18 +14,21 @@ from research.text_intelligence.semantic_calibration_v1.candidate_contract impor
     enrich_candidate_rows,
 )
 
-from .certification import default_certification_config
+from .certification import default_certification_config, validate_certified_document
+from .contracts import CONTRACT_VERSION, sha256_json
 from .engine import (
+    ENGINE_VERSION,
     IssuerIdentity,
     IssuerIdentityIndex,
     NewsSynthesisEngine,
     _normalize_ticker_identifier,
     _safe_alias,
 )
-from .taxonomy_audit import discover_pairs, load_json
+from .registry import ConceptRegistry
+from .source_authority import discover_pairs, load_json
 
 
-AUDIT_VERSION = "direct_trading_sentiment_audit_v17"
+AUDIT_VERSION = "direct_trading_sentiment_audit_v18"
 IDENTITY_SNAPSHOT_VERSION = "news_synthesis_benchmark_identity_snapshot_v3"
 
 
@@ -102,6 +106,8 @@ def load_population(population_ids: Iterable[str] | None = None) -> AuditPopulat
             "Certified population identity mismatch: "
             f"certified={len(certified_ids)} annotations={len(annotations)}"
         )
+    for sample_id in sorted(certified_ids):
+        validate_certified_document(certified_documents[sample_id], articles[sample_id])
     return AuditPopulation(
         certified_ids=certified_ids,
         certified_documents=certified_documents,
@@ -332,6 +338,7 @@ def generate_audit(
         reviewed_entities=reviewed_entities,
     )
     engine = NewsSynthesisEngine(identity_index)
+    registry = ConceptRegistry.load()
     if output_root.exists():
         shutil.rmtree(output_root)
     (output_root / "audit_files").mkdir(parents=True)
@@ -438,8 +445,47 @@ def generate_audit(
             )
 
     error_counts = Counter(row["error_type"] for row in records)
+    eligible_unit_authority = sorted(
+        {
+            (
+                str(row["sample_id"]),
+                str(row["ticker"]),
+                str(row["eligibility_class"]),
+                str(row["manual_sentiment"]),
+            )
+            for row in all_predictions
+        }
+    )
+    certified_document_hashes = [
+        {
+            "sample_id": sample_id,
+            "sha256": sha256_json(population.certified_documents[sample_id]),
+        }
+        for sample_id in sorted(population.certified_ids)
+    ]
+    source_article_hashes = [
+        {
+            "sample_id": sample_id,
+            "source_id": population.articles[sample_id]["source_id"],
+            "source_text_sha256": population.articles[sample_id]["source_text_sha256"],
+        }
+        for sample_id in sorted(population.certified_ids)
+    ]
+    authority = {
+        "contract_version": CONTRACT_VERSION,
+        "concept_registry_version": registry.version,
+        "engine_version": ENGINE_VERSION,
+        "certified_ids_sha256": sha256_json(sorted(population.certified_ids)),
+        "certified_documents_sha256": sha256_json(certified_document_hashes),
+        "source_articles_sha256": sha256_json(source_article_hashes),
+        "eligible_issuer_units_sha256": sha256_json(eligible_unit_authority),
+    }
+    authority["authority_sha256"] = sha256_json(authority)
     manifest: dict[str, Any] = {
         "version": AUDIT_VERSION,
+        "generated_at_utc": datetime.now(UTC).isoformat(),
+        "run_name": output_root.name,
+        "authority": authority,
         "identity_authority": {key: value for key, value in snapshot.items() if key != "identities"},
         "population": {
             "certified_news": len(population.certified_ids),
@@ -465,6 +511,7 @@ def generate_audit(
     (output_root / "all_predictions.json").write_text(
         json.dumps({
             "version": AUDIT_VERSION,
+            "authority": authority,
             "distinct_news": len(eligible_news),
             "issuer_units": len(all_predictions),
             "prediction_distribution": dict(sorted(prediction_counts.items())),
@@ -530,13 +577,30 @@ def compare_manifests(
         key for key, row in current_errors.items() if is_missing(row)
     }
     recovered_missing = previous_missing_keys - current_missing_keys
+    authority_keys = (
+        "contract_version",
+        "concept_registry_version",
+        "certified_ids_sha256",
+        "certified_documents_sha256",
+        "source_articles_sha256",
+        "eligible_issuer_units_sha256",
+    )
+    previous_authority = previous.get("authority", {})
+    current_authority = current.get("authority", {})
+    identity_checks = {
+        key: bool(previous_authority.get(key))
+        and previous_authority.get(key) == current_authority.get(key)
+        for key in authority_keys
+    }
     return {
         "previous_version": previous.get("version"),
         "current_version": current.get("version"),
-        "population_identity_equal": all(
-            int(before.get(key) or 0) == int(after.get(key) or 0)
-            for key in ("certified_news", "distinct_direct_trading_news", "direct_trading_issuer_units")
-        ),
+        "population_identity_equal": all(identity_checks.values()),
+        "authority_identity_checks": identity_checks,
+        "engine_transition": {
+            "before": previous_authority.get("engine_version"),
+            "after": current_authority.get("engine_version"),
+        },
         "metrics": {
             key: {
                 "before": int(before_values.get(key) or 0),

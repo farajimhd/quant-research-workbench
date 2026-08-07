@@ -11,7 +11,7 @@ from research.text_intelligence.news_synthesis_v1.certification import (
     render_review_packet,
 )
 from research.text_intelligence.news_synthesis_v1.review_spec import compile_review_spec
-from research.text_intelligence.news_synthesis_v1.taxonomy_audit import discover_pairs, load_json
+from research.text_intelligence.news_synthesis_v1.source_authority import discover_pairs, load_json
 
 
 def parse_source_specs(payload: str) -> list[object]:

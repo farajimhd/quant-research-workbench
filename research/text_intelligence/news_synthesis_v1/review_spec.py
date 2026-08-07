@@ -115,6 +115,126 @@ def compile_review_spec(article: Mapping[str, Any], spec: Mapping[str, Any]) -> 
     return document
 
 
+def materialize_review_spec(
+    article: Mapping[str, Any],
+    certified_document: Mapping[str, Any],
+    *,
+    allow_derived_changes: bool = False,
+) -> dict[str, Any]:
+    """Convert a complete certified document into the source-bound review DSL.
+
+    This removes the historical approved-migration-draft dependency. The
+    resulting specification is independently compilable against the preserved
+    article and current registry.
+    """
+    if str(article.get("sample_id")) != str(certified_document.get("sample_id")):
+        raise RuntimeError("Materialized review specification identity mismatch")
+    participations_by_statement: dict[str, list[dict[str, Any]]] = {}
+    for row in certified_document.get("participations", []):
+        participations_by_statement.setdefault(str(row["statement_id"]), []).append(
+            {
+                key: deepcopy(row[key])
+                for key in (
+                    "entity_id",
+                    "semantic_role",
+                    "discourse_role",
+                    "semantic_sentiment",
+                    "sentiment_strength",
+                )
+            }
+        )
+    envelope: dict[str, Any] = {}
+    for field, decision in certified_document.get("envelope", {}).items():
+        evidence = [
+            _materialize_evidence_request(article, span)
+            for span in decision.get("evidence", [])
+        ]
+        envelope[field] = (
+            {"value": str(decision["value"]), "evidence": evidence}
+            if evidence
+            else str(decision["value"])
+        )
+    statements = []
+    for statement in certified_document.get("statements", []):
+        statement_id = str(statement["statement_id"])
+        statements.append(
+            {
+                "statement_id": statement_id,
+                "statement_kind": str(statement["statement_kind"]),
+                "concept_leaf": str(statement["concept_leaf"]),
+                "epistemic_status": str(statement["epistemic_status"]),
+                "time_relation": str(statement["time_relation"]),
+                "evidence": [
+                    _materialize_evidence_request(article, span, statement=True)
+                    for span in statement.get("evidence_spans", [])
+                ],
+                "participations": participations_by_statement.get(statement_id, []),
+            }
+        )
+    spec = {
+        "sample_id": str(certified_document["sample_id"]),
+        "review_notes": str(
+            certified_document.get("certification", {}).get("review_notes")
+            or "Materialized from the complete source-bound certified document."
+        ),
+        "envelope": envelope,
+        "entities": deepcopy(list(certified_document.get("entities", []))),
+        "statements": statements,
+        "quality_flags": deepcopy(list(certified_document.get("quality_flags", []))),
+    }
+    compiled = compile_review_spec(article, spec)
+    expected_views = {
+        str(row["entity_id"]): str(row["composite_sentiment"])
+        for row in certified_document.get("issuer_views", [])
+    }
+    actual_views = {
+        str(row["entity_id"]): str(row["composite_sentiment"])
+        for row in compiled.get("issuer_views", [])
+    }
+    if expected_views != actual_views and not allow_derived_changes:
+        raise RuntimeError(
+            f"Materialized review spec changes issuer sentiment for {article.get('sample_id')}: "
+            f"expected={expected_views} actual={actual_views}"
+        )
+    expected_eligibility = {
+        (str(row["entity_id"]), str(row["product"])): bool(row["eligible"])
+        for row in certified_document.get("eligibility", [])
+    }
+    actual_eligibility = {
+        (str(row["entity_id"]), str(row["product"])): bool(row["eligible"])
+        for row in compiled.get("eligibility", [])
+    }
+    if expected_eligibility != actual_eligibility and not allow_derived_changes:
+        raise RuntimeError(
+            f"Materialized review spec changes eligibility for {article.get('sample_id')}"
+        )
+    return spec
+
+
+def _materialize_evidence_request(
+    article: Mapping[str, Any], span: Mapping[str, Any], *, statement: bool = False
+) -> str | dict[str, Any]:
+    source_field = str(span.get("source_field") or "rendered_text")
+    if statement:
+        source_field = "rendered_text"
+    source_text = _source_value(article, source_field)
+    quote = str(span.get("quote") or "")
+    start = int(span.get("start", -1))
+    starts = [match.start() for match in re.finditer(re.escape(quote), source_text)]
+    if start not in starts:
+        raise RuntimeError(
+            f"Cannot materialize stale evidence span: field={source_field} start={start}"
+        )
+    if len(starts) == 1 and source_field == "rendered_text":
+        return quote
+    request: dict[str, Any] = {"quote": quote}
+    if source_field != "rendered_text":
+        request["source_field"] = source_field
+    if len(starts) > 1:
+        request["occurrence"] = starts.index(start) + 1
+    return request
+
+
 def _apply_issuer_view_overrides(
     issuer_views: list[dict[str, Any]],
     overrides: Any,
@@ -205,117 +325,6 @@ def _compile_envelope_decision(
         "value": value,
         "rule_id": "manual_review_v1",
         "evidence": [_resolve_evidence(article, item) for item in evidence],
-    }
-
-
-def compile_approved_draft(
-    article: Mapping[str, Any],
-    draft: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Recompile a manually approved V1 draft for certification.
-
-    This path is intentionally narrow: the reviewer may approve an unchanged
-    V1 semantic draft, but the compiler still refreshes typed facts, the active
-    concept-registry version, issuer views, synthesis and eligibility. It never
-    copies prior annotation fields into the certified authority. Temporary
-    migration provenance remains only until the certifier replaces it with the
-    required certification provenance.
-    """
-    if str(article.get("sample_id")) != str(draft.get("sample_id")):
-        raise RuntimeError("Approved-draft sample identity mismatch")
-    registry = ConceptRegistry.load()
-    document = deepcopy(dict(draft))
-    document["concept_registry_version"] = registry.version
-    for decision in document.get("envelope", {}).values():
-        if isinstance(decision, dict):
-            decision["rule_id"] = "manual_review_v1_approved_draft"
-    for statement in document.get("statements", []):
-        concept = str(statement.get("concept_leaf", ""))
-        if concept == registry.fallback_leaf or not registry.contains(concept):
-            raise RuntimeError(f"Approved draft has unresolved concept: {concept}")
-        statement["evidence_spans"] = [
-            _rebind_existing_statement_evidence(article, span)
-            for span in statement.get("evidence_spans", [])
-        ]
-        statement["typed_facts"] = extract_typed_facts(
-            list(statement.get("evidence_spans", []))
-        )
-    entities = list(document.get("entities", []))
-    statements = list(document.get("statements", []))
-    participations = list(document.get("participations", []))
-    issuer_views = derive_issuer_views(entities, participations)
-    document["issuer_views"] = issuer_views
-    document["synthesis"] = derive_synthesis(
-        entities=entities,
-        statements=statements,
-        participations=participations,
-        issuer_views=issuer_views,
-    )
-    document["eligibility"] = derive_eligibility(
-        entities=entities,
-        statements=statements,
-        participations=participations,
-        envelope=document["envelope"],
-        quality_flags=document.get("quality_flags", []),
-    )
-    validation = validate_document(document)
-    if not validation.valid:
-        raise RuntimeError(f"Invalid manually approved V1 draft for {draft.get('sample_id')}: {validation.issues}")
-    return document
-
-
-def _rebind_existing_statement_evidence(
-    article: Mapping[str, Any],
-    span: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Verify an existing rendered-text span without losing its occurrence.
-
-    Rendered products commonly repeat the same provider sentence in the teaser
-    and body. The stored offset is therefore authoritative only after the
-    quote is verified against the current source text and source hash.
-    """
-    quote = str(span.get("quote", ""))
-    source_field = str(span.get("source_field", "rendered_text"))
-    rendered_text = _source_value(article, "rendered_text")
-    start = int(span.get("start", -1))
-    if source_field == "rendered_text":
-        source_text = rendered_text
-        rendered_start = start
-    else:
-        legacy_field = (
-            source_field
-            if source_field.startswith("publication.")
-            else f"publication.{source_field}"
-        )
-        source_text = _source_value(article, legacy_field)
-        rendered_matches = [
-            match.start() for match in re.finditer(re.escape(quote), rendered_text)
-        ]
-        if not rendered_matches:
-            raise RuntimeError(
-                "Stored statement evidence no longer matches: it is absent from rendered text; "
-                f"source_field={source_field} quote={quote[:120]!r}"
-            )
-        # The verified source-field offset disambiguates repeated teaser/body
-        # evidence. Identical rendered occurrences carry the same evidence;
-        # use the first occurrence deterministically.
-        rendered_start = rendered_matches[0]
-    source_matches = start >= 0 and source_text[start:start + len(quote)] == quote
-    if not source_matches and source_field != "rendered_text" and len(rendered_matches) == 1:
-        # Some draft migrations carried stale legacy field coordinates even
-        # though the evidence quote remained uniquely bound in the immutable
-        # rendered product. The unique rendered occurrence is sufficient.
-        source_matches = True
-    if not source_matches:
-        raise RuntimeError(
-            "Stored statement evidence no longer matches its source field; "
-            f"source_field={source_field} start={start} quote={quote[:120]!r}"
-        )
-    return {
-        "source_field": "rendered_text",
-        "start": rendered_start,
-        "end": rendered_start + len(quote),
-        "quote": quote,
     }
 
 

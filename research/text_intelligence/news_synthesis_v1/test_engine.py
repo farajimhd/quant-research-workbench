@@ -40,6 +40,7 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertTrue(any(row["product"] == "forecast_trigger" and row["eligible"] for row in document["eligibility"]))
         row = persistence_row(document)
         self.assertEqual(row["forecast_tickers"], ["AAA"])
+        self.assertEqual(row["analyst_tickers"], [])
 
     def test_provider_ticker_without_text_evidence_is_not_an_entity(self) -> None:
         document = self.engine.synthesize({

@@ -8,6 +8,7 @@ from pathlib import Path
 from research.text_intelligence.news_synthesis_v1.certification import (
     CertificationConfig,
     certify_document,
+    initialize_workspace,
     render_review_packet,
 )
 from research.text_intelligence.news_synthesis_v1.contracts import validate_document
@@ -84,6 +85,32 @@ class CertificationTest(unittest.TestCase):
             config = CertificationConfig(root / "draft.jsonl", (collection,), root / "out", expected_articles=1)
             with self.assertRaisesRegex(RuntimeError, "unresolved quality flags"):
                 certify_document(config, "NTEST", self.draft, reviewer="Codex", review_notes="Reviewed.")
+
+    def test_workspace_refresh_uses_current_certified_authority_without_migration_draft(self) -> None:
+        self.draft["quality_flags"] = []
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            collection = root / "collection"
+            article_root = collection / "blinded_articles"
+            annotation_root = collection / "annotations_v3"
+            article_root.mkdir(parents=True)
+            annotation_root.mkdir()
+            (article_root / "NTEST.json").write_text(json.dumps(self.article), encoding="utf-8")
+            (annotation_root / "NTEST.json").write_text(json.dumps(self.annotation), encoding="utf-8")
+            config = CertificationConfig(None, (collection,), root / "out", expected_articles=1)
+            certify_document(
+                config,
+                "NTEST",
+                self.draft,
+                reviewer="Codex",
+                review_notes="Source-bound current authority.",
+            )
+
+            manifest = initialize_workspace(config)
+
+            self.assertEqual(manifest["input_authority"], "certified_labels")
+            self.assertEqual(manifest["certified"], 1)
+            self.assertEqual(manifest["pending"], 0)
 
     def test_source_evidence_mismatch_blocks_certification(self) -> None:
         self.draft["quality_flags"] = []

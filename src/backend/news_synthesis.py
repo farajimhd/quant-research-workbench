@@ -3,14 +3,11 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+from research.text_intelligence.news_synthesis_v1.engine import ENGINE_VERSION
 from research.text_intelligence.news_synthesis_v1.storage import (
     LIVE_SEMANTIC_TABLE,
     SYNTHESIS_TABLE,
 )
-
-
-ENGINE_VERSION = "news_synthesis_engine_v1"
-
 
 def load_news_synthesis(
     source_ids: list[str], *, query_rows: Callable[[str], list[dict[str, Any]]], quote: Callable[[str], str]
@@ -97,7 +94,9 @@ def synthesis_summary(
             eligible.get((entity_id, "analyst_evaluation"), False) for entity_id in entity_ids
         ),
         "issuer_count": len(views),
-        "engine_version": ENGINE_VERSION,
+        "engine_version": str(
+            document.get("production", {}).get("engine_version") or ENGINE_VERSION
+        ),
         "quality_flags": list(document.get("quality_flags", [])),
     }
 

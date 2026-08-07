@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,11 +10,16 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-DEFAULT_COLLECTIONS = (
-    "news_1300_v1",
-    "news_acceptance_200_v4_reviewed_v2",
-    "news_acceptance_500_v5_reviewed",
+from .source_authority import (
+    SOURCE_COLLECTION_NAMES,
+    default_source_authority_config,
+    discover_pairs,
+    load_json,
+    sha256_file,
 )
+
+
+DEFAULT_COLLECTIONS = SOURCE_COLLECTION_NAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,12 +30,11 @@ class AuditConfig:
 
 
 def default_config() -> AuditConfig:
-    runtime_root = Path(os.environ.get("QW_MLOPS_ROOT", "D:/TradingML")) / "runtimes"
-    calibration_root = runtime_root / "text_intelligence" / "semantic_calibration_v1"
+    authority = default_source_authority_config()
     return AuditConfig(
-        collection_roots=tuple(calibration_root / name for name in DEFAULT_COLLECTIONS),
+        collection_roots=authority.collection_roots,
         output_root=(
-            runtime_root
+            authority.runtime_root
             / "text_intelligence"
             / "news_synthesis_v1"
             / "taxonomy_audit_2000"
@@ -45,22 +48,6 @@ def canonical_json(value: Any) -> str:
 
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        value = json.load(handle)
-    if not isinstance(value, dict):
-        raise ValueError(f"Expected an object in {path}")
-    return value
 
 
 def iter_leaf_values(value: Any, path: str = "$") -> Iterable[tuple[str, Any]]:
@@ -96,26 +83,6 @@ def _cross_tab(rows: Iterable[tuple[Any, Any]]) -> list[dict[str, Any]]:
 
 def _percentage(count: int, total: int) -> float:
     return round(100.0 * count / total, 3) if total else 0.0
-
-
-def discover_pairs(collection_roots: Sequence[Path]) -> list[tuple[Path, Path, str]]:
-    pairs: list[tuple[Path, Path, str]] = []
-    for root in collection_roots:
-        annotation_root = root / "annotations_v3"
-        article_root = root / "blinded_articles"
-        if not annotation_root.is_dir() or not article_root.is_dir():
-            raise FileNotFoundError(f"Missing gold directories under {root}")
-        annotations = {path.stem: path for path in annotation_root.glob("*.json")}
-        articles = {path.stem: path for path in article_root.glob("*.json")}
-        if annotations.keys() != articles.keys():
-            missing_articles = sorted(annotations.keys() - articles.keys())
-            missing_annotations = sorted(articles.keys() - annotations.keys())
-            raise RuntimeError(
-                f"Unpaired gold files under {root}: missing_articles={missing_articles[:5]} "
-                f"missing_annotations={missing_annotations[:5]}"
-            )
-        pairs.extend((annotations[key], articles[key], root.name) for key in sorted(annotations))
-    return pairs
 
 
 def _validate_pair(annotation: Mapping[str, Any], article: Mapping[str, Any], label: str) -> None:

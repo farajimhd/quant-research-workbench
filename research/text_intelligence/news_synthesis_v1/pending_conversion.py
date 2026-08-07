@@ -14,7 +14,7 @@ from research.text_intelligence.news_synthesis_v1.certification import (
 from research.text_intelligence.news_synthesis_v1.contracts import canonical_json, sha256_json
 from research.text_intelligence.news_synthesis_v1.migration import migrate_record
 from research.text_intelligence.news_synthesis_v1.registry import ConceptRegistry
-from research.text_intelligence.news_synthesis_v1.taxonomy_audit import (
+from research.text_intelligence.news_synthesis_v1.source_authority import (
     discover_pairs,
     load_json,
     sha256_file,
@@ -139,4 +139,3 @@ def _sample_sort_key(value: str) -> tuple[str, int, str]:
     prefix = value.rstrip("0123456789")
     suffix = value[len(prefix):]
     return prefix, int(suffix) if suffix else -1, value
-

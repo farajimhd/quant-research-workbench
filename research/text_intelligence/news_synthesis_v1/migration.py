@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -23,8 +22,8 @@ from research.text_intelligence.news_synthesis_v1.synthesis import (
     derive_issuer_views,
     derive_synthesis,
 )
-from research.text_intelligence.news_synthesis_v1.taxonomy_audit import (
-    DEFAULT_COLLECTIONS,
+from research.text_intelligence.news_synthesis_v1.source_authority import (
+    default_source_authority_config,
     discover_pairs,
     load_json,
     sha256_file,
@@ -39,11 +38,10 @@ class MigrationConfig:
 
 
 def default_config() -> MigrationConfig:
-    runtime_root = Path(os.environ.get("QW_MLOPS_ROOT", "D:/TradingML")) / "runtimes"
-    calibration = runtime_root / "text_intelligence" / "semantic_calibration_v1"
+    authority = default_source_authority_config()
     return MigrationConfig(
-        collection_roots=tuple(calibration / name for name in DEFAULT_COLLECTIONS),
-        output_root=runtime_root / "text_intelligence" / "news_synthesis_v1" / "gold_migration_v1",
+        collection_roots=authority.collection_roots,
+        output_root=authority.runtime_root / "text_intelligence" / "news_synthesis_v1" / "gold_migration_v1",
     )
 
 

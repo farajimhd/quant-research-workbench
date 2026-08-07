@@ -185,9 +185,39 @@ class DirectTradingSentimentAuditTests(unittest.TestCase):
             },
         }
         result = compare_manifests(previous, current)
-        self.assertTrue(result["population_identity_equal"])
+        self.assertFalse(result["population_identity_equal"])
         self.assertEqual(result["metrics"]["missing_sentiments"]["before"], 1)
         self.assertEqual(result["metrics"]["missing_sentiments"]["after"], 0)
+
+    def test_manifest_comparison_requires_exact_authority_hashes(self) -> None:
+        authority = {
+            "contract_version": "news_synthesis_v1",
+            "concept_registry_version": "registry",
+            "engine_version": "engine-before",
+            "certified_ids_sha256": "ids",
+            "certified_documents_sha256": "documents",
+            "source_articles_sha256": "sources",
+            "eligible_issuer_units_sha256": "units",
+        }
+        population = {
+            "certified_news": 2,
+            "distinct_direct_trading_news": 2,
+            "direct_trading_issuer_units": 2,
+            "exact_sentiment_matches": 2,
+            "sentiment_mismatches": 0,
+            "missing_sentiments": 0,
+        }
+        previous = {"version": "old", "authority": authority, "population": population}
+        current = {
+            "version": "new",
+            "authority": {**authority, "engine_version": "engine-after"},
+            "population": population,
+        }
+        result = compare_manifests(previous, current)
+        self.assertTrue(result["population_identity_equal"])
+        self.assertEqual(result["engine_transition"]["before"], "engine-before")
+        current["authority"]["certified_ids_sha256"] = "different-identities"
+        self.assertFalse(compare_manifests(previous, current)["population_identity_equal"])
 
     def test_comparison_reports_identity_level_error_transitions(self) -> None:
         previous = {

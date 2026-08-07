@@ -6,7 +6,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from research.mlops.clickhouse import ClickHouseHttpClient, sql_string
-from research.text_intelligence.news_synthesis_v1.storage import LIVE_SEMANTIC_TABLE
+from research.text_intelligence.news_synthesis_v1.engine import ENGINE_VERSION
+from research.text_intelligence.news_synthesis_v1.storage import (
+    LIVE_SEMANTIC_CONTRACT,
+    LIVE_SEMANTIC_TABLE,
+)
 
 
 DATABASE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -53,13 +57,16 @@ def prior_news_context(
         f"""
             LEFT JOIN
             (
-                SELECT canonical_news_id, ticker,
+                SELECT canonical_news_id, ticker, rendered_text_hash,
                        argMax(semantic_json, created_at_utc) AS semantic_json
                 FROM `{database}`.`{semantic_table}`
-                GROUP BY canonical_news_id, ticker
+                WHERE news_synthesis_version = {sql_string(ENGINE_VERSION)}
+                  AND semantic_contract = {sql_string(LIVE_SEMANTIC_CONTRACT)}
+                GROUP BY canonical_news_id, ticker, rendered_text_hash
             ) AS s
               ON s.canonical_news_id = t.canonical_news_id
              AND s.ticker = t.ticker
+             AND s.rendered_text_hash = t.rendered_text_hash
         """
         if include_semantic
         else ""

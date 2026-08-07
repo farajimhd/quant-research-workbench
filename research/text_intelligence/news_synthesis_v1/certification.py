@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,9 +12,9 @@ from research.text_intelligence.news_synthesis_v1.contracts import (
     sha256_json,
     validate_document,
 )
-from research.text_intelligence.news_synthesis_v1.migration import default_config
 from research.text_intelligence.news_synthesis_v1.registry import ConceptRegistry
-from research.text_intelligence.news_synthesis_v1.taxonomy_audit import (
+from research.text_intelligence.news_synthesis_v1.source_authority import (
+    default_source_authority_config,
     discover_pairs,
     load_json,
     sha256_file,
@@ -24,24 +23,39 @@ from research.text_intelligence.news_synthesis_v1.taxonomy_audit import (
 
 @dataclass(frozen=True, slots=True)
 class CertificationConfig:
-    draft_path: Path
+    draft_path: Path | None
     collection_roots: tuple[Path, ...]
     output_root: Path
     expected_articles: int = 2_000
 
 
 def default_certification_config() -> CertificationConfig:
-    migration = default_config()
-    runtime_root = Path(os.environ.get("QW_MLOPS_ROOT", "D:/TradingML")) / "runtimes"
+    authority = default_source_authority_config()
+    news_root = authority.runtime_root / "text_intelligence" / "news_synthesis_v1"
     return CertificationConfig(
-        draft_path=migration.output_root / "news_synthesis_v1.jsonl",
-        collection_roots=migration.collection_roots,
-        output_root=(runtime_root / "text_intelligence" / "news_synthesis_v1" / "manual_certification_v1"),
+        draft_path=None,
+        collection_roots=authority.collection_roots,
+        output_root=news_root / "manual_certification_v1",
     )
 
 
 def initialize_workspace(config: CertificationConfig) -> dict[str, Any]:
-    drafts = _load_drafts(config.draft_path)
+    if config.draft_path is not None:
+        drafts = _load_drafts(config.draft_path)
+        input_authority = "explicit_bootstrap_draft"
+        input_authority_sha256 = sha256_file(config.draft_path)
+    else:
+        drafts = {
+            path.stem: load_json(path)
+            for path in (config.output_root / "certified_labels").glob("*.json")
+        }
+        input_authority = "certified_labels"
+        input_authority_sha256 = sha256_json(
+            [
+                {"sample_id": sample_id, "sha256": sha256_json(drafts[sample_id])}
+                for sample_id in sorted(drafts, key=_sample_sort_key)
+            ]
+        )
     pairs = discover_pairs(config.collection_roots)
     if len(drafts) != config.expected_articles or len(pairs) != config.expected_articles:
         raise RuntimeError(
@@ -60,6 +74,9 @@ def initialize_workspace(config: CertificationConfig) -> dict[str, Any]:
         )
     if drafts.keys() != articles.keys():
         raise RuntimeError("Draft and source article identities differ")
+    if config.draft_path is None:
+        for sample_id in sorted(drafts, key=_sample_sort_key):
+            validate_certified_document(drafts[sample_id], articles[sample_id])
 
     review_root = config.output_root / "review_packets"
     certified_root = config.output_root / "certified_labels"
@@ -88,7 +105,8 @@ def initialize_workspace(config: CertificationConfig) -> dict[str, Any]:
         "certification_version": CERTIFICATION_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "expected_articles": config.expected_articles,
-        "draft_sha256": sha256_file(config.draft_path),
+        "input_authority": input_authority,
+        "input_authority_sha256": input_authority_sha256,
         "source_files_sha256": sha256_json(source_files),
         "review_packets": len(ledger_rows),
         "certified": sum(row["status"] == "certified" for row in ledger_rows),
@@ -197,6 +215,31 @@ def _prepare_certified_document(
     if clean.get("quality_flags"):
         raise RuntimeError(f"Cannot certify with unresolved quality flags: {clean['quality_flags']}")
     return clean
+
+
+def validate_certified_document(
+    document: Mapping[str, Any], source: Mapping[str, Any]
+) -> None:
+    """Validate one stored gold document against the current complete authority."""
+    validation = validate_document(document)
+    if not validation.valid:
+        raise RuntimeError(
+            f"Invalid certified V1 document {document.get('sample_id')}: {validation.issues}"
+        )
+    certification = document.get("certification", {})
+    if (
+        certification.get("certification_version") != CERTIFICATION_VERSION
+        or certification.get("status") != "certified"
+    ):
+        raise RuntimeError(
+            f"Invalid certification provenance for {document.get('sample_id')}"
+        )
+    if document.get("quality_flags"):
+        raise RuntimeError(
+            f"Certified document has unresolved quality flags: {document.get('sample_id')}"
+        )
+    _validate_identity(document, source)
+    _validate_source_bound_semantics(document, source)
 
 
 def _validate_source_bound_semantics(document: Mapping[str, Any], article: Mapping[str, Any]) -> None:

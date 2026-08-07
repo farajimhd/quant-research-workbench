@@ -23,7 +23,10 @@ from research.mlops.clickhouse import (
 )
 from research.news_labeling.gpt_oss_v1.prompt import build_messages
 from research.news_labeling.gpt_oss_v1.schema import TRANSPORT_SCHEMA, validate_label
-from research.text_intelligence.news_synthesis_v1.storage import LIVE_SEMANTIC_TABLE
+from research.text_intelligence.news_synthesis_v1.storage import (
+    LIVE_SEMANTIC_CONTRACT,
+    LIVE_SEMANTIC_TABLE,
+)
 from services.market_hours import get_market_hours_client
 
 
@@ -435,7 +438,7 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
             "news_synthesis_version": scoped.synthesis_version,
             "deterministic_version": scoped.synthesis_version,
             "deterministic_json": json.dumps(deterministic, separators=(",", ":")),
-            "semantic_contract": "gpt_oss_news_semantics_v1",
+            "semantic_contract": LIVE_SEMANTIC_CONTRACT,
             "semantic_json": json.dumps(label, separators=(",", ":")),
             "point_in_time_price": price,
             "qmd_snapshot_json": json.dumps(snapshot, separators=(",", ":"), default=str),

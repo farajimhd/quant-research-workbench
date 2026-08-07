@@ -102,6 +102,20 @@ class TradeHypothesisContractTests(unittest.TestCase):
         self.assertIn("FROM system.tables", client.queries[0])
         self.assertNotIn("`news_semantic_label_v1`", client.queries[1])
 
+    def test_semantic_context_is_bound_to_current_synthesis_and_source_revision(self) -> None:
+        client = FakeClickHouse(['{"rows":1}\n', ""])
+        prior_news_context(
+            client,
+            canonical_news_id="current",
+            ticker="AAPL",
+            as_of_utc="2026-07-14T12:00:00Z",
+            include_semantic=True,
+        )
+        query = client.queries[1]
+        self.assertIn("news_synthesis_version", query)
+        self.assertIn("semantic_contract", query)
+        self.assertIn("s.rendered_text_hash = t.rendered_text_hash", query)
+
     def test_prior_news_result_contract_uses_stable_aliases(self) -> None:
         prior = {
             "canonical_news_id": "prior",

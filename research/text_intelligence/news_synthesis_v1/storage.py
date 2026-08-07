@@ -13,6 +13,7 @@ from .engine import ENGINE_VERSION, IssuerIdentity, IssuerIdentityIndex
 SYNTHESIS_TABLE = "news_synthesis_v1"
 STATUS_TABLE = "news_synthesis_build_status_v1"
 LIVE_SEMANTIC_TABLE = "news_live_semantic_v3"
+LIVE_SEMANTIC_CONTRACT = "gpt_oss_news_semantics_v1"
 
 
 def create_tables(client: ClickHouseHttpClient, database: str) -> None:
@@ -34,12 +35,18 @@ concepts Array(LowCardinality(String)),
 forecast_tickers Array(LowCardinality(String)),
 reaction_tickers Array(LowCardinality(String)),
 history_tickers Array(LowCardinality(String)),
+analyst_tickers Array(LowCardinality(String)),
 quality_flags Array(LowCardinality(String)),
 synthesis_json String,
 updated_at_utc DateTime64(6,'UTC')
 ) ENGINE=ReplacingMergeTree(updated_at_utc)
 PARTITION BY toYYYYMM(published_at_utc)
 ORDER BY (published_at_utc,canonical_news_id,engine_version)""")
+    client.execute(
+        f"ALTER TABLE `{database}`.`{SYNTHESIS_TABLE}` "
+        "ADD COLUMN IF NOT EXISTS analyst_tickers Array(LowCardinality(String)) "
+        "AFTER history_tickers"
+    )
     client.execute(f"""CREATE TABLE IF NOT EXISTS `{database}`.`{STATUS_TABLE}` (
 published_date Date, source_rows UInt64, completed_rows UInt64, failed_rows UInt64,
 source_revision FixedString(64), engine_version LowCardinality(String), status LowCardinality(String), error String,
@@ -67,7 +74,8 @@ def persistence_row(document: Mapping[str, Any]) -> dict[str, Any]:
         "production_method": document["envelope"]["production_method"]["value"],
         "text_availability": document["envelope"]["text_availability"]["value"],
         "tickers": tickers, "sentiments": [str(row["composite_sentiment"]) for row in views], "concepts": concepts,
-        "forecast_tickers": eligible("forecast_trigger"), "reaction_tickers": eligible("reaction_study"), "history_tickers": eligible("issuer_history"),
+        "forecast_tickers": eligible("forecast_trigger"), "reaction_tickers": eligible("reaction_study"),
+        "history_tickers": eligible("issuer_history"), "analyst_tickers": eligible("analyst_evaluation"),
         "quality_flags": list(document["quality_flags"]), "synthesis_json": canonical_json(document),
         "updated_at_utc": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f"),
     }

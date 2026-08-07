@@ -103,6 +103,23 @@ class ManualGoldCorrectionTests(unittest.TestCase):
         self.assertEqual(spec["issuer_view_overrides"][0]["composite_sentiment"], "negative")
         self.assertIn("dominant supply-overhang implication", spec["review_notes"])
 
+    def test_evidence_balance_correction_updates_every_side_to_aggregate_strength(self) -> None:
+        correction = next(row for row in CORRECTIONS if row.sample_id == "N0774")
+        spec = {
+            "sample_id": correction.sample_id,
+            "review_notes": "Original review.",
+            "statements": [
+                {"concept_leaf": "earnings.performance", "evidence": ["miss"], "participations": [{"entity_id": "security:SITE", "semantic_sentiment": "negative", "sentiment_strength": 2}]},
+                {"concept_leaf": "earnings.performance", "evidence": ["growth"], "participations": [{"entity_id": "security:SITE", "semantic_sentiment": "positive", "sentiment_strength": 3}]},
+            ],
+        }
+
+        _correct_review_spec(spec, correction)
+
+        self.assertEqual(spec["statements"][0]["participations"][0]["sentiment_strength"], 3)
+        self.assertEqual(spec["statements"][1]["participations"][0]["sentiment_strength"], 2)
+        self.assertEqual(spec["issuer_view_overrides"][0]["composite_sentiment"], "negative")
+
     def test_historical_recap_is_not_a_fresh_trigger(self) -> None:
         correction = HISTORICAL_RECAP_CORRECTIONS[0]
         spec = {

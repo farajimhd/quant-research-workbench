@@ -7,7 +7,9 @@ News Gateway and SEC Gateway own acquisition and canonical persistence. After a
 canonical publish, they send only a corpus, source identity, timestamp, and
 the SEC CIK needed for an exact filing read to this service. Bounded workers
 reload canonical source data. News is processed only by
-`news_synthesis_engine_v1` and persisted to `q_live.news_synthesis_v1`. SEC is
+the version exported by `research.text_intelligence.news_synthesis_v1.engine`
+and persisted to `q_live.news_synthesis_v1`. The table name denotes the stable
+V1 document contract, not an engine version. SEC is
 processed by its independent `scoped_text_labeling_v5` authority and persisted
 to `q_live.scoped_text_labels_v5` and `q_live.scoped_content_relations_v3`.
 The SEC classifier is never a News fallback or input.

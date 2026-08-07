@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from research.text_intelligence.news_synthesis_v1.engine import IssuerIdentity, IssuerIdentityIndex, NewsSynthesisEngine
-from src.backend.news_synthesis import presentation_payload, synthesis_summary
+from research.text_intelligence.news_synthesis_v1.engine import ENGINE_VERSION, IssuerIdentity, IssuerIdentityIndex, NewsSynthesisEngine
+from src.backend.news_synthesis import load_news_synthesis, presentation_payload, synthesis_summary
 
 
 class NewsSynthesisPresentationTests(unittest.TestCase):
@@ -27,9 +27,24 @@ class NewsSynthesisPresentationTests(unittest.TestCase):
         payload = presentation_payload(document)
         self.assertEqual(payload["article_fields"]["news_kind"], "company")
         self.assertTrue(payload["summary"]["forecast_trigger_eligible"])
-        self.assertEqual(payload["summary"]["engine_version"], "news_synthesis_engine_v1")
+        self.assertEqual(payload["summary"]["engine_version"], ENGINE_VERSION)
         self.assertNotIn("labels", payload)
         self.assertIs(payload["document"], document)
+
+    def test_loader_queries_the_single_current_engine_authority(self) -> None:
+        queries: list[str] = []
+
+        def query_rows(sql: str) -> list[dict[str, object]]:
+            queries.append(sql)
+            return []
+
+        self.assertEqual(
+            load_news_synthesis(["n1"], query_rows=query_rows, quote=lambda value: f"'{value}'"),
+            {},
+        )
+        self.assertEqual(len(queries), 1)
+        self.assertIn(f"engine_version='{ENGINE_VERSION}'", queries[0])
+        self.assertNotIn("news_synthesis_engine_v1", queries[0])
 
     def test_ticker_summary_uses_v1_issuer_view_and_products(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((IssuerIdentity("AAA", "issuer:aaa", "Alpha Corp", ("Alpha Corp",)),)))
