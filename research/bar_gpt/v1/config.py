@@ -176,8 +176,8 @@ class DataConfig:
             raise ValueError("this BarGPT version requires loader_stream_contract_version 3 or 4")
         if "split_adjusted" in self.one_second_table or self.daily_table.endswith("_adjusted"):
             raise ValueError("globally adjusted bar authorities are retired; use raw bars with causal split metadata")
-        if len(self.tickers) < 2:
-            raise ValueError("at least two tickers are required")
+        if not self.tickers:
+            raise ValueError("at least one ticker is required")
         if not self.horizons_us:
             raise ValueError("at least one prediction horizon is required")
         if len(self.condition_target_active) != 4:

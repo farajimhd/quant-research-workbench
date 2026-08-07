@@ -1,0 +1,20 @@
+[
+  {
+    "correction_id": "googl-class-a-2014-symbol",
+    "current_ticker": "GOOGL",
+    "composite_figi": "BBG009S39JX6",
+    "share_class_figi": "BBG009S39JY5",
+    "cik": "0001652044",
+    "provider_event_signature": [
+      {"date": "2015-10-06", "ticker": "GOOG"}
+    ],
+    "canonical_timeline": [
+      {"date": "2004-08-19", "ticker": "GOOG"},
+      {"date": "2014-04-03", "ticker": "GOOGL"}
+    ],
+    "evidence_url": "https://www.sec.gov/Archives/edgar/data/1288776/000128877615000008/goog2014123110-k.htm",
+    "evidence_accession_number": "0001288776-15-000008",
+    "evidence_summary": "Google Inc. states that Class A common stock traded as GOOG from August 19, 2004 through April 2, 2014 and as GOOGL beginning April 3, 2014. The successor Alphabet security retains that Class A listing identity.",
+    "scope_note": "Repairs only the exact Class A Composite FIGI and Share Class FIGI when Massive returns the reviewed defective signature; raw Massive events remain unchanged."
+  }
+]

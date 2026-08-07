@@ -20,6 +20,11 @@ from services.reference_gateway.ticker_events import (
     tombstone_rows,
 )
 from services.reference_gateway.providers import MassiveTickerEventsResult
+from services.reference_gateway.ticker_event_corrections import (
+    CORRECTION_SOURCE_SYSTEM,
+    correction_for_entity,
+    load_ticker_event_corrections,
+)
 
 
 META_FIGI = "BBG000MM2P62"
@@ -44,7 +49,80 @@ def meta_entity() -> TickerEventEntity:
     )
 
 
+def googl_entity() -> TickerEventEntity:
+    return TickerEventEntity(
+        provider_entity_key="massive:composite_figi:BBG009S39JX6",
+        provider_identifier_kind="composite_figi",
+        provider_identifier="BBG009S39JX6",
+        current_ticker="GOOGL",
+        entity_name="Alphabet Inc. Class A Common Stock",
+        active=True,
+        composite_figi="BBG009S39JX6",
+        share_class_figi="BBG009S39JY5",
+        cik="0001652044",
+        primary_exchange="XNAS",
+        currency_name="USD",
+        provider_last_updated_utc="2026-08-01 00:00:00.000",
+        source_payload_json="{}",
+        source_content_sha256="googl",
+    )
+
+
 class TickerEventTests(unittest.TestCase):
+    def test_sec_correction_repairs_googl_intervals_but_preserves_raw_massive_event(self) -> None:
+        entity = googl_entity()
+        correction = correction_for_entity(entity, load_ticker_event_corrections())
+        response = MassiveTickerEventsResult(
+            identifier=entity.provider_identifier,
+            name=entity.entity_name,
+            status="OK",
+            request_id="request-googl",
+            events=[{"date": "2015-10-06", "ticker_change": {"ticker": "GOOG"}, "type": "ticker_change"}],
+        )
+        binding = reconcile_source_binding(
+            entity,
+            response,
+            CanonicalBinding("mapped", "security:googl", "listing:googl", "exact_composite_figi"),
+            correction=correction,
+        )
+
+        events, intervals, _ = normalize_ticker_event_response(
+            entity,
+            response,
+            binding,
+            run_id="test",
+            observed_at=datetime(2026, 8, 7, tzinfo=UTC),
+            correction=correction,
+        )
+
+        self.assertEqual(binding.status, "mapped")
+        self.assertIn("verified_ticker_timeline_correction", binding.reason)
+        self.assertEqual([(row["event_date"], row["ticker"], row["source_system"]) for row in events], [("2015-10-06", "GOOG", "massive")])
+        self.assertEqual(
+            [(row["ticker"], row["valid_from_date"], row["valid_to_date_exclusive"]) for row in intervals],
+            [("GOOG", "2004-08-19", "2014-04-03"), ("GOOGL", "2014-04-03", None)],
+        )
+        self.assertTrue(all(row["source_system"] == CORRECTION_SOURCE_SYSTEM for row in intervals))
+
+    def test_sec_correction_fails_closed_on_unreviewed_provider_revision(self) -> None:
+        entity = googl_entity()
+        correction = correction_for_entity(entity, load_ticker_event_corrections())
+        response = MassiveTickerEventsResult(
+            identifier=entity.provider_identifier,
+            name=entity.entity_name,
+            status="OK",
+            request_id="request-drift",
+            events=[{"date": "2015-10-06", "ticker_change": {"ticker": "XYZ"}, "type": "ticker_change"}],
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "signature drift"):
+            reconcile_source_binding(
+                entity,
+                response,
+                CanonicalBinding("mapped", "security:googl", "listing:googl"),
+                correction=correction,
+            )
+
     def test_inventory_deduplicates_by_stable_figi_and_prefers_active_row(self) -> None:
         rows = normalize_inventory(
             [{"ticker": "META", "active": True, "composite_figi": META_FIGI, "name": "Meta"}],
@@ -182,6 +260,22 @@ class TickerEventTests(unittest.TestCase):
         selected = select_entities([second, first], coverage, mode="rolling", max_entities=1, stale_after_days=7, only_identifiers=())
 
         self.assertEqual([row.provider_entity_key for row in selected], [first.provider_entity_key])
+
+    def test_rolling_selection_retries_source_conflict_for_new_correction_authority(self) -> None:
+        entity = googl_entity()
+        coverage = {
+            entity.provider_entity_key: {
+                "source_status": "completed",
+                "mapping_status": "source_conflict",
+                "last_success_at_utc": "2026-08-07 00:00:00.000",
+            }
+        }
+
+        selected = select_entities(
+            [entity], coverage, mode="rolling", max_entities=1, stale_after_days=7, only_identifiers=()
+        )
+
+        self.assertEqual(selected, [entity])
 
     def test_historical_selection_retries_failure_before_missing(self) -> None:
         failed = meta_entity()

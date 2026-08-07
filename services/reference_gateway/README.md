@@ -219,11 +219,12 @@ entity-scoped reference source. It refreshes the active and inactive U.S. stock
 inventory daily, processes a bounded due batch hourly, retries failed entities
 first, and records durable per-entity coverage so restarts resume safely.
 
-The four owned tables are:
+The five owned tables are:
 
 - `market_ticker_event_entity_v1`: stable Composite-FIGI-first provider inventory.
 - `market_ticker_event_v1`: lossless normalized ticker-change events and source provenance.
 - `market_ticker_event_entity_coverage_v1`: success, empty, failure, mapping, and next-due state.
+- `market_ticker_event_correction_v1`: reviewed, exact-FIGI correction points with official evidence.
 - `id_symbol_interval_v1`: canonical half-open `[valid_from, valid_to)` symbol intervals.
 
 Canonical intervals require one exact Composite FIGI mapping. Unmapped,
@@ -231,6 +232,13 @@ ambiguous, or provider-current conflicts remain visible in coverage and raw
 events but are not promoted. A blank terminal ticker closes an inactive
 entity's preceding interval. HTTP 404 `No events found` is successful empty
 coverage, not a retrying failure.
+
+Provider defects are not rewritten in `market_ticker_event_v1`. A curated
+correction may replace only the canonical interval timeline when its current
+ticker, CIK, Composite FIGI, Share Class FIGI, and reviewed provider-event
+signature all match. Any later unreviewed provider-signature change fails
+closed and is surfaced as a failed entity instead of silently retaining a
+stale correction.
 
 Historical/reconciliation fill:
 

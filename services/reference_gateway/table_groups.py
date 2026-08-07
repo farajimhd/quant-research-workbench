@@ -63,9 +63,10 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
         group_id="point_in_time_symbol_identity",
         owner="reference_gateway",
         purpose="Validity-dated provider symbols bound to canonical securities and listings.",
-        tables=("id_symbol_interval_v1",),
+        tables=("id_symbol_interval_v1", "market_ticker_event_correction_v1"),
         update_policy=(
-            "Build only from complete Massive entity event timelines bound by Composite FIGI. "
+            "Build from complete Massive entity event timelines bound by Composite FIGI, with exact-FIGI, "
+            "reviewed SEC-backed corrections when a provider timeline has a documented defect. "
             "Unmapped, ambiguous, or provider-current conflicts remain explicit coverage findings and never become canonical intervals."
         ),
     ),

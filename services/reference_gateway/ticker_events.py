@@ -10,6 +10,14 @@ from typing import Any, Callable, Iterable
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 from services.reference_gateway.market_publications import mergetree_settings
 from services.reference_gateway.providers import MassiveReferenceClient, MassiveTickerEventsResult
+from services.reference_gateway.ticker_event_corrections import (
+    CORRECTION_SOURCE_SYSTEM,
+    TickerEventCorrection,
+    correction_for_entity,
+    correction_table_rows,
+    load_ticker_event_corrections,
+    validate_provider_signature,
+)
 
 
 TICKER_EVENT_HISTORY_START = date(2003, 9, 10)
@@ -17,6 +25,7 @@ TICKER_EVENT_ENTITY_TABLE = "market_ticker_event_entity_v1"
 TICKER_EVENT_TABLE = "market_ticker_event_v1"
 TICKER_EVENT_COVERAGE_TABLE = "market_ticker_event_entity_coverage_v1"
 SYMBOL_INTERVAL_TABLE = "id_symbol_interval_v1"
+TICKER_EVENT_CORRECTION_TABLE = "market_ticker_event_correction_v1"
 CLICKHOUSE_KEY_BATCH_SIZE = 1_000
 
 
@@ -226,6 +235,37 @@ SETTINGS {settings}
         f"ALTER TABLE {table(database, TICKER_EVENT_COVERAGE_TABLE)} "
         "ADD COLUMN IF NOT EXISTS mapping_reason Nullable(String) AFTER mapping_status"
     )
+    client.execute(
+        f"""
+CREATE TABLE IF NOT EXISTS {table(database, TICKER_EVENT_CORRECTION_TABLE)}
+(
+    correction_point_id String,
+    correction_id String,
+    current_ticker String,
+    composite_figi String,
+    share_class_figi String,
+    cik String,
+    valid_from_date Date,
+    ticker String,
+    evidence_url String,
+    evidence_accession_number String,
+    evidence_summary String,
+    evidence_json String,
+    source_content_sha256 String,
+    source_system LowCardinality(String),
+    is_deleted UInt8,
+    source_run_id String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+ORDER BY correction_point_id
+SETTINGS {settings}
+""".strip()
+    )
+    client.execute(
+        f"ALTER TABLE {table(database, TICKER_EVENT_CORRECTION_TABLE)} "
+        "ADD COLUMN IF NOT EXISTS is_deleted UInt8 DEFAULT 0 AFTER source_system"
+    )
 
 
 def refresh_ticker_event_inventory(
@@ -318,6 +358,9 @@ def sync_ticker_events(
         raise ValueError(f"unsupported ticker-event sync mode: {mode}")
     started = time.perf_counter()
     run_id = run_id or ticker_event_run_id(mode)
+    corrections = load_ticker_event_corrections()
+    if execute:
+        publish_ticker_event_corrections(client, database=database, corrections=corrections, run_id=run_id)
     inventory = load_ticker_event_inventory(client, database=database)
     coverage = load_ticker_event_coverage(client, database=database)
     selected = select_entities(
@@ -347,12 +390,13 @@ def sync_ticker_events(
         entity_started = datetime.now(UTC)
         binding = bindings.get(entity.provider_entity_key, CanonicalBinding("unmapped", reason="no_canonical_binding"))
         try:
+            correction = correction_for_entity(entity, corrections)
             remaining = request_min_interval_seconds - (time.monotonic() - last_request_at)
             if remaining > 0:
                 time.sleep(remaining)
             response = provider.fetch_ticker_events(entity.provider_identifier)
             last_request_at = time.monotonic()
-            binding = reconcile_source_binding(entity, response, binding)
+            binding = reconcile_source_binding(entity, response, binding, correction=correction)
             if binding.status == "unmapped":
                 unmapped += 1
             elif binding.status == "ambiguous":
@@ -365,6 +409,7 @@ def sync_ticker_events(
                 binding,
                 run_id=run_id,
                 observed_at=datetime.now(UTC),
+                correction=correction,
             )
             desired_event_ids = {str(row["ticker_event_id"]) for row in normalized_events}
             desired_interval_ids = {str(row["symbol_interval_id"]) for row in intervals}
@@ -502,6 +547,7 @@ def normalize_ticker_event_response(
     *,
     run_id: str,
     observed_at: datetime,
+    correction: TickerEventCorrection | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
     stable_response = {"status": response.status, "name": response.name, "events": response.events}
     response_sha = sha256_text(canonical_json(stable_response))
@@ -546,7 +592,26 @@ def normalize_ticker_event_response(
                 "inserted_at": dt64(observed_at),
             }
         )
-    intervals = build_symbol_intervals(entity, binding, changes, run_id=run_id, observed_at=observed_at)
+    interval_source = "massive"
+    if correction is not None:
+        validate_provider_signature(correction, response.events)
+        changes = [
+            (
+                date.fromisoformat(valid_from),
+                ticker,
+                stable_id("ticker_event_correction", f"{correction.correction_id}|{valid_from}|{ticker}"),
+            )
+            for valid_from, ticker in correction.canonical_timeline
+        ]
+        interval_source = CORRECTION_SOURCE_SYSTEM
+    intervals = build_symbol_intervals(
+        entity,
+        binding,
+        changes,
+        run_id=run_id,
+        observed_at=observed_at,
+        source_system=interval_source,
+    )
     return rows, intervals, response_sha
 
 
@@ -554,9 +619,19 @@ def reconcile_source_binding(
     entity: TickerEventEntity,
     response: MassiveTickerEventsResult,
     binding: CanonicalBinding,
+    *,
+    correction: TickerEventCorrection | None = None,
 ) -> CanonicalBinding:
     if binding.status != "mapped" or not response.events:
         return binding
+    if correction is not None:
+        validate_provider_signature(correction, response.events)
+        return CanonicalBinding(
+            "mapped",
+            security_id=binding.security_id,
+            listing_id=binding.listing_id,
+            reason=f"verified_ticker_timeline_correction:{correction.correction_id}",
+        )
     changes: list[tuple[date, str]] = []
     for raw in response.events:
         if str(raw.get("type") or "").strip().lower() != "ticker_change":
@@ -599,6 +674,7 @@ def build_symbol_intervals(
     *,
     run_id: str,
     observed_at: datetime,
+    source_system: str = "massive",
 ) -> list[dict[str, Any]]:
     if binding.status != "mapped":
         return []
@@ -632,7 +708,7 @@ def build_symbol_intervals(
                 "mapping_status": "mapped",
                 "confidence_score": 1.0,
                 "source_event_id": event_id,
-                "source_system": "massive",
+                "source_system": source_system,
                 "is_deleted": 0,
                 "observed_at_utc": dt64(observed_at),
                 "source_run_id": run_id,
@@ -667,6 +743,50 @@ def load_ticker_event_inventory(client: ClickHouseHttpClient, *, database: str) 
         )
         for row in rows
     ]
+
+
+def publish_ticker_event_corrections(
+    client: ClickHouseHttpClient,
+    *,
+    database: str,
+    corrections: tuple[TickerEventCorrection, ...],
+    run_id: str,
+    observed_at: datetime | None = None,
+) -> int:
+    desired = correction_table_rows(corrections)
+    existing_rows = query_json_each_row(
+        client,
+        f"SELECT * FROM {table(database, TICKER_EVENT_CORRECTION_TABLE)} FINAL",
+    )
+    existing = {str(row.get("correction_point_id") or ""): row for row in existing_rows}
+    timestamp = dt64(observed_at or datetime.now(UTC))
+    rows = [
+        {
+            **row,
+            "source_system": CORRECTION_SOURCE_SYSTEM,
+            "is_deleted": 0,
+            "source_run_id": run_id,
+            "inserted_at": timestamp,
+        }
+        for row in desired
+        if (
+            str(existing.get(str(row["correction_point_id"]), {}).get("source_content_sha256") or "")
+            != str(row["source_content_sha256"])
+            or int(existing.get(str(row["correction_point_id"]), {}).get("is_deleted") or 0) != 0
+        )
+    ]
+    desired_ids = {str(row["correction_point_id"]) for row in desired}
+    rows.extend(
+        {
+            **row,
+            "is_deleted": 1,
+            "source_run_id": run_id,
+            "inserted_at": timestamp,
+        }
+        for correction_id, row in existing.items()
+        if correction_id not in desired_ids and int(row.get("is_deleted") or 0) == 0
+    )
+    return insert_json_rows(client, database, TICKER_EVENT_CORRECTION_TABLE, rows)
 
 
 def load_ticker_event_coverage(client: ClickHouseHttpClient, *, database: str) -> dict[str, dict[str, Any]]:
@@ -711,7 +831,7 @@ def select_entities(
         provider_updated = parse_datetime(entity.provider_last_updated_utc)
         if status == "failed":
             return (0, last_success or datetime.min.replace(tzinfo=UTC), entity.provider_entity_key)
-        if mapping in {"unmapped", "ambiguous", "weak_ticker"}:
+        if mapping in {"unmapped", "ambiguous", "weak_ticker", "source_conflict"}:
             return (2, last_success or datetime.min.replace(tzinfo=UTC), entity.provider_entity_key)
         if provider_updated and (last_success is None or provider_updated > last_success):
             return (3, last_success or datetime.min.replace(tzinfo=UTC), entity.provider_entity_key)
@@ -745,7 +865,7 @@ def select_entities(
             due = (
                 row is None
                 or str(row.get("source_status") or "") == "failed"
-                or str(row.get("mapping_status") or "") in {"unmapped", "ambiguous", "weak_ticker"}
+                or str(row.get("mapping_status") or "") in {"unmapped", "ambiguous", "weak_ticker", "source_conflict"}
                 or last_success is None
                 or last_success < stale_before
                 or (provider_updated is not None and provider_updated > last_success)
@@ -993,7 +1113,13 @@ def ticker_event_audit(
     read_database: str | None = None,
 ) -> list[dict[str, Any]]:
     identity_database = read_database or database
-    required = (TICKER_EVENT_ENTITY_TABLE, TICKER_EVENT_TABLE, TICKER_EVENT_COVERAGE_TABLE, SYMBOL_INTERVAL_TABLE)
+    required = (
+        TICKER_EVENT_ENTITY_TABLE,
+        TICKER_EVENT_TABLE,
+        TICKER_EVENT_COVERAGE_TABLE,
+        SYMBOL_INTERVAL_TABLE,
+        TICKER_EVENT_CORRECTION_TABLE,
+    )
     existing = {
         row["name"]
         for row in query_json_each_row(
@@ -1040,6 +1166,24 @@ def ticker_event_audit(
         (
             "current_ticker_mismatch",
             f"SELECT count() FROM {table(database, SYMBOL_INTERVAL_TABLE)} i FINAL INNER JOIN {table(database, TICKER_EVENT_ENTITY_TABLE)} e FINAL USING provider_entity_key WHERE i.is_deleted = 0 AND e.is_deleted = 0 AND i.is_current = 1 AND upper(i.ticker) != upper(e.current_ticker)",
+        ),
+        (
+            "unapplied_active_corrections",
+            f"""
+            SELECT count()
+            FROM {table(database, TICKER_EVENT_CORRECTION_TABLE)} c FINAL
+            LEFT JOIN {table(database, TICKER_EVENT_ENTITY_TABLE)} e FINAL
+              ON e.composite_figi = c.composite_figi
+             AND e.share_class_figi = c.share_class_figi
+             AND e.is_deleted = 0
+            LEFT JOIN {table(database, SYMBOL_INTERVAL_TABLE)} i FINAL
+              ON i.provider_entity_key = e.provider_entity_key
+             AND i.valid_from_date = c.valid_from_date
+             AND upper(i.ticker) = upper(c.ticker)
+             AND i.source_system = {sql_string(CORRECTION_SOURCE_SYSTEM)}
+             AND i.is_deleted = 0
+            WHERE c.is_deleted = 0 AND (e.provider_entity_key = '' OR i.symbol_interval_id = '')
+            """,
         ),
     ]
     output: list[dict[str, Any]] = []

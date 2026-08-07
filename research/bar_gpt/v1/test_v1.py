@@ -98,8 +98,8 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertEqual(args.start_date, "2019-01-01")
         self.assertEqual(DataConfig().one_second_table, BAR_GPT_COHORT_2TB_TABLE)
         self.assertEqual(DataConfig().tickers, BAR_GPT_TRAINING_TICKERS)
-        self.assertEqual(BAR_GPT_IDENTITY_QUARANTINE, ("GOOGL", "MOGO"))
-        self.assertEqual(len(BAR_GPT_VALIDATION_SLICES_2026), 98)
+        self.assertEqual(BAR_GPT_IDENTITY_QUARANTINE, ("MOGO",))
+        self.assertEqual(len(BAR_GPT_VALIDATION_SLICES_2026), 99)
         self.assertEqual(
             tuple(ticker for ticker, _start, _end in BAR_GPT_VALIDATION_SLICES_2026),
             BAR_GPT_TRAINING_TICKERS,
@@ -113,7 +113,15 @@ class BuilderSqlTest(unittest.TestCase):
             set(BAR_GPT_TRAINING_TICKERS) - set(DataConfig().training_tickers),
             set(BAR_GPT_IDENTITY_HOLDOUT_TICKERS),
         )
-        self.assertEqual(len(DataConfig().training_tickers), 90)
+        self.assertEqual(len(DataConfig().training_tickers), 91)
+
+    def test_data_config_accepts_single_ticker_for_bounded_shard_builds(self) -> None:
+        config = DataConfig(
+            tickers=("GOOGL",),
+            validation_slices=(("GOOGL", "2026-01-01", "2026-08-01"),),
+        )
+
+        config.validate()
 
     def test_custom_tickers_cannot_contaminate_canonical_tables(self) -> None:
         with self.assertRaisesRegex(SystemExit, "Custom --tickers require custom"):

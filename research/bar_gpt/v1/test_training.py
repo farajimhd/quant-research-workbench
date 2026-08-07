@@ -92,6 +92,8 @@ from research.bar_gpt.v1.train import (
     _resolved_warmup_samples,
     _resume_data_contract,
     _training_prefetcher,
+    build_config as build_training_config,
+    parse_args as parse_training_args,
     preflight,
     validate,
 )
@@ -131,6 +133,12 @@ def session_view(length: int = 24) -> BarView:
 
 
 class LoaderTrainerContractTest(unittest.TestCase):
+    def test_training_rejects_single_ticker_even_though_shard_builds_allow_it(self) -> None:
+        args = parse_training_args(["--tickers", "GOOGL"])
+
+        with self.assertRaisesRegex(ValueError, "training requires at least two tickers"):
+            build_training_config(args)
+
     def test_rolling_daily_cache_replaces_overlap_and_is_bounded(self) -> None:
         first = session_view(3)
         later = session_view(2)

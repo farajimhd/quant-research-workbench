@@ -95,7 +95,7 @@ def ticker_event_source_state(client: ClickHouseHttpClient, *, database: str) ->
             "missing",
             "-",
             None,
-            "market_ticker_event_v1, id_symbol_interval_v1",
+            "market_ticker_event_v1, market_ticker_event_correction_v1, id_symbol_interval_v1",
             "entity inventory, event, or coverage schema is missing",
         )
     row = query_json_each_row(
@@ -135,7 +135,7 @@ def ticker_event_source_state(client: ClickHouseHttpClient, *, database: str) ->
         status,
         f"entities {covered:,}/{entities:,}",
         events,
-        "market_ticker_event_v1, id_symbol_interval_v1",
+        "market_ticker_event_v1, market_ticker_event_correction_v1, id_symbol_interval_v1",
         (
             f"failed={failed:,}; mapping_gaps={mapping_gaps:,}; review_conflicts={review_conflicts:,}; "
             f"oldest_success={str(values.get('oldest_success') or '-')}; latest_success={str(values.get('latest_success') or '-')}"

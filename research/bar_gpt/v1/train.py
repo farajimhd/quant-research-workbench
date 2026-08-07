@@ -269,6 +269,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         clickhouse_retry_max_seconds=float(args.clickhouse_retry_max_seconds),
         balance_activity_regimes=bool(args.balance_activity_regimes),
     )
+    if len(data.tickers) < 2:
+        raise ValueError("training requires at least two tickers; single-ticker configurations are supported only for data and shard builds")
     data.validate()
     model = BarGPTConfig(
         d_model=int(args.d_model),

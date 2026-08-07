@@ -326,7 +326,7 @@ session/block/origin totals, block shape, epochs, ticker sharding, and worker
 count. Cache depth, retry budget, and per-worker prefetch depth may be tuned on
 resume; worker count may not, because it changes ticker ownership.
 
-Validation is one fixed 196-block chronological panel spanning all 98 eligible
+Validation is one fixed 198-block chronological panel spanning all 99 eligible
 identities from January through July 2026. Each ticker contributes exactly two
 deterministic pseudo-random blocks selected across its seven monthly shards;
 the seed, ticker, month, session date, and stable block offset make the sample
@@ -498,13 +498,22 @@ one independently addressable block—not the number of blocks collated into a
 training batch.
 
 The current bounded eager build targets both calendar years 2019 and 2020 for
-training and all 98 eligible tickers from January through July 2026 as the
+training and all 99 eligible tickers from January through July 2026 as the
 chronological validation pool. The two commands intentionally share one root
 and are independently resumable:
 
 ```powershell
 python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection train --start-date 2019-01-01 --end-date 2021-01-01 --workers 32
 python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection validation --start-date 2026-01-01 --end-date 2026-08-01 --workers 8
+```
+
+To add only the repaired GOOGL Class A identity to an existing compatible
+catalog, use `--selection all`; the named `train` and `validation` selections
+intentionally expand to their complete predefined universes:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection all --tickers GOOGL --start-date 2019-01-01 --end-date 2021-01-01 --workers 1
+python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection all --tickers GOOGL --start-date 2026-01-01 --end-date 2026-08-01 --workers 1
 ```
 
 Sidecars created before condition-positive metadata was emitted can be repaired

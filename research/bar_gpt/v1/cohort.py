@@ -27,7 +27,7 @@ BAR_GPT_COHORT_2TB_TABLE = "bar_gpt_1s_bars_v1_cohort_2tb"
 BAR_GPT_COHORT_2TB_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v1_cohort_2tb"
 BAR_GPT_SOURCE_ALIAS_TICKERS: tuple[str, ...] = ("FB",)
 BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v1_identity_aliases"
-BAR_GPT_IDENTITY_QUARANTINE: tuple[str, ...] = ("GOOGL", "MOGO")
+BAR_GPT_IDENTITY_QUARANTINE: tuple[str, ...] = ("MOGO",)
 BAR_GPT_TRAINING_TICKERS: tuple[str, ...] = tuple(
     ticker for ticker in BAR_GPT_COHORT_2TB if ticker not in BAR_GPT_IDENTITY_QUARANTINE
 )
