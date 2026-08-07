@@ -1776,6 +1776,10 @@ function ReentryEditor({ catalog, draft, onChange, profile }: {
   });
   return (
     <>
+      <ConfigurationNarrative heading="Reentry" paragraphs={[
+        "Reentry begins only after a confirmed full exit while the same campaign still owns the ticker. It is a second flat-to-open decision, so it needs its own evidence, capital request, execution intent, and protection rather than inheriting the first entry invisibly.",
+        "The cooldown prevents immediate churn, the attempt limit bounds repeated risk, and fresh confirmation prevents the campaign from reusing the evidence that justified an earlier entry.",
+      ]} />
       <PhaseOrderEditor
         capitalRequest={reentry.capital_request}
         eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions}
@@ -1859,6 +1863,10 @@ function ExitRuleSetsEditor({ catalog, draft, onChange, profile }: {
   const protectionProfile = draft.oms.protection_profiles.find((row) => row.profile_id === omsProfile?.settings.protection_profile_id);
   return (
     <div className="strategy-exit-routes">
+      <ConfigurationNarrative heading="Strategic exits" paragraphs={[
+        "Strategic exits describe how the thesis reduces or ends when causal evidence changes. Routes are checked in their configured order, and each route owns an eligibility window, position action, evidence, and OMS execution intent.",
+        "This layer is intentionally separate from protection. A strategic rule may wait for evidence or operator authority; broker-held stops and emergency liquidation remain active without waiting for either.",
+      ]} />
       <div className="configuration-protection-authority">
         <ShieldCheck size={19} />
         <div>
@@ -1877,6 +1885,10 @@ function ExitRuleSetsEditor({ catalog, draft, onChange, profile }: {
             <ChevronDown size={17} />
           </summary>
           <div className="strategy-exit-route-body">
+            <ConfigurationNarrative heading={ruleSet.name} paragraphs={[
+              "Give this route a clear thesis, then define the evidence that proves it. The active and expiry times bound when that thesis is meaningful relative to the confirmed entry.",
+              "Choose whether the route closes the position or requests a partial reduction. The resulting order still passes through Run Plan authority and OMS; it never directly manipulates broker state.",
+            ]} />
             <div className="strategy-exit-rule-meta"><label className="strategy-rule-name"><span>Rule set name</span><input onChange={(event) => replace(ruleSet.rule_set_id, { ...ruleSet, name: event.target.value })} value={ruleSet.name} /></label><label><span>Purpose</span><input onChange={(event) => replace(ruleSet.rule_set_id, { ...ruleSet, summary: event.target.value })} value={ruleSet.summary} /></label><button aria-label={`Delete ${ruleSet.name}`} className="button compact danger" disabled={routes.length <= 1} onClick={() => onChange({ ...profile, lifecycle: { ...profile.lifecycle, exit: { rule_sets: routes.filter((row) => row.rule_set_id !== ruleSet.rule_set_id) } } })} type="button"><Trash2 size={14} /></button></div>
             <RuleStageEditor catalog={catalog} intent="exit" label={`${ruleSet.name} evidence`} onChange={(rules) => replace(ruleSet.rule_set_id, { ...ruleSet, rules })} stage={ruleSet.rules} />
             <div className="configuration-field-grid">
@@ -1906,6 +1918,10 @@ function CapabilitiesEditor({ catalog, onChange, profile }: {
 }) {
   return (
     <>
+      <ConfigurationNarrative heading="Capabilities" paragraphs={[
+        "Capabilities are optional code-defined functions that a campaign may invoke after the core lifecycle exists. Enabling one makes its settings part of this Profile revision; disabling it preserves the catalog without giving the run permission to use it.",
+        "A capability may add a management action or an Order Entry option, but it cannot replace the entry, reentry, exit, Portfolio, OMS, or safety authorities described elsewhere in the book.",
+      ]} />
       <p className="configuration-section-guide">Capabilities are code-defined reusable functions attached to a campaign lifecycle. They may extend position management or Order Entry, but they do not replace Initial Entry, Reentry, or Exit.</p>
       <div className="capability-grid">
         {catalog.map((definition) => {
@@ -1917,6 +1933,7 @@ function CapabilitiesEditor({ catalog, onChange, profile }: {
                 <div><span>{definition.category.replaceAll("_", " ")}</span><strong>{definition.name}</strong></div>
                 <label className="configuration-switch"><input checked={binding.enabled} onChange={(event) => onChange(updateCapability(profile, binding.capability_id, { ...binding, enabled: event.target.checked }))} type="checkbox" /><span /></label>
               </header>
+              <ConfigurationNarrative heading={definition.name} paragraphs={[definition.summary, "Configure the values below only when this capability is enabled; they remain local to this Profile and are pinned with its revision."]} />
               <p>{definition.summary}</p>
               {definition.order_entry_action ? <em><BadgeCheck size={12} /> Appears in Order Entry</em> : null}
               {binding.enabled ? (
@@ -1956,6 +1973,21 @@ const RULE_STAGE_META = {
     summary: "A passing blocker prevents a new position even when opportunity and confirmation pass.",
   },
 } as const;
+
+const RULE_STAGE_STORY: Record<keyof EntryRules, string[]> = {
+  opportunity: [
+    "Opportunity is the first question: is there enough causal evidence to treat this ticker as a candidate at all? Keep this stage broad enough to recognize the setup, but not so broad that every routine market update becomes an entry thesis.",
+    "Each rule set is one recognizable path to an opportunity. The stage logic decides whether one path is sufficient or whether every configured path must agree before confirmation is considered.",
+  ],
+  confirmation: [
+    "Confirmation asks whether the candidate is actionable now. These rule sets should contain the evidence that must arrive after or alongside the opportunity, such as price acceptance, flow persistence, or a second independent signal.",
+    "A required score belongs to its rule set, so different confirmation paths may demand different amounts of supporting evidence without sharing hidden state.",
+  ],
+  blockers: [
+    "Blockers are explicit vetoes. A passing blocker prevents new exposure even when opportunity and confirmation pass; it does not erase the underlying observation or pretend the positive evidence was false.",
+    "Use blockers for conditions that make action unsafe or invalid now—stale evidence, disallowed volatility, conflicting regime, or another causal constraint—not for Portfolio limits that belong to the account guardrails.",
+  ],
+};
 
 const COMPARATOR_OPTIONS = [
   { label: "Is above by", value: "above_by_bps" },
@@ -2051,7 +2083,9 @@ function DecisionRulesEditor({ catalog, importRules, onChange, rules, summary, t
         const stage = rules[stageName];
         const meta = RULE_STAGE_META[stageName];
         return (
-          <details className="strategy-rule-stage" data-stage={stageName} key={stageName}>
+          <section className="strategy-rule-stage-chapter" key={stageName}>
+          <ConfigurationNarrative heading={meta.label} paragraphs={RULE_STAGE_STORY[stageName]} />
+          <details className="strategy-rule-stage" data-stage={stageName}>
             <summary><div><span>{stageName}</span><strong>{meta.label}</strong><p>{meta.summary}</p></div><span>{stage.groups.length} rule sets</span><ChevronDown size={16} /></summary>
             <div className="strategy-rule-stage-body">
             <header>
@@ -2085,6 +2119,7 @@ function DecisionRulesEditor({ catalog, importRules, onChange, rules, summary, t
             </div>
             </div>
           </details>
+          </section>
         );
       })}
     </div>
@@ -2131,6 +2166,10 @@ function RuleGroupEditor({ catalog, defaultOpen = false, group, onChange, onRemo
         <ChevronDown size={16} />
       </summary>
       <div className="strategy-rule-group-body">
+      <ConfigurationNarrative heading={group.label} paragraphs={[
+        "This rule set turns several atomic comparisons into one pass-or-fail result. Name the evidence path, choose whether all conditions, any condition, or a required fraction must pass, and disable the whole set when it should remain configured but absent from evaluation.",
+        "Each condition reads a causal data source at a declared timeframe and compares it with either a fixed threshold or another source. The runtime evaluates only the enabled conditions using data available at the decision time.",
+      ]} />
       <header className="strategy-rule-toolbar">
         <div className="strategy-rule-toolbar-heading"><span>Rule set controls</span><p>Name the evidence bundle, choose how its conditions combine, and decide whether it participates in evaluation.</p></div>
         <div className="strategy-rule-toolbar-fields">
@@ -2292,6 +2331,10 @@ function RuleStageEditor({ catalog, intent, label, onChange, stage }: {
           <button className="button compact" onClick={addGroup} type="button"><Plus size={14} /> Add rule set</button>
         </div>
       </header>
+      <ConfigurationNarrative heading={label} paragraphs={[
+        context.text,
+        "The rule-set logic combines independent paths at this stage. Inside each rule set, condition logic and any required score determine whether that particular path passes from currently available evidence.",
+      ]} />
       <div className="strategy-rule-groups">
         {stage.groups.map((group) => (
           <RuleGroupEditor
@@ -2325,6 +2368,10 @@ function PhaseOrderEditor({ capitalRequest, eligibleSessions, executionPolicies,
         <div><span>Portfolio + OMS handoff</span><strong>{title}</strong><p>The strategy describes intent. Portfolio resolves the approved account quantity, then OMS chooses session-safe broker instructions and manages the order.</p></div>
         <div className="strategy-handoff-flow" aria-label="Order handoff sequence"><span>Strategy request</span><ChevronRight size={14} /><span>Portfolio approval</span><ChevronRight size={14} /><span>OMS execution</span></div>
       </header>
+      <ConfigurationNarrative heading={title} paragraphs={[
+        "The strategy now describes the request it would like to make if this lifecycle decision passes. It asks for capital without assuming an account quantity, then names the broker-neutral execution and protection behavior it expects after approval.",
+        "Portfolio may approve less than requested or reject the request with a reason. OMS receives only the approved account allocation and cannot expand it while resolving session, venue, order type, repricing, and protection mechanics.",
+      ]} />
       <div className="strategy-handoff-grid">
         <CapitalRequestEditor onChange={onCapitalRequest} value={capitalRequest} />
         <OrderIntentEditor eligibleSessions={eligibleSessions} executionPolicies={executionPolicies} protectionProfiles={protectionProfiles} onChange={onOrderIntent} value={orderIntent} />
@@ -2349,6 +2396,10 @@ function CapitalRequestEditor({ onChange, value }: {
         <BriefcaseBusiness size={18} />
         <div><span>Step 1 · Portfolio</span><strong>Capital request</strong><p>Ask for capital in relative terms. Portfolio applies the deployment mandate, buying power, current positions, risk limits, and competing requests before approving shares.</p></div>
       </header>
+      <ConfigurationNarrative heading="Capital request" paragraphs={[
+        "Choose the unit in which the strategy expresses demand. Fixed quantity asks for shares; mandate fraction asks for part of this Run Plan's account capacity; risk fraction asks for part of its planned-loss budget; all available asks only for unused mandate capacity.",
+        "Replacement is permission to propose a better account plan, not permission for the strategy to close another position. Portfolio owns the comparison threshold and records any displacement decision.",
+      ]} />
       <div className="configuration-field-grid">
       <SelectField
         help={{
@@ -2407,6 +2458,10 @@ function OrderIntentEditor({ eligibleSessions, executionPolicies, onChange, prot
         <Send size={18} />
         <div><span>Step 2 · OMS</span><strong>Execution policy</strong><p>Choose urgency and fill behavior, not broker-specific flags. OMS converts this intent into the fastest compatible order for the selected sessions, account, venue, and broker.</p></div>
       </header>
+      <ConfigurationNarrative heading="Execution intent" paragraphs={[
+        "Select an execution policy by the trade-off the strategy needs: patience and price improvement for durable opportunities, or bounded urgency when delay threatens the thesis or increases risk.",
+        "The protection profile is attached to actual fills rather than requested quantity. Partial-fill behavior determines whether OMS keeps working the remainder, accepts the exposure already obtained, or cancels what is left.",
+      ]} />
       <div className="configuration-field-grid">
       <SelectField
         help={{
@@ -2472,11 +2527,19 @@ function AddStepsEditor({ catalog, eligibleSessions, executionPolicies, onChange
   return (
     <section className="strategy-add-plan">
       <header><div><span>Position construction</span><strong>Conditional add requests</strong><p>Each add owns its evidence, relative capital request, order policy, and usage limit. Newly added steps appear first.</p></div><button className="button compact" onClick={addStep} type="button"><Plus size={14} /> Add position step</button></header>
+      <ConfigurationNarrative heading="Position construction" paragraphs={[
+        "Position construction is an ordered plan for earning more exposure after the first fill. An add is never implied by unrealized profit or spare buying power; its own evidence must pass while the position remains open.",
+        "Each step limits how many successful fills it may produce and submits a fresh capital request. Portfolio re-evaluates the entire account at that moment, so a previously approved entry does not guarantee that an add will be funded.",
+      ]} />
       <div>
         {steps.map((step) => (
           <details className="strategy-add-step" key={step.step_id}>
             <summary><span className="strategy-rule-state" /><div><strong>{step.name}</strong><small>{readableLabel(step.capital_request.mode)} · {step.maximum_uses} maximum uses</small></div><ChevronDown size={16} /></summary>
             <div className="strategy-add-step-body">
+              <ConfigurationNarrative heading={step.name} paragraphs={[
+                "First name and enable this construction step, then define the evidence that earns another request. The usage limit counts successful executions during one ticker campaign, not evaluations or rejected requests.",
+                "When the evidence passes, this step follows the same authority chain as the initial entry: Run Plan authority, Portfolio sizing and account allocation, then OMS execution and protection.",
+              ]} />
               <div className="configuration-field-grid">
                 <TextField help="Operator-facing name for this ordered position-building step." label="Step name" onChange={(name) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, name } : row))} value={step.name} />
                 <NumberField help="Maximum successful executions of this add step during one campaign." label="Maximum uses" minimum={1} onChange={(maximum_uses) => onChange(steps.map((row) => row.step_id === step.step_id ? { ...row, maximum_uses } : row))} step={1} unit="fills" value={step.maximum_uses} />
@@ -3115,7 +3178,64 @@ function EffectiveConfigurationPreview({ updatedAt }: { updatedAt: string }) {
 function ConfigGroup({ action, children, summary, title }: { action?: ReactNode; children: ReactNode; summary: string; title: string }) {
   const visual = configGroupVisual(title);
   const Icon = visual.icon;
-  return <section className="configuration-group" data-group-tone={visual.tone}><header><div className="configuration-group-heading"><span className="configuration-group-icon"><Icon size={15} /></span><div><strong>{title}</strong><p>{summary}</p></div></div>{action}</header><div className="configuration-group-body">{children}</div></section>;
+  return <section className="configuration-group" data-group-tone={visual.tone}><header><div className="configuration-group-heading"><span className="configuration-group-icon"><Icon size={15} /></span><div><strong>{title}</strong><p>{summary}</p></div></div>{action}</header><div className="configuration-group-body"><ConfigurationNarrative heading={title} paragraphs={configurationGroupStory(title)} />{children}</div></section>;
+}
+
+function ConfigurationNarrative({ heading, paragraphs }: { heading: string; paragraphs: string[] }) {
+  if (!paragraphs.length) return null;
+  return <section className="configuration-narrative"><span>{heading}</span>{paragraphs.map((paragraph, index) => <p key={`${heading}-${index}`}>{paragraph}</p>)}</section>;
+}
+
+function configurationGroupStory(title: string) {
+  const normalized = title.toLowerCase();
+  if (normalized.includes("watch universe")) return [
+    "The Run Plan needs a bounded source of candidates before it can create ticker campaigns. The universe may come from configured symbols, a watchlist, or a Scanner view; it supplies eligibility, not permission to trade.",
+    "Choose the portfolio book with the universe because campaign ownership is resolved inside that book. Several plans may observe the same ticker, but the control plane grants an active campaign only after the current ownership rules pass.",
+  ];
+  if (normalized.includes("strategy and execution")) return [
+    "This is the central join in a Run Plan. The Strategy Profile supplies decision behavior, while the OMS profile supplies execution and protection behavior. Their revisions remain independent even though one run pins both.",
+  ];
+  if (normalized.includes("action authority")) return [
+    "Begin with the default level of operator involvement, then override only the lifecycle actions that genuinely differ. Manual records intent without automation, Confirm pauses for approval, and Automatic may proceed after every downstream guard passes.",
+    "Protective and emergency exits are excluded from discretionary inheritance. They always remain automatic because risk reduction cannot wait for the same authority used to add exposure.",
+  ];
+  if (normalized.includes("environments") && normalized.includes("safety")) return [
+    "An environment states where this Run Plan may launch. Safety remains enabled by default for historical modes so configuration errors are visible during rehearsal, and it is mandatory for Paper and Live.",
+  ];
+  if (normalized.includes("account mandate")) return [
+    "Each mandate is the explicit bridge from a Run Plan to an account. It limits cash, planned risk, position count, assignment behavior, and the strongest action authority that account accepts.",
+    "A mandate grants eligibility, not a reservation. Portfolio still checks the account's current state and every competing request before it approves quantity.",
+  ];
+  if (normalized.includes("account safety")) return [
+    "This policy is the account's outer envelope. Exposure ceilings constrain normal allocation; warning thresholds pause new risk; hard loss and drawdown limits latch the account so a strategy bug or market discontinuity cannot keep adding exposure.",
+    "These limits apply across every Strategy Run using the account. A Strategy Profile cannot weaken them, and Paper or Live cannot disable the shared safety supervisor.",
+  ];
+  if (normalized.includes("risk group")) return [
+    "A risk group places several accounts under one shared exposure boundary. Use it when separately bound accounts still represent the same economic capital, household, legal entity, or correlated risk pool.",
+  ];
+  if (normalized.includes("execution policy catalog")) return [
+    "An execution policy describes how OMS works an already approved quantity. Quote authority, price boundaries, deadline, repricing cadence, and partial-fill behavior belong here because they are broker mechanics rather than strategy evidence.",
+  ];
+  if (normalized.includes("protection profile catalog")) return [
+    "A protection profile divides a fill into independently protected slices. Every slice must own a hard stop; targets and trailing transitions may differ, but the fractions must still cover the complete filled position.",
+    "The broker-held plan is repaired and reconciled by OMS. Strategy exits may close exposure earlier, but they cannot cancel the catastrophic backstop or exceed the repair deadline.",
+  ];
+  if (normalized === "protection") return [
+    "These defaults tell OMS how to derive invalidation distance when an order intent does not select a more specific protection profile. Structure, volatility, and hybrid methods all remain bounded by the maximum risk setting.",
+  ];
+  if (normalized.includes("execution behavior")) return [
+    "These defaults are used when a Strategy Intent does not provide a phase-specific override. They choose urgency and policy families while smart routing still resolves the final broker-compatible instructions from session and account capabilities.",
+  ];
+  if (normalized.includes("configured account")) return [
+    "Create one stable application identity for each simulated or broker account. The stable key is safe to publish and reference; protected broker identifiers are resolved by the backend only when Paper or Live preflight begins.",
+  ];
+  if (normalized.includes("readiness")) return [
+    "Readiness is the dependency check at this point in the book. A green item proves that the required configuration reference exists; it does not claim that a future broker connection or market-data feed is healthy.",
+  ];
+  if (normalized.includes("effective configuration")) return [
+    "Resolve one runtime mode to inspect the exact account, policy, and Run Plan projection the backend will supply to a new run. This is derived evidence from the saved draft, not another place to edit authority.",
+  ];
+  return [];
 }
 
 function configGroupVisual(title: string) {

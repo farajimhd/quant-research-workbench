@@ -679,6 +679,38 @@
 .strategy-book-configuration .configuration-detail-heading { padding-top: 0; }
 .strategy-book-configuration .configuration-revision-layout { grid-template-columns: minmax(0, 1fr); }
 
+.configuration-narrative { display: none; }
+.strategy-book .configuration-narrative {
+  border-left: 2px solid var(--configuration-rule);
+  display: grid;
+  gap: 8px;
+  margin: 2px 0 16px;
+  max-width: 820px;
+  padding: 2px 0 2px 14px;
+}
+.strategy-book .configuration-narrative > span {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.configuration-expert-editor .strategy-book .configuration-narrative p {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 12.5px;
+  line-height: 1.68;
+  margin: 0;
+}
+.strategy-book .strategy-rule-stage-chapter { display: grid; gap: 2px; }
+.strategy-book .strategy-rule-stage-chapter + .strategy-rule-stage-chapter { margin-top: 14px; }
+.strategy-book .strategy-rule-stage-chapter > .configuration-narrative { margin: 0 0 8px; }
+.strategy-book .strategy-add-step-body > .configuration-narrative,
+.strategy-book .strategy-exit-route-body > .configuration-narrative,
+.strategy-book .strategy-rule-group-body > .configuration-narrative { margin: 0 0 14px; }
+.strategy-book .strategy-handoff-card > .configuration-narrative { margin-top: 12px; }
+
 @container configuration-workbench (max-width: 980px) {
   .strategy-book-configuration .configuration-workbench { grid-template-columns: minmax(0, 1fr); }
   .strategy-book-configuration .configuration-library { max-height: none; }
