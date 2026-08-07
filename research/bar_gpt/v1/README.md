@@ -542,9 +542,11 @@ The first command prints the exact build and audit plan. The execute form builds
 `AAPL:2019-01` and `GOOGL:2019-01` beneath `offline_shards_v3_pilot`, verifies
 both complete-file SHA-256 digests, and fails unless shard/sidecar identities,
 counts, configured context, causal as-of indices, horizon tensors, and condition
-positive-count metadata agree. Its JSON audit is written beneath the pilot
-root's `manifest/audits` directory. The pilot root is never used by the default
-training or production-build launchers.
+positive-count metadata agree. The audit also scans every stored value in all
+46 feature columns of every view for finiteness and records per-feature
+nonzero fractions, standard deviations, minima, and maxima. Its JSON report is
+written beneath the pilot root's `manifest/audits` directory. The pilot root is
+never used by the default training or production-build launchers.
 
 To add only the repaired GOOGL Class A identity to an existing compatible
 catalog, use `--selection all`; the named `train` and `validation` selections
@@ -585,11 +587,14 @@ is the explicit replacement path. `--skip-hash` is diagnostic only and produces
 uncertified shards that are intentionally not resume-skipped.
 
 Execute-time coverage planning derives exact block totals from the certified
-one-second sessions before workers start. Interactive output gives every worker
+one-second sessions before workers start, including explicitly requested
+holdout tickers. Interactive output gives every worker
 its own compiled-block progress bar, plus assigned shard count, active
 ticker-month/session, fetched blocks, compiled sessions, and stage. The primary
 progress bar, rate, and ETA are based on compiled blocks across all workers;
 atomically certified ticker-month shards remain a separate durability counter.
+If a worker's total is not yet known, the display uses `?` rather than a false
+zero and reconciles the total to the worker's completed count at exit.
 The display also shows written GiB, origins, failures, output, and resume
 semantics. New sidecars record
 preparation wall time, compilation CPU time, write/hash time, and total unit wall

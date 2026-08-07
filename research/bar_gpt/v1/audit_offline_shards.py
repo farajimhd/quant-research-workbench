@@ -146,6 +146,17 @@ def audit_shard(sidecar_path: Path, *, verify_sha256: bool = True) -> dict[str, 
     origins = 0
     blocks = 0
     view_rows: dict[str, int] = {name: 0 for name in expected_views}
+    feature_accumulators: dict[str, dict[str, torch.Tensor | int]] = {
+        name: {
+            "rows": 0,
+            "nonzero": torch.zeros(len(MODEL_FEATURE_NAMES), dtype=torch.long),
+            "sum": torch.zeros(len(MODEL_FEATURE_NAMES), dtype=torch.float64),
+            "sum_squared": torch.zeros(len(MODEL_FEATURE_NAMES), dtype=torch.float64),
+            "minimum": torch.full((len(MODEL_FEATURE_NAMES),), float("inf"), dtype=torch.float64),
+            "maximum": torch.full((len(MODEL_FEATURE_NAMES),), float("-inf"), dtype=torch.float64),
+        }
+        for name in expected_views
+    }
     target_valid = torch.zeros((horizon_count, len(TARGET_NAMES)), dtype=torch.long)
     target_total = torch.zeros_like(target_valid)
     for session_index, session in enumerate(sessions):
@@ -171,8 +182,18 @@ def audit_shard(sidecar_path: Path, *, verify_sha256: bool = True) -> dict[str, 
             _require(_strictly_increasing(starts), f"{label}/{name}: starts are not strictly increasing")
             _require(_strictly_increasing(available), f"{label}/{name}: availability is not strictly increasing")
             _require(bool(torch.all(available >= starts)), f"{label}/{name}: availability precedes bar start")
-            sample = torch.cat((features[:2], features[-2:]), dim=0)
-            _require(bool(torch.isfinite(sample).all()), f"{label}/{name}: sampled features are non-finite")
+            accumulator = feature_accumulators[name]
+            for left in range(0, int(features.shape[0]), 65_536):
+                chunk = features[left : left + 65_536]
+                finite = torch.isfinite(chunk)
+                _require(bool(finite.all()), f"{label}/{name}: stored features contain non-finite values")
+                values = chunk.to(torch.float64)
+                accumulator["nonzero"] += torch.count_nonzero(chunk, dim=0)
+                accumulator["sum"] += values.sum(dim=0)
+                accumulator["sum_squared"] += values.square().sum(dim=0)
+                accumulator["minimum"] = torch.minimum(accumulator["minimum"], values.amin(dim=0))
+                accumulator["maximum"] = torch.maximum(accumulator["maximum"], values.amax(dim=0))
+                accumulator["rows"] += int(chunk.shape[0])
             view_rows[name] += int(features.shape[0])
         for block_index, block in enumerate(session_blocks):
             block_label = f"{label}/block-{block_index}"
@@ -236,6 +257,39 @@ def audit_shard(sidecar_path: Path, *, verify_sha256: bool = True) -> dict[str, 
         == tuple(int(value) for value in sidecar.get("condition_positive_counts", ())),
         f"{unit_key}: condition-positive metadata mismatch",
     )
+    feature_coverage: dict[str, Any] = {}
+    for name in sorted(expected_views):
+        accumulator = feature_accumulators[name]
+        rows = int(accumulator["rows"])
+        _require(rows == view_rows[name] and rows > 0, f"{unit_key}/{name}: feature scan row mismatch")
+        nonzero = accumulator["nonzero"]
+        mean = accumulator["sum"] / rows
+        variance = (accumulator["sum_squared"] / rows - mean.square()).clamp_min(0.0)
+        feature_coverage[name] = {
+            "rows_scanned": rows,
+            "columns_present": len(MODEL_FEATURE_NAMES),
+            "all_finite": True,
+            "all_zero_features": [
+                feature for feature, count in zip(MODEL_FEATURE_NAMES, nonzero.tolist(), strict=True)
+                if int(count) == 0
+            ],
+            "nonzero_fraction": {
+                feature: float(count / rows)
+                for feature, count in zip(MODEL_FEATURE_NAMES, nonzero.tolist(), strict=True)
+            },
+            "standard_deviation": {
+                feature: float(value)
+                for feature, value in zip(MODEL_FEATURE_NAMES, variance.sqrt().tolist(), strict=True)
+            },
+            "minimum": {
+                feature: float(value)
+                for feature, value in zip(MODEL_FEATURE_NAMES, accumulator["minimum"].tolist(), strict=True)
+            },
+            "maximum": {
+                feature: float(value)
+                for feature, value in zip(MODEL_FEATURE_NAMES, accumulator["maximum"].tolist(), strict=True)
+            },
+        }
     return {
         "unit_key": unit_key,
         "path": str(shard_path),
@@ -245,6 +299,7 @@ def audit_shard(sidecar_path: Path, *, verify_sha256: bool = True) -> dict[str, 
         "blocks": blocks,
         "origins": origins,
         "view_rows": view_rows,
+        "feature_coverage": feature_coverage,
         "condition_positive_counts": list(recomputed_conditions),
         "target_valid_fraction": {
             f"{int(horizon) // 1_000_000}s": {

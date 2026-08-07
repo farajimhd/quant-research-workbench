@@ -97,6 +97,7 @@ from research.bar_gpt.v1.train import (
     build_config as build_training_config,
     parse_args as parse_training_args,
     preflight,
+    sequential_coverage_counts,
     validate,
 )
 from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS, _model_config, _parse_candidates
@@ -855,6 +856,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(audit["status"], "passed")
             self.assertEqual(audit["unit_key"], "AAA:2026-01")
             self.assertEqual(audit["origins"], sum(item.origin_indices.numel() for item in examples))
+            self.assertTrue(audit["feature_coverage"]["1s"]["all_finite"])
+            self.assertEqual(audit["feature_coverage"]["1s"]["columns_present"], len(MODEL_FEATURE_NAMES))
         live_batch = collate_examples(examples).to("cpu", non_blocking=False)
         for name in live_batch.views:
             self.assertTrue(torch.equal(cached_batch.views[name], live_batch.views[name]), name)
@@ -1166,6 +1169,55 @@ class LoaderTrainerContractTest(unittest.TestCase):
         reporter.event(("session", 0, "BBB:2026-01", "2026-01-02", 1, 45))
         self.assertEqual(reporter.worker_progress[0][2], 45)
         self.assertEqual(reporter.compiled_work_blocks, 45)
+
+    def test_offline_reporter_never_renders_zero_total_and_corrects_completed_total(self) -> None:
+        reporter = ShardBuildReporter(
+            total=2, completed=0, root=Path("D:/runtime"), workers=2,
+            layout="rich", refresh=60.0,
+            worker_totals=(1, 1), worker_block_totals=(8, 0),
+        )
+        reporter.event(("worker", 1, "starting", "AAPL", 1, 0))
+        reporter.event(("session", 1, "AAPL:2019-01", "2019-01-02", 1, 8))
+        output = io.StringIO()
+        reporter._console = Console(file=output, width=140, height=40, force_terminal=False, color_system=None)
+        reporter._console.print(reporter._render())
+        self.assertIn("8/? blocks", output.getvalue())
+        self.assertNotIn("8/0 blocks", output.getvalue())
+        reporter.event(("worker", 1, "completed", ""))
+        self.assertEqual(reporter.worker_progress[1][3], 8)
+        self.assertEqual(reporter.total_work_blocks, 16)
+
+    def test_sequential_coverage_explicitly_includes_holdout_and_derived_warmup(self) -> None:
+        config = dataclasses.replace(
+            DataConfig(),
+            tickers=("AAPL",),
+            start_date="2019-01-01",
+            end_date="2019-02-01",
+            validation_start_date="2019-02-01",
+            validation_slices=(),
+            origin_bars_1s=4096,
+        )
+
+        class FakeStream:
+            def __init__(self, _config) -> None:
+                pass
+
+            def read_identity_intervals(self, tickers, **_kwargs):
+                test_case.assertEqual(tickers, ("AAPL",))
+                return {"AAPL": (TickerInterval("AAPL", "AAPL", "2000-01-01", "2100-01-01"),)}
+
+        class FakeClient:
+            @staticmethod
+            def query_tsv(_sql: str) -> str:
+                return "AAPL\t2019-01-02"
+
+        test_case = self
+        with patch("research.bar_gpt.v1.train.ArrowStreamClient", FakeStream):
+            sessions, blocks, origins, units, _plan = sequential_coverage_counts(
+                FakeClient(), config, tickers=("AAPL",),
+            )
+        self.assertEqual((sessions, blocks, origins), (1, 8, 28_800))
+        self.assertEqual(units["AAPL:2019-01"], (8, 28_800))
 
     def test_sequential_session_emits_tail_origins_with_unavailable_horizons_masked(self) -> None:
         config = self.data_config()

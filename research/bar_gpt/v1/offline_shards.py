@@ -1349,11 +1349,26 @@ class ShardBuildReporter:
         worker = int(value[1])
         force_refresh = False
         if kind == "worker":
+            state = str(value[2])
             if worker not in self.failed_workers:
-                self.worker_state[worker] = (str(value[2]), str(value[3]))
+                self.worker_state[worker] = (state, str(value[3]))
             if len(value) > 4:
                 block_total = int(value[5]) if len(value) > 5 else 0
                 self.worker_progress[worker] = [0, int(value[4]), 0, block_total, 0, 0]
+            elif state == "completed":
+                progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0, 0, 0])
+                planned_blocks = int(progress[3])
+                actual_blocks = int(progress[2])
+                if actual_blocks != planned_blocks:
+                    self.total_work_blocks += actual_blocks - planned_blocks
+                    progress[3] = actual_blocks
+                    if self.run_log is not None:
+                        self.run_log.record(
+                            "worker_progress_total_corrected",
+                            worker=worker,
+                            planned_blocks=planned_blocks,
+                            actual_blocks=actual_blocks,
+                        )
         elif kind == "unit":
             self.worker_state[worker] = (str(value[2]), str(value[3]))
         elif kind == "block":
@@ -1420,7 +1435,8 @@ class ShardBuildReporter:
             rate = self.compiled_work_blocks / elapsed
             eta = (self.total_work_blocks - self.compiled_work_blocks) / rate if rate > 0 else 0
             active = ", ".join(
-                f"w{worker}:{self.worker_progress.get(worker, [0, 0, 0, 0])[2]}/{self.worker_progress.get(worker, [0, 0, 0, 0])[3]}blocks:{state}:{focus}"
+                f"w{worker}:{self.worker_progress.get(worker, [0, 0, 0, 0])[2]}/"
+                f"{self.worker_progress.get(worker, [0, 0, 0, 0])[3] or '?'}blocks:{state}:{focus}"
                 for worker, (state, focus) in sorted(self.worker_state.items())
             )
             print(
@@ -1480,7 +1496,8 @@ class ShardBuildReporter:
             )
             cells = 10
             filled = min(cells, int(fraction * cells))
-            bar = f"[green]{'=' * filled}[/][dim]{'-' * (cells - filled)}[/] {blocks_done:,}/{blocks_total:,} blocks"
+            total_label = f"{blocks_total:,}" if blocks_total else "?"
+            bar = f"[green]{'=' * filled}[/][dim]{'-' * (cells - filled)}[/] {blocks_done:,}/{total_label} blocks"
             detail = f"{focus or '-'} | shards {shards_done}/{shards_total}"
             blocks = fetched
             if sessions or blocks:
@@ -1602,7 +1619,7 @@ def _run_main(args: argparse.Namespace, run_log: BuildRunLog | None) -> int:
         validation_start_date=config.end_date,
     )
     _sessions, _exact_blocks, _exact_origins, unit_block_plan, _block_plan = sequential_coverage_counts(
-        client, coverage_config, seed=17,
+        client, coverage_config, seed=17, tickers=selected_tickers,
     )
     ticker_weights = {
         ticker: sum(

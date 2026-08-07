@@ -610,12 +610,18 @@ def sequential_coverage_counts(
     config: DataConfig,
     *,
     seed: int = 17,
+    tickers: Sequence[str] | None = None,
 ) -> tuple[int, int, int, dict[str, tuple[int, int]], SequentialBlockPlan]:
     """Return exact epoch totals and ticker-month block plans in dataset order."""
+    selected_tickers = tuple(ticker.upper() for ticker in (tickers or config.training_tickers))
+    if not selected_tickers:
+        raise RuntimeError("sequential coverage requires at least one selected ticker")
+    if len(set(selected_tickers)) != len(selected_tickers):
+        raise ValueError("sequential coverage tickers must be unique")
     stream = ArrowStreamClient(_stream_config(config))
     lookback_start = (dt.date.fromisoformat(config.start_date) - dt.timedelta(days=14)).isoformat()
     intervals = stream.read_identity_intervals(
-        config.training_tickers,
+        selected_tickers,
         identity_database=config.identity_database,
         interval_table=config.identity_interval_table,
         entity_table=config.identity_entity_table,
@@ -623,7 +629,7 @@ def sequential_coverage_counts(
         coverage_start=lookback_start,
     )
     subqueries: list[str] = []
-    for ticker in config.training_tickers:
+    for ticker in selected_tickers:
         predicates = []
         for interval in intervals[ticker]:
             left = max(lookback_start, interval.valid_from)
@@ -647,7 +653,7 @@ def sequential_coverage_counts(
         + "\nUNION ALL\n".join(subqueries)
         + "\n) ORDER BY canonical_ticker, local_date FORMAT TSVRaw"
     )
-    dates_by_ticker: dict[str, list[dt.date]] = {ticker: [] for ticker in config.training_tickers}
+    dates_by_ticker: dict[str, list[dt.date]] = {ticker: [] for ticker in selected_tickers}
     for line in rows.splitlines():
         values = line.split("\t")
         if len(values) == 2:
@@ -663,7 +669,7 @@ def sequential_coverage_counts(
     units = month_units(
         config.start_date,
         config.validation_start_date,
-        config.training_tickers,
+        selected_tickers,
         seed=seed,
     )
     for unit_index, unit in enumerate(units):
@@ -678,7 +684,7 @@ def sequential_coverage_counts(
         for day in dates:
             if day < left or day >= right:
                 continue
-            first_origin = 0 if previous_date is not None else int(config.context_bars_1s)
+            first_origin = 0 if previous_date is not None else int(config.intraday_warmup_bars_1s)
             eligible = max(0, session_seconds - first_origin)
             full, remainder = divmod(eligible, int(config.origin_bars_1s))
             session_blocks = full
