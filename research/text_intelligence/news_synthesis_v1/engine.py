@@ -548,6 +548,35 @@ def _time_relation(text: str, kind: str) -> str:
     return "current"
 
 
+_ADVERSE_REGULATORY_RESPONSE_PATTERNS = tuple(re.compile(pattern) for pattern in (
+    r"\btitle:\s*[^\n]*\b(?:complete response letters?|crls?)\b",
+    r"\b(?:issue|issued|issuing|receiv(?:e[sd]?|ing)|send(?:s|ing)?|sent|confirm(?:s|ed|ing)?)\b"
+    r".{0,100}\b(?:complete response letters?|crls?)\b",
+    r"\b(?:complete response letters?|crls?)\b.{0,100}"
+    r"\b(?:issue|issued|issuing|receiv(?:e[sd]?|ing)|(?:was |were )?sent)\b",
+    r"\b(?:refus(?:e[sd]?|al) to file|refuse-to-file)\b",
+    r"\b(?:plac(?:e[sd]?|ing)|impos(?:e[sd]?|ing)|remain(?:s|ed|ing)?|(?:is|was|were))\b"
+    r".{0,80}\b(?:on (?:a )?)?clinical hold\b",
+    r"\b(?:fda|ema)\b.{0,140}\b(?:did not approve|has not approved|"
+    r"declin(?:e[sd]?|ing) (?:the )?approval|den(?:y|ies|ied|ial) (?:the )?approval|"
+    r"reject(?:s|ed|ing) (?:the )?(?:application|submission))\b",
+))
+
+
+def _is_adverse_regulatory_response(normalized_text: str) -> bool:
+    """Identify regulator decisions that block or delay the requested authorization."""
+    return any(pattern.search(normalized_text) for pattern in _ADVERSE_REGULATORY_RESPONSE_PATTERNS)
+
+
+def _is_resolved_clinical_hold(normalized_text: str) -> bool:
+    return bool(re.search(
+        r"\b(?:lift(?:s|ed|ing)?|remov(?:e[sd]?|ing)|resolv(?:e[sd]?|ing))\b"
+        r".{0,80}\bclinical hold\b|\bclinical hold\b.{0,80}"
+        r"\b(?:lift(?:s|ed|ing)?|remov(?:e[sd]?|ing)|resolv(?:e[sd]?|ing))\b",
+        normalized_text,
+    ))
+
+
 def _sentiment(text: str, rule: ConceptRule, role: str) -> tuple[str, int]:
     if rule.statement_kind == "market_observation":
         return "neutral", 0
@@ -562,6 +591,15 @@ def _sentiment(text: str, rule: ConceptRule, role: str) -> tuple[str, int]:
         if re.search(r"\b(?:cuts?|lowers?|reduc(?:e|es|ed))\b", normalized): return "negative", 2
         if re.search(r"\b(?:raises?|increases?|boosts?)\b", normalized): return "positive", 2
         return "neutral", 0
+    if rule.concept in {"clinical.regulatory_milestone", "regulatory.action"}:
+        # A regulator's adverse disposition is the controlling event even when
+        # the same sentence names the approval being sought. Remediation scope,
+        # management confidence, and approvals of separate application
+        # components remain independent evidence rather than canceling it.
+        if _is_resolved_clinical_hold(normalized):
+            return "positive", 3
+        if _is_adverse_regulatory_response(normalized):
+            return "negative", 4
     if rule.concept in {"earnings.performance", "financial.operating_performance"}:
         if re.search(r"\b(?:narrowed|reduced|cut)\b.{0,40}\b(?:net )?loss\b|\b(?:net )?loss\b.{0,40}\bnarrowed\b", normalized):
             return "positive", 2

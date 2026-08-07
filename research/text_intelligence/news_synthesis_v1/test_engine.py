@@ -580,6 +580,66 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         })
         self.assertEqual(authorization["issuer_views"][0]["composite_sentiment"], "mixed")
 
+    def test_complete_response_letter_dominates_partial_approval_and_mitigation(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-complete-response-letter",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha receives Complete Response Letter from FDA for approval supplement",
+            "text": (
+                "The FDA approved Alpha Therapeutics Inc (NASDAQ:AAA)'s drug product supplement. "
+                "The FDA issued a CRL for the drug substance supplement concerning chemistry, "
+                "manufacturing and controls. The CRL did not request additional safety or efficacy "
+                "studies, and management believes the comments are addressable."
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "negative")
+        self.assertEqual(view["positive_strength"], 2)
+        self.assertEqual(view["negative_strength"], 4)
+
+    def test_adverse_regulatory_response_variants_are_strong_negative_events(self) -> None:
+        cases = (
+            "The FDA issued a CRL to Alpha Therapeutics Inc (NASDAQ:AAA) for its application.",
+            "The FDA issued a refuse-to-file letter for Alpha Therapeutics Inc (NASDAQ:AAA)'s application.",
+            "The FDA placed Alpha Therapeutics Inc (NASDAQ:AAA)'s study on clinical hold.",
+            "The FDA did not approve Alpha Therapeutics Inc (NASDAQ:AAA)'s application.",
+        )
+        for index, text in enumerate(cases):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"news-adverse-regulatory-response-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": "Alpha regulatory update",
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                view = document["issuer_views"][0]
+                self.assertEqual(view["composite_sentiment"], "negative")
+                self.assertEqual(view["negative_strength"], 4)
+
+    def test_regulatory_approval_remains_positive(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-regulatory-approval",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "FDA approves Alpha application",
+            "text": "The FDA approved Alpha Therapeutics Inc (NASDAQ:AAA)'s application.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_lifted_clinical_hold_is_a_positive_regulatory_resolution(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-lifted-clinical-hold",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "FDA lifts clinical hold on Alpha study",
+            "text": "The FDA lifted the clinical hold on Alpha Therapeutics Inc (NASDAQ:AAA)'s study.",
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "positive")
+        self.assertEqual(view["positive_strength"], 3)
+
     def test_canonical_aliases_bind_statements_and_shared_transaction_context(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((
             IssuerIdentity("AAA", "issuer:aaa", "Alpha Holdings", ("Alpha Legacy Corporation",), "NYSE"),
