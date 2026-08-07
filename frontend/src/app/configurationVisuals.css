@@ -464,6 +464,147 @@
   .configuration-revision-layout { grid-template-columns: 1fr; }
 }
 
+/* Strategy Studio reads as one editable runtime story. */
+.strategy-story {
+  background: var(--surface);
+  border: 1px solid var(--configuration-rule);
+  border-radius: 8px;
+  counter-reset: strategy-story;
+  overflow: clip;
+}
+
+.strategy-story-introduction {
+  align-items: flex-start;
+  background: var(--configuration-soft);
+  border-bottom: 1px solid var(--configuration-rule);
+  display: flex;
+  gap: 12px;
+  padding: 20px 24px;
+}
+
+.strategy-story-introduction > svg {
+  color: var(--configuration-accent);
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.strategy-story-introduction > div { display: grid; gap: 4px; }
+.strategy-story-introduction span,
+.strategy-story-chapter-body > header span {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+
+.strategy-story-introduction h2,
+.strategy-story-chapter-body > header h2 { color: var(--foreground); margin: 0; }
+.strategy-story-introduction h2 { font-size: 18px; font-weight: 680; }
+.strategy-story-chapter-body > header h2 { font-size: 17px; font-weight: 660; line-height: 1.25; }
+
+.configuration-expert-editor .strategy-story-copy {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 13px;
+  line-height: 1.72;
+  margin: 0;
+  max-width: 920px;
+}
+
+.strategy-story-chapter {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  position: relative;
+}
+
+.strategy-story-chapter:not(:last-child) { border-bottom: 1px solid var(--configuration-rule); }
+.strategy-story-chapter::before {
+  background: var(--configuration-rule);
+  bottom: 0;
+  content: "";
+  left: 28px;
+  position: absolute;
+  top: 0;
+  width: 1px;
+}
+
+.strategy-story-chapter:first-of-type::before { top: 34px; }
+.strategy-story-chapter:last-child::before { bottom: calc(100% - 34px); }
+.strategy-story-marker {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--configuration-rule);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  display: flex;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  height: 28px;
+  justify-content: center;
+  margin: 24px auto 0;
+  position: relative;
+  width: 28px;
+  z-index: 1;
+}
+
+.strategy-story-chapter-body {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding: 24px 24px 30px 8px;
+}
+
+.strategy-story-chapter-body > header { display: grid; gap: 4px; }
+.strategy-story-fields { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 780px; }
+.strategy-story-fields.compact { grid-template-columns: minmax(260px, 390px); }
+.strategy-story-advanced { margin-top: 2px; }
+
+.strategy-story-handoffs {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.strategy-story-handoffs > a {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--configuration-rule);
+  border-radius: 6px;
+  color: var(--foreground);
+  display: grid;
+  gap: 3px 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 58px;
+  padding: 10px 12px;
+  text-decoration: none;
+}
+
+.strategy-story-handoffs > a:hover { background: var(--configuration-soft); border-color: var(--configuration-accent); }
+.strategy-story-handoffs > a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.strategy-story-handoffs > a > span { align-items: center; display: flex; gap: 7px; min-width: 0; }
+.strategy-story-handoffs > a > span svg { color: var(--muted-foreground); flex: 0 0 auto; }
+.strategy-story-handoffs > a strong { font-size: 12px; font-weight: 650; }
+.strategy-story-handoffs > a small { color: var(--muted-foreground); font-size: 10.5px; grid-column: 1; line-height: 1.45; }
+.strategy-story-handoffs > a > svg { color: var(--muted-foreground); grid-column: 2; grid-row: 1 / span 2; }
+
+@container configuration-workbench (max-width: 900px) {
+  .strategy-story-handoffs { grid-template-columns: minmax(0, 1fr); }
+}
+
+@container configuration-workbench (max-width: 600px) {
+  .strategy-story-introduction { padding: 18px; }
+  .strategy-story-chapter { grid-template-columns: 44px minmax(0, 1fr); }
+  .strategy-story-chapter::before { left: 21px; }
+  .strategy-story-marker { height: 24px; margin-top: 20px; width: 24px; }
+  .strategy-story-chapter-body { padding: 20px 16px 24px 4px; }
+  .strategy-story-fields,
+  .strategy-story-fields.compact { grid-template-columns: minmax(0, 1fr); }
+  .configuration-expert-editor .strategy-story-copy { font-size: 12.5px; line-height: 1.65; }
+}
+
 @media (max-width: 840px) {
   .trading-configuration-page { padding: 12px 12px 76px; }
   .configuration-page-header { gap: 10px; padding: 11px 12px; }
