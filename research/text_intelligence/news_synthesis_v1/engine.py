@@ -179,7 +179,7 @@ RULES = (
     _rule("analyst.rating_action", r"\b(?:upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?|rates?|ratings?)\b(?:.{0,100})\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|equal[- ]weight|sector perform|market perform|rating)\b|\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|equal[- ]weight|sector perform|market perform)\s+rating\b|\banalysts? (?:have )?(?:provided|published|offered).{0,60}ratings?\b", "assessment", positive=("upgrade", "buy", "outperform", "overweight"), negative=("downgrade", "sell", "underperform", "underweight")),
     _rule("analyst.price_target_action", r"\b(?:price target|target price|price objective|PO|P/T|\$\d+(?:\.\d+)? target|target on)\b", "forecast", positive=("raises", "raised", "higher", "increases"), negative=("cuts", "cut", "lowers", "lowered")),
     _rule("earnings.performance", r"\b(?:earnings|EPS|revenues?|sales|net income|profit|quarterly results?|financial results?)\b.{0,180}\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|above|below|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|fell|declin(?:e|ed)|grew|increase[sd]?|decrease[sd]?|loss|up from|down from|narrowed|widened)\b|\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|rose|fell|grew|narrowed|widened)\b.{0,100}\b(?:earnings|EPS|revenues?|sales|profit|results?|loss)\b", positive=("beat", "above", "better-than-expected", "grew", "rose", "record", "increase", "up from", "narrowed"), negative=("miss", "below", "weaker-than-expected", "fell", "decline", "decrease", "loss", "down from", "widened")),
-    _rule("guidance.issued", r"\b(?:issues?|provid(?:e|es|ed)|guid(?:e|es|ed)|raises?|lower(?:s|ed)?|cuts?|reaffirm(?:s|ed|ing)?|withdraws?|updates?)\b.{0,100}\b(?:guidance|outlook|forecast|revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:guidance|outlook)\b.{0,100}\b(?:raised|lowered|cut|reaffirmed|withdrawn|unchanged|expects?)\b|\b(?:sees|expects?|anticipates?|projects?|is looking for)\b.{0,120}\b(?:revenue|sales|earnings|EPS|EBITDA|growth|margin)\b", "forecast", positive=("raise", "increas", "higher"), negative=("cut", "lower", "withdraw", "reduce", "weaker")),
+    _rule("guidance.issued", r"\b(?:issues?|provid(?:e|es|ed)|guid(?:e|es|ed)|raises?|lower(?:s|ed)?|cuts?|reaffirm(?:s|ed|ing)?|withdraws?|updates?)\b.{0,100}\b(?:guidance|outlook|forecast|revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:guidance|outlook)\b.{0,100}\b(?:raised|lowered|cut|reaffirmed|withdrawn|unchanged|expects?|projection|projecting)\b|\b(?:sees|expects?|anticipates?|project(?:s|ed|ing)?|is looking for)\b.{0,120}\b(?:revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:revenue|sales|earnings|EPS|EBITDA|growth|margin|free cash flow)\b.{0,160}\bprojection\s*=", "forecast", positive=("raise", "increas", "higher"), negative=("cut", "lower", "withdraw", "reduce", "weaker")),
     _rule("corporate_transaction.acquisition", r"\b(?:acquir(?:e|es|ed|ing)|acquisition|merger|takeover)\b|\bbuys?\b.{1,100}\bfor\s+\$|\bpurchase(?:s|d)? of .{0,100}\b(?:assets?|business|operations?)\b|\b(?:rumored?|possible|potential)\s+bid for\b|\b(?:will|would|agrees? to) combine with\b|\bamalgamat(?:e|es|ed|ing) with\b|\b(?:complet(?:e|es|ed|ion) of|proposed) (?:the )?(?:business )?combination\b", positive=("agreed", "complete", "closes", "approved", "purchase", "will combine", "amalgamat"), negative=("terminate", "withdraw", "no longer pursue", "blocked", "reject", "not in best interest")),
     _rule("corporate_transaction.asset_sale", r"\b(?:asset sale|sale of .{0,100}(?:assets?|business|operations?)|closes? (?:the )?sale of|divest(?:s|ed|iture)|sell(?:s|ing)? its .*business)\b", positive=("complete", "closes", "proceeds"), negative=("distress",)),
     _rule("capital.financing", r"\b(?:public offering|registered direct offering|private placement|mixed shelf|shelf (?:offering|registration)|at-the-market|ATM (?:program|offering)|convertible (?:senior )?notes?|debt financing|equity financing|files? for .{0,80}offering|prices? .{0,80}(?:offering|shares?|notes?|bonds?)|offer(?:s|ed|ing)? .{0,60} shares?|shares? offering|offering of .{0,80}(?:shares?|notes?|units?|securities)|sale (?:by us )?of .{0,80}(?:common stock|preferred stock|debt securities|warrants)|investment from .{0,80}funds?|term sheet .{0,100}investment|conversion price .{0,40}(?:share|stock))\b", positive=("investment from",), negative=("dilution", "offering", "placement", "convertible", "shelf", "prices")),
@@ -277,7 +277,7 @@ class NewsSynthesisEngine:
         }
         statements, participations = self._statements(text, entities, source_field, mention_terms)
         flags = _quality_flags(source, entities, text)
-        views = derive_issuer_views(entities, participations)
+        views = derive_issuer_views(entities, participations, statements=statements)
         synthesis = derive_synthesis(entities=entities, statements=statements, participations=participations, issuer_views=views)
         eligibility = derive_eligibility(entities=entities, statements=statements, participations=participations, envelope=envelope, quality_flags=flags)
         document = {
@@ -304,8 +304,10 @@ class NewsSynthesisEngine:
         statements: list[dict[str, Any]] = []
         participations: list[dict[str, Any]] = []
         previous_entity_ids: tuple[str, ...] = ()
+        previous_guidance = False
         previous_end = 0
-        for start, end, quote in _sentence_spans(text):
+        guidance_rule = next(rule for rule in self.rules if rule.concept == "guidance.issued")
+        for start, end, quote in _semantic_spans(text):
             if len(quote) < 8:
                 continue
             if _boilerplate_sentence(quote):
@@ -313,11 +315,18 @@ class NewsSynthesisEngine:
                 continue
             if "\n\n" in text[previous_end:start]:
                 previous_entity_ids = ()
+                previous_guidance = False
             matched_rules = [
                 (rule, match)
                 for rule in self.rules
                 if (match := rule.pattern.search(quote)) and _rule_applicable(rule, quote)
             ]
+            if (
+                previous_guidance
+                and _coordinated_guidance_fragment(quote)
+                and not any(rule.concept == "guidance.issued" for rule, _match in matched_rules)
+            ):
+                matched_rules.append((guidance_rule, None))
             inherit_subject = any(_issuer_scoped_concept(rule.concept) for rule, _match in matched_rules)
             scoped_entities = _entities_for_quote(
                 entities,
@@ -330,9 +339,9 @@ class NewsSynthesisEngine:
                 previous_entity_ids = tuple(str(row["entity_id"]) for row in scoped_entities)
             for rule, match in matched_rules:
                 sid = f"s{len(statements) + 1:04d}"
-                statement_quote = match.group(0) if rule.local_evidence else quote
-                statement_start = start + match.start() if rule.local_evidence else start
-                statement_end = start + match.end() if rule.local_evidence else end
+                statement_quote = match.group(0) if rule.local_evidence and match is not None else quote
+                statement_start = start + match.start() if rule.local_evidence and match is not None else start
+                statement_end = start + match.end() if rule.local_evidence and match is not None else end
                 span = {
                     "source_field": source_field,
                     "start": statement_start,
@@ -352,6 +361,7 @@ class NewsSynthesisEngine:
                         mention_terms=mention_terms.get(str(entity["entity_id"]), ()),
                     )
                     participations.append({"statement_id": sid, "entity_id": entity["entity_id"], "semantic_role": role, "discourse_role": "none", "semantic_sentiment": sentiment, "sentiment_strength": strength})
+            previous_guidance = any(rule.concept == "guidance.issued" for rule, _match in matched_rules)
             previous_end = end
         return statements, participations
 
@@ -521,7 +531,7 @@ def _quality_flags(source: Mapping[str, Any], entities: Sequence[Mapping[str, An
 
 
 def _epistemic(text: str) -> str:
-    return "rumored" if re.search(r"\b(?:rumor|reportedly|may be|could be)\b", text, re.I) else "conditional" if re.search(r"\b(?:if|subject to)\b", text, re.I) else "planned" if re.search(r"\b(?:plans?|intends?|will)\b", text, re.I) else "expected" if re.search(r"\b(?:expects?|forecast|guidance)\b", text, re.I) else "confirmed"
+    return "rumored" if re.search(r"\b(?:rumor|reportedly|may be|could be)\b", text, re.I) else "conditional" if re.search(r"\b(?:if|subject to)\b", text, re.I) else "planned" if re.search(r"\b(?:plans?|intends?|will)\b", text, re.I) else "expected" if re.search(r"\b(?:expects?|forecast|guidance|project(?:s|ed|ing|ion)s?)\b", text, re.I) else "confirmed"
 
 
 def _rule_applicable(rule: ConceptRule, text: str) -> bool:
@@ -536,8 +546,8 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
         )
         if external_expectation and not explicit_issuer_action:
             return False
-    if rule.concept in {"earnings.performance", "financial.operating_performance"}:
-        projected = re.search(r"\b(?:forecast|guidance|project(?:s|ed)?|estimate[sd]?|anticipates?|expects?|sees|reaffirm(?:s|ed|ing)?|is looking for|potential|could|may)\b", text, re.I)
+    if rule.concept in {"earnings.performance", "financial.operating_performance", "financial.margin", "financial.cash_flow", "financial.liquidity"}:
+        projected = re.search(r"\b(?:forecast|guidance|project(?:s|ed|ing|ion)s?|estimate[sd]?|anticipates?|expects?|sees|reaffirm(?:s|ed|ing)?|is looking for|potential|could|may)\b", text, re.I)
         observed = re.search(r"\b(?:reported|actual|trailing[- ]twelve[- ]month|TTM|beat|miss(?:ed|es)?|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|fell|grew|declined|slipped|climbed|increased|decreased|recovered|record)\b", text, re.I)
         if projected and not observed:
             return False
@@ -576,7 +586,7 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
 
 
 def _time_relation(text: str, kind: str) -> str:
-    if kind == "forecast" or re.search(r"\b(?:will|expects?|next year|future)\b", text, re.I): return "forward"
+    if kind == "forecast" or re.search(r"\b(?:will|expects?|next year|future|project(?:s|ed|ing|ion)s?)\b", text, re.I): return "forward"
     if re.search(r"\b(?:previously|last (?:year|quarter|month)|historically)\b", text, re.I): return "historical"
     return "current"
 
@@ -652,6 +662,10 @@ def _sentiment(
             return "positive", 3
         if relations:
             return "neutral", 0
+        if re.search(r"\b(?:revenue|sales) growth\b", normalized) and _positive_growth_fact(typed_facts):
+            # Positive absolute growth without a market benchmark is favorable,
+            # but materially weaker than guidance versus consensus.
+            return "positive", 1
     if rule.concept in {"clinical.regulatory_milestone", "regulatory.action"}:
         # A regulator's adverse disposition is the controlling event even when
         # the same sentence names the approval being sought. Remediation scope,
@@ -750,6 +764,21 @@ def _sentiment(
     if positive > negative: return "positive", min(4, 1 + positive)
     if negative > positive: return "negative", min(4, 1 + negative)
     return "neutral", 0
+
+
+def _positive_growth_fact(typed_facts: Sequence[Mapping[str, Any]]) -> bool:
+    for fact in typed_facts:
+        raw_value = (
+            fact.get("lower_value")
+            if fact.get("fact_type") == "percentage_range"
+            else fact.get("value") if fact.get("fact_type") == "percentage" else None
+        )
+        try:
+            if raw_value is not None and float(str(raw_value)) > 0:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _index_membership_direction(
@@ -985,6 +1014,42 @@ def _sentence_spans(text: str) -> list[tuple[int, int, str]]:
     while right > left and text[right - 1].isspace(): right -= 1
     if left < right: spans.append((left, right, text[left:right]))
     return spans
+
+
+def _semantic_spans(text: str) -> list[tuple[int, int, str]]:
+    """Keep rendered outlook table labels attached to their projection cells."""
+    raw = _sentence_spans(text)
+    spans: list[tuple[int, int, str]] = []
+    index = 0
+    while index < len(raw):
+        start, end, quote = raw[index]
+        if index + 1 < len(raw):
+            next_start, next_end, next_quote = raw[index + 1]
+            same_line = "\n" not in text[end:next_start]
+            table_label = "=" in quote and bool(re.search(
+                r"\b(?:EPS|EBIT|EBITDA|revenue|sales|growth|margin|cash flow|tax rate|capex|interest expense|shares outstanding)\b",
+                quote,
+                re.I,
+            ))
+            if same_line and table_label and re.match(r"\s*Projection\s*=", next_quote, re.I):
+                spans.append((start, next_end, text[start:next_end].strip()))
+                index += 2
+                continue
+        spans.append((start, end, quote))
+        index += 1
+    return spans
+
+
+def _coordinated_guidance_fragment(text: str) -> bool:
+    """Recognize a semicolon clause governed by the preceding guidance predicate."""
+    return bool(re.match(
+        r"\s*(?:(?:Q[1-4]|FY)\s*\d{2,4}|full[- ]year|fiscal[- ]year)\b"
+        r".{0,50}\b(?:EPS|earnings per share|revenue|sales|EBITDA|margin)\b"
+        r".{0,120}\b(?:vs\.?|versus|compared (?:with|to))\b"
+        r".{0,80}\b(?:est\.?|estimate|consensus)\b",
+        text,
+        re.I,
+    ))
 
 
 def _semantic_role(text: str, entity: Mapping[str, Any], concept: str) -> str:

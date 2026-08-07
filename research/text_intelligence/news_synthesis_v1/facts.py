@@ -176,8 +176,19 @@ def _extract_guidance_comparisons(text: str) -> list[dict[str, Any]]:
             "comparator_lower_value": _decimal_text(comparator_low),
             "comparator_upper_value": _decimal_text(comparator_high),
             "relation": relation,
+            **({"horizon": horizon} if (horizon := _comparison_horizon(text, match.start())) else {}),
         })
     return comparisons
+
+
+def _comparison_horizon(text: str, metric_start: int) -> str | None:
+    prefix = text[max(0, metric_start - 50):metric_start]
+    matches = list(re.finditer(
+        r"\b(?:Q[1-4](?:\s+20\d{2})?|FY\s*\d{2,4}|full[- ]year(?:\s+20\d{2})?|fiscal[- ]year(?:\s+20\d{2})?)\b",
+        prefix,
+        re.I,
+    ))
+    return " ".join(matches[-1].group(0).upper().split()) if matches else None
 
 
 def _comparison_bounds(raw: str) -> tuple[Decimal, Decimal] | None:

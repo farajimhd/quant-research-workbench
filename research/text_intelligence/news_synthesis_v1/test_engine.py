@@ -460,6 +460,65 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             {row["concept_leaf"] for row in document["statements"]},
         )
 
+    def test_coordinated_outlook_and_rendered_table_rows_form_one_guidance_package(self) -> None:
+        title = (
+            "Alpha sees Q3 EPS $0.35-$0.40 vs $0.42 est.; "
+            "FY23 EPS $1.40-$1.45 vs $1.57 est."
+        )
+        text = (
+            f"Title: {title}\n"
+            "Q3 2023 Outlook:\n"
+            "Columns: Metric; Projection\n"
+            "Metric=Net Sales growth versus Q3 2022; Projection=3-5%\n"
+            "Metric=Adjusted Diluted EPS; Projection=$0.35-$0.40\n"
+            "Full Year 2023 Outlook:\n"
+            "Metric=Net Sales growth versus 2022; Projection=6-8%\n"
+            "Metric=Adjusted Diluted EPS; Projection=$1.40-$1.45"
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-coordinated-outlook",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": title,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        guidance = [
+            row for row in document["statements"]
+            if row["concept_leaf"] == "guidance.issued"
+        ]
+        comparisons = [
+            fact for row in guidance for fact in row["typed_facts"]
+            if fact["fact_type"] == "estimate_comparison"
+        ]
+        self.assertEqual([fact["relation"] for fact in comparisons], ["below", "below"])
+        self.assertEqual([fact["horizon"] for fact in comparisons], ["Q3", "FY23"])
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+        self.assertEqual(document["issuer_views"][0]["positive_strength"], 1)
+        self.assertNotIn(
+            "financial.operating_performance",
+            {row["concept_leaf"] for row in document["statements"]},
+        )
+        table_quotes = [row["evidence_spans"][0]["quote"] for row in guidance]
+        self.assertTrue(any("Net Sales growth" in quote and "Projection=3-5%" in quote for quote in table_quotes))
+        self.assertTrue(all(row["time_relation"] == "forward" for row in guidance))
+
+    def test_two_consistent_guidance_horizons_control_package_direction(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-guidance-package-dominance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha results and outlook",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reports EPS fell and missed estimates; "
+                "the company sees Q3 EPS $2.10 vs $2.00 est.; "
+                "FY27 EPS $4.20 vs $4.00 est."
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["positive_strength"], 3)
+        self.assertEqual(view["negative_strength"], 3)
+        self.assertEqual(view["composite_sentiment"], "positive")
+
     def test_guidance_range_above_consensus_is_positive(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-guidance-range-above-consensus",

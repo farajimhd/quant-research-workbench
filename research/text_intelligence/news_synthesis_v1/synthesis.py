@@ -11,12 +11,15 @@ SYNTHESIS_VERSION = "news_synthesis_renderer_v1"
 def derive_issuer_views(
     entities: Iterable[Mapping[str, Any]],
     participations: Iterable[Mapping[str, Any]],
+    *,
+    statements: Iterable[Mapping[str, Any]] = (),
 ) -> list[dict[str, Any]]:
     issuer_ids = {str(row["entity_id"]) for row in entities if row.get("entity_kind") in {"issuer", "security"}}
     by_entity: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in participations:
         if row.get("entity_id") in issuer_ids:
             by_entity[str(row["entity_id"])].append(row)
+    statement_by_id = {str(row["statement_id"]): row for row in statements}
     views: list[dict[str, Any]] = []
     for entity_id in sorted(by_entity):
         rows = by_entity[entity_id]
@@ -37,7 +40,25 @@ def derive_issuer_views(
             for row in rows
             if row["semantic_sentiment"] == "neutral"
         })
-        if positive and negative and min(positive, negative) >= 2 and abs(positive - negative) <= 1:
+        guidance_relations = [
+            str(fact.get("relation"))
+            for row in rows
+            if (statement := statement_by_id.get(str(row["statement_id"])))
+            and statement.get("concept_leaf") == "guidance.issued"
+            for fact in statement.get("typed_facts", ())
+            if fact.get("fact_type") == "estimate_comparison"
+            and fact.get("subject_role") == "issuer_guidance"
+            and fact.get("comparator_role") == "consensus_estimate"
+        ]
+        below = guidance_relations.count("below")
+        above = guidance_relations.count("above")
+        if below >= 2 and not above:
+            sentiment = "negative"
+            negative = max(negative, 3)
+        elif above >= 2 and not below:
+            sentiment = "positive"
+            positive = max(positive, 3)
+        elif positive and negative and min(positive, negative) >= 2 and abs(positive - negative) <= 1:
             sentiment = "mixed"
         elif positive > negative:
             sentiment = "positive"
