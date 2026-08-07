@@ -902,6 +902,22 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(view["positive_strength"], 2)
         self.assertEqual(view["negative_strength"], 4)
 
+    def test_complete_response_letter_dominates_pas_component_approval(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-complete-response-letter-pas",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha receives Complete Response Letter from FDA",
+            "text": (
+                "The FDA approved Alpha Therapeutics Inc (NASDAQ:AAA)'s drug product PAS submission. "
+                "The FDA issued a CRL for its separate drug substance PAS submission."
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "negative")
+        self.assertEqual(view["positive_strength"], 2)
+        self.assertEqual(view["negative_strength"], 4)
+
     def test_adverse_regulatory_response_variants_are_strong_negative_events(self) -> None:
         cases = (
             "The FDA issued a CRL to Alpha Therapeutics Inc (NASDAQ:AAA) for its application.",
@@ -931,6 +947,113 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             "tickers": ["AAA"],
         })
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_product_scoped_regulatory_setback_and_separate_clearance_are_mixed(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-product-scoped-regulatory-package",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha receives regulatory decision",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) Receives NSE Letter From FDA "
+                "For 12-Lead ECG Synthesis Software; Evaluating Launch Of FDA-Cleared "
+                "3d ECG System; To Work With FDA To Resolve NSE Issue"
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "mixed")
+        self.assertEqual(view["positive_strength"], 3)
+        self.assertEqual(view["negative_strength"], 4)
+        regulatory_facts = [
+            fact
+            for statement in document["statements"]
+            for fact in statement["typed_facts"]
+            if fact["fact_type"] == "regulatory_decision"
+        ]
+        self.assertEqual(
+            {fact["outcome"] for fact in regulatory_facts},
+            {"not_substantially_equivalent", "clearance_granted"},
+        )
+        self.assertTrue(any(
+            fact.get("subject_raw") == "12-Lead ECG Synthesis Software"
+            for fact in regulatory_facts
+        ))
+        launch = next(
+            statement
+            for statement in document["statements"]
+            if statement["concept_leaf"] == "product.milestone"
+        )
+        self.assertEqual(launch["epistemic_status"], "expected")
+        self.assertEqual(launch["time_relation"], "forward")
+
+    def test_regulatory_outcome_is_recognized_in_either_authority_order(self) -> None:
+        cases = (
+            "The FDA found Alpha Therapeutics Inc (NASDAQ:AAA)'s cardiac software not substantially equivalent.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) received a not substantially equivalent determination from FDA for its cardiac software.",
+        )
+        for index, text in enumerate(cases):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"news-regulatory-order-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": "Alpha regulatory update",
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                view = document["issuer_views"][0]
+                self.assertEqual(view["composite_sentiment"], "negative")
+                self.assertEqual(view["negative_strength"], 4)
+
+    def test_nse_without_medical_regulator_is_not_a_clinical_decision(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-nonmedical-nse",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "NSE launches a new index",
+            "text": "NSE launches a new index for listed companies.",
+            "tickers": ["AAA"],
+        })
+        self.assertNotIn(
+            "clinical.regulatory_milestone",
+            {statement["concept_leaf"] for statement in document["statements"]},
+        )
+
+    def test_regulatory_submission_is_a_positive_completed_milestone(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-regulatory-submission",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports regulatory submission",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reports a deal with Health Canada "
+                "for regulatory submission of its blood system."
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "positive")
+        self.assertEqual(view["positive_strength"], 2)
+
+    def test_competitor_regulatory_approval_is_not_assigned_to_primary_setback(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "Alpha Therapeutics", ("Alpha",), "NYSE"),
+            IssuerIdentity("BBB", "issuer:bbb", "Beta Therapeutics", ("Beta",), "NASDAQ"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-competitor-regulatory-outcomes",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha setback benefits Beta",
+            "text": (
+                "The FDA issued a Complete Response Letter for Alpha Therapeutics (NYSE:AAA). "
+                "The setback benefits Beta Therapeutics (NASDAQ:BBB), which secured FDA approval "
+                "for its rival drug. Alpha will attempt to secure FDA approval again."
+            ),
+            "tickers": ["AAA", "BBB"],
+        })
+        views = {
+            next(entity["ticker"] for entity in document["entities"] if entity["entity_id"] == view["entity_id"]): view
+            for view in document["issuer_views"]
+        }
+        self.assertEqual(views["AAA"]["composite_sentiment"], "negative")
+        self.assertEqual(views["BBB"]["composite_sentiment"], "positive")
 
     def test_lifted_clinical_hold_is_a_positive_regulatory_resolution(self) -> None:
         document = self.engine.synthesize({

@@ -35,6 +35,108 @@ NUMBER_RE = re.compile(
     re.I,
 )
 
+REGULATORY_AUTHORITY_RE = re.compile(
+    r"\b(?:FDA|U\.S\. Food and Drug Administration|EMA|European Medicines Agency|"
+    r"Health Canada|MHRA|PMDA)\b",
+    re.I,
+)
+
+_REGULATORY_OUTCOME_PATTERNS = (
+    (
+        "clinical_hold_lifted",
+        "favorable",
+        "market_access_restored",
+        re.compile(
+            r"\b(?:lift(?:s|ed|ing)?|remov(?:e[sd]?|ing)|resolv(?:e[sd]?|ing))\b"
+            r".{0,80}\bclinical hold\b|\bclinical hold\b.{0,80}"
+            r"\b(?:lift(?:s|ed|ing)?|remov(?:e[sd]?|ing)|resolv(?:e[sd]?|ing))\b",
+            re.I,
+        ),
+    ),
+    (
+        "not_substantially_equivalent",
+        "adverse",
+        "market_access_blocked_or_delayed",
+        re.compile(
+            r"\b(?:not substantially equivalent|NSE (?:letter|determination|decision|finding))\b",
+            re.I,
+        ),
+    ),
+    (
+        "complete_response",
+        "adverse",
+        "market_access_blocked_or_delayed",
+        re.compile(r"\b(?:complete response letters?|CRLs?)\b", re.I),
+    ),
+    (
+        "refusal_to_file",
+        "adverse",
+        "market_access_blocked_or_delayed",
+        re.compile(r"\b(?:refus(?:e[sd]?|al)[- ]to[- ]file|refuse[- ]to[- ]file)\b", re.I),
+    ),
+    (
+        "clinical_hold",
+        "adverse",
+        "development_blocked_or_delayed",
+        re.compile(r"\bclinical hold\b", re.I),
+    ),
+    (
+        "approval_denied",
+        "adverse",
+        "market_access_blocked_or_delayed",
+        re.compile(
+            r"\b(?:did not approve|has not approved|declin(?:e[sd]?|ing) (?:the )?approval|"
+            r"den(?:y|ies|ied|ial) (?:the )?approval|reject(?:s|ed|ing) (?:the )?"
+            r"(?:application|submission))\b",
+            re.I,
+        ),
+    ),
+    (
+        "deficiency_identified",
+        "adverse",
+        "market_access_blocked_or_delayed",
+        re.compile(r"\b(?:deficien(?:cy|cies) letters?|major deficien(?:cy|cies))\b", re.I),
+    ),
+    (
+        "clearance_granted",
+        "favorable",
+        "market_access_granted",
+        re.compile(
+            r"\bcleared\b|\b(?:grant(?:s|ed|ing)?|receiv(?:e[sd]?|ing)|secur(?:e[sd]?|ing)|"
+            r"obtain(?:s|ed|ing)?)\b.{0,50}\bclearance\b",
+            re.I,
+        ),
+    ),
+    (
+        "approval_granted",
+        "favorable",
+        "market_access_granted",
+        re.compile(
+            r"\bapprov(?:e[sd]|ing)\b|\b(?:grant(?:s|ed|ing)?|receiv(?:e[sd]?|ing)|"
+            r"secur(?:e[sd]?|ing)|obtain(?:s|ed|ing)?)\b.{0,50}\bapproval\b",
+            re.I,
+        ),
+    ),
+    (
+        "authorization_granted",
+        "favorable",
+        "market_access_granted",
+        re.compile(r"\b(?:authorization|authoriz(?:e[sd]?|ing))\b", re.I),
+    ),
+    (
+        "application_accepted",
+        "favorable",
+        "regulatory_review_started",
+        re.compile(r"\baccept(?:s|ed|ance)?\b.{0,60}\b(?:application|submission)\b", re.I),
+    ),
+    (
+        "regulatory_submission",
+        "procedural",
+        "regulatory_review_pending",
+        re.compile(r"\b(?:submission|resubmission|submit(?:s|ted|ting))\b", re.I),
+    ),
+)
+
 _GUIDANCE_METRIC = (
     r"(?:adjusted\s+|diluted\s+)?EPS|earnings per share|"
     r"(?:core\s+|organic\s+)?(?:revenue|sales) growth|"
@@ -93,6 +195,7 @@ def extract_typed_facts(
     facts: list[dict[str, Any]] = []
     for span in spans:
         quote = str(span["quote"])
+        facts.extend(extract_regulatory_decision_facts(quote))
         facts.extend(_extract_estimate_comparisons(quote, estimate_subject_role))
         occupied: list[tuple[int, int]] = []
         for match in MONEY_RE.finditer(quote):
@@ -149,6 +252,82 @@ def extract_typed_facts(
                 }
             )
     return facts
+
+
+def extract_regulatory_decision_facts(text: str) -> list[dict[str, Any]]:
+    """Normalize medical-regulatory outcomes independently of surface word order."""
+    authority_match = REGULATORY_AUTHORITY_RE.search(text)
+    facts: list[dict[str, Any]] = []
+    occupied: list[tuple[int, int]] = []
+    for outcome, outcome_class, commercial_effect, pattern in _REGULATORY_OUTCOME_PATTERNS:
+        for match in pattern.finditer(text):
+            if _overlaps(match.span(), occupied):
+                continue
+            if authority_match is None and outcome not in {
+                "clinical_hold_lifted",
+                "complete_response",
+                "refusal_to_file",
+                "clinical_hold",
+            }:
+                continue
+            effective_outcome = outcome
+            effective_class = outcome_class
+            effective_effect = commercial_effect
+            if outcome_class == "favorable" and re.search(
+                r"\b(?:attempt(?:s|ed|ing)?|seek(?:s|ing)?|aim(?:s|ed|ing)?|"
+                r"try(?:ing|ies|ied)?|plans?|intends?|expects?|will)\b.{0,50}$",
+                text[max(0, match.start() - 70):match.start()],
+                re.I,
+            ):
+                effective_outcome = "regulatory_authorization_sought"
+                effective_class = "procedural"
+                effective_effect = "market_access_pending"
+            occupied.append(match.span())
+            fact = {
+                "fact_type": "regulatory_decision",
+                "raw": match.group(0),
+                "authority": authority_match.group(0) if authority_match else "unspecified_regulator",
+                "outcome": effective_outcome,
+                "outcome_class": effective_class,
+                "commercial_effect": effective_effect,
+                "start": match.start(),
+                "end": match.end(),
+            }
+            if subject := _regulatory_subject(text, match.span()):
+                fact["subject_raw"] = subject
+            if (
+                effective_outcome in {"clearance_granted", "approval_granted", "authorization_granted"}
+                and (
+                    re.search(r"\bsupplements?\b", str(fact.get("subject_raw") or ""), re.I)
+                    or re.search(r"\bPAS submission\b", text, re.I)
+                )
+            ):
+                fact["commercial_effect"] = "supplement_scope_granted"
+            facts.append(fact)
+    return facts
+
+
+def _regulatory_subject(text: str, outcome_span: tuple[int, int]) -> str | None:
+    """Retain the product/application scope nearest a regulatory disposition."""
+    suffix = text[outcome_span[1]:]
+    scoped = re.search(
+        r"\b(?:for|on|of)\s+(?P<subject>[^,;.!?]{3,160})",
+        suffix,
+        re.I,
+    )
+    if scoped:
+        subject = scoped.group("subject")
+    else:
+        direct = re.match(r"[\s:\-]*(?P<subject>[^,;.!?]{3,120})", suffix)
+        subject = direct.group("subject") if direct else ""
+    subject = re.split(
+        r"\b(?:after|before|because|but|while|and (?:will|plans?|expects?|intends?))\b",
+        subject,
+        maxsplit=1,
+        flags=re.I,
+    )[0]
+    subject = " ".join(subject.strip(" :-").split())
+    return subject or None
 
 
 def _extract_estimate_comparisons(

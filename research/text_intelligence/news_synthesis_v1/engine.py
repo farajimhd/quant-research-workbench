@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .contracts import CONTRACT_VERSION, PRODUCTION_VERSION, validate_document
-from .facts import extract_typed_facts
+from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v2"
+ENGINE_VERSION = "news_synthesis_engine_v3"
 EXCHANGE_TICKER_RE = re.compile(r"\b(?:NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*([A-Z][A-Z0-9.\-]{0,9})\b", re.I)
 CASHTAG_RE = re.compile(r"(?<![A-Z0-9])\$([A-Z][A-Z0-9.\-]{0,9})\b")
 ROUNDUP_RE = re.compile(r"\b(?:stocks?|companies|biggest movers?|gainers?|losers?)\s+(?:moving|to watch)|\bmarket\s+(?:wrap|recap|update)\b", re.I)
@@ -318,6 +318,7 @@ class NewsSynthesisEngine:
         previous_end = 0
         guidance_rule = next(rule for rule in self.rules if rule.concept == "guidance.issued")
         earnings_rule = next(rule for rule in self.rules if rule.concept == "earnings.performance")
+        clinical_regulatory_rule = next(rule for rule in self.rules if rule.concept == "clinical.regulatory_milestone")
         rules_by_concept = {rule.concept: rule for rule in self.rules}
         for start, end, quote in _semantic_spans(text):
             if len(quote) < 8:
@@ -334,6 +335,12 @@ class NewsSynthesisEngine:
                 for rule in self.rules
                 if (match := rule.pattern.search(quote)) and _rule_applicable(rule, quote)
             ]
+            regulatory_facts = extract_regulatory_decision_facts(quote)
+            if (
+                regulatory_facts
+                and not any(rule.concept == "clinical.regulatory_milestone" for rule, _match in matched_rules)
+            ):
+                matched_rules.append((clinical_regulatory_rule, None))
             if (
                 previous_guidance
                 and _coordinated_guidance_fragment(quote)
@@ -376,7 +383,15 @@ class NewsSynthesisEngine:
                 )
                 typed_facts = extract_typed_facts([span], estimate_subject_role=estimate_role)
                 statements.append({"statement_id": sid, "statement_kind": rule.statement_kind, "concept_leaf": rule.concept, "epistemic_status": _epistemic(quote), "time_relation": _time_relation(quote, rule.statement_kind), "evidence_spans": [span], "typed_facts": typed_facts})
-                for entity in scoped_entities:
+                rule_entities = scoped_entities
+                if rule.concept in {"clinical.regulatory_milestone", "regulatory.action"}:
+                    rule_entities = _regulatory_entities_for_facts(
+                        scoped_entities,
+                        statement_quote,
+                        typed_facts,
+                        mention_terms,
+                    )
+                for entity in rule_entities:
                     role = _semantic_role(quote, entity, rule.concept)
                     sentiment, strength = _sentiment(
                         statement_quote,
@@ -632,7 +647,7 @@ def _quality_flags(source: Mapping[str, Any], entities: Sequence[Mapping[str, An
 
 
 def _epistemic(text: str) -> str:
-    return "rumored" if re.search(r"\b(?:rumor|reportedly|may be|could be)\b", text, re.I) else "conditional" if re.search(r"\b(?:if|subject to)\b", text, re.I) else "planned" if re.search(r"\b(?:plans?|intends?|will)\b", text, re.I) else "expected" if re.search(r"\b(?:expects?|forecast|guidance|project(?:s|ed|ing|ion)s?)\b", text, re.I) else "confirmed"
+    return "rumored" if re.search(r"\b(?:rumor|reportedly|may be|could be)\b", text, re.I) else "conditional" if re.search(r"\b(?:if|subject to)\b", text, re.I) else "planned" if re.search(r"\b(?:plans?|intends?|will)\b", text, re.I) else "expected" if re.search(r"\b(?:expects?|forecast|guidance|project(?:s|ed|ing|ion)s?|evaluat(?:e|es|ed|ing)|consider(?:s|ed|ing)?|explor(?:e|es|ed|ing)|attempt(?:s|ed|ing)?)\b", text, re.I) else "confirmed"
 
 
 def _rule_applicable(rule: ConceptRule, text: str) -> bool:
@@ -687,7 +702,7 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
 
 
 def _time_relation(text: str, kind: str) -> str:
-    if kind == "forecast" or re.search(r"\b(?:will|expects?|next year|future|project(?:s|ed|ing|ion)s?)\b", text, re.I): return "forward"
+    if kind == "forecast" or re.search(r"\b(?:will|expects?|next year|future|project(?:s|ed|ing|ion)s?|evaluat(?:e|es|ed|ing)|consider(?:s|ed|ing)?|explor(?:e|es|ed|ing)|attempt(?:s|ed|ing)?)\b", text, re.I): return "forward"
     if re.search(r"\b(?:previously|last (?:year|quarter|month)|historically)\b", text, re.I): return "historical"
     return "current"
 
@@ -807,6 +822,47 @@ def _sentiment(
         # the same sentence names the approval being sought. Remediation scope,
         # management confidence, and approvals of separate application
         # components remain independent evidence rather than canceling it.
+        regulatory_outcomes = {
+            str(fact.get("outcome_class"))
+            for fact in typed_facts
+            if fact.get("fact_type") == "regulatory_decision"
+        }
+        regulatory_effects = {
+            str(fact.get("commercial_effect"))
+            for fact in typed_facts
+            if fact.get("fact_type") == "regulatory_decision"
+            and fact.get("outcome_class") == "favorable"
+        }
+        if "adverse" in regulatory_outcomes:
+            return "negative", 4
+        if re.search(
+            r"\b(?:myocarditis|pericarditis|adverse event|safety warning|boxed warning)\b",
+            normalized,
+        ):
+            return "negative", 2
+        if "favorable" in regulatory_outcomes:
+            strength = 2 if regulatory_effects <= {
+                "regulatory_review_started",
+                "supplement_scope_granted",
+            } else 3
+            return "positive", strength
+        if regulatory_outcomes == {"procedural"}:
+            if any(
+                fact.get("outcome") == "regulatory_submission"
+                for fact in typed_facts
+                if fact.get("fact_type") == "regulatory_decision"
+            ):
+                return "positive", 1 if re.search(
+                    r"\b(?:plans?|intends?|expects?|seeks?|attempts?|will)\b.{0,100}\bsubmit\w*\b",
+                    normalized,
+                ) else 2
+            return "neutral", 0
+        if re.search(
+            r"\b(?:attempt(?:s|ed|ing)?|seek(?:s|ing)?|aim(?:s|ed|ing)?|try(?:ing|ies|ied)?)\b"
+            r".{0,100}\b(?:secure|obtain|receive)?\s*(?:FDA\s+)?(?:approval|clearance|authorization)\b",
+            normalized,
+        ):
+            return "neutral", 0
         if _is_resolved_clinical_hold(normalized):
             return "positive", 3
         if _is_adverse_regulatory_response(normalized):
@@ -829,6 +885,12 @@ def _sentiment(
             return "positive", 3
         if re.search(r"\bfirst (?:patient|subject) (?:enrolled|dosed)\b|\b(?:enrolls?|doses?) (?:the )?first (?:patient|subject)\b", normalized):
             return "positive", 2
+    if rule.concept == "product.milestone" and re.search(
+        r"\b(?:evaluat(?:e|es|ed|ing)|consider(?:s|ed|ing)?|explor(?:e|es|ed|ing))\b"
+        r".{0,80}\b(?:launch|commercializ|introduc|roll(?:s|ed)? out)\w*\b",
+        normalized,
+    ):
+        return "positive", 1
     if rule.concept in {"earnings.performance", "financial.operating_performance"}:
         relations = {
             str(fact.get("relation"))
@@ -1246,6 +1308,86 @@ def _entities_for_quote(
     if inherit_subject and inherited:
         return inherited
     return inherited if len(inherited) == 1 else []
+
+
+def _regulatory_entities_for_facts(
+    entities: Sequence[Mapping[str, Any]],
+    quote: str,
+    typed_facts: Sequence[Mapping[str, Any]],
+    mention_terms: Mapping[str, Sequence[str]],
+) -> list[Mapping[str, Any]]:
+    """Bind a regulatory outcome to the closest explicitly named issuer."""
+    if len(entities) <= 1:
+        return list(entities)
+    decisions = [
+        fact
+        for fact in typed_facts
+        if fact.get("fact_type") == "regulatory_decision"
+        and fact.get("outcome_class") in {"favorable", "adverse"}
+    ]
+    if not decisions:
+        return list(entities)
+    selected_ids: set[str] = set()
+    for fact in decisions:
+        subject = str(fact.get("subject_raw") or "")
+        subject_entities = [
+            entity
+            for entity in entities
+            if subject and _entity_in_quote(
+                entity,
+                subject,
+                mention_terms.get(str(entity["entity_id"]), ()),
+            )
+        ]
+        if subject_entities:
+            selected_ids.update(str(entity["entity_id"]) for entity in subject_entities)
+            continue
+        cue_start = int(fact.get("start") or 0)
+        cue_end = int(fact.get("end") or cue_start)
+        distances: list[tuple[int, str]] = []
+        for entity in entities:
+            entity_id = str(entity["entity_id"])
+            spans = _entity_mention_spans(
+                entity,
+                quote,
+                mention_terms.get(entity_id, ()),
+            )
+            if spans:
+                distance = min(
+                    max(cue_start - end, start - cue_end, 0)
+                    for start, end in spans
+                )
+                distances.append((distance, entity_id))
+        if distances:
+            nearest = min(distance for distance, _entity_id in distances)
+            selected_ids.update(
+                entity_id for distance, entity_id in distances if distance == nearest
+            )
+    selected = [entity for entity in entities if str(entity["entity_id"]) in selected_ids]
+    return selected or list(entities)
+
+
+def _entity_mention_spans(
+    entity: Mapping[str, Any],
+    quote: str,
+    mention_terms: Sequence[str],
+) -> list[tuple[int, int]]:
+    values = (*mention_terms, str(entity.get("display_name") or ""), str(entity.get("ticker") or ""))
+    patterns: set[str] = set()
+    for value in values:
+        tokens = re.findall(r"[A-Za-z0-9]+", str(value))
+        if not tokens:
+            continue
+        normalized = " ".join(token.casefold() for token in tokens)
+        ticker = _normalize_alias(entity.get("ticker") or "")
+        if not (_safe_alias(normalized) or normalized == ticker):
+            continue
+        patterns.add(r"(?<![A-Za-z0-9])" + r"[^A-Za-z0-9]+".join(map(re.escape, tokens)) + r"(?![A-Za-z0-9])")
+    return [
+        match.span()
+        for pattern in patterns
+        for match in re.finditer(pattern, quote, re.I)
+    ]
 
 
 def _issuer_scoped_concept(concept: str) -> bool:
