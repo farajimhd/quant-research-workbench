@@ -2172,8 +2172,8 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
           options={supportedSides.map((value) => ({ label: readableLabel(value), value }))}
           value={behavior.side}
         />
-        <fieldset className="configuration-choice-set">
-          <legend>Eligible sessions</legend>
+        <div aria-label="Eligible sessions" className="configuration-field configuration-session-field" role="group">
+          <span>Eligible sessions</span>
           <div>{sessions.map((session) => (
             <label key={session}>
               <input
@@ -2189,7 +2189,7 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
               {readableLabel(session)}
             </label>
           ))}</div>
-        </fieldset>
+        </div>
         <BooleanField
           help="When enabled, a campaign may take ownership of a manually opened position and manage its adds and exits. When disabled, manual positions remain outside strategy control."
           label="Adopt manual positions"

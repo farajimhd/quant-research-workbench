@@ -2399,7 +2399,7 @@
 .strategy-selection-icon { align-items: center; background: color-mix(in oklab, var(--canvas-link-blue) 10%, var(--surface)); border: 1px solid color-mix(in oklab, var(--canvas-link-blue) 28%, var(--border)); border-radius: 8px; color: var(--canvas-link-blue); display: flex; height: 40px; justify-content: center; width: 40px; }
 .strategy-editor-toolbar { align-items: center; border-bottom: 1px solid var(--configuration-rule); display: flex; gap: 12px; margin-left: auto; margin-right: auto; max-width: var(--strategy-workspace-max); padding-bottom: 12px; width: 100%; }
 .strategy-editor-toolbar > span { display: grid; gap: 1px; }
-.strategy-editor-toolbar > span strong { color: var(--canvas-link-blue); }
+.strategy-editor-toolbar > span strong { color: var(--canvas-link-blue); text-transform: uppercase; }
 .strategy-editor-toolbar > span small { color: var(--muted-foreground); }
 .strategy-editor-modes { align-items: center; background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 8px; display: flex; gap: 3px; margin-left: auto; padding: 3px; }
 .strategy-editor-modes button { align-items: center; background: transparent; border: 0; border-radius: 6px; color: var(--muted-foreground); cursor: pointer; display: inline-flex; gap: 6px; min-height: 32px; padding: 6px 10px; }
@@ -2495,8 +2495,7 @@
 .strategy-editor-guided .strategy-observe-fields .configuration-field:nth-child(3) {
   grid-column: 1 / -1;
 }
-.strategy-editor-guided .strategy-observe-fields .configuration-field > span,
-.strategy-editor-guided .strategy-observe-fields .configuration-choice-set > legend {
+.strategy-editor-guided .strategy-observe-fields .configuration-field > span {
   color: var(--muted-foreground);
   font-size: 11px;
   font-weight: 700;
@@ -2519,42 +2518,21 @@
   min-height: 72px;
   padding: 14px 16px;
 }
-.strategy-editor-guided .strategy-observe-fields .configuration-choice-set {
-  border: 0;
-  border-top: 1px solid var(--configuration-rule);
-  border-radius: 0;
-  display: grid;
-  gap: 14px;
-  margin: 0;
-  padding: 24px 0 0;
-}
-.strategy-editor-guided .strategy-observe-fields > .configuration-field-grid > .configuration-choice-set {
-  align-content: start;
-  align-self: start;
-  border: 0;
-  gap: 9px;
-  min-inline-size: 0;
-  padding: 0;
-}
-.strategy-editor-guided .strategy-observe-fields > .configuration-field-grid > .configuration-choice-set > legend {
-  display: block;
-  float: none;
-  margin: 0;
-  padding: 0;
-  width: 100%;
-}
-.strategy-editor-guided .strategy-observe-fields .configuration-choice-set > div {
+.strategy-editor-guided .strategy-observe-fields .configuration-session-field > div {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
-.strategy-editor-guided .strategy-observe-fields .configuration-choice-set > div label {
+.strategy-editor-guided .strategy-observe-fields .configuration-session-field > div label {
+  align-items: center;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 9px;
+  display: flex;
   font-size: 12px;
+  gap: 7px;
+  height: 52px;
   justify-content: center;
-  min-height: 46px;
   padding: 8px 6px;
   width: 100%;
 }
@@ -2697,7 +2675,7 @@
 }
 
 @media (max-width: 620px) {
-  .strategy-editor-guided .strategy-observe-fields .configuration-choice-set > div,
+  .strategy-editor-guided .strategy-observe-fields .configuration-session-field > div,
   .strategy-entry-rule-toolbar { grid-template-columns: 1fr; }
   .strategy-entry-rule-toolbar .button { justify-self: start; }
   .strategy-entry-rule-editor .strategy-rule-condition { grid-template-columns: minmax(0, 1fr); }
