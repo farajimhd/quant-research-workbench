@@ -111,6 +111,20 @@ type StrategyInput = {
   value_type: string;
 };
 
+type StrategyCatalogItem = {
+  category: string;
+  detail: string;
+  group: string;
+  groupOrder: number;
+  id: string;
+  importance: number;
+  kind: string;
+  label: string;
+  metadata: Array<{ label: string; value: string }>;
+  parameter: string;
+  usage: string;
+};
+
 type RuleCondition = {
   comparator: string;
   condition_id: string;
@@ -1444,7 +1458,9 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
   section: StrategySection;
 }) {
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
+  const [studioView, setStudioView] = useState<"select" | "configure">("select");
   const [activeStage, setActiveStage] = useState<StrategyAuthoringStage>("overview");
+  const [catalogItem, setCatalogItem] = useState<StrategyCatalogItem | null>(null);
   const [creationMode, setCreationMode] = useState<"blank" | "template" | null>(null);
   const [creationName, setCreationName] = useState("");
   const [creationTemplateId, setCreationTemplateId] = useState(section.profile_templates[0]?.profile_id ?? "");
@@ -1492,6 +1508,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
       : { ...blankStrategyProfile(selected, draft), name: normalizedName };
     onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(next.profile_id);
+    setStudioView("configure");
     setCreationMode(null);
     setCreationName("");
   }
@@ -1523,27 +1540,32 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
   ));
   const entryRules = selected.lifecycle.initial_entry;
   const creationNameConflict = Boolean(creationName.trim()) && section.profiles.some((row) => row.name.trim().toLocaleLowerCase() === creationName.trim().toLocaleLowerCase());
+
+  if (studioView === "select") return <StrategySelectionPage
+    creationMode={creationMode}
+    name={creationName}
+    nameConflict={creationNameConflict}
+    onCancel={() => { setCreationMode(null); setCreationName(""); }}
+    onCreate={createProfile}
+    onModeChange={beginProfileCreation}
+    onNameChange={setCreationName}
+    onOpen={(profileId) => { setSelectedId(profileId); setCatalogItem(null); setStudioView("configure"); }}
+    onTemplateChange={(profileId) => { const template = section.profile_templates.find((row) => row.profile_id === profileId); setCreationTemplateId(profileId); setCreationName(uniqueProfileName(template?.name ?? "New Strategy", section.profiles)); }}
+    profiles={section.profiles}
+    templateId={creationTemplateId}
+    templates={section.profile_templates}
+  />;
+
   return (
     <div className="strategy-studio-workspace">
-      <StrategyCreationBar
-        creationMode={creationMode}
-        name={creationName}
-        nameConflict={creationNameConflict}
-        onCancel={() => { setCreationMode(null); setCreationName(""); }}
-        onCreate={createProfile}
-        onModeChange={beginProfileCreation}
-        onNameChange={setCreationName}
-        onProfileChange={setSelectedId}
-        onTemplateChange={(profileId) => { const template = section.profile_templates.find((row) => row.profile_id === profileId); setCreationTemplateId(profileId); setCreationName(uniqueProfileName(template?.name ?? "New Strategy", section.profiles)); }}
-        profiles={section.profiles}
-        selectedId={selected.profile_id}
-        templateId={creationTemplateId}
-        templates={section.profile_templates}
-      />
+      <nav className="strategy-editor-toolbar" aria-label="Strategy editor navigation">
+        <button className="button compact" onClick={() => { setCatalogItem(null); setStudioView("select"); }} type="button"><ArrowLeft size={14} /> All strategies</button>
+        <span><strong>{selected.name}</strong><small>{catalogItem ? "Parameter catalog" : "Strategy configuration"}</small></span>
+      </nav>
       <div className="configuration-workbench">
-      <StrategyParameterCatalog catalog={section.input_catalog} engineParameters={advanced} />
+      <StrategyParameterCatalog catalog={section.input_catalog} engineParameters={advanced} onSelect={setCatalogItem} selectedId={catalogItem?.id ?? null} />
 
-      <main className="configuration-detail">
+      {catalogItem ? <StrategyParameterDetail item={catalogItem} onClose={() => setCatalogItem(null)} /> : <main className="configuration-detail">
         <section className="configuration-detail-heading">
           <div>
             <span>Configured Strategy Profile</span>
@@ -1697,13 +1719,13 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
           </StoryChapter>
         </article>
         </details>
-      </main>
+      </main>}
     </div>
     </div>
   );
 }
 
-function StrategyCreationBar({ creationMode, name, nameConflict, onCancel, onCreate, onModeChange, onNameChange, onProfileChange, onTemplateChange, profiles, selectedId, templateId, templates }: {
+function StrategySelectionPage({ creationMode, name, nameConflict, onCancel, onCreate, onModeChange, onNameChange, onOpen, onTemplateChange, profiles, templateId, templates }: {
   creationMode: "blank" | "template" | null;
   name: string;
   nameConflict: boolean;
@@ -1711,37 +1733,58 @@ function StrategyCreationBar({ creationMode, name, nameConflict, onCancel, onCre
   onCreate: () => void;
   onModeChange: (value: "blank" | "template") => void;
   onNameChange: (value: string) => void;
-  onProfileChange: (value: string) => void;
+  onOpen: (value: string) => void;
   onTemplateChange: (value: string) => void;
   profiles: StrategyProfile[];
-  selectedId: string;
   templateId: string;
   templates: StrategyProfile[];
 }) {
-  return <section className="strategy-profile-command" aria-label="Strategy profile selection and creation">
-    <div className="strategy-profile-current">
-      <span>Current strategy</span>
-      <InventoryFilterSelect ariaLabel="Current strategy profile" className="configuration-lookup-button" onChange={onProfileChange} options={profiles.map((profile) => ({ label: `${profile.name} · ${profile.protected ? "Protected" : "User"}`, value: profile.profile_id }))} searchable={profiles.length > 6} value={selectedId} />
-    </div>
-    <div className="strategy-profile-create-choice">
-      <span>Create a new strategy</span>
+  return <main className="strategy-selection-page" aria-label="Choose a strategy">
+    <header><span>Strategy profiles</span><h2>Choose a strategy to configure</h2><p>Open an existing profile or create a new one. Configuration begins after you choose.</p></header>
+    <section className="strategy-selection-list" aria-label="Existing strategies">
+      {profiles.map((profile) => <button key={profile.profile_id} onClick={() => onOpen(profile.profile_id)} type="button">
+        <span className="strategy-selection-icon"><GitBranch size={18} /></span>
+        <span><strong>{profile.name}</strong><small>{profile.description || "No description"}</small></span>
+        <em>{profile.protected ? "Protected" : "User"} · V{profile.revision}</em>
+        <ChevronRight size={17} />
+      </button>)}
+    </section>
+    <section className="strategy-profile-command" aria-label="Create a strategy">
+      <div className="strategy-profile-create-choice">
+      <span>Create a strategy</span>
       <div role="group" aria-label="New strategy starting point">
         <button aria-pressed={creationMode === "blank"} onClick={() => onModeChange("blank")} type="button"><Plus size={15} /><span><strong>Empty strategy</strong><small>No active decisions</small></span></button>
         <button aria-pressed={creationMode === "template"} disabled={!templates.length} onClick={() => onModeChange("template")} type="button"><Clipboard size={15} /><span><strong>From template</strong><small>Copy a starting structure</small></span></button>
       </div>
-    </div>
-    {creationMode ? <div className="strategy-profile-create-detail">
+      </div>
+      {creationMode ? <div className="strategy-profile-create-detail">
       <header><span>{creationMode === "blank" ? "Empty strategy" : "Template strategy"}</span><strong>{creationMode === "blank" ? "Create a strategy with disabled lifecycle decisions" : "Create an editable copy of a template"}</strong></header>
       {creationMode === "template" ? <SelectField help="The source remains unchanged." label="Template" onChange={onTemplateChange} options={templates.map((template) => ({ label: template.name, value: template.profile_id }))} value={templateId} /> : null}
       <TextField help={nameConflict ? "This name is already used." : "You can change it later."} label="Strategy name" onChange={onNameChange} value={name} />
       <div><button className="button" onClick={onCancel} type="button">Cancel</button><button className="button primary" disabled={!name.trim() || nameConflict || (creationMode === "template" && !templateId)} onClick={onCreate} type="button">Create strategy <ArrowRight size={14} /></button></div>
-    </div> : null}
-  </section>;
+      </div> : null}
+    </section>
+  </main>;
 }
 
-function StrategyParameterCatalog({ catalog, engineParameters }: { catalog: StrategyInput[]; engineParameters: Array<{ path: string; value: Primitive }> }) {
+function strategyCatalogGroup(item: Omit<StrategyCatalogItem, "group" | "groupOrder" | "importance">): Pick<StrategyCatalogItem, "group" | "groupOrder" | "importance"> {
+  const key = `${item.id} ${item.category} ${item.label} ${item.parameter}`.toLocaleLowerCase();
+  const rank = (...patterns: string[]) => {
+    const index = patterns.findIndex((pattern) => key.includes(pattern));
+    return index < 0 ? 50 : index;
+  };
+  if (item.category === "Market") return { group: "Market anchors", groupOrder: 0, importance: rank("last_price", "previous_close", "previous_high") };
+  if (key.includes("protection") || key.includes("stop") || key.includes("trailing") || key.includes("risk")) return { group: "Protection and risk", groupOrder: 4, importance: rank("minimum_stop", "stop", "trailing", "target", "risk") };
+  if (key.includes("profit_pocket") || key.includes("position") || key.includes("reentry") || key.includes("add_")) return { group: "Position management", groupOrder: 5, importance: rank("profit_pocket.enabled", "activation", "minimum_gain", "allocation", "reentry", "add_") };
+  if (key.includes("structure") || key.includes("swing") || key.includes("choch") || key.includes("flow")) return { group: "Structure and flow", groupOrder: 1, importance: rank("swing_high", "swing_low", "choch", "flow_structure", "flow_price") };
+  if (key.includes("vwap") || key.includes("macd")) return { group: "Momentum indicators", groupOrder: 2, importance: rank("vwap.value", "vwap.slope", "macd.line", "macd.signal", "macd.histogram") };
+  if (item.kind === "Evidence source") return { group: "Decision signals", groupOrder: 3, importance: rank("price_volume", "vwap_transition", "liquidity", "news") };
+  return { group: "Strategy engine", groupOrder: 6, importance: rank("entry", "exit", "maximum", "minimum") };
+}
+
+function StrategyParameterCatalog({ catalog, engineParameters, onSelect, selectedId }: { catalog: StrategyInput[]; engineParameters: Array<{ path: string; value: Primitive }>; onSelect: (item: StrategyCatalogItem) => void; selectedId: string | null }) {
   const [search, setSearch] = useState("");
-  const items = useMemo(() => [
+  const items = useMemo(() => ([
     ...catalog.map((source) => ({
       category: source.category,
       detail: source.summary,
@@ -1762,21 +1805,32 @@ function StrategyParameterCatalog({ catalog, engineParameters }: { catalog: Stra
       parameter: parameter.path,
       usage: "Edit this value from Engine-specific parameters in the Observe step.",
     })),
-  ], [catalog, engineParameters]);
+  ]).map((item) => ({ ...item, ...strategyCatalogGroup(item) })).sort((left, right) => left.groupOrder - right.groupOrder || left.importance - right.importance || left.label.localeCompare(right.label)), [catalog, engineParameters]);
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filtered = items.filter((item) => !normalizedSearch || [item.label, item.parameter, item.category, item.kind, item.detail, ...item.metadata.flatMap((row) => [row.label, row.value])].join(" ").toLocaleLowerCase().includes(normalizedSearch));
-  const [selectedId, setSelectedId] = useState(items[0]?.id ?? "");
-  const selected = filtered.find((item) => item.id === selectedId) ?? filtered[0];
+  const groups = filtered.reduce<Array<{ label: string; items: StrategyCatalogItem[] }>>((result, item) => {
+    const existing = result.find((group) => group.label === item.group);
+    if (existing) existing.items.push(item);
+    else result.push({ label: item.group, items: [item] });
+    return result;
+  }, []);
 
   return <aside className="strategy-parameter-catalog">
     <header><div><span>Parameter catalog</span><strong>{filtered.length} of {items.length}</strong></div><small>Search every available strategy input and engine parameter.</small></header>
     <label className="strategy-parameter-search"><Search size={14} /><input aria-label="Search strategy parameters" onChange={(event) => setSearch(event.target.value)} placeholder="Search parameters" type="search" value={search} /></label>
     <div className="strategy-parameter-list">
-      {filtered.map((item) => <button aria-current={selected?.id === item.id ? "true" : undefined} key={item.id} onClick={() => setSelectedId(item.id)} type="button"><span><strong>{item.label}</strong><small>{item.category} · {item.parameter}</small></span><ChevronRight size={13} /></button>)}
+      {groups.map((group) => <section className="strategy-parameter-group" key={group.label}><header><strong>{group.label}</strong><span>{group.items.length}</span></header>{group.items.map((item) => <button aria-current={selectedId === item.id ? "true" : undefined} key={item.id} onClick={() => onSelect(item)} type="button"><span><strong>{item.label}</strong><small>{item.kind} · {readableLabel(item.category)}</small></span><ChevronRight size={13} /></button>)}</section>)}
       {!filtered.length ? <div className="strategy-parameter-empty"><Search size={16} /><span>No matching parameters</span></div> : null}
     </div>
-    {selected ? <footer className="strategy-parameter-detail"><span>{selected.kind}</span><strong>{selected.label}</strong><p>{selected.detail}</p><dl><div><dt>Parameter</dt><dd>{selected.parameter}</dd></div>{selected.metadata.map((row) => <div key={`${selected.id}-${row.label}`}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl><small>{selected.usage}</small></footer> : null}
   </aside>;
+}
+
+function StrategyParameterDetail({ item, onClose }: { item: StrategyCatalogItem; onClose: () => void }) {
+  return <main className="strategy-parameter-detail-page">
+    <header><button className="button compact" onClick={onClose} type="button"><ArrowLeft size={14} /> Strategy configuration</button><span>{item.group}</span><h2>{item.label}</h2><p>{item.detail}</p></header>
+    <section><div><span>Runtime parameter</span><strong>{item.parameter}</strong></div>{item.metadata.map((row) => <div key={`${item.id}-${row.label}`}><span>{row.label}</span><strong>{row.value}</strong></div>)}</section>
+    <footer><Target size={18} /><div><strong>Where this is used</strong><p>{item.usage}</p></div></footer>
+  </main>;
 }
 
 function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onProfileChange, onStageChange, profile, section }: {
