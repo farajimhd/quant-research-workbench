@@ -548,6 +548,12 @@ nonzero fractions, standard deviations, minima, and maxima. Its JSON report is
 written beneath the pilot root's `manifest/audits` directory. The pilot root is
 never used by the default training or production-build launchers.
 
+The offline compiler fails closed before writing a shard when any origin lacks
+the configured 720/360/360/240/240/96/16/8 intraday histories or the configured
+90/52/12 daily/weekly/monthly histories. The daily-session authority must
+therefore contain sufficient history before the first requested training date;
+an unavailable calendar view is not accepted as padded context.
+
 To add only the repaired GOOGL Class A identity to an existing compatible
 catalog, use `--selection all`; the named `train` and `validation` selections
 intentionally expand to their complete predefined universes:

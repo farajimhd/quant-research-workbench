@@ -75,6 +75,7 @@ from research.bar_gpt.v1.offline_shards import (
     shard_path,
     shard_compatibility_hash,
     stable_unit_index,
+    validate_complete_context,
     write_unit,
 )
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
@@ -625,6 +626,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(empty.raw_views[name].shape[0], 1)
             self.assertTrue(torch.all(empty.raw_views[name] == 0))
             self.assertTrue(torch.all(empty.asof_indices[name] == -1))
+        with self.assertRaisesRegex(RuntimeError, "1D context underflow"):
+            validate_complete_context(empty, config)
 
         daily_raw = session_view(3)
         daily_starts = torch.tensor([base - 86_400_000_000, base, base + 86_400_000_000])
@@ -642,6 +645,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
         for name in ("1D", "1W", "1MO"):
             self.assertEqual(partial.raw_views[name].shape[0], 1)
             self.assertTrue(torch.all(partial.asof_indices[name] >= 0))
+        complete_config = dataclasses.replace(
+            config,
+            calendar_context_bars=(("1D", 1), ("1W", 1), ("1MO", 1)),
+            daily_context_bars=1,
+        )
+        validate_complete_context(partial, complete_config)
 
     def test_origin_schedule_is_bounded_phase_spread_and_condition_first(self) -> None:
         dates = ["2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07"]
@@ -826,9 +835,15 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertNotIn("1D", batch.autoregressive_mask)
 
     def test_offline_shard_round_trip_preserves_compiled_targets_without_context_duplication(self) -> None:
-        config = self.data_config()
+        config = dataclasses.replace(
+            self.data_config(),
+            calendar_context_bars=(("1D", 1), ("1W", 1), ("1MO", 1)),
+            daily_context_bars=1,
+        )
+        daily = session_view(1, start_second=0)
         examples = list(build_session_examples(
-            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            ticker="AAA", local_date="2026-01-02", session=session_view(),
+            daily=(("2026-01-01",), daily),
             split_actions=(), config=config,
         ))
         for offset, example in enumerate(examples):

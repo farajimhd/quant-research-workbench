@@ -130,10 +130,19 @@ def audit_shard(sidecar_path: Path, *, verify_sha256: bool = True) -> dict[str, 
         str(name): int(count)
         for name, count in dict(context_contract.get("intraday_context_bars", {})).items()
     }
+    calendar_context = {
+        str(name): int(count)
+        for name, count in dict(context_contract.get("calendar_context_bars", {})).items()
+    }
     _require(
         set(intraday_context) == set(DataConfig().intraday_context_by_name),
         f"{unit_key}: intraday context view set mismatch",
     )
+    _require(
+        set(calendar_context) == set(DataConfig().calendar_context_by_name),
+        f"{unit_key}: calendar context view set mismatch",
+    )
+    required_context = intraday_context | calendar_context
     expected_warmup = max(
         int(count) * (int(TIMEFRAME_US_BY_NAME[name]) // int(shard.get("base_timeframe_us", 1)))
         for name, count in intraday_context.items()
@@ -223,8 +232,8 @@ def audit_shard(sidecar_path: Path, *, verify_sha256: bool = True) -> dict[str, 
                     continue
                 indices = asof[name]
                 _require(isinstance(indices, torch.Tensor) and indices.shape == origin_timestamps.shape, f"{block_label}/{name}: as-of shape mismatch")
-                if name in intraday_context:
-                    required = int(intraday_context[name])
+                if name in required_context:
+                    required = int(required_context[name])
                     _require(int(indices.min()) >= required - 1, f"{block_label}/{name}: configured context underflow")
                 selected = indices >= 0
                 if bool(selected.any()):
