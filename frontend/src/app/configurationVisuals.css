@@ -2402,6 +2402,8 @@
 }
 .strategy-selection-page .strategy-profile-command { grid-template-columns: 1fr; }
 .strategy-selection-page .strategy-profile-create-choice { padding: 16px; }
+.strategy-selection-page .strategy-profile-create-choice > div { grid-template-columns: 1fr; }
+.strategy-selection-page .strategy-profile-create-detail { grid-template-columns: minmax(230px, 1fr) minmax(260px, 1fr) auto; }
 .strategy-profile-current,
 .strategy-profile-create-choice { display: grid; gap: 8px; padding: 14px 16px; }
 .strategy-profile-current { border-right: 1px solid var(--configuration-rule); }

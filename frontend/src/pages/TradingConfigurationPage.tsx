@@ -1461,9 +1461,8 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
   const [studioView, setStudioView] = useState<"select" | "configure">("select");
   const [activeStage, setActiveStage] = useState<StrategyAuthoringStage>("overview");
   const [catalogItem, setCatalogItem] = useState<StrategyCatalogItem | null>(null);
-  const [creationMode, setCreationMode] = useState<"blank" | "template" | null>(null);
+  const [creationMode, setCreationMode] = useState<"blank" | null>(null);
   const [creationName, setCreationName] = useState("");
-  const [creationTemplateId, setCreationTemplateId] = useState(section.profile_templates[0]?.profile_id ?? "");
   const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
   const referencingPlans = draft.assignments.deployments.filter((row) => row.profile_id === selected?.profile_id);
   useEffect(() => {
@@ -1489,23 +1488,15 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
     setSelectedId(next.profile_id);
   }
 
-  function beginProfileCreation(mode: "blank" | "template") {
-    setCreationMode(mode);
-    if (mode === "blank") setCreationName(uniqueProfileName("Untitled Strategy", section.profiles));
-    else {
-      const template = section.profile_templates.find((row) => row.profile_id === creationTemplateId) ?? section.profile_templates[0];
-      setCreationTemplateId(template?.profile_id ?? "");
-      setCreationName(uniqueProfileName(template?.name ?? "New Strategy", section.profiles));
-    }
+  function beginProfileCreation() {
+    setCreationMode("blank");
+    setCreationName(uniqueProfileName("Untitled Strategy", section.profiles));
   }
 
   function createProfile() {
     const normalizedName = creationName.trim();
     if (!creationMode || !normalizedName || section.profiles.some((row) => row.name.trim().toLocaleLowerCase() === normalizedName.toLocaleLowerCase())) return;
-    const template = section.profile_templates.find((row) => row.profile_id === creationTemplateId);
-    const next = creationMode === "template" && template
-      ? cloneStrategyProfile(template, section.profiles, normalizedName)
-      : { ...blankStrategyProfile(selected, draft), name: normalizedName };
+    const next = { ...blankStrategyProfile(selected, draft), name: normalizedName };
     onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(next.profile_id);
     setStudioView("configure");
@@ -1547,13 +1538,10 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
     nameConflict={creationNameConflict}
     onCancel={() => { setCreationMode(null); setCreationName(""); }}
     onCreate={createProfile}
-    onModeChange={beginProfileCreation}
+    onCreateStart={beginProfileCreation}
     onNameChange={setCreationName}
     onOpen={(profileId) => { setSelectedId(profileId); setCatalogItem(null); setStudioView("configure"); }}
-    onTemplateChange={(profileId) => { const template = section.profile_templates.find((row) => row.profile_id === profileId); setCreationTemplateId(profileId); setCreationName(uniqueProfileName(template?.name ?? "New Strategy", section.profiles)); }}
     profiles={section.profiles}
-    templateId={creationTemplateId}
-    templates={section.profile_templates}
   />;
 
   return (
@@ -1725,44 +1713,39 @@ function StrategyStudio({ approved, draft, label, onChange, onDraftChange, onLab
   );
 }
 
-function StrategySelectionPage({ creationMode, name, nameConflict, onCancel, onCreate, onModeChange, onNameChange, onOpen, onTemplateChange, profiles, templateId, templates }: {
-  creationMode: "blank" | "template" | null;
+function StrategySelectionPage({ creationMode, name, nameConflict, onCancel, onCreate, onCreateStart, onNameChange, onOpen, profiles }: {
+  creationMode: "blank" | null;
   name: string;
   nameConflict: boolean;
   onCancel: () => void;
   onCreate: () => void;
-  onModeChange: (value: "blank" | "template") => void;
+  onCreateStart: () => void;
   onNameChange: (value: string) => void;
   onOpen: (value: string) => void;
-  onTemplateChange: (value: string) => void;
   profiles: StrategyProfile[];
-  templateId: string;
-  templates: StrategyProfile[];
 }) {
   return <main className="strategy-selection-page" aria-label="Choose a strategy">
-    <header><span>Strategy profiles</span><h2>Choose a strategy to configure</h2><p>Open an existing profile or create a new one. Configuration begins after you choose.</p></header>
-    <section className="strategy-selection-list" aria-label="Existing strategies">
-      {profiles.map((profile) => <button key={profile.profile_id} onClick={() => onOpen(profile.profile_id)} type="button">
-        <span className="strategy-selection-icon"><GitBranch size={18} /></span>
-        <span><strong>{profile.name}</strong><small>{profile.description || "No description"}</small></span>
-        <em>{profile.protected ? "Protected" : "User"} · V{profile.revision}</em>
-        <ChevronRight size={17} />
-      </button>)}
-    </section>
     <section className="strategy-profile-command" aria-label="Create a strategy">
       <div className="strategy-profile-create-choice">
       <span>Create a strategy</span>
       <div role="group" aria-label="New strategy starting point">
-        <button aria-pressed={creationMode === "blank"} onClick={() => onModeChange("blank")} type="button"><Plus size={15} /><span><strong>Empty strategy</strong><small>No active decisions</small></span></button>
-        <button aria-pressed={creationMode === "template"} disabled={!templates.length} onClick={() => onModeChange("template")} type="button"><Clipboard size={15} /><span><strong>From template</strong><small>Copy a starting structure</small></span></button>
+        <button aria-pressed={creationMode === "blank"} onClick={onCreateStart} type="button"><Plus size={15} /><span><strong>Empty strategy</strong><small>Start with no active decisions</small></span></button>
       </div>
       </div>
       {creationMode ? <div className="strategy-profile-create-detail">
-      <header><span>{creationMode === "blank" ? "Empty strategy" : "Template strategy"}</span><strong>{creationMode === "blank" ? "Create a strategy with disabled lifecycle decisions" : "Create an editable copy of a template"}</strong></header>
-      {creationMode === "template" ? <SelectField help="The source remains unchanged." label="Template" onChange={onTemplateChange} options={templates.map((template) => ({ label: template.name, value: template.profile_id }))} value={templateId} /> : null}
+      <header><span>Empty strategy</span><strong>Create a strategy with disabled lifecycle decisions</strong></header>
       <TextField help={nameConflict ? "This name is already used." : "You can change it later."} label="Strategy name" onChange={onNameChange} value={name} />
-      <div><button className="button" onClick={onCancel} type="button">Cancel</button><button className="button primary" disabled={!name.trim() || nameConflict || (creationMode === "template" && !templateId)} onClick={onCreate} type="button">Create strategy <ArrowRight size={14} /></button></div>
+      <div><button className="button" onClick={onCancel} type="button">Cancel</button><button className="button primary" disabled={!name.trim() || nameConflict} onClick={onCreate} type="button">Create strategy <ArrowRight size={14} /></button></div>
       </div> : null}
+    </section>
+    <header className="strategy-selection-heading"><span>Available strategies</span><h2>Choose a strategy to configure</h2><p>The protected template and every strategy you create appear here.</p></header>
+    <section className="strategy-selection-list" aria-label="Available strategies">
+      {profiles.map((profile) => <button key={profile.profile_id} onClick={() => onOpen(profile.profile_id)} type="button">
+        <span className="strategy-selection-icon"><GitBranch size={18} /></span>
+        <span><strong>{profile.name}</strong><small>{profile.description || "No description"}</small></span>
+        <em>{profile.protected ? "Template" : "User"} · V{profile.revision}</em>
+        <ChevronRight size={17} />
+      </button>)}
     </section>
   </main>;
 }

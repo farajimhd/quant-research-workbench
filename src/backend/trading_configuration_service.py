@@ -1010,8 +1010,8 @@ def _default_draft() -> dict[str, Any]:
     system_profiles = [
         _strategy_profile(
             "long-momentum-balanced",
-            "Long Momentum",
-            "Canonical Long Momentum strategy profile.",
+            "Long Momentum · Balanced",
+            "Balanced Long Momentum template with breakout confirmation, protection, and re-entry.",
             parameters,
             origin="system",
         ),
@@ -1020,8 +1020,8 @@ def _default_draft() -> dict[str, Any]:
     profile_templates = [
         _strategy_profile(
             "long-momentum-template",
-            "Long Momentum",
-            "Create an editable Long Momentum strategy profile.",
+            "Long Momentum · Balanced",
+            "Balanced Long Momentum template with breakout confirmation, protection, and re-entry.",
             parameters,
             origin="system",
         ),

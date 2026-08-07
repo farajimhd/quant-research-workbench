@@ -105,7 +105,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(
             draft["strategy"]["profile_templates"][0]["name"],
-            "Long Momentum",
+            "Long Momentum · Balanced",
         )
         self.assertTrue(all(profile["editable"] for profile in draft["strategy"]["profiles"]))
         default_profile = next(
