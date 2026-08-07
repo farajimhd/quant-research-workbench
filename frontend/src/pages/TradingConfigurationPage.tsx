@@ -1480,6 +1480,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
 }) {
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
   const [studioView, setStudioView] = useState<"select" | "configure">("select");
+  const [editorMode, setEditorMode] = useState<"catalog" | "guided">("catalog");
   const [activeStage, setActiveStage] = useState<StrategyAuthoringStage>("overview");
   const [catalogItem, setCatalogItem] = useState<StrategyCatalogItem | null>(null);
   const [creationMode, setCreationMode] = useState<"blank" | null>(null);
@@ -1515,6 +1516,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
     onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(next.profile_id);
     setCatalogItem(null);
+    setEditorMode("catalog");
     setStudioView("configure");
   }
 
@@ -1573,7 +1575,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
     onDelete={(profileId) => void removeProfile(profileId)}
     onClone={cloneProfileFromSelection}
     onNameChange={setCreationName}
-    onModify={(profileId) => { setSelectedId(profileId); setCatalogItem(null); setStudioView("configure"); }}
+    onModify={(profileId) => { setSelectedId(profileId); setCatalogItem(null); setEditorMode("catalog"); setStudioView("configure"); }}
     profiles={section.profiles}
   />;
 
@@ -1581,12 +1583,18 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
     <div className="strategy-studio-workspace">
       <nav className="strategy-editor-toolbar" aria-label="Strategy editor navigation">
         <button className="button compact" onClick={() => { setCatalogItem(null); setStudioView("select"); }} type="button"><ArrowLeft size={14} /> All strategies</button>
-        <span><strong>{selected.name}</strong><small>{catalogItem ? "Parameter catalog" : "Strategy configuration"}</small></span>
+        <span><strong>{selected.name}</strong><small>{editorMode === "catalog" ? "Parameter Catalog" : "Guided Configuration"}</small></span>
+        <div className="strategy-editor-modes" role="tablist" aria-label="Strategy editor views">
+          <button aria-selected={editorMode === "catalog"} onClick={() => setEditorMode("catalog")} role="tab" type="button"><Search size={14} /> Parameter Catalog</button>
+          <button aria-selected={editorMode === "guided"} onClick={() => setEditorMode("guided")} role="tab" type="button"><BookOpenCheck size={14} /> Guided Configuration</button>
+        </div>
       </nav>
-      <div className="configuration-workbench">
-      <StrategyParameterCatalog catalog={section.input_catalog} engineParameters={advanced} onSelect={setCatalogItem} selectedId={catalogItem?.id ?? null} />
+      <div className={`configuration-workbench strategy-editor-${editorMode}`}>
+      {editorMode === "catalog" ? <>
+      <StrategyParameterCatalog engineParameters={advanced} onSelect={setCatalogItem} selectedId={catalogItem?.id ?? null} />
 
-      {catalogItem ? <StrategyParameterDetail item={catalogItem} onClose={() => setCatalogItem(null)} /> : <main className="configuration-detail">
+      {catalogItem ? <StrategyParameterDetail item={catalogItem} onChange={(value) => replaceProfile({ ...selected, parameters: setPath(selected.parameters, catalogItem.parameter, value) })} value={advanced.find((row) => row.path === catalogItem.parameter)?.value} /> : <main className="strategy-parameter-empty-detail"><Search size={24} /><h2>Select a parameter</h2><p>Choose any strategy parameter from the catalog to review and edit its current value.</p></main>}
+      </> : <main className="configuration-detail">
         <section className="configuration-detail-heading">
           <div>
             <span>Configured Strategy Profile</span>
@@ -1806,30 +1814,18 @@ function strategyCatalogGroup(item: Omit<StrategyCatalogItem, "group" | "groupOr
   return { group: "Strategy engine", groupOrder: 6, importance: rank("entry", "exit", "maximum", "minimum") };
 }
 
-function StrategyParameterCatalog({ catalog, engineParameters, onSelect, selectedId }: { catalog: StrategyInput[]; engineParameters: Array<{ path: string; value: Primitive }>; onSelect: (item: StrategyCatalogItem) => void; selectedId: string | null }) {
+function StrategyParameterCatalog({ engineParameters, onSelect, selectedId }: { engineParameters: Array<{ path: string; value: Primitive }>; onSelect: (item: StrategyCatalogItem) => void; selectedId: string | null }) {
   const [search, setSearch] = useState("");
-  const items = useMemo(() => ([
-    ...catalog.map((source) => ({
-      category: source.category,
-      detail: source.summary,
-      id: `evidence:${source.source_id}`,
-      kind: "Evidence source",
-      label: source.label,
-      metadata: [{ label: "Provider", value: source.provider }, { label: "Value type", value: readableLabel(source.value_type) }, { label: "Timeframes", value: source.timeframes.join(", ") || "Event native" }],
-      parameter: source.parameter,
-      usage: "Available to entry, add, reentry, and exit rule builders.",
-    })),
-    ...engineParameters.map((parameter) => ({
+  const items = useMemo(() => engineParameters.map((parameter) => ({
       category: "Engine parameter",
-      detail: "Configuration value read directly by the registered strategy implementation.",
+      detail: helpForPath(parameter.path),
       id: `engine:${parameter.path}`,
       kind: "Engine parameter",
       label: readableLabel(parameter.path),
       metadata: [{ label: "Value type", value: typeof parameter.value }, { label: "Current value", value: String(parameter.value) }],
       parameter: parameter.path,
-      usage: "Edit this value from Engine-specific parameters in the Observe step.",
-    })),
-  ]).map((item) => ({ ...item, ...strategyCatalogGroup(item) })).sort((left, right) => left.groupOrder - right.groupOrder || left.importance - right.importance || left.label.localeCompare(right.label)), [catalog, engineParameters]);
+      usage: "The registered strategy implementation reads this value when it evaluates the corresponding behavior.",
+    })).map((item) => ({ ...item, ...strategyCatalogGroup(item) })).sort((left, right) => left.groupOrder - right.groupOrder || left.importance - right.importance || left.label.localeCompare(right.label)), [engineParameters]);
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filtered = items.filter((item) => !normalizedSearch || [item.label, item.parameter, item.category, item.kind, item.detail, ...item.metadata.flatMap((row) => [row.label, row.value])].join(" ").toLocaleLowerCase().includes(normalizedSearch));
   const groups = filtered.reduce<Array<{ label: string; items: StrategyCatalogItem[] }>>((result, item) => {
@@ -1840,7 +1836,7 @@ function StrategyParameterCatalog({ catalog, engineParameters, onSelect, selecte
   }, []);
 
   return <aside className="strategy-parameter-catalog">
-    <header><div><span>Parameter catalog</span><strong>{filtered.length} of {items.length}</strong></div><small>Search every available strategy input and engine parameter.</small></header>
+    <header><div><span>Parameter catalog</span><strong>{filtered.length} of {items.length}</strong></div><small>Search every editable parameter in this Strategy Profile.</small></header>
     <label className="strategy-parameter-search"><Search size={14} /><input aria-label="Search strategy parameters" onChange={(event) => setSearch(event.target.value)} placeholder="Search parameters" type="search" value={search} /></label>
     <div className="strategy-parameter-list">
       {groups.map((group) => <section className="strategy-parameter-group" key={group.label}><header><strong>{group.label}</strong><span>{group.items.length}</span></header>{group.items.map((item) => <button aria-current={selectedId === item.id ? "true" : undefined} key={item.id} onClick={() => onSelect(item)} type="button"><span><strong>{item.label}</strong><small>{item.kind} · {readableLabel(item.category)}</small></span><ChevronRight size={13} /></button>)}</section>)}
@@ -1849,11 +1845,12 @@ function StrategyParameterCatalog({ catalog, engineParameters, onSelect, selecte
   </aside>;
 }
 
-function StrategyParameterDetail({ item, onClose }: { item: StrategyCatalogItem; onClose: () => void }) {
+function StrategyParameterDetail({ item, onChange, value }: { item: StrategyCatalogItem; onChange: (value: Primitive) => void; value: Primitive | undefined }) {
   return <main className="strategy-parameter-detail-page">
-    <header><button className="button compact" onClick={onClose} type="button"><ArrowLeft size={14} /> Strategy configuration</button><span>{item.group}</span><h2>{item.label}</h2><p>{item.detail}</p></header>
-    <section><div><span>Runtime parameter</span><strong>{item.parameter}</strong></div>{item.metadata.map((row) => <div key={`${item.id}-${row.label}`}><span>{row.label}</span><strong>{row.value}</strong></div>)}</section>
-    <footer><Target size={18} /><div><strong>Where this is used</strong><p>{item.usage}</p></div></footer>
+    <header><span>{item.group}</span><h2>{item.label}</h2><p>{item.detail}</p></header>
+    <section className="strategy-parameter-editor"><ParameterField definition={field(item.parameter, item.label, item.detail, controlFor(value ?? ""), choicesFor(item.parameter), unitFor(item.parameter), stepFor(value ?? ""))} onChange={onChange} value={value ?? ""} /></section>
+    <section className="strategy-parameter-reference"><div><span>Runtime parameter</span><strong>{item.parameter}</strong></div>{item.metadata.filter((row) => row.label !== "Current value").map((row) => <div key={`${item.id}-${row.label}`}><span>{row.label}</span><strong>{row.value}</strong></div>)}</section>
+    <footer><Target size={18} /><div><strong>Runtime effect</strong><p>{item.usage}</p></div></footer>
   </main>;
 }
 
@@ -1871,6 +1868,14 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
   const enabledAdds = profile.lifecycle.initial_entry.add_steps.filter((step) => step.enabled).length;
   const enabledExits = profile.lifecycle.exit.rule_sets.filter((route) => route.enabled).length;
   const definition = section.definitions.find((row) => row.strategy_id === profile.definition_id);
+  const stages: Array<[StrategyAuthoringStage, string, string, string]> = [
+    ["overview", "1", "Observe", "Evaluation context"],
+    ["entry", "2", "Enter", "Evidence and request"],
+    ["position", "3", "Manage", "Adds and reentry"],
+    ["exit", "4", "Exit", "Reduction conditions"],
+    ["handoff", "5", "Run", "External authorities"],
+  ];
+  const activeIndex = stages.findIndex(([stage]) => stage === activeStage);
 
   return <article className="strategy-authoring" aria-label={`${profile.name} strategy authoring flow`}>
     <header className="strategy-authoring-header">
@@ -1887,13 +1892,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
     </section>
 
     <nav aria-label="Strategy configuration steps" className="strategy-authoring-steps">
-      {([
-        ["overview", "1", "Observe", "Evaluation context"],
-        ["entry", "2", "Enter", "Evidence and request"],
-        ["position", "3", "Manage", "Adds and reentry"],
-        ["exit", "4", "Exit", "Reduction conditions"],
-        ["handoff", "5", "Run", "External authorities"],
-      ] as Array<[StrategyAuthoringStage, string, string, string]>).map(([stage, number, title, detail]) => <button aria-current={activeStage === stage ? "step" : undefined} key={stage} onClick={() => onStageChange(stage)} type="button"><span>{number}</span><strong>{title}</strong><small>{detail}</small></button>)}
+      {stages.map(([stage, number, title, detail]) => <button aria-current={activeStage === stage ? "step" : undefined} key={stage} onClick={() => onStageChange(stage)} type="button"><span>{number}</span><strong>{title}</strong><small>{detail}</small></button>)}
     </nav>
 
     <section className="strategy-authoring-stage">
@@ -1926,6 +1925,11 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
         <StrategyHandoffLinks draft={draft} profile={profile} />
       </> : null}
     </section>
+    <footer className="strategy-guided-navigation">
+      <button className="button" disabled={activeIndex <= 0} onClick={() => onStageChange(stages[activeIndex - 1][0])} type="button"><ArrowLeft size={14} /> Previous question</button>
+      <span>Question {activeIndex + 1} of {stages.length}</span>
+      <button className="button primary" disabled={activeIndex >= stages.length - 1} onClick={() => onStageChange(stages[activeIndex + 1][0])} type="button">Next question <ArrowRight size={14} /></button>
+    </footer>
   </article>;
 }
 

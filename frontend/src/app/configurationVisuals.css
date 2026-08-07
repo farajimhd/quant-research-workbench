@@ -2399,6 +2399,10 @@
 .strategy-editor-toolbar { align-items: center; border-bottom: 1px solid var(--configuration-rule); display: flex; gap: 12px; padding-bottom: 12px; }
 .strategy-editor-toolbar > span { display: grid; gap: 1px; }
 .strategy-editor-toolbar > span small { color: var(--muted-foreground); }
+.strategy-editor-modes { align-items: center; background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 8px; display: flex; gap: 3px; margin-left: auto; padding: 3px; }
+.strategy-editor-modes button { align-items: center; background: transparent; border: 0; border-radius: 6px; color: var(--muted-foreground); cursor: pointer; display: inline-flex; gap: 6px; min-height: 32px; padding: 6px 10px; }
+.strategy-editor-modes button[aria-selected="true"] { background: var(--surface); box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 10%, transparent); color: var(--foreground); }
+.strategy-studio-workspace > .configuration-workbench.strategy-editor-guided { grid-template-columns: minmax(0, 1fr); }
 
 .strategy-profile-command {
   background: var(--surface);
@@ -2476,6 +2480,14 @@
 .strategy-parameter-detail-page > footer svg { color: var(--canvas-link-blue); }
 .strategy-parameter-detail-page > footer div { display: grid; gap: 4px; }
 .strategy-parameter-detail-page > footer p { margin: 0; }
+.strategy-parameter-detail-page > .strategy-parameter-editor { display: block; padding: 24px; }
+.strategy-parameter-editor .configuration-field { max-width: 560px; }
+.strategy-parameter-detail-page > .strategy-parameter-reference { background: var(--configuration-soft); border-top: 1px solid var(--configuration-rule); grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 8px 24px 24px; }
+.strategy-parameter-empty-detail { align-items: center; background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 8px; color: var(--muted-foreground); display: flex; flex-direction: column; justify-content: center; min-height: 500px; padding: 32px; text-align: center; }
+.strategy-parameter-empty-detail h2 { color: var(--foreground); margin: 12px 0 6px; }
+.configuration-expert-editor .strategy-parameter-empty-detail p { display: block; margin: 0; max-width: 440px; }
+.strategy-guided-navigation { align-items: center; border-top: 1px solid var(--configuration-rule); display: flex; justify-content: space-between; padding-top: 16px; }
+.strategy-guided-navigation > span { color: var(--muted-foreground); font-size: 11px; }
 
 @container configuration-workbench (max-width: 760px) {
   .strategy-profile-command { grid-template-columns: 1fr; }
@@ -2490,6 +2502,14 @@
   .strategy-profile-create-detail { grid-template-columns: 1fr; }
   .strategy-profile-create-detail > div:last-child { justify-content: stretch; }
   .strategy-profile-create-detail > div:last-child .button { flex: 1; }
+}
+
+@media (max-width: 840px) {
+  .strategy-editor-toolbar { align-items: stretch; flex-wrap: wrap; }
+  .strategy-editor-modes { margin-left: 0; order: 3; width: 100%; }
+  .strategy-editor-modes button { flex: 1; justify-content: center; }
+  .strategy-guided-navigation { gap: 8px; }
+  .strategy-guided-navigation > span { display: none; }
 }
 
 @media (max-width: 760px) {
