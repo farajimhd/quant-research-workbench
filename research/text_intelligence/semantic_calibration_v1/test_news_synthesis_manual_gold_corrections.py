@@ -12,7 +12,7 @@ from .news_synthesis_manual_gold_corrections import (
 
 class ManualGoldCorrectionTests(unittest.TestCase):
     def test_review_spec_correction_preserves_offset_and_makes_overall_direction_dominant(self) -> None:
-        correction = CORRECTIONS[0]
+        correction = next(row for row in CORRECTIONS if row.sample_id == "N1130")
         spec = {
             "sample_id": correction.sample_id,
             "review_notes": "Original review.",

@@ -22,7 +22,7 @@ from research.text_intelligence.news_synthesis_v1.certification import (
 from research.text_intelligence.news_synthesis_v1.taxonomy_audit import discover_pairs
 
 
-CORRECTION_VERSION = "news_synthesis_manual_gold_corrections_v1"
+CORRECTION_VERSION = "news_synthesis_manual_gold_corrections_v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +33,7 @@ class GoldCorrection:
     positive_strength: int
     negative_strength: int
     rationale: str
+    review_policy: str = "evidence_balance"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,53 @@ CORRECTIONS = (
             "dominant supply-overhang implication. The concurrent issuer repurchase "
             "is a material positive offset, but does not outweigh the principal event."
         ),
+        review_policy="secondary_with_repurchase",
+    ),
+    GoldCorrection(
+        sample_id="N0261",
+        ticker="PEIX",
+        direction="negative",
+        positive_strength=0,
+        negative_strength=3,
+        rationale=(
+            "An effective reverse split is a materially bearish listing and capital-structure "
+            "signal even though it mechanically preserves enterprise value at effectiveness."
+        ),
+        review_policy="reverse_split",
+    ),
+    GoldCorrection(
+        sample_id="N0774",
+        ticker="SITE",
+        direction="negative",
+        positive_strength=2,
+        negative_strength=3,
+        rationale=(
+            "Both EPS and sales missed consensus; year-over-year growth is a meaningful offset "
+            "but does not outweigh the stronger benchmark misses."
+        ),
+    ),
+    GoldCorrection(
+        sample_id="N0850",
+        ticker="JNPR",
+        direction="positive",
+        positive_strength=3,
+        negative_strength=2,
+        rationale=(
+            "Both EPS and sales beat consensus; year-over-year declines are meaningful offsets "
+            "but do not outweigh the stronger benchmark beats."
+        ),
+    ),
+    GoldCorrection(
+        sample_id="N1925",
+        ticker="MOVE",
+        direction="negative",
+        positive_strength=0,
+        negative_strength=3,
+        rationale=(
+            "An effective reverse split is a materially bearish listing and capital-structure "
+            "signal even though it mechanically preserves enterprise value at effectiveness."
+        ),
+        review_policy="reverse_split",
     ),
 )
 
@@ -180,6 +228,7 @@ def _correct_review_spec(spec: dict[str, Any], correction: GoldCorrection) -> No
         raise RuntimeError(f"Review-spec identity mismatch for {correction.sample_id}")
     found_negative = False
     found_positive = False
+    found_reverse_split = False
     for statement in spec.get("statements", []):
         concept = str(statement.get("concept_leaf") or "")
         evidence_text = " ".join(
@@ -201,9 +250,37 @@ def _correct_review_spec(spec: dict[str, Any], correction: GoldCorrection) -> No
                     "sentiment_strength": correction.positive_strength,
                 })
                 found_positive = True
-    if not found_negative or not found_positive:
+            if (
+                correction.review_policy == "reverse_split"
+                and concept in {"listing.market_structure", "capital.structure"}
+                and "reverse" in evidence_text
+                and "split" in evidence_text
+            ):
+                participation.update({
+                    "semantic_sentiment": "negative",
+                    "sentiment_strength": correction.negative_strength,
+                })
+                found_reverse_split = True
+            if correction.review_policy == "evidence_balance":
+                if participation.get("semantic_sentiment") == "negative":
+                    found_negative = True
+                if participation.get("semantic_sentiment") == "positive":
+                    found_positive = True
+    if correction.review_policy == "secondary_with_repurchase" and (
+        not found_negative or not found_positive
+    ):
         raise RuntimeError(
             f"Could not find both dominant and offsetting evidence in {correction.sample_id} review spec"
+        )
+    if correction.review_policy == "reverse_split" and not found_reverse_split:
+        raise RuntimeError(
+            f"Could not find reverse-split evidence in {correction.sample_id} review spec"
+        )
+    if correction.review_policy == "evidence_balance" and (
+        not found_negative or not found_positive
+    ):
+        raise RuntimeError(
+            f"Could not find both benchmark and prior-period evidence in {correction.sample_id} review spec"
         )
     spec["issuer_view_overrides"] = [{
         "entity_id": f"security:{correction.ticker}",

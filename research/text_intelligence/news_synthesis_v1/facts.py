@@ -139,6 +139,7 @@ _REGULATORY_OUTCOME_PATTERNS = (
 
 _GUIDANCE_METRIC = (
     r"(?:adjusted\s+|diluted\s+)?EPS|earnings per share|"
+    r"rev\.?|"
     r"(?:core\s+|organic\s+)?(?:revenue|sales) growth|"
     r"(?:adjusted\s+)?EBITDA|(?:revenues?|sales|profit)|(?:gross|operating|EBITDA) margin"
 )
@@ -151,7 +152,7 @@ _COMPARISON_VALUE = (
 )
 _ESTIMATE_LABEL = r"(?:analysts?'?\s+)?(?:consensus\s+)?(?:est\.?|estimates?|consensus)"
 GUIDANCE_COMPARISON_RE = re.compile(
-    rf"\b(?P<metric>{_GUIDANCE_METRIC})\b\s*"
+    rf"\b(?P<metric>{_GUIDANCE_METRIC})(?=\s)\s*"
     rf"(?:guidance\s*)?(?:of|at|around|approximately|between|~)?\s*"
     rf"(?P<subject>{_COMPARISON_VALUE})\s*"
     rf"(?:vs\.?|versus|compared (?:with|to))\s*"
@@ -161,7 +162,7 @@ GUIDANCE_COMPARISON_RE = re.compile(
     re.I,
 )
 ANALYST_ESTIMATE_COMPARISON_RE = re.compile(
-    rf"\b(?P<metric>{_GUIDANCE_METRIC})\b\s*(?:estimate|forecast)s?\b"
+    rf"\b(?P<metric>{_GUIDANCE_METRIC})(?=\s)\s*(?:estimate|forecast)s?\b"
     rf".{{0,100}}?\b(?:to|at|of)\s*(?P<subject>{_COMPARISON_VALUE})"
     rf".{{0,100}}?\b(?P<relation>below|above|in[- ]line with|in line with)\s+"
     rf"(?:the\s+)?(?P<label>consensus|street)(?:\s+(?:estimate|forecast))?\s*"
@@ -169,7 +170,7 @@ ANALYST_ESTIMATE_COMPARISON_RE = re.compile(
     re.I,
 )
 OUTLOOK_ESTIMATE_COMPARISON_RE = re.compile(
-    rf"\b(?P<metric>{_GUIDANCE_METRIC})\b\s+(?:forecast|outlook|guidance)\b"
+    rf"\b(?P<metric>{_GUIDANCE_METRIC})(?=\s)\s+(?:forecast|outlook|guidance)\b"
     rf".{{0,60}}?\b(?:is|at|of|between)\s*(?P<subject>{_COMPARISON_VALUE})"
     rf".{{0,100}}?\b(?:while|vs\.?|versus|compared (?:with|to))\s+"
     rf"(?:(?:analysts?'?\s+)?(?:estimates?|consensus|street)(?:\s+(?:estimate|view))?\s*)"
@@ -323,6 +324,16 @@ def extract_regulatory_decision_facts(text: str) -> list[dict[str, Any]]:
     for outcome, outcome_class, commercial_effect, pattern in _REGULATORY_OUTCOME_PATTERNS:
         for match in pattern.finditer(text):
             if _overlaps(match.span(), occupied):
+                continue
+            if outcome == "clinical_hold" and re.search(
+                r"\b(?:lift(?:s|ed|ing)?|remov(?:e[sd]?|ing)|resolv(?:e[sd]?|ing)|"
+                r"clear(?:s|ed|ing)?\b.{0,80}\b(?:resume|begin enrolling)|"
+                r"address(?:es|ed|ing)? all clinical hold (?:issues|concerns))\b",
+                text,
+                re.I,
+            ):
+                # The noun names the obstacle that was resolved; it is not a
+                # second, still-active adverse disposition.
                 continue
             if authority_match is None and outcome not in {
                 "clinical_hold_lifted",
@@ -584,6 +595,8 @@ def _normalize_comparison_metric(raw: str) -> str:
     metric = " ".join(raw.casefold().split())
     if "eps" in metric or "earnings per share" in metric:
         return "eps"
+    if re.fullmatch(r"rev\.?", metric):
+        return "revenue"
     return metric.replace(" ", "_")
 
 

@@ -13,6 +13,7 @@ from .engine import (
     _sentiment_term_present,
 )
 from .facts import extract_typed_facts
+from .synthesis import derive_issuer_views
 from .storage import persistence_row
 
 
@@ -1544,6 +1545,83 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         }
         self.assertEqual(views["AAA"], "neutral")
         self.assertEqual(views["BBB"], "positive")
+
+    def test_dotted_company_initials_preserve_downgrade_and_entity_binding(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-dotted-company-name",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Analyst downgrade",
+            "text": (
+                "Analysts downgraded J. C. Alpha Therapeutics Inc "
+                "(NASDAQ:AAA) from outperform to perform."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_abbreviated_revenue_guidance_compares_with_consensus(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-abbreviated-revenue-guidance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha sees FY revenue below consensus",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) sees FY26 Rev. $112M-$118M vs $128.56M est.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_news_pending_halt_is_neutral_without_dropping_the_label(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-pending-halt",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha shares halted on news pending",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) shares halted on code news pending.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_confirmed_reorganization_plan_is_positive_despite_bankruptcy_noun(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-reorganization-confirmed",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reorganization plan confirmed",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) said its joint plan of reorganization "
+                "was confirmed by the bankruptcy court."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_evidence_package_dominance_requires_overwhelming_cumulative_weight(self) -> None:
+        entities = [{"entity_id": "security:AAA", "entity_kind": "security"}]
+        statements = [
+            {
+                "statement_id": f"s{index}",
+                "concept_leaf": "earnings.performance",
+                "evidence_spans": [{"quote": quote}],
+            }
+            for index, quote in enumerate(("profit fell", "sales fell", "margin fell", "guidance fell", "orders rose"), 1)
+        ]
+        participations = [
+            {
+                "statement_id": f"s{index}",
+                "entity_id": "security:AAA",
+                "semantic_sentiment": "negative" if index < 5 else "positive",
+                "sentiment_strength": 3 if index < 5 else 2,
+            }
+            for index in range(1, 6)
+        ]
+        self.assertEqual(
+            derive_issuer_views(entities, participations, statements=statements)[0]["composite_sentiment"],
+            "negative",
+        )
+
+        balanced = derive_issuer_views(
+            entities,
+            participations[:2] + [participations[-1]],
+            statements=statements,
+        )
+        self.assertEqual(balanced[0]["composite_sentiment"], "mixed")
 
 
 if __name__ == "__main__":

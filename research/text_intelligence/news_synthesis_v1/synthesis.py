@@ -36,6 +36,26 @@ def derive_issuer_views(
             for row in rows
             if row["semantic_sentiment"] == "negative"
         })
+        directional_packages: dict[str, dict[str, int]] = {
+            "positive": {},
+            "negative": {},
+        }
+        for row in rows:
+            direction = str(row.get("semantic_sentiment") or "")
+            if direction not in directional_packages:
+                continue
+            statement = statement_by_id.get(str(row["statement_id"]), {})
+            quote = str((statement.get("evidence_spans") or [{}])[0].get("quote") or "")
+            # A sentence can produce several mechanically duplicated rules. Count
+            # one evidence package per concept and normalized source span, while
+            # retaining distinct facts within the same article.
+            package_key = re.sub(r"\s+", " ", quote).strip().casefold()
+            directional_packages[direction][package_key] = max(
+                directional_packages[direction].get(package_key, 0),
+                int(row.get("sentiment_strength") or 0),
+            )
+        positive_score = sum(directional_packages["positive"].values())
+        negative_score = sum(directional_packages["negative"].values())
         neutral_ids = sorted({
             str(row["statement_id"])
             for row in rows
@@ -82,6 +102,16 @@ def derive_issuer_views(
         elif above >= 2 and not below:
             sentiment = "positive"
             positive = max(positive, 3)
+        elif (
+            positive_score >= max(12, negative_score * 2)
+            and positive > negative
+        ):
+            sentiment = "positive"
+        elif (
+            negative_score >= max(12, positive_score * 2)
+            and negative > positive
+        ):
+            sentiment = "negative"
         elif positive and negative and min(positive, negative) >= 2 and abs(positive - negative) <= 1:
             sentiment = "mixed"
         elif positive > negative:
