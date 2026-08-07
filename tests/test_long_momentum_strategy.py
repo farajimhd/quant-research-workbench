@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import os
+from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -219,6 +220,42 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertFalse(strict["confirmation"]["groups"]["qmd-alignment"])
         self.assertFalse(strict["confirmation"]["passed"])
+
+    def test_nested_rule_expression_supports_mixed_and_or_logic(self) -> None:
+        legacy = default_long_momentum_parameters()["entry_rules"]
+        rules = deepcopy(legacy)
+        confirmation_sets = []
+        for group in rules["confirmation"].pop("groups"):
+            confirmation_sets.append({
+                **group,
+                "rule_set_id": group.pop("group_id"),
+            })
+        rules["confirmation"] = {
+            "rule_sets": confirmation_sets,
+            "expression": {
+                "kind": "operator",
+                "operator": "and",
+                "children": [
+                    {"kind": "rule_set", "rule_set_id": confirmation_sets[0]["rule_set_id"]},
+                    {
+                        "kind": "operator",
+                        "operator": "or",
+                        "children": [
+                            {"kind": "rule_set", "rule_set_id": confirmation_sets[1]["rule_set_id"]},
+                            {"kind": "rule_set", "rule_set_id": confirmation_sets[2]["rule_set_id"]},
+                        ],
+                    },
+                ],
+            },
+        }
+        result = evaluate_entry_decision_rules(
+            rules,
+            confirmed_observation(macd_histogram=-0.2),
+        )
+        self.assertTrue(result["confirmation"]["groups"]["qmd-alignment"])
+        self.assertTrue(result["confirmation"]["groups"]["vwap-confirmation"])
+        self.assertFalse(result["confirmation"]["groups"]["macd-confirmation"])
+        self.assertTrue(result["confirmation"]["passed"])
 
     def test_confirmed_swing_break_enters_with_semantic_protection(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(assignment(), confirmed_observation())

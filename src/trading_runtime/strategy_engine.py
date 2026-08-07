@@ -1667,7 +1667,8 @@ def _trigger_reference(
     observation: StrategyObservation,
 ) -> tuple[str, float | None, float]:
     matched = set(dict(result.get("trigger") or {}).get("matched_groups") or [])
-    for group in dict(rules.get("trigger") or {}).get("groups") or []:
+    trigger_stage = dict(rules.get("trigger") or {})
+    for group in trigger_stage.get("rule_sets") or trigger_stage.get("groups") or []:
         if str(group.get("group_id") or "") not in matched:
             continue
         for condition in group.get("conditions") or []:
@@ -1694,10 +1695,11 @@ def evaluate_entry_decision_rules(
         stage = dict(resolved.get(stage_name) or {})
         group_results: dict[str, bool] = {}
         group_scores: dict[str, float] = {}
-        for group in stage.get("groups") or []:
+        rule_sets = stage.get("rule_sets") or stage.get("groups") or []
+        for group in rule_sets:
             if not bool(group.get("enabled", True)):
                 continue
-            group_id = str(group.get("group_id") or "")
+            group_id = str(group.get("rule_set_id") or group.get("group_id") or "")
             condition_results = [
                 _condition_matches(dict(condition), observation)
                 for condition in group.get("conditions") or []
@@ -1720,10 +1722,15 @@ def evaluate_entry_decision_rules(
             group_results[group_id] = passed
             group_scores[group_id] = score
         matched = [group_id for group_id, passed in group_results.items() if passed]
+        expression = dict(stage.get("expression") or {})
         operator = str(stage.get("operator") or "any")
         score = len(matched) / len(group_results) if group_results else 0.0
-        passed = bool(group_results) and (
-            all(group_results.values()) if operator == "all" else bool(matched)
+        passed = (
+            _rule_expression_passed(expression, group_results)
+            if expression
+            else bool(group_results) and (
+                all(group_results.values()) if operator == "all" else bool(matched)
+            )
         )
         output[stage_name] = {
             "groups": group_results,
@@ -1942,10 +1949,10 @@ def _rule_stage_passed(
     stage: dict[str, Any],
     observation: StrategyObservation,
 ) -> bool:
-    groups = list(stage.get("groups") or [])
+    groups = list(stage.get("rule_sets") or stage.get("groups") or [])
     if not groups:
         return False
-    group_results: list[bool] = []
+    group_results: dict[str, bool] = {}
     for group in groups:
         if not bool(group.get("enabled", True)):
             continue
@@ -1963,13 +1970,32 @@ def _rule_stage_passed(
             if operator == "score"
             else any(conditions)
         )
-        group_results.append(passed)
+        group_id = str(group.get("rule_set_id") or group.get("group_id") or "")
+        group_results[group_id] = passed
     if not group_results:
         return False
+    expression = dict(stage.get("expression") or {})
+    if expression:
+        return _rule_expression_passed(expression, group_results)
     operator = str(stage.get("operator") or "any")
     if operator == "all":
-        return all(group_results)
-    return any(group_results)
+        return all(group_results.values())
+    return any(group_results.values())
+
+
+def _rule_expression_passed(
+    expression: dict[str, Any],
+    rule_set_results: dict[str, bool],
+) -> bool:
+    if str(expression.get("kind") or "") == "rule_set":
+        return bool(rule_set_results.get(str(expression.get("rule_set_id") or ""), False))
+    children = [
+        _rule_expression_passed(dict(child), rule_set_results)
+        for child in expression.get("children") or []
+    ]
+    if not children:
+        return False
+    return all(children) if str(expression.get("operator") or "") == "and" else any(children)
 
 
 def _campaign_authority(
@@ -1978,6 +2004,26 @@ def _campaign_authority(
     default: str,
 ) -> str:
     return str(dict(state.get("campaign_policy") or {}).get(key) or default)
+
+
+def _validate_runtime_rule_expression(
+    expression: dict[str, Any],
+    rule_set_ids: set[str],
+    label: str,
+) -> None:
+    kind = str(expression.get("kind") or "")
+    if kind == "rule_set":
+        rule_set_id = str(expression.get("rule_set_id") or "")
+        if rule_set_id not in rule_set_ids:
+            raise ValueError(f"{label} references unknown rule set {rule_set_id or '<empty>'}")
+        return
+    if kind != "operator" or str(expression.get("operator") or "") not in {"and", "or"}:
+        raise ValueError(f"{label} expression is unsupported")
+    children = list(expression.get("children") or [])
+    if not children:
+        raise ValueError(f"{label} expression requires at least one child")
+    for child in children:
+        _validate_runtime_rule_expression(dict(child), rule_set_ids, label)
 
 
 def _validate_exit_routes(routes: list[dict[str, Any]]) -> None:
@@ -2011,17 +2057,20 @@ def _validate_entry_rules(rules: dict[str, Any]) -> None:
     catalog = {str(row["source_id"]): row for row in strategy_input_catalog()}
     for stage_name in ("trigger", "confirmation", "veto"):
         stage = dict(rules.get(stage_name) or {})
+        expression = dict(stage.get("expression") or {})
         operator = str(stage.get("operator") or "")
-        if operator not in {"all", "any"}:
+        if not expression and operator not in {"all", "any"}:
             raise ValueError(f"Entry {stage_name} operator is unsupported")
-        groups = list(stage.get("groups") or [])
+        groups = list(stage.get("rule_sets") or stage.get("groups") or [])
         if not groups:
             raise ValueError(f"Entry {stage_name} requires at least one rule group")
         if not any(bool(group.get("enabled", True)) for group in groups):
             raise ValueError(f"Entry {stage_name} requires at least one enabled rule group")
-        group_ids = [str(group.get("group_id") or "") for group in groups]
+        group_ids = [str(group.get("rule_set_id") or group.get("group_id") or "") for group in groups]
         if any(not group_id for group_id in group_ids) or len(set(group_ids)) != len(group_ids):
             raise ValueError(f"Entry {stage_name} rule group ids must be present and unique")
+        if expression:
+            _validate_runtime_rule_expression(expression, set(group_ids), f"Entry {stage_name}")
         for group in groups:
             group_operator = str(group.get("operator") or "")
             if group_operator not in {"all", "any", "score"}:

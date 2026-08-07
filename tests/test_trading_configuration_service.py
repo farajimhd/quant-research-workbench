@@ -75,7 +75,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 10)
+        self.assertEqual(migrated["schema_version"], 11)
         lifecycle = migrated["strategy"]["profiles"][0]["lifecycle"]
         self.assertNotIn("evaluation_trigger", lifecycle["trading_behavior"])
         self.assertEqual(
@@ -108,7 +108,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 10)
+        self.assertEqual(draft["schema_version"], 11)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(
@@ -130,12 +130,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             all(profile["capabilities"] for profile in draft["strategy"]["profiles"])
         )
         self.assertTrue(draft["strategy"]["input_catalog"])
-        self.assertTrue(
-            all(
-                profile["lifecycle"]["initial_entry"]["opportunity"]["groups"]
-                for profile in draft["strategy"]["profiles"]
-            )
-        )
+        self.assertTrue(all(profile["rule_set_catalog"] for profile in draft["strategy"]["profiles"]))
+        self.assertTrue(all(
+            profile["lifecycle"]["initial_entry"]["opportunity"]["expression"]["children"]
+            for profile in draft["strategy"]["profiles"]
+        ))
         lifecycle = default_profile["lifecycle"]
         self.assertEqual(lifecycle["trading_behavior"]["side"], "long")
         self.assertNotIn(
@@ -161,14 +160,14 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             lifecycle["initial_entry"]["order_intent"]["protection_profile"],
             "hybrid-single",
         )
-        self.assertTrue(lifecycle["reentry"]["rules"]["opportunity"]["groups"])
-        self.assertTrue(lifecycle["exit"]["rule_sets"][1]["rules"]["groups"])
+        self.assertTrue(lifecycle["reentry"]["rules"]["opportunity"]["expression"]["children"])
+        self.assertTrue(lifecycle["exit"]["rule_sets"][1]["rules"]["expression"]["children"])
         self.assertTrue(
             any(
                 condition["left_source_id"]
                 == "indicator.flow_structure.score"
-                for group in lifecycle["exit"]["rule_sets"][1]["rules"]["groups"]
-                for condition in group["conditions"]
+                for rule_set in default_profile["rule_set_catalog"]
+                for condition in rule_set["conditions"]
             )
         )
         self.assertNotIn("sizing", default_profile["parameters"])
@@ -386,7 +385,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
     def test_unknown_strategy_input_cannot_enter_runtime_projection(self) -> None:
         draft = self._draft()
-        condition = draft["strategy"]["profiles"][0]["lifecycle"]["initial_entry"]["opportunity"]["groups"][0]["conditions"][0]
+        profile = draft["strategy"]["profiles"][0]
+        opportunity_id = profile["lifecycle"]["initial_entry"]["opportunity"]["expression"]["children"][0]["rule_set_id"]
+        condition = next(row for row in profile["rule_set_catalog"] if row["rule_set_id"] == opportunity_id)["conditions"][0]
         condition["left_source_id"] = "indicator.unregistered.value"
 
         with patch(

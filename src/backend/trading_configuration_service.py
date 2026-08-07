@@ -36,7 +36,7 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 10
+CONFIGURATION_SCHEMA_VERSION = 11
 CONFIGURATION_SECTIONS = {"strategy", "run_plans", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
@@ -705,6 +705,170 @@ def _single_rule_stage(
     }
 
 
+def _rule_set_identifier(context: str, group_id: str, existing: set[str]) -> str:
+    base = "-".join(
+        part for part in "".join(
+            character.lower() if character.isalnum() else " "
+            for character in f"{context}-{group_id}"
+        ).split() if part
+    ) or "rule-set"
+    candidate = base
+    suffix = 2
+    while candidate in existing:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    existing.add(candidate)
+    return candidate
+
+
+def _catalog_stage_rules(
+    stage: dict[str, Any],
+    context: str,
+    catalog: list[dict[str, Any]],
+    existing: set[str],
+) -> dict[str, Any]:
+    if isinstance(stage.get("expression"), dict):
+        return deepcopy(stage)
+    children: list[dict[str, Any]] = []
+    for index, raw_group in enumerate(stage.get("groups") or []):
+        group = deepcopy(dict(raw_group))
+        rule_set_id = _rule_set_identifier(
+            context,
+            str(group.pop("group_id", "") or f"rule-{index + 1}"),
+            existing,
+        )
+        catalog.append({
+            "rule_set_id": rule_set_id,
+            "name": str(group.pop("label", "") or f"Rule set {index + 1}"),
+            "description": "",
+            **group,
+        })
+        children.append({"kind": "rule_set", "rule_set_id": rule_set_id})
+    return {
+        "expression": {
+            "kind": "operator",
+            "operator": "and" if str(stage.get("operator") or "any") == "all" else "or",
+            "children": children,
+        }
+    }
+
+
+def _migrate_profile_rule_catalog(profile: dict[str, Any]) -> None:
+    catalog = list(deepcopy(profile.get("rule_set_catalog") or []))
+    existing = {
+        str(rule_set.get("rule_set_id") or "")
+        for rule_set in catalog
+        if str(rule_set.get("rule_set_id") or "")
+    }
+    lifecycle = dict(profile.get("lifecycle") or {})
+    initial = dict(lifecycle.get("initial_entry") or {})
+    for stage_name in ("opportunity", "confirmation", "blockers"):
+        initial[stage_name] = _catalog_stage_rules(
+            dict(initial.get(stage_name) or {}),
+            f"initial-entry-{stage_name}",
+            catalog,
+            existing,
+        )
+    for step in initial.get("add_steps") or []:
+        step["rules"] = _catalog_stage_rules(
+            dict(step.get("rules") or {}),
+            f"add-{step.get('step_id') or 'step'}",
+            catalog,
+            existing,
+        )
+    lifecycle["initial_entry"] = initial
+    reentry = dict(lifecycle.get("reentry") or {})
+    reentry_rules = dict(reentry.get("rules") or {})
+    for stage_name in ("opportunity", "confirmation", "blockers"):
+        reentry_rules[stage_name] = _catalog_stage_rules(
+            dict(reentry_rules.get(stage_name) or {}),
+            f"reentry-{stage_name}",
+            catalog,
+            existing,
+        )
+    reentry["rules"] = reentry_rules
+    lifecycle["reentry"] = reentry
+    exit_section = dict(lifecycle.get("exit") or {})
+    for route in exit_section.get("rule_sets") or []:
+        route["rules"] = _catalog_stage_rules(
+            dict(route.get("rules") or {}),
+            f"exit-{route.get('rule_set_id') or 'route'}",
+            catalog,
+            existing,
+        )
+    lifecycle["exit"] = exit_section
+    canonical_by_fingerprint: dict[str, str] = {}
+    remapped_ids: dict[str, str] = {}
+    deduplicated: list[dict[str, Any]] = []
+    for rule_set in catalog:
+        fingerprint = json.dumps(
+            {
+                "name": str(rule_set.get("name") or ""),
+                "enabled": bool(rule_set.get("enabled", True)),
+                "operator": str(rule_set.get("operator") or "all"),
+                "required_score": float(rule_set.get("required_score") or 1),
+                "conditions": rule_set.get("conditions") or [],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        rule_set_id = str(rule_set.get("rule_set_id") or "")
+        canonical_id = canonical_by_fingerprint.get(fingerprint)
+        if canonical_id:
+            remapped_ids[rule_set_id] = canonical_id
+            continue
+        canonical_by_fingerprint[fingerprint] = rule_set_id
+        remapped_ids[rule_set_id] = rule_set_id
+        deduplicated.append(rule_set)
+
+    def remap_expression(expression: dict[str, Any]) -> dict[str, Any]:
+        result = deepcopy(expression)
+        if str(result.get("kind") or "") == "rule_set":
+            rule_set_id = str(result.get("rule_set_id") or "")
+            result["rule_set_id"] = remapped_ids.get(rule_set_id, rule_set_id)
+            return result
+        result["children"] = [
+            remap_expression(dict(child))
+            for child in result.get("children") or []
+        ]
+        return result
+
+    for stage in (
+        *(initial.get(name) or {} for name in ("opportunity", "confirmation", "blockers")),
+        *(step.get("rules") or {} for step in initial.get("add_steps") or []),
+        *(reentry_rules.get(name) or {} for name in ("opportunity", "confirmation", "blockers")),
+        *(route.get("rules") or {} for route in exit_section.get("rule_sets") or []),
+    ):
+        stage["expression"] = remap_expression(dict(stage.get("expression") or {}))
+    profile["rule_set_catalog"] = deduplicated
+    profile["lifecycle"] = lifecycle
+
+
+def _expression_rule_set_ids(expression: dict[str, Any]) -> set[str]:
+    if str(expression.get("kind") or "") == "rule_set":
+        rule_set_id = str(expression.get("rule_set_id") or "")
+        return {rule_set_id} if rule_set_id else set()
+    result: set[str] = set()
+    for child in expression.get("children") or []:
+        result.update(_expression_rule_set_ids(dict(child)))
+    return result
+
+
+def _materialize_rule_stage(
+    stage: dict[str, Any],
+    catalog: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    expression = deepcopy(dict(stage.get("expression") or {}))
+    return {
+        "expression": expression,
+        "rule_sets": [
+            deepcopy(catalog[rule_set_id])
+            for rule_set_id in sorted(_expression_rule_set_ids(expression))
+            if rule_set_id in catalog
+        ],
+    }
+
+
 def _default_exit_rule_stage(mechanism: str) -> dict[str, Any]:
     if mechanism == "failed_breakout":
         stage = _single_rule_stage(
@@ -1246,7 +1410,8 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         ):
             raise ValueError("The default Strategy Profile must remain protected")
         lifecycle = dict(profile.get("lifecycle") or {})
-        _validate_strategy_lifecycle(lifecycle)
+        rule_set_catalog = list(profile.get("rule_set_catalog") or [])
+        _validate_strategy_lifecycle(lifecycle, rule_set_catalog)
         definition_config = dict(definition.get("config") or {})
         direction = str(definition_config.get("direction") or "")
         configured_side = str(dict(lifecycle.get("trading_behavior") or {}).get("side") or "")
@@ -1695,6 +1860,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                     {"rules": dict(route.get("rules") or {})}
                 )
             profile["lifecycle"] = lifecycle
+            _migrate_profile_rule_catalog(profile)
             profile["parameters"] = _parameters_without_lifecycle(parameters)
             profile["protected"] = (
                 str(profile.get("profile_id"))
@@ -1894,7 +2060,7 @@ def _strategy_profile(
             "enabled": True,
             "settings": settings,
         })
-    return {
+    profile = {
         "profile_id": profile_id,
         "revision": 1,
         "name": name,
@@ -1909,6 +2075,8 @@ def _strategy_profile(
         "parameters": _parameters_without_lifecycle(parameters),
         "capabilities": capabilities,
     }
+    _migrate_profile_rule_catalog(profile)
+    return profile
 
 
 def _normalize_account_binding(binding: dict[str, Any]) -> None:
@@ -1979,7 +2147,10 @@ def _lifecycle_order_intents(lifecycle: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
+def _validate_strategy_lifecycle(
+    lifecycle: dict[str, Any],
+    raw_rule_set_catalog: list[dict[str, Any]],
+) -> None:
     required = {"trading_behavior", "re_evaluation", "initial_entry", "reentry", "exit"}
     missing = required - set(lifecycle)
     if missing:
@@ -2003,12 +2174,29 @@ def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
         states = set(rule_set.get("campaign_states") or [])
         if not states or not states <= supported_states:
             raise ValueError("Strategy re-evaluation campaign states are unsupported")
+    rule_set_ids = _unique_ids(
+        raw_rule_set_catalog,
+        "rule_set_id",
+        "Strategy rule set",
+    )
+    rule_set_catalog = {
+        str(rule_set["rule_set_id"]): dict(rule_set)
+        for rule_set in raw_rule_set_catalog
+    }
+    for rule_set in raw_rule_set_catalog:
+        _validate_rule_set_definition(dict(rule_set), f"Rule set {rule_set.get('name')}")
     initial_entry = dict(lifecycle["initial_entry"])
     runtime_rules = {
-        "trigger": deepcopy(dict(initial_entry.get("opportunity") or {})),
-        "confirmation": deepcopy(dict(initial_entry.get("confirmation") or {})),
-        "veto": deepcopy(dict(initial_entry.get("blockers") or {})),
+        "trigger": _materialize_rule_stage(dict(initial_entry.get("opportunity") or {}), rule_set_catalog),
+        "confirmation": _materialize_rule_stage(dict(initial_entry.get("confirmation") or {}), rule_set_catalog),
+        "veto": _materialize_rule_stage(dict(initial_entry.get("blockers") or {}), rule_set_catalog),
     }
+    for stage_name in ("opportunity", "confirmation", "blockers"):
+        _validate_rule_stage(
+            dict(initial_entry.get(stage_name) or {}),
+            f"Initial entry {stage_name}",
+            rule_set_ids,
+        )
     parameters = default_long_momentum_parameters()
     parameters["entry_rules"] = runtime_rules
     resolve_long_momentum_parameters(parameters)
@@ -2017,7 +2205,7 @@ def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
     add_steps = list(initial_entry.get("add_steps") or [])
     _unique_ids(add_steps, "step_id", "Initial-entry add step")
     for step in add_steps:
-        _validate_rule_stage(dict(step.get("rules") or {}), f"Add step {step.get('name')}")
+        _validate_rule_stage(dict(step.get("rules") or {}), f"Add step {step.get('name')}", rule_set_ids)
         _validate_capital_request(dict(step.get("capital_request") or {}), f"Add step {step.get('name')}")
         _validate_order_intent(dict(step.get("order_intent") or {}), f"Add step {step.get('name')}")
         if int(step.get("maximum_uses") or 0) < 1:
@@ -2029,10 +2217,16 @@ def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
         raise ValueError("Strategy maximum reentries cannot be negative")
     reentry_rules = dict(reentry.get("rules") or {})
     runtime_reentry_rules = {
-        "trigger": deepcopy(dict(reentry_rules.get("opportunity") or {})),
-        "confirmation": deepcopy(dict(reentry_rules.get("confirmation") or {})),
-        "veto": deepcopy(dict(reentry_rules.get("blockers") or {})),
+        "trigger": _materialize_rule_stage(dict(reentry_rules.get("opportunity") or {}), rule_set_catalog),
+        "confirmation": _materialize_rule_stage(dict(reentry_rules.get("confirmation") or {}), rule_set_catalog),
+        "veto": _materialize_rule_stage(dict(reentry_rules.get("blockers") or {}), rule_set_catalog),
     }
+    for stage_name in ("opportunity", "confirmation", "blockers"):
+        _validate_rule_stage(
+            dict(reentry_rules.get(stage_name) or {}),
+            f"Reentry {stage_name}",
+            rule_set_ids,
+        )
     reentry_parameters = default_long_momentum_parameters()
     reentry_parameters["entry_rules"] = runtime_reentry_rules
     resolve_long_momentum_parameters(reentry_parameters)
@@ -2050,24 +2244,49 @@ def _validate_strategy_lifecycle(lifecycle: dict[str, Any]) -> None:
             timing.get("expires_after_ms") or 0
         ) < 0:
             raise ValueError("Exit rule-set timing cannot be negative")
-        _validate_rule_stage(dict(route.get("rules") or {}), f"Exit rule set {route.get('name')}")
+        _validate_rule_stage(dict(route.get("rules") or {}), f"Exit rule set {route.get('name')}", rule_set_ids)
         _validate_order_intent(dict(route.get("order_intent") or {}), f"Exit rule set {route.get('name')}")
         position_fraction = float(route.get("position_fraction") or 0)
         if not 0 < position_fraction <= 1:
             raise ValueError(f"Exit rule set {route.get('name')} position fraction must be between zero and one")
 
 
-def _validate_rule_stage(stage: dict[str, Any], label: str) -> None:
-    if str(stage.get("operator") or "") not in {"all", "any"}:
-        raise ValueError(f"{label} has unsupported rule-set logic")
-    for group in stage.get("groups") or []:
-        operator = str(group.get("operator") or "")
-        if operator not in {"all", "any", "score"}:
-            raise ValueError(f"{label} has unsupported condition logic")
-        if operator == "score" and not 0 < float(group.get("required_score") or 0) <= 1:
-            raise ValueError(f"{label} required score must be between zero and one")
-        if not list(group.get("conditions") or []):
-            raise ValueError(f"{label} rule sets require at least one condition")
+def _validate_rule_set_definition(rule_set: dict[str, Any], label: str) -> None:
+    operator = str(rule_set.get("operator") or "")
+    if operator not in {"all", "any", "score"}:
+        raise ValueError(f"{label} has unsupported condition logic")
+    if operator == "score" and not 0 < float(rule_set.get("required_score") or 0) <= 1:
+        raise ValueError(f"{label} required score must be between zero and one")
+    if not list(rule_set.get("conditions") or []):
+        raise ValueError(f"{label} requires at least one condition")
+
+
+def _validate_rule_expression(
+    expression: dict[str, Any],
+    label: str,
+    rule_set_ids: set[str],
+) -> None:
+    kind = str(expression.get("kind") or "")
+    if kind == "rule_set":
+        rule_set_id = str(expression.get("rule_set_id") or "")
+        if rule_set_id not in rule_set_ids:
+            raise ValueError(f"{label} references unknown rule set {rule_set_id or '<empty>'}")
+        return
+    if kind != "operator" or str(expression.get("operator") or "") not in {"and", "or"}:
+        raise ValueError(f"{label} has unsupported expression logic")
+    children = list(expression.get("children") or [])
+    if not children:
+        raise ValueError(f"{label} requires at least one rule set")
+    for child in children:
+        _validate_rule_expression(dict(child), label, rule_set_ids)
+
+
+def _validate_rule_stage(
+    stage: dict[str, Any],
+    label: str,
+    rule_set_ids: set[str],
+) -> None:
+    _validate_rule_expression(dict(stage.get("expression") or {}), label, rule_set_ids)
 
 
 def _validate_capital_request(request: dict[str, Any], label: str) -> None:
@@ -2229,11 +2448,15 @@ def _default_protection_profiles() -> list[dict[str, Any]]:
 def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
     parameters = deepcopy(dict(profile.get("parameters") or {}))
     lifecycle = dict(profile.get("lifecycle") or {})
+    rule_set_catalog = {
+        str(rule_set.get("rule_set_id") or ""): dict(rule_set)
+        for rule_set in profile.get("rule_set_catalog") or []
+    }
     initial_entry = dict(lifecycle.get("initial_entry") or {})
     parameters["entry_rules"] = {
-        "trigger": deepcopy(dict(initial_entry.get("opportunity") or {})),
-        "confirmation": deepcopy(dict(initial_entry.get("confirmation") or {})),
-        "veto": deepcopy(dict(initial_entry.get("blockers") or {})),
+        "trigger": _materialize_rule_stage(dict(initial_entry.get("opportunity") or {}), rule_set_catalog),
+        "confirmation": _materialize_rule_stage(dict(initial_entry.get("confirmation") or {}), rule_set_catalog),
+        "veto": _materialize_rule_stage(dict(initial_entry.get("blockers") or {}), rule_set_catalog),
     }
     behavior = deepcopy(dict(lifecycle.get("trading_behavior") or {}))
     re_evaluation = deepcopy(dict(lifecycle.get("re_evaluation") or {}))
@@ -2253,15 +2476,28 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
         },
         "reentry": {
             "rules": {
-                "trigger": deepcopy(dict(reentry_rules.get("opportunity") or {})),
-                "confirmation": deepcopy(dict(reentry_rules.get("confirmation") or {})),
-                "veto": deepcopy(dict(reentry_rules.get("blockers") or {})),
+                "trigger": _materialize_rule_stage(dict(reentry_rules.get("opportunity") or {}), rule_set_catalog),
+                "confirmation": _materialize_rule_stage(dict(reentry_rules.get("confirmation") or {}), rule_set_catalog),
+                "veto": _materialize_rule_stage(dict(reentry_rules.get("blockers") or {}), rule_set_catalog),
             },
             "capital_request": deepcopy(dict(reentry.get("capital_request") or {})),
             "order_intent": deepcopy(dict(reentry.get("order_intent") or {})),
         },
-        "exit": {"rule_sets": deepcopy(exit_rule_sets)},
+        "exit": {"rule_sets": [
+            {
+                **deepcopy(route),
+                "rules": _materialize_rule_stage(dict(route.get("rules") or {}), rule_set_catalog),
+            }
+            for route in exit_rule_sets
+        ]},
     }
+    parameters["phase_policy"]["initial_entry"]["add_steps"] = [
+        {
+            **deepcopy(step),
+            "rules": _materialize_rule_stage(dict(step.get("rules") or {}), rule_set_catalog),
+        }
+        for step in initial_entry.get("add_steps") or []
+    ]
     bindings = {str(row["capability_id"]): row for row in profile.get("capabilities") or [] if row.get("enabled", True)}
     pocket = bindings.get("profit-pocket")
     if pocket:

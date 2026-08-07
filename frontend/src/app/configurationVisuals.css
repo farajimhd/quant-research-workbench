@@ -2611,6 +2611,33 @@
 .strategy-entry-rule-editor .strategy-rule-condition { box-sizing: border-box; min-width: 0; width: 100%; }
 .strategy-entry-rule-editor .strategy-rule-condition { grid-template-columns: auto repeat(2, minmax(0, 1fr)); }
 .strategy-entry-rule-editor .strategy-source-detail { grid-column: 2 / -1; }
+.strategy-rule-composition-page { gap: 18px; }
+.strategy-rule-composition-toolbar { border-bottom: 1px solid var(--configuration-rule); display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); padding-bottom: 16px; }
+.strategy-rule-composition-toolbar > div:first-child { display: grid; gap: 4px; }
+.strategy-rule-composition-toolbar > div:first-child > span { color: var(--configuration-accent); font-size: 10px; font-weight: 700; letter-spacing: .075em; text-transform: uppercase; }
+.strategy-rule-composition-toolbar > div:first-child > strong { font-size: 17px; font-weight: 680; }
+.strategy-rule-composition-toolbar > div:first-child > small { color: var(--muted-foreground); font-size: 12px; line-height: 1.45; }
+.strategy-rule-composition-toolbar > div:last-child { align-items: center; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) auto auto; }
+.strategy-rule-composition-toolbar select { background: var(--surface); border: 1px solid var(--border); border-radius: 7px; color: var(--foreground); min-height: 38px; min-width: 0; padding: 0 10px; width: 100%; }
+.strategy-rule-expression-group { border-left: 2px solid color-mix(in oklab, var(--configuration-accent) 50%, var(--border)); display: grid; gap: 10px; padding: 4px 0 4px 18px; }
+.strategy-rule-expression-group > header { align-items: center; display: flex; gap: 10px; }
+.strategy-rule-expression-group > header > div { background: var(--surface-alt); border: 1px solid var(--border); border-radius: 7px; display: flex; padding: 2px; }
+.strategy-rule-expression-group > header > div button { background: transparent; border: 0; border-radius: 5px; color: var(--muted-foreground); cursor: pointer; font: inherit; font-size: 10px; font-weight: 750; padding: 6px 10px; }
+.strategy-rule-expression-group > header > div button[aria-pressed="true"] { background: var(--foreground); color: var(--background); }
+.strategy-rule-parenthesis { color: var(--configuration-accent); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 24px; font-weight: 400; }
+.strategy-rule-expression-group > div { display: grid; gap: 8px; }
+.strategy-rule-expression-child { align-items: center; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) auto; position: relative; }
+.strategy-rule-expression-operator { background: var(--surface); color: var(--configuration-accent); font-size: 9px; font-weight: 800; grid-column: 1 / -1; justify-self: start; letter-spacing: .08em; margin: -3px 0 -3px 18px; padding: 0 6px; }
+.strategy-rule-expression-leaf { align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; display: grid; gap: 12px; grid-template-columns: auto minmax(0, 1fr) auto; min-height: 58px; padding: 10px 12px; }
+.strategy-rule-expression-leaf > svg { color: var(--configuration-accent); }
+.strategy-rule-expression-leaf > span { display: grid; gap: 3px; }
+.strategy-rule-expression-leaf strong { font-size: 13px; font-weight: 650; }
+.strategy-rule-expression-leaf small { color: var(--muted-foreground); font-size: 11px; line-height: 1.4; }
+.strategy-rule-expression-summary { background: color-mix(in oklab, var(--configuration-accent) 5%, var(--surface)); border: 1px solid color-mix(in oklab, var(--configuration-accent) 24%, var(--border)); border-radius: 9px; display: grid; gap: 7px; padding: 14px 16px; }
+.strategy-rule-expression-summary span { color: var(--configuration-accent); font-size: 9px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+.strategy-rule-expression-summary strong { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; font-weight: 550; line-height: 1.6; }
+.strategy-rule-set-detail .strategy-rule-set-identity { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); }
+.strategy-rule-set-detail > .strategy-rule-group { border: 1px solid var(--border); border-radius: 9px; }
 .strategy-entry-fields { display: grid; gap: 18px; }
 .strategy-entry-fields > .configuration-field { max-width: 620px; }
 .strategy-entry-fields .guided-form-grid { gap: 28px 24px; }
