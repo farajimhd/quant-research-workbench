@@ -1856,10 +1856,17 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
 
     <section className="strategy-authoring-stage">
       {activeStage === "identity" ? <>
-        <StrategyStageIntro hideDescription title="Name and describe this strategy">These fields identify the Strategy Profile wherever it is selected, configured, reviewed, or run. They do not change trading behavior.</StrategyStageIntro>
-        <div className="configuration-field-grid strategy-identity-fields">
-          <TextField help="Use a concise name that distinguishes this Strategy Profile in Run Plans and runtime views." label="Strategy name" onChange={(name) => onProfileChange({ ...profile, name })} value={profile.name} />
-          <TextField help="State the setup, intended market behavior, and purpose of this Strategy Profile." label="Strategy description" onChange={(description) => onProfileChange({ ...profile, description })} value={profile.description} />
+        <div className="strategy-identity-fields">
+          <label className="strategy-identity-field">
+            <span>Strategy name</span>
+            <input autoComplete="off" onChange={(event) => onProfileChange({ ...profile, name: event.target.value })} value={profile.name} />
+            <small>This name identifies the profile in Run Plans and runtime views.</small>
+          </label>
+          <label className="strategy-identity-field">
+            <span>Strategy description</span>
+            <textarea onChange={(event) => onProfileChange({ ...profile, description: event.target.value })} rows={4} value={profile.description} />
+            <small>Summarize the setup, intended market behavior, and purpose.</small>
+          </label>
         </div>
       </> : null}
       {activeStage === "overview" ? <>

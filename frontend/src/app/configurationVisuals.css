@@ -2418,8 +2418,47 @@
 .strategy-editor-guided .strategy-stage-intro h2 { font-size: 22px; margin: 0; }
 .configuration-expert-editor .strategy-editor-guided .strategy-stage-intro p { font-size: 13px; line-height: 1.65; max-width: 720px; }
 .strategy-editor-guided .strategy-stage-intro p[data-layout-placeholder="true"] { visibility: hidden; }
-.strategy-editor-guided .strategy-identity-fields { gap: 22px; grid-template-columns: 1fr; max-width: 720px; }
-.strategy-editor-guided .strategy-identity-fields .configuration-field { gap: 8px; }
+.strategy-editor-guided .strategy-identity-fields {
+  display: grid;
+  gap: 30px;
+  width: 100%;
+}
+.strategy-editor-guided .strategy-identity-field {
+  display: grid;
+  gap: 10px;
+}
+.strategy-editor-guided .strategy-identity-field > span {
+  color: var(--foreground);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+}
+.strategy-editor-guided .strategy-identity-field > :is(input, textarea) {
+  background: var(--surface);
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 9px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 35%, transparent);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+  outline: none;
+  padding: 14px 16px;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+  width: 100%;
+}
+.strategy-editor-guided .strategy-identity-field > input { min-height: 52px; }
+.strategy-editor-guided .strategy-identity-field > textarea { min-height: 118px; resize: vertical; }
+.strategy-editor-guided .strategy-identity-field > :is(input, textarea):hover { border-color: var(--foreground); }
+.strategy-editor-guided .strategy-identity-field > :is(input, textarea):focus {
+  border-color: var(--canvas-link-blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--canvas-link-blue) 15%, transparent);
+}
+.strategy-editor-guided .strategy-identity-field > small {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
 .strategy-editor-guided .strategy-guided-navigation { margin: 0 auto; padding: 22px 0 0; width: 60%; }
 .strategy-editor-guided .strategy-technical-book[hidden] { display: none; }
 
