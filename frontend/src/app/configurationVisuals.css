@@ -646,6 +646,78 @@
 .configuration-expert-editor .strategy-book-cover p { color: var(--muted-foreground); max-width: 780px; }
 .strategy-book-prose { display: grid; gap: 14px; max-width: 790px; }
 
+.strategy-mechanism-overview {
+  border-bottom: 1px solid var(--configuration-rule);
+  display: grid;
+  gap: 18px;
+  padding: 28px 42px 34px;
+}
+.strategy-mechanism-overview > header { display: grid; gap: 5px; max-width: 820px; }
+.strategy-mechanism-overview > header > span,
+.strategy-mechanism-dependencies > span {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.strategy-mechanism-overview > header h2 { font-size: 20px; font-weight: 660; margin: 0; }
+.configuration-expert-editor .strategy-mechanism-overview > header p {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 0;
+}
+.strategy-mechanism-grid { display: grid; gap: 12px; }
+.strategy-mechanism-diagram {
+  background: var(--surface);
+  border: 1px solid var(--configuration-rule);
+  border-radius: 7px;
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  min-width: 0;
+  padding: 16px;
+}
+.strategy-mechanism-diagram figcaption { align-items: baseline; display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.strategy-mechanism-diagram figcaption strong { font-size: 13px; font-weight: 660; }
+.strategy-mechanism-diagram figcaption span { color: var(--muted-foreground); font-size: 10.5px; }
+.strategy-mechanism-flow { align-items: stretch; display: flex; gap: 6px; min-width: 0; }
+.strategy-mechanism-node {
+  align-items: center;
+  background: color-mix(in oklab, var(--mechanism-tone) 6%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--mechanism-tone) 24%, var(--border));
+  border-radius: 6px;
+  color: var(--foreground);
+  display: flex;
+  flex: 1 1 0;
+  gap: 8px;
+  min-width: 112px;
+  padding: 10px;
+}
+.strategy-mechanism-node > svg { color: var(--mechanism-tone); flex: 0 0 auto; }
+.strategy-mechanism-node > span { display: grid; gap: 2px; min-width: 0; }
+.strategy-mechanism-node strong { font-size: 11px; font-weight: 660; }
+.strategy-mechanism-node small { color: var(--muted-foreground); font-size: 9px; line-height: 1.35; }
+.strategy-mechanism-node[data-tone="strategy"] { --mechanism-tone: var(--canvas-link-blue); }
+.strategy-mechanism-node[data-tone="run"] { --mechanism-tone: var(--canvas-link-violet); }
+.strategy-mechanism-node[data-tone="release"] { --mechanism-tone: var(--success); }
+.strategy-mechanism-node[data-tone="dependency"] { --mechanism-tone: var(--muted-foreground); }
+.strategy-mechanism-node[data-tone="source"] { --mechanism-tone: var(--canvas-link-orange); }
+.strategy-mechanism-node[data-tone="portfolio"] { --mechanism-tone: var(--canvas-link-green); }
+.strategy-mechanism-node[data-tone="oms"] { --mechanism-tone: var(--canvas-link-cyan); }
+.strategy-mechanism-arrow { align-items: center; color: var(--muted-foreground); display: flex; flex: 0 0 64px; flex-direction: column; justify-content: center; }
+.strategy-mechanism-arrow small { font-size: 8px; text-align: center; }
+.strategy-mechanism-dependencies { border-top: 1px solid var(--configuration-rule); display: grid; gap: 8px; padding-top: 12px; }
+.strategy-mechanism-dependencies > div { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.strategy-mechanism-safety { align-items: flex-start; background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 6px; display: flex; gap: 9px; padding: 10px 12px; }
+.strategy-mechanism-safety > svg { color: var(--success); flex: 0 0 auto; }
+.strategy-mechanism-safety > div { display: grid; gap: 2px; }
+.strategy-mechanism-safety strong { font-size: 11px; }
+.strategy-mechanism-safety span { color: var(--muted-foreground); font-size: 9.5px; line-height: 1.45; }
+
 .strategy-book-part {
   border-bottom: 1px solid var(--configuration-rule);
   border-top: 1px solid var(--configuration-rule);
@@ -729,6 +801,12 @@
   .strategy-book .strategy-story-chapter-body > header h2 { font-size: 20px; }
   .configuration-expert-editor .strategy-book-cover p,
   .configuration-expert-editor .strategy-book-prose p { font-size: 14px; line-height: 1.72; }
+  .strategy-mechanism-overview { padding: 24px 18px 28px; }
+  .strategy-mechanism-flow { align-items: center; display: grid; grid-template-columns: minmax(0, 1fr); }
+  .strategy-mechanism-node { min-width: 0; width: 100%; }
+  .strategy-mechanism-arrow { flex: none; min-height: 30px; }
+  .strategy-mechanism-arrow svg { transform: rotate(90deg); }
+  .strategy-mechanism-dependencies > div { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 840px) {
