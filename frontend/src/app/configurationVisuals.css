@@ -2447,10 +2447,10 @@
   text-transform: uppercase;
 }
 .strategy-editor-guided .strategy-identity-field > :is(input, textarea) {
-  background: color-mix(in srgb, var(--surface) 88%, var(--canvas-link-blue) 12%);
-  border: 1px solid color-mix(in srgb, var(--border-strong, var(--border)) 76%, var(--canvas-link-blue) 24%);
+  background: var(--surface);
+  border: 1px solid var(--border-strong, var(--border));
   border-radius: 10px;
-  box-shadow: inset 3px 0 var(--canvas-link-blue);
+  box-shadow: none;
   color: var(--foreground);
   font: inherit;
   line-height: 1.5;
@@ -2467,14 +2467,14 @@
 }
 .strategy-editor-guided .strategy-identity-field > textarea {
   font-size: 16px;
+  font-weight: 400;
   min-height: 132px;
   resize: vertical;
 }
 .strategy-editor-guided .strategy-identity-field > :is(input, textarea):hover { border-color: var(--foreground); }
 .strategy-editor-guided .strategy-identity-field > :is(input, textarea):focus {
-  background: var(--surface);
   border-color: var(--canvas-link-blue);
-  box-shadow: inset 3px 0 var(--canvas-link-blue), 0 0 0 3px color-mix(in srgb, var(--canvas-link-blue) 15%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--canvas-link-blue) 15%, transparent);
 }
 .strategy-editor-guided .strategy-identity-field > small {
   color: var(--muted-foreground);
