@@ -89,3 +89,18 @@ def test_git_maintenance_backs_up_before_pruning_unreachable_objects() -> None:
     assert '"fsck", "--connectivity-only"' in source
     assert '"reflog", "expire", "--expire-unreachable=now", "--all"' in source
     assert '"gc", "--prune=now"' in source
+
+
+def test_gateway_launchers_resolve_machine_specific_code_authority() -> None:
+    authority = _source("repository_code_authority.ps1")
+    reference = _source("run_reference_gateway.ps1")
+    live_services = _source("start_live_gateway_services.ps1")
+
+    assert r"d:\tradingcodes\quant-research-workbench" in authority
+    assert r"d:\tradingml\codes\quant-research-workbench" in authority
+    assert "do not start services from a fallback checkout" in authority
+    assert "resolve-repositorycodeauthority" in reference
+    assert "& $authoritativelauncher @psboundparameters" in reference
+    assert "resolve-repositorycodeauthority" in live_services
+    assert '$launcherroot = join-path $reporoot "scripts"' in live_services
+    assert 'join-path $psscriptroot "run_reference_gateway.ps1"' not in live_services

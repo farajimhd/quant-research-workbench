@@ -17,14 +17,23 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
-$newsLauncher = Join-Path $PSScriptRoot "run_news_gateway.ps1"
-$secLauncher = Join-Path $PSScriptRoot "run_sec_gateway.ps1"
-$referenceLauncher = Join-Path $PSScriptRoot "run_reference_gateway.ps1"
-$ibkrLauncher = Join-Path $PSScriptRoot "run_ibkr_gateway_supervisor.ps1"
-$textIntelligenceLauncher = Join-Path $PSScriptRoot "run_text_intelligence.ps1"
-$serviceTabHost = Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1"
-$terminalWindowTargetHelper = Join-Path $PSScriptRoot "windows_terminal_window_target.ps1"
+$invokedRepoRoot = Split-Path -Parent $PSScriptRoot
+$authorityHelper = Join-Path $PSScriptRoot "repository_code_authority.ps1"
+if (-not (Test-Path -LiteralPath $authorityHelper -PathType Leaf)) {
+    throw "Required repository authority helper is missing: $authorityHelper"
+}
+. $authorityHelper
+
+$codeAuthority = Resolve-RepositoryCodeAuthority -InvokedRepositoryRoot $invokedRepoRoot
+$repoRoot = $codeAuthority.Root
+$launcherRoot = Join-Path $repoRoot "scripts"
+$newsLauncher = Join-Path $launcherRoot "run_news_gateway.ps1"
+$secLauncher = Join-Path $launcherRoot "run_sec_gateway.ps1"
+$referenceLauncher = Join-Path $launcherRoot "run_reference_gateway.ps1"
+$ibkrLauncher = Join-Path $launcherRoot "run_ibkr_gateway_supervisor.ps1"
+$textIntelligenceLauncher = Join-Path $launcherRoot "run_text_intelligence.ps1"
+$serviceTabHost = Join-Path $launcherRoot "run_windows_terminal_service_tab.ps1"
+$terminalWindowTargetHelper = Join-Path $launcherRoot "windows_terminal_window_target.ps1"
 
 if (-not (Test-Path -LiteralPath $terminalWindowTargetHelper -PathType Leaf)) {
     throw "Required Windows Terminal target helper is missing: $terminalWindowTargetHelper"
@@ -171,6 +180,11 @@ Assert-Launcher -Path $referenceLauncher
 Assert-Launcher -Path $ibkrLauncher
 Assert-Launcher -Path $textIntelligenceLauncher
 Assert-Launcher -Path $serviceTabHost
+
+Write-Host "Live Gateway code authority: $($codeAuthority.Kind) at $repoRoot"
+if ($codeAuthority.Redirected) {
+    Write-Host "Ignoring launchers from stale/non-authoritative checkout: $invokedRepoRoot"
+}
 
 $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe -EnvironmentName $CondaEnv
 $callerTerminalWindow = Get-WindowsTerminalCallerWindow `

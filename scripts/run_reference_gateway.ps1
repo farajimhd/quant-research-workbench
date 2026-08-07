@@ -27,7 +27,27 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$RepoRoot = Split-Path -Parent $PSScriptRoot
+$invokedRepoRoot = Split-Path -Parent $PSScriptRoot
+$authorityHelper = Join-Path $PSScriptRoot "repository_code_authority.ps1"
+if (-not (Test-Path -LiteralPath $authorityHelper -PathType Leaf)) {
+    throw "Required repository authority helper is missing: $authorityHelper"
+}
+. $authorityHelper
+
+$codeAuthority = Resolve-RepositoryCodeAuthority -InvokedRepositoryRoot $invokedRepoRoot
+$RepoRoot = $codeAuthority.Root
+$authoritativeLauncher = Join-Path $RepoRoot "scripts\run_reference_gateway.ps1"
+if (-not (Test-Path -LiteralPath $authoritativeLauncher -PathType Leaf)) {
+    throw "The Reference Gateway launcher is missing from the $($codeAuthority.Kind) authority: $authoritativeLauncher"
+}
+if ($codeAuthority.Redirected) {
+    Write-Host "Reference Gateway code authority: $($codeAuthority.Kind) at $RepoRoot"
+    Write-Host "Redirecting launcher from stale/non-authoritative checkout: $invokedRepoRoot"
+    & $authoritativeLauncher @PSBoundParameters
+    exit $LASTEXITCODE
+}
+
+Write-Host "Reference Gateway code authority: $($codeAuthority.Kind) at $RepoRoot"
 Set-Location $RepoRoot
 
 $argsList = @("-m", "services.reference_gateway.main")
