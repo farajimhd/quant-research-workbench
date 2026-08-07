@@ -102,7 +102,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         self.assertEqual(draft["schema_version"], 9)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
-        self.assertEqual(len(draft["strategy"]["profile_templates"]), 2)
+        self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
+        self.assertEqual(
+            draft["strategy"]["profile_templates"][0]["name"],
+            "Long Momentum",
+        )
         self.assertTrue(all(profile["editable"] for profile in draft["strategy"]["profiles"]))
         default_profile = next(
             row

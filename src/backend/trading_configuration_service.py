@@ -1010,36 +1010,22 @@ def _default_draft() -> dict[str, Any]:
     system_profiles = [
         _strategy_profile(
             "long-momentum-balanced",
-            "Long Momentum · Balanced",
-            "System starting point balancing breakout confirmation, protection, and re-entry.",
+            "Long Momentum",
+            "Canonical Long Momentum strategy profile.",
             parameters,
             origin="system",
-        ),
-        _strategy_profile(
-            "long-momentum-conservative",
-            "Long Momentum · Conservative",
-            "Higher confirmation and smaller initial size for controlled evaluation.",
-            _overrides(parameters, {"reentry.maximum_attempts": 1}),
-            origin="system",
-        ),
-        _strategy_profile(
-            "long-momentum-semi-auto",
-            "Long Momentum · Semi-automatic",
-            "Operator-confirmed entries with configurable automated position management.",
-            parameters,
-            origin="system",
-            capability_modes={"profit-pocket": "confirm", "exit-watch-reenter": "confirm", "confirmed-pullback-add": "confirm"},
         ),
     ]
-    system_profiles[1]["lifecycle"]["initial_entry"]["capital_request"] = (
-        _default_capital_request("mandate_fraction", 0.10)
-    )
-    system_profiles[1]["lifecycle"]["reentry"]["capital_request"] = (
-        _default_capital_request("mandate_fraction", 0.10)
-    )
     system_profiles[0]["protected"] = True
-    profile_templates = deepcopy(system_profiles[1:])
-    system_profiles = system_profiles[:1]
+    profile_templates = [
+        _strategy_profile(
+            "long-momentum-template",
+            "Long Momentum",
+            "Create an editable Long Momentum strategy profile.",
+            parameters,
+            origin="system",
+        ),
+    ]
     source_assignments = list_strategy_assignments(active_only=True)
     account_ids = list(dict.fromkeys(str(row["account_id"]) for row in source_assignments)) or ["replay"]
     account_keys = {account_id: _account_key(account_id, index) for index, account_id in enumerate(account_ids)}
@@ -2270,17 +2256,6 @@ def _deep_merge(target: dict[str, Any], updates: dict[str, Any]) -> None:
             _deep_merge(target[key], value)
         else:
             target[key] = deepcopy(value)
-
-
-def _overrides(parameters: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
-    result = deepcopy(parameters)
-    for path, value in values.items():
-        cursor = result
-        parts = path.split(".")
-        for part in parts[:-1]:
-            cursor = cursor.setdefault(part, {})
-        cursor[parts[-1]] = value
-    return result
 
 
 def _account_key(account_id: str, index: int) -> str:
