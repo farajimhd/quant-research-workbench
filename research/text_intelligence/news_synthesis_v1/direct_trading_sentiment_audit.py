@@ -7,7 +7,7 @@ import shutil
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from research.text_intelligence.semantic_calibration_v1.candidate_contract import (
     enrich_candidate_rows,
@@ -24,7 +24,7 @@ from .engine import (
 from .taxonomy_audit import discover_pairs, load_json
 
 
-AUDIT_VERSION = "direct_trading_sentiment_audit_v14"
+AUDIT_VERSION = "direct_trading_sentiment_audit_v15"
 IDENTITY_SNAPSHOT_VERSION = "news_synthesis_benchmark_identity_snapshot_v2"
 
 
@@ -257,6 +257,9 @@ def generate_audit(
     exact_matches = 0
     failures: list[dict[str, str]] = []
     records: list[dict[str, Any]] = []
+    all_predictions: list[dict[str, Any]] = []
+    prediction_counts: Counter[str] = Counter()
+    manual_counts: Counter[str] = Counter()
     missing_dispositions = Counter()
     for sample_id in sorted(population.certified_ids):
         annotation = population.annotations[sample_id]
@@ -293,6 +296,22 @@ def generate_audit(
             ticker = str(unit.get("ticker") or "").upper()
             manual = str(unit.get("semantic_direction") or "")
             predicted = sentiments.get(ticker, "missing")
+            eligibility_class = (
+                "analyst_evaluation"
+                if unit.get("analyst_evaluation_eligible")
+                else "forecast_reaction"
+            )
+            prediction_counts[predicted] += 1
+            manual_counts[manual] += 1
+            all_predictions.append({
+                "sample_id": sample_id,
+                "ticker": ticker,
+                "title": str(article.get("publication", {}).get("title") or ""),
+                "eligibility_class": eligibility_class,
+                "manual_sentiment": manual,
+                "predicted_sentiment": predicted,
+                "exact_match": manual == predicted,
+            })
             if manual == predicted:
                 exact_matches += 1
                 continue
@@ -308,11 +327,6 @@ def generate_audit(
                 else:
                     disposition = "issuer_view_missing"
                 missing_dispositions[disposition] += 1
-            eligibility_class = (
-                "analyst_evaluation"
-                if unit.get("analyst_evaluation_eligible")
-                else "forecast_reaction"
-            )
             error_type = f"{manual}_to_{predicted}"
             relative = Path("audit_files") / error_type / f"{sample_id}__{_safe(ticker)}.md"
             target = output_root / relative
@@ -357,12 +371,29 @@ def generate_audit(
         "selection": "Corrected manually reviewed issuer units where forecast_trigger_eligible or analyst_evaluation_eligible is true.",
         "error_definition": "Current News Synthesis issuer-view sentiment for the same ticker differs from corrected manual semantic_direction; absent views are missing errors with explicit failure stages.",
         "error_counts": dict(sorted(error_counts.items())),
+        "prediction_distribution": dict(sorted(prediction_counts.items())),
+        "manual_distribution": dict(sorted(manual_counts.items())),
         "missing_dispositions": dict(sorted(missing_dispositions.items())),
         "engine_failures": failures,
         "records": records,
     }
     (output_root / "identity_snapshot.json").write_text(
         json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    (output_root / "all_predictions.json").write_text(
+        json.dumps({
+            "version": AUDIT_VERSION,
+            "distinct_news": len(eligible_news),
+            "issuer_units": len(all_predictions),
+            "prediction_distribution": dict(sorted(prediction_counts.items())),
+            "manual_distribution": dict(sorted(manual_counts.items())),
+            "records": all_predictions,
+        }, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    (output_root / "prediction_summary.md").write_text(
+        _render_prediction_summary(all_predictions),
         encoding="utf-8",
     )
     if previous_manifest:
@@ -498,8 +529,52 @@ def _render_readme(manifest: Mapping[str, Any]) -> str:
         f"- Audit packets: {population['sentiment_mismatches']}\n"
         f"- Missing sentiments: {population['missing_sentiments']}\n"
         f"- Engine failures: {len(manifest['engine_failures'])}\n\n"
+        f"Prediction distribution: `{json.dumps(manifest.get('prediction_distribution', {}), sort_keys=True)}`\n\n"
+        "`all_predictions.json` contains the predicted and manual label for every eligible issuer unit.\n\n"
         "`identity_snapshot.json` is a prediction-blind, versioned offline benchmark snapshot. "
         "Production continues to use the canonical ClickHouse point-in-time identity tables.\n"
+    )
+
+
+def _render_prediction_summary(rows: Sequence[Mapping[str, Any]]) -> str:
+    prediction_counts = Counter(str(row["predicted_sentiment"]) for row in rows)
+    exact_counts = Counter(
+        str(row["predicted_sentiment"])
+        for row in rows
+        if row.get("exact_match")
+    )
+    by_news: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        by_news[str(row["sample_id"])].add(str(row["predicted_sentiment"]))
+    news_counts = Counter(
+        next(iter(labels)) if len(labels) == 1 else "multi_issuer_split"
+        for labels in by_news.values()
+    )
+    unit_lines = [
+        f"| {label} | {prediction_counts[label]} | {exact_counts[label]} | "
+        f"{prediction_counts[label] - exact_counts[label]} |"
+        for label in ("positive", "negative", "mixed", "neutral", "missing")
+        if prediction_counts[label]
+    ]
+    news_lines = [
+        f"| {label} | {news_counts[label]} |"
+        for label in ("positive", "negative", "mixed", "neutral", "multi_issuer_split")
+        if news_counts[label]
+    ]
+    return (
+        "# Direct-trading prediction summary\n\n"
+        f"The {len(by_news)} eligible news articles contain {len(rows)} issuer-level labels. "
+        "Issuer-level labels are authoritative for multi-ticker news; `multi_issuer_split` below "
+        "means one article has different labels for different issuers.\n\n"
+        "## Issuer-unit predictions\n\n"
+        "| Prediction | Units | Exact vs manual | Mismatched |\n"
+        "|---|---:|---:|---:|\n"
+        + "\n".join(unit_lines)
+        + "\n\n## Article-level view\n\n"
+        "| Article result | News articles |\n"
+        "|---|---:|\n"
+        + "\n".join(news_lines)
+        + "\n\nSee `all_predictions.json` for every sample/ticker label.\n"
     )
 
 

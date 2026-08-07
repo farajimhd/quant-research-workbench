@@ -1623,6 +1623,54 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         )
         self.assertEqual(balanced[0]["composite_sentiment"], "mixed")
 
+    def test_article_local_ticker_alias_binds_headline_to_explicit_share_class(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:a", "AAA", (), "NASDAQ"),
+            IssuerIdentity("BBB", "issuer:b", "BBB", (), "NASDAQ"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-local-share-class-alias",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Beta Foods Q3 EPS down from last year",
+            "text": (
+                "Title: Beta Foods Q3 EPS down from last year\n"
+                "Beta Foods (NASDAQ:BBB) reported quarterly earnings of $2.14 per share."
+            ),
+            "tickers": ["AAA", "BBB"],
+        })
+        ticker_by_entity = {row["entity_id"]: row["ticker"] for row in document["entities"]}
+        views = {
+            ticker_by_entity[row["entity_id"]]: row["composite_sentiment"]
+            for row in document["issuer_views"]
+        }
+        self.assertEqual(views["BBB"], "negative")
+
+    def test_subsidiary_ipo_is_positive_for_parent_and_dilutive_for_issuer(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("IACI", "issuer:iac", "IACI", (), "NASDAQ"),
+            IssuerIdentity("MTCH", "issuer:match", "Match Group", ("Match Group",), "NASDAQ"),
+            IssuerIdentity("BANK", "issuer:bank", "Example Bank", ("Example Bank",), "NYSE"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-subsidiary-ipo-roles",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Match Group prices IPO",
+            "text": (
+                "IAC and Match Group (NASDAQ:MTCH), a wholly-owned subsidiary of IAC, "
+                "announced the pricing of Match Group's initial public offering of shares. "
+                "Example Bank acted as bookrunner."
+            ),
+            "tickers": ["IACI", "MTCH", "BANK"],
+        })
+        ticker_by_entity = {row["entity_id"]: row["ticker"] for row in document["entities"]}
+        views = {
+            ticker_by_entity[row["entity_id"]]: row["composite_sentiment"]
+            for row in document["issuer_views"]
+        }
+        self.assertEqual(views["IACI"], "positive")
+        self.assertEqual(views["MTCH"], "negative")
+        self.assertEqual(views["BANK"], "neutral")
+
 
 if __name__ == "__main__":
     unittest.main()

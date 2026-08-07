@@ -13,7 +13,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v6"
+ENGINE_VERSION = "news_synthesis_engine_v7"
 EXCHANGE_TICKER_RE = re.compile(r"\b(?:NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*([A-Z][A-Z0-9.\-]{0,9})\b", re.I)
 CASHTAG_RE = re.compile(r"(?<![A-Z0-9])\$([A-Z][A-Z0-9.\-]{0,9})\b")
 ROUNDUP_RE = re.compile(r"\b(?:stocks?|companies|biggest movers?|gainers?|losers?)\s+(?:moving|to watch)|\bmarket\s+(?:wrap|recap|update)\b", re.I)
@@ -273,8 +273,12 @@ class NewsSynthesisEngine:
                     entity_ids.add(str(candidate["entity_id"]))
             entities.sort(key=lambda row: (str(row.get("ticker") or ""), str(row["entity_id"])))
         envelope = _envelope(title, text, source)
+        document_aliases = _document_ticker_aliases(identity_text)
         mention_terms = {
-            str(entity["entity_id"]): self.identity_index.mention_terms(entity)
+            str(entity["entity_id"]): tuple(dict.fromkeys((
+                *self.identity_index.mention_terms(entity),
+                *document_aliases.get(_normalize_ticker_identifier(entity.get("ticker")), ()),
+            )))
             for entity in entities
         }
         statements, participations = self._statements(
@@ -951,6 +955,11 @@ def _sentiment(
         return "neutral", 0
     if rule.concept == "capital.financing":
         if re.search(r"\b(?:initial public offering|IPO)\b", normalized):
+            ipo_role = _subsidiary_ipo_role(entity, text, mention_terms)
+            if ipo_role == "parent":
+                return "positive", 2
+            if ipo_role == "unrelated":
+                return "neutral", 0
             if re.search(r"\babove\b.{0,50}\b(?:expected )?(?:price )?range\b", normalized):
                 return "positive", 3
             return "negative", 2
@@ -1665,6 +1674,60 @@ def _entity_in_quote(
     )
 
 
+def _document_ticker_aliases(text: str) -> dict[str, tuple[str, ...]]:
+    """Derive article-local company aliases from explicit exchange/ticker anchors."""
+    aliases: dict[str, list[str]] = {}
+    pattern = re.compile(
+        r"(?:^|[\n.!?])\s*(?:Title:\s*|Teaser:\s*)?"
+        r"(?P<name>[^\n.!?()]{2,100}?)\s*"
+        r"\((?:NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|OTC(?:QX|QB)?|TSX|TSXV|CSE)"
+        r"\s*[:\-]\s*(?P<ticker>[A-Z][A-Z0-9.\-]{0,9})\)",
+        re.I,
+    )
+    for match in pattern.finditer(text):
+        ticker = _normalize_ticker_identifier(match.group("ticker"))
+        name = re.sub(r"^(?:title|teaser)\s*:\s*", "", match.group("name"), flags=re.I).strip(" ,-:")
+        if not ticker or not _safe_alias(_normalize_alias(name)):
+            continue
+        aliases.setdefault(ticker, []).extend(_alias_variants(name))
+    return {
+        ticker: tuple(dict.fromkeys(values))
+        for ticker, values in aliases.items()
+    }
+
+
+def _subsidiary_ipo_role(
+    entity: Mapping[str, Any] | None,
+    text: str,
+    mention_terms: Sequence[str],
+) -> str:
+    """Classify an IPO participant as issuer, parent, or unrelated mention."""
+    if entity is None:
+        return "issuer"
+    normalized = text.casefold()
+    if not re.search(r"\b(?:initial public offering|ipo)\b", normalized):
+        return ""
+    parent_matches = list(re.finditer(
+        r"\b(?:wholly[- ]owned|majority[- ]owned|controlled)?\s*subsidiary of\s+"
+        r"(?P<parent>[A-Z][A-Za-z0-9&./'\-]{1,40})",
+        text,
+        re.I,
+    ))
+    ticker = _normalize_alias(str(entity.get("ticker") or "")).replace(" ", "")
+    for match in parent_matches:
+        parent = match.group("parent").strip(" ,.-")
+        parent_key = _normalize_alias(parent).replace(" ", "")
+        if _entity_in_quote(entity, parent, mention_terms) or (
+            len(parent_key) >= 2
+            and ticker.startswith(parent_key)
+            and len(ticker) - len(parent_key) <= 1
+        ):
+            return "parent"
+    if _entity_in_quote(entity, text, mention_terms):
+        return "issuer"
+    return "unrelated"
+
+
 def _entities_for_quote(
     entities: Sequence[Mapping[str, Any]],
     quote: str,
@@ -1980,6 +2043,13 @@ def _apply_intrinsic_event_tradeoffs(
         elif concept == "capital.financing" and sentiment == "positive" and re.search(
             r"\b(?:conversion price|convertible|shares?|equity)\b",
             normalized,
+        ) and (
+            (entity := entity_by_id.get(str(row["entity_id"]))) is None
+            or _subsidiary_ipo_role(
+                entity,
+                quote,
+                mention_terms.get(str(row["entity_id"]), ()),
+            ) != "parent"
         ):
             add_opposite(row, "negative", 2)
         elif concept == "governance.shareholder_vote" and sentiment == "positive" and re.search(
