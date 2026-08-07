@@ -24,7 +24,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.bar_gpt.v1 import MODEL_FAMILY, MODEL_VERSION
-from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig, to_dict
 from research.bar_gpt.v1.data import AUTOREGRESSIVE_VIEW_NAMES, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarGPTBatch, BarGPTExample, BarView, collate_examples
 from research.bar_gpt.v1.loader import (
@@ -471,28 +470,28 @@ FORMAT TSVRaw
             f"requested daily-session range [{config.daily_history_start_date},{config.end_date}) is not continuously certified; "
             f"certified coverage reaches only {daily_cursor}"
         )
-    certified_condition_tickers = (
-        BAR_GPT_TRAINING_TICKERS
-        if set(config.tickers) <= set(BAR_GPT_TRAINING_TICKERS)
-        else config.tickers
-    )
-    condition_artifact = config.condition_table + ":tickers=" + ",".join(sorted(certified_condition_tickers))
     expected_condition_days = (dt.date.fromisoformat(config.end_date) - dt.date.fromisoformat(config.start_date)).days
     condition_sql = f"""
-SELECT count()
+SELECT artifact_name, count(), countIf(status = 'complete')
 FROM {quote_ident(config.database)}.{quote_ident(config.condition_status_table)} FINAL
-WHERE artifact_name={sql_string(condition_artifact)}
-  AND status='complete'
+WHERE startsWith(artifact_name, {sql_string(config.condition_table + ':tickers=')})
   AND local_date>=toDate({sql_string(config.start_date)})
   AND local_date<toDate({sql_string(config.end_date)})
+GROUP BY artifact_name
 FORMAT TSVRaw
 """
-    condition_days = int(client.query_tsv(condition_sql).strip() or "0")
-    if condition_days != expected_condition_days:
+    certified_condition_tickers, certified_condition_artifacts = _condition_certification_coverage(
+        client.query_tsv(condition_sql),
+        condition_table=config.condition_table,
+        expected_days=expected_condition_days,
+    )
+    missing_condition_tickers = sorted(set(config.tickers) - certified_condition_tickers)
+    if missing_condition_tickers:
         raise RuntimeError(
-            f"exact condition-label sidecar is not certified for the requested range: "
-            f"{condition_days}/{expected_condition_days} calendar days; run "
-            "python -B -m research.bar_gpt.v1.run_build_conditions_1s"
+            "exact condition-label sidecar is not certified for the requested range and tickers: "
+            f"missing={missing_condition_tickers}; run python -B -m "
+            "research.bar_gpt.v1.run_build_conditions_1s --tickers "
+            + ",".join(missing_condition_tickers)
         )
     condition_positive_sql = f"""
 SELECT count(),
@@ -501,7 +500,7 @@ SELECT count(),
        countIf(condition_news_risk_flag=1),
        countIf(condition_luld_limit_state_flag=1)
 FROM {quote_ident(config.database)}.{quote_ident(config.condition_table)}
-WHERE ticker IN ({', '.join(sql_string(ticker) for ticker in certified_condition_tickers)})
+WHERE ticker IN ({', '.join(sql_string(ticker) for ticker in config.tickers)})
   AND local_date>=toDate({sql_string(config.start_date)})
   AND local_date<toDate({sql_string(config.validation_start_date)})
 FORMAT TSVRaw
@@ -518,13 +517,38 @@ FORMAT TSVRaw
         "alias_identity_ranges_checked": str(alias_checks),
         "daily_certified_end": daily_cursor,
         "daily_certified_ranges": str(daily_ranges),
-        "condition_certified_days": str(condition_days),
+        "condition_certified_days": str(expected_condition_days),
+        "condition_certified_artifacts": str(certified_condition_artifacts),
         "condition_positive_rows": str(positive_values[0]),
         "condition_halt_rows": str(positive_values[1]),
         "condition_resume_rows": str(positive_values[2]),
         "condition_news_rows": str(positive_values[3]),
         "condition_luld_rows": str(positive_values[4]),
     }
+
+
+def _condition_certification_coverage(
+    status_tsv: str,
+    *,
+    condition_table: str,
+    expected_days: int,
+) -> tuple[set[str], int]:
+    prefix = condition_table + ":tickers="
+    covered: set[str] = set()
+    complete_artifacts = 0
+    for line in status_tsv.splitlines():
+        values = line.split("\t")
+        if len(values) < 3 or not values[0].startswith(prefix):
+            continue
+        row_count, completed_count = int(values[1]), int(values[2])
+        if row_count != expected_days or completed_count != expected_days:
+            continue
+        tickers = {ticker.strip().upper() for ticker in values[0][len(prefix):].split(",") if ticker.strip()}
+        if not tickers:
+            continue
+        covered.update(tickers)
+        complete_artifacts += 1
+    return covered, complete_artifacts
 
 
 def _stream_config(data: DataConfig) -> ClickHouseBarStreamConfig:

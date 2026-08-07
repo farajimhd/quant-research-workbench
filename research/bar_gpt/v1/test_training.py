@@ -83,6 +83,7 @@ from research.bar_gpt.v1.train import (
     _advance_cursors,
     _batch_eligibility_metrics,
     _checkpoint_policy,
+    _condition_certification_coverage,
     _forward,
     _loaders,
     _mask_inactive_condition_targets,
@@ -133,6 +134,22 @@ def session_view(length: int = 24) -> BarView:
 
 
 class LoaderTrainerContractTest(unittest.TestCase):
+    def test_condition_certification_composes_disjoint_complete_ticker_artifacts(self) -> None:
+        rows = "\n".join((
+            "intraday_condition_bars_by_time_ticker:tickers=AAPL,MSFT\t731\t731",
+            "intraday_condition_bars_by_time_ticker:tickers=GOOGL\t731\t731",
+            "intraday_condition_bars_by_time_ticker:tickers=INCOMPLETE\t730\t730",
+        ))
+
+        covered, artifacts = _condition_certification_coverage(
+            rows,
+            condition_table="intraday_condition_bars_by_time_ticker",
+            expected_days=731,
+        )
+
+        self.assertEqual(covered, {"AAPL", "MSFT", "GOOGL"})
+        self.assertEqual(artifacts, 2)
+
     def test_training_rejects_single_ticker_even_though_shard_builds_allow_it(self) -> None:
         args = parse_training_args(["--tickers", "GOOGL"])
 
@@ -1443,8 +1460,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
                     return "2019-01-01\t2020-03-01\n"
                 if "current_ticker" in query:
                     return ""
-                if "intraday_base_bars_build_status" in query:
-                    return "60\n"
+                if "intraday_base_bars_build_status" in query and "GROUP BY artifact_name" in query:
+                    return "intraday_condition_bars_by_time_ticker:tickers=AAA,BBB,CCC\t60\t60\n"
                 if "intraday_condition_bars_by_time_ticker" in query and "countIf" in query:
                     return "10\t2\t2\t3\t3\n"
                 return self.messages

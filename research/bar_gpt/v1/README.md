@@ -512,7 +512,9 @@ catalog, use `--selection all`; the named `train` and `validation` selections
 intentionally expand to their complete predefined universes:
 
 ```powershell
+python -B -m research.bar_gpt.v1.run_build_conditions_1s --tickers GOOGL --start-date 2019-01-01 --end-date 2021-01-01
 python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection all --tickers GOOGL --start-date 2019-01-01 --end-date 2021-01-01 --workers 1
+python -B -m research.bar_gpt.v1.run_build_conditions_1s --tickers GOOGL --start-date 2026-01-01 --end-date 2026-08-01
 python -B -m research.bar_gpt.v1.run_build_offline_shards --execute --selection all --tickers GOOGL --start-date 2026-01-01 --end-date 2026-08-01 --workers 1
 ```
 
