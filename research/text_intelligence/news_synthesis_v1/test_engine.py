@@ -1396,6 +1396,155 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         })
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
 
+    def test_directional_title_is_a_complete_evidence_lane(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-directional-title-lane",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Raises Low End of Prelim. FY26 Earnings Outlook by $0.05",
+            "text": "Source: wire service.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+        self.assertTrue(any(
+            statement["concept_leaf"] == "guidance.issued"
+            and statement["evidence_spans"][0]["source_field"] == "title"
+            and "FY26 Earnings Outlook" in statement["evidence_spans"][0]["quote"]
+            for statement in document["statements"]
+        ))
+
+    def test_positive_event_grammar_families_are_not_neutralized(self) -> None:
+        cases = (
+            ("Takeover chatter in Alpha", "corporate_transaction.acquisition"),
+            ("Alpha granted an in-person meeting with FDA", "clinical.regulatory_milestone"),
+            ("Alpha Phase 3 study met its primary safety and efficacy endpoints", "clinical.trial_result"),
+            ("Alpha partnering with Beta to commercialize a service", "commercial.partnership"),
+            ("Alpha announces deal with Beta for providing 300 systems", "commercial.contract"),
+            ("Alpha revenues $17.3M vs $16.49M estimate", "financial.operating_performance"),
+            ("Alpha September comp sales up 10%", "financial.operating_performance"),
+            ("Alpha obtained a $4.9M loan related to the Paycheck Protection Program", "financial.liquidity"),
+            ("Alpha granted a patent for a new therapeutic", "legal.proceeding"),
+            ("Alpha launches a diagnostic panel", "product.milestone"),
+            ("Alpha delivers its 24th system", "product.milestone"),
+            ("Alpha continues its sale process in an expedited manner", "strategy.strategic_alternatives"),
+        )
+        for index, (headline, expected_concept) in enumerate(cases):
+            with self.subTest(headline=headline):
+                document = self.engine.synthesize({
+                    "source_id": f"news-positive-grammar-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": headline,
+                    "text": headline,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(
+                    document["issuer_views"][0]["composite_sentiment"],
+                    "positive",
+                )
+                self.assertIn(
+                    expected_concept,
+                    {statement["concept_leaf"] for statement in document["statements"]},
+                )
+
+    def test_transaction_role_grammar_handles_punctuation_and_rumors(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "A P Global", (), "NYSE"),
+            IssuerIdentity("BBB", "issuer:bbb", "BetaBio Pharmaceuticals", (), "NYSE"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-punctuated-acquirer",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "A&P Global will buy BetaBio, while takeover chatter continues in BetaBio",
+            "text": "A&P Global will buy BetaBio, while takeover chatter continues in BetaBio.",
+            "tickers": ["AAA", "BBB"],
+        })
+        ticker_by_entity = {row["entity_id"]: row["ticker"] for row in document["entities"]}
+        roles = {
+            ticker_by_entity[row["entity_id"]]: row["semantic_role"]
+            for row in document["participations"]
+            if ticker_by_entity[row["entity_id"]] in {"AAA", "BBB"}
+        }
+        self.assertEqual(roles["AAA"], "acquirer")
+        self.assertEqual(roles["BBB"], "target")
+
+    def test_positive_repairs_do_not_reverse_adverse_or_nondirectional_events(self) -> None:
+        cases = (
+            (
+                "Alpha received a subpoena requesting documents and information",
+                "negative",
+                "legal.proceeding",
+                "product.milestone",
+            ),
+            (
+                "Alpha announces launch of a secondary public offering of common shares",
+                "negative",
+                "capital.financing",
+                "product.milestone",
+            ),
+        )
+        for index, (headline, expected, required, forbidden) in enumerate(cases):
+            with self.subTest(headline=headline):
+                document = self.engine.synthesize({
+                    "source_id": f"news-positive-repair-control-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": headline,
+                    "text": headline,
+                    "tickers": ["AAA"],
+                })
+                concepts = {row["concept_leaf"] for row in document["statements"]}
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+                self.assertIn(required, concepts)
+                self.assertNotIn(forbidden, concepts)
+
+        executive = self.engine.synthesize({
+            "source_id": "news-executive-introduction-control",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha introduces its new CFO",
+            "text": "Alpha introduces its new CFO.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(executive["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_future_dated_new_partnership_is_not_treated_as_historical(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-future-partnership",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha partnering with Beta to begin commercializing a service in 2027",
+            "text": "Alpha partnering with Beta to begin commercializing a service in 2027.",
+            "tickers": ["AAA", "BBB"],
+        })
+        self.assertTrue(all(
+            view["composite_sentiment"] == "positive"
+            for view in document["issuer_views"]
+        ))
+
+        historical = self.engine.synthesize({
+            "source_id": "news-historical-partnership",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha workforce update",
+            "text": "Alpha launched a joint venture with Beta in 2019.",
+            "tickers": ["AAA", "BBB"],
+        })
+        self.assertTrue(all(
+            view["composite_sentiment"] == "neutral"
+            for view in historical["issuer_views"]
+        ))
+
+    def test_rumored_bid_is_positive_for_target_not_bidder(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-rumored-bid-roles",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha bid for Beta could be imminent",
+            "text": "Alpha Therapeutics bid for Beta Holdings could be imminent.",
+            "tickers": ["AAA", "BBB"],
+        })
+        ticker_by_entity = {row["entity_id"]: row["ticker"] for row in document["entities"]}
+        views = {
+            ticker_by_entity[row["entity_id"]]: row["composite_sentiment"]
+            for row in document["issuer_views"]
+        }
+        self.assertEqual(views["AAA"], "neutral")
+        self.assertEqual(views["BBB"], "positive")
+
 
 if __name__ == "__main__":
     unittest.main()

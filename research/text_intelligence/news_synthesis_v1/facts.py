@@ -140,7 +140,7 @@ _REGULATORY_OUTCOME_PATTERNS = (
 _GUIDANCE_METRIC = (
     r"(?:adjusted\s+|diluted\s+)?EPS|earnings per share|"
     r"(?:core\s+|organic\s+)?(?:revenue|sales) growth|"
-    r"(?:adjusted\s+)?EBITDA|(?:revenue|sales|profit)|(?:gross|operating|EBITDA) margin"
+    r"(?:adjusted\s+)?EBITDA|(?:revenues?|sales|profit)|(?:gross|operating|EBITDA) margin"
 )
 _COMPARISON_VALUE_ATOM = (
     r"(?:(?:E?\$|£|€)\s*)?\(?\d[\d,]*(?:\.\d+)?\)?\s*"
