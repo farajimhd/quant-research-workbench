@@ -101,8 +101,8 @@ prior manifest:
 
 ```powershell
 python -m research.text_intelligence.news_synthesis_v1.run_direct_trading_sentiment_audit `
-  --output-root D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\direct_trading_sentiment_audit_v4 `
-  --previous-manifest D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\direct_trading_sentiment_audit_v3\manifest.json
+  --output-root D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\direct_trading_sentiment_audit_v5 `
+  --previous-manifest D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\direct_trading_sentiment_audit_v4\manifest.json
 ```
 
 The offline snapshot is evaluation evidence only. Historical and live

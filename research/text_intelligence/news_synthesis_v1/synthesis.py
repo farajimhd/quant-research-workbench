@@ -139,7 +139,15 @@ def derive_eligibility(
             and statement_by_id[str(row["statement_id"])]["statement_kind"] in {"event", "assessment", "forecast", "background"}
             and row.get("semantic_role") != "none"
         ]
-        current_event = any(row["statement_kind"] == "event" and row["time_relation"] == "current" for row in substantive)
+        current_event = any(
+            (row["statement_kind"] == "event" and row["time_relation"] == "current")
+            or (
+                row["statement_kind"] == "forecast"
+                and row["concept_leaf"] == "guidance.issued"
+                and row["time_relation"] == "forward"
+            )
+            for row in substantive
+        )
         has_semantic_implication = any(row.get("semantic_sentiment") in {"positive", "negative"} for row in rows)
         identity_ok = entity.get("identity_status") == "resolved"
         tradable_security = entity.get("entity_kind") == "security" and bool(str(entity.get("ticker", "")).strip())

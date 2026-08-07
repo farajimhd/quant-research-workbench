@@ -388,6 +388,85 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertIn("market.price_move_observed", concepts)
         self.assertNotIn("financial.operating_performance", concepts)
 
+    def test_guidance_comparison_drives_sentiment_and_not_analyst_attribution(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-guidance-vs-consensus",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reaffirms FY2027 outlook",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reaffirms FY2027 EPS $2.65 "
+                "vs $2.70 analyst estimate and core sales growth 5.5%."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "report")
+        self.assertEqual(document["envelope"]["information_origin"]["value"], "issuer")
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+        self.assertTrue(next(
+            row["eligible"] for row in document["eligibility"]
+            if row["product"] == "forecast_trigger"
+        ))
+        guidance = next(row for row in document["statements"] if row["concept_leaf"] == "guidance.issued")
+        comparison = next(row for row in guidance["typed_facts"] if row["fact_type"] == "estimate_comparison")
+        self.assertEqual(comparison["metric"], "eps")
+        self.assertEqual(comparison["relation"], "below")
+        self.assertNotIn(
+            "financial.operating_performance",
+            {row["concept_leaf"] for row in document["statements"]},
+        )
+
+    def test_guidance_range_above_consensus_is_positive(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-guidance-range-above-consensus",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha raises outlook",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) sees FY27 adjusted EPS $2.10-$2.30 vs $2.00 est.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+        guidance = next(row for row in document["statements"] if row["concept_leaf"] == "guidance.issued")
+        comparison = next(row for row in guidance["typed_facts"] if row["fact_type"] == "estimate_comparison")
+        self.assertEqual(comparison["relation"], "above")
+
+    def test_guidance_range_spanning_consensus_is_neutral(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-guidance-range-spans-consensus",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha provides sales outlook",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) sees Q4 sales "
+                "$270.0 million-$295.0 million vs $290.4 million estimate."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+        guidance = next(row for row in document["statements"] if row["concept_leaf"] == "guidance.issued")
+        comparison = next(row for row in guidance["typed_facts"] if row["fact_type"] == "estimate_comparison")
+        self.assertEqual(comparison["subject_lower_value"], "270000000")
+        self.assertEqual(comparison["subject_upper_value"], "295000000")
+        self.assertEqual(comparison["relation"], "in_line")
+
+    def test_fiscal_year_results_are_not_mistaken_for_forward_guidance(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-fiscal-year-results",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha FY24 EPS down year over year",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) FY24 EPS $0.55 down from $0.90 year over year.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+        self.assertIn("earnings.performance", {row["concept_leaf"] for row in document["statements"]})
+
+    def test_reaffirmation_without_directional_change_is_neutral(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-reaffirmed-guidance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reaffirms outlook",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) reaffirmed its full-year EPS guidance.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
     def test_background_business_and_unqualified_demand_do_not_create_events(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-background-language", "source_timestamp": "2026-08-03T12:00:00Z",
