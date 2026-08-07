@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -66,6 +67,7 @@ def migrate_record(
     entities: list[dict[str, Any]] = []
     statements: list[dict[str, Any]] = []
     participations: list[dict[str, Any]] = []
+    legacy_view_participations: list[dict[str, Any]] = []
     concept_stats = Counter()
     entity_ids: dict[str, str] = {}
 
@@ -97,11 +99,43 @@ def migrate_record(
         spans = _validated_spans(unit, rendered_text, unit_index, issues, quality_flags)
         if not spans:
             continue
+        semantic_role, discourse_role = _roles(unit)
+        for direction, strength in _legacy_sentiment_variants(unit):
+            if semantic_role == "none":
+                direction, strength = "neutral", 0
+            legacy_view_participations.append(
+                {
+                    "statement_id": f"L{unit_index:04d}.{direction}",
+                    "entity_id": entity_id,
+                    "semantic_role": semantic_role,
+                    "discourse_role": discourse_role,
+                    "semantic_sentiment": direction,
+                    "sentiment_strength": strength,
+                }
+            )
         concepts = [str(value) for value in unit.get("event_concepts", []) if str(value).strip()]
         if not concepts:
             concepts = [""]
             issues.append(f"unit_{unit_index}:missing_concept")
-        sentiment_variants = _sentiment_variants(unit, unit_index, issues)
+        evidence_by_concept = _allocate_evidence(concepts, spans, unit_index, issues)
+        variants_by_concept = [
+            _statement_variants(
+                unit,
+                legacy_concept,
+                evidence_by_concept[index],
+                unit_index,
+                index + 1,
+                issues,
+            )
+            for index, legacy_concept in enumerate(concepts)
+        ]
+        _preserve_mixed_direction_sides(
+            unit,
+            evidence_by_concept,
+            variants_by_concept,
+            unit_index,
+            issues,
+        )
         for concept_index, legacy_concept in enumerate(concepts, start=1):
             concept_leaf, resolution_kind = registry.resolve(legacy_concept)
             concept_stats[resolution_kind] += 1
@@ -110,7 +144,8 @@ def migrate_record(
             kind = _statement_kind(unit, concept_leaf)
             epistemic = _epistemic_status(unit, unit_index, issues)
             time_relation = _time_relation(unit, unit_index, issues)
-            for sentiment_index, (sentiment, strength) in enumerate(sentiment_variants, start=1):
+            sentiment_variants = variants_by_concept[concept_index - 1]
+            for sentiment_index, (sentiment, strength, statement_spans) in enumerate(sentiment_variants, start=1):
                 statement_id = f"S{unit_index:04d}.{concept_index:02d}.{sentiment_index}"
                 statements.append(
                     {
@@ -119,11 +154,10 @@ def migrate_record(
                         "concept_leaf": concept_leaf,
                         "epistemic_status": epistemic,
                         "time_relation": time_relation,
-                        "evidence_spans": spans,
-                        "typed_facts": extract_typed_facts(spans),
+                        "evidence_spans": statement_spans,
+                        "typed_facts": extract_typed_facts(statement_spans),
                     }
                 )
-                semantic_role, discourse_role = _roles(unit)
                 if semantic_role == "none":
                     sentiment, strength = "neutral", 0
                 participations.append(
@@ -142,6 +176,16 @@ def migrate_record(
     if annotation.get("extraction_decision") != "labeled" and entities:
         issues.append("non_labeled_record_contains_entities")
     issuer_views = derive_issuer_views(entities, participations)
+    legacy_views = {
+        str(row["entity_id"]): row
+        for row in derive_issuer_views(entities, legacy_view_participations)
+    }
+    for view in issuer_views:
+        legacy_view = legacy_views.get(str(view["entity_id"]))
+        if legacy_view:
+            view["composite_sentiment"] = legacy_view["composite_sentiment"]
+            view["positive_strength"] = legacy_view["positive_strength"]
+            view["negative_strength"] = legacy_view["negative_strength"]
     eligibility = derive_eligibility(
         entities=entities,
         statements=statements,
@@ -395,23 +439,159 @@ def _roles(unit: Mapping[str, Any]) -> tuple[str, str]:
     return ({"acquirer": "acquirer", "target": "target", "counterparty": "counterparty"}.get(role, "affected_subject"), "none")
 
 
-def _sentiment_variants(unit: Mapping[str, Any], index: int, issues: list[str]) -> list[tuple[str, int]]:
-    old = str(unit.get("semantic_direction", "neutral"))
+def _legacy_sentiment_variants(unit: Mapping[str, Any]) -> list[tuple[str, int]]:
+    direction = str(unit.get("semantic_direction", "neutral"))
     positive = max(0, min(4, int(unit.get("positive_evidence_level", 0) or 0)))
     negative = max(0, min(4, int(unit.get("negative_evidence_level", 0) or 0)))
-    if old == "mixed":
-        issues.append(f"unit_{index}:mixed_sentiment_decomposed")
+    if direction == "mixed":
         rows = []
         if positive:
             rows.append(("positive", positive))
         if negative:
             rows.append(("negative", negative))
         return rows or [("neutral", 0)]
-    if old == "positive":
+    if direction == "positive":
         return [("positive", positive or 1)]
-    if old == "negative":
+    if direction == "negative":
         return [("negative", negative or 1)]
     return [("neutral", 0)]
+
+
+_POSITIVE_DIRECTION = re.compile(
+    r"\b(?:acquir(?:e|ed|es|ing)|approval|approved|award|beat|benefit|buyback|"
+    r"confidence|expan(?:d|ded|sion)|favorable|gain|growth|improv(?:e|ed|ement)|"
+    r"increase|launch|met|outperform|positive|profit|purchase|raise|record|"
+    r"repurchase|restore|strong|success|upside|win|won)\w*\b",
+    re.I,
+)
+_NEGATIVE_DIRECTION = re.compile(
+    r"\b(?:adverse|bankrupt|breach|cancel|concern|declin|decreas|deficien|delay|"
+    r"delist|deteriorat|discontinu|downside|fail|fraud|headwind|impair|investigat|"
+    r"layoff|loss|miss|negative|noncompliance|pressure|recall|reduc|reject|"
+    r"restatement|risk|soft|split|subpoena|suspend|terminat|weak|withdraw)\w*\b",
+    re.I,
+)
+
+
+def _allocate_evidence(
+    concepts: Sequence[str],
+    spans: Sequence[Mapping[str, Any]],
+    unit_index: int,
+    issues: list[str],
+) -> list[list[dict[str, Any]]]:
+    """Create review candidates without copying every unit span onto every concept.
+
+    V3 stored concepts and evidence as parallel unit-level lists. Equal-length
+    lists preserve their reviewed order. Other shapes use lexical affinity and
+    remain explicitly review-required; every source span is retained.
+    """
+    clean_spans = [dict(span) for span in spans]
+    if len(concepts) == 1:
+        return [clean_spans]
+    if len(concepts) == len(clean_spans):
+        issues.append(f"unit_{unit_index}:concept_evidence_positionally_aligned")
+        return [[clean_spans[index]] for index in range(len(concepts))]
+
+    issues.append(f"unit_{unit_index}:concept_evidence_lexically_aligned")
+    allocations: list[list[dict[str, Any]]] = [[] for _ in concepts]
+    concept_tokens = [_semantic_tokens(value) for value in concepts]
+    for span in clean_spans:
+        quote_tokens = _semantic_tokens(str(span.get("quote", "")))
+        scores = [len(tokens & quote_tokens) for tokens in concept_tokens]
+        best = max(range(len(concepts)), key=lambda index: (scores[index], -index))
+        allocations[best].append(span)
+    for index, allocation in enumerate(allocations):
+        if not allocation:
+            # A concept without uniquely assignable evidence remains visible and
+            # source-bound, but is flagged for human decomposition.
+            allocations[index] = clean_spans
+            issues.append(f"unit_{unit_index}:concept_{index + 1}_shares_unit_evidence")
+    return allocations
+
+
+def _semantic_tokens(value: str) -> set[str]:
+    tokens = re.findall(r"[a-z0-9]+", value.casefold())
+    normalized = set(tokens)
+    for token in tokens:
+        for suffix in ("ments", "ment", "ations", "ation", "ings", "ing", "ies", "ed", "es", "s"):
+            if token.endswith(suffix) and len(token) > len(suffix) + 3:
+                normalized.add(token[: -len(suffix)])
+                break
+    return normalized
+
+
+def _direction_score(value: str) -> tuple[int, int]:
+    return len(_POSITIVE_DIRECTION.findall(value)), len(_NEGATIVE_DIRECTION.findall(value))
+
+
+def _statement_variants(
+    unit: Mapping[str, Any],
+    legacy_concept: str,
+    spans: Sequence[Mapping[str, Any]],
+    unit_index: int,
+    concept_index: int,
+    issues: list[str],
+) -> list[tuple[str, int, list[dict[str, Any]]]]:
+    old = str(unit.get("semantic_direction", "neutral"))
+    positive = max(0, min(4, int(unit.get("positive_evidence_level", 0) or 0)))
+    negative = max(0, min(4, int(unit.get("negative_evidence_level", 0) or 0)))
+    clean_spans = [dict(span) for span in spans]
+    if old != "mixed":
+        direction = old if old in {"positive", "negative"} else "neutral"
+        strength = positive if direction == "positive" else negative if direction == "negative" else 0
+        return [(direction, strength or (1 if direction != "neutral" else 0), clean_spans)]
+
+    issues.append(f"unit_{unit_index}:mixed_sentiment_requires_atomic_review")
+    positive_spans: list[dict[str, Any]] = []
+    negative_spans: list[dict[str, Any]] = []
+    unresolved_spans: list[dict[str, Any]] = []
+    concept_positive, concept_negative = _direction_score(legacy_concept)
+    for span in clean_spans:
+        span_positive, span_negative = _direction_score(str(span.get("quote", "")))
+        score_positive = concept_positive + span_positive
+        score_negative = concept_negative + span_negative
+        if score_positive > score_negative:
+            positive_spans.append(span)
+        elif score_negative > score_positive:
+            negative_spans.append(span)
+        else:
+            unresolved_spans.append(span)
+    if positive_spans and negative_spans and not unresolved_spans:
+        return [
+            ("positive", positive or 1, positive_spans),
+            ("negative", negative or 1, negative_spans),
+        ]
+    score_positive, score_negative = _direction_score(
+        " ".join([legacy_concept, *(str(span.get("quote", "")) for span in clean_spans)])
+    )
+    if score_positive > score_negative:
+        return [("positive", positive or 1, clean_spans)]
+    if score_negative > score_positive:
+        return [("negative", negative or 1, clean_spans)]
+    issues.append(f"unit_{unit_index}:concept_{concept_index}_mixed_direction_unresolved")
+    return [("neutral", 0, clean_spans)]
+
+
+def _preserve_mixed_direction_sides(
+    unit: Mapping[str, Any],
+    evidence_by_concept: Sequence[Sequence[Mapping[str, Any]]],
+    variants_by_concept: list[list[tuple[str, int, list[dict[str, Any]]]]],
+    unit_index: int,
+    issues: list[str],
+) -> None:
+    """Keep both reviewed V3 sides visible when lexical decomposition is unsure."""
+    if str(unit.get("semantic_direction", "neutral")) != "mixed":
+        return
+    directions = {direction for variants in variants_by_concept for direction, _strength, _spans in variants}
+    positive = max(0, min(4, int(unit.get("positive_evidence_level", 0) or 0)))
+    negative = max(0, min(4, int(unit.get("negative_evidence_level", 0) or 0)))
+    first_spans = [dict(span) for span in evidence_by_concept[0]]
+    if positive and "positive" not in directions:
+        variants_by_concept[0].append(("positive", positive, first_spans))
+        issues.append(f"unit_{unit_index}:positive_side_preserved_for_review")
+    if negative and "negative" not in directions:
+        variants_by_concept[0].append(("negative", negative, first_spans))
+        issues.append(f"unit_{unit_index}:negative_side_preserved_for_review")
 
 
 def _epistemic_status(unit: Mapping[str, Any], index: int, issues: list[str]) -> str:

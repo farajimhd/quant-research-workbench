@@ -8,7 +8,7 @@ from research.text_intelligence.news_synthesis_v1.registry import ConceptRegistr
 
 
 class MigrationTest(unittest.TestCase):
-    def test_mixed_sentiment_is_decomposed_and_requires_review(self) -> None:
+    def test_mixed_sentiment_is_not_duplicated_on_the_same_evidence(self) -> None:
         text = "Title: Buyer acquires Target\nBuyer acquires Target for $25 million."
         quote = "Buyer acquires Target for $25 million."
         start = text.index(quote)
@@ -56,6 +56,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
         self.assertEqual(len(document["issuer_views"][0]["positive_statement_ids"]), 1)
         self.assertEqual(len(document["issuer_views"][0]["negative_statement_ids"]), 1)
+        self.assertIn("unit_1:mixed_sentiment_requires_atomic_review", audit["issues"])
         self.assertEqual(
             document["synthesis"]["renderer_version"],
             "news_synthesis_renderer_v1",
@@ -64,6 +65,77 @@ class MigrationTest(unittest.TestCase):
             document["envelope"]["production_method"]["value"], "unknown"
         )
         self.assertTrue(validate_document(document).valid)
+
+    def test_parallel_concepts_and_evidence_are_kept_atomic(self) -> None:
+        text = (
+            "Title: Insider activity roundup\n"
+            "The CEO purchased 200,000 shares. "
+            "The company approved a reverse split and delisting strategy."
+        )
+        quotes = [
+            "The CEO purchased 200,000 shares.",
+            "The company approved a reverse split and delisting strategy.",
+        ]
+        spans = [
+            {
+                "source_field": "rendered_text",
+                "start": text.index(quote),
+                "end": text.index(quote) + len(quote),
+                "quote": quote,
+            }
+            for quote in quotes
+        ]
+        annotation = {
+            "annotation_version": "news_semantic_ground_truth_annotation_v3",
+            "sample_id": "NATOMIC",
+            "source_id": "atomic",
+            "source_timestamp": "2026-01-01 12:00:00.000000000",
+            "source_text_sha256": "c" * 64,
+            "extraction_decision": "labeled",
+            "content_role": "editorial_analysis",
+            "source_origin": "editorial_aggregation",
+            "issuer_units": [{
+                "ticker": "ACME",
+                "issuer_role": "primary_subject",
+                "event_concepts": ["insider_purchase", "reverse_split_and_delisting_strategy"],
+                "evidence_spans": spans,
+                "modality": "confirmed",
+                "time_orientation": "current",
+                "semantic_direction": "mixed",
+                "positive_evidence_level": 2,
+                "negative_evidence_level": 2,
+            }, {
+                "ticker": "OTHER",
+                "issuer_role": "primary_subject",
+                "event_concepts": ["insider_purchase"],
+                "evidence_spans": [spans[0]],
+                "modality": "confirmed",
+                "time_orientation": "current",
+                "semantic_direction": "positive",
+                "positive_evidence_level": 1,
+            }],
+        }
+        article = {
+            "sample_id": "NATOMIC",
+            "source_id": "atomic",
+            "source_timestamp": "2026-01-01 12:00:00.000000000",
+            "source_text_sha256": "c" * 64,
+            "publication": {"title": "Insider activity roundup", "content_quality_flags": []},
+            "point_in_time_issuer_candidates": [
+                {"ticker": "ACME", "identity_evidence": ["symbol:ACME"]},
+                {"ticker": "OTHER", "identity_evidence": ["symbol:OTHER"]},
+            ],
+            "rendered_product": {"text": text, "quality_flags": []},
+        }
+        document, _audit = migrate_record(annotation, article, ConceptRegistry.load())
+        acme_rows = [row for row in document["participations"] if row["entity_id"] == "security:ACME"]
+        statement_by_id = {row["statement_id"]: row for row in document["statements"]}
+        self.assertEqual([row["semantic_sentiment"] for row in acme_rows], ["positive", "negative"])
+        self.assertEqual(
+            [statement_by_id[row["statement_id"]]["evidence_spans"][0]["quote"] for row in acme_rows],
+            quotes,
+        )
+        self.assertEqual(document["envelope"]["document_structure"]["value"], "single_subject")
 
     def test_context_mention_cannot_inherit_sentiment(self) -> None:
         text = "Title: Context\nContext mentions ACME."

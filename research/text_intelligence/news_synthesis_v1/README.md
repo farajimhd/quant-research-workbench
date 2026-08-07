@@ -76,6 +76,19 @@ Initialize the separate V1-only certification workspace with:
 python -m research.text_intelligence.news_synthesis_v1.run_initialize_certification
 ```
 
+Prepare a non-authoritative review workspace for every source article that is
+not already certified with:
+
+```powershell
+python -m research.text_intelligence.news_synthesis_v1.run_prepare_pending_conversion
+```
+
+This writes only under `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\manual_conversion_v2`.
+It freezes the certified exclusion set and source hashes, generates improved
+atomic review candidates and packets, and cannot write certified labels. A
+candidate remains untrusted until its complete source, envelope, entities,
+statements, sentiment and eligibility have been manually reviewed.
+
 Review packets contain preserved source evidence and the V1 draft only.
 Certified labels are written separately under
 `manual_certification_v1/certified_labels` and cannot contain unresolved
