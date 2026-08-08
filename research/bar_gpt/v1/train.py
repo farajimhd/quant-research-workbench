@@ -880,6 +880,11 @@ def _training_prefetcher(
     )
 
 
+def _preserve_training_prefetch_during_validation(loader: DataLoader[Any]) -> bool:
+    """Keep immutable offline-shard workers warm across fixed-panel validation."""
+    return isinstance(loader.dataset, OfflineShardDataset)
+
+
 def _amp_dtype(name: str) -> torch.dtype:
     return {"bf16": torch.bfloat16, "fp16": torch.float16, "float32": torch.float32}[name]
 
@@ -2117,14 +2122,21 @@ def main(argv: Iterable[str] | None = None) -> int:
                             deferred_losses.flush(metrics_logger)
                             next_log = samples_seen + max(1, config.train.logging_samples)
                         if validation_due:
-                            # Do not let a full training cache continue issuing
-                            # ClickHouse work while the held-out loader starts
-                            # its own workers. Durable cursors describe only
-                            # consumed batches, so rebuilding after validation
-                            # safely replays any discarded prefetched blocks.
-                            iterator.close()
-                            active_iterator = None
-                            reporter.message("Training prefetch paused for isolated validation")
+                            preserve_training_prefetch = _preserve_training_prefetch_during_validation(train_loader)
+                            if preserve_training_prefetch:
+                                # The fixed validation panel is already materialized and
+                                # immutable offline workers naturally block once the bounded
+                                # host cache is full. Retaining this iterator avoids a costly
+                                # Windows worker-process rebuild without advancing durable
+                                # cursors, which still describe only consumed batches.
+                                reporter.message("Training prefetch retained across offline validation")
+                            else:
+                                # Live ClickHouse workers must stop before isolated
+                                # validation. Rebuilding from durable cursors safely replays
+                                # any discarded prefetched blocks.
+                                iterator.close()
+                                active_iterator = None
+                                reporter.message("Training prefetch paused for isolated validation")
                             if not validation_cache.ready:
                                 reporter.message("Waiting for initial fixed validation panel preparation")
                             reporter.phase("validating")
@@ -2142,7 +2154,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                             if validation_runs_in_epoch < len(epoch_validation_milestones):
                                 next_validation = epoch_start_samples + epoch_validation_milestones[validation_runs_in_epoch]
                                 reporter.schedule_validation(next_validation)
-                            if not _INTERRUPTED and not (
+                            if not preserve_training_prefetch and not _INTERRUPTED and not (
                                 training_limit > 0 and samples_seen >= training_limit
                             ):
                                 train_loader, _unused_validation = _loaders(

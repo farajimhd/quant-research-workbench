@@ -104,6 +104,7 @@ from research.bar_gpt.v1.train import (
     _resolved_warmup_samples,
     restore_checkpoint,
     _resume_data_contract,
+    _preserve_training_prefetch_during_validation,
     _training_prefetcher,
     build_config as build_training_config,
     parse_args as parse_training_args,
@@ -407,6 +408,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(cached.batch_count, 2)
         finally:
             cached.close()
+
+    def test_offline_training_prefetch_is_preserved_during_validation(self) -> None:
+        offline_loader = SimpleNamespace(dataset=object.__new__(OfflineShardDataset))
+        live_loader = SimpleNamespace(dataset=object())
+        self.assertTrue(_preserve_training_prefetch_during_validation(offline_loader))
+        self.assertFalse(_preserve_training_prefetch_during_validation(live_loader))
 
     def test_inactive_condition_channels_are_loss_ineligible(self) -> None:
         batch = SimpleNamespace(horizon_mask=torch.ones((1, 2, 3, 12), dtype=torch.bool))
@@ -1184,7 +1191,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
                     shutdown()
             self.assertEqual(sum(len(batch.tickers) for batch in worker_validation), 2)
 
-    def test_offline_training_pauses_validates_and_resumes_from_worker_cursors(self) -> None:
+    def test_offline_training_preserves_prefetch_across_validation(self) -> None:
         runtime_data = dataclasses.replace(
             self.data_config(),
             loader_stream_contract_version=5,
@@ -1264,6 +1271,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
             cursors: dict[int, CoverageCursor] = {}
             training = _training_prefetcher(train_loader, experiment, device)
+            validation_cache = PreparedValidationBatches(validation_loader)
             try:
                 for _ in range(16):
                     batch = next(training)
@@ -1274,29 +1282,13 @@ class LoaderTrainerContractTest(unittest.TestCase):
                     cursors = _advance_cursors(cursors, batch, latest_per_worker=True)
                     if len(cursors) == 2:
                         break
-            finally:
-                training.close()
-            self.assertEqual(set(cursors), {0, 1})
-
-            validation_cache = PreparedValidationBatches(validation_loader)
-            try:
+                self.assertEqual(set(cursors), {0, 1})
+                self.assertTrue(_preserve_training_prefetch_during_validation(train_loader))
                 metrics = validate(model, validation_cache, experiment, device)
                 self.assertEqual(metrics["validation_data/batches"], 1.0)
                 self.assertGreater(metrics["validation_data/origins"], 0.0)
                 self.assertTrue(model.training)
-            finally:
-                validation_cache.close()
-
-            resumed_loader, _unused_validation = _loaders(
-                experiment,
-                args,
-                resume_cursors=cursors,
-                offline_train_units=train_units,
-                offline_validation_units=validation_units,
-            )
-            resumed = _training_prefetcher(resumed_loader, experiment, device)
-            try:
-                resumed_batch = next(resumed)
+                resumed_batch = next(training)
                 for worker, unit, block in zip(
                     resumed_batch.worker_ids,
                     resumed_batch.unit_indices,
@@ -1312,7 +1304,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 resumed_result.loss.backward()
                 optimizer.step()
             finally:
-                resumed.close()
+                training.close()
+                validation_cache.close()
 
     def test_offline_reporter_tracks_known_worker_totals(self) -> None:
         reporter = ShardBuildReporter(
