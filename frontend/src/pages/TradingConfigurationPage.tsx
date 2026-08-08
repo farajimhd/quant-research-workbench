@@ -51,6 +51,7 @@ type RuntimeMode = "replay" | "backtest" | "backtest_debug" | "paper" | "live";
 type ActionAuthority = "disabled" | "manual" | "confirm" | "automatic" | "inherit";
 type Primitive = boolean | number | string;
 type CatalogParameterValue = Primitive | null;
+type SectionCatalogValue = CatalogParameterValue | string[];
 type ParameterMap = Record<string, unknown>;
 type StrategyPhaseMode = "automatic" | "manual";
 
@@ -127,6 +128,16 @@ type StrategyCatalogItem = {
   parameter: string;
   ruleSetId?: string;
   usage: string;
+};
+
+type SectionCatalogItem = {
+  detail: string;
+  group: string;
+  groupOrder: number;
+  id: string;
+  label: string;
+  path: string;
+  value: SectionCatalogValue;
 };
 
 type RuleCondition = {
@@ -815,7 +826,28 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         </div>
       ) : null}
 
-      {experience === "guided" && draft ? (
+      {section !== "strategy" && section !== "revisions" && draft ? (
+        <ConfigurationSectionStudio
+          draft={draft}
+          guided={<GuidedConfiguration
+            approved={approved}
+            draft={draft}
+            label={label}
+            omsStage={omsGuidedStage}
+            onChange={updateDraft}
+            onContinue={(step) => void saveAndContinue(step)}
+            onLabelChange={setLabel}
+            onOmsStageChange={setOmsGuidedStage}
+            onPublish={publish}
+            onSwitchToExpert={() => undefined}
+            publishing={status === "saving"}
+            revisions={revisions}
+            section={section}
+          />}
+          onChange={(value) => updateDraft(section, value as never)}
+          section={section}
+        />
+      ) : experience === "guided" && draft ? (
         <div className="configuration-guided-workspace"><GuidedConfiguration
           approved={approved}
           draft={draft}
@@ -2028,8 +2060,8 @@ function StrategyParameterDetail({ item, onChange, value }: { item: StrategyCata
   </main>;
 }
 
-function ParameterDocumentation({ group, path, value }: { group: string; path: string; value: CatalogParameterValue | undefined }) {
-  const documentation = strategyParameterDocumentation(path, group, value);
+function ParameterDocumentation({ documentation: suppliedDocumentation, group, path, value }: { documentation?: StrategyParameterDocumentation; group: string; path: string; value: CatalogParameterValue | undefined }) {
+  const documentation = suppliedDocumentation ?? strategyParameterDocumentation(path, group, value);
   return <section aria-label="Parameter documentation" className="strategy-parameter-documentation">
     <header><BookOpenCheck size={18} /><div><span>Parameter guidance</span><h3>Understand this setting before changing it</h3></div></header>
     <div className="strategy-parameter-documentation-copy">
@@ -3551,6 +3583,234 @@ function AddStepsEditor({ catalog, eligibleSessions, executionPolicies, onChange
       </div>
     </section>
   );
+}
+
+type ConfigurableSection = Exclude<TradingConfigurationSection, "strategy" | "revisions">;
+type SectionStudioView = "guided" | "catalog" | "structure";
+
+const SECTION_STUDIO_COPY: Record<ConfigurableSection, { managed: string; title: string }> = {
+  accounts: { managed: "Manage accounts", title: "ACCOUNTS & SESSIONS" },
+  assignments: { managed: "Manage Run Plans", title: "STRATEGY RUN PLANS" },
+  oms: { managed: "Manage policies", title: "OMS & PROTECTION" },
+  portfolio: { managed: "Manage mandates", title: "PORTFOLIO & RISK" },
+};
+
+const SECTION_SYSTEM_KEYS = new Set([
+  "assignment_id", "condition_id", "group_id", "revision", "slice_id", "origin", "editable", "runtime_assignments", "mandate_ids",
+]);
+
+function ConfigurationSectionStudio({ draft, guided, onChange, section }: {
+  draft: Draft;
+  guided: ReactNode;
+  onChange: (value: Draft[ConfigurableSection]) => void;
+  section: ConfigurableSection;
+}) {
+  const [view, setView] = useState<SectionStudioView>("guided");
+  const items = useMemo(() => sectionCatalogItems(section, draft), [draft, section]);
+  const [selectedPath, setSelectedPath] = useState(items[0]?.path ?? "");
+  const selected = items.find((item) => item.path === selectedPath) ?? items[0];
+  useEffect(() => {
+    if (!selectedPath || !items.some((item) => item.path === selectedPath)) setSelectedPath(items[0]?.path ?? "");
+  }, [items, selectedPath]);
+  const copy = SECTION_STUDIO_COPY[section];
+  const structure = section === "assignments"
+    ? <DeploymentEditor draft={draft} onChange={onChange as (value: AssignmentSection) => void} />
+    : section === "portfolio"
+      ? <PortfolioEditor draft={draft} onChange={onChange as (value: PortfolioSection) => void} />
+      : section === "oms"
+        ? <OmsEditor section={draft.oms} onChange={onChange as (value: OmsSection) => void} />
+        : <AccountsEditor draft={draft} onChange={onChange as (value: AccountSection) => void} />;
+
+  function replacePath(path: string, value: SectionCatalogValue) {
+    onChange(setSectionValue(draft[section], path, value) as Draft[ConfigurableSection]);
+  }
+
+  return <div className="strategy-studio-workspace configuration-section-studio">
+    <nav className="strategy-editor-toolbar">
+      <span><strong>{copy.title}</strong><small>{view === "guided" ? "Guided Configuration" : view === "catalog" ? "Parameter Catalog" : copy.managed}</small></span>
+      <div className="configuration-section-toolbar-actions">
+        <div aria-label="Configuration view" className="strategy-editor-mode-tabs" role="tablist">
+          <button aria-selected={view === "catalog"} onClick={() => setView("catalog")} role="tab" type="button"><Search size={13} /> Parameter Catalog</button>
+          <button aria-selected={view === "guided"} onClick={() => setView("guided")} role="tab" type="button"><BookOpenCheck size={13} /> Guided Configuration</button>
+        </div>
+        <button className="button compact configuration-structure-button" onClick={() => setView(view === "structure" ? "guided" : "structure")} type="button"><Settings2 size={14} /> {view === "structure" ? "Done" : copy.managed}</button>
+      </div>
+    </nav>
+    {view === "guided" ? <div className="configuration-guided-workspace configuration-section-guided">{guided}</div> : null}
+    {view === "catalog" ? <div className="configuration-workbench strategy-editor-catalog configuration-section-catalog">
+      <SectionParameterCatalog items={items} onSelect={setSelectedPath} selectedPath={selected?.path ?? ""} />
+      {selected ? <SectionParameterDetail draft={draft} item={selected} onChange={(value) => replacePath(selected.path, value)} section={section} /> : <EmptyState detail="No user-adjustable parameters are available in this section." title="No parameters" />}
+    </div> : null}
+    {view === "structure" ? <div className="configuration-section-structure">{structure}</div> : null}
+  </div>;
+}
+
+function SectionParameterCatalog({ items, onSelect, selectedPath }: { items: SectionCatalogItem[]; onSelect: (path: string) => void; selectedPath: string }) {
+  const [query, setQuery] = useState("");
+  const filtered = items.filter((item) => `${item.label} ${item.group} ${item.detail} ${item.path}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const groups = [...new Set(filtered.map((item) => item.group))];
+  return <aside className="strategy-parameter-catalog">
+    <header><div><span>Parameter catalog</span><strong>{filtered.length} of {items.length}</strong></div><p>Search every editable setting in this configuration.</p></header>
+    <label className="strategy-parameter-search"><Search size={14} /><input aria-label="Search parameters" onChange={(event) => setQuery(event.target.value)} placeholder="Search parameters" value={query} /></label>
+    <div className="strategy-parameter-list">{groups.map((group) => <section className="strategy-parameter-group" key={group}><header><span>{group}</span><strong>{filtered.filter((item) => item.group === group).length}</strong></header>{filtered.filter((item) => item.group === group).map((item) => <button aria-current={selectedPath === item.path ? "page" : undefined} key={item.id} onClick={() => onSelect(item.path)} type="button"><span><strong>{item.label}</strong><small>{item.detail}</small></span><ChevronRight size={14} /></button>)}</section>)}</div>
+  </aside>;
+}
+
+function SectionParameterDetail({ draft, item, onChange, section }: { draft: Draft; item: SectionCatalogItem; onChange: (value: SectionCatalogValue) => void; section: ConfigurableSection }) {
+  const documentation = sectionParameterDocumentation(section, item);
+  return <main className="strategy-parameter-detail-page">
+    <header><span>{item.group}</span><h2>{item.label}</h2><p>{item.detail}</p></header>
+    <section className="strategy-parameter-editor"><SectionParameterField draft={draft} item={item} onChange={onChange} section={section} /></section>
+    <ParameterDocumentation documentation={documentation} group={item.group} path={item.path} value={Array.isArray(item.value) ? item.value.join(", ") : item.value} />
+    <section className="strategy-parameter-reference"><div><span>Configuration path</span><strong>{item.path}</strong></div><div><span>Value type</span><strong>{Array.isArray(item.value) ? "list" : item.value === null ? "optional number" : typeof item.value}</strong></div></section>
+    <footer><Target size={18} /><div><strong>Authority</strong><p>{sectionAuthority(section)}</p></div></footer>
+  </main>;
+}
+
+function SectionParameterField({ draft, item, onChange, section }: { draft: Draft; item: SectionCatalogItem; onChange: (value: SectionCatalogValue) => void; section: ConfigurableSection }) {
+  const help = item.detail;
+  const options = sectionParameterOptions(section, item.path, draft);
+  if (Array.isArray(item.value)) {
+    if (item.path.endsWith("allowed_environments") || item.path.endsWith(".modes")) return <div className="configuration-field configuration-list-field" data-editable="true"><span>{item.label}</span><small>{help}</small><ModeSelector modes={item.value as RuntimeMode[]} onChange={onChange} /></div>;
+    return <TextField help={help} label={item.label} onChange={(value) => onChange(value.split(",").map((part) => part.trim()).filter(Boolean))} value={item.value.join(", ")} />;
+  }
+  if (options) return <SelectField help={help} label={item.label} onChange={onChange} options={options} value={String(item.value ?? "")} />;
+  if (typeof item.value === "boolean") return <BooleanField help={help} label={item.label} onChange={onChange} value={item.value} />;
+  if (typeof item.value === "number") return <NumberField help={help} label={item.label} onChange={onChange} step={stepFor(item.value)} unit={unitFor(item.path)} value={item.value} />;
+  if (item.value === null) return <OptionalNumberField help={help} label={item.label} onChange={onChange} step={0.01} unit={unitFor(item.path)} value={null} />;
+  if (item.path.endsWith("description")) return <label className="configuration-field configuration-textarea-field" data-editable="true"><span>{item.label}</span><small>{help}</small><textarea onChange={(event) => onChange(event.target.value)} value={String(item.value)} /></label>;
+  return <TextField help={help} label={item.label} onChange={onChange} value={String(item.value)} />;
+}
+
+function sectionCatalogItems(section: ConfigurableSection, draft: Draft): SectionCatalogItem[] {
+  const source = draft[section];
+  return flattenSectionValues(source).filter(({ path }) => isSectionEditablePath(path)).map(({ path, value }) => {
+    const group = sectionCatalogGroup(section, path, source);
+    return { detail: sectionParameterHelp(section, path), group: group.group, groupOrder: group.order, id: `${section}:${path}`, label: sectionParameterLabel(path), path, value };
+  }).sort((left, right) => left.groupOrder - right.groupOrder || left.label.localeCompare(right.label));
+}
+
+function flattenSectionValues(value: unknown, prefix = "", result: Array<{ path: string; value: SectionCatalogValue }> = []) {
+  if (value === null && prefix) result.push({ path: prefix, value: null });
+  else if (["boolean", "number", "string"].includes(typeof value) && prefix) result.push({ path: prefix, value: value as Primitive });
+  else if (Array.isArray(value)) {
+    if (value.every((item) => typeof item === "string")) result.push({ path: prefix, value: value as string[] });
+    else value.forEach((item, index) => flattenSectionValues(item, `${prefix}.${index}`, result));
+  } else if (value && typeof value === "object") Object.entries(value).forEach(([key, item]) => flattenSectionValues(item, prefix ? `${prefix}.${key}` : key, result));
+  return result;
+}
+
+function isSectionEditablePath(path: string) {
+  const parts = path.split(".");
+  const leaf = parts.at(-1) ?? path;
+  if (parts.some((part) => SECTION_SYSTEM_KEYS.has(part))) return false;
+  if (["system_managed", "source_account_id", "scanner_view_id", "anchor_source"].includes(leaf)) return false;
+  if (["emergency_exit", "protective_exit", "protective_exit_authority"].includes(leaf)) return false;
+  if (/^deployments\.\d+\.run_plan_id$|^universes\.\d+\.universe_id$|^mandates\.\d+\.mandate_id$|^policies\.\d+\.policy_id$|^groups\.\d+\.group_id$|^profiles\.\d+\.profile_id$|^execution_policies\.\d+\.policy_id$|^protection_profiles\.\d+\.profile_id$|^bindings\.\d+\.account_key$/.test(path)) return false;
+  if (/^protection_profiles\.\d+\.slices\.\d+\.slice_id$/.test(path)) return false;
+  if (path.includes("runtime_assignments") || path.includes("safety_supervisor.enabled_by_environment.live")) return false;
+  return true;
+}
+
+function sectionCatalogGroup(section: ConfigurableSection, path: string, source: Draft[ConfigurableSection]) {
+  const [collection, rawIndex, subgroup] = path.split(".");
+  const index = Number(rawIndex);
+  const entity = Array.isArray((source as unknown as ParameterMap)[collection]) ? ((source as unknown as ParameterMap)[collection] as ParameterMap[])[index] : undefined;
+  const name = typeof entity?.name === "string" ? entity.name : `${readableLabel(collection)} ${Number.isFinite(index) ? index + 1 : ""}`.trim();
+  const orderMap: Record<ConfigurableSection, Record<string, number>> = {
+    accounts: { bindings: 0 }, assignments: { deployments: 0, universes: 1 }, oms: { profiles: 0, execution_policies: 1, protection_profiles: 2 }, portfolio: { mandates: 0, policies: 1, groups: 2 },
+  };
+  return { group: subgroup === "slices" ? `${name} · Protection slices` : name, order: (orderMap[section][collection] ?? 9) * 100 + (Number.isFinite(index) ? index : 0) };
+}
+
+function sectionParameterLabel(path: string) {
+  const parts = path.split(".");
+  const rawLeaf = parts.at(-1) ?? path;
+  const aliases: Record<string, string> = {
+    book_id: "Portfolio book", oms_profile_id: "OMS profile", policy_id: "Policy", portfolio_policy_id: "Portfolio policy",
+    profile_id: path.startsWith("deployments.") ? "Strategy Profile" : "Profile", protection_profile_id: "Protection profile",
+    run_plan_id: "Run Plan", session_key: "Gateway session", source_account_env: "Broker account environment key", universe_id: "Watch Universe",
+  };
+  const leaf = aliases[rawLeaf] ?? readableLabel(rawLeaf);
+  const parent = parts.at(-2) ?? "";
+  if (/^\d+$/.test(parent)) return leaf;
+  if (["settings", "envelope", "protection", "stop", "trailing"].includes(parent)) return `${readableLabel(parent)} · ${leaf}`;
+  return leaf;
+}
+
+function sectionParameterHelp(section: ConfigurableSection, path: string) {
+  const leaf = path.split(".").at(-1) ?? path;
+  const specific: Record<string, string> = {
+    account_class: "Sets the account capability class used by Portfolio and broker preflight.",
+    allowed_environments: "Limits the runtime environments in which this Run Plan may be selected.",
+    allocation_weight: "Sets this mandate's relative allocation when capital is distributed across eligible mandates.",
+    enabled: "Includes or excludes this configured object from new runs after publication.",
+    maximum_cash_fraction: "Caps the share of otherwise available account cash this mandate may use.",
+    maximum_planned_risk_fraction: "Caps combined planned loss after broker state, reservations, and protective stops are reconciled.",
+    maximum_positions: "Caps simultaneous open and reserved positions attributable to this mandate.",
+    modes: "Limits which runtime modes may bind this account.",
+    partial_fill_policy: "Controls what OMS does with the broker-confirmed unfilled remainder.",
+    quote_source: "Selects the authoritative quote feed used by this execution policy.",
+    source_account_env: "Names the local environment key that resolves the broker account without storing its value in the draft.",
+  };
+  return specific[leaf] ?? `Changes ${readableLabel(leaf).toLowerCase()} for this ${section === "assignments" ? "Run Plan configuration" : readableLabel(section)}.`;
+}
+
+function sectionParameterOptions(section: ConfigurableSection, path: string, draft: Draft) {
+  const leaf = path.split(".").at(-1) ?? path;
+  const values: Record<string, string[]> = {
+    account_class: ["simulated", "paper", "cash", "margin", "registered"], add: ["inherit", "disabled", "manual", "confirm", "automatic"], add_policy: ["inherit", "replace", "append"], assignment_mode: ["single", "replicated", "weighted", "partitioned"],
+    base_currency: ["USD", "CAD", "EUR", "GBP", "JPY"], maximum_action_authority: ["manual", "confirm", "automatic"],
+    default: ["manual", "confirm", "automatic"], entry_urgency: ["patient", "regular", "urgent", "very_urgent"], exit_authority: ["manual", "confirm", "automatic"], exit_urgency: ["urgent", "very_urgent"],
+    initial_entry: ["inherit", "disabled", "manual", "confirm", "automatic"], initial_entry_authority: ["manual", "confirm", "automatic"], order_type: ["STP", "STOP_LIMIT"],
+    partial_fill_policy: ["complete_remainder", "accept_partial", "cancel_remainder"], profit_pocket_transition: ["move_to_breakeven", "start_swing_trail", "keep_existing"], quote_source: ["qmd", "ibkr", "simulated"],
+    reentry: ["inherit", "disabled", "manual", "confirm", "automatic"], reentry_authority: ["manual", "confirm", "automatic"], session_end_behavior: ["keep_watching", "stop_when_flat", "exit_and_stop"], session_routing: ["smart"],
+    source: ["configured_symbols", "scanner_view", "watchlist"], stop_method: ["structure", "volatility", "hybrid"], strategic_exit: ["inherit", "disabled", "manual", "confirm", "automatic"], structural_timeframe: ["100ms", "1s", "5s", "10s", "1m"],
+  };
+  if (path.endsWith(".stop.rule_type")) return ["fixed_price", "fixed_percent", "fixed_bps", "fixed_cash_risk", "swing_anchored", "volatility", "hybrid", "catastrophic"].map((value) => ({ label: readableLabel(value), value }));
+  if (path.endsWith(".trailing.rule_type")) return ["none", "broker_amount", "broker_percent", "volatility_trail", "swing_trail", "chandelier", "breakeven_then_trail", "profit_lock_r", "time_tightening"].map((value) => ({ label: readableLabel(value), value }));
+  if (path.endsWith("anchor_ordinal")) return ["most_recent", "second_recent", "third_recent", "fourth_recent"].map((value) => ({ label: readableLabel(value), value }));
+  let options: Array<{ description?: string; label: string; value: string }> | undefined;
+  if (leaf === "profile_id" && section === "assignments") options = draft.strategy.profiles.map((row) => ({ description: row.description, label: row.name, value: row.profile_id }));
+  else if (leaf === "oms_profile_id") options = draft.oms.profiles.map((row) => ({ description: row.description, label: row.name, value: row.profile_id }));
+  else if (leaf === "universe_id") options = draft.assignments.universes.map((row) => ({ description: row.description, label: row.name, value: row.universe_id }));
+  else if (leaf === "account_key") options = draft.accounts.bindings.map((row) => ({ description: `${readableLabel(row.account_class)} account`, label: row.name, value: row.account_key }));
+  else if (leaf === "run_plan_id") options = draft.assignments.deployments.map((row) => ({ description: row.description, label: row.name, value: row.run_plan_id }));
+  else if (leaf === "portfolio_policy_id") options = draft.portfolio.policies.map((row) => ({ label: String(row.name ?? row.policy_id), value: String(row.policy_id) }));
+  else if (leaf.endsWith("execution_policy_id")) options = draft.oms.execution_policies.map((row) => ({ description: row.description, label: row.name, value: row.policy_id }));
+  else if (leaf === "protection_profile_id") options = draft.oms.protection_profiles.map((row) => ({ description: row.description, label: row.name, value: row.profile_id }));
+  else if (leaf === "book_id") options = [{ description: "Use the default portfolio ownership and arbitration book.", label: "Default book", value: "default" }];
+  else if (values[leaf]) options = values[leaf].map((value) => ({ label: readableLabel(value), value }));
+  return options;
+}
+
+function setSectionValue<T>(source: T, path: string, value: SectionCatalogValue): T {
+  const result = deepClone(source) as unknown;
+  const parts = path.split(".");
+  let cursor = result as ParameterMap | unknown[];
+  parts.slice(0, -1).forEach((part) => { cursor = Array.isArray(cursor) ? cursor[Number(part)] as ParameterMap : cursor[part] as ParameterMap; });
+  const leaf = parts.at(-1) ?? path;
+  if (Array.isArray(cursor)) cursor[Number(leaf)] = value;
+  else cursor[leaf] = value;
+  return result as T;
+}
+
+function sectionAuthority(section: ConfigurableSection) {
+  if (section === "assignments") return "Run Plans bind reusable behavior, universe, OMS, and permitted environments. They do not allocate account capital.";
+  if (section === "portfolio") return "Portfolio approves account-specific quantity and arbitrates shared capital after synchronized broker state and risk checks.";
+  if (section === "oms") return "OMS executes approved intent and maintains protection. It cannot increase Portfolio-approved quantity or invent Strategy intent.";
+  return "Account bindings establish exact runtime identity and eligible modes. Broker identifiers remain local when an environment key is configured.";
+}
+
+function sectionParameterDocumentation(section: ConfigurableSection, item: SectionCatalogItem): StrategyParameterDocumentation {
+  const value = Array.isArray(item.value) ? item.value.join(", ") : String(item.value ?? "Automatic");
+  return {
+    role: [item.detail, sectionAuthority(section)],
+    timing: [`The draft value is ${value}. It applies only to new runs after the configuration is validated and published.`],
+    impact: [`Changing ${item.label.toLowerCase()} updates the canonical ${readableLabel(section)} draft used by every guided and catalog view.`],
+    caution: [section === "accounts" ? "Verify broker identity and session ownership before enabling Paper or Live. Secret account values are never stored through this catalog." : "Review dependent references and safety limits before publication; active pinned runs remain unchanged."],
+    cautionTone: section === "accounts" || section === "portfolio" || section === "oms" ? "safety" : "warning",
+  };
 }
 
 function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value: AssignmentSection) => void }) {

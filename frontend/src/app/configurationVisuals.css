@@ -2902,6 +2902,79 @@
   .strategy-parameter-detail-page > section > div:nth-child(n) { border-left: 0; padding-left: 0; padding-right: 0; }
 }
 
+/* Shared configuration studio: Run Plans, Portfolio, OMS, and Accounts use the
+   same catalog/guided reading surface as Strategy Studio. */
+.configuration-section-studio {
+  margin: 0 auto;
+  max-width: var(--strategy-workspace-max);
+  width: 100%;
+}
+.configuration-section-toolbar-actions { align-items: center; display: flex; gap: 8px; margin-left: auto; }
+.strategy-editor-mode-tabs {
+  align-items: center;
+  background: var(--configuration-soft);
+  border: 1px solid var(--configuration-rule);
+  border-radius: 8px;
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+}
+.strategy-editor-mode-tabs button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 11px;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 10px;
+}
+.strategy-editor-mode-tabs button[aria-selected="true"] { background: var(--surface); box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 10%, transparent); color: var(--foreground); }
+.configuration-structure-button { color: var(--muted-foreground); }
+.configuration-section-guided { margin: 12px auto 0; max-width: 1180px; width: 100%; }
+.configuration-section-guided .guided-configuration-shell { grid-template-columns: minmax(0, 1fr); }
+.configuration-section-guided .guided-question-surface { background: transparent; border: 0; box-shadow: none; }
+.configuration-section-guided .guided-question-surface > header { background: transparent; border: 0; border-bottom: 1px solid var(--configuration-rule); padding-inline: 0; }
+.configuration-section-guided .guided-question-list,
+.configuration-section-guided .guided-running-summary,
+.configuration-section-guided .guided-navigation { margin-left: auto; margin-right: auto; width: min(100%, 980px); }
+.configuration-section-catalog { margin-top: 2px; }
+.configuration-section-catalog .strategy-parameter-catalog > header p { color: var(--muted-foreground); font-size: 10px; line-height: 1.45; margin: 0; }
+.configuration-section-catalog .strategy-parameter-detail-page > header > span { color: var(--muted-foreground); font-family: var(--font-mono); font-size: 9px; font-weight: 720; letter-spacing: .08em; text-transform: uppercase; }
+.configuration-list-field { display: grid; gap: 10px; }
+.configuration-list-field > span,
+.configuration-textarea-field > span { color: var(--muted-foreground); font-size: 11px; font-weight: 700; letter-spacing: .055em; text-transform: uppercase; }
+.configuration-list-field > small,
+.configuration-textarea-field > small { color: var(--muted-foreground); font-size: 12px; line-height: 1.5; }
+.configuration-list-field .configuration-mode-selector { display: grid; gap: 8px; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.configuration-list-field .configuration-mode-selector label { align-items: center; background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 8px; display: flex; gap: 7px; justify-content: center; min-height: 46px; padding: 8px; }
+.configuration-textarea-field textarea { background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 8px; color: var(--foreground); font: inherit; line-height: 1.55; min-height: 116px; padding: 12px 14px; resize: vertical; }
+.configuration-section-structure { margin: 2px auto 0; max-width: var(--strategy-workspace-max); width: 100%; }
+.configuration-section-structure > .configuration-workbench { grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); }
+.configuration-section-structure .configuration-library,
+.configuration-section-structure .configuration-detail-heading,
+.configuration-section-structure .configuration-group { border-color: var(--configuration-rule); box-shadow: none; }
+.configuration-section-structure .configuration-library { background: var(--surface); border-radius: 8px; }
+.configuration-section-structure .configuration-detail { min-width: 0; }
+
+@media (max-width: 1100px) {
+  .configuration-section-toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .configuration-structure-button { order: 2; }
+  .configuration-section-structure > .configuration-workbench { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 760px) {
+  .configuration-section-toolbar-actions { margin-left: 0; width: 100%; }
+  .strategy-editor-mode-tabs { flex: 1 1 100%; }
+  .strategy-editor-mode-tabs button { flex: 1; justify-content: center; }
+  .configuration-section-toolbar-actions > .button { flex: 1; justify-content: center; }
+  .configuration-list-field .configuration-mode-selector { grid-template-columns: 1fr; }
+}
+
 /* Reading-first typography trial. Deliberately scoped to the application sidebar
    and non-Canvas configuration pages; Live, Replay, Backtest, and Canvas content
    retain their existing typography. */
