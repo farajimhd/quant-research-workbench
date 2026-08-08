@@ -2898,6 +2898,15 @@
   line-height: 1.35;
 }
 
+/* Guided Strategy field headings share the muted label treatment used by
+   Identity and Observe, regardless of the underlying control primitive. */
+.strategy-editor-guided :is(
+  .strategy-authoring-stage,
+  .strategy-rule-set-authoring
+) :is(.configuration-field > span, .configuration-choice-set > legend) {
+  color: var(--muted-foreground);
+}
+
 .trading-configuration-page h1 {
   font-family: var(--font-display);
   font-size: var(--configuration-type-title);
