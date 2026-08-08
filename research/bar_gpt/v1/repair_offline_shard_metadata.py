@@ -19,6 +19,7 @@ from research.bar_gpt.v1.offline_shards import (
     OFFLINE_SHARD_CONTRACT_VERSION,
     _atomic_json,
     _sha256,
+    assert_shard_catalog_writable,
     condition_positive_counts,
     load_shard,
 )
@@ -231,6 +232,8 @@ def repair_candidate(
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     root = Path(args.root)
+    if args.execute:
+        assert_shard_catalog_writable(root)
     candidates, catalog = discover_candidates(
         root,
         tickers=_csv(str(args.tickers)),

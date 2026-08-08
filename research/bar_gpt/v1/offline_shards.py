@@ -48,6 +48,7 @@ OFFLINE_SHARD_CONTRACT_VERSION = 3
 # context at every origin, and origin-independent packed-block boundaries.
 OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 5
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
+SHARD_CATALOG_LOCK_FILENAME = "SHARD_CATALOG_IMMUTABLE.json"
 
 
 _STORAGE_IRRELEVANT_CONFIG_FIELDS = frozenset({
@@ -393,6 +394,20 @@ def sidecar_path(path: Path) -> Path:
     return path.with_suffix(".json")
 
 
+def shard_catalog_lock_path(root: Path) -> Path:
+    return root / SHARD_CATALOG_LOCK_FILENAME
+
+
+def assert_shard_catalog_writable(root: Path) -> None:
+    """Fail closed when a catalog has been sealed against further mutation."""
+    marker = shard_catalog_lock_path(root)
+    if marker.exists():
+        raise RuntimeError(
+            f"offline shard catalog is immutable: {root}; lock={marker}. "
+            "Choose a different --output-root for any new cohort or shard generation."
+        )
+
+
 def _canonical_config(config: DataConfig) -> dict[str, Any]:
     return dataclasses.asdict(config)
 
@@ -730,6 +745,7 @@ def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig
 
 
 def write_unit(root: Path, payload: dict[str, Any], *, certify_hash: bool) -> dict[str, Any]:
+    assert_shard_catalog_writable(root)
     key = str(payload["unit_key"])
     path = shard_path(root, key)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1090,6 +1106,7 @@ def collate_compiled_blocks(
 
 
 def _write_empty(root: Path, config: DataConfig, key: str) -> dict[str, Any]:
+    assert_shard_catalog_writable(root)
     path = shard_path(root, key)
     value = {
         "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
@@ -1591,6 +1608,7 @@ def _partition_tickers(
 
 
 def rebuild_catalog(root: Path, expected_hash: str) -> dict[str, Any]:
+    assert_shard_catalog_writable(root)
     values = completed_units(root, expected_hash)
     catalog = {
         "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
@@ -1854,6 +1872,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.execute:
         return _run_main(args, None)
     root = args.output_root.resolve()
+    # Check before BuildRunLog creates diagnostics beneath the shard root.
+    # Unit and catalog writers repeat the check to close force-rebuild and
+    # mid-run sealing paths as well.
+    assert_shard_catalog_writable(root)
     run_log = BuildRunLog(root, arguments=vars(args))
     print(f"Durable build diagnostics: {run_log.directory}", flush=True)
     try:

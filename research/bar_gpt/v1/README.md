@@ -662,6 +662,21 @@ sidecars are skipped. `--max-shards N` provides a bounded smoke. The optional
 substantial I/O to the 2.3 TB catalog; without it, the original certified digest
 is preserved while tensor structure and metadata are still checked.
 
+The completed `offline_shards_v3` authority can be permanently sealed after its
+catalog has been certified:
+
+```powershell
+python -B -m research.bar_gpt.v1.lock_offline_shard_catalog
+python -B -m research.bar_gpt.v1.lock_offline_shard_catalog --execute
+```
+
+The root-level `SHARD_CATALOG_IMMUTABLE.json` marker binds the lock to the
+current certified `manifest/catalog.json` SHA-256 and counts. Once present,
+normal builds, force rebuilds, covered-empty certification, catalog rebuilds,
+and metadata repairs fail before modifying the root. Training, discovery, and
+read-only shard inspection remain allowed. A later ticker cohort must use a
+new `--output-root`; the lock has no override flag by design.
+
 Completion advances only after the shard is atomically renamed, SHA-256
 certified, and accompanied by its sidecar manifest. Rerunning the same command
 skips compatible certified or explicitly covered-empty ticker-months. A changed

@@ -58,6 +58,7 @@ from research.bar_gpt.v1.offline_shards import (
     OFFLINE_SHARD_CONTRACT_VERSION,
     DEFAULT_OUTPUT_ROOT,
     ShardBuildReporter,
+    assert_shard_catalog_writable,
     _partition_tickers,
     _process_exit_detail,
     _resolve_cpu_threads_per_worker,
@@ -75,11 +76,13 @@ from research.bar_gpt.v1.offline_shards import (
     materialize_block,
     OfflineShardDataset,
     shard_path,
+    shard_catalog_lock_path,
     shard_compatibility_hash,
     stable_unit_index,
     validate_origin_context,
     write_unit,
 )
+from research.bar_gpt.v1.lock_offline_shard_catalog import lock_catalog
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter, _format_value, _ratio_markup
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES, build_next_bar_targets, build_physical_horizon_targets
@@ -1002,6 +1005,36 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(validation_shards[validation_shards.index("--selection") + 1], "validation")
         self.assertIn("--execute", validation_shards)
         self.assertNotIn("run_pilot_offline_shards", " ".join(item for _label, command in stages for item in command))
+
+    def test_immutable_catalog_blocks_execute_before_build_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog_path = root / "manifest" / "catalog.json"
+            catalog_path.parent.mkdir(parents=True)
+            catalog_path.write_text(json.dumps({
+                "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
+                "config_hash": "abc123",
+                "counts": {
+                    "units": 7, "complete": 6, "covered_empty": 1,
+                    "bytes": 123, "blocks": 45, "origins": 67,
+                },
+            }), encoding="utf-8")
+            proposed = lock_catalog(root, reason="test completed catalog", execute=False)
+            self.assertFalse(shard_catalog_lock_path(root).exists())
+            locked = lock_catalog(root, reason="test completed catalog", execute=True)
+            self.assertEqual(locked["catalog_sha256"], proposed["catalog_sha256"])
+            self.assertEqual(locked["policy"]["future_cohorts"], "require_new_output_root")
+            with self.assertRaisesRegex(RuntimeError, "catalog is immutable"):
+                assert_shard_catalog_writable(root)
+            with patch("research.bar_gpt.v1.offline_shards.BuildRunLog") as build_log:
+                with self.assertRaisesRegex(RuntimeError, "different --output-root"):
+                    offline_shards_main(["--execute", "--output-root", str(root)])
+                build_log.assert_not_called()
+            # Re-locking the same unchanged catalog is idempotent.
+            self.assertEqual(
+                lock_catalog(root, reason="ignored on existing lock", execute=True),
+                locked,
+            )
 
     def test_offline_shard_identity_excludes_loader_batch_and_selection_settings(self) -> None:
         base = self.data_config()
