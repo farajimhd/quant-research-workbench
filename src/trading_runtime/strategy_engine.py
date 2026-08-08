@@ -504,6 +504,10 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
     _validate_entry_rules(dict(parameters.get("entry_rules") or {}))
     phase_policy = dict(parameters.get("phase_policy") or {})
     if phase_policy:
+        for phase_name in ("initial_entry", "manage", "reentry", "exit"):
+            mode = str(dict(phase_policy.get(phase_name) or {}).get("mode") or "automatic")
+            if mode not in {"automatic", "manual"}:
+                raise ValueError(f"Unsupported strategy {phase_name} mode")
         for phase_name in ("initial_entry", "reentry"):
             phase = dict(phase_policy.get(phase_name) or {})
             if phase:
@@ -547,6 +551,13 @@ def _decision_rules_source_dependencies(
     return dependencies
 
 
+def _phase_is_automatic(parameters: dict[str, Any], phase_name: str) -> bool:
+    return str(
+        dict(dict(parameters.get("phase_policy") or {}).get(phase_name) or {}).get("mode")
+        or "automatic"
+    ) == "automatic"
+
+
 def _active_rule_source_dependencies(
     parameters: dict[str, Any],
     observation: StrategyObservation,
@@ -556,31 +567,37 @@ def _active_rule_source_dependencies(
     phase_policy = dict(parameters.get("phase_policy") or {})
     if not observation.position_quantity:
         if reentries:
+            if not _phase_is_automatic(parameters, "reentry"):
+                return set()
             return _decision_rules_source_dependencies(
                 dict(dict(phase_policy.get("reentry") or {}).get("rules") or {})
             )
+        if not _phase_is_automatic(parameters, "initial_entry"):
+            return set()
         return _decision_rules_source_dependencies(
             dict(parameters.get("entry_rules") or {})
         )
 
-    # Open-position protection and trailing logic are code-owned mechanisms,
-    # not author-defined rule sets. Their authoritative market dependencies
-    # remain part of the active subscription alongside strategic exit/add rules.
-    dependencies = {
-        ("market.last_price", ""),
-        ("indicator.structure.swing_high", ""),
-        ("indicator.structure.swing_low", ""),
-    }
-    for route in dict(phase_policy.get("exit") or {}).get("rule_sets") or []:
-        if bool(route.get("enabled", True)):
-            dependencies.update(
-                _rule_stage_source_dependencies(dict(route.get("rules") or {}))
-            )
-    for step in dict(phase_policy.get("initial_entry") or {}).get("add_steps") or []:
-        if bool(step.get("enabled", True)):
-            dependencies.update(
-                _rule_stage_source_dependencies(dict(step.get("rules") or {}))
-            )
+    # Last price remains subscribed for protective-stop enforcement in every
+    # mode. Structural/trailing and add dependencies belong to automatic
+    # position management; strategic-exit dependencies belong to automatic exit.
+    dependencies = {("market.last_price", "")}
+    if _phase_is_automatic(parameters, "exit"):
+        for route in dict(phase_policy.get("exit") or {}).get("rule_sets") or []:
+            if bool(route.get("enabled", True)):
+                dependencies.update(
+                    _rule_stage_source_dependencies(dict(route.get("rules") or {}))
+                )
+    if _phase_is_automatic(parameters, "manage"):
+        dependencies.update({
+            ("indicator.structure.swing_high", ""),
+            ("indicator.structure.swing_low", ""),
+        })
+        for step in dict(phase_policy.get("initial_entry") or {}).get("add_steps") or []:
+            if bool(step.get("enabled", True)):
+                dependencies.update(
+                    _rule_stage_source_dependencies(dict(step.get("rules") or {}))
+                )
     return dependencies
 
 
@@ -656,6 +673,18 @@ class LongMomentumStrategyEngine:
         state.pop("force_entry_requested", None)
         if assignment.status == AssignmentStatus.ENTRY_PENDING:
             return self._result(assignment, observation, "wait", "entry_fill_pending", 0.0, 1.0, state, AssignmentStatus.ENTRY_PENDING)
+        phase_name = "reentry" if reentries else "initial_entry"
+        if not _phase_is_automatic(parameters, phase_name):
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                "reentry_manual_mode" if reentries else "initial_entry_manual_mode",
+                0.0,
+                1.0,
+                state,
+                AssignmentStatus.REENTRY_COOLDOWN if reentries else AssignmentStatus.WATCHING,
+            )
         if reentries > int(reentry["maximum_attempts"]):
             return self._result(assignment, observation, "wait", "maximum_reentries_reached", 0.0, 1.0, state, AssignmentStatus.COMPLETED)
         if reentries and not assignment.permissions.reenter:
@@ -703,7 +732,6 @@ class LongMomentumStrategyEngine:
         if not observation.market_open:
             return self._result(assignment, observation, "wait", "market_not_open", 0.0, 1.0, state, AssignmentStatus.WATCHING)
 
-        phase_name = "reentry" if reentries else "initial_entry"
         phase_policy = dict(parameters.get("phase_policy") or {})
         phase = dict(phase_policy.get(phase_name) or {})
         phase_rules = (
@@ -837,11 +865,19 @@ class LongMomentumStrategyEngine:
         state: dict[str, Any],
     ) -> StrategyEngineResult:
         side = _strategy_side(parameters)
+        manage_automatic = _phase_is_automatic(parameters, "manage")
         if side == "long":
             state["high_water_price"] = max(float(state.get("high_water_price") or observation.price), observation.price)
         else:
             state["low_water_price"] = min(float(state.get("low_water_price") or observation.price), observation.price)
-        state["active_stop"] = _ratcheted_stop(observation, parameters, state, side=side)
+        if manage_automatic:
+            state["active_stop"] = _ratcheted_stop(observation, parameters, state, side=side)
+        else:
+            state["active_stop"] = float(
+                state.get("active_stop")
+                or state.get("initial_stop")
+                or _initial_stop(observation, parameters, observation.price, side=side)
+            )
         stop = float(state["active_stop"])
         breakout_level = float(state.get("breakout_level") or 0)
         breakout_buffer = observation.price * float(state.get("breakout_buffer_bps") or 0) / 10_000
@@ -856,6 +892,7 @@ class LongMomentumStrategyEngine:
         protection_breached = (
             observation.price <= stop if side == "long" else observation.price >= stop
         )
+        exit_automatic = _phase_is_automatic(parameters, "exit")
         if protection_breached:
             exit_route = {
                 "route_id": "oms-protective-stop",
@@ -863,7 +900,7 @@ class LongMomentumStrategyEngine:
                 "mechanism": "protective_stop",
                 "position_fraction": 1.0,
             }
-        else:
+        elif exit_automatic:
             exit_rule_sets = list(
                 dict(
                     dict(parameters.get("phase_policy") or {}).get("exit") or {}
@@ -884,6 +921,8 @@ class LongMomentumStrategyEngine:
                     side=side,
                 )
             )
+        else:
+            exit_route = None
         manual_exit_requested = bool(state.pop("manual_exit_requested", False))
         if manual_exit_requested:
             exit_route = {
@@ -941,6 +980,20 @@ class LongMomentumStrategyEngine:
                         and not state.get("disable_after_exit")
                     ),
                 },
+            )
+
+        if not manage_automatic:
+            return self._result(
+                assignment,
+                observation,
+                "hold",
+                "position_management_manual_mode",
+                observation.qmd_score,
+                _confirmation_confidence(observation),
+                state,
+                AssignmentStatus.MANAGING,
+                invalidation_price=stop,
+                trailing_amount=_trailing_amount(observation, parameters),
             )
 
         confirmation: dict[str, bool] = {}

@@ -620,6 +620,75 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(result.evaluation.signals[0].reason, "protective_stop")
         self.assertEqual(result.evaluation.signals[0].action, "exit")
 
+    def test_manual_initial_entry_mode_skips_entry_rule_evaluation(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["phase_policy"] = {"initial_entry": {
+            "mode": "manual",
+            "capital_request": {"mode": "fixed_quantity", "value": 100, "allow_replacement": False},
+            "order_intent": {"execution_policy": "adaptive_urgent", "protection_profile": "hybrid-single", "partial_fill_policy": "complete_remainder", "deadline_ms": 750},
+        }}
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "wait")
+        self.assertEqual(result.evaluation.signals[0].reason, "initial_entry_manual_mode")
+        self.assertFalse(result.evaluation.intents)
+
+    def test_manual_reentry_mode_skips_reentry_rule_evaluation(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["phase_policy"] = {"reentry": {
+            "mode": "manual",
+            "capital_request": {"mode": "fixed_quantity", "value": 100, "allow_replacement": False},
+            "order_intent": {"execution_policy": "adaptive_urgent", "protection_profile": "hybrid-single", "partial_fill_policy": "complete_remainder", "deadline_ms": 750},
+        }}
+        waiting = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.REENTRY_COOLDOWN,
+            state={"reentries": 1, "last_exit_at": (NOW - timedelta(seconds=5)).isoformat()},
+        )
+
+        result = LongMomentumStrategyEngine().evaluate(waiting, confirmed_observation())
+
+        self.assertEqual(result.evaluation.signals[0].action, "wait")
+        self.assertEqual(result.evaluation.signals[0].reason, "reentry_manual_mode")
+        self.assertFalse(result.evaluation.intents)
+
+    def test_manual_manage_and_exit_modes_preserve_protective_stop(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["phase_policy"] = {
+            "manage": {"mode": "manual"},
+            "exit": {"mode": "manual"},
+        }
+        managed = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.MANAGING,
+            state={
+                "active_stop": 100.0,
+                "initial_stop": 100.0,
+                "breakout_level": 101.0,
+                "entry_reference_price": 101.0,
+                "high_water_price": 101.0,
+            },
+        )
+
+        held = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(price=100.5, position_quantity=100, average_price=101.0),
+        )
+        protected = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(price=99.0, position_quantity=100, average_price=101.0),
+        )
+
+        self.assertEqual(held.evaluation.signals[0].reason, "position_management_manual_mode")
+        self.assertEqual(held.evaluation.signals[0].action, "hold")
+        self.assertEqual(held.state["active_stop"], 100.0)
+        self.assertEqual(protected.evaluation.signals[0].reason, "protective_stop")
+        self.assertEqual(protected.evaluation.signals[0].action, "exit")
+
     def test_bullish_choch_adds_only_with_confirmation(self) -> None:
         managed = assignment(
             status=AssignmentStatus.MANAGING,

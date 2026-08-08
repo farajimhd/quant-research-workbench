@@ -53,7 +53,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             self.assertEqual(_resolved_source_account_id(accounts["paper"]), "DU-PAPER-TEST")
             self.assertEqual(_resolved_source_account_id(accounts["cash"]), "U-CASH-TEST")
 
-    def test_schema_v12_migration_removes_global_evaluation_gate(self) -> None:
+    def test_schema_v13_migration_adds_lifecycle_phase_modes(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
@@ -75,8 +75,14 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 12)
+        self.assertEqual(migrated["schema_version"], 13)
         lifecycle = migrated["strategy"]["profiles"][0]["lifecycle"]
+        self.assertEqual(lifecycle["phase_modes"], {
+            "initial_entry": "automatic",
+            "manage": "automatic",
+            "reentry": "automatic",
+            "exit": "automatic",
+        })
         self.assertNotIn("evaluation_trigger", lifecycle["trading_behavior"])
         self.assertNotIn("re_evaluation", lifecycle)
         migrated_intent = migrated["strategy"]["profiles"][0]["lifecycle"][
@@ -95,6 +101,26 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             migrated_oms["protection_profile_id"],
         )
 
+    def test_schema_v13_maps_legacy_disabled_reentry_to_manual_mode(self) -> None:
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), patch(
+            "src.backend.trading_configuration_service.list_strategy_assignments",
+            return_value=[],
+        ):
+            legacy = _default_draft()
+        legacy["schema_version"] = 12
+        lifecycle = legacy["strategy"]["profiles"][0]["lifecycle"]
+        lifecycle.pop("phase_modes")
+        lifecycle["reentry"]["enabled"] = False
+
+        migrated = _migrate_draft(legacy)
+
+        migrated_lifecycle = migrated["strategy"]["profiles"][0]["lifecycle"]
+        self.assertEqual(migrated_lifecycle["phase_modes"]["reentry"], "manual")
+        self.assertFalse(migrated_lifecycle["reentry"]["enabled"])
+
     def test_system_profiles_and_capabilities_are_user_configurable(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
@@ -105,7 +131,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 12)
+        self.assertEqual(draft["schema_version"], 13)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(
@@ -133,6 +159,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             for profile in draft["strategy"]["profiles"]
         ))
         lifecycle = default_profile["lifecycle"]
+        self.assertEqual(set(lifecycle["phase_modes"].values()), {"automatic"})
         self.assertEqual(lifecycle["trading_behavior"]["side"], "long")
         self.assertNotIn(
             "minimum_score", lifecycle["initial_entry"]["confirmation"]
@@ -281,6 +308,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         draft["oms"]["execution_policies"].append(cloned_execution)
         draft["portfolio"]["mandates"][0]["maximum_cash_fraction"] = 0.3
         profile = draft["strategy"]["profiles"][0]
+        profile["lifecycle"]["phase_modes"].update({
+            "manage": "manual",
+            "reentry": "manual",
+        })
         pocket = next(
             row for row in profile["capabilities"]
             if row["capability_id"] == "profit-pocket"
@@ -309,6 +340,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             resolved["protection_profile_catalog"]["hybrid-single"]["revision"],
             1,
         )
+        self.assertEqual(resolved["phase_policy"]["manage"]["mode"], "manual")
+        self.assertEqual(resolved["phase_policy"]["reentry"]["mode"], "manual")
+        self.assertFalse(resolved["reentry"]["enabled"])
 
     def test_paper_release_requires_exact_broker_binding_and_mode_deployment(self) -> None:
         draft = self._draft()

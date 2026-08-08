@@ -36,7 +36,7 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 12
+CONFIGURATION_SCHEMA_VERSION = 13
 CONFIGURATION_SECTIONS = {"strategy", "run_plans", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
@@ -600,6 +600,12 @@ def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
         "blockers": deepcopy(dict(rules.get("veto") or {})),
     }
     lifecycle = {
+        "phase_modes": {
+            "initial_entry": "automatic",
+            "manage": "automatic",
+            "reentry": "automatic",
+            "exit": "automatic",
+        },
         "trading_behavior": {
             "side": "long",
             "eligible_sessions": ["regular"],
@@ -1162,6 +1168,25 @@ def _migrate_lifecycle_v10(
             ]
         },
     )
+    return result
+
+
+def _migrate_lifecycle_v13(
+    lifecycle: dict[str, Any],
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    had_phase_modes = isinstance(lifecycle.get("phase_modes"), dict)
+    legacy_reentry_enabled = bool(
+        dict(lifecycle.get("reentry") or {}).get("enabled", True)
+    )
+    result = _migrate_lifecycle_v10(lifecycle, parameters)
+    modes = result.setdefault("phase_modes", {})
+    for phase_name in ("initial_entry", "manage", "reentry", "exit"):
+        if str(modes.get(phase_name) or "") not in {"automatic", "manual"}:
+            modes[phase_name] = "automatic"
+    if not had_phase_modes and not legacy_reentry_enabled:
+        modes["reentry"] = "manual"
+    result["reentry"]["enabled"] = modes["reentry"] == "automatic"
     return result
 
 
@@ -1812,7 +1837,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 lifecycle["reentry"]["enabled"] = bool(
                     legacy_reentry.get("enabled", True)
                 )
-            lifecycle = _migrate_lifecycle_v10(lifecycle, parameters)
+            lifecycle = _migrate_lifecycle_v13(lifecycle, parameters)
             lifecycle.pop("re_evaluation", None)
             initial_entry = dict(lifecycle.get("initial_entry") or {})
             initial_capital = dict(initial_entry.get("capital_request") or {})
@@ -2140,11 +2165,20 @@ def _validate_strategy_lifecycle(
     lifecycle: dict[str, Any],
     raw_rule_set_catalog: list[dict[str, Any]],
 ) -> None:
-    required = {"trading_behavior", "initial_entry", "reentry", "exit"}
+    required = {"phase_modes", "trading_behavior", "initial_entry", "reentry", "exit"}
     missing = required - set(lifecycle)
     if missing:
         raise ValueError(
             f"Strategy lifecycle is missing: {', '.join(sorted(missing))}"
+        )
+    phase_modes = dict(lifecycle["phase_modes"])
+    required_phases = {"initial_entry", "manage", "reentry", "exit"}
+    if set(phase_modes) != required_phases or any(
+        str(phase_modes.get(phase_name) or "") not in {"automatic", "manual"}
+        for phase_name in required_phases
+    ):
+        raise ValueError(
+            "Strategy phase modes must define initial_entry, manage, reentry, and exit as automatic or manual"
         )
     behavior = dict(lifecycle["trading_behavior"])
     if str(behavior.get("side") or "") not in {"long", "short"}:
@@ -2448,8 +2482,10 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
         "veto": _materialize_rule_stage(dict(initial_entry.get("blockers") or {}), rule_set_catalog),
     }
     behavior = deepcopy(dict(lifecycle.get("trading_behavior") or {}))
+    phase_modes = deepcopy(dict(lifecycle.get("phase_modes") or {}))
     reentry = deepcopy(dict(lifecycle.get("reentry") or {}))
     reentry_rules = dict(reentry.pop("rules", {}) or {})
+    reentry["enabled"] = str(phase_modes.get("reentry") or "automatic") == "automatic"
     parameters["reentry"] = reentry
     exit_rule_sets = list(
         dict(lifecycle.get("exit") or {}).get("rule_sets") or []
@@ -2457,11 +2493,16 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
     parameters["strategy_behavior"] = behavior
     parameters["phase_policy"] = {
         "initial_entry": {
+            "mode": str(phase_modes.get("initial_entry") or "automatic"),
             "capital_request": deepcopy(dict(initial_entry.get("capital_request") or {})),
             "order_intent": deepcopy(dict(initial_entry.get("order_intent") or {})),
             "add_steps": deepcopy(list(initial_entry.get("add_steps") or [])),
         },
+        "manage": {
+            "mode": str(phase_modes.get("manage") or "automatic"),
+        },
         "reentry": {
+            "mode": str(phase_modes.get("reentry") or "automatic"),
             "rules": {
                 "trigger": _materialize_rule_stage(dict(reentry_rules.get("opportunity") or {}), rule_set_catalog),
                 "confirmation": _materialize_rule_stage(dict(reentry_rules.get("confirmation") or {}), rule_set_catalog),
@@ -2470,7 +2511,7 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
             "capital_request": deepcopy(dict(reentry.get("capital_request") or {})),
             "order_intent": deepcopy(dict(reentry.get("order_intent") or {})),
         },
-        "exit": {"rule_sets": [
+        "exit": {"mode": str(phase_modes.get("exit") or "automatic"), "rule_sets": [
             {
                 **deepcopy(route),
                 "rules": _materialize_rule_stage(dict(route.get("rules") or {}), rule_set_catalog),

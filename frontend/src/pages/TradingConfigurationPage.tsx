@@ -52,6 +52,7 @@ type ActionAuthority = "disabled" | "manual" | "confirm" | "automatic" | "inheri
 type Primitive = boolean | number | string;
 type CatalogParameterValue = Primitive | null;
 type ParameterMap = Record<string, unknown>;
+type StrategyPhaseMode = "automatic" | "manual";
 
 type CapabilityParameter = {
   display?: string;
@@ -174,9 +175,10 @@ type EntryRules = {
   opportunity: RuleStage;
 };
 
-type EntryAuthoringPage = keyof EntryRules | "capital" | "priority" | "execution" | "partial_fill" | "protection" | "initial_stop";
+type EntryAuthoringPage = keyof EntryRules | "mode" | "capital" | "priority" | "execution" | "partial_fill" | "protection" | "initial_stop";
 
 const ENTRY_AUTHORING_PAGES: Array<{ description: string; id: EntryAuthoringPage; label: string; title: string }> = [
+  { description: "Choose whether Strategy evaluates and emits initial-entry intent for this profile.", id: "mode", label: "Mode", title: "Should Strategy automate initial entry?" },
   { description: "Define the evidence paths that identify a candidate setup before confirmation is considered.", id: "opportunity", label: "Opportunity", title: "What identifies a possible entry?" },
   { description: "Define the independent evidence paths that must validate an identified opportunity.", id: "confirmation", label: "Confirmation", title: "What proves the entry is actionable?" },
   { description: "Define the conditions that veto entry even when opportunity and confirmation have passed.", id: "blockers", label: "Blockers", title: "What must prevent the entry?" },
@@ -189,10 +191,11 @@ const ENTRY_AUTHORING_PAGES: Array<{ description: string; id: EntryAuthoringPage
 ];
 
 type ManageAuthoringPage =
-  | "add_actions" | "add_evidence" | "add_capital" | "add_replacement" | "add_execution" | "add_partial_fill" | "add_protection"
+  | "mode" | "add_actions" | "add_evidence" | "add_capital" | "add_replacement" | "add_execution" | "add_partial_fill" | "add_protection"
   | "trailing" | "capabilities";
 
 const MANAGE_AUTHORING_PAGES: Array<{ description: string; id: ManageAuthoringPage; label: string; title: string }> = [
+  { description: "Choose whether Strategy manages an open position through adds, trailing behavior, and optional capabilities.", id: "mode", label: "Mode", title: "Should Strategy automate position management?" },
   { description: "Create, name, enable, and limit the add actions that may increase an already-open position.", id: "add_actions", label: "Add actions", title: "Which position-add actions are available?" },
   { description: "Combine predefined rule sets to decide when the selected add action may request more exposure.", id: "add_evidence", label: "Add evidence", title: "What permits the selected add action?" },
   { description: "Express the selected add action's desired exposure before Portfolio applies current account and risk limits.", id: "add_capital", label: "Add capital", title: "How much exposure should the add request?" },
@@ -205,10 +208,11 @@ const MANAGE_AUTHORING_PAGES: Array<{ description: string; id: ManageAuthoringPa
 ];
 
 type ReentryAuthoringPage =
-  | "reentry_policy" | "reentry_opportunity" | "reentry_confirmation" | "reentry_blockers"
+  | "mode" | "reentry_policy" | "reentry_opportunity" | "reentry_confirmation" | "reentry_blockers"
   | "reentry_capital" | "reentry_replacement" | "reentry_execution" | "reentry_partial_fill" | "reentry_protection";
 
 const REENTRY_AUTHORING_PAGES: Array<{ description: string; id: ReentryAuthoringPage; label: string; title: string }> = [
+  { description: "Choose whether Strategy may evaluate and emit another flat-to-open request after a full exit.", id: "mode", label: "Mode", title: "Should Strategy automate reentry?" },
   { description: "Control whether a flat campaign may enter again and bound its evidence freshness, delay, and attempts.", id: "reentry_policy", label: "Reentry policy", title: "May the campaign enter again after a full exit?" },
   { description: "Combine predefined rule sets that identify a possible reentry after the campaign becomes flat.", id: "reentry_opportunity", label: "Reentry opportunity", title: "What identifies a possible reentry?" },
   { description: "Combine predefined rule sets that must validate the reentry opportunity before a request is emitted.", id: "reentry_confirmation", label: "Reentry confirmation", title: "What proves the reentry is actionable?" },
@@ -220,9 +224,10 @@ const REENTRY_AUTHORING_PAGES: Array<{ description: string; id: ReentryAuthoring
   { description: "Select the independently versioned protection contract attached to confirmed reentry fills.", id: "reentry_protection", label: "Reentry protection", title: "Which protection follows the reentry fill?" },
 ];
 
-type ExitAuthoringPage = "targets" | "profit_pocket" | "routes" | "evidence" | "timing" | "action" | "execution" | "partial_fill" | "protection";
+type ExitAuthoringPage = "mode" | "targets" | "profit_pocket" | "routes" | "evidence" | "timing" | "action" | "execution" | "partial_fill" | "protection";
 
 const EXIT_AUTHORING_PAGES: Array<{ description: string; id: ExitAuthoringPage; label: string; title: string }> = [
+  { description: "Choose whether Strategy evaluates strategic reductions and exits for this profile. OMS protection and account safety remain active.", id: "mode", label: "Mode", title: "Should Strategy automate strategic exits?" },
   { description: "Configure the definition-specific profit target derived from the authoritative volatility band.", id: "targets", label: "LULD target", title: "How may the volatility band define a target?" },
   { description: "Configure definition-specific conditions and quantity for an intentional profit reduction.", id: "profit_pocket", label: "Profit pocket", title: "When may the strategy preserve a profit pocket?" },
   { description: "Create, name, enable, and describe the strategic routes that may reduce or close an open position.", id: "routes", label: "Exit routes", title: "Which strategic exit routes are available?" },
@@ -270,6 +275,12 @@ type ExitRuleSet = {
 };
 
 type StrategyLifecycle = {
+  phase_modes: {
+    initial_entry: StrategyPhaseMode;
+    manage: StrategyPhaseMode;
+    reentry: StrategyPhaseMode;
+    exit: StrategyPhaseMode;
+  };
   trading_behavior: {
     adopt_manual_positions: boolean;
     eligible_sessions: string[];
@@ -493,8 +504,31 @@ type Draft = {
 
 function normalizeDraft(payload: any): Draft {
   const runPlans = payload?.run_plans ?? payload?.assignments ?? { plans: [], universes: [] };
+  const strategy = payload?.strategy ?? {};
+  const normalizeProfile = (profile: any) => {
+    const phaseModes = {
+      initial_entry: "automatic",
+      manage: "automatic",
+      reentry: profile.lifecycle?.reentry?.enabled === false ? "manual" : "automatic",
+      exit: "automatic",
+      ...(profile.lifecycle?.phase_modes ?? {}),
+    };
+    return {
+      ...profile,
+      lifecycle: {
+        ...profile.lifecycle,
+        phase_modes: phaseModes,
+        reentry: { ...profile.lifecycle?.reentry, enabled: phaseModes.reentry === "automatic" },
+      },
+    };
+  };
   return {
     ...payload,
+    strategy: {
+      ...strategy,
+      profile_templates: (strategy.profile_templates ?? []).map(normalizeProfile),
+      profiles: (strategy.profiles ?? []).map(normalizeProfile),
+    },
     assignments: {
       deployments: runPlans.plans ?? runPlans.deployments ?? [],
       universes: runPlans.universes ?? [],
@@ -1116,6 +1150,16 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
   function replaceReentry(nextReentry: StrategyLifecycle["reentry"]) {
     replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, reentry: nextReentry } });
   }
+  function replacePhaseMode(phase: keyof StrategyLifecycle["phase_modes"], mode: StrategyPhaseMode) {
+    replaceProfile({
+      ...profile,
+      lifecycle: {
+        ...profile.lifecycle,
+        phase_modes: { ...profile.lifecycle.phase_modes, [phase]: mode },
+        ...(phase === "reentry" ? { reentry: { ...reentry, enabled: mode === "automatic" } } : {}),
+      },
+    });
+  }
   function replaceAddStep(stepId: string, nextStep: AddStep) {
     replaceInitial({ ...initial, add_steps: initial.add_steps.map((row) => row.step_id === stepId ? nextStep : row) });
   }
@@ -1149,7 +1193,7 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, exit: { rule_sets: [next, ...profile.lifecycle.exit.rule_sets] } } });
   }
 
-  const questions: GuidedStrategyQuestionDefinition[] = [
+  let questions: GuidedStrategyQuestionDefinition[] = [
     {
       id: "profile", section: "Behavior", title: "How do you want to build this strategy?",
       description: "Start with a blank strategy and answer every decision, or copy an existing strategy after reviewing exactly what it contains.",
@@ -1185,6 +1229,12 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
       description: "Select every market session in which initial entries, adds, and reentries may become eligible.",
       guide: "Protective exits remain active whenever exposure exists. OMS derives compatible broker session instructions from this choice.",
       content: <ModeChoices onChange={(eligible_sessions) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, eligible_sessions } } })} options={["premarket", "regular", "after_hours"]} values={profile.lifecycle.trading_behavior.eligible_sessions} />,
+    },
+    {
+      id: "initial-mode", section: "Initial entry", title: "Should Strategy automate initial entry?",
+      description: "Choose whether Strategy evaluates the first-entry configuration and may emit entry intent.",
+      guide: "Manual preserves every initial-entry answer but skips those questions and emits no first-entry intent.",
+      content: <DecisionOptions onChange={(value) => replacePhaseMode("initial_entry", value as StrategyPhaseMode)} options={[{ detail: "Evaluate the saved initial-entry rules and request settings.", label: "Automatic", recommended: true, value: "automatic" }, { detail: "Skip initial-entry evaluation while preserving its configuration.", label: "Manual", value: "manual" }]} value={profile.lifecycle.phase_modes.initial_entry} />,
     },
     {
       id: "initial-capital", section: "Initial entry", title: "How much capital should the first entry request?",
@@ -1223,6 +1273,12 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
       content: <RuleStageEditor catalog={draft.strategy.input_catalog} intent="entry" label={`Initial entry ${readableLabel(stage)}`} onChange={(value) => replaceInitial({ ...initial, [stage]: value })} stage={initial[stage]} />,
     })),
     {
+      id: "manage-mode", section: "Position adds", title: "Should Strategy automate position management?",
+      description: "Choose whether Strategy evaluates adds, trailing behavior, and optional management capabilities.",
+      guide: "Manual preserves the position-management configuration but prevents Strategy from changing the position. Existing protection remains active.",
+      content: <DecisionOptions onChange={(value) => replacePhaseMode("manage", value as StrategyPhaseMode)} options={[{ detail: "Evaluate configured management actions while a position is open.", label: "Automatic", recommended: true, value: "automatic" }, { detail: "Skip position-management actions while preserving their settings.", label: "Manual", value: "manual" }]} value={profile.lifecycle.phase_modes.manage} />,
+    },
+    {
       id: "adds-overview", section: "Position adds", title: "Which position-add actions are available?",
       description: "Each action may request more capital only while a position is already open.",
       guide: "Disabled actions remain saved. Maximum uses is a fill count; a rejected or unfilled request must not consume a use.",
@@ -1241,11 +1297,11 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     })),
     {
       id: "reentry-policy", section: "Reentry", title: "May the campaign enter again after a complete exit?",
-      description: "Reentry is a new flat-to-open transition while the same ticker campaign retains ownership.",
-      guide: "It is separate from adding to an open position. Disabling reentry retains its saved rules but prevents another flat-to-open request.",
-      content: <BooleanField help="Permit this ticker campaign to request another flat-to-open entry after a confirmed complete exit." label="Enable reentry" onChange={(enabled) => replaceReentry({ ...reentry, enabled })} value={reentry.enabled} />,
+      description: "Choose whether Strategy evaluates reentry after a confirmed complete exit.",
+      guide: "Manual preserves every reentry answer but skips those questions and emits no reentry intent.",
+      content: <DecisionOptions onChange={(value) => replacePhaseMode("reentry", value as StrategyPhaseMode)} options={[{ detail: "Evaluate the saved reentry rules after the campaign becomes flat.", label: "Automatic", recommended: true, value: "automatic" }, { detail: "Skip reentry evaluation while preserving its configuration.", label: "Manual", value: "manual" }]} value={profile.lifecycle.phase_modes.reentry} />,
     },
-    ...(reentry.enabled ? [{
+    ...(profile.lifecycle.phase_modes.reentry === "automatic" ? [{
       id: "reentry-guardrails", section: "Reentry", title: "What limits reentry timing and frequency?", description: "These campaign-level guardrails control evidence freshness, minimum waiting time, and the maximum number of successful reentries.", guide: "A rejected or unfilled request does not consume an attempt. Fresh confirmation prevents evidence from the prior entry from being silently reused.", content: <div className="guided-form-grid"><BooleanField help="Require confirmation evidence with a timestamp newer than the previous confirmed entry." label="Require fresh confirmation" onChange={(require_new_confirmation) => replaceReentry({ ...reentry, require_new_confirmation })} value={reentry.require_new_confirmation} /><NumberField help="Set the minimum elapsed time after a confirmed full exit before another reentry may become eligible." label="Cooldown" minimum={0} onChange={(cooldown_ms) => replaceReentry({ ...reentry, cooldown_ms })} step={100} unit="ms" value={reentry.cooldown_ms} /><NumberField help="Set the maximum number of confirmed reentry fills allowed during one ticker campaign." label="Maximum attempts" minimum={0} onChange={(maximum_attempts) => replaceReentry({ ...reentry, maximum_attempts })} step={1} unit="entries" value={reentry.maximum_attempts} /></div>,
     }, {
       id: "reentry-capital", section: "Reentry", title: "How much capital should a reentry request?", description: "Choose only the reentry sizing method and amount. Reentry owns a request independent from the first entry.", guide: "Portfolio recalculates capacity from current synchronized account state; the previous position size is never reused automatically.", content: <GuidedCapitalRequestFields onChange={(capital_request) => replaceReentry({ ...reentry, capital_request })} segment="amount" value={reentry.capital_request} />,
@@ -1260,6 +1316,12 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     }, ...(["opportunity", "confirmation", "blockers"] as const).map((stage) => ({
       id: `reentry-${stage}`, section: "Reentry", title: stage === "opportunity" ? "What identifies a possible reentry?" : stage === "confirmation" ? "What must confirm a reentry?" : "What must prevent a reentry?", description: "Reentry owns independent decision rules; it does not silently reuse the first-entry rule set.", guide: "Importing or copying initial rules creates editable copies. Fresh-evidence and cooldown gates still apply before evaluation.", content: <RuleStageEditor catalog={draft.strategy.input_catalog} intent="reentry" label={`Reentry ${readableLabel(stage)}`} onChange={(value) => replaceReentry({ ...reentry, rules: { ...reentry.rules, [stage]: value } })} stage={reentry.rules[stage]} />,
     }))] : []),
+    {
+      id: "exit-mode", section: "Strategic exits", title: "Should Strategy automate strategic exits?",
+      description: "Choose whether Strategy evaluates reduction and close rules for an open position.",
+      guide: "Manual preserves strategic-exit settings. Broker-held protection, emergency exits, and account safety remain active.",
+      content: <DecisionOptions onChange={(value) => replacePhaseMode("exit", value as StrategyPhaseMode)} options={[{ detail: "Evaluate strategic exit routes while a position is open.", label: "Automatic", recommended: true, value: "automatic" }, { detail: "Skip strategic exits while retaining mandatory protection.", label: "Manual", value: "manual" }]} value={profile.lifecycle.phase_modes.exit} />,
+    },
     {
       id: "exit-overview", section: "Strategic exits", title: "Which strategic exit routes are available?", description: "Enable, name, or add the rule sets that can reduce or close a position.", guide: "Broker-held protection is independent and remains active even when every strategic exit is disabled or delayed.", content: <div className="guided-action-list"><button className="button compact" onClick={addExit} type="button"><Plus size={14} /> Add exit route</button>{profile.lifecycle.exit.rule_sets.map((ruleSet) => <article key={ruleSet.rule_set_id}><div><TextField help="Operator-facing route name." label="Exit name" onChange={(name) => replaceExit(ruleSet.rule_set_id, { ...ruleSet, name })} value={ruleSet.name} /><TextField help="State the market condition this route handles." label="Purpose" onChange={(summary) => replaceExit(ruleSet.rule_set_id, { ...ruleSet, summary })} value={ruleSet.summary} /></div><BooleanField help="Evaluate this route while a position is open." label="Enabled" onChange={(enabled) => replaceExit(ruleSet.rule_set_id, { ...ruleSet, enabled })} value={ruleSet.enabled} /><button className="button compact danger" disabled={profile.lifecycle.exit.rule_sets.length <= 1} onClick={() => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, exit: { rule_sets: profile.lifecycle.exit.rule_sets.filter((row) => row.rule_set_id !== ruleSet.rule_set_id) } } })} type="button"><Trash2 size={14} /> Remove</button></article>)}</div>,
     },
@@ -1293,6 +1355,13 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
       guide: "Keep the current values unless you have evidence and validation for retuning this behavior. Guided mode shows them so no published parameter is silently skipped.",
       content: <div className="guided-form-grid">{items.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path.split(".").slice(-1)[0]), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} onChange={(value) => replaceProfile({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} value={item.value} />)}</div>,
     });
+  });
+  questions = questions.filter((question) => {
+    if (profile.lifecycle.phase_modes.initial_entry === "manual" && question.id.startsWith("initial-") && question.id !== "initial-mode") return false;
+    if (profile.lifecycle.phase_modes.manage === "manual" && (question.id === "adds-overview" || question.id.startsWith("add-") || question.id.startsWith("capability-"))) return false;
+    if (profile.lifecycle.phase_modes.reentry === "manual" && question.id.startsWith("reentry-") && question.id !== "reentry-policy") return false;
+    if (profile.lifecycle.phase_modes.exit === "manual" && question.id.startsWith("exit-") && question.id !== "exit-mode") return false;
+    return true;
   });
 
   const safeIndex = Math.min(questionIndex, Math.max(questions.length - 1, 0));
@@ -1415,7 +1484,7 @@ function StrategyProfileFeaturePreview({ profile, section }: { profile: Strategy
     <dl>
       <div><dt>Trading behavior</dt><dd><strong>{readableLabel(behavior.side)}</strong><span>{behavior.eligible_sessions.map(readableLabel).join(", ")}</span></dd></div>
       <div><dt>Initial entry</dt><dd><strong>{opportunityCount} opportunity · {confirmationCount} confirmation</strong><span>{blockerCount} blocker rule set{blockerCount === 1 ? "" : "s"} · {readableLabel(initial.capital_request.mode)}</span></dd></div>
-      <div><dt>Position lifecycle</dt><dd><strong>{addCount} add action{addCount === 1 ? "" : "s"} · {exitCount} strategic exit{exitCount === 1 ? "" : "s"}</strong><span>{profile.lifecycle.reentry.enabled ? `Reentry up to ${profile.lifecycle.reentry.maximum_attempts} times` : "Reentry disabled"}</span></dd></div>
+      <div><dt>Position lifecycle</dt><dd><strong>{addCount} add action{addCount === 1 ? "" : "s"} · {exitCount} strategic exit{exitCount === 1 ? "" : "s"}</strong><span>{profile.lifecycle.phase_modes.reentry === "automatic" ? `Reentry up to ${profile.lifecycle.reentry.maximum_attempts} times` : "Reentry manual"}</span></dd></div>
       <div><dt>Order behavior</dt><dd><strong>{executionPolicies.size} execution polic{executionPolicies.size === 1 ? "y" : "ies"}</strong><span>{readableLabel(initial.order_intent.partial_fill_policy)} · OMS applies tested terminal timing</span></dd></div>
     </dl>
     <section><span>Enabled capabilities · {capabilities.length}</span>{capabilities.length ? <div>{capabilities.map((capability) => <strong key={capability}><CheckCircle2 size={13} />{capability}</strong>)}</div> : <p>No optional capabilities are enabled.</p>}</section>
@@ -1498,7 +1567,7 @@ function strategySetupRows(profile: StrategyProfile) {
     { label: "Behavior", value: `${readableLabel(profile.lifecycle.trading_behavior.side)} · ${profile.lifecycle.trading_behavior.eligible_sessions.map(readableLabel).join(", ")}` },
     { label: "Initial entry", value: `${readableLabel(profile.lifecycle.initial_entry.capital_request.mode)} · ${countRuleReferences(profile.lifecycle.initial_entry.opportunity.expression)}/${countRuleReferences(profile.lifecycle.initial_entry.confirmation.expression)}/${countRuleReferences(profile.lifecycle.initial_entry.blockers.expression)} rule references` },
     { label: "Position adds", value: `${profile.lifecycle.initial_entry.add_steps.filter((row) => row.enabled).length} enabled` },
-    { label: "Reentry", value: profile.lifecycle.reentry.enabled ? `${profile.lifecycle.reentry.maximum_attempts} attempts · ${profile.lifecycle.reentry.cooldown_ms} ms` : "Disabled" },
+    { label: "Reentry", value: profile.lifecycle.phase_modes.reentry === "automatic" ? `${profile.lifecycle.reentry.maximum_attempts} attempts · ${profile.lifecycle.reentry.cooldown_ms} ms` : "Manual" },
     { label: "Strategic exits", value: `${profile.lifecycle.exit.rule_sets.filter((row) => row.enabled).length} enabled` },
     { label: "Capabilities", value: `${profile.capabilities.filter((row) => row.enabled).length} enabled` },
   ];
@@ -1524,9 +1593,10 @@ function blankStrategyProfile(source: StrategyProfile, draft: Draft): StrategyPr
     enabled: false,
     rule_set_catalog: [],
     lifecycle: {
+      phase_modes: { initial_entry: "automatic", manage: "automatic", reentry: "automatic", exit: "automatic" },
       trading_behavior: { adopt_manual_positions: false, eligible_sessions: ["regular"], side: source.lifecycle.trading_behavior.side },
       initial_entry: { add_steps: [], blockers: emptyStage(), capital_request: deepClone(capitalRequest), confirmation: emptyStage(), opportunity: emptyStage(), order_intent: deepClone(orderIntent) },
-      reentry: { capital_request: deepClone(capitalRequest), cooldown_ms: 0, enabled: false, maximum_attempts: 0, order_intent: deepClone(orderIntent), require_new_confirmation: true, rules: { blockers: emptyStage(), confirmation: emptyStage(), opportunity: emptyStage() } },
+      reentry: { capital_request: deepClone(capitalRequest), cooldown_ms: 0, enabled: true, maximum_attempts: 0, order_intent: deepClone(orderIntent), require_new_confirmation: true, rules: { blockers: emptyStage(), confirmation: emptyStage(), opportunity: emptyStage() } },
       exit: { rule_sets: [{ action: "close", enabled: false, name: "Strategic exit", order_intent: deepClone(orderIntent), position_fraction: 1, rule_set_id: "strategic-exit", rules: emptyStage(), summary: "Define the evidence that should close the position.", timing: { active_after_ms: 0, expires_after_ms: 0 } }] },
     },
     name: "Untitled Strategy",
@@ -1945,9 +2015,16 @@ function StrategyRuleSetDetail({ catalog, onChange, ruleSet }: { catalog: Strate
 }
 
 function StrategyParameterDetail({ item, onChange, value }: { item: StrategyCatalogItem; onChange: (value: Primitive) => void; value: CatalogParameterValue | undefined }) {
+  const fieldHelp: HelpContent = item.parameter.startsWith("lifecycle.phase_modes.") ? {
+    role: "Choose whether Strategy owns this lifecycle decision.",
+    values: {
+      Automatic: "Strategy evaluates the saved phase configuration and may emit intent when it passes.",
+      Manual: "Strategy skips this phase and emits no intent; the saved configuration remains available.",
+    },
+  } : item.detail;
   return <main className="strategy-parameter-detail-page">
     <header><span>{item.group}</span><h2>{item.label}</h2><p>{item.detail}</p></header>
-    <section className="strategy-parameter-editor"><ParameterField definition={field(item.parameter, item.label, item.detail, controlFor(value ?? ""), choicesFor(item.parameter), unitFor(item.parameter), stepFor(value ?? ""))} onChange={onChange} value={value ?? ""} /></section>
+    <section className="strategy-parameter-editor"><ParameterField definition={field(item.parameter, item.label, fieldHelp, controlFor(value ?? ""), choicesFor(item.parameter), unitFor(item.parameter), stepFor(value ?? ""))} onChange={onChange} value={value ?? ""} /></section>
     <ParameterDocumentation group={item.group} path={item.parameter} value={value} />
     <section className="strategy-parameter-reference"><div><span>Runtime parameter</span><strong>{item.parameter}</strong></div>{item.metadata.filter((row) => row.label !== "Current value").map((row) => <div key={`${item.id}-${row.label}`}><span>{row.label}</span><strong>{row.value}</strong></div>)}</section>
     <footer><Target size={18} /><div><strong>Runtime effect</strong><p>{item.usage}</p></div></footer>
@@ -1981,10 +2058,10 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
   saving: boolean;
   section: StrategySection;
 }) {
-  const [activeEntryPage, setActiveEntryPage] = useState<EntryAuthoringPage>("opportunity");
-  const [activeManagePage, setActiveManagePage] = useState<ManageAuthoringPage>("add_actions");
-  const [activeReentryPage, setActiveReentryPage] = useState<ReentryAuthoringPage>("reentry_policy");
-  const [activeExitPage, setActiveExitPage] = useState<ExitAuthoringPage>("targets");
+  const [activeEntryPage, setActiveEntryPage] = useState<EntryAuthoringPage>("mode");
+  const [activeManagePage, setActiveManagePage] = useState<ManageAuthoringPage>("mode");
+  const [activeReentryPage, setActiveReentryPage] = useState<ReentryAuthoringPage>("mode");
+  const [activeExitPage, setActiveExitPage] = useState<ExitAuthoringPage>("mode");
   const [selectedAddStepId, setSelectedAddStepId] = useState(profile.lifecycle.initial_entry.add_steps[0]?.step_id ?? "");
   const [selectedExitRouteId, setSelectedExitRouteId] = useState(profile.lifecycle.exit.rule_sets[0]?.rule_set_id ?? "");
   const [selectedCapabilityId, setSelectedCapabilityId] = useState(profile.capabilities[0]?.capability_id ?? "");
@@ -2020,6 +2097,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
   const activeCapabilityDefinition = section.capability_catalog.find((definition) => definition.capability_id === selectedCapabilityId) ?? section.capability_catalog[0];
   const activeCapabilityBinding = profile.capabilities.find((binding) => binding.capability_id === activeCapabilityDefinition?.capability_id);
   const isFinalQuestion = activeIndex === stages.length - 1;
+  const phaseModes = profile.lifecycle.phase_modes;
 
   function replaceInitialEntry(value: Partial<StrategyLifecycle["initial_entry"]>) {
     onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, ...value } } });
@@ -2043,6 +2121,25 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
 
   function replaceReentry(next: StrategyLifecycle["reentry"]) {
     onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, reentry: next } });
+  }
+
+  function replacePhaseMode(phase: keyof StrategyLifecycle["phase_modes"], mode: StrategyPhaseMode) {
+    onProfileChange({
+      ...profile,
+      lifecycle: {
+        ...profile.lifecycle,
+        phase_modes: { ...phaseModes, [phase]: mode },
+        ...(phase === "reentry" ? { reentry: { ...profile.lifecycle.reentry, enabled: mode === "automatic" } } : {}),
+      },
+    });
+  }
+
+  function changeStage(stage: StrategyAuthoringStage) {
+    if (stage === "entry") setActiveEntryPage("mode");
+    if (stage === "position") setActiveManagePage("mode");
+    if (stage === "reentry") setActiveReentryPage("mode");
+    if (stage === "exit") setActiveExitPage("mode");
+    onStageChange(stage);
   }
 
   function replaceExitRoute(routeId: string, next: ExitRuleSet) {
@@ -2080,10 +2177,19 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
       setActiveExitPage(EXIT_AUTHORING_PAGES[activeExitIndex - 1].id);
       return;
     }
-    if (activeIndex > 0) onStageChange(stages[activeIndex - 1][0]);
+    if (activeIndex > 0) changeStage(stages[activeIndex - 1][0]);
   }
 
   function nextQuestion() {
+    if (
+      (activeStage === "entry" && phaseModes.initial_entry === "manual")
+      || (activeStage === "position" && phaseModes.manage === "manual")
+      || (activeStage === "reentry" && phaseModes.reentry === "manual")
+      || (activeStage === "exit" && phaseModes.exit === "manual")
+    ) {
+      if (activeIndex < stages.length - 1) changeStage(stages[activeIndex + 1][0]);
+      return;
+    }
     if (activeStage === "entry" && activeEntryIndex < ENTRY_AUTHORING_PAGES.length - 1) {
       setActiveEntryPage(ENTRY_AUTHORING_PAGES[activeEntryIndex + 1].id);
       return;
@@ -2100,7 +2206,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
       setActiveExitPage(EXIT_AUTHORING_PAGES[activeExitIndex + 1].id);
       return;
     }
-    if (activeIndex < stages.length - 1) onStageChange(stages[activeIndex + 1][0]);
+    if (activeIndex < stages.length - 1) changeStage(stages[activeIndex + 1][0]);
     else void onSave();
   }
 
@@ -2108,7 +2214,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
     <div className="strategy-authoring-step-navigation">
       <button aria-label="Previous configuration question" className="button compact strategy-step-direction strategy-step-direction-previous" disabled={activeIndex <= 0 && activeStage !== "entry" && activeStage !== "position" && activeStage !== "reentry" && activeStage !== "exit"} onClick={previousQuestion} type="button">&lt; Previous</button>
       <nav aria-label="Strategy configuration steps" className="strategy-authoring-steps">
-        {stages.map(([stage, number, title, detail]) => <button aria-current={activeStage === stage ? "step" : undefined} key={stage} onClick={() => onStageChange(stage)} type="button"><span>{number}</span><strong>{title}</strong><small>{detail}</small></button>)}
+        {stages.map(([stage, number, title, detail]) => <button aria-current={activeStage === stage ? "step" : undefined} key={stage} onClick={() => changeStage(stage)} type="button"><span>{number}</span><strong>{title}</strong><small>{detail}</small></button>)}
       </nav>
       <button aria-label={isFinalQuestion ? "Save strategy draft" : "Next configuration question"} className="button compact primary strategy-step-direction strategy-step-direction-next" disabled={saving || (isFinalQuestion && !hasUnsavedChanges)} onClick={nextQuestion} type="button">Next &gt;</button>
     </div>
@@ -2140,6 +2246,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
         <header className="strategy-identity-intro strategy-entry-intro"><h2>{activeEntry.title}</h2><p>{activeEntry.description}</p></header>
         <div className="strategy-entry-layout">
           <div className="strategy-entry-question-surface">
+            {activeEntryPage === "mode" ? <StrategyPhaseModeEditor mode={phaseModes.initial_entry} onChange={(mode) => replacePhaseMode("initial_entry", mode)} phase="Initial entry" /> : null}
             {activeEntryRuleStage ? <DecisionRulesEditor catalog={section.input_catalog} onChange={(value) => replaceInitialEntry(value)} onRuleSetEdit={onRuleSetEdit} onRuleSetsChange={(rule_set_catalog, nextRules) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, ...nextRules } }, rule_set_catalog })} ruleSetCatalog={profile.rule_set_catalog} rules={entryRules} stageName={activeEntryRuleStage} title="Initial-entry evidence" summary="" /> : null}
             {activeEntryPage === "capital" ? <div className="strategy-entry-fields"><GuidedCapitalRequestFields onChange={(capital_request) => replaceInitialEntry({ capital_request })} segment="amount" value={entryRules.capital_request} /></div> : null}
             {activeEntryPage === "priority" ? <div className="strategy-entry-fields"><GuidedCapitalRequestFields onChange={(capital_request) => replaceInitialEntry({ capital_request })} segment="priority" value={entryRules.capital_request} /></div> : null}
@@ -2149,24 +2256,24 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
             {activeEntryPage === "initial_stop" ? <div className="configuration-field-grid strategy-entry-engine-fields">{entryStopParameters.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path.split(".").at(-1) ?? item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} value={item.value} />)}{!entryStopParameters.length ? <EmptyState detail="This strategy definition does not expose initial-stop engine parameters." title="No initial-stop parameters" /> : null}</div> : null}
           </div>
           <nav aria-label="Initial entry questions" className="strategy-entry-navigation">
-            {ENTRY_AUTHORING_PAGES.map((page, index) => <button aria-current={page.id === activeEntryPage ? "step" : undefined} aria-label={page.label} key={page.id} onClick={() => setActiveEntryPage(page.id)} title={page.label} type="button"><span>{index + 1}</span><strong>{page.label}</strong></button>)}
+            {ENTRY_AUTHORING_PAGES.map((page, index) => <button aria-current={page.id === activeEntryPage ? "step" : undefined} aria-label={page.label} disabled={phaseModes.initial_entry === "manual" && page.id !== "mode"} key={page.id} onClick={() => setActiveEntryPage(page.id)} title={page.label} type="button"><span>{index + 1}</span><strong>{page.label}</strong></button>)}
           </nav>
         </div>
       </> : null}
 
       {activeStage === "position" ? <>
         <header className="strategy-identity-intro strategy-entry-intro"><h2>{activeManage.title}</h2><p>{activeManage.description}</p></header>
-        <ManageAuthoringSurface activeAddStep={activeAddStep} activeCapabilityBinding={activeCapabilityBinding} activeCapabilityDefinition={activeCapabilityDefinition} activePage={activeManagePage} draft={draft} enabledAdds={enabledAdds} entryRules={entryRules} onAddStep={addAddStep} onPageChange={setActiveManagePage} onProfileChange={onProfileChange} onReplaceAddStep={replaceAddStep} onReplaceInitialEntry={replaceInitialEntry} onRuleSetEdit={onRuleSetEdit} onSelectedAddStepChange={setSelectedAddStepId} onSelectedCapabilityChange={setSelectedCapabilityId} profile={profile} section={section} trailingParameters={trailingParameters} />
+        <ManageAuthoringSurface activeAddStep={activeAddStep} activeCapabilityBinding={activeCapabilityBinding} activeCapabilityDefinition={activeCapabilityDefinition} activePage={activeManagePage} draft={draft} enabledAdds={enabledAdds} entryRules={entryRules} mode={phaseModes.manage} onAddStep={addAddStep} onModeChange={(mode) => replacePhaseMode("manage", mode)} onPageChange={setActiveManagePage} onProfileChange={onProfileChange} onReplaceAddStep={replaceAddStep} onReplaceInitialEntry={replaceInitialEntry} onRuleSetEdit={onRuleSetEdit} onSelectedAddStepChange={setSelectedAddStepId} onSelectedCapabilityChange={setSelectedCapabilityId} profile={profile} section={section} trailingParameters={trailingParameters} />
       </> : null}
 
       {activeStage === "reentry" ? <>
         <header className="strategy-identity-intro strategy-entry-intro"><h2>{activeReentry.title}</h2><p>{activeReentry.description}</p></header>
-        <ReentryAuthoringSurface activePage={activeReentryPage} draft={draft} onPageChange={setActiveReentryPage} onProfileChange={onProfileChange} onReplaceReentry={replaceReentry} onRuleSetEdit={onRuleSetEdit} profile={profile} section={section} />
+        <ReentryAuthoringSurface activePage={activeReentryPage} draft={draft} mode={phaseModes.reentry} onModeChange={(mode) => replacePhaseMode("reentry", mode)} onPageChange={setActiveReentryPage} onProfileChange={onProfileChange} onReplaceReentry={replaceReentry} onRuleSetEdit={onRuleSetEdit} profile={profile} section={section} />
       </> : null}
 
       {activeStage === "exit" ? <>
         <header className="strategy-identity-intro strategy-entry-intro"><h2>{activeExit.title}</h2><p>{activeExit.description}</p></header>
-        <ExitAuthoringSurface activePage={activeExitPage} activeRoute={activeExitRoute} catalog={section.input_catalog} draft={draft} luldTargetParameters={luldTargetParameters} onAddRoute={addExitRoute} onPageChange={setActiveExitPage} onProfileChange={onProfileChange} onReplaceRoute={replaceExitRoute} onRuleSetEdit={onRuleSetEdit} onSelectedRouteChange={setSelectedExitRouteId} profile={profile} profitPocketParameters={profitPocketParameters} />
+        <ExitAuthoringSurface activePage={activeExitPage} activeRoute={activeExitRoute} catalog={section.input_catalog} draft={draft} luldTargetParameters={luldTargetParameters} mode={phaseModes.exit} onAddRoute={addExitRoute} onModeChange={(mode) => replacePhaseMode("exit", mode)} onPageChange={setActiveExitPage} onProfileChange={onProfileChange} onReplaceRoute={replaceExitRoute} onRuleSetEdit={onRuleSetEdit} onSelectedRouteChange={setSelectedExitRouteId} profile={profile} profitPocketParameters={profitPocketParameters} />
       </> : null}
 
       {activeStage === "handoff" ? <>
@@ -2179,7 +2286,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
   </article>;
 }
 
-function ManageAuthoringSurface({ activeAddStep, activeCapabilityBinding, activeCapabilityDefinition, activePage, draft, enabledAdds, entryRules, onAddStep, onPageChange, onProfileChange, onReplaceAddStep, onReplaceInitialEntry, onRuleSetEdit, onSelectedAddStepChange, onSelectedCapabilityChange, profile, section, trailingParameters }: {
+function ManageAuthoringSurface({ activeAddStep, activeCapabilityBinding, activeCapabilityDefinition, activePage, draft, enabledAdds, entryRules, mode, onAddStep, onModeChange, onPageChange, onProfileChange, onReplaceAddStep, onReplaceInitialEntry, onRuleSetEdit, onSelectedAddStepChange, onSelectedCapabilityChange, profile, section, trailingParameters }: {
   activeAddStep?: AddStep;
   activeCapabilityBinding?: CapabilityBinding;
   activeCapabilityDefinition?: CapabilityDefinition;
@@ -2187,7 +2294,9 @@ function ManageAuthoringSurface({ activeAddStep, activeCapabilityBinding, active
   draft: Draft;
   enabledAdds: number;
   entryRules: StrategyLifecycle["initial_entry"];
+  mode: StrategyPhaseMode;
   onAddStep: () => void;
+  onModeChange: (mode: StrategyPhaseMode) => void;
   onPageChange: (page: ManageAuthoringPage) => void;
   onProfileChange: (value: StrategyProfile) => void;
   onReplaceAddStep: (stepId: string, next: AddStep) => void;
@@ -2202,6 +2311,7 @@ function ManageAuthoringSurface({ activeAddStep, activeCapabilityBinding, active
   const addPageWithoutAction = activePage.startsWith("add_") && activePage !== "add_actions" && !activeAddStep;
   return <div className="strategy-entry-layout strategy-lifecycle-layout">
     <div className="strategy-entry-question-surface">
+      {activePage === "mode" ? <StrategyPhaseModeEditor mode={mode} onChange={onModeChange} phase="Position management" /> : null}
       {activePage === "add_actions" ? <div className="strategy-guided-entity-list">
         <header><span>{enabledAdds} enabled</span><button className="button compact" onClick={onAddStep} type="button"><Plus size={14} /> Add action</button></header>
         {entryRules.add_steps.map((step) => <article data-selected={activeAddStep?.step_id === step.step_id ? "true" : "false"} key={step.step_id}>
@@ -2221,13 +2331,49 @@ function ManageAuthoringSurface({ activeAddStep, activeCapabilityBinding, active
       {activePage === "trailing" ? <div className="configuration-field-grid strategy-entry-engine-fields">{trailingParameters.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path.split(".").at(-1) ?? item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} value={item.value} />)}{!trailingParameters.length ? <EmptyState detail="This strategy definition does not expose trailing parameters." title="No trailing parameters" /> : null}</div> : null}
       {activePage === "capabilities" ? <div className="strategy-entry-fields strategy-capability-focus"><SelectField help="Choose one optional code-defined behavior to review." label="Capability" onChange={onSelectedCapabilityChange} options={section.capability_catalog.map((definition) => ({ label: definition.name, value: definition.capability_id }))} value={activeCapabilityDefinition?.capability_id ?? ""} />{activeCapabilityDefinition && activeCapabilityBinding ? <GuidedCapabilityFields binding={activeCapabilityBinding} definition={activeCapabilityDefinition} onChange={(binding) => onProfileChange(updateCapability(profile, binding.capability_id, binding))} /> : <EmptyState detail="This profile has no configurable capability binding." title="Capability unavailable" />}</div> : null}
     </div>
-    <nav aria-label="Position management questions" className="strategy-entry-navigation strategy-lifecycle-navigation">{MANAGE_AUTHORING_PAGES.map((page, index) => <button aria-current={page.id === activePage ? "step" : undefined} aria-label={page.label} key={page.id} onClick={() => onPageChange(page.id)} title={page.label} type="button"><span>{index + 1}</span><strong>{page.label}</strong></button>)}</nav>
+    <nav aria-label="Position management questions" className="strategy-entry-navigation strategy-lifecycle-navigation">{MANAGE_AUTHORING_PAGES.map((page, index) => <button aria-current={page.id === activePage ? "step" : undefined} aria-label={page.label} disabled={mode === "manual" && page.id !== "mode"} key={page.id} onClick={() => onPageChange(page.id)} title={page.label} type="button"><span>{index + 1}</span><strong>{page.label}</strong></button>)}</nav>
   </div>;
 }
 
-function ReentryAuthoringSurface({ activePage, draft, onPageChange, onProfileChange, onReplaceReentry, onRuleSetEdit, profile, section }: {
+function StrategyPhaseModeEditor({ mode, onChange, phase }: {
+  mode: StrategyPhaseMode;
+  onChange: (mode: StrategyPhaseMode) => void;
+  phase: "Initial entry" | "Position management" | "Reentry" | "Strategic exit";
+}) {
+  const choices: Array<{ detail: string; icon: typeof Sparkles; label: string; value: StrategyPhaseMode }> = [
+    {
+      detail: `Strategy evaluates the configured ${phase.toLowerCase()} rules and may emit intent when they pass.`,
+      icon: Sparkles,
+      label: "Automatic",
+      value: "automatic",
+    },
+    {
+      detail: `Strategy does not evaluate or emit ${phase.toLowerCase()} intent. Its saved configuration is preserved.`,
+      icon: PencilLine,
+      label: "Manual",
+      value: "manual",
+    },
+  ];
+  return <div className="strategy-phase-mode-editor">
+    <div aria-label={`${phase} mode`} className="strategy-phase-mode-options" role="radiogroup">
+      {choices.map((choice) => {
+        const Icon = choice.icon;
+        return <button aria-checked={mode === choice.value} className="strategy-phase-mode-choice" data-selected={mode === choice.value ? "true" : "false"} key={choice.value} onClick={() => onChange(choice.value)} role="radio" type="button">
+          <Icon aria-hidden="true" size={20} />
+          <span><strong>{choice.label}</strong><small>{choice.detail}</small></span>
+          <span aria-hidden="true" className="strategy-phase-mode-indicator"><Check size={14} /></span>
+        </button>;
+      })}
+    </div>
+    <div className="strategy-phase-mode-guidance"><ShieldCheck aria-hidden="true" size={18} /><p>{phase === "Strategic exit" ? "Broker-held protection, emergency exits, and account safety remain active in both modes." : "Run Plan authority still decides whether emitted intent executes automatically or requires confirmation."}</p></div>
+  </div>;
+}
+
+function ReentryAuthoringSurface({ activePage, draft, mode, onModeChange, onPageChange, onProfileChange, onReplaceReentry, onRuleSetEdit, profile, section }: {
   activePage: ReentryAuthoringPage;
   draft: Draft;
+  mode: StrategyPhaseMode;
+  onModeChange: (mode: StrategyPhaseMode) => void;
   onPageChange: (page: ReentryAuthoringPage) => void;
   onProfileChange: (value: StrategyProfile) => void;
   onReplaceReentry: (value: StrategyLifecycle["reentry"]) => void;
@@ -2238,7 +2384,8 @@ function ReentryAuthoringSurface({ activePage, draft, onPageChange, onProfileCha
   const reentry = profile.lifecycle.reentry;
   return <div className="strategy-entry-layout strategy-lifecycle-layout">
     <div className="strategy-entry-question-surface">
-      {activePage === "reentry_policy" ? <div className="strategy-entry-fields"><div className="guided-form-grid"><BooleanField help="Permit another flat-to-open transition while this ticker campaign retains ownership." label="Enable reentry" onChange={(enabled) => onReplaceReentry({ ...reentry, enabled })} value={reentry.enabled} /><BooleanField help="Require confirmation evidence newer than the evidence used by the previous confirmed entry." label="Require new confirmation" onChange={(require_new_confirmation) => onReplaceReentry({ ...reentry, require_new_confirmation })} value={reentry.require_new_confirmation} /><NumberField help="Minimum time after a confirmed full exit before reentry may become eligible." label="Cooldown" minimum={0} onChange={(cooldown_ms) => onReplaceReentry({ ...reentry, cooldown_ms })} step={100} unit="ms" value={reentry.cooldown_ms} /><NumberField help="Maximum confirmed reentry fills during one ticker campaign." label="Maximum attempts" minimum={0} onChange={(maximum_attempts) => onReplaceReentry({ ...reentry, maximum_attempts })} step={1} unit="entries" value={reentry.maximum_attempts} /></div></div> : null}
+      {activePage === "mode" ? <StrategyPhaseModeEditor mode={mode} onChange={onModeChange} phase="Reentry" /> : null}
+      {activePage === "reentry_policy" ? <div className="strategy-entry-fields"><div className="guided-form-grid"><BooleanField help="Require confirmation evidence newer than the evidence used by the previous confirmed entry." label="Require new confirmation" onChange={(require_new_confirmation) => onReplaceReentry({ ...reentry, require_new_confirmation })} value={reentry.require_new_confirmation} /><NumberField help="Minimum time after a confirmed full exit before reentry may become eligible." label="Cooldown" minimum={0} onChange={(cooldown_ms) => onReplaceReentry({ ...reentry, cooldown_ms })} step={100} unit="ms" value={reentry.cooldown_ms} /><NumberField help="Maximum confirmed reentry fills during one ticker campaign." label="Maximum attempts" minimum={0} onChange={(maximum_attempts) => onReplaceReentry({ ...reentry, maximum_attempts })} step={1} unit="entries" value={reentry.maximum_attempts} /></div></div> : null}
       {activePage === "reentry_opportunity" ? <DecisionRulesEditor catalog={section.input_catalog} onChange={(rules) => onReplaceReentry({ ...reentry, rules })} onRuleSetEdit={onRuleSetEdit} onRuleSetsChange={(rule_set_catalog, rules) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, reentry: { ...reentry, rules } }, rule_set_catalog })} ruleSetCatalog={profile.rule_set_catalog} rules={reentry.rules} stageName="opportunity" summary="" title="Reentry evidence" /> : null}
       {activePage === "reentry_confirmation" ? <DecisionRulesEditor catalog={section.input_catalog} onChange={(rules) => onReplaceReentry({ ...reentry, rules })} onRuleSetEdit={onRuleSetEdit} onRuleSetsChange={(rule_set_catalog, rules) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, reentry: { ...reentry, rules } }, rule_set_catalog })} ruleSetCatalog={profile.rule_set_catalog} rules={reentry.rules} stageName="confirmation" summary="" title="Reentry evidence" /> : null}
       {activePage === "reentry_blockers" ? <DecisionRulesEditor catalog={section.input_catalog} onChange={(rules) => onReplaceReentry({ ...reentry, rules })} onRuleSetEdit={onRuleSetEdit} onRuleSetsChange={(rule_set_catalog, rules) => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, reentry: { ...reentry, rules } }, rule_set_catalog })} ruleSetCatalog={profile.rule_set_catalog} rules={reentry.rules} stageName="blockers" summary="" title="Reentry evidence" /> : null}
@@ -2248,17 +2395,19 @@ function ReentryAuthoringSurface({ activePage, draft, onPageChange, onProfileCha
       {activePage === "reentry_partial_fill" ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => onReplaceReentry({ ...reentry, order_intent })} segment="partial-fill" value={reentry.order_intent} /></div> : null}
       {activePage === "reentry_protection" ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => onReplaceReentry({ ...reentry, order_intent })} segment="protection" value={reentry.order_intent} /></div> : null}
     </div>
-    <nav aria-label="Reentry questions" className="strategy-entry-navigation strategy-lifecycle-navigation">{REENTRY_AUTHORING_PAGES.map((page, index) => <button aria-current={page.id === activePage ? "step" : undefined} aria-label={page.label} key={page.id} onClick={() => onPageChange(page.id)} title={page.label} type="button"><span>{index + 1}</span><strong>{page.label}</strong></button>)}</nav>
+    <nav aria-label="Reentry questions" className="strategy-entry-navigation strategy-lifecycle-navigation">{REENTRY_AUTHORING_PAGES.map((page, index) => <button aria-current={page.id === activePage ? "step" : undefined} aria-label={page.label} disabled={mode === "manual" && page.id !== "mode"} key={page.id} onClick={() => onPageChange(page.id)} title={page.label} type="button"><span>{index + 1}</span><strong>{page.label}</strong></button>)}</nav>
   </div>;
 }
 
-function ExitAuthoringSurface({ activePage, activeRoute, catalog, draft, luldTargetParameters, onAddRoute, onPageChange, onProfileChange, onReplaceRoute, onRuleSetEdit, onSelectedRouteChange, profile, profitPocketParameters }: {
+function ExitAuthoringSurface({ activePage, activeRoute, catalog, draft, luldTargetParameters, mode, onAddRoute, onModeChange, onPageChange, onProfileChange, onReplaceRoute, onRuleSetEdit, onSelectedRouteChange, profile, profitPocketParameters }: {
   activePage: ExitAuthoringPage;
   activeRoute?: ExitRuleSet;
   catalog: StrategyInput[];
   draft: Draft;
   luldTargetParameters: Array<{ path: string; value: Primitive }>;
+  mode: StrategyPhaseMode;
   onAddRoute: () => void;
+  onModeChange: (mode: StrategyPhaseMode) => void;
   onPageChange: (page: ExitAuthoringPage) => void;
   onProfileChange: (value: StrategyProfile) => void;
   onReplaceRoute: (routeId: string, next: ExitRuleSet) => void;
@@ -2267,9 +2416,10 @@ function ExitAuthoringSurface({ activePage, activeRoute, catalog, draft, luldTar
   profile: StrategyProfile;
   profitPocketParameters: Array<{ path: string; value: Primitive }>;
 }) {
-  const routeRequired = activePage !== "targets" && activePage !== "profit_pocket" && activePage !== "routes";
+  const routeRequired = activePage !== "mode" && activePage !== "targets" && activePage !== "profit_pocket" && activePage !== "routes";
   return <div className="strategy-entry-layout strategy-lifecycle-layout">
     <div className="strategy-entry-question-surface">
+      {activePage === "mode" ? <StrategyPhaseModeEditor mode={mode} onChange={onModeChange} phase="Strategic exit" /> : null}
       {activePage === "targets" ? <div className="configuration-field-grid strategy-entry-engine-fields">{luldTargetParameters.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path.split(".").at(-1) ?? item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} value={item.value} />)}{!luldTargetParameters.length ? <EmptyState detail="This strategy definition does not expose LULD target parameters." title="No LULD target parameters" /> : null}</div> : null}
       {activePage === "profit_pocket" ? <div className="configuration-field-grid strategy-entry-engine-fields">{profitPocketParameters.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path.split(".").at(-1) ?? item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} value={item.value} />)}{!profitPocketParameters.length ? <EmptyState detail="This strategy definition does not expose profit-pocket parameters." title="No profit-pocket parameters" /> : null}</div> : null}
       {activePage === "routes" ? <div className="strategy-guided-entity-list"><header><span>{profile.lifecycle.exit.rule_sets.filter((route) => route.enabled).length} enabled</span><button className="button compact" onClick={onAddRoute} type="button"><Plus size={14} /> Add route</button></header>{profile.lifecycle.exit.rule_sets.map((route) => <article data-selected={activeRoute?.rule_set_id === route.rule_set_id ? "true" : "false"} key={route.rule_set_id}><div className="guided-form-grid"><TextField help="Operator-facing name for this strategic exit route." label="Route name" onChange={(name) => onReplaceRoute(route.rule_set_id, { ...route, name })} value={route.name} /><TextField help="State the market condition and purpose handled by this route." label="Purpose" onChange={(summary) => onReplaceRoute(route.rule_set_id, { ...route, summary })} value={route.summary} /></div><BooleanField help="Disabled routes remain saved but cannot emit an exit request." label="Enabled" onChange={(enabled) => onReplaceRoute(route.rule_set_id, { ...route, enabled })} value={route.enabled} /><div className="strategy-guided-entity-actions"><button className="button compact" onClick={() => { onSelectedRouteChange(route.rule_set_id); onPageChange("evidence"); }} type="button">Configure</button><button className="button compact danger" disabled={profile.lifecycle.exit.rule_sets.length <= 1} onClick={() => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, exit: { rule_sets: profile.lifecycle.exit.rule_sets.filter((row) => row.rule_set_id !== route.rule_set_id) } } })} type="button"><Trash2 size={14} /> Remove</button></div></article>)}</div> : null}
@@ -2281,7 +2431,7 @@ function ExitAuthoringSurface({ activePage, activeRoute, catalog, draft, luldTar
       {activePage === "protection" && activeRoute ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => onReplaceRoute(activeRoute.rule_set_id, { ...activeRoute, order_intent })} segment="protection" value={activeRoute.order_intent} /></div> : null}
       {routeRequired && !activeRoute ? <EmptyState detail="Return to Exit routes and create a route first." title="No exit route selected" /> : null}
     </div>
-    <nav aria-label="Strategic exit questions" className="strategy-entry-navigation strategy-lifecycle-navigation">{EXIT_AUTHORING_PAGES.map((page, index) => <button aria-current={page.id === activePage ? "step" : undefined} aria-label={page.label} key={page.id} onClick={() => onPageChange(page.id)} title={page.label} type="button"><span>{index + 1}</span><strong>{page.label}</strong></button>)}</nav>
+    <nav aria-label="Strategic exit questions" className="strategy-entry-navigation strategy-lifecycle-navigation">{EXIT_AUTHORING_PAGES.map((page, index) => <button aria-current={page.id === activePage ? "step" : undefined} aria-label={page.label} disabled={mode === "manual" && page.id !== "mode"} key={page.id} onClick={() => onPageChange(page.id)} title={page.label} type="button"><span>{index + 1}</span><strong>{page.label}</strong></button>)}</nav>
   </div>;
 }
 
@@ -2432,12 +2582,22 @@ function ReentryEditor({ catalog, draft, onChange, onRuleSetEdit = () => undefin
     ...profile,
     lifecycle: { ...profile.lifecycle, reentry: next },
   });
+  const mode = profile.lifecycle.phase_modes.reentry;
+  const updateMode = (nextMode: string) => onChange({
+    ...profile,
+    lifecycle: {
+      ...profile.lifecycle,
+      phase_modes: { ...profile.lifecycle.phase_modes, reentry: nextMode as StrategyPhaseMode },
+      reentry: { ...reentry, enabled: nextMode === "automatic" },
+    },
+  });
   return (
     <>
       <ConfigurationNarrative heading="Reentry" paragraphs={[
         "Reentry is a new flat-to-open decision after a confirmed full exit. Cooldown delays eligibility, maximum attempts bounds repeated exposure, and fresh confirmation prevents reuse of the evidence that supported the previous entry. Reentry has independent evidence, capital, execution, and protection settings.",
       ]} />
-      <PhaseOrderEditor
+      <SelectField help={{ role: "Choose whether Strategy evaluates and emits reentry intent.", values: { Automatic: "Evaluate the saved reentry configuration.", Manual: "Preserve the configuration but skip reentry evaluation." } }} label="Reentry mode" onChange={updateMode} options={[{ label: "Automatic", value: "automatic" }, { label: "Manual", value: "manual" }]} value={mode} />
+      {mode === "automatic" ? <><PhaseOrderEditor
         capitalRequest={reentry.capital_request}
         eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions}
         orderIntent={reentry.order_intent}
@@ -2449,7 +2609,6 @@ function ReentryEditor({ catalog, draft, onChange, onRuleSetEdit = () => undefin
       />
       <p className="configuration-section-guide">A reentry occurs only after a full exit while the same Strategy Campaign retains ticker ownership. Adding to an open position is a capability, not a reentry.</p>
       <div className="configuration-field-grid">
-        <BooleanField help="Permit another flat-to-open transition within the same ticker campaign." label="Enable reentry" onChange={(enabled) => update({ ...reentry, enabled })} value={reentry.enabled} />
         <BooleanField help="Evidence used for the previous entry cannot be reused without a newer causal update." label="Require new confirmation" onChange={(require_new_confirmation) => update({ ...reentry, require_new_confirmation })} value={reentry.require_new_confirmation} />
         <NumberField help="Minimum time after a confirmed full exit before reentry becomes eligible." label="Cooldown" minimum={0} onChange={(cooldown_ms) => update({ ...reentry, cooldown_ms })} step={100} unit="ms" value={reentry.cooldown_ms} />
         <NumberField help="Maximum reentries during one ticker campaign. Zero allows only the initial entry." label="Maximum attempts" minimum={0} onChange={(maximum_attempts) => update({ ...reentry, maximum_attempts })} step={1} unit="entries" value={reentry.maximum_attempts} />
@@ -2463,7 +2622,7 @@ function ReentryEditor({ catalog, draft, onChange, onRuleSetEdit = () => undefin
         rules={reentry.rules}
         title="When a reentry becomes eligible"
         summary="Reentry owns an independent rule set. Import selected initial-entry groups as editable copies, then add reentry-only evidence as needed."
-      />
+      /></> : null}
     </>
   );
 }
@@ -4352,6 +4511,10 @@ function flattenStrategyPrimitives(value: unknown, prefix = "", result: Array<{ 
 
 function strategyCatalogGroupForPath(path: string): { group: string; groupOrder: number } {
   let groupOrder = 0;
+  if (path === "lifecycle.phase_modes.initial_entry") return { group: "Initial entry · Mode", groupOrder: 2 };
+  if (path === "lifecycle.phase_modes.manage") return { group: "Position management", groupOrder: 6 };
+  if (path === "lifecycle.phase_modes.reentry") return { group: "Reentry", groupOrder: 7 };
+  if (path === "lifecycle.phase_modes.exit") return { group: "Strategic exits", groupOrder: 8 };
   if (path.startsWith("lifecycle.trading_behavior")) groupOrder = 1;
   else if (path.startsWith("lifecycle.initial_entry.opportunity")) groupOrder = 2;
   else if (path.startsWith("lifecycle.initial_entry.confirmation")) groupOrder = 3;
@@ -4375,6 +4538,7 @@ function strategyEditableParameters(profile: StrategyProfile) {
     parameters: profile.parameters,
   };
   return flattenStrategyPrimitives(editableProfile).filter(({ path }) => {
+    if (path === "lifecycle.reentry.enabled") return false;
     const leaf = path.split(".").at(-1) ?? path;
     if (STRATEGY_CATALOG_GUIDED_OMITTED_LEAVES.has(leaf)) return false;
     if (path.includes(".expression.")) return false;
@@ -4393,6 +4557,7 @@ function strategyEditableParameters(profile: StrategyProfile) {
 function strategyParameterLabel(path: string) {
   const parts = path.split(".");
   const leaf = readableLabel(parts.at(-1) ?? path);
+  if (path.startsWith("lifecycle.phase_modes.")) return `${leaf} mode`;
   const indexedParent = parts.findIndex((part) => /^\d+$/.test(part));
   if (indexedParent < 1) return leaf;
   const index = Number(parts[indexedParent]) + 1;
@@ -4451,6 +4616,7 @@ function controlFor(value: Primitive): FieldDefinition["kind"] {
 }
 
 function choicesFor(path: string): readonly string[] | undefined {
+  if (path.startsWith("lifecycle.phase_modes.")) return ["automatic", "manual"];
   if (path.endsWith(".method")) return ["structure", "volatility", "hybrid"];
   if (path.endsWith(".trigger")) return ["acceleration_slowdown", "favorable_move_pct", "volatility_multiple"];
   if (path.endsWith(".side")) return ["long", "short"];
@@ -4499,6 +4665,10 @@ function strategyParameterDocumentation(path: string, group: string, value: Cata
   if (path === "name") return { ...base, role: ["The name is the human-readable identity of this Strategy Profile. It appears in selection lists, Run Plans, releases, and runtime evidence."], timing: ["The name is descriptive metadata and is not consulted by trading logic."], impact: ["Renaming improves operator recognition without changing entries, position sizing, exits, or order behavior."], caution: ["Use a unique, stable name that describes the strategy rather than a temporary test label. Renaming does not create a new strategy revision by itself."], cautionTone: "information" };
   if (path === "description") return { ...base, role: ["The description records the strategy's intended setup, market context, and operating purpose for reviewers and operators."], timing: ["It is shown during configuration and review but is not evaluated by the Strategy Engine."], impact: ["A precise description makes later changes auditable and helps users distinguish expected behavior from a defect. It has no direct trading effect."], caution: ["Describe intent and boundaries, not implementation guesses. Keep behavior-changing facts in typed parameters where the runtime can enforce them."], cautionTone: "information" };
   if (path === "enabled") return { ...base, role: ["This switch controls whether a Run Plan may select the Strategy Profile for a new run."], timing: ["It is checked before a new Strategy Run is admitted. It does not start, stop, or mutate an already running campaign."], impact: [value ? "The profile is currently available to eligible Run Plans." : "The profile is currently unavailable for new Strategy Runs."], caution: ["Disabling availability is not an emergency stop. Use the shared safety authority to halt active trading or block new account risk."], cautionTone: "warning" };
+  if (path.startsWith("lifecycle.phase_modes.")) {
+    const phase = readableLabel(path.split(".").at(-1) ?? "phase");
+    return { ...base, role: [`This mode decides whether Strategy owns the ${phase.toLowerCase()} decision.`], timing: ["The mode is checked before Strategy evaluates any rules or emits intent for this lifecycle phase."], impact: [value === "manual" ? `The ${phase.toLowerCase()} configuration is preserved, but Strategy skips its evaluation and emits no intent for it.` : `Strategy evaluates the configured ${phase.toLowerCase()} pages and may emit intent when their rules pass.`], caution: [path.endsWith(".exit") ? "Manual strategic exit never disables broker-held protection, emergency exits, or account safety." : "Run Plan authority remains separate and still decides whether emitted intent executes automatically or requires confirmation."], cautionTone: path.endsWith(".exit") ? "safety" : "information" };
+  }
 
   if (path.includes("eligible_sessions")) return { ...base, role: ["This session is one of the time windows in which the strategy may create exposure-increasing actions."], timing: ["The session gate is checked before initial entry, position adds, and reentry. Existing-position protection and emergency action remain active outside eligible sessions."], impact: ["Adding a session expands when the strategy may take risk; removing it narrows opportunity and can prevent otherwise valid evidence from producing an entry request."], caution: ["Session eligibility is not a protection schedule. Broker-held stops and account safety supervision must remain active regardless of this value."], cautionTone: "safety" };
   if (path.endsWith(".side")) return { ...base, role: ["Side reserves the campaign's trade direction and determines whether entry intent seeks long or short exposure."], timing: ["It is applied when the campaign is created and is carried into entry, add, reentry, and exit interpretation."], impact: ["Changing side reverses the economic meaning of price movement, evidence comparisons, and closing orders. It is a fundamental strategy change, not a display preference."], caution: ["Review every directional evidence source and exit rule after changing side. A rule written for long behavior may be logically wrong for short behavior even if the schema accepts it."], cautionTone: "warning" };
