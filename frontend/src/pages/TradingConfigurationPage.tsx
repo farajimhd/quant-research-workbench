@@ -2031,12 +2031,12 @@ function StrategyParameterDetail({ item, onChange, value }: { item: StrategyCata
 function ParameterDocumentation({ group, path, value }: { group: string; path: string; value: CatalogParameterValue | undefined }) {
   const documentation = strategyParameterDocumentation(path, group, value);
   return <section aria-label="Parameter documentation" className="strategy-parameter-documentation">
-    <header><BookOpenCheck size={18} /><div><span>Parameter documentation</span><h3>How this value changes the strategy</h3></div></header>
+    <header><BookOpenCheck size={18} /><div><span>Parameter guidance</span><h3>Understand this setting before changing it</h3></div></header>
     <div className="strategy-parameter-documentation-copy">
-      <article data-tone="information"><CircleHelp size={17} /><div><strong>Role in the strategy</strong>{documentation.role.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
-      <article data-tone="behavior"><GitBranch size={17} /><div><strong>When it is used</strong>{documentation.timing.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
-      <article data-tone="impact"><Target size={17} /><div><strong>Behavioral impact</strong>{documentation.impact.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
-      <article data-tone={documentation.cautionTone}><TriangleAlert size={17} /><div><strong>Important</strong>{documentation.caution.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
+      <article data-tone="information"><CircleHelp size={18} /><div><strong>What it controls</strong>{documentation.role.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
+      <article data-tone="behavior"><GitBranch size={18} /><div><strong>When it applies</strong>{documentation.timing.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
+      <article data-tone="impact"><Target size={18} /><div><strong>What changes</strong>{documentation.impact.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
+      <article data-tone={documentation.cautionTone}><TriangleAlert size={18} /><div><strong>Check before changing</strong>{documentation.caution.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
     </div>
   </section>;
 }

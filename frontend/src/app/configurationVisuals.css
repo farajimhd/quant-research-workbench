@@ -2844,29 +2844,32 @@
 .strategy-parameter-detail-page > footer p { margin: 0; }
 .strategy-parameter-detail-page > .strategy-parameter-editor { display: block; padding: 24px; }
 .strategy-parameter-editor .configuration-field { max-width: 560px; }
-.strategy-parameter-detail-page > .strategy-parameter-documentation { border-top: 1px solid var(--configuration-rule); display: grid; gap: 16px; grid-template-columns: 1fr; padding: 24px; }
-.strategy-parameter-documentation > header { align-items: center; display: flex; gap: 10px; }
-.strategy-parameter-documentation > header > svg { color: var(--info); flex: 0 0 auto; }
-.strategy-parameter-documentation > header > div { display: grid; gap: 2px; }
-.strategy-parameter-documentation > header span { color: var(--muted-foreground); font-size: 10px; font-weight: 620; letter-spacing: .08em; text-transform: uppercase; }
-.strategy-parameter-documentation > header h3 { font-size: 16px; margin: 0; }
-.strategy-parameter-detail-page > section > .strategy-parameter-documentation-copy { border: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); padding: 0; }
-.strategy-parameter-detail-page > section .strategy-parameter-documentation-copy > article { --documentation-tone: var(--info); align-items: start; background: color-mix(in oklab, var(--documentation-tone) 5%, var(--surface)); border: 1px solid color-mix(in oklab, var(--documentation-tone) 24%, var(--configuration-rule)); border-left: 3px solid var(--documentation-tone); border-radius: 7px; display: flex; gap: 11px; min-width: 0; padding: 15px; }
+.strategy-parameter-detail-page > .strategy-parameter-documentation { background: var(--surface); border-top: 1px solid var(--configuration-rule); container-type: inline-size; display: grid; gap: 20px; grid-template-columns: 1fr; padding: 28px 24px 30px; }
+.strategy-parameter-documentation > header { align-items: flex-start; display: flex; gap: 12px; }
+.strategy-parameter-documentation > header > svg { color: var(--muted-foreground); flex: 0 0 auto; margin-top: 2px; }
+.strategy-parameter-documentation > header > div { display: grid; gap: 4px; }
+.strategy-parameter-documentation > header span { color: var(--muted-foreground); font-size: 10px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; }
+.strategy-parameter-documentation > header h3 { font-size: 17px; font-weight: 650; line-height: 1.3; margin: 0; }
+.strategy-parameter-detail-page > section > .strategy-parameter-documentation-copy { border: 0; display: grid; gap: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0; }
+.strategy-parameter-detail-page > section .strategy-parameter-documentation-copy > article { --documentation-tone: var(--info); align-items: start; background: var(--surface); border: 0; border-top: 1px solid var(--configuration-rule); border-radius: 0; display: flex; gap: 13px; min-width: 0; padding: 20px 16px; }
 .strategy-parameter-documentation-copy > article[data-tone="behavior"] { --documentation-tone: var(--success); }
 .strategy-parameter-documentation-copy > article[data-tone="impact"] { --documentation-tone: var(--canvas-link-blue); }
-.strategy-parameter-documentation-copy > article[data-tone="impact"] { border-color: var(--configuration-rule); border-left-color: var(--configuration-rule); }
 .strategy-parameter-documentation-copy > article[data-tone="warning"] { --documentation-tone: var(--warning); }
 .strategy-parameter-documentation-copy > article[data-tone="safety"] { --documentation-tone: var(--danger); }
-.strategy-parameter-documentation-copy > article > svg { color: var(--documentation-tone); flex: 0 0 auto; margin-top: 1px; }
-.strategy-parameter-documentation-copy > article > div { border: 0; display: grid; gap: 7px; padding: 0; }
-.strategy-parameter-detail-page > section .strategy-parameter-documentation-copy strong { font-family: inherit; font-size: 12px; font-weight: 650; }
-.configuration-expert-editor .strategy-parameter-documentation-copy p { color: var(--muted-foreground); display: block; font-size: 11px; line-height: 1.58; margin: 0; }
+.strategy-parameter-documentation-copy > article > svg { color: var(--documentation-tone); flex: 0 0 auto; margin-top: 2px; }
+.strategy-parameter-documentation-copy > article > div { border: 0; display: grid; gap: 8px; padding: 0; }
+.strategy-parameter-detail-page > section .strategy-parameter-documentation-copy strong { color: var(--foreground); font-family: inherit; font-size: 13px; font-weight: 680; letter-spacing: -.005em; }
+.configuration-expert-editor .strategy-parameter-documentation-copy p { color: var(--muted-foreground); display: block; font-size: 13px; line-height: 1.6; margin: 0; max-width: 68ch; }
 .strategy-parameter-detail-page > .strategy-parameter-reference { background: var(--configuration-soft); border-top: 1px solid var(--configuration-rule); grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 8px 24px 24px; }
 .strategy-parameter-empty-detail { align-items: center; background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 8px; color: var(--muted-foreground); display: flex; flex-direction: column; justify-content: center; min-height: 500px; padding: 32px; text-align: center; }
 .strategy-parameter-empty-detail h2 { color: var(--foreground); margin: 12px 0 6px; }
 .configuration-expert-editor .strategy-parameter-empty-detail p { display: block; margin: 0; max-width: 440px; }
 .strategy-guided-navigation { align-items: center; border-top: 1px solid var(--configuration-rule); display: flex; justify-content: space-between; padding-top: 16px; }
 .strategy-guided-navigation > span { color: var(--muted-foreground); font-size: 11px; }
+
+@container (max-width: 620px) {
+  .strategy-parameter-detail-page > section > .strategy-parameter-documentation-copy { grid-template-columns: 1fr; }
+}
 
 @container configuration-workbench (max-width: 760px) {
   .strategy-profile-command { grid-template-columns: 1fr; }
