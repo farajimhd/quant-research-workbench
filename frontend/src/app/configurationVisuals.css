@@ -156,6 +156,11 @@
 .trading-configuration-page {
   --configuration-control-border: color-mix(in oklab, var(--configuration-accent) 24%, var(--surface-alt));
   --configuration-control-fill: color-mix(in oklab, var(--configuration-accent) 3%, var(--surface-alt));
+  /* One centered frame owns the hierarchy for every configuration studio.
+     Catalog, guided, and structure views all inherit this same boundary. */
+  --configuration-studio-max: 1600px;
+  --configuration-reading-max: 980px;
+  --strategy-workspace-max: var(--configuration-studio-max);
   container-name: configuration-workbench;
   container-type: inline-size;
   gap: 12px;
@@ -2302,7 +2307,6 @@
 .trading-configuration-page[data-configuration-section="strategy"] {
   --strategy-neutral-focus: color-mix(in oklab, var(--muted-foreground) 58%, var(--border));
   --strategy-neutral-focus-soft: color-mix(in oklab, var(--muted-foreground) 12%, transparent);
-  --strategy-workspace-max: 1904px;
 }
 
 .trading-configuration-page[data-configuration-section="strategy"] .strategy-start-paths > button:focus-visible,
@@ -2935,13 +2939,13 @@
 }
 .strategy-editor-mode-tabs button[aria-selected="true"] { background: var(--surface); box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 10%, transparent); color: var(--foreground); }
 .configuration-structure-button { color: var(--muted-foreground); }
-.configuration-section-guided { margin: 12px auto 0; max-width: 1180px; width: 100%; }
+.configuration-section-guided { margin: 12px auto 0; max-width: var(--configuration-studio-max); width: 100%; }
 .configuration-section-guided .guided-configuration-shell { grid-template-columns: minmax(0, 1fr); }
 .configuration-section-guided .guided-question-surface { background: transparent; border: 0; box-shadow: none; }
 .configuration-section-guided .guided-question-surface > header { background: transparent; border: 0; border-bottom: 1px solid var(--configuration-rule); padding-inline: 0; }
 .configuration-section-guided .guided-question-list,
 .configuration-section-guided .guided-running-summary,
-.configuration-section-guided .guided-navigation { margin-left: auto; margin-right: auto; width: min(100%, 980px); }
+.configuration-section-guided .guided-navigation { margin-left: auto; margin-right: auto; width: min(100%, var(--configuration-reading-max)); }
 .configuration-section-catalog { margin-top: 2px; }
 .configuration-section-catalog .strategy-parameter-catalog > header p { color: var(--muted-foreground); font-size: 10px; line-height: 1.45; margin: 0; }
 .configuration-section-catalog .strategy-parameter-detail-page > header > span { color: var(--muted-foreground); font-family: var(--font-mono); font-size: 9px; font-weight: 720; letter-spacing: .08em; text-transform: uppercase; }
