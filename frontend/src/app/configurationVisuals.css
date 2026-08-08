@@ -3021,3 +3021,160 @@
   gap: 10px;
   grid-template-columns: 88px minmax(0, 1fr);
 }
+
+/* Strategy Studio authoring uses one label -> control -> guidance rhythm. */
+.strategy-entry-layout {
+  align-items: start;
+  display: grid;
+  gap: 34px;
+  grid-template-columns: minmax(0, 1fr) 190px;
+}
+
+.strategy-editor-guided .strategy-authoring-stage-entry { width: 80%; }
+
+.strategy-entry-question-surface { min-width: 0; }
+
+.strategy-entry-navigation {
+  border: 0;
+  display: grid;
+  gap: 0;
+  grid-template-columns: 1fr;
+  padding: 2px 0;
+  position: relative;
+}
+
+.strategy-entry-navigation::before {
+  background: var(--configuration-rule);
+  bottom: 22px;
+  content: "";
+  left: 17px;
+  position: absolute;
+  top: 22px;
+  width: 1px;
+}
+
+.strategy-entry-navigation button {
+  border: 0;
+  color: var(--muted-foreground);
+  justify-content: flex-start;
+  min-height: 42px;
+  padding: 5px 0;
+  position: relative;
+  text-align: left;
+  z-index: 1;
+}
+
+.strategy-entry-navigation button > span {
+  background: var(--surface);
+  border: 1px solid var(--configuration-rule);
+  height: 34px;
+  width: 34px;
+}
+
+.strategy-entry-navigation button > strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.strategy-entry-navigation button[aria-current="step"] { border: 0; color: var(--foreground); }
+.strategy-entry-navigation button[aria-current="step"] > span { border-color: var(--canvas-link-blue); }
+
+.strategy-entry-fields .configuration-field,
+.strategy-entry-engine-fields .configuration-field,
+.strategy-re-evaluation-rules .configuration-field {
+  align-content: start;
+  display: grid;
+}
+
+.strategy-entry-fields .configuration-field > span,
+.strategy-entry-engine-fields .configuration-field > span,
+.strategy-re-evaluation-rules .configuration-field > span { order: 1; }
+
+.strategy-entry-fields .configuration-field > :is(input, select, strong, .configuration-number, .configuration-lookup-button),
+.strategy-entry-engine-fields .configuration-field > :is(input, select, strong, .configuration-number, .configuration-lookup-button),
+.strategy-re-evaluation-rules .configuration-field > :is(input, select, strong, .configuration-number, .configuration-lookup-button) { order: 2; }
+
+.strategy-entry-fields .configuration-field > small,
+.strategy-entry-engine-fields .configuration-field > small,
+.strategy-re-evaluation-rules .configuration-field > small {
+  color: var(--muted-foreground);
+  order: 3;
+}
+
+.strategy-entry-fields .configuration-field > small,
+.strategy-entry-engine-fields .configuration-field > small { display: block; }
+
+.strategy-rule-set-detail { border: 0; overflow: visible; }
+.strategy-rule-set-detail > section.strategy-rule-set-authoring {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: 1fr;
+  margin: 0 auto;
+  padding: 34px 0;
+  width: 72%;
+}
+
+.strategy-rule-set-authoring > .strategy-identity-intro {
+  border-bottom: 1px solid var(--configuration-rule);
+  display: grid;
+  gap: 8px;
+  padding-bottom: 18px;
+}
+
+.strategy-rule-set-authoring > .strategy-identity-intro h2 { font-size: 25px; margin: 0; }
+.strategy-rule-set-authoring > .strategy-identity-intro p { color: var(--muted-foreground); font-size: 13px; line-height: 1.55; margin: 0; }
+.strategy-rule-set-editor { min-width: 0; }
+.strategy-rule-set-editor > .strategy-rule-group { border: 0; border-radius: 0; }
+.strategy-rule-set-editor > .strategy-rule-group > summary { background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 9px; min-height: 64px; padding: 12px 16px; }
+.strategy-rule-set-editor .strategy-rule-group-body { border: 0; padding: 24px 0 0; }
+.strategy-rule-set-editor .configuration-narrative,
+.strategy-rule-set-editor .strategy-rule-toolbar-heading { display: none; }
+.strategy-rule-set-editor .strategy-rule-toolbar { border: 0; padding: 0 0 22px; }
+.strategy-rule-set-editor .strategy-rule-toolbar-fields { grid-template-columns: minmax(0, 1fr) auto; }
+.strategy-rule-set-editor .strategy-rule-condition {
+  box-sizing: border-box;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  width: 100%;
+}
+.strategy-rule-set-editor .strategy-condition-index { display: none; }
+.strategy-rule-set-editor .strategy-source-detail { grid-column: 1; }
+
+.strategy-re-evaluation-editor { gap: 18px; }
+.strategy-re-evaluation-toolbar { border-bottom: 1px solid var(--configuration-rule); padding-bottom: 14px; }
+.strategy-re-evaluation-rules { gap: 0; }
+.strategy-re-evaluation-rules > article {
+  border: 0;
+  border-bottom: 1px solid var(--configuration-rule);
+  border-radius: 0;
+  gap: 20px;
+  padding: 22px 0;
+}
+.strategy-re-evaluation-rule-heading { align-items: center; grid-template-columns: minmax(0, 1fr) minmax(180px, .35fr) auto; }
+.strategy-re-evaluation-rule-identity { display: grid; gap: 4px; }
+.strategy-re-evaluation-rule-identity > span { color: var(--muted-foreground); font-size: 10px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+.strategy-re-evaluation-rule-identity > strong { font-size: 16px; font-weight: 650; }
+.strategy-re-evaluation-rules .configuration-field > small { display: block; font-size: 11px; line-height: 1.45; }
+.strategy-re-evaluation-rules .configuration-choice-set { border-top: 0; padding-top: 0; }
+
+@media (max-width: 1050px) {
+  .strategy-entry-layout { grid-template-columns: minmax(0, 1fr) 160px; }
+  .strategy-rule-set-detail > section.strategy-rule-set-authoring { width: 88%; }
+}
+
+@media (max-width: 760px) {
+  .strategy-editor-guided .strategy-authoring-stage-entry { width: 100%; }
+  .strategy-entry-layout { display: flex; flex-direction: column-reverse; }
+  .strategy-entry-navigation { display: flex; overflow-x: auto; width: 100%; }
+  .strategy-entry-navigation::before { display: none; }
+  .strategy-entry-navigation button { flex: 0 0 auto; padding-right: 16px; }
+  .strategy-re-evaluation-rule-heading { grid-template-columns: 1fr; }
+  .strategy-rule-set-detail > section.strategy-rule-set-authoring { width: 100%; }
+}
+
+@media (min-width: 1600px) {
+  .strategy-rule-set-editor .strategy-rule-condition { grid-template-columns: auto repeat(3, minmax(0, 1fr)); }
+  .strategy-rule-set-editor .strategy-condition-index { display: flex; }
+  .strategy-rule-set-editor .strategy-source-detail { grid-column: 2 / -1; }
+}
