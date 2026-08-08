@@ -2657,6 +2657,31 @@
 .strategy-rule-expression-summary { background: color-mix(in oklab, var(--configuration-accent) 5%, var(--surface)); border: 1px solid color-mix(in oklab, var(--configuration-accent) 24%, var(--border)); border-radius: 9px; display: grid; gap: 7px; padding: 14px 16px; }
 .strategy-rule-expression-summary span { color: var(--configuration-accent); font-size: 9px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
 .strategy-rule-expression-summary strong { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; font-weight: 550; line-height: 1.6; }
+.strategy-rule-set-dialog-backdrop { background: color-mix(in oklab, var(--foreground) 22%, transparent); padding: 24px; }
+.strategy-rule-set-dialog { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: min(860px, calc(var(--app-zoomed-viewport-height, 100vh) - 48px)); max-width: min(1120px, calc(var(--app-zoomed-viewport-width, 100vw) - 48px)); overflow: hidden; padding: 0; width: min(1120px, calc(var(--app-zoomed-viewport-width, 100vw) - 48px)); }
+.strategy-rule-set-dialog-header { align-items: start; border-bottom: 1px solid var(--configuration-rule); display: flex; justify-content: space-between; margin: 0; padding: 20px 22px; }
+.strategy-rule-set-dialog-header > div { display: grid; gap: 4px; }
+.strategy-rule-set-dialog-header span { color: var(--muted-foreground); font-size: 10px; font-weight: 720; letter-spacing: .07em; text-transform: uppercase; }
+.strategy-rule-set-dialog-header h2 { font-size: 21px; font-weight: 680; margin: 0; }
+.strategy-rule-set-dialog-header p { color: var(--muted-foreground); font-size: 12px; line-height: 1.45; margin: 0; }
+.strategy-rule-set-dialog-header > button { align-items: center; background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 7px; color: var(--muted-foreground); cursor: pointer; display: flex; height: 34px; justify-content: center; width: 34px; }
+.strategy-rule-set-dialog-header > button:hover { color: var(--foreground); }
+.strategy-rule-set-dialog-body { min-height: 0; overflow: auto; padding: 20px 22px; }
+.strategy-rule-set-dialog-identity { display: grid; gap: 16px; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); margin-bottom: 18px; }
+.strategy-rule-set-dialog-identity label { display: grid; gap: 7px; }
+.strategy-rule-set-dialog-identity label > span { color: var(--muted-foreground); font-size: 10px; font-weight: 720; letter-spacing: .06em; text-transform: uppercase; }
+.strategy-rule-set-dialog-identity input,
+.strategy-rule-set-dialog-identity textarea { background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 7px; color: var(--foreground); font: inherit; min-width: 0; padding: 10px 11px; resize: vertical; }
+.strategy-rule-set-dialog-identity input { font-weight: 650; min-height: 42px; }
+.strategy-rule-set-dialog-identity input[aria-invalid="true"] { border-color: var(--danger); }
+.strategy-rule-set-dialog .strategy-rule-set-meaning { margin-bottom: 18px; }
+.strategy-rule-set-dialog .strategy-rule-group { border: 1px solid var(--configuration-rule); border-radius: 9px; }
+.strategy-rule-set-dialog-actions { align-items: center; border-top: 1px solid var(--configuration-rule); display: flex; gap: 8px; justify-content: flex-end; padding: 14px 22px; }
+@media (max-width: 760px) {
+  .strategy-rule-set-dialog-backdrop { padding: 10px; }
+  .strategy-rule-set-dialog { max-height: calc(var(--app-zoomed-viewport-height, 100vh) - 20px); max-width: calc(var(--app-zoomed-viewport-width, 100vw) - 20px); width: calc(var(--app-zoomed-viewport-width, 100vw) - 20px); }
+  .strategy-rule-set-dialog-identity { grid-template-columns: 1fr; }
+}
 .strategy-rule-set-detail .strategy-rule-set-identity { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); }
 .strategy-rule-set-detail > .strategy-rule-group { border: 1px solid var(--border); border-radius: 9px; }
 .strategy-entry-fields { display: grid; gap: 18px; }
