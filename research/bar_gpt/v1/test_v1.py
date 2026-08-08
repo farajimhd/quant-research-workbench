@@ -80,7 +80,7 @@ class BuilderSqlTest(unittest.TestCase):
         ).to(dtype=value.dtype) * norm.weight
         torch.testing.assert_close(actual, expected)
 
-    def test_attention_passes_unexpanded_kv_heads_to_native_gqa(self) -> None:
+    def test_cpu_causal_attention_uses_compatible_explicit_gqa(self) -> None:
         config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.0)
         attention = CausalSelfAttention(config).eval()
         value = torch.randn(2, 7, 32)
@@ -92,9 +92,25 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertEqual(output.shape, value.shape)
         query, key, val = sdpa.call_args.args[:3]
         self.assertEqual(query.shape[1], 4)
-        self.assertEqual(key.shape[1], 2)
-        self.assertEqual(val.shape[1], 2)
-        self.assertTrue(sdpa.call_args.kwargs["enable_gqa"])
+        self.assertEqual(key.shape[1], 4)
+        self.assertEqual(val.shape[1], 4)
+        self.assertFalse(sdpa.call_args.kwargs["enable_gqa"])
+
+    def test_local_attention_expands_kv_to_preserve_efficient_sdpa_dispatch(self) -> None:
+        config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.0)
+        attention = CausalSelfAttention(config).eval()
+        value = torch.randn(2, 7, 32)
+        with patch(
+            "research.bar_gpt.v1.model.F.scaled_dot_product_attention",
+            wraps=torch.nn.functional.scaled_dot_product_attention,
+        ) as sdpa:
+            output = attention(value, attention_window=3)
+        self.assertEqual(output.shape, value.shape)
+        query, key, val = sdpa.call_args.args[:3]
+        self.assertEqual(query.shape[1], 4)
+        self.assertEqual(key.shape[1], 4)
+        self.assertEqual(val.shape[1], 4)
+        self.assertNotIn("enable_gqa", sdpa.call_args.kwargs)
 
     def test_native_gqa_matches_explicit_kv_repetition(self) -> None:
         query = torch.randn(2, 4, 7, 8, requires_grad=True)

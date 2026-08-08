@@ -32,6 +32,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="cuda")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--sdpa-audit", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--print-config-only", action="store_true")
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -69,6 +70,7 @@ def profiler_argv(args: argparse.Namespace) -> list[str]:
         str(args.device),
         "--progress-layout",
         str(args.progress_layout),
+        "--sdpa-audit" if args.sdpa_audit else "--no-sdpa-audit",
     ]
 
 

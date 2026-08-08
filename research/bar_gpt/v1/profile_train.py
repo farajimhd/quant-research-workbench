@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Iterable
 
 import torch
+import torch.nn.functional as F
 
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, TrainConfig
 from research.bar_gpt.v1.data import BarGPTBatch, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME
@@ -37,6 +38,7 @@ from research.mlops.env import load_env_files
 
 
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\profile_train")
+SDPA_PROBE_MAX_LENGTH = 512
 
 MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
     "current": {"d_model": 384, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
@@ -132,59 +134,89 @@ def _sdpa_backend(key: str) -> str | None:
     return "other"
 
 
-def _sdpa_attention_mode(event: object) -> str:
-    """Identify masked-local versus causal SDPA from the dispatcher parent."""
-    parent = getattr(event, "cpu_parent", None)
-    while parent is not None:
-        if str(getattr(parent, "key", "")) == "aten::scaled_dot_product_attention":
-            shapes = getattr(parent, "input_shapes", ())
-            mask_shape = shapes[3] if len(shapes) > 3 else ()
-            return "local_mask" if mask_shape else "causal"
-        parent = getattr(parent, "cpu_parent", None)
-    return "unknown"
-
-
 def _profile_sdpa_backends(
-    model: torch.nn.Module,
     batch: BarGPTBatch,
     data: DataConfig,
+    model_config: BarGPTConfig,
     *,
     device: torch.device,
-) -> tuple[str, tuple[tuple[str, int], ...], float, str]:
-    """Audit one real forward after timing; never include it in throughput."""
+) -> tuple[str, tuple[tuple[str, int], ...], int, float, str]:
+    """Audit bounded representative causal/local SDPA calls after timing."""
     if device.type != "cuda":
-        return "not_run", (), 0.0, "CUDA is required for an SDPA kernel audit"
+        return "not_run", (), 0, 0.0, "CUDA is required for an SDPA kernel audit"
+    view_lengths = {name: int(value.shape[1]) for name, value in batch.views.items()}
+    local_lengths = [
+        length
+        for name, length in view_lengths.items()
+        if int(data.attention_window_by_name[name]) < length
+    ]
+    causal_lengths = [
+        length
+        for name, length in view_lengths.items()
+        if int(data.attention_window_by_name[name]) >= length
+    ]
+    probes: list[tuple[str, int]] = []
+    if local_lengths:
+        probes.append(("local_mask", min(SDPA_PROBE_MAX_LENGTH, max(local_lengths))))
+    if causal_lengths:
+        probes.append(("causal", min(SDPA_PROBE_MAX_LENGTH, max(causal_lengths))))
     counts: dict[str, int] = {}
     started = time.perf_counter()
     try:
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            record_shapes=True,
-        ) as trace:
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                audited_output = model(
-                    batch.views,
-                    timeframe_us=TIMEFRAME_US_BY_NAME,
-                    pathway_ids=PATHWAY_ID_BY_NAME,
-                    base_view="1s",
-                    origin_indices=batch.origin_indices,
-                    asof_indices=batch.asof_indices,
-                    attention_windows=data.attention_window_by_name,
-                    horizon_ids=torch.arange(len(data.horizons_us), device=device),
+        head_dim = model_config.d_model // model_config.n_heads
+        for mode, length in probes:
+            kv_heads = model_config.n_heads if mode == "local_mask" else model_config.n_kv_heads
+            query = torch.randn(
+                (1, model_config.n_heads, length, head_dim),
+                device=device,
+                dtype=torch.bfloat16,
+                requires_grad=True,
+            )
+            key = torch.randn(
+                (1, kv_heads, length, head_dim),
+                device=device,
+                dtype=torch.bfloat16,
+                requires_grad=True,
+            )
+            value = torch.randn_like(key, requires_grad=True)
+            mask = None
+            if mode == "local_mask":
+                positions = torch.arange(length, device=device)
+                mask = (positions[None, :] <= positions[:, None]) & (
+                    positions[None, :] > positions[:, None] - min(128, length)
+                )
+            with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            ) as trace:
+                audited_output = F.scaled_dot_product_attention(
+                    query,
+                    key,
+                    value,
+                    attn_mask=mask,
+                    dropout_p=float(model_config.dropout),
+                    is_causal=mode == "causal",
+                    enable_gqa=mode == "causal" and model_config.n_kv_heads != model_config.n_heads,
                 )
             torch.cuda.synchronize(device)
-        del audited_output
-        for event in trace.events():
-            backend = _sdpa_backend(str(event.key))
-            if backend is not None:
-                label = f"{_sdpa_attention_mode(event)}/{backend}"
-                counts[label] = counts.get(label, 0) + 1
+            del audited_output, query, key, value, mask
+            for event in trace.key_averages():
+                backend = _sdpa_backend(str(event.key))
+                if backend is not None:
+                    label = f"{mode}/{backend}"
+                    counts[label] = counts.get(label, 0) + int(event.count)
     except (RuntimeError, OSError) as exc:
-        return "failed", (), time.perf_counter() - started, str(exc)
+        return "failed", (), len(probes), time.perf_counter() - started, str(exc)
     elapsed = time.perf_counter() - started
     if not counts:
-        return "unreported", (), elapsed, "torch.profiler emitted no concrete SDPA backend operator"
-    return "passed", tuple(sorted(counts.items())), elapsed, ""
+        return (
+            "unreported",
+            (),
+            len(probes),
+            elapsed,
+            "torch.profiler emitted no concrete SDPA backend operator",
+        )
+    lengths = ", ".join(f"{mode}={length}" for mode, length in probes)
+    return "passed", tuple(sorted(counts.items())), len(probes), elapsed, f"bounded probe lengths: {lengths}"
 
 
 def _parse_candidates(value: str) -> tuple[ProfileCandidate, ...]:
@@ -251,6 +283,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
+    parser.add_argument("--sdpa-audit", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="offline")
     parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
     return parser.parse_args(list(argv) if argv is not None else None)
@@ -332,6 +365,11 @@ class ProfileReporter:
         calendar_context = ", ".join(f"{name}={bars}" for name, bars in data.calendar_context_bars)
         horizons = ", ".join(f"{value // 1_000_000}s" for value in data.horizons_us)
         runtime = _runtime_evidence(device)
+        audit_description = (
+            "up to two bounded representative probes after timing; excluded from throughput"
+            if bool(args.sdpa_audit)
+            else "disabled by --no-sdpa-audit"
+        )
         if self.rich:
             from rich.console import Console
             from rich.table import Table
@@ -355,7 +393,7 @@ class ProfileReporter:
             )
             run.add_row(
                 "SDPA kernel audit",
-                "one extra real forward after timing; excluded from throughput",
+                audit_description,
             )
             run.add_row("Precision", "BF16 autocast")
             run.add_row("Intraday context", intraday_context)
@@ -418,7 +456,7 @@ class ProfileReporter:
             flush=True,
         )
         print(
-            "  SDPA kernel audit   one extra real forward after timing; excluded from throughput",
+            f"  SDPA kernel audit   {audit_description}",
             flush=True,
         )
         print("  Precision           BF16 autocast", flush=True)
@@ -473,6 +511,13 @@ class ProfileReporter:
             self._progress.update(self._task, total=total, completed=completed, description=f"measuring: {candidate.name}")
         elif self.layout == "text" and (completed == 1 or completed == total):
             print(f"profile measured: {candidate.name} {completed}/{total} updates", flush=True)
+
+    def audit(self, candidate: ProfileCandidate) -> None:
+        message = f"timed measurement complete; auditing bounded SDPA probes: {candidate.name}"
+        if self._progress is not None and self._task is not None:
+            self._progress.update(self._task, description=message)
+        elif self.layout != "none":
+            print(message, flush=True)
 
     def final(self, results: list[ProfileResult], selected: ProfileResult | None) -> None:
         if self.layout == "none":
@@ -599,7 +644,7 @@ def _profile_candidate(
     measured_metric = 0.0
     sdpa_audit_state = "not_run"
     sdpa_backend_counts: tuple[tuple[str, int], ...] = ()
-    sdpa_expected_calls = model_config.n_layers * len(data.attention_window_by_name)
+    sdpa_expected_calls = 0
     sdpa_audit_seconds = 0.0
     sdpa_audit_message = ""
     measured_allocated = measured_reserved = total_device = 0
@@ -714,9 +759,17 @@ def _profile_candidate(
             total_device = int(torch.cuda.get_device_properties(device).total_memory)
         optimizer.zero_grad(set_to_none=True)
         del output, loss_result, loss
-        sdpa_audit_state, sdpa_backend_counts, sdpa_audit_seconds, sdpa_audit_message = (
-            _profile_sdpa_backends(model, batch, data, device=device)
-        )
+        if bool(args.sdpa_audit):
+            reporter.audit(candidate)
+            (
+                sdpa_audit_state,
+                sdpa_backend_counts,
+                sdpa_expected_calls,
+                sdpa_audit_seconds,
+                sdpa_audit_message,
+            ) = _profile_sdpa_backends(batch, data, model_config, device=device)
+        else:
+            sdpa_audit_state = "disabled"
         observed_sdpa_calls = sum(count for _name, count in sdpa_backend_counts)
         if sdpa_audit_state == "passed" and observed_sdpa_calls != sdpa_expected_calls:
             sdpa_audit_state = "partial"

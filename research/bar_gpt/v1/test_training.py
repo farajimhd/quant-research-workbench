@@ -103,7 +103,7 @@ from research.bar_gpt.v1.train import (
     sequential_coverage_counts,
     validate,
 )
-from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS, ProfileReporter, _model_config, _parse_candidates, _sdpa_attention_mode, _sdpa_backend, parse_args as parse_profile_args
+from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS, ProfileReporter, _model_config, _parse_candidates, _sdpa_backend, parse_args as parse_profile_args
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
 from research.bar_gpt.v1.run_build_offline_dataset import (
     commands as offline_dataset_commands,
@@ -1815,6 +1815,11 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertIn("linear warm-up 1.0% from LR 3e-05 to 0.0003", rendered)
         self.assertNotIn("Scheduler warning", rendered)
         self.assertIn("medium", rendered)
+        disabled_args = parse_profile_args([*resolved, "--no-sdpa-audit"])
+        disabled_stream = io.StringIO()
+        with redirect_stdout(disabled_stream):
+            ProfileReporter("text").configuration(disabled_args, candidates, torch.device("cpu"))
+        self.assertIn("SDPA kernel audit   disabled", disabled_stream.getvalue())
 
     def test_profiler_classifies_concrete_sdpa_forward_backends_only(self) -> None:
         self.assertEqual(_sdpa_backend("aten::_scaled_dot_product_flash_attention"), "flash")
@@ -1823,18 +1828,6 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(_sdpa_backend("aten::_scaled_dot_product_attention_math"), "math")
         self.assertIsNone(_sdpa_backend("aten::scaled_dot_product_attention"))
         self.assertIsNone(_sdpa_backend("aten::_scaled_dot_product_flash_attention_backward"))
-        causal_parent = SimpleNamespace(
-            key="aten::scaled_dot_product_attention",
-            input_shapes=[[2, 8, 10, 48], [2, 4, 10, 48], [2, 4, 10, 48], []],
-            cpu_parent=None,
-        )
-        local_parent = SimpleNamespace(
-            key="aten::scaled_dot_product_attention",
-            input_shapes=[[2, 8, 10, 48], [2, 4, 10, 48], [2, 4, 10, 48], [10, 10]],
-            cpu_parent=None,
-        )
-        self.assertEqual(_sdpa_attention_mode(SimpleNamespace(cpu_parent=causal_parent)), "causal")
-        self.assertEqual(_sdpa_attention_mode(SimpleNamespace(cpu_parent=local_parent)), "local_mask")
 
     def test_training_launcher_uses_selected_worker_owned_profile(self) -> None:
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")

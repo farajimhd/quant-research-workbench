@@ -459,10 +459,12 @@ running. It separately measures forward, backward, optimizer, loader-wait,
 throughput, parameter count, and peak-memory results. It also measures one
 periodic metric reduction outside the throughput window and reports its
 projected amortized overhead at the 64-update cadence. After the timed window,
-it profiles one additional real forward pass and records the concrete SDPA
+it profiles up to two bounded representative attention probes (at most 512 tokens)
+and records the concrete SDPA
 backend (`flash`, `memory_efficient`, `cudnn`, or `math`) and call count,
 separately for dense local-mask calls and unmasked causal calls. This
-kernel audit is excluded from throughput and peak-memory selection. Use `--print-config-only`
+kernel audit is excluded from throughput and peak-memory selection and can be
+disabled with `--no-sdpa-audit`. Use `--print-config-only`
 to inspect the complete contract without loading shards or allocating the model.
 
 The main trainer does not run a startup profiler. Exact per-update losses are

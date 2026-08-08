@@ -86,8 +86,13 @@ class CausalSelfAttention(nn.Module):
         cosine, sine = self.rope(length, value.device, value.dtype)
         query = query * cosine + _rotate_half(query) * sine
         key = key * cosine + _rotate_half(key) * sine
-        enable_gqa = self.n_kv_heads != self.n_heads
+        grouped_query = self.n_kv_heads != self.n_heads
         if attention_window is None or int(attention_window) >= length:
+            enable_gqa = grouped_query and value.device.type == "cuda"
+            if grouped_query and not enable_gqa:
+                repeats = self.n_heads // self.n_kv_heads
+                key = key.repeat_interleave(repeats, dim=1)
+                val = val.repeat_interleave(repeats, dim=1)
             attended = F.scaled_dot_product_attention(
                 query,
                 key,
@@ -104,6 +109,15 @@ class CausalSelfAttention(nn.Module):
             query_positions = positions[:, None]
             key_positions = positions[None, :]
             allowed = (key_positions <= query_positions) & (key_positions > query_positions - window)
+            # Native CUDA GQA currently supports Flash Attention or the math
+            # kernel. Dense local masks can make Flash ineligible, which would
+            # force an impractically slow quadratic math fallback. Expand K/V
+            # only for this masked path so SDPA can retain its efficient kernel;
+            # the unmasked causal path above keeps compact native GQA.
+            if grouped_query:
+                repeats = self.n_heads // self.n_kv_heads
+                key = key.repeat_interleave(repeats, dim=1)
+                val = val.repeat_interleave(repeats, dim=1)
             attended = F.scaled_dot_product_attention(
                 query,
                 key,
@@ -111,7 +125,6 @@ class CausalSelfAttention(nn.Module):
                 attn_mask=allowed,
                 dropout_p=self.dropout if self.training else 0.0,
                 is_causal=False,
-                enable_gqa=enable_gqa,
             )
         attended = attended.transpose(1, 2).contiguous().view(batch, length, -1)
         return self.out_proj(attended)
