@@ -1573,6 +1573,49 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         }
         self.assertEqual(sentiments, {"AAA": "positive", "BBB": "negative"})
 
+    def test_insider_purchase_and_sale_morphology(self) -> None:
+        cases = (
+            ("Alpha president purchased 1,000 shares", "positive"),
+            ("Alpha insider sold 225,000 shares", "negative"),
+        )
+        for index, (title, expected) in enumerate(cases):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-insider-position-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA). {title}.",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
+    def test_warrant_registration_ads_pricing_and_block_trade(self) -> None:
+        cases = (
+            ("Alpha registers 9.7 million shares issuable on warrant exercise", "negative"),
+            ("Alpha prices 27.4 million ADS at $10.50 per ADS", "neutral"),
+            ("Notable block trades in Alpha totaling 2.56 million shares", "neutral"),
+        )
+        for index, (title, expected) in enumerate(cases):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-market-financing-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA). {title}.",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
+    def test_estimated_unbenchmarked_ads_ipo_range_is_neutral(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-estimated-ads-ipo",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha says estimated U.S. IPO price will be between $13-$14 per ADS",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) says estimated U.S. IPO price will be between $13-$14 per ADS.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
     def test_focal_below_consensus_guidance_controls_realized_beat(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-focal-weak-guidance",

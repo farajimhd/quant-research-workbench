@@ -104,6 +104,15 @@ def derive_issuer_views(
             if statement.get("concept_leaf") == "capital.financing"
             and re.search(r"\b(?:initial public offering|IPO)\b", str((statement.get("evidence_spans") or [{}])[0].get("quote", "")), re.I)
         ]
+        unbenchmarked_estimated_ads_ipo = bool(ipo_quotes) and all(
+            re.search(
+                r"\bestimat(?:e|es|ed|ing)\b.{0,100}\bIPO price\b"
+                r".{0,100}\b(?:ADS|ADRs?)\b",
+                quote,
+                re.I,
+            )
+            for quote in ipo_quotes
+        )
         negative_current_statement_ids = {
             str(row.get("statement_id") or "")
             for row in directional_rows
@@ -300,6 +309,10 @@ def derive_issuer_views(
             sentiment = "mixed"
             positive = max(positive, 3)
             negative = max(negative, 3)
+        elif unbenchmarked_estimated_ads_ipo:
+            sentiment = "neutral"
+            positive = 0
+            negative = 0
         elif ipo_quotes and any(re.search(r"\babove\b.{0,50}\b(?:expected )?(?:price )?range\b", quote, re.I) for quote in all_ipo_quotes):
             sentiment = "positive"
             positive = max(positive, 3)
