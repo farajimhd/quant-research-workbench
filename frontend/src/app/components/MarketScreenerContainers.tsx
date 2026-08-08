@@ -35,7 +35,19 @@ export type ScannerCustomColumn = {
 type TechnicalListSettings = { columns: string[]; customColumns: ScannerCustomColumn[] };
 export type MarketScannerSettings = TechnicalListSettings & { limit: number; preset: string };
 export type SignalStreamSettings = TechnicalListSettings & { limit: number; preset: string };
-export type WatchlistSettings = TechnicalListSettings & { limit: number; ownerKind: "strategy" | "user"; ownerName: string; symbols: string[] };
+export type WatchUniverseSettings = TechnicalListSettings & { limit: number; universeId: string };
+export type WatchUniverseDefinition = {
+  description?: string;
+  enabled?: boolean;
+  name: string;
+  scanner_view_id?: string;
+  source: "configured_symbols" | "scanner_view" | "watchlist" | string;
+  symbols?: string[];
+  universe_id: string;
+};
+export type StrategyActivitySettings = { eventType: string; limit: number; runId: string; strategyId: string; ticker: string };
+type StrategyActivityResponse = { as_of: string; complete: boolean; rows: ScreenerRow[]; source: string };
+type WatchUniverseCatalogResponse = { run_plans?: { plans?: Array<{ name?: string; run_plan_id: string; universe_id: string }>; universes?: WatchUniverseDefinition[] } };
 type SignalMethod = { key: string; label: string; signal_version: number; status: string; compute_mode: string; working_timeframes: string[]; confirmation_timeframes: string[]; trigger_rules: string[]; rationale: string; domain?: string; producer?: string; input_basis?: string; evaluation_mode?: string; update_trigger?: string; publication_cadence?: string; publication_interval_ms?: number | null; score_required?: boolean; rank_score_required?: boolean };
 
 type FieldKind = "derived" | "estimated" | "raw";
@@ -136,6 +148,12 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("sec_count", "SEC filings", "News & SEC", "derived", "integer", "Recent ticker-linked SEC filing count."),
   field("sec_labels", "SEC", "News & SEC", "derived", "text", "Explainable SEC disclosure categories."),
   field("event_time", "Detected", "Signal event", "raw", "date", "First causal detection time for this event."),
+  field("event_type", "Event", "Strategy activity", "raw", "text", "Whether the durable record is a strategy signal, decision, or campaign-state change."),
+  field("action", "Action", "Strategy activity", "raw", "text", "The semantic action emitted by the strategy runtime."),
+  field("state", "State", "Strategy activity", "raw", "text", "The resulting strategy or campaign state when one was recorded."),
+  field("reason", "Reason", "Strategy activity", "raw", "text", "Durable explanation or evidence recorded with the strategy event."),
+  field("strategy_id", "Strategy", "Strategy activity", "raw", "text", "Stable Strategy Profile identifier that emitted the event."),
+  field("run_id", "Run", "Strategy activity", "raw", "text", "Strategy Run identifier that owns the event."),
   field("signal_type", "Signal", "Signal event", "derived", "text", "Stable event class or strategy-defined signal name."),
   field("signal_domain", "Signal domain", "Signal taxonomy", "raw", "text", "Semantic domain: market, news, SEC, or model."),
   field("signal_producer", "Signal producer", "Signal taxonomy", "raw", "text", "Service or model that produced the signal; QMD is a producer, not a signal domain."),
@@ -292,41 +310,87 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
   />;
 }
 
-export function WatchlistContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<WatchlistSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: WatchlistSettings }) {
-  const [draft, setDraft] = useState("");
+export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<WatchUniverseSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: WatchUniverseSettings }) {
+  const [catalog, setCatalog] = useState<WatchUniverseCatalogResponse | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    api<WatchUniverseCatalogResponse>("/api/trading/configuration/draft", { signal: controller.signal, timeoutMs: 10000 })
+      .then(setCatalog)
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+  const universes = catalog?.run_plans?.universes ?? [];
+  const runPlans = catalog?.run_plans?.plans ?? [];
   const sourceRows = useMemo(() => normalizeScannerRows(scannerRows), [scannerRows]);
   const rowByTicker = useMemo(() => new Map(sourceRows.map((row) => [String(row.ticker), row])), [sourceRows]);
-  const rows: ScreenerRow[] = settings.symbols.map((ticker) => rowByTicker.get(ticker) ?? { ticker });
-  function addTicker() {
-    const ticker = draft.trim().toUpperCase();
-    if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(ticker)) return;
-    onSettingsChange({ symbols: [...new Set([...settings.symbols, ticker])] });
-    setDraft("");
-  }
-  const owner = settings.ownerName.trim() || (settings.ownerKind === "strategy" ? "Strategy runtime" : "You");
-  return <section className="market-list-surface watchlist-surface" aria-label={`${owner} watchlist`}>
+  const universe = universes.find((row) => row.universe_id === settings.universeId) ?? universes[0];
+  const symbols = (universe?.symbols ?? []).map((ticker) => ticker.trim().toUpperCase()).filter(Boolean);
+  const rows: ScreenerRow[] = symbols.map((ticker) => rowByTicker.get(ticker) ?? { ticker });
+  const linkedPlans = runPlans.filter((plan) => plan.universe_id === universe?.universe_id);
+  const resolved = universe?.source === "configured_symbols";
+  return <section className="market-list-surface watchlist-surface" aria-label={`${universe?.name ?? "Watch"} universe`}>
     <header className="market-list-heading">
-      <div><span className="market-list-eyebrow"><Star size={12} /> {settings.ownerKind} owned</span><h3>{owner}</h3><p>{settings.symbols.length} tracked securities · latest state at <MarketTime value={asOf} /></p></div>
-      <span className={`market-list-owner ${settings.ownerKind}`}>{settings.ownerKind}</span>
+      <div><span className="market-list-eyebrow"><Star size={12} /> Run Plan boundary</span><h3>{universe?.name ?? "No watch universe configured"}</h3><p>{resolved ? `${symbols.length} eligible securities` : "Dynamic membership awaits its runtime resolver"} · state at <MarketTime value={asOf} /></p></div>
+      <span className="market-list-owner strategy">{universe?.source?.replaceAll("_", " ") ?? "unavailable"}</span>
     </header>
-    <div className="watchlist-compose">
-      <label><Search size={14} /><input aria-label="Add watchlist symbol" onChange={(event) => setDraft(event.target.value.toUpperCase())} onKeyDown={(event) => { if (event.key === "Enter") addTicker(); }} placeholder="Add ticker" value={draft} /></label>
-      <button onClick={addTicker} type="button"><Plus size={14} /> Add</button>
+    <div className="watch-universe-context">
+      <label><span>Watch universe</span><select aria-label="Watch universe" onChange={(event) => onSettingsChange({ universeId: event.target.value })} value={universe?.universe_id ?? ""}>{universes.map((row) => <option key={row.universe_id} value={row.universe_id}>{row.name}</option>)}</select></label>
+      <div><span>Used by</span><strong>{linkedPlans.map((plan) => plan.name || plan.run_plan_id).join(", ") || "No Run Plan"}</strong></div>
+      <button onClick={() => { window.location.hash = "assignment-configuration"; }} type="button">Configure in Run Plans <ArrowRight size={13} /></button>
     </div>
+    {!resolved ? <div className="watch-universe-warning"><strong>Membership is not runtime-ready</strong><span>{universe?.source === "scanner_view" ? `Scanner view ${universe.scanner_view_id || "not selected"} cannot publish until a causal resolver produces versioned members.` : "This source cannot publish until a resolver produces versioned members."}</span></div> : null}
     <MarketListTable
       columns={withLockedColumns(settings.columns.length ? settings.columns : WATCHLIST_DEFAULT_COLUMNS, LOCKED_MARKET_LIST_COLUMNS)}
       customColumns={settings.customColumns}
-      empty="This watchlist has no symbols yet."
+      empty={resolved ? "This watch universe has no configured members." : "No resolved membership is available."}
       limit={settings.limit}
       lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
       onColumnsChange={(columns) => onSettingsChange({ columns })}
       onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
       onTickerSelect={onTickerSelect}
-      rowAction={(row) => <button aria-label={`Remove ${row.ticker}`} onClick={() => onSettingsChange({ symbols: settings.symbols.filter((ticker) => ticker !== row.ticker) })} title="Remove from watchlist" type="button"><Trash2 size={13} /></button>}
       rows={rows}
-      title={`${owner} watchlist`}
+      title={`${universe?.name ?? "Watch"} universe`}
     />
   </section>;
+}
+
+export function StrategyActivityContainer({ asOf, onSettingsChange, onTickerSelect, settings }: { asOf: string; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; settings: StrategyActivitySettings }) {
+  const [payload, setPayload] = useState<StrategyActivityResponse | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    api<StrategyActivityResponse>(`/api/trading/strategy-activity?as_of=${encodeURIComponent(asOf)}&limit=5000`, { signal: controller.signal, timeoutMs: 10000 })
+      .then((response) => { setPayload(response); setError(""); })
+      .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => controller.abort();
+  }, [asOf]);
+  const rows = useMemo(() => (payload?.rows ?? []).filter((row) =>
+    (!settings.strategyId || String(row.strategy_id) === settings.strategyId)
+    && (!settings.runId || String(row.run_id) === settings.runId)
+    && (!settings.ticker || String(row.ticker) === settings.ticker)
+    && (!settings.eventType || String(row.event_type) === settings.eventType)
+  ), [payload, settings]);
+  const strategies = useMemo(() => uniqueValues(payload?.rows ?? [], "strategy_id"), [payload]);
+  const runs = useMemo(() => uniqueValues(payload?.rows ?? [], "run_id"), [payload]);
+  const tickers = useMemo(() => uniqueValues(payload?.rows ?? [], "ticker"), [payload]);
+  return <section className="market-list-surface strategy-activity-surface" aria-label="Strategy activity">
+    <header className="market-list-heading"><div><span className="market-list-eyebrow"><FileCheck2 size={12} /> Durable runtime history</span><h3>Strategy Activity</h3><p>{rows.length} persisted events at or before <MarketTime value={asOf} /></p></div><span className="market-list-owner strategy">Trading Journal</span></header>
+    <div className="strategy-activity-filters">
+      <ActivityFilter label="Strategy" onChange={(strategyId) => onSettingsChange({ strategyId })} options={strategies} value={settings.strategyId} />
+      <ActivityFilter label="Run" onChange={(runId) => onSettingsChange({ runId })} options={runs} value={settings.runId} />
+      <ActivityFilter label="Ticker" onChange={(ticker) => onSettingsChange({ ticker })} options={tickers} value={settings.ticker} />
+      <ActivityFilter label="Event" onChange={(eventType) => onSettingsChange({ eventType })} options={["signal", "decision", "campaign_state"]} value={settings.eventType} />
+    </div>
+    {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable columns={["event_time", "ticker", "event_type", "action", "state", "reason", "strategy_id", "run_id"]} customColumns={[]} empty="No persisted strategy events match these filters." limit={settings.limit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} rows={rows} title="Strategy activity" />}
+  </section>;
+}
+
+function ActivityFilter({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: string[]; value: string }) {
+  return <label><span>{label}</span><select onChange={(event) => onChange(event.target.value)} value={value}><option value="">All</option>{options.map((option) => <option key={option} value={option}>{option.replaceAll("_", " ")}</option>)}</select></label>;
+}
+
+function uniqueValues(rows: ScreenerRow[], key: string) {
+  return [...new Set(rows.map((row) => String(row[key] ?? "")).filter(Boolean))].sort();
 }
 
 function MarketListSurface({
@@ -414,7 +478,7 @@ function MarketListTable({
   const [filterMode, setFilterMode] = useState("all");
   const [headerMenuColumn, setHeaderMenuColumn] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>({ column: title === "Signal stream" ? "event_time" : "change_pct", direction: "desc" });
+  const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>({ column: title === "Signal stream" || title === "Strategy activity" ? "event_time" : "change_pct", direction: "desc" });
   const headerMenuRef = useRef<HTMLDivElement | null>(null);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   useEffect(() => {

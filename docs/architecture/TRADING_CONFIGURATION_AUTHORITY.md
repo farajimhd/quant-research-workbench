@@ -30,11 +30,13 @@ The product deliberately separates concepts that were previously grouped under
 | Portfolio Policy | Reusable account safety, exposure, capital, and loss envelope |
 | Strategy-account mandate | Rule assigning a Run Plan to an account, with allocation topology, risk limits, and a maximum action-authority cap |
 | Watch Universe | Versioned source of symbols that Run Plans may evaluate; configured symbols, an approved Scanner view, or a Watchlist |
+| Watch Universe Resolver | Runtime authority that materializes versioned, point-in-time eligible ticker membership from QMD Scanner or another registered source |
 | Strategy Run Plan | Reusable launch contract combining a Strategy Profile, Watch Universe, environment eligibility, per-action authority, OMS profile, and account mandates |
 | Strategy Run | One actual execution of a Run Plan, pinned to an Approved Release |
 | Strategy Campaign | One durable runtime lifecycle that exclusively owns one ticker-side pair in one portfolio book across initial entry, exits, and zero or more reentries |
 | Campaign account leg | Account-specific execution and position state belonging to one Strategy Campaign; several legs may share the same ticker lease |
 | Strategy Orchestrator | Shared runtime authority that grants and releases ticker leases and prevents conflicting active campaigns |
+| Strategy Activity | Durable journal projection of ticker events, strategy signals, decisions, and campaign changes, filtered by Strategy Profile or Run without becoming their authority |
 | Approved Release | Immutable application snapshot consumed by new runs |
 
 System code may ship one protected default Strategy Profile plus predefined

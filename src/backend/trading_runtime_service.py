@@ -407,6 +407,94 @@ def strategy_canvas_payload(*, as_of: datetime, ticker: str) -> dict[str, Any]:
     }
 
 
+def strategy_activity_payload(
+    *,
+    as_of: datetime | None = None,
+    strategy_id: str = "",
+    run_id: str = "",
+    ticker: str = "",
+    event_type: str = "",
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Project the durable strategy journal into an operator-facing event list."""
+    requested_limit = max(1, min(int(limit), 5000))
+    records = trading_journal().strategy_activity_records(
+        strategy_id=strategy_id.strip(),
+        run_id=run_id.strip(),
+        ticker=ticker.strip().upper(),
+        as_of=as_of,
+        limit=50_000 if event_type else requested_limit,
+    )
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        payload = dict(record.payload)
+        row_type = _strategy_activity_event_type(record.entity_type)
+        if event_type and row_type != event_type:
+            continue
+        metadata = dict(payload.get("metadata") or {})
+        action = str(
+            payload.get("action")
+            or payload.get("event")
+            or payload.get("status")
+            or payload.get("state")
+            or "observed"
+        )
+        rows.append(
+            {
+                "record_id": record.record_id,
+                "event_time": record.event_time.isoformat(),
+                "recorded_at": record.recorded_at.isoformat(),
+                "run_id": record.run_id,
+                "sequence": record.sequence,
+                "strategy_id": str(payload.get("strategy_id") or ""),
+                "strategy_revision": payload.get("strategy_revision"),
+                "account_id": record.account_id,
+                "ticker": str(payload.get("ticker") or "").upper(),
+                "event_type": row_type,
+                "action": action,
+                "state": str(payload.get("status") or payload.get("state") or ""),
+                "reason": str(
+                    payload.get("reason")
+                    or payload.get("evidence")
+                    or metadata.get("reason")
+                    or metadata.get("evidence")
+                    or ""
+                ),
+                "score": payload.get("score"),
+                "confidence": payload.get("confidence"),
+                "reference_price": payload.get("reference_price") or metadata.get("reference_price"),
+                "entity_id": record.entity_id,
+                "source": str(payload.get("source") or record.entity_type),
+            }
+        )
+        if len(rows) >= requested_limit:
+            break
+    strategies = sorted({str(row["strategy_id"]) for row in rows if row["strategy_id"]})
+    runs = sorted({str(row["run_id"]) for row in rows if row["run_id"]})
+    tickers = sorted({str(row["ticker"]) for row in rows if row["ticker"]})
+    return {
+        "schema_version": 1,
+        "as_of": (as_of or datetime.now(ZoneInfo("UTC"))).isoformat(),
+        "source": "trading_journal",
+        "complete": True,
+        "rows": rows,
+        "catalog": {
+            "strategies": strategies,
+            "runs": runs,
+            "tickers": tickers,
+            "event_types": ["signal", "decision", "campaign_state"],
+        },
+    }
+
+
+def _strategy_activity_event_type(entity_type: str) -> str:
+    if entity_type == "signal":
+        return "signal"
+    if entity_type == "strategy_assignment_state":
+        return "campaign_state"
+    return "decision"
+
+
 def _assignment_from_row(row: dict[str, Any]) -> StrategyAssignment:
     return StrategyAssignment(
         assignment_id=str(row["assignment_id"]),

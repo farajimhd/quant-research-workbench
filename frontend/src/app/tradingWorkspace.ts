@@ -8,6 +8,7 @@ export type WorkspaceContainerId =
   | "scanner"
   | "signal_stream"
   | "watchlist"
+  | "strategy_activity"
   | "strategy"
   | "portfolio"
   | "positions"
@@ -207,7 +208,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     id: "scanner",
     title: "Scanner",
     groupedTitle: "Market scanner",
-    description: "Stable ranked universe and strategy candidates evaluated at the active workspace clock.",
+    description: "Live candidate discovery from QMD market, news, SEC, and model signals at the active workspace clock.",
     modes: allModes,
     defaultOpen: { live: true, paper: true, replay: true, backtest_debug: true },
     sourceByMode: {
@@ -219,28 +220,22 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     },
   },
   {
-    id: "signal_stream",
-    title: "Signal Stream",
-    groupedTitle: "Signal stream",
-    description: "Newest-first reproducible market events and durable strategy-emitted signals with shared scanner context.",
+    id: "watchlist",
+    title: "Watch Universe",
+    groupedTitle: "Watch universe",
+    description: "Versioned eligible ticker membership selected by a Run Plan and resolved before strategy evaluation.",
     modes: allModes,
     defaultOpen: {},
-    sourceByMode: {
-      live: liveBinding("Live market rules plus durable strategy signals", [qmdLive, strategyRuntime]),
-      paper: liveBinding("Live market rules plus paper-strategy signals", [qmdLive, strategyRuntime]),
-      replay: runtimeBinding("Causal market events reconstructed at the replay clock plus persisted strategy signals", [qmdHistory, strategyRuntime]),
-      backtest: runtimeBinding("Market-derived and persisted strategy events at each backtest clock", [qmdHistory, strategyRuntime]),
-      backtest_debug: runtimeBinding("Market-derived and persisted strategy events at the debug cursor", [qmdHistory, strategyRuntime]),
-    },
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, runtimeBinding("Run Plan watch-universe membership with values projected from the active market clock", [mode === "live" || mode === "paper" ? qmdLive : qmdHistory, strategyRuntime])])),
   },
   {
-    id: "watchlist",
-    title: "Watchlist",
-    groupedTitle: "Watchlist",
-    description: "Owner-managed small symbol collection projected through the same current-state column catalog as Scanner.",
+    id: "strategy_activity",
+    title: "Strategy Activity",
+    groupedTitle: "Strategy activity",
+    description: "Durable signals, decisions, and ticker-campaign state transitions grouped by strategy and run.",
     modes: allModes,
     defaultOpen: {},
-    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, runtimeBinding("Persisted membership from its user or strategy owner; values projected from the active market clock", [mode === "live" || mode === "paper" ? qmdLive : qmdHistory, strategyRuntime])])),
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, runtimeBinding("Persisted strategy-runtime events from the Trading Journal", [strategyRuntime, tradingJournal])])),
   },
   {
     id: "strategy",

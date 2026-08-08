@@ -918,7 +918,8 @@ function parseWorkspaceState(raw: string, definitions: WorkspaceContainerDefinit
     if (![3, 4, 5, 7, TRADING_WORKSPACE_LAYOUT_VERSION].includes(sourceVersion) || !parsed.layouts || !Array.isArray(parsed.openIds)) return null;
     const legacyMigrated = migrateLegacyMicrostructureState(parsed as CanvasWorkspaceState);
     const definitionById = new Map(definitions.map((definition) => [definition.id, definition]));
-    const migrated = migrateTradingManagementState(legacyMigrated, sourceVersion, definitionById);
+    const managementMigrated = migrateTradingManagementState(legacyMigrated, sourceVersion, definitionById);
+    const migrated = migrateSignalStreamState(managementMigrated, definitionById);
     const parsedInstances = migrated.instances && typeof migrated.instances === "object" ? migrated.instances : {};
     const openIds = migrated.openIds.filter((id) => definitionById.has(instanceKind(id, parsedInstances, definitionById)));
     const instances = Object.fromEntries(openIds.map((id) => [id, instanceKind(id, parsedInstances, definitionById)])) as Record<string, WorkspaceContainerId>;
@@ -928,6 +929,18 @@ function parseWorkspaceState(raw: string, definitions: WorkspaceContainerDefinit
   } catch {
     return null;
   }
+}
+
+function migrateSignalStreamState(state: CanvasWorkspaceState, definitions: Map<WorkspaceContainerId, WorkspaceContainerDefinition>): CanvasWorkspaceState {
+  if (!definitions.has("scanner")) return state;
+  const instances = { ...(state.instances ?? {}) };
+  let changed = false;
+  for (const id of state.openIds) {
+    if (instanceKind(id, instances, definitions) !== "signal_stream") continue;
+    instances[id] = "scanner";
+    changed = true;
+  }
+  return changed ? { ...state, instances } : state;
 }
 
 function migrateTradingManagementState(state: CanvasWorkspaceState, sourceVersion: number, definitions: Map<WorkspaceContainerId, WorkspaceContainerDefinition>): CanvasWorkspaceState {
@@ -965,6 +978,7 @@ function createGlobalLayouts(ids: string[], instances: Record<string, WorkspaceC
     scanner: { h: 250, w: columnWidth, x: margin, y: 0 },
     signal_stream: { h: 330, w: columnWidth, x: margin, y: 252 },
     watchlist: { h: 300, w: columnWidth, x: margin, y: 584 },
+    strategy_activity: { h: 330, w: columnWidth, x: margin, y: 886 },
     chart: { h: 410, w: columnWidth, x: margin + columnWidth + gap, y: 0 },
     charts_quotes: { h: 1120, w: width, x: margin, y: 4460 },
     facts: { h: 620, w: columnWidth, x: margin, y: 1680 },
@@ -1149,6 +1163,7 @@ function containerIcon(id: WorkspaceContainerId) {
     scanner: ScanSearch,
     signal_stream: ListFilter,
     watchlist: Star,
+    strategy_activity: Activity,
     sec: FileSearch,
     ticker_sec: FileSearch,
     sec_detail: FileSearch,

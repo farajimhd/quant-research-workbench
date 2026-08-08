@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -94,6 +94,27 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class JournalTests(unittest.TestCase):
+    def test_strategy_activity_is_newest_first_and_excludes_broker_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            journal.append(
+                run_id="run-a", category="strategy_decision", entity_type="signal", entity_id="signal-1",
+                event_time=TS, payload={"strategy_id": "momentum", "ticker": "AAPL", "action": "wait"},
+            )
+            journal.append(
+                run_id="run-a", category="strategy", entity_type="strategy_intent", entity_id="intent-1",
+                event_time=TS + timedelta(seconds=1), payload={"strategy_id": "momentum", "ticker": "AAPL", "action": "enter_long"},
+            )
+            journal.append(
+                run_id="run-a", category="broker", entity_type="order", entity_id="order-1",
+                event_time=TS + timedelta(seconds=2), payload={"strategy_id": "momentum", "ticker": "AAPL"},
+            )
+
+            rows = journal.strategy_activity_records(strategy_id="momentum", ticker="AAPL")
+            self.assertEqual([row.entity_type for row in rows], ["strategy_intent", "signal"])
+            self.assertEqual(journal.strategy_activity_records(run_id="missing"), [])
+            journal.close()
+
     def test_journal_sequence_checkpoint_strategy_and_outbox_are_durable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "journal.sqlite3"

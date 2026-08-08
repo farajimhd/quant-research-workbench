@@ -90,7 +90,7 @@ they can be rebuilt from canonical market events. If a strategy consumes a QMD
 signal and makes a decision, that strategy decision is durable and is never
 reconstructed from UI state.
 
-## Scanner, Signal Stream, and chart
+## Scanner, Strategy Activity, and chart
 
 The scanner market universe and the signal event stream are separate
 collections:
@@ -100,9 +100,15 @@ collections:
   while event-native state is advanced by every eligible event;
 - the strongest active QMD signal and active-signal count may be joined onto a
   scanner row for sorting and filtering;
-- `signal_rows` contains canonical lifecycle events for Signal Stream;
+- `signal_rows` contains canonical QMD lifecycle events for Scanner's Signals
+  view;
 - the frontend must not invent signals from scanner percentages or activity
   fields.
+
+Strategy Activity is not a renamed market-signal stream. It contains durable
+strategy interpretations and campaign decisions, keyed by Strategy Run and
+Strategy Profile revision. It may reference QMD signal identities, but it does
+not take ownership of the source market event.
 
 The chart displays triggered QMD events as directional markers with confidence
 and working timeframe. Updates and resolutions remain available to tooltips,
@@ -132,7 +138,7 @@ migration.
   new market signal.
 - Missing evidence remains missing; it is not converted to neutral evidence.
 - QMD signals never bypass strategy risk, account, or broker authorities.
-- Full-universe historical Signal Stream uses QMD History's
+- Full-universe historical Scanner Signals uses QMD History's
   `scanner-derived` replay and the Canvas-owned durable cross-sectional
   artifact. The replay consumes canonical compact events through the same Rust
   indicator and market-signal engines as live QMD; the frontend never

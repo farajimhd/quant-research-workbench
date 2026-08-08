@@ -135,6 +135,7 @@ from src.backend.trading_runtime_service import (
     list_strategy_definitions,
     save_strategy_definition,
     save_trade_annotation,
+    strategy_activity_payload,
     trading_taxonomy_catalog,
 )
 from src.backend.trading_configuration_service import (
@@ -4442,6 +4443,31 @@ def trading_strategy_assignment_evaluate(
 @app.get("/api/trading/taxonomy")
 def trading_taxonomy() -> dict[str, Any]:
     return trading_taxonomy_catalog()
+
+
+@app.get("/api/trading/strategy-activity")
+def trading_strategy_activity(
+    as_of: str = "",
+    strategy_id: str = "",
+    run_id: str = "",
+    ticker: str = "",
+    event_type: str = "",
+    limit: int = 500,
+) -> dict[str, Any]:
+    try:
+        cutoff = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
+        if cutoff is not None and cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=UTC)
+        return strategy_activity_payload(
+            as_of=cutoff,
+            strategy_id=strategy_id,
+            run_id=run_id,
+            ticker=ticker,
+            event_type=event_type,
+            limit=limit,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/trading/configuration/draft")

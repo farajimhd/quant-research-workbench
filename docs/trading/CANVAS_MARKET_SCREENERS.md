@@ -7,8 +7,8 @@ The market-screening package contains three related Canvas containers that share
 | Container | Job | State authority |
 | --- | --- | --- |
 | Scanner | Cross-sectional state of the available market universe | Canonical market, reference, news, SEC, facts, and derived-score sources |
-| Signal Stream | Newest-first reusable QMD market signals and strategy-owned decisions | Canonical QMD signal lifecycle plus durable strategy events |
-| Watchlist | Small, named set of securities selected by a user or strategy | Persisted membership; projected market values |
+| Watch Universe | Versioned eligible ticker membership used by one or more Run Plans | Run Plan configuration and its registered universe resolver |
+| Strategy Activity | Newest-first signals, decisions, and campaign changes for Strategy Runs | Durable trading journal records owned by the strategy runtime |
 
 The table rows never own copies of market facts. Every displayed market value is projected at the active Canvas clock. This keeps historical replay, backtests, paper trading, and live trading on the same field semantics.
 
@@ -38,15 +38,19 @@ Provenance is visible in the column picker and table heading:
 
 A missing value remains missing. The UI does not substitute zero for unavailable float, fundamentals, news, SEC, or signal evidence.
 
-## Signal Stream authority and persistence
+## Discovery and strategy activity
 
-Signal Stream does not derive events in the browser. QMD emits versioned,
-causal market-signal lifecycle rows from the shared live/historical signal
-engine. Strategy-owned interpretations are persisted by the strategy runtime
-with their detection timestamp, symbol, strategy revision, action, direction,
-score, confidence, source signal identities, evidence, and correlation
-identifiers. Signal Stream merges those canonical collections without changing
-either authority.
+Scanner includes QMD's reusable market, news, SEC, and model discoveries. It
+may show the strongest active signal on each security and expose the canonical
+QMD lifecycle events through its Signals view. Canvas never derives a second
+signal stream from table values.
+
+Strategy Activity is a different abstraction. It queries durable strategy and
+strategy-decision journal records and projects their event time, Strategy Run,
+Strategy Profile revision, account, ticker, event type, action, score,
+confidence, reason, and source. It can be filtered without changing the
+underlying record. Broker execution and portfolio events remain in their own
+authoritative containers.
 
 The scanner market universe remains separate from the event stream. A scanner
 row may expose its strongest active QMD signal and active-signal count, while
@@ -56,9 +60,14 @@ replace the scanner universe.
 See [QMD market-signal architecture](../architecture/QMD_SIGNAL_ARCHITECTURE.md)
 for the authority matrix, lifecycle schema, causal clock, and strategy contract.
 
-## Watchlist ownership
+## Watch Universe ownership
 
-Watchlists have a stable name and an owner kind of `user` or `strategy`. Canvas persists membership and presentation settings per container instance. A strategy may update only lists it owns; user lists remain user-controlled. Price, activity, news, SEC, facts, and derived scores are read from the shared scanner projection rather than stored in the watchlist.
+A Watch Universe is selected by a Run Plan and resolved before the Run Plan
+creates or retires ticker campaigns. Canvas displays that configured universe,
+its source, its linked Run Plans, and the resolved members projected onto the
+Scanner snapshot. Canvas does not own or edit membership. Configured-symbol
+universes are immediately resolvable; scanner-view and external-list sources
+remain fail-closed until their point-in-time resolver is registered.
 
 ## UI behavior
 
@@ -85,7 +94,7 @@ Watchlists have a stable name and an owner kind of `user` or `strategy`. Canvas 
   ascending/descending sort, move left/right/start/end, and remove actions.
   Logo and Symbol remain pinned identity columns.
 - Scanner identity is fixed at the left edge of the selected schema. A narrow, unlabeled first column contains only the provider logo when one exists; a missing logo leaves that cell blank. The adjacent Symbol cell contains the ticker followed by compact company-news and SEC recency icons. Missing recent events leave no placeholder ornament.
-- Scanner, Signal Stream, and Watchlist body rows use one fixed 42 px logical height before global UI scaling. Logos render at 28 px inside a 38 px identity cell with a 6 px leading inset, while News and SEC recency glyphs render at 15 px; rows without either asset retain the same height and alignment.
+- Scanner and Watch Universe body rows use one fixed 42 px logical height before global UI scaling. Logos render at 28 px inside a 38 px identity cell with a 6 px leading inset, while News and SEC recency glyphs render at 15 px; rows without either asset retain the same height and alignment.
 - Event icons have no badge background or border: company News uses a filled flame, SEC uses the filing-check mark, hot events use the danger color, and cold events use the information color. Old and absent events render no ticker-cell icon. The News icon is restricted to classified company news, so broad market or editorial coverage cannot mark a ticker.
 - Compact News and SEC badge columns sit at the right edge of every default schema so market-state comparisons stay adjacent. They contain explainable classifications (for example, news topics and SEC form classes), not duplicate recency icons. Their exact labels and independent hot/cold states are available in the table filter.
 - Selectable rows retain the normal pointer and use a quiet selection tint on hover. Selecting with pointer or keyboard assigns the list container the first unused Canvas link color, creates a dedicated Chart on the same link, and applies the selected symbol. Later selections reuse and focus that exact linked Chart; closing it does not discard the pairing, so the next selection reopens it instead of taking over an unrelated chart. An explicit row-open request exits any conflicting fullscreen surface before raising the Chart, so creation cannot succeed invisibly behind a fullscreen Scanner.
@@ -101,7 +110,14 @@ QMD live scanner state is the live cross-sectional authority. Historical and rep
 3. Later requests reuse the stored rows while the compact-event continuity revision is unchanged.
 4. A changed upstream revision causes a new snapshot revision to be written; older rows remain auditable.
 
-The dedicated `GET /api/trading/canvas-scanner` route makes the Scanner, Watchlist, and market-derived Signal Stream independent of the broad Canvas preview request. An unrelated QMD History coverage failure therefore cannot replace a valid persisted scanner snapshot with a six-symbol sample or an empty universe. News and SEC enrichments are attached in batch at the same clock and report their failures separately from market-state availability.
+The dedicated `GET /api/trading/canvas-scanner` route supplies Scanner and the
+market projection used for resolved Watch Universe members independently of
+the broad Canvas preview request. `GET /api/trading/strategy-activity` supplies
+durable Strategy Activity records independently of market discovery. An
+unrelated QMD History coverage failure therefore cannot replace a valid
+persisted scanner snapshot with a six-symbol sample or an empty universe. News
+and SEC enrichments are attached in batch at the same clock and report their
+failures separately from market-state availability.
 
 Live consumers use `GET /api/trading/canvas-market-signals/{symbol}` and
 `WS /api/trading/canvas-market-signals/stream/{symbol}` for ticker-bounded

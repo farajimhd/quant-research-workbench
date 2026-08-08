@@ -905,6 +905,15 @@ class LongMomentumServiceTests(unittest.TestCase):
                 self.assertEqual(canvas["historical_source"], "saved_strategy_journal_only")
                 self.assertEqual(len(canvas["signals"]), 1)
                 self.assertEqual(canvas["order_management"], [])
+                activity = trading_runtime_service.strategy_activity_payload(
+                    as_of=NOW,
+                    strategy_id=STRATEGY_ID,
+                    ticker="AAPL",
+                )
+                self.assertEqual(activity["source"], "trading_journal")
+                self.assertTrue(any(row["event_type"] == "decision" for row in activity["rows"]))
+                self.assertTrue(any(row["action"] == "enter_long" for row in activity["rows"]))
+                self.assertEqual(activity["catalog"]["tickers"], ["AAPL"])
             finally:
                 journal = trading_runtime_service.trading_journal()
                 journal.close()

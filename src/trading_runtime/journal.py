@@ -439,6 +439,44 @@ class TradingJournal:
         ).fetchall()
         return [_record(row) for row in reversed(rows)]
 
+    def strategy_activity_records(
+        self,
+        *,
+        strategy_id: str = "",
+        run_id: str = "",
+        ticker: str = "",
+        as_of: datetime | None = None,
+        limit: int = 2000,
+    ) -> list[JournalRecord]:
+        """Return newest-first durable strategy events across ticker campaigns.
+
+        This query intentionally excludes broker and portfolio records.  Those
+        authorities have their own Canvas surfaces; Strategy Activity records
+        only the signals, semantic intents, and campaign-state transitions
+        emitted by a strategy runtime.
+        """
+        clauses = ["category IN ('strategy', 'strategy_decision')"]
+        values: list[Any] = []
+        if strategy_id:
+            clauses.append("json_extract(payload_json, '$.strategy_id') = ?")
+            values.append(strategy_id)
+        if run_id:
+            clauses.append("run_id = ?")
+            values.append(run_id)
+        if ticker:
+            clauses.append("upper(json_extract(payload_json, '$.ticker')) = ?")
+            values.append(ticker.upper())
+        if as_of is not None:
+            clauses.append("event_time <= ?")
+            values.append(as_of.astimezone(timezone.utc).isoformat())
+        values.append(max(1, min(int(limit), 50_000)))
+        rows = self._connection.execute(
+            f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
+            "ORDER BY event_time DESC, recorded_at DESC, sequence DESC LIMIT ?",
+            values,
+        ).fetchall()
+        return [_record(row) for row in rows]
+
     def order_management_records(
         self,
         *,

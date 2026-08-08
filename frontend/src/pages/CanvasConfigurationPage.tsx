@@ -40,7 +40,7 @@ import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/
 import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 import { ChartsQuotesMarketLayout, QuotesTapeContainer, type ChartsQuotesLayoutSettings } from "../app/components/MarketMicrostructureContainers";
-import { MarketScannerContainer, migrateMarketScannerSettings, SCANNER_TIMEFRAMES, SignalStreamContainer, WatchlistContainer, type MarketScannerSettings, type ScannerCustomColumn, type ScannerSnapshotMeta, type ScannerTimeframe, type SignalStreamSettings, type WatchlistSettings } from "../app/components/MarketScreenerContainers";
+import { MarketScannerContainer, migrateMarketScannerSettings, SCANNER_TIMEFRAMES, SignalStreamContainer, StrategyActivityContainer, WatchUniverseContainer, type MarketScannerSettings, type ScannerCustomColumn, type ScannerSnapshotMeta, type ScannerTimeframe, type SignalStreamSettings, type StrategyActivitySettings, type WatchUniverseSettings } from "../app/components/MarketScreenerContainers";
 import { StockFactsContainer } from "../app/components/StockFactsContainer";
 import { XbrlAnalysisContainer, type XbrlAnalysisSettings } from "../app/components/XbrlAnalysisContainer";
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations } from "../app/components/TickerIdentity";
@@ -337,7 +337,7 @@ type CanvasLiveChartState = {
 
 type CanvasChartSettings = { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
 type ContainerSettings = {
-  version: 23;
+  version: 24;
   chart: CanvasChartSettings;
   charts_quotes: {
     daily: CanvasChartSettings;
@@ -358,7 +358,8 @@ type ContainerSettings = {
   portfolio: { showExposure: boolean; showPnl: boolean };
   scanner: MarketScannerSettings;
   signal_stream: SignalStreamSettings;
-  watchlist: WatchlistSettings;
+  watchlist: WatchUniverseSettings;
+  strategy_activity: StrategyActivitySettings;
   sec: { content: string; endDate: string; label: string; limit: number; lookbackHours: number; rangeMode: "custom" | "preset"; startDate: string; ticker: string };
   ticker_sec: { lookbackHours: number };
   sec_detail: Record<string, never>;
@@ -372,7 +373,7 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 23,
+  version: 24,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite", "strategy.presentation"] },
   charts_quotes: {
     main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd", "strategy.presentation"] },
@@ -393,7 +394,8 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   portfolio: { showExposure: true, showPnl: true },
   scanner: { columns: [], customColumns: [], limit: 250, preset: "Overview" },
   signal_stream: { columns: [], customColumns: [], limit: 250, preset: "All" },
-  watchlist: { columns: [], customColumns: [], limit: 50, ownerKind: "user", ownerName: "My watchlist", symbols: ["AAPL", "MSFT", "NVDA"] },
+  watchlist: { columns: [], customColumns: [], limit: 50, universeId: "" },
+  strategy_activity: { eventType: "", limit: 250, runId: "", strategyId: "", ticker: "" },
   sec: { content: "all", endDate: "", label: "", limit: 100, lookbackHours: 168, rangeMode: "preset", startDate: "", ticker: "" },
   ticker_sec: { lookbackHours: 720 },
   sec_detail: {},
@@ -1360,7 +1362,7 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
   const primarySettings = instanceSettings(registry, primaryChartId);
-  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "watchlist"]);
+  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "watchlist", "strategy_activity"]);
   const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => !dedicatedContainers.has(workspaceContainerKind(id, workspaceState))).sort().join(",");
   const scannerContainerKey = (workspaceState?.openIds ?? []).filter((id) => ["scanner", "signal_stream", "watchlist"].includes(workspaceContainerKind(id, workspaceState))).sort().join(",");
   const scannerTechnicalWindows = useMemo(() => {
@@ -2025,7 +2027,9 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
           ? <div className="canvas-preview-loading">Loading the historical watchlist snapshot…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">Historical watchlist unavailable: {scannerError}</div>
-            : <WatchlistContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
+            : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
+      : definition.id === "strategy_activity"
+        ? <StrategyActivityContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} settings={settings.strategy_activity} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>
@@ -3853,7 +3857,8 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   if (id === "charts_quotes") return <div className="canvas-settings-note">The main chart starts at 10 seconds with MACD. Its timeframe, indicators, pane layout, and appearance persist from controls inside the chart. The lower charts remain fixed to monthly and daily horizons. Drag the dividers between rows and columns to persist the workspace proportions.</div>;
   if (id === "scanner") return <><NumberField label="Maximum rows" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Columns, sorting, and filters are managed inside Scanner and persist with this container instance.</div></>;
   if (id === "signal_stream") return <><NumberField label="Maximum events" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Market rules are reconstructed from canonical data. Strategy events remain durable records owned by the strategy runtime.</div></>;
-  if (id === "watchlist") return <><TextField label="List name" onChange={(value) => patch({ ownerName: value })} value={String(current.ownerName)} /><SelectField label="Owner" onChange={(value) => patch({ ownerKind: value })} options={["user", "strategy"]} value={String(current.ownerKind)} /><NumberField label="Maximum rows" max={500} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Membership follows its named owner. Market values remain a projection at the shared clock, not copied watchlist state.</div></>;
+  if (id === "watchlist") return <><NumberField label="Maximum rows" max={500} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Membership is configured and owned by the selected Run Plan Watch Universe. Canvas only chooses which universe to present.</div></>;
+  if (id === "strategy_activity") return <><NumberField label="Maximum events" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Filters remain local to this container. Events come from the durable Trading Journal and are never reconstructed in the browser.</div></>;
   if (id === "orders") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showOrderIds)} label="Show order IDs" onChange={(value) => patch({ showOrderIds: value })} /></>;
   if (id === "fills") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showCommission)} label="Show commission" onChange={(value) => patch({ showCommission: value })} /></>;
   if (id === "positions") return <><NumberField label="Rows" max={100} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
@@ -3942,8 +3947,9 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
       ...(stored.watchlist ?? {}),
       columns: normalizeScannerColumnKeys(stored.watchlist?.columns, stored.watchlist?.customColumns),
       customColumns: normalizeScannerCustomColumns(stored.watchlist?.customColumns),
-      symbols: Array.isArray(stored.watchlist?.symbols) ? stored.watchlist.symbols.map((symbol) => String(symbol).trim().toUpperCase()).filter(Boolean) : [...DEFAULT_SETTINGS.watchlist.symbols],
+      universeId: String((stored.watchlist as Partial<WatchUniverseSettings> | undefined)?.universeId ?? ""),
     },
+    strategy_activity: { ...DEFAULT_SETTINGS.strategy_activity, ...(stored.strategy_activity ?? {}) },
     sec: { ...DEFAULT_SETTINGS.sec, ...(stored.sec ?? {}) },
     ticker_sec: { ...DEFAULT_SETTINGS.ticker_sec, ...(stored.ticker_sec ?? {}) },
     sec_detail: {},
