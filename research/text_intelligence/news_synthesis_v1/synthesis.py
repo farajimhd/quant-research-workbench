@@ -218,7 +218,33 @@ def derive_issuer_views(
             )
             for statement in issuer_statements
         )
-        if distress_restructuring:
+        current_adverse_regulatory_blocker = any(
+            row.get("semantic_sentiment") == "negative"
+            and int(row.get("sentiment_strength") or 0) >= 2
+            and _is_active_regulatory_blocker(
+                statement_by_id.get(str(row.get("statement_id") or ""), {})
+            )
+            for row in directional_rows
+        )
+        current_favorable_regulatory_outcome = any(
+            row.get("semantic_sentiment") == "positive"
+            and int(row.get("sentiment_strength") or 0) >= 2
+            and _is_current_favorable_regulatory_outcome(
+                statement_by_id.get(str(row.get("statement_id") or ""), {})
+            )
+            for row in directional_rows
+        )
+        if (
+            current_adverse_regulatory_blocker
+            and not current_favorable_regulatory_outcome
+        ):
+            # An active regulator-imposed blocker is the controlling current
+            # event until an actual favorable regulator disposition exists.
+            # Historical trial success, management confidence, cost actions,
+            # or unchanged guidance are mitigation, not resolution.
+            sentiment = "negative"
+            negative = max(negative, 3)
+        elif distress_restructuring:
             sentiment = "negative"
             negative = max(negative, 3)
         elif financing_tradeoff:
@@ -302,6 +328,89 @@ def _directionally_current(statement: Mapping[str, Any]) -> bool:
     if statement.get("statement_kind") == "background":
         return False
     return statement.get("time_relation") != "historical"
+
+
+def _is_current_favorable_regulatory_outcome(
+    statement: Mapping[str, Any],
+) -> bool:
+    if statement.get("concept_leaf") not in {
+        "clinical.regulatory_milestone",
+        "regulatory.action",
+    }:
+        return False
+    quote = " ".join(
+        str(span.get("quote") or "")
+        for span in statement.get("evidence_spans", ())
+    )
+    # Require an actual regulator disposition. Regulatory vocabulary inside
+    # management commentary (for example, an "FDA-approved comparator") is
+    # not evidence that the current blocker was resolved.
+    return bool(re.search(
+        r"\b(?:fda(?![- ]approved\b)|ema|mhra|health canada|"
+        r"european commission|regulator\w*|agency)\b.{0,80}"
+        r"\b(?:approv(?:es|ed)|authoriz(?:es|ed)|clear(?:s|ed)|grant(?:s|ed)|"
+        r"accept(?:s|ed)|acknowledg(?:es|ed)|lift(?:s|ed)|remov(?:es|ed))\b|"
+        r"\b(?:clinical hold|refusal[- ]to[- ]file|complete response letter)\b"
+        r".{0,80}\b(?:lift(?:ed)?|remov(?:ed)?|withdrawn|resolved)\b",
+        quote,
+        re.I,
+    ))
+
+
+def _is_active_regulatory_blocker(statement: Mapping[str, Any]) -> bool:
+    if statement.get("concept_leaf") not in {
+        "clinical.regulatory_milestone",
+        "regulatory.action",
+    }:
+        return False
+    quote = " ".join(
+        str(span.get("quote") or "")
+        for span in statement.get("evidence_spans", ())
+    )
+    focal_assertion = bool(
+        re.match(r"\s*(?:Title|Teaser):", quote, re.I)
+        or re.search(
+            r"\b(?:today|currently)\b.{0,80}\b(?:announc(?:e[sd]?|ing)|"
+            r"report(?:s|ed|ing)?|notif(?:y|ies|ied|ying))\b.{0,120}"
+            r"\b(?:refusal[- ]to[- ]file|complete response letter|clinical hold|"
+            r"not approvable)\b",
+            quote,
+            re.I,
+        )
+    )
+    if not focal_assertion:
+        return False
+    if re.search(
+        r"\b(?:lift(?:s|ed)|remov(?:es|ed)|withdrawn|resolved|dismiss(?:es|ed))\b"
+        r".{0,80}\b(?:clinical hold|refusal[- ]to[- ]file|complete response letter)\b|"
+        r"\b(?:clinical hold|refusal[- ]to[- ]file|complete response letter)\b"
+        r".{0,80}\b(?:lift(?:s|ed)|remov(?:es|ed)|withdrawn|resolved|dismiss(?:es|ed))\b",
+        quote,
+        re.I,
+    ):
+        return False
+    return bool(re.search(
+        r"\b(?:refusal[- ]to[- ]file(?: letter)?|refus(?:e|es|ed) to file|"
+        r"not approvable)\b|"
+        r"\b(?:fda|ema|regulator\w*|agency)\b.{0,80}"
+        r"\breject(?:s|ed|ing)?\b.{0,80}"
+        r"\b(?:application|submission|resubmission|filing)\b|"
+        r"\b(?:receiv(?:e[sd]?|ing)|obtain(?:s|ed|ing)?|issu(?:e[sd]?|ing)|"
+        r"send(?:s|ing)?|sent|deliver(?:s|ed|ing)?)\b.{0,80}"
+        r"\bcomplete response letter\b|"
+        r"\bcomplete response letter\b.{0,80}"
+        r"\b(?:receiv(?:e[sd]?|ing)|obtain(?:s|ed|ing)?|issu(?:e[sd]?|ing)|"
+        r"send(?:s|ing)?|sent|deliver(?:s|ed|ing)?)\b|"
+        r"\b(?:place[sd]?|impose[sd]?|remain(?:s|ed)?|continue[sd]?)\b.{0,60}"
+        r"\bclinical hold\b|"
+        r"\bclinical hold\b.{0,60}\b(?:place[sd]?|impose[sd]?|remain(?:s|ed)?|"
+        r"continue[sd]?|in effect)\b|"
+        r"\b(?:panel|committee)\b.{0,80}\b(?:votes? against|does not recommend)\b|"
+        r"\b(?:additional|supplemental)\b.{0,40}\b(?:data|information)\b"
+        r".{0,60}\b(?:required|requested|needed)\b",
+        quote,
+        re.I,
+    ))
 
 
 def _evidence_package_key(statement: Mapping[str, Any]) -> str:

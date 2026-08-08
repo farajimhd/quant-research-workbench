@@ -13,7 +13,7 @@ from .engine import (
     _sentiment_term_present,
 )
 from .facts import extract_typed_facts
-from .synthesis import derive_issuer_views
+from .synthesis import _is_active_regulatory_blocker, derive_issuer_views
 from .storage import persistence_row
 
 
@@ -237,6 +237,137 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             "tickers": ["AAA"],
         })
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_announced_completed_asset_acquisitions_are_not_facility_closures(self) -> None:
+        text = (
+            "Alpha Therapeutics announces $297 million of acquisitions and "
+            "$91 million of executed purchase agreements, resulting in an "
+            "expanded portfolio. "
+            "Alpha Therapeutics announced today the closing of $297 million of investments "
+            "in medical office facilities."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-completed-asset-acquisitions",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": (
+                "Alpha announces $297 million of acquisitions and executed "
+                "purchase agreements"
+            ),
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "positive")
+        self.assertFalse(any(
+            row["semantic_sentiment"] == "negative"
+            for row in document["participations"]
+        ))
+
+    def test_seller_is_not_acquirer_in_acquisition_by_another_party(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-acquisition-seller-role",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": (
+                "Alpha Therapeutics announces acquisition by Beta Group of "
+                "the shares held by Alpha Therapeutics"
+            ),
+            "text": (
+                "Alpha Therapeutics announced the acquisition by Beta Group "
+                "of capital held by Alpha Therapeutics. Terms were not disclosed."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertNotEqual(
+            document["issuer_views"][0]["composite_sentiment"],
+            "positive",
+        )
+
+    def test_offering_proceeds_for_prior_acquisition_are_not_a_new_acquisition(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-offering-funds-prior-acquisition",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Therapeutics announces public offering",
+            "text": (
+                "Alpha Therapeutics announced a public offering of 25 million "
+                "common shares. Alpha expects to use the net proceeds to fund "
+                "its previously announced acquisition."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(
+            document["issuer_views"][0]["composite_sentiment"],
+            "negative",
+        )
+
+    def test_historical_crl_does_not_override_current_accepted_complete_response(self) -> None:
+        text = (
+            "Alpha Therapeutics filed its complete response to the FDA's November 25, "
+            "2023 Complete Response Letter. On August 10, 2026, the FDA acknowledged "
+            "receipt and considers this a complete response."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-accepted-complete-response",
+            "source_timestamp": "2026-08-11T12:00:00Z",
+            "title": "FDA accepts complete response submission",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "positive")
+        adverse = [
+            row for row in document["statements"]
+            if row["concept_leaf"] == "clinical.regulatory_milestone"
+            and any(
+                fact.get("outcome_class") == "adverse"
+                for fact in row["typed_facts"]
+            )
+        ]
+        self.assertTrue(adverse)
+        adverse_ids = {row["statement_id"] for row in adverse}
+        self.assertFalse(any(
+            row["statement_id"] in adverse_ids
+            and row["semantic_sentiment"] == "negative"
+            and row["sentiment_strength"] > 1
+            for row in document["participations"]
+        ))
+
+    def test_current_rejection_referencing_old_crl_remains_current(self) -> None:
+        text = (
+            "The FDA has issued a response letter. The letter stated that the "
+            "FDA did not consider the resubmitted application a complete response "
+            "to deficiencies identified in the FDA's October 2020 Complete "
+            "Response Letter. The FDA will not begin substantive review."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-current-rejection-old-crl-reference",
+            "source_timestamp": "2022-02-22T12:00:00Z",
+            "title": "FDA rejects Alpha Therapeutics application again",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(
+            document["issuer_views"][0]["composite_sentiment"],
+            "negative",
+        )
+
+    def test_response_letter_not_approvable_is_adverse(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-response-letter-not-approvable",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": (
+                "Alpha Therapeutics informed FDA issued response letter "
+                "indicating application is not approvable"
+            ),
+            "text": (
+                "Alpha Therapeutics was informed that the FDA issued a response "
+                "letter indicating the application is not approvable."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(
+            document["issuer_views"][0]["composite_sentiment"],
+            "negative",
+        )
 
     def test_statistically_significant_immune_response_has_adverse_override(self) -> None:
         cases = (
@@ -2180,6 +2311,63 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             repeated_weak_positive[0]["composite_sentiment"],
             "positive",
         )
+
+    def test_active_regulatory_blocker_controls_unrelated_positive_packages(self) -> None:
+        entities = [{"entity_id": "security:AAA", "entity_kind": "security"}]
+        statements = [
+            {
+                "statement_id": "s1",
+                "statement_kind": "event",
+                "time_relation": "current",
+                "concept_leaf": "clinical.regulatory_milestone",
+                "evidence_spans": [{
+                    "quote": "Title: FDA issued a refusal-to-file letter"
+                }],
+            },
+            {
+                "statement_id": "s2",
+                "statement_kind": "event",
+                "time_relation": "current",
+                "concept_leaf": "guidance.issued",
+                "evidence_spans": [{"quote": "guidance remains unchanged"}],
+            },
+            {
+                "statement_id": "s3",
+                "statement_kind": "assessment",
+                "time_relation": "current",
+                "concept_leaf": "strategy.operational_priority",
+                "evidence_spans": [{"quote": "management remains confident"}],
+            },
+            {
+                "statement_id": "s4",
+                "statement_kind": "assessment",
+                "time_relation": "current",
+                "concept_leaf": "clinical.regulatory_milestone",
+                "evidence_spans": [{
+                    "quote": "The study used an FDA-approved vaccine as comparator."
+                }],
+            },
+        ]
+        participations = [
+            {"statement_id": "s1", "entity_id": "security:AAA", "semantic_sentiment": "negative", "sentiment_strength": 4},
+            {"statement_id": "s2", "entity_id": "security:AAA", "semantic_sentiment": "positive", "sentiment_strength": 3},
+            {"statement_id": "s3", "entity_id": "security:AAA", "semantic_sentiment": "positive", "sentiment_strength": 2},
+            {"statement_id": "s4", "entity_id": "security:AAA", "semantic_sentiment": "positive", "sentiment_strength": 3},
+        ]
+        view = derive_issuer_views(entities, participations, statements=statements)[0]
+        self.assertEqual(view["composite_sentiment"], "negative")
+
+    def test_prior_crl_in_resubmission_context_is_not_a_new_active_blocker(self) -> None:
+        statement = {
+            "concept_leaf": "clinical.regulatory_milestone",
+            "evidence_spans": [{
+                "quote": (
+                    "The company was granted an FDA meeting regarding its NDA "
+                    "resubmission following the earlier Complete Response Letter."
+                )
+            }],
+        }
+        self.assertFalse(_is_active_regulatory_blocker(statement))
 
     def test_repeated_renderings_of_one_metric_do_not_create_dominance(self) -> None:
         entities = [{"entity_id": "security:AAA", "entity_kind": "security"}]

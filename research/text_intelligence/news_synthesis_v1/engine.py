@@ -13,7 +13,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v38"
+ENGINE_VERSION = "news_synthesis_engine_v39"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -1271,6 +1271,37 @@ def _time_relation(
         and int(dated_event.group(1)) < reference_year
     ):
         return "historical"
+    dated_regulatory_state = re.search(
+        r"\b((?:19|20)\d{2})\s+(?:complete response letter|clinical hold|"
+        r"refusal[- ]to[- ]file letter|action letter)\b",
+        text,
+        re.I,
+    )
+    current_response_prefix = bool(
+        dated_regulatory_state
+        and (
+            re.search(
+                r"\b(?:fil(?:e[sd]?|ing)|submit(?:s|ted|ting)?|accept(?:s|ed|ing)?|"
+                r"acknowledg(?:e[sd]?|ing))\b.{0,120}\b(?:complete )?response\b",
+                text[:dated_regulatory_state.start()],
+                re.I,
+            )
+            or re.search(
+                r"\b(?:did not consider|does not consider|will not begin|"
+                r"refus(?:e[sd]?|ing)|reject(?:s|ed|ing)?|not acceptable)\b"
+                r".{0,160}\b(?:application|resubmission|response|review)\b",
+                text[:dated_regulatory_state.start()],
+                re.I,
+            )
+        )
+    )
+    if (
+        dated_regulatory_state
+        and not current_response_prefix
+        and reference_year is not None
+        and int(dated_regulatory_state.group(1)) < reference_year
+    ):
+        return "historical"
     historical_cue = re.search(
         r"\b(?:previously|formerly|earlier(?!\s+(?:today|this))|"
         r"last (?:year|quarter|month)|prior (?:year|quarter|month)|"
@@ -1799,6 +1830,33 @@ def _sentiment(
         ):
             return "positive", 1
     if rule.concept in {"clinical.regulatory_milestone", "regulatory.action"}:
+        if re.search(
+            r"\b(?:did not|does not|will not)\b.{0,100}"
+            r"\b(?:consider|accept|begin)\b.{0,100}"
+            r"\b(?:complete response|substantive review|application|resubmission)\b|"
+            r"\b(?:not acceptable|not approvable|unable to approve)\b",
+            normalized,
+        ):
+            return "negative", 4
+        if re.search(
+            r"\b(?:fda|ema|regulator\w*|agency)\b.{0,80}"
+            r"\bissu(?:e[sd]?|ing)\b.{0,40}\bresponse letter\b",
+            normalized,
+        ) and not re.search(
+            r"\b(?:complete response letter|refusal[- ]to[- ]file|"
+            r"accept(?:s|ed)|acknowledg(?:e[sd]?)|approv(?:es|ed)|"
+            r"reject(?:s|ed)|not acceptable|unable to approve)\b",
+            normalized,
+        ):
+            return "neutral", 0
+        if re.search(
+            r"\b(?:fda|ema|regulator\w*)\b.{0,120}"
+            r"\b(?:accept(?:s|ed|ance)?|acknowledg(?:e[sd]?|ing))\b.{0,100}"
+            r"\b(?:complete )?(?:response|resubmission|submission|application)\b|"
+            r"\bconsiders?\b.{0,80}\b(?:complete|class\s*2)\s+response\b",
+            normalized,
+        ):
+            return "positive", 2
         if re.search(
             r"\b(?:plans?|intends?|expects?)\b.{0,80}\b(?:seek|file|submit)\b"
             r".{0,100}\b(?:fda|ema)\b.{0,80}\b(?:priority review|snda|nda|bla|application)\b",
@@ -2507,6 +2565,9 @@ def _sentiment(
         if role == "acquirer" and re.search(
             r"\b(?:agrees? to|will|to) (?:acquire|buy|purchase)\b|"
             r"\b(?:has|have|had) acquired\b|"
+            r"\bannounc(?:e|es|ed|ing)\b.{0,80}\bacquisitions?\b"
+            r".{0,120}\b(?:executed|completed|closed|closing|resulting in|"
+            r"accretive|strategic|expand(?:s|ed|ing)?)\b|"
             r"\b(?:closes?|completes?|approved?)\b.{0,80}\b(?:acquisition|purchase|merger)\b|"
             r"\bpurchase of\b.{0,100}\b(?:assets?|business|operations?)\b",
             normalized,
@@ -3280,7 +3341,13 @@ def _strict_local_fallback_sentiment(text: str) -> tuple[str, int] | None:
         text,
         re.I,
     ))
-    negative = bool(re.search(
+    transaction_closing = bool(re.search(
+        r"\bclos(?:e[sd]?|ing)\s+of\b.{0,100}"
+        r"\b(?:investments?|acquisitions?|purchase(?: and sale)? agreements?)\b",
+        text,
+        re.I,
+    ))
+    negative = not transaction_closing and bool(re.search(
         r"\b(?:will not be available|unavailable|blocked?|downgrad(?:e[sd]?|ing)|"
         r"shut(?:s|ting)? down|lost|loss|adverse allegation)\b|"
         r"\bclos(?:e[sd]?|ing)\b.{0,80}\b(?:stores?|plants?|facilities?|offices?|sites?|mines?|operations?|businesses?|locations?)\b|"
@@ -3891,6 +3958,19 @@ def _semantic_role(text: str, entity: Mapping[str, Any], concept: str) -> str:
             if re.search(rf"\b(?:firm|binding|cash|takeover)?\s*offer\b.{{0,40}}\bfor\s+{name}\b", text, re.I): return "target"
             if re.search(rf"\btakeover chatter\b.{{0,40}}\b(?:in|for)\s+{name}\b", text, re.I): return "target"
             if re.search(rf"{name}.*\b(?:acquir(?:e|es|ed|ing)|buys?|purchases?)\b", text, re.I): return "acquirer"
+            if re.search(
+                rf"{name}.{{0,100}}\bannounc(?:e|es|ed|ing)\b.{{0,80}}\bacquisitions?\b",
+                text,
+                re.I,
+            ) and not re.search(
+                r"\b(?:use|used|using)\b.{0,40}\bproceeds\b.{0,100}"
+                r"\b(?:previously )?announced acquisition\b|"
+                r"\bpreviously announced acquisition\b|"
+                r"\bacquisition\b.{0,50}\bby\b.{0,80}\b(?:group|company|corp(?:oration)?|inc\.?|ltd\.?)\b",
+                text,
+                re.I,
+            ):
+                return "acquirer"
     return "affected_subject"
 
 
