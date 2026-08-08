@@ -276,12 +276,9 @@ class ProfileReporter:
             )
             run.add_row(
                 "Scheduler in trainer",
-                f"sample-clock cosine warm restarts | cycle {train.cosine_cycle_samples:,} origins | "
-                f"minimum LR {train.minimum_learning_rate:g} | restart decay {train.cosine_restart_decay:g}",
-            )
-            run.add_row(
-                "Scheduler warning",
-                f"configured warm-up {train.warmup_fraction:.1%} is currently not applied by that scheduler",
+                f"sample-clock linear warm-up {train.warmup_fraction:.1%} from LR "
+                f"{train.minimum_learning_rate:g} to {train.learning_rate:g} | then cosine warm restarts | "
+                f"cycle {train.cosine_cycle_samples:,} post-warm-up origins | restart decay {train.cosine_restart_decay:g}",
             )
             console.print(run)
             candidates_table = Table(title="Candidates")
@@ -336,12 +333,9 @@ class ProfileReporter:
             flush=True,
         )
         print(
-            f"  Scheduler           cosine warm restarts, cycle {train.cosine_cycle_samples:,} origins, "
-            f"minimum LR {train.minimum_learning_rate:g}, restart decay {train.cosine_restart_decay:g}",
-            flush=True,
-        )
-        print(
-            f"  Scheduler warning   configured warm-up {train.warmup_fraction:.1%} is not currently applied",
+            f"  Scheduler           linear warm-up {train.warmup_fraction:.1%} from LR "
+            f"{train.minimum_learning_rate:g} to {train.learning_rate:g}, then cosine warm restarts, "
+            f"cycle {train.cosine_cycle_samples:,} post-warm-up origins, restart decay {train.cosine_restart_decay:g}",
             flush=True,
         )
         print("Candidates", flush=True)

@@ -59,12 +59,24 @@ class SampleWarmupCosineScheduler:
 
 
 class SampleCosineRestartScheduler:
-    """Sample-clock cosine annealing with decaying warm restarts."""
+    """Sample-clock linear warmup followed by decaying cosine restarts."""
 
-    def __init__(self, optimizer: torch.optim.Optimizer, *, cycle_samples: int, minimum_lr: float, restart_decay: float = 0.98) -> None:
-        if cycle_samples <= 0 or not 0.0 < restart_decay <= 1.0:
-            raise ValueError("cycle_samples must be positive and restart_decay must be in (0,1]")
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        *,
+        cycle_samples: int,
+        minimum_lr: float,
+        restart_decay: float = 0.98,
+        warmup_samples: int = 0,
+    ) -> None:
+        if warmup_samples < 0 or cycle_samples <= 0 or not 0.0 < restart_decay <= 1.0:
+            raise ValueError(
+                "warmup_samples must be non-negative, cycle_samples must be positive, "
+                "and restart_decay must be in (0,1]"
+            )
         self.optimizer = optimizer
+        self.warmup_samples = int(warmup_samples)
         self.cycle_samples = int(cycle_samples)
         self.minimum_lr = float(minimum_lr)
         self.restart_decay = float(restart_decay)
@@ -76,15 +88,28 @@ class SampleCosineRestartScheduler:
 
     def step(self, samples_seen: int) -> None:
         self.samples_seen = max(0, int(samples_seen))
-        cycle = self.samples_seen // self.cycle_samples
-        phase = (self.samples_seen % self.cycle_samples) / self.cycle_samples
+        if self.warmup_samples and self.samples_seen < self.warmup_samples:
+            progress = self.samples_seen / self.warmup_samples
+            for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs, strict=True):
+                group["lr"] = self.minimum_lr + (base_lr - self.minimum_lr) * progress
+            return
+        decay_samples = self.samples_seen - self.warmup_samples
+        cycle = decay_samples // self.cycle_samples
+        phase = (decay_samples % self.cycle_samples) / self.cycle_samples
         amplitude = self.restart_decay ** cycle
         for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs, strict=True):
             peak = self.minimum_lr + (base_lr - self.minimum_lr) * amplitude
             group["lr"] = self.minimum_lr + (peak - self.minimum_lr) * 0.5 * (1.0 + math.cos(math.pi * phase))
 
     def state_dict(self) -> dict[str, Any]:
-        return {"samples_seen": self.samples_seen, "base_lrs": self.base_lrs}
+        return {
+            "samples_seen": self.samples_seen,
+            "base_lrs": self.base_lrs,
+            "warmup_samples": self.warmup_samples,
+            "cycle_samples": self.cycle_samples,
+            "minimum_lr": self.minimum_lr,
+            "restart_decay": self.restart_decay,
+        }
 
     def load_state_dict(self, state: dict[str, Any] | None) -> None:
         if not state:
@@ -92,4 +117,18 @@ class SampleCosineRestartScheduler:
         saved_base = [float(value) for value in state.get("base_lrs", self.base_lrs)]
         if saved_base != self.base_lrs:
             raise RuntimeError("scheduler base learning rates do not match the resumed optimizer")
+        saved_contract = {
+            "warmup_samples": int(state.get("warmup_samples", self.warmup_samples)),
+            "cycle_samples": int(state.get("cycle_samples", self.cycle_samples)),
+            "minimum_lr": float(state.get("minimum_lr", self.minimum_lr)),
+            "restart_decay": float(state.get("restart_decay", self.restart_decay)),
+        }
+        current_contract = {
+            "warmup_samples": self.warmup_samples,
+            "cycle_samples": self.cycle_samples,
+            "minimum_lr": self.minimum_lr,
+            "restart_decay": self.restart_decay,
+        }
+        if saved_contract != current_contract:
+            raise RuntimeError("scheduler configuration does not match the resumed run")
         self.step(int(state.get("samples_seen", 0)))

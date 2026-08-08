@@ -119,7 +119,7 @@ from research.bar_gpt.v1.run_train_model_comparison import (
 )
 from research.bar_gpt.v1.run_profile_model_performance import parse_args as parse_performance_profile_args, profiler_argv
 from research.mlops.metrics import AsyncJsonlMetricLogger
-from research.mlops.schedulers import SampleWarmupCosineScheduler
+from research.mlops.schedulers import SampleCosineRestartScheduler, SampleWarmupCosineScheduler
 
 
 def _abrupt_process_exit_for_test() -> None:
@@ -1457,6 +1457,40 @@ class LoaderTrainerContractTest(unittest.TestCase):
         scheduler.step(1_000)
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-5)
 
+    def test_restart_scheduler_applies_warmup_then_restarts_and_resumes(self) -> None:
+        parameter = torch.nn.Parameter(torch.tensor(1.0))
+        optimizer = torch.optim.AdamW([parameter], lr=3e-4)
+        scheduler = SampleCosineRestartScheduler(
+            optimizer,
+            warmup_samples=100,
+            cycle_samples=1_000,
+            minimum_lr=3e-5,
+            restart_decay=0.98,
+        )
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-5)
+        scheduler.step(50)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1.65e-4)
+        scheduler.step(100)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-4)
+        scheduler.step(600)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1.65e-4)
+        scheduler.step(1_100)
+        expected_restart_peak = 3e-5 + (3e-4 - 3e-5) * 0.98
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], expected_restart_peak)
+
+        state = scheduler.state_dict()
+        resumed_optimizer = torch.optim.AdamW([torch.nn.Parameter(torch.tensor(1.0))], lr=3e-4)
+        resumed = SampleCosineRestartScheduler(
+            resumed_optimizer,
+            warmup_samples=100,
+            cycle_samples=1_000,
+            minimum_lr=3e-5,
+            restart_decay=0.98,
+        )
+        resumed.load_state_dict(state)
+        self.assertEqual(resumed.samples_seen, 1_100)
+        self.assertAlmostEqual(resumed_optimizer.param_groups[0]["lr"], expected_restart_peak)
+
     def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
         self.assertEqual(training_launcher_args["--data-source"], "offline")
         self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v3"))
@@ -1777,7 +1811,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         rendered = stream.getvalue()
         self.assertIn("W&B                 disabled", rendered)
         self.assertIn("Scheduler", rendered)
-        self.assertIn("configured warm-up 1.0% is not currently applied", rendered)
+        self.assertIn("linear warm-up 1.0% from LR 3e-05 to 0.0003", rendered)
+        self.assertNotIn("Scheduler warning", rendered)
         self.assertIn("medium", rendered)
 
     def test_training_launcher_uses_selected_worker_owned_profile(self) -> None:

@@ -1170,7 +1170,7 @@ def checkpoint_payload(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
-    scheduler: SampleWarmupCosineScheduler,
+    scheduler: SampleCosineRestartScheduler,
     checkpointer: AsyncCheckpointManager,
     config: ExperimentConfig,
     *,
@@ -1233,7 +1233,7 @@ def restore_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
-    scheduler: SampleWarmupCosineScheduler,
+    scheduler: SampleCosineRestartScheduler,
     device: torch.device,
     config: ExperimentConfig,
     plan_hash: str,
@@ -1562,6 +1562,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     resolved_warmup_samples = _resolved_warmup_samples(config.train, schedule_samples)
     scheduler = SampleCosineRestartScheduler(
         optimizer,
+        warmup_samples=resolved_warmup_samples,
         cycle_samples=config.train.cosine_cycle_samples,
         minimum_lr=config.train.minimum_learning_rate,
         restart_decay=config.train.cosine_restart_decay,

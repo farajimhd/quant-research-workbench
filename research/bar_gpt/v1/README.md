@@ -409,13 +409,11 @@ and six horizons from 5 seconds through 1 hour. `--max-samples 0` means the
 complete coverage epoch; a positive value is an operator safety or diagnostic
 cap and does not shorten the full-epoch learning-rate curve.
 
-AdamW uses a `3e-4` peak learning rate and `0.1` weight decay. The current shared
-MLOps scheduler is a sample-clock cosine warm-restart schedule with a
-100,000,000-origin cycle, `3e-5` minimum learning rate, and `0.98` peak decay at
-each restart. The configuration still resolves a 1% warm-up value, but the
-instantiated restart scheduler does not currently apply it; the performance
-profiler reports this mismatch explicitly rather than describing the warm-up as
-active. Scheduler,
+AdamW uses a `3e-4` peak learning rate and `0.1` weight decay. The shared MLOps
+scheduler starts at `3e-5` and warms linearly to the peak over 1% of the resolved
+run population (or the explicit `--warmup-samples` override). It then uses
+sample-clock cosine warm restarts with a 100,000,000-origin post-warm-up cycle,
+`3e-5` minimum learning rate, and `0.98` peak decay at each restart. Scheduler,
 optimizer, scaler, RNG, plan, logical data cursors, validation schedule,
 checkpoint-manager state, and W&B run ID are part of every resumable checkpoint.
 Resume continues the same W&B run; `--wandb-mode disabled` is an explicit
