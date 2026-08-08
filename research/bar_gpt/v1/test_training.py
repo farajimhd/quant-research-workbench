@@ -21,7 +21,7 @@ import torch
 from rich.console import Console
 
 from research.bar_gpt.v1.audit_offline_shards import audit_shard
-from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig
+from research.bar_gpt.v1.config import BAR_GPT_WANDB_PROJECT, BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig
 from research.bar_gpt.v1.data import FixedBucketHistoryCache, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarView, collate_examples
 from research.bar_gpt.v1.loader import (
     ArrowStreamClient,
@@ -110,6 +110,11 @@ from research.bar_gpt.v1.run_build_offline_dataset import (
 from research.bar_gpt.v1.run_profile_train import DEFAULT_ARGS as profile_launcher_args
 from research.bar_gpt.v1.run_pilot_offline_shards import commands as pilot_commands, parse_args as parse_pilot_args
 from research.bar_gpt.v1.run_train import DEFAULT_ARGS as training_launcher_args
+from research.bar_gpt.v1.run_train_model_comparison import (
+    COMPARISON_RUNS,
+    comparison_run_name,
+    trainer_argv as comparison_trainer_argv,
+)
 from research.mlops.schedulers import SampleWarmupCosineScheduler
 
 
@@ -1453,9 +1458,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v3"))
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
-        self.assertEqual(training_launcher_args["--batch-size"], "16")
+        self.assertEqual(training_launcher_args["--offline-train-end-date"], "2022-01-01")
+        self.assertEqual(training_launcher_args["--batch-size"], "32")
         self.assertEqual(training_launcher_args["--validation-blocks-per-slice"], "2")
-        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
+        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "1")
+        self.assertEqual(training_launcher_args["--epochs"], "1")
+        self.assertEqual(training_launcher_args["--wandb-project"], BAR_GPT_WANDB_PROJECT)
         self.assertEqual(training_launcher_args["--loader-workers"], "16")
         config = TrainConfig(warmup_samples=0, warmup_fraction=0.01)
         self.assertEqual(_resolved_warmup_samples(config, 7_563_836_672), 75_638_367)
@@ -1685,11 +1693,38 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_training_launcher_uses_selected_worker_owned_profile(self) -> None:
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
-        self.assertEqual(training_launcher_args["--batch-size"], "16")
-        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
+        self.assertEqual(training_launcher_args["--batch-size"], "32")
+        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "1")
         self.assertEqual(training_launcher_args["--loader-workers"], "16")
         self.assertEqual(training_launcher_args["--ready-queue-blocks"], "1024")
         self.assertEqual(training_launcher_args["--worker-prefetch-batches"], "8")
+
+    def test_one_epoch_comparison_runs_match_profiled_winners(self) -> None:
+        expected = {
+            "current": (384, 8, 8, 4, 32, 1),
+            "medium": (512, 12, 8, 4, 16, 2),
+            "large": (768, 12, 12, 4, 8, 4),
+            "xlarge": (1024, 16, 16, 8, 8, 4),
+        }
+        names = set()
+        for model_size, values in expected.items():
+            args = comparison_trainer_argv(model_size, run_stamp="fixed", wandb_mode="offline")
+            parsed = parse_training_args(args)
+            actual = (
+                parsed.d_model,
+                parsed.n_layers,
+                parsed.n_heads,
+                parsed.n_kv_heads,
+                parsed.batch_size,
+                parsed.gradient_accumulation_steps,
+            )
+            self.assertEqual(actual, values)
+            self.assertEqual(parsed.epochs, 1)
+            self.assertEqual(parsed.offline_train_end_date, "2022-01-01")
+            self.assertEqual(parsed.wandb_project, BAR_GPT_WANDB_PROJECT)
+            self.assertEqual(COMPARISON_RUNS[model_size].effective_blocks, 32)
+            names.add(comparison_run_name(model_size, "fixed"))
+        self.assertEqual(len(names), 4)
 
     def test_holdout_and_regime_resampling_are_deterministic(self) -> None:
         tickers = tuple(f"T{index:02d}" for index in range(20))

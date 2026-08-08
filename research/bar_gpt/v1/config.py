@@ -18,6 +18,9 @@ from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES
 
 
+BAR_GPT_WANDB_PROJECT = "bar gpt"
+
+
 INTRADAY_TIMEFRAMES_US: tuple[int, ...] = (
     1_000_000,
     5_000_000,
@@ -261,7 +264,7 @@ class TrainConfig:
     cuda_prefetch: bool = True
     amp: bool = True
     seed: int = 17
-    wandb_project: str = "bar-gpt-v1"
+    wandb_project: str = BAR_GPT_WANDB_PROJECT
     wandb_entity: str = "mehdifaraji"
     wandb_mode: str = "auto"
     wandb_init_timeout: int = 120

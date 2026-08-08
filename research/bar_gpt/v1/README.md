@@ -301,10 +301,38 @@ The canonical workstation training command is:
 python -B -m research.bar_gpt.v1.run_train
 ```
 
+The one-epoch model comparison is defined by four fixed, equal-effective-batch
+runs. Plan all four without starting training:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_train_model_comparison
+```
+
+Start one run explicitly; long runs are deliberately never chained:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size current --execute
+python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size medium --execute
+python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size large --execute
+python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size xlarge --execute
+```
+
+| Run | Width | Layers | Heads / KV heads | Microbatch | Accumulation | Effective blocks/update |
+|---|---:|---:|---:|---:|---:|---:|
+| Current | 384 | 8 | 8 / 4 | 32 | 1 | 32 |
+| Medium | 512 | 12 | 8 / 4 | 16 | 2 | 32 |
+| Large | 768 | 12 | 12 / 4 | 8 | 4 | 32 |
+| XLarge | 1024 | 16 | 16 / 8 | 8 | 4 | 32 |
+
+All four use one epoch, dropout `0.08`, the same certified training/validation
+populations, and W&B project `bar gpt`. Run names use one consistent schema and
+include model size, microbatch, accumulation, and a timestamp. Checkpoint resume
+continues the original W&B run ID rather than creating a same-name replacement.
+
 The canonical launcher now trains from certified v3 offline shards. Its bounded
-training selection is `[2019-01-01, 2021-01-01)` and its fixed validation
+training selection is `[2019-01-01, 2022-01-01)` and its fixed validation
 selection is `[2026-01-01, 2026-08-01)`. One coverage epoch is one deterministic
-exhaustive pass over every stored 04:00-20:00 block in the 90-ticker training
+exhaustive pass over every stored 04:00-20:00 block in the 91-ticker training
 population. Startup reads sidecar metadata—not tensor payloads—to verify every
 requested ticker-month and derive exact session, block, and origin totals;
 those totals drive progress, scheduling, validation spacing, ETA, and the
@@ -329,8 +357,8 @@ receptive field beyond that contract.
 
 The shard stores no microbatch dimension. `--batch-size` is the number of
 independent 4,096-origin blocks collated by the loader and may be tuned without
-rebuilding shards. The production default is 16 blocks per microbatch with two
-microbatches per optimizer update. Sixteen worker-owned mmap streams retain
+rebuilding shards. The production default is 32 blocks per microbatch with one
+microbatch per optimizer update. Sixteen worker-owned mmap streams retain
 shard-local access, eight in-flight batches per worker, and a shared bounded
 RAM cache sized in loader blocks. One pinned device batch transfers on a
 dedicated CUDA stream while the current batch computes. The terminal reports
@@ -354,7 +382,7 @@ identities from January through July 2026. Each ticker contributes exactly two
 deterministic pseudo-random blocks selected across its seven monthly shards;
 the seed, ticker, month, session date, and stable block offset make the sample
 repeatable. The original eight identity holdouts remain excluded from the
-2019--2020 training population, while the other 90 validation identities test
+2019--2021 training population, while the other 91 validation identities test
 out-of-time behavior for names seen during training. The full panel is
 materialized once into a bounded host-RAM cache on background validation
 workers while training begins, then the same prepared batches are reused for

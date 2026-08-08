@@ -4,6 +4,7 @@ import os
 import shlex
 import sys
 
+from research.bar_gpt.v1.config import BAR_GPT_WANDB_PROJECT
 from research.bar_gpt.v1.train import main
 
 
@@ -11,7 +12,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--data-source": "offline",
     "--offline-shard-root": r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3",
     "--offline-train-start-date": "2019-01-01",
-    "--offline-train-end-date": "2021-01-01",
+    "--offline-train-end-date": "2022-01-01",
     "--offline-validation-start-date": "2026-01-01",
     "--offline-validation-end-date": "2026-08-01",
     "--start-date": "2019-01-01",
@@ -26,7 +27,7 @@ DEFAULT_ARGS: dict[str, str] = {
     # Loader-owned shape retained from the full-universe profile. Offline
     # shards contain 4,096-origin blocks but never this batch dimension; tune
     # it from the launcher without rebuilding storage.
-    "--batch-size": "16",
+    "--batch-size": "32",
     "--loader-workers": "16",
     "--ready-queue-blocks": "1024",
     "--worker-prefetch-batches": "8",
@@ -42,7 +43,8 @@ DEFAULT_ARGS: dict[str, str] = {
     "--n-heads": "8",
     "--n-kv-heads": "4",
     "--max-samples": "0",
-    "--gradient-accumulation-steps": "2",
+    "--gradient-accumulation-steps": "1",
+    "--epochs": "1",
     "--learning-rate": "0.0003",
     "--warmup-samples": "0",
     "--warmup-fraction": "0.01",
@@ -59,6 +61,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--condition-positive-weight": "32",
     "--amp-dtype": "bf16",
     "--progress-layout": "auto",
+    "--wandb-project": BAR_GPT_WANDB_PROJECT,
 }
 DEFAULT_FLAGS: tuple[str, ...] = ("--amp", "--cuda-prefetch", "--no-compile-model")
 
