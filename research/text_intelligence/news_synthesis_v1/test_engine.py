@@ -1844,6 +1844,35 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             {row["concept_leaf"] for row in document["statements"]},
         )
 
+    def test_equal_prior_period_eps_is_neutral_with_zero_strength(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-equal-prior-period-eps",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha earnings preview",
+            "text": (
+                "Alpha Therapeutics is expected to report EPS of $0.39 "
+                "versus $0.39 a year ago."
+            ),
+            "tickers": ["AAA"],
+        })
+        validation = validate_document(document)
+        self.assertTrue(validation.valid, validation.issues)
+        neutral_rows = [
+            row
+            for row in document["participations"]
+            if row["semantic_sentiment"] == "neutral"
+        ]
+        self.assertTrue(neutral_rows)
+        self.assertTrue(all(
+            row["semantic_sentiment"] == "neutral"
+            for row in document["participations"]
+        ))
+        self.assertTrue(all(
+            row["sentiment_strength"] == 0
+            for row in document["participations"]
+        ))
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
     def test_negated_analyst_recommendations_are_negative(self) -> None:
         for text in (
             "The analyst is no longer bullish on Alpha Therapeutics.",

@@ -13,7 +13,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v9"
+ENGINE_VERSION = "news_synthesis_engine_v10"
 EXCHANGE_TICKER_RE = re.compile(r"\b(?:NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*([A-Z][A-Z0-9.\-]{0,9})\b", re.I)
 CASHTAG_RE = re.compile(r"(?<![A-Z0-9])\$([A-Z][A-Z0-9.\-]{0,9})\b")
 ROUNDUP_RE = re.compile(r"\b(?:stocks?|companies|biggest movers?|gainers?|losers?)\s+(?:moving|to watch)|\bmarket\s+(?:wrap|recap|update)\b", re.I)
@@ -1260,7 +1260,10 @@ def _sentiment(
             return "positive", 3
         period_direction = _reported_period_comparison_direction(normalized)
         if period_direction is not None:
-            return period_direction, 3
+            # Equality carries direction information but no directional
+            # magnitude.  Returning strength 3 for an unchanged comparison
+            # produces an internally invalid neutral participation.
+            return period_direction, 0 if period_direction == "neutral" else 3
         if re.search(r"\b(?:disappointing|weak|weaker)\b.{0,60}\b(?:earnings|results?|sales|revenue|profit)\b", normalized):
             return "negative", 3
         if re.search(r"\b(?:sales|revenue|EPS|earnings)\b.{0,40}\bdown\b", normalized):
