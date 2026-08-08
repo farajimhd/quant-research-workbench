@@ -1506,6 +1506,36 @@ class NewsSynthesisEngineTests(unittest.TestCase):
                 })
                 self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
 
+    def test_non_us_regulatory_approval_authority_is_supported(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-sfda-approval",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha receives SFDA approval for its device",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) obtained State Food and Drug Administration approval for its device.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_structured_legal_action_morphology_and_disposition(self) -> None:
+        cases = (
+            ("Alpha won an IP rights case against a challenger", "positive"),
+            ("Department of Labor sues Alpha for gender pay discrimination", "negative"),
+            ("Prosecution office investigates Alpha for provider interactions", "negative"),
+            ("SEC charged Alpha with fraud and Alpha agreed to pay a civil penalty", "negative"),
+            ("Patent case remanded for trial; Alpha intends to defend the claims", "negative"),
+            ("Court dismissed as moot Alpha's action against a fund", "neutral"),
+        )
+        for index, (title, expected) in enumerate(cases):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-legal-action-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA). {title}.",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
     def test_focal_below_consensus_guidance_controls_realized_beat(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-focal-weak-guidance",
