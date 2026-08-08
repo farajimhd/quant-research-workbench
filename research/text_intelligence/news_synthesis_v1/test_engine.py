@@ -1536,6 +1536,43 @@ class NewsSynthesisEngineTests(unittest.TestCase):
                 })
                 self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
 
+    def test_clinical_publication_and_program_data_patterns(self) -> None:
+        cases = (
+            "Alpha will present positive therapy data from its clinical program",
+            "Publication of data shows Alpha-101 induces a cellular process linked to prevention and treatment of disease",
+        )
+        for index, title in enumerate(cases):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-clinical-publication-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA). {title}.",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_biosimilar_comparability_uses_sponsor_and_incumbent_roles(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "Alpha Therapeutics", ("Alpha",), "NASDAQ"),
+            IssuerIdentity("BBB", "issuer:bbb", "Bravo Holdings", ("Bravo",), "NYSE"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-biosimilar-role",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "FDA staff says data shows Alpha's biosimilar is highly similar to Bravo's therapy",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) and Bravo Holdings (NYSE:BBB). "
+                "FDA staff says data shows Alpha's biosimilar is highly similar to Bravo's therapy."
+            ),
+            "tickers": ["AAA", "BBB"],
+        })
+        sentiments = {
+            next(row["ticker"] for row in document["entities"] if row["entity_id"] == view["entity_id"]): view["composite_sentiment"]
+            for view in document["issuer_views"]
+        }
+        self.assertEqual(sentiments, {"AAA": "positive", "BBB": "negative"})
+
     def test_focal_below_consensus_guidance_controls_realized_beat(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-focal-weak-guidance",

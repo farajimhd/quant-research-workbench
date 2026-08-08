@@ -13,7 +13,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v42"
+ENGINE_VERSION = "news_synthesis_engine_v43"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -280,7 +280,8 @@ RULES = (
     _rule("regulatory.action", r"\b(?:trading halt|halted|resume trading|SEC action|regulatory action|compliance notice|formal investigation|clinical hold|license renewal|crackdown|advisory committee|regulator|letter of authorization|conditions? of authorization|reporting requirements?|(?:grant|grants|granted)\b.{0,100}\b(?:terrestrial|commercial|marketing|regulatory) authorization)\b|\b(?:FDA|FTC|SEC|European Commission|Nuclear Regulatory Commission|FERC|Federal Energy Regulatory Commission)\b.{0,180}\b(?:investigation|inquiry|subpoena|request(?:s|ed)? information|hold|cancel|issue|renew|order|action|notice|authoriz|reporting requirement|pre[- ]filing review)\w*\b|\benter(?:s|ed|ing)?\b.{0,80}\bpre[- ]filing review process\b.{0,120}\b(?:FERC|Federal Energy Regulatory Commission)\b|\b(?:NICE|National Institute for Health and Care Excellence|health technology assessment (?:body|agency)|payer)\b.{0,180}\b(?:reject(?:s|ed)?|does not recommend|cannot recommend|declines? to recommend|refus(?:e[sd]?|ing) coverage)\b|\b(?:reject(?:s|ed)?|does not recommend|cannot recommend|declines? to recommend|refus(?:e[sd]?|ing) coverage)\b.{0,180}\b(?:NICE|National Institute for Health and Care Excellence|health technology assessment (?:body|agency)|payer)\b", positive=("authorize", "authorization", "renew", "grant", "pre-filing review"), negative=("halt", "suspend", "noncompliance", "investigation", "inquiry", "subpoena", "crackdown", "cancel", "myocarditis", "pericarditis", "adverse", "reject", "does not recommend", "cannot recommend", "declines to recommend", "refuse")),
     _rule("clinical.regulatory_milestone", r"\b(?:FDA|EMA|SFDA|State Food and Drug Administration|NDA|BLA|USDA)\b.{0,180}\b(?:approv|reject|complete response|clinical hold|clearance|accept|authoriz|resubmission|acknowledge|submission|meeting|grant|nod|fast track|priority review|expand\w*\s+(?:the\s+)?indication)\w*\b|\b(?:grant(?:s|ed)?|agree(?:s|d)?)\b.{0,100}\b(?:meet|meeting)\b.{0,80}\bFDA\b|\b(?:plans?|intends?|expects?)\b.{0,80}\b(?:seek|file|submit)\b.{0,100}\b(?:FDA|EMA|SFDA)\b.{0,80}\b(?:priority review|sNDA|NDA|BLA|application)\b|\b(?:receiv(?:e|es|ed)|secur(?:e|es|ed))\b.{0,80}\bCE mark\b|\b(?:complete response letter|clinical hold|primary endpoint|phase [123] (?:study|trial)|letter of authorization|regulatory submission|FDA nod|SFDA approval|CE mark|fast track designation)\b", positive=("approve", "approval", "clearance", "accept", "authorize", "authorization", "grant", "nod", "CE mark", "met primary", "expands indication"), negative=("reject", "complete response", "hold", "did not meet", "missed", "myocarditis", "pericarditis", "cancel")),
     _rule("clinical.regulatory_milestone", r"\bfil(?:e[sd]?|ing)\b.{0,100}\b(?:response|submission|application)\b.{0,80}\b(?:FDA|EMA)\b|\b(?:withdraw(?:s|n|al)?|withdrew)\b.{0,100}\b(?:NDA|BLA|new drug application|application|submission)\b", positive=("file", "submitted"), negative=("withdraw", "withdrew")),
-    _rule("clinical.trial_result", r"\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b.*\b(?:endpoint|results?|data|efficacy|safety|survival|viral suppression|site)\b|\b(?:results?|data)\b.{0,120}\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b|\b(?:initiat(?:e[sd]?|ion)|commenc(?:e[sd]?|ement)|begin(?:s|ning)?)\b.{0,100}\b(?:Phase\s*[123][a-z]?\s+)?(?:clinical\s+)?(?:study|trial)\b|\bexpansion of\b.{0,100}\bclinical development program\b.{0,120}\bnew trial\b|\bpositive clinical (?:data|results?)\b|\b(?:met|achieved|did not meet|failed to meet|did not demonstrate)\b.{0,120}\b(?:primary\b.{0,60})?(?:endpoint|goal|dose[- ]response|statistical significance)\b|\b(?:primary|co-primary|secondary) endpoint\b.{0,100}\b(?:did not meet|failed to meet|missed)\b.{0,80}\b(?:statistical significance|endpoint)?\b|\b(?:shut(?:s|ting)? down|discontinues?|terminates?)\b.{0,100}\b(?:clinical trial|study|Phase\s*[123])\b|\b(?:investigator|physician|assessment|review)\b.{0,160}\bconclud(?:e[sd]?|ing)\b.{0,100}\bnot (?:a )?case of\b.{0,120}\brevis(?:e[sd]?|ing) (?:the )?diagnosis\b|\b(?:statistically significant(?: and clinically meaningful)? improvement|statistically significant (?:adverse |unwanted |harmful )?(?:immune|immunologic|immunological) response (?:data|results?)|significantly reduces?|prevent(?:s|ed|ing)?\s+\d+(?:\.\d+)?%\s+of|\d+(?:\.\d+)?%\s+(?:vaccine )?efficacy|\d+(?:\.\d+)?%\s+reduction in (?:the )?risk|\d+(?:\.\d+)?%\s+of patients?.{0,80}\bachieved\b|first (?:patient|subject) (?:enrolled|dosed|screened)|(?:enrolls?|doses?|screens?) (?:the )?first (?:patient|subject)|(?:opens?|initiates?|announces?)\b.{0,80}\b(?:Phase\s*[123]\s+)?trial site|high efficacy|durable viral suppression|overall survival|sustained virologic response)\b", positive=("met", "positive", "improved", "prevented", "efficacy", "trial site", "initiation", "new trial", "first patient screened"), negative=("failed", "missed", "did not meet", "shut down", "discontinue", "terminate", "adverse")),
+    _rule("clinical.trial_result", r"\bdata\b.{0,120}\bshows?\b.{0,100}\bbiosimilar\b.{0,80}\bhighly similar\b.{0,40}\bto\b.{0,100}", positive=("highly similar",)),
+    _rule("clinical.trial_result", r"\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b.*\b(?:endpoint|results?|data|efficacy|safety|survival|viral suppression|site)\b|\b(?:results?|data)\b.{0,120}\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b|\b(?:initiat(?:e[sd]?|ion)|commenc(?:e[sd]?|ement)|begin(?:s|ning)?)\b.{0,100}\b(?:Phase\s*[123][a-z]?\s+)?(?:clinical\s+)?(?:study|trial)\b|\bexpansion of\b.{0,100}\bclinical development program\b.{0,120}\bnew trial\b|\bpresent(?:s|ed|ing)?\b.{0,100}\bpositive\b.{0,100}\bdata\b.{0,100}\bclinical program\b|\bpositive clinical (?:data|results?)\b|\bpublication of data\b.{0,120}\bshows?\b.{0,120}\b(?:induces?|activates?|improves?)\b.{0,140}\blinked to\b.{0,80}\b(?:prevention|treatment)\b|\b(?:met|achieved|did not meet|failed to meet|did not demonstrate)\b.{0,120}\b(?:primary\b.{0,60})?(?:endpoint|goal|dose[- ]response|statistical significance)\b|\b(?:primary|co-primary|secondary) endpoint\b.{0,100}\b(?:did not meet|failed to meet|missed)\b.{0,80}\b(?:statistical significance|endpoint)?\b|\b(?:shut(?:s|ting)? down|discontinues?|terminates?)\b.{0,100}\b(?:clinical trial|study|Phase\s*[123])\b|\b(?:investigator|physician|assessment|review)\b.{0,160}\bconclud(?:e[sd]?|ing)\b.{0,100}\bnot (?:a )?case of\b.{0,120}\brevis(?:e[sd]?|ing) (?:the )?diagnosis\b|\b(?:statistically significant(?: and clinically meaningful)? improvement|statistically significant (?:adverse |unwanted |harmful )?(?:immune|immunologic|immunological) response (?:data|results?)|significantly reduces?|prevent(?:s|ed|ing)?\s+\d+(?:\.\d+)?%\s+of|\d+(?:\.\d+)?%\s+(?:vaccine )?efficacy|\d+(?:\.\d+)?%\s+reduction in (?:the )?risk|\d+(?:\.\d+)?%\s+of patients?.{0,80}\bachieved\b|first (?:patient|subject) (?:enrolled|dosed|screened)|(?:enrolls?|doses?|screens?) (?:the )?first (?:patient|subject)|(?:opens?|initiates?|announces?)\b.{0,80}\b(?:Phase\s*[123]\s+)?trial site|high efficacy|durable viral suppression|overall survival|sustained virologic response)\b", positive=("met", "positive", "improved", "prevented", "efficacy", "trial site", "initiation", "new trial", "first patient screened"), negative=("failed", "missed", "did not meet", "shut down", "discontinue", "terminate", "adverse")),
     _rule("legal.proceeding", r"\b(?:lawsuit|litigation|investigation|subpoena|probe|targeted by (?:the )?probe|under investigation|settlement|arbitration|legal claim|security vulnerability|actively exploited vulnerability|data breach|claim for .{0,60}damages|seeking .{0,40}damages|patent peace|patent (?:is )?issued|issues? .{0,40}patent|(?:grant(?:s|ed)?|receiv(?:e|es|ed))\b.{0,80}\bpatent)\b|\bfil(?:e[sd]?|ing)\b.{0,80}\bcomplaint\b.{0,100}\bagainst\b|\b(?:sues?|sued|investigates?|investigated|charges?|charged)\b.{0,140}\b(?:discrimination|fraud|corruption|claims?|company|providers?)\b|\b(?:won|wins?)\b.{0,100}\b(?:IP rights|patent|legal)\b.{0,80}\bcase\b|\b(?:case|action|judgment)\b.{0,120}\b(?:reversed?|remanded|dismissed as moot)\b|\b(?:reverses?|remands?|dismiss(?:es|ed) as moot)\b.{0,120}\b(?:case|action|judgment)\b|\b(?:judge|court)\b.{0,140}\b(?:rules?|ruled|finds?|found|calls?|called|strikes? down|invalidates?)\b.{0,100}\b(?:restriction|limitation|ban|rule|regulation)s?\b|\b(?:judge|court)\b.{0,140}\b(?:restriction|limitation|ban|rule|regulation)s?\b.{0,100}\b(?:arbitrary|unlawful|invalid|struck down)\b", positive=("seeking damages", "served a request", "files arbitration", "patent peace", "patent issued", "issues patent"), negative=("lawsuit", "investigation", "probe", "subpoena", "breach", "vulnerability", "discriminatory", "adverse treatment")),
     _rule("listing.market_structure", r"\b(?:reverse (?:stock|share) split|reverse split|stock split|share consolidation|share combination|delist(?:s|ed|ing)?|deslit|delisting|listing compliance|regains? compliance|regained compliance|continued listing|non[- ]compliance|minimum bid|late filing|failure to timely file|included in .{0,60}(?:Russell|S&P|Nasdaq).{0,20}index|IPO)\b", positive=("regain", "regained compliance", "approved listing", "included"), negative=("delist", "deslit", "noncompliance", "non-compliance", "late", "failure", "reverse split", "reverse share split", "reverse stock split")),
     _rule("commercial.contract", r"\b(?:awarded|wins?|receives?|secures?|sign(?:s|ed|ing)?|enters?|affirms?)\b.{0,120}\b(?:contract|order|award|agreements?|program|initiative)\b|\bselected\b.{0,120}\bto (?:provide|deliver|supply)\b.{0,120}\b(?:services?|consultancy|supervision|supply|systems?|stations?|equipment|products?|components?)\b|\b(?:expand(?:s|ed|ing)?|extend(?:s|ed|ing)?|renew(?:s|ed|ing)?)\b.{0,100}\b(?:sales |supply |service )?agreements?\b|\b(?:deal with\b.{0,100}\b(?:provid|supply)\w*|named\b.{0,100}\bofficial\b.{0,60}\b(?:broker|provider|supplier|partner))\b|\bcontract award\b|\b(?:waiver and amendment|amendment) agreement\b|\bwaiv(?:e|es|ed|ing)\b.{0,120}\bright to terminate\b.{0,120}\b(?:fund|financ|tranche|obligation)\w*\b|\b(?:contract|agreement)\s+(?:termination|cancellation|non[- ]renewal)\b|\b(?:termination|cancellation|non[- ]renewal)\b.{0,80}\b(?:contract|agreement)\b|\b(?:follow[- ]on )?(?:contract|order|agreement|program|initiative)\b.{0,120}\b(?:awarded|affirmed|won|win|received|secured|signed|terminated|cancelled|canceled|not renewed)\b", positive=("awarded", "affirmed", "wins", "win", "received", "secured", "signed", "selected", "expand", "extend", "renew", "contract award"), negative=("cancel", "terminate", "non-renewal", "not renewed")),
@@ -641,6 +642,25 @@ class NewsSynthesisEngine:
                         typed_facts,
                         mention_terms,
                     )
+                elif rule.concept == "clinical.trial_result" and re.search(
+                    r"\bbiosimilar\b.{0,80}\bhighly similar\b.{0,40}\bto\b",
+                    statement_quote,
+                    re.I,
+                ):
+                    rule_entities = [
+                        entity
+                        for entity in entities
+                        if _entity_in_quote(
+                            entity,
+                            statement_quote,
+                            mention_terms.get(str(entity["entity_id"]), ()),
+                        )
+                        or _entity_possessive_in_quote(
+                            entity,
+                            statement_quote,
+                            mention_terms.get(str(entity["entity_id"]), ()),
+                        )
+                    ]
                 elif rule.concept == "guidance.issued":
                     rule_entities = _guidance_entities_for_quote(
                         scoped_entities,
@@ -2289,6 +2309,34 @@ def _sentiment(
         ):
             return "positive", 2
     if rule.concept == "clinical.trial_result":
+        biosimilar = re.search(
+            r"\bdata\b.{0,120}\bshows?\b(?P<subject>.{0,120}\bbiosimilar\b)"
+            r".{0,80}\bhighly similar\b.{0,40}\bto\b(?P<comparator>.{0,120})",
+            text,
+            re.I,
+        )
+        if biosimilar and entity is not None:
+            if _entity_in_quote(entity, biosimilar.group("subject"), mention_terms) or _entity_possessive_in_quote(
+                entity,
+                biosimilar.group("subject"),
+                mention_terms,
+            ):
+                return "positive", 2
+            if _entity_in_quote(entity, biosimilar.group("comparator"), mention_terms) or _entity_possessive_in_quote(
+                entity,
+                biosimilar.group("comparator"),
+                mention_terms,
+            ):
+                return "negative", 2
+        if re.search(
+            r"\bpresent(?:s|ed|ing)?\b.{0,100}\bpositive\b.{0,100}"
+            r"\bdata\b.{0,100}\bclinical program\b|"
+            r"\bpublication of data\b.{0,120}\bshows?\b.{0,120}"
+            r"\b(?:induces?|activates?|improves?)\b.{0,140}\blinked to\b"
+            r".{0,80}\b(?:prevention|treatment)\b",
+            normalized,
+        ):
+            return "positive", 2
         if re.search(
             r"\b(?:investigator|physician|assessment|review)\b.{0,160}"
             r"\bconclud(?:e[sd]?|ing)\b.{0,100}\bnot (?:a )?case of\b"
@@ -3181,6 +3229,22 @@ def _entity_in_quote(
         _safe_alias(alias := _normalize_alias(term)) and f" {alias} " in normalized_quote
         for term in terms
     )
+
+
+def _entity_possessive_in_quote(
+    entity: Mapping[str, Any],
+    quote: str,
+    mention_terms: Sequence[str] = (),
+) -> bool:
+    values = (*mention_terms, str(entity.get("display_name") or ""))
+    for value in values:
+        tokens = re.findall(r"[A-Za-z0-9]+", str(value))
+        if not tokens or not _safe_alias(_normalize_alias(value)):
+            continue
+        name_pattern = r"[^A-Za-z0-9]+".join(re.escape(token) for token in tokens)
+        if re.search(rf"(?<![A-Za-z0-9]){name_pattern}(?:'s|’s)(?![A-Za-z0-9])", quote, re.I):
+            return True
+    return False
 
 
 def _document_ticker_aliases(text: str) -> dict[str, tuple[str, ...]]:
