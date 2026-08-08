@@ -1708,6 +1708,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     last_validation_samples = -1
     if not pending_resume_validation:
         validation_runs_in_epoch = min(validation_runs_in_epoch, max(0, len(epoch_validation_milestones) - 1))
+    state.validation_runs_completed = resume_epoch * len(epoch_validation_milestones) + validation_runs_in_epoch
+    state.validation_runs_total = max(1, config.train.epochs) * len(epoch_validation_milestones)
+    state.next_validation_origins = next_validation
     last_metrics: dict[str, float] = {"train/loss": math.inf}
     last_val: dict[str, float] = {}
     current_epoch = resume_epoch
@@ -1744,6 +1747,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 epoch_validation_milestones = validation_milestones
                 if epoch != resume_epoch:
                     next_validation = epoch_start_samples + epoch_validation_milestones[0]
+                reporter.schedule_validation(next_validation)
                 reporter.epoch(epoch + 1, epoch_start_samples)
                 if isinstance(train_loader.dataset, (BarGPTIterableDataset, OfflineShardDataset)):
                     train_loader.dataset.epoch = epoch
@@ -2038,17 +2042,20 @@ def main(argv: Iterable[str] | None = None) -> int:
                             reporter.message("Training prefetch paused for isolated validation")
                             if not validation_cache.ready:
                                 reporter.message("Waiting for initial fixed validation panel preparation")
+                            reporter.phase("validating")
                             last_val = validate(model, validation_cache, config, device)
                             if not deferred_losses.merge_last(last_val):
                                 metrics_logger.log(last_val, samples_seen)
                             deferred_losses.flush(metrics_logger)
                             if telemetry_due:
                                 next_log = samples_seen + max(1, config.train.logging_samples)
-                            reporter.validation(last_val["validation_loss/total"])
+                            reporter.validation(last_val)
+                            reporter.phase("running")
                             last_validation_samples = samples_seen
                             validation_runs_in_epoch += 1
                             if validation_runs_in_epoch < len(epoch_validation_milestones):
                                 next_validation = epoch_start_samples + epoch_validation_milestones[validation_runs_in_epoch]
+                                reporter.schedule_validation(next_validation)
                             if not _INTERRUPTED and not (
                                 training_limit > 0 and samples_seen >= training_limit
                             ):
@@ -2121,11 +2128,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                 if last_validation_samples != samples_seen:
                     if not validation_cache.ready:
                         reporter.message("Waiting for initial fixed validation panel preparation")
+                    reporter.phase("validating")
                     last_val = validate(model, validation_cache, config, device)
                     if not deferred_losses.merge_last(last_val):
                         metrics_logger.log(last_val, samples_seen)
                     deferred_losses.flush(metrics_logger)
-                    reporter.validation(last_val["validation_loss/total"])
+                    reporter.validation(last_val)
+                    reporter.phase("running")
                     last_validation_samples = samples_seen
             if optimizer_steps == 0:
                 raise RuntimeError("coverage epoch produced no optimizer updates")

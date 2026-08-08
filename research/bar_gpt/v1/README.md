@@ -697,6 +697,20 @@ multi-horizon pinball loss, horizon availability BCE, and stop-gradient
 next-state cosine prediction. A separate frozen ridge-probe job evaluates
 whether embeddings retain held-out return information:
 
+Preview the fixed full-screen training dashboard without opening shards,
+initializing CUDA, starting W&B, or training a model:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_preview_training_dashboard
+python -B -m research.bar_gpt.v1.run_preview_training_dashboard --empty
+```
+
+The first command shows representative synthetic training and validation
+values. The `--empty` form proves that every panel, heading, and placeholder is
+present before the first update. The production Rich display uses the same
+renderer and expects a terminal of at least 120 columns by 36 rows. Redirected
+training output remains periodic plain text.
+
 ```powershell
 python -B -m research.bar_gpt.v1.run_linear_probe `
   --checkpoint D:\TradingML\runtimes\bar_gpt\v1\train\<run>\checkpoints\checkpoint_best_val.pt

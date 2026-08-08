@@ -1934,7 +1934,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 config,
             )
 
-    def test_compact_terminal_keeps_status_current_work_and_durability(self) -> None:
+    def test_training_dashboard_keeps_a_fixed_complete_schema(self) -> None:
         state = TrainingProgressState(
             run_name="smoke", device="cuda", precision="bf16", output_dir=r"D:\TradingML\runtimes\bar_gpt\v1\train\smoke",
             model_parameters=12_345, max_samples=300_000, samples_seen=125_000, batches_seen=12,
@@ -1947,33 +1947,65 @@ class LoaderTrainerContractTest(unittest.TestCase):
             current_unit_block=75, current_unit_blocks=300,
         )
         reporter = TrainingReporter(state, layout="rich")
+        reporter.update(
+            {
+                "train/loss": 0.123,
+                "train/loss_autoregressive": 0.08,
+                "train/gradient_norm": 0.75,
+                "train/condition_positive_rate": 0.01,
+                "train/amp_scale": 1.0,
+            }
+        )
+        reporter.validation(
+            {
+                "validation_loss/total": 0.2,
+                "validation_return/mae_bps_macro": 7.5,
+                "validation_direction/balanced_accuracy_macro": 0.56,
+                "validation_direction/mcc_macro": 0.12,
+                "validation_data/origins": 802_816,
+            }
+        )
         output = io.StringIO()
-        reporter._console = Console(file=output, width=72, force_terminal=False, color_system=None)
+        reporter._console = Console(file=output, width=160, height=42, force_terminal=False, color_system=None)
         reporter.messages.append("12:00:00 source certified")
         reporter._console.print(reporter._render())
         rendered = " ".join(output.getvalue().split())
         self.assertIn("running", rendered)
         self.assertIn("AAPL,SPY", rendered)
         self.assertIn("checkpoint_latest.pt", rendered)
-        self.assertIn("Epoch 2/3 origins", rendered)
+        self.assertIn("Epoch 2/3", rendered)
         self.assertIn("25,000/100,000", rendered)
-        self.assertIn("AAPL 2025-01 ticker-month blocks", rendered)
         self.assertIn("75/300", rendered)
-        self.assertIn("125,000/300,000 origins", rendered)
+        self.assertIn("125,000/300,000", rendered)
         self.assertIn("cosine", rendered)
+        for heading in (
+            "Progress and ETA",
+            "Training objectives",
+            "Validation scorecard",
+            "Optimization and runtime",
+            "Data and durability",
+            "Recent events",
+            "Return MAE",
+            "Balanced accuracy",
+            "MCC",
+            "q90 coverage",
+        ):
+            self.assertIn(heading, output.getvalue())
 
-        normal_output = io.StringIO()
-        reporter._console = Console(file=normal_output, width=120, height=40, force_terminal=False, color_system=None)
-        reporter._console.print(reporter._render())
-        self.assertIn("Objectives", normal_output.getvalue())
-        self.assertIn("Current work and durability", normal_output.getvalue())
-
-        short_output = io.StringIO()
-        reporter._console = Console(file=short_output, width=72, height=18, force_terminal=False, color_system=None)
-        reporter._console.print(reporter._render())
-        short_rendered = " ".join(short_output.getvalue().split())
-        self.assertIn("running", short_rendered)
-        self.assertIn("source certified", short_rendered)
+        empty_state = TrainingProgressState(
+            run_name="empty", device="cuda", precision="bf16", output_dir="-",
+            model_parameters=0, max_samples=0,
+        )
+        empty_reporter = TrainingReporter(empty_state, layout="rich")
+        empty_output = io.StringIO()
+        empty_reporter._console = Console(
+            file=empty_output, width=160, height=42, force_terminal=False, color_system=None
+        )
+        empty_reporter._console.print(empty_reporter.render())
+        self.assertIn("Training objectives", empty_output.getvalue())
+        self.assertIn("Validation scorecard", empty_output.getvalue())
+        self.assertIn("Latent prediction", empty_output.getvalue())
+        self.assertIn("Top 20% accuracy", empty_output.getvalue())
 
         text_output = io.StringIO()
         with redirect_stdout(text_output):

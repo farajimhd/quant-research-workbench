@@ -1,10 +1,45 @@
 from __future__ import annotations
 
+import math
 import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+
+TRAINING_OBJECTIVES: tuple[tuple[str, str, str], ...] = (
+    ("Total", "train/loss", "loss"),
+    ("Autoregressive", "train/loss_autoregressive", "loss"),
+    ("Horizon", "train/loss_horizon", "loss"),
+    ("AR continuous", "train/loss_ar_continuous", "loss"),
+    ("AR availability", "train/loss_ar_availability", "loss"),
+    ("Horizon quantile", "train/loss_horizon_quantile", "loss"),
+    ("Horizon availability", "train/loss_horizon_availability", "loss"),
+    ("Latent prediction", "train/loss_latent_prediction", "loss"),
+    ("Gradient norm", "train/gradient_norm", "number"),
+    ("Condition positive", "train/condition_positive_rate", "percent"),
+)
+
+VALIDATION_SCORECARD: tuple[tuple[str, str, str], ...] = (
+    ("Total loss", "validation_loss/total", "loss"),
+    ("AR loss", "validation_loss/autoregressive", "loss"),
+    ("Horizon loss", "validation_loss/horizon", "loss"),
+    ("Return MAE", "validation_return/mae_bps_macro", "bps"),
+    ("Balanced accuracy", "validation_direction/balanced_accuracy_macro", "percent"),
+    ("MCC", "validation_direction/mcc_macro", "number"),
+    ("Calibration error", "validation_calibration/error_macro", "percent"),
+    ("Availability Brier", "validation_availability/brier_macro", "number"),
+    ("Spearman rank", "validation_ranking/spearman_macro", "number"),
+    ("Top 10% accuracy", "validation_confidence/top_10pct_accuracy_macro", "percent"),
+    ("Top 20% accuracy", "validation_confidence/top_20pct_accuracy_macro", "percent"),
+    ("Origins", "validation_data/origins", "integer"),
+    ("Batches", "validation_data/batches", "integer"),
+    ("q10 coverage", "validation_coverage_q10/macro", "percent"),
+    ("q50 coverage", "validation_coverage_q50/macro", "percent"),
+    ("q90 coverage", "validation_coverage_q90/macro", "percent"),
+)
 
 
 @dataclass(slots=True)
@@ -38,6 +73,8 @@ class TrainingProgressState:
     loss: float = 0.0
     validation_loss: float | None = None
     learning_rate: float = 0.0
+    gradient_norm: float | None = None
+    amp_scale: float | None = None
     origins_per_second: float = 0.0
     smoothed_origins_per_second: float = 0.0
     loader_wait_seconds: float = 0.0
@@ -53,21 +90,29 @@ class TrainingProgressState:
     current_unit_origins: int = 0
     current_unit_ticker: str = "-"
     current_unit_month: str = "-"
+    validation_runs_completed: int = 0
+    validation_runs_total: int = 0
+    next_validation_origins: int = 0
     last_checkpoint: str = "-"
     losses: dict[str, float] = field(default_factory=dict)
     eligibility: dict[str, float] = field(default_factory=dict)
+    validation_metrics: dict[str, float] = field(default_factory=dict)
     last_message: str = ""
 
 
 class TrainingReporter:
+    """Low-overhead training status with a fixed Rich dashboard schema."""
+
     def __init__(self, state: TrainingProgressState, *, layout: str = "auto") -> None:
         self.state = state
         self.layout = layout
         self.started = time.perf_counter()
-        self.messages: deque[str] = deque(maxlen=6)
+        self.messages: deque[str] = deque(maxlen=4)
         self._live: Any | None = None
         self._console: Any | None = None
         self._last_text = 0.0
+        self._last_rich = 0.0
+        self._rich_refresh_seconds = 0.5
 
     def __enter__(self) -> "TrainingReporter":
         use_rich = self.layout == "rich" or (self.layout == "auto" and sys.stdout.isatty())
@@ -77,7 +122,9 @@ class TrainingReporter:
                 from rich.live import Live
 
                 self._console = Console()
-                self._live = Live(self._render(), console=self._console, screen=True, transient=False, auto_refresh=False)
+                self._live = Live(
+                    self.render(), console=self._console, screen=True, transient=False, auto_refresh=False
+                )
                 self._live.start()
             except Exception:
                 if self.layout == "rich":
@@ -100,7 +147,7 @@ class TrainingReporter:
             live = self._live
             live.stop()
             if self._console is not None:
-                self._console.print(self._render())
+                self._console.print(self.render())
             self._live = None
         return False
 
@@ -123,6 +170,10 @@ class TrainingReporter:
         s.condition_blocks_seen = int(metrics.get("train/condition_blocks_seen", s.condition_blocks_seen))
         s.loss = float(metrics.get("train/loss", s.loss))
         s.learning_rate = float(metrics.get("train/learning_rate", s.learning_rate))
+        if "train/gradient_norm" in metrics:
+            s.gradient_norm = float(metrics["train/gradient_norm"])
+        if "train/amp_scale" in metrics:
+            s.amp_scale = float(metrics["train/amp_scale"])
         s.origins_per_second = float(metrics.get("train/origins_per_second", s.origins_per_second))
         if s.origins_per_second > 0:
             s.smoothed_origins_per_second = (
@@ -135,12 +186,11 @@ class TrainingReporter:
         s.gpu_duty_cycle = float(metrics.get("train/gpu_duty_cycle", s.gpu_duty_cycle))
         s.host_cache_batches = int(metrics.get("train/host_cache_batches", s.host_cache_batches))
         s.host_cache_capacity = int(metrics.get("train/host_cache_capacity", s.host_cache_capacity))
-        s.losses = {key.removeprefix("train/loss_"): float(value) for key, value in metrics.items() if key.startswith("train/loss_")}
-        s.eligibility = {
-            key.removeprefix("train/"): float(value)
-            for key, value in metrics.items()
-            if key == "train/condition_positive_rate"
-        }
+        for key, value in metrics.items():
+            if key.startswith("train/loss_"):
+                s.losses[key.removeprefix("train/loss_")] = float(value)
+        if "train/condition_positive_rate" in metrics:
+            s.eligibility["condition_positive_rate"] = float(metrics["train/condition_positive_rate"])
         if tickers:
             s.active_tickers = ",".join(tickers)
         if dates:
@@ -163,9 +213,21 @@ class TrainingReporter:
         self.state.epoch_origins_seen = max(0, self.state.samples_seen - self.state.epoch_start_origins)
         self.message(f"Epoch {self.state.epoch_index}/{self.state.epochs_total} started")
 
-    def validation(self, loss: float) -> None:
-        self.state.validation_loss = float(loss)
-        self.message(f"Validation completed: loss={loss:.6f}")
+    def phase(self, value: str) -> None:
+        self.state.state = str(value)
+        self.refresh(force=True)
+
+    def validation(self, metrics: Mapping[str, float]) -> None:
+        self.state.validation_metrics = {str(key): float(value) for key, value in metrics.items()}
+        loss = self.state.validation_metrics.get("validation_loss/total")
+        self.state.validation_loss = loss
+        self.state.validation_runs_completed += 1
+        detail = f"loss={loss:.6f}" if loss is not None else "metrics recorded"
+        self.message(f"Validation completed: {detail}")
+
+    def schedule_validation(self, next_origins: int) -> None:
+        self.state.next_validation_origins = max(0, int(next_origins))
+        self.refresh()
 
     def checkpoint(self, path: str) -> None:
         self.state.last_checkpoint = path
@@ -173,6 +235,8 @@ class TrainingReporter:
 
     def message(self, text: str) -> None:
         self.state.last_message = str(text)
+        if str(text).startswith("Saved checkpoint ") and ": " in str(text):
+            self.state.last_checkpoint = str(text).split(": ", 1)[1]
         line = f"{time.strftime('%H:%M:%S')} {text}"
         self.messages.append(line)
         if self._live is not None:
@@ -181,12 +245,15 @@ class TrainingReporter:
             print(line, flush=True)
 
     def refresh(self, *, force: bool = False) -> None:
+        now = time.monotonic()
         if self._live is not None:
-            self._live.update(self._render(), refresh=True)
+            if not force and now - self._last_rich < self._rich_refresh_seconds:
+                return
+            self._last_rich = now
+            self._live.update(self.render(), refresh=True)
             return
         if self.layout == "none":
             return
-        now = time.monotonic()
         if force or now - self._last_text >= 15.0:
             self._last_text = now
             s = self.state
@@ -195,8 +262,8 @@ class TrainingReporter:
                 f"epoch_origins={s.epoch_origins_seen:,}/{s.epoch_origin_budget:,} "
                 f"run_origins={s.samples_seen:,}/{s.max_samples:,} steps={s.optimizer_steps:,} "
                 f"blocks={s.blocks_seen:,}/{s.planned_blocks:,} units={s.units_seen:,}/{s.planned_units:,} "
-                f"loss={s.loss:.6f} speed={s.origins_per_second:,.1f}/s "
-                f"gpu_duty={s.gpu_duty_cycle * 100:.1f}% "
+                f"loss={s.loss:.6f} validation={_format_value(s.validation_loss, 'loss')} "
+                f"speed={s.origins_per_second:,.1f}/s gpu_duty={s.gpu_duty_cycle * 100:.1f}% "
                 f"cache={s.host_cache_batches}/{s.host_cache_capacity} batches "
                 f"unit={s.current_unit_ticker}:{s.current_unit_month} "
                 f"unit_blocks={s.current_unit_block}/{s.current_unit_blocks} "
@@ -204,109 +271,193 @@ class TrainingReporter:
                 flush=True,
             )
 
-    def _render(self) -> Any:
-        from rich.console import Group
+    def render(self) -> Any:
+        """Build the complete dashboard; the panel schema never depends on terminal size."""
+        from rich.layout import Layout
         from rich.panel import Panel
-        from rich.progress import BarColumn, Progress, TextColumn
+        from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
         from rich.table import Table
 
         s = self.state
-        width = self._console.size.width if self._console is not None else 120
-        height = self._console.size.height if self._console is not None else 40
-        elapsed = max(1e-9, time.perf_counter() - self.started)
+        elapsed = max(0.0, time.perf_counter() - self.started)
         rate = s.smoothed_origins_per_second or s.origins_per_second
         remaining = max(0, s.max_samples - s.samples_seen) if s.max_samples else 0
         eta = remaining / rate if remaining and rate > 0 else 0.0
-        epoch_progress = Progress(
-            TextColumn(f"[bold bright_cyan]Epoch {s.epoch_index}/{s.epochs_total}[/] [dim]origins[/]"),
-            BarColumn(complete_style="bright_cyan", finished_style="green"),
-            TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
-            TextColumn("[bold]{task.percentage:>5.1f}%[/]"), expand=True,
-        )
-        total = max(s.epoch_origin_budget, s.epoch_origins_seen, 1)
-        epoch_progress.add_task("epoch origins", total=total, completed=min(s.epoch_origins_seen, total))
-        unit_progress = Progress(
-            TextColumn(
-                f"[bold green]{s.current_unit_ticker}[/] [green]{s.current_unit_month}[/] [dim]ticker-month blocks[/]"
-            ),
-            BarColumn(complete_style="green", finished_style="green"),
-            TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
-            TextColumn("{task.percentage:>5.1f}%"), expand=True,
-        )
-        unit_total = max(s.current_unit_blocks, s.current_unit_block, 1)
-        unit_progress.add_task(
-            "ticker-month blocks",
-            total=unit_total,
-            completed=min(s.current_unit_block, unit_total),
-        )
-        unit_remaining_origins = max(0, s.current_unit_blocks - s.current_unit_block) * max(1, s.origin_bars)
-        unit_eta = unit_remaining_origins / rate if unit_remaining_origins and rate > 0 else 0.0
         finish_at = time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() + eta)) if eta else "-"
+        unit_remaining = max(0, s.current_unit_blocks - s.current_unit_block) * max(1, s.origin_bars)
+        unit_eta = unit_remaining / rate if unit_remaining and rate > 0 else 0.0
         schedule_phase, schedule_progress = _schedule_status(s)
-        summary = Table.grid(expand=True, padding=(0, 2))
-        if width >= 100:
-            summary.add_column(); summary.add_column(); summary.add_column()
-            summary.add_row(f"[bold]state[/] {s.state}", f"[bold]run[/] {s.run_name}", f"[bold]device[/] {s.device} {s.precision}")
-            summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]validation[/] {s.validation_loss:.6f}" if s.validation_loss is not None else "[bold]validation[/] -", f"[bold]lr[/] {s.learning_rate:.3e}")
-            summary.add_row(f"[bold]speed[/] {rate:,.0f} origins/s", f"[bold]elapsed[/] {_duration(elapsed)}", f"[bold]ETA / finish[/] {_duration(eta) if eta else '-'} / {finish_at}")
-            summary.add_row(
-                f"[bold]loader wait[/] {s.loader_wait_seconds:.2f}s",
-                f"[bold]GPU[/] {s.gpu_seconds:.2f}s ({s.gpu_duty_cycle * 100:.0f}% duty)",
-                f"[bold]host cache[/] {s.host_cache_batches}/{s.host_cache_capacity} batches",
+
+        header = Table.grid(padding=(0, 2))
+        header.add_column(no_wrap=True); header.add_column(no_wrap=True); header.add_column(no_wrap=True)
+        header.add_row(
+            f"[bold]State[/] {_safe(s.state)}",
+            f"[bold]Run[/] {_safe(s.run_name)}",
+            f"[bold]Device[/] {_safe(s.device)} / {_safe(s.precision)}",
+        )
+        header.add_row(
+            f"[bold]Model[/] {s.model_parameters:,} parameters",
+            f"[bold]Elapsed[/] {_duration(elapsed)}",
+            f"[bold]Output[/] {_safe(s.output_dir)}",
+        )
+
+        def progress_line(label: str, completed: int, total: int, color: str) -> Any:
+            progress = Progress(
+                TextColumn(f"[bold {color}]{label:<12}[/]"),
+                BarColumn(complete_style=color, finished_style="green", bar_width=None),
+                TextColumn(f"{completed:,}/{total:,}"),
+                TaskProgressColumn(),
+                expand=True,
             )
-            summary.add_row(
-                f"[bold]schedule[/] {schedule_phase} {schedule_progress:.1f}%",
-                f"[bold]learning rate[/] {s.learning_rate:.3e}",
-                f"[bold]unit ETA[/] {_duration(unit_eta) if unit_eta else '-'}",
-            )
+            visual_total = max(total, completed, 1)
+            progress.add_task(label, total=visual_total, completed=min(completed, visual_total))
+            return progress
+
+        progress_group = Table.grid(expand=True)
+        progress_group.add_column()
+        progress_group.add_row(progress_line("Epoch", s.epoch_origins_seen, s.epoch_origin_budget, "bright_cyan"))
+        progress_group.add_row(progress_line("Full run", s.samples_seen, s.max_samples, "blue"))
+        progress_group.add_row(progress_line("Ticker-month", s.current_unit_block, s.current_unit_blocks, "green"))
+        eta_table = Table.grid(padding=(0, 2))
+        eta_table.add_column(); eta_table.add_column(); eta_table.add_column(); eta_table.add_column()
+        eta_table.add_row(
+            f"[bold]Epoch[/] {s.epoch_index}/{s.epochs_total}",
+            f"[bold]Run ETA[/] {_duration(eta) if eta else '-'}",
+            f"[bold]Finish[/] {finish_at}",
+            f"[bold]Unit ETA[/] {_duration(unit_eta) if unit_eta else '-'}",
+        )
+        progress_group.add_row(eta_table)
+
+        train_values: dict[str, float | None] = {"train/loss": s.loss}
+        train_values.update({f"train/loss_{key}": value for key, value in s.losses.items()})
+        train_values["train/gradient_norm"] = s.gradient_norm
+        train_values["train/condition_positive_rate"] = s.eligibility.get("condition_positive_rate")
+        objective_rows = [(label, train_values.get(key), style) for label, key, style in TRAINING_OBJECTIVES]
+        validation_rows = [
+            (label, s.validation_metrics.get(key), style) for label, key, style in VALIDATION_SCORECARD
+        ]
+
+        runtime_rows = (
+            ("Learning rate", s.learning_rate, "scientific"),
+            ("Schedule", schedule_phase, "text"),
+            ("Schedule progress", schedule_progress / 100.0, "percent"),
+            ("AMP scale", s.amp_scale, "number"),
+            ("Accumulation", s.gradient_accumulation_steps, "integer"),
+            ("Optimizer updates", s.optimizer_steps, "integer"),
+            ("Current rate", s.origins_per_second, "rate"),
+            ("Smoothed rate", s.smoothed_origins_per_second, "rate"),
+            ("Loader wait", s.loader_wait_seconds, "seconds"),
+            ("GPU time", s.gpu_seconds, "seconds"),
+            ("GPU duty", s.gpu_duty_cycle, "percent"),
+            ("Host cache", f"{s.host_cache_batches}/{s.host_cache_capacity} batches", "text"),
+            ("CUDA prefetch", "on" if s.cuda_prefetch else "off", "text"),
+            ("Microbatches", s.batches_seen, "integer"),
+        )
+        checkpoint = Path(s.last_checkpoint).name if s.last_checkpoint not in ("", "-") else "-"
+        data_rows = (
+            ("Origins", f"{s.samples_seen:,}/{s.max_samples:,}", "text"),
+            ("Blocks", f"{s.blocks_seen:,}/{s.planned_blocks:,}", "text"),
+            ("Units touched", f"{s.units_seen:,}/{s.planned_units:,}", "text"),
+            ("Condition blocks", s.condition_blocks_seen, "integer"),
+            ("Active tickers", s.active_tickers, "text"),
+            ("Active dates", s.active_dates, "text"),
+            ("Current unit", f"{s.current_unit_ticker}:{s.current_unit_month}", "text"),
+            ("Unit block", f"{s.current_unit_block:,}/{s.current_unit_blocks:,}", "text"),
+            ("Unit origins", s.current_unit_origins, "integer"),
+            ("Validations", f"{s.validation_runs_completed:,}/{s.validation_runs_total:,}", "text"),
+            ("Next validation", s.next_validation_origins, "integer"),
+            ("Checkpoint", checkpoint, "text"),
+            ("Origin block", s.origin_bars, "integer"),
+            ("Unit index", s.current_unit_index if s.current_unit_index >= 0 else None, "integer"),
+        )
+
+        messages = list(self.messages)
+        messages.extend(["-"] * (4 - len(messages)))
+        message_table = Table.grid(expand=True)
+        message_table.add_column()
+        for message in messages[:4]:
+            message_table.add_row(message)
+
+        root = Layout(name="root")
+        root.split_column(
+            Layout(Panel(header, title="BarGPT v1 training", border_style="cyan"), name="header", size=4),
+            Layout(Panel(progress_group, title="Progress and ETA", border_style="cyan"), name="progress", size=7),
+            Layout(name="scores", size=11),
+            Layout(name="operations", size=9),
+            Layout(Panel(message_table, title="Recent events", border_style="yellow"), name="messages", minimum_size=6),
+        )
+        root["scores"].split_row(
+            Layout(Panel(_paired_table(objective_rows), title="Training objectives", border_style="magenta")),
+            Layout(Panel(_paired_table(validation_rows), title="Validation scorecard", border_style="bright_magenta")),
+        )
+        root["operations"].split_row(
+            Layout(Panel(_paired_table(runtime_rows), title="Optimization and runtime", border_style="blue")),
+            Layout(Panel(_paired_table(data_rows), title="Data and durability", border_style="green")),
+        )
+        return root
+
+    # Retain the private name for callers/tests from the earlier reporter.
+    def _render(self) -> Any:
+        return self.render()
+
+
+def _paired_table(rows: Sequence[tuple[str, Any, str]]) -> Any:
+    from rich.table import Table
+
+    table = Table.grid(padding=(0, 1))
+    table.add_column(style="dim", no_wrap=True)
+    table.add_column(justify="right", no_wrap=True)
+    table.add_column(style="dim", no_wrap=True)
+    table.add_column(justify="right", no_wrap=True)
+    midpoint = (len(rows) + 1) // 2
+    left = list(rows[:midpoint])
+    right = list(rows[midpoint:])
+    for index, (left_label, left_value, left_style) in enumerate(left):
+        if index < len(right):
+            right_label, right_value, right_style = right[index]
         else:
-            summary.add_column(); summary.add_column()
-            summary.add_row(f"[bold]state[/] {s.state}", f"[bold]device[/] {s.device} {s.precision}")
-            summary.add_row(f"[bold]loss[/] {s.loss:.6f}", f"[bold]lr[/] {s.learning_rate:.3e}")
-            summary.add_row(f"[bold]speed[/] {rate:,.0f}/s", f"[bold]run ETA[/] {_duration(eta) if eta else '-'}")
-            summary.add_row(
-                f"[bold]GPU duty[/] {s.gpu_duty_cycle * 100:.0f}%",
-                f"[bold]cache[/] {s.host_cache_batches}/{s.host_cache_capacity} batches",
-            )
-            summary.add_row(f"[bold]LR[/] {s.learning_rate:.3e} {schedule_phase}", f"[bold]updates[/] {s.optimizer_steps:,}")
-        active = Table.grid(expand=True, padding=(0, 2))
-        active.add_column(style="bold", no_wrap=True); active.add_column(ratio=1)
-        active.add_row("durable focus", f"{s.current_unit_ticker}  {s.current_unit_month}  block {s.current_unit_block:,}/{s.current_unit_blocks:,}")
-        active.add_row("GPU batch", f"{s.active_tickers}  •  {s.active_dates}")
-        active.add_row("coverage", f"{s.samples_seen:,}/{s.max_samples:,} origins  •  {s.blocks_seen:,}/{s.planned_blocks:,} blocks  •  {s.units_seen:,}/{s.planned_units:,} units touched")
-        active.add_row(
-            "pipeline",
-            f"RAM cache {s.host_cache_batches}/{s.host_cache_capacity} batches + "
-            f"{'CUDA prefetch' if s.cuda_prefetch else 'synchronous device handoff'}",
+            right_label, right_value, right_style = "", None, "text"
+        table.add_row(
+            left_label,
+            _format_value(left_value, left_style),
+            right_label,
+            _format_value(right_value, right_style) if right_label else "",
         )
-        active.add_row("condition blocks", f"{s.condition_blocks_seen:,}")
-        active.add_row(
-            "causal eligibility",
-            "  ".join(f"{key}={value:.1%}" for key, value in s.eligibility.items()) or "waiting for first batch",
-        )
-        active.add_row("checkpoint", s.last_checkpoint)
-        active.add_row("output", s.output_dir)
-        losses = Table.grid(expand=True, padding=(0, 2))
-        losses.add_column(); losses.add_column(justify="right")
-        for key, value in list(s.losses.items())[:8]:
-            losses.add_row(key, f"{value:.6f}")
-        if not s.losses:
-            losses.add_row("waiting for first batch", "-")
-        message_limit = 1 if height < 22 else (3 if height < 30 else 6)
-        messages = "\n".join(list(self.messages)[-message_limit:]) if self.messages else "No messages"
-        primary = Panel(Group(epoch_progress, unit_progress, summary), title="BarGPT v1 training", border_style="cyan")
-        current = Panel(active, title="Current work and durability", border_style="green")
-        recent = Panel(messages, title="Recent messages", border_style="yellow")
-        if height < 22:
-            return Group(primary, recent)
-        if height < 30:
-            return Group(primary, current, recent)
-        return Group(
-            primary,
-            current,
-            Panel(losses, title="Objectives", border_style="magenta"),
-            recent,
-        )
+    return table
+
+
+def _format_value(value: Any, style: str) -> str:
+    if value is None:
+        return "-"
+    if style == "text":
+        return _safe(str(value))
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return _safe(str(value))
+    if not math.isfinite(numeric):
+        return "-"
+    if style == "loss":
+        return f"{numeric:.6f}"
+    if style == "percent":
+        return f"{numeric * 100:.2f}%"
+    if style == "bps":
+        return f"{numeric:.3f} bps"
+    if style == "integer":
+        return f"{int(numeric):,}"
+    if style == "scientific":
+        return f"{numeric:.3e}"
+    if style == "rate":
+        return f"{numeric:,.0f}/s"
+    if style == "seconds":
+        return f"{numeric:.3f}s"
+    return f"{numeric:.4f}"
+
+
+def _safe(value: str) -> str:
+    from rich.markup import escape
+
+    return escape(value or "-")
 
 
 def _duration(value: float) -> str:
