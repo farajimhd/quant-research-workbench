@@ -1425,7 +1425,28 @@ function GuidedCapitalRequestFields({ onChange, segment, value }: { onChange: (v
 function GuidedOrderIntentFields({ draft, eligibleSessions, onChange, segment, value }: { draft: Draft; eligibleSessions: string[]; onChange: (value: OrderIntentConfig) => void; segment: "execution" | "partial-fill" | "protection"; value: OrderIntentConfig }) {
   if (segment === "partial-fill") return <SelectField help="Choose the terminal behavior for only the broker-confirmed unfilled remainder. OMS always reconciles cumulative fills before acting." label="Partial-fill response" onChange={(partial_fill_policy) => onChange({ ...value, partial_fill_policy: partial_fill_policy as OrderIntentConfig["partial_fill_policy"] })} options={[{ label: "Finish the approved remainder", value: "complete_remainder" }, { label: "Accept the partial position", value: "accept_partial" }, { label: "Cancel the remainder", value: "cancel_remainder" }]} value={value.partial_fill_policy} />;
   if (segment === "protection") return <SelectField help="Select the independent broker-held stop, catastrophic backstop, target, and trailing contract applied after confirmed fills." label="Protection profile" onChange={(protection_profile) => onChange({ ...value, protection_profile })} options={draft.oms.protection_profiles.map((row) => ({ description: row.description, label: `${row.name} · v${row.revision}`, value: row.profile_id }))} value={value.protection_profile} />;
-  return <><div className="guided-form-grid"><SelectField help="Select the broker-neutral execution behavior that OMS uses to choose price, repricing cadence, and terminal actions. OMS owns the tested terminal timing for the selected policy." label="Execution policy" onChange={(execution_policy) => onChange({ ...value, execution_policy })} options={draft.oms.execution_policies.map((row) => ({ description: row.description, label: `${readableLabel(row.name)} · v${row.revision}`, value: row.policy_id }))} searchable={false} value={value.execution_policy} /></div><p className="guided-inline-note"><ShieldCheck size={15} /> Eligible sessions: {eligibleSessions.map(readableLabel).join(", ") || "none"}. OMS derives compatible broker routing and applies tested terminal timing automatically.</p></>;
+  return <><div className="guided-form-grid"><SelectField help="Select the broker-neutral execution behavior that OMS uses to choose price, repricing cadence, and terminal actions. OMS owns the tested terminal timing for the selected policy." label="Execution policy" onChange={(execution_policy) => onChange({ ...value, execution_policy })} options={draft.oms.execution_policies.map((row) => ({ description: executionPolicyLookupDescription(row), label: `${readableLabel(row.name)} · v${row.revision}`, value: row.policy_id }))} searchable={false} value={value.execution_policy} /></div><p className="guided-inline-note"><ShieldCheck size={15} /> Eligible sessions: {eligibleSessions.map(readableLabel).join(", ") || "none"}. OMS derives compatible broker routing and applies tested terminal timing automatically.</p></>;
+}
+
+function executionPolicyLookupDescription(policy: ExecutionPolicyConfig): string {
+  const behavior = ({
+    passive: "Posts at the near-side quote without crossing the spread, prioritizing price quality over fill certainty.",
+    midpoint: "Posts at the current bid-ask midpoint, seeking spread improvement while accepting that the order may not fill.",
+    adaptive_patient: "Starts at the near-side quote and advances only to midpoint after repeated attempts, favoring price quality over speed.",
+    adaptive_regular: "Moves progressively from the near-side quote toward executable liquidity, balancing price improvement with fill probability.",
+    adaptive_urgent: "Quotes at the executable touch immediately, prioritizing a timely fill within the approved price envelope.",
+    adaptive_very_urgent: "Starts at the executable touch and may move through it by bounded ticks, maximizing fill urgency within hard limits.",
+    immediate_with_limit: "Seeks an immediate fill at executable liquidity but never crosses the configured buy ceiling or sell floor.",
+    ibkr_native_adaptive: "Uses urgent touch pricing without OMS repricing. The current runtime does not delegate this policy to a broker-native adaptive algorithm.",
+    cancel_if_not_filled: "Moves from passive toward executable pricing while time remains, then cancels the unfilled remainder at the deadline.",
+  } as Record<string, string>)[policy.name] ?? policy.description;
+  const deadline = policy.envelope.deadline_ms >= 1_000
+    ? `${round(policy.envelope.deadline_ms / 1_000)} s`
+    : `${policy.envelope.deadline_ms} ms`;
+  const repricing = policy.envelope.maximum_reprices
+    ? `Up to ${policy.envelope.maximum_reprices} reprice${policy.envelope.maximum_reprices === 1 ? "" : "s"}, no more often than every ${policy.envelope.minimum_reprice_interval_ms} ms, within ${deadline}.`
+    : `No OMS reprices; the working deadline is ${deadline}.`;
+  return `${behavior} ${repricing}`;
 }
 
 function GuidedActionForm({ sections }: { sections: Array<{ content: ReactNode; description: string; title: string }> }) {

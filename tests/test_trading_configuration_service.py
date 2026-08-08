@@ -152,6 +152,19 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertNotIn("time_in_force", draft["oms"]["profiles"][0]["settings"])
         self.assertNotIn("outside_rth", draft["oms"]["profiles"][0]["settings"])
         self.assertEqual(len(draft["oms"]["execution_policies"]), 9)
+        descriptions = {
+            row["policy_id"]: row["description"]
+            for row in draft["oms"]["execution_policies"]
+        }
+        self.assertIn("near-side quote", descriptions["passive"])
+        self.assertIn("bid-ask midpoint", descriptions["midpoint"])
+        self.assertIn(
+            "cancels the unfilled remainder",
+            descriptions["cancel_if_not_filled"],
+        )
+        self.assertTrue(
+            all(not value.startswith("System ") for value in descriptions.values())
+        )
         self.assertTrue(draft["oms"]["protection_profiles"])
         self.assertEqual(
             lifecycle["initial_entry"]["order_intent"]["protection_profile"],

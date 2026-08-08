@@ -2357,12 +2357,23 @@ def _default_execution_policies() -> list[dict[str, Any]]:
         "ibkr_native_adaptive": (1_000, 0, 0),
         "cancel_if_not_filled": (500, 3, 100),
     }
+    descriptions = {
+        "passive": "Posts at the near-side quote without crossing the spread, prioritizing price quality over fill certainty.",
+        "midpoint": "Posts at the current bid-ask midpoint, seeking spread improvement while accepting that the order may not fill.",
+        "adaptive_patient": "Starts at the near-side quote and advances only to the midpoint after repeated attempts, favoring price quality over speed.",
+        "adaptive_regular": "Moves progressively from the near-side quote toward executable liquidity, balancing price improvement with fill probability.",
+        "adaptive_urgent": "Quotes at the executable touch immediately, prioritizing a timely fill while remaining inside the approved price envelope.",
+        "adaptive_very_urgent": "Starts at the executable touch and may move through it by bounded ticks on reprices, maximizing fill urgency within hard limits.",
+        "immediate_with_limit": "Seeks an immediate fill at executable liquidity but never crosses the configured buy ceiling or sell floor.",
+        "ibkr_native_adaptive": "Uses urgent touch pricing without OMS repricing; the current runtime does not delegate this policy to a broker-native adaptive algorithm.",
+        "cancel_if_not_filled": "Moves from passive toward executable pricing while time remains, then cancels the unfilled remainder at the deadline.",
+    }
     return [
         {
             "policy_id": name,
             "revision": 1,
             "name": name,
-            "description": f"System {name.replace('_', ' ')} execution policy.",
+            "description": descriptions[name],
             "origin": "system",
             "editable": True,
             "quote_source": "qmd",
