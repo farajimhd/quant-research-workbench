@@ -24876,7 +24876,12 @@ button {
 .inventory-filter-button:focus-visible { border-color: var(--focus); outline: 1px solid color-mix(in oklab, var(--focus) 28%, transparent); }
 .inventory-filter-menu { --inventory-overlay-scale: var(--app-overlay-scale, 1); background: var(--menu-bg, var(--surface)); border: 0; border-radius: calc(12px * var(--inventory-overlay-scale)); box-shadow: var(--menu-shadow); box-sizing: border-box; display: grid; overflow: auto; padding: calc(4px * var(--inventory-overlay-scale)); position: fixed; z-index: 4000; }
 .inventory-filter-option { background: transparent; border: 0; border-radius: calc(6px * var(--inventory-overlay-scale)); color: color-mix(in oklab, var(--foreground) 88%, var(--muted-foreground)); cursor: pointer; font-family: var(--font-body); font-size: calc(12px * var(--inventory-overlay-scale)); font-weight: 400; line-height: 1.2; min-height: calc(34px * var(--inventory-overlay-scale)); overflow: hidden; padding: 0 calc(12px * var(--inventory-overlay-scale)); text-align: left; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+.inventory-filter-option[data-detailed="true"] { border: 1px solid transparent; min-height: calc(62px * var(--inventory-overlay-scale)); padding: calc(9px * var(--inventory-overlay-scale)) calc(12px * var(--inventory-overlay-scale)); white-space: normal; }
+.inventory-filter-option[data-detailed="true"] > span { display: grid; gap: calc(4px * var(--inventory-overlay-scale)); min-width: 0; }
+.inventory-filter-option[data-detailed="true"] strong { color: var(--foreground); font-size: calc(12px * var(--inventory-overlay-scale)); font-weight: 620; line-height: 1.25; }
+.inventory-filter-option[data-detailed="true"] small { color: var(--muted-foreground); font-size: calc(10.5px * var(--inventory-overlay-scale)); font-weight: 400; line-height: 1.45; }
 .inventory-filter-option[aria-selected="true"] { background: transparent; color: var(--muted-foreground); font-weight: 400; }
+.inventory-filter-option[data-detailed="true"][aria-selected="true"] { background: var(--surface-alt); border-color: var(--border); }
 .inventory-filter-option:not([aria-selected="true"]):hover, .inventory-filter-option:not([aria-selected="true"]):focus-visible { background: color-mix(in oklab, var(--muted) 52%, transparent); }
 .inventory-filter-option:focus-visible { outline: 0; }
 .inventory-filter-options { display: contents; }

@@ -1542,7 +1542,7 @@
 
 .strategy-order-request {
   background: var(--surface);
-  border-color: color-mix(in oklab, var(--canvas-link-blue) 30%, var(--border));
+  border-color: var(--configuration-rule);
   border-top-width: 2px;
   box-shadow: none;
 }
@@ -1550,7 +1550,7 @@
 .strategy-handoff-flow span:first-child { --handoff-accent: var(--canvas-link-blue); }
 .strategy-handoff-flow span:nth-child(3) { --handoff-accent: var(--canvas-link-green); }
 .strategy-handoff-flow span:nth-child(5) { --handoff-accent: var(--canvas-link-cyan); }
-.strategy-handoff-flow span { background: var(--surface); border-color: color-mix(in oklab, var(--handoff-accent) 28%, var(--border)); color: var(--handoff-accent); }
+.strategy-handoff-flow span { background: var(--surface); border-color: var(--configuration-rule); color: var(--handoff-accent); }
 .strategy-handoff-card:first-child { --handoff-card-accent: var(--canvas-link-green); }
 .strategy-handoff-card:last-child { --handoff-card-accent: var(--canvas-link-cyan); }
 .strategy-handoff-card { background: var(--surface); border-top: 2px solid var(--handoff-card-accent); padding: 14px; }
@@ -2382,7 +2382,7 @@
 .strategy-selection-list { display: grid; gap: 10px; }
 .strategy-selection-list > article { align-items: center; background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 10px; color: var(--foreground); display: grid; gap: 16px; grid-template-columns: auto minmax(0, 1fr) 220px; min-height: 82px; padding: 15px 16px; text-align: left; }
 .strategy-selection-list > article:hover,
-.strategy-selection-list > article:focus-within { background: var(--configuration-soft); border-color: color-mix(in oklab, var(--canvas-link-blue) 40%, var(--border)); }
+.strategy-selection-list > article:focus-within { background: var(--configuration-soft); border-color: var(--border-strong, var(--border)); }
 .strategy-selection-copy { display: grid; gap: 4px; min-width: 0; }
 .strategy-selection-identity { align-items: baseline; display: flex; gap: 10px; min-width: 0; }
 .strategy-selection-list > article strong { font-size: 15px; font-weight: 620; }
@@ -2393,10 +2393,10 @@
 .strategy-selection-list > article:hover .strategy-selection-actions,
 .strategy-selection-list > article:focus-within .strategy-selection-actions { opacity: 1; pointer-events: auto; }
 .strategy-selection-actions > button { align-items: center; background: transparent; border: 1px solid transparent; border-radius: 7px; color: var(--muted-foreground); cursor: pointer; display: inline-flex; font: inherit; font-size: 11px; font-weight: 600; gap: 5px; min-height: 34px; padding: 7px 9px; }
-.strategy-selection-actions > button:hover { background: var(--surface); border-color: color-mix(in oklab, var(--canvas-link-blue) 35%, var(--border)); color: var(--canvas-link-blue); }
+.strategy-selection-actions > button:hover { background: var(--surface); border-color: var(--border-strong, var(--border)); color: var(--canvas-link-blue); }
 .strategy-selection-actions > button.danger:hover { border-color: color-mix(in oklab, var(--destructive) 45%, var(--border)); color: var(--destructive); }
-.strategy-selection-actions > button:focus-visible { outline: 2px solid var(--canvas-link-blue); outline-offset: 2px; }
-.strategy-selection-icon { align-items: center; background: color-mix(in oklab, var(--canvas-link-blue) 10%, var(--surface)); border: 1px solid color-mix(in oklab, var(--canvas-link-blue) 28%, var(--border)); border-radius: 8px; color: var(--canvas-link-blue); display: flex; height: 40px; justify-content: center; width: 40px; }
+.strategy-selection-actions > button:focus-visible { outline: 2px solid var(--border-strong, var(--foreground)); outline-offset: 2px; }
+.strategy-selection-icon { align-items: center; background: transparent; border: 1px solid var(--configuration-rule); border-radius: 8px; color: var(--canvas-link-blue); display: flex; height: 40px; justify-content: center; width: 40px; }
 .strategy-editor-toolbar { align-items: center; border-bottom: 1px solid var(--configuration-rule); display: flex; gap: 12px; margin-left: auto; margin-right: auto; max-width: var(--strategy-workspace-max); padding-bottom: 12px; width: 100%; }
 .strategy-editor-toolbar > span { display: grid; gap: 1px; }
 .strategy-editor-toolbar > span strong { color: var(--canvas-link-blue); text-transform: uppercase; }
@@ -2474,8 +2474,8 @@
 }
 .strategy-editor-guided .strategy-identity-field > :is(input, textarea):hover { border-color: var(--foreground); }
 .strategy-editor-guided .strategy-identity-field > :is(input, textarea):focus {
-  border-color: var(--canvas-link-blue);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--canvas-link-blue) 15%, transparent);
+  border-color: var(--border-strong, var(--foreground));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--foreground) 8%, transparent);
 }
 .strategy-editor-guided .strategy-identity-field > small {
   color: var(--muted-foreground);
@@ -2712,7 +2712,7 @@
 .strategy-parameter-detail > span { color: var(--muted-foreground); font-family: var(--font-mono); font-size: 9px; font-weight: 720; letter-spacing: .08em; text-transform: uppercase; }
 .strategy-profile-create-choice > div { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .strategy-profile-create-choice > div > button { align-items: center; background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 7px; color: var(--foreground); cursor: pointer; display: flex; gap: 9px; min-height: 40px; padding: 8px 11px; text-align: left; }
-.strategy-profile-create-choice > div > button[aria-pressed="true"] { background: color-mix(in oklab, var(--canvas-link-blue) 8%, var(--surface)); border-color: color-mix(in oklab, var(--canvas-link-blue) 34%, var(--border)); color: var(--canvas-link-blue); }
+.strategy-profile-create-choice > div > button[aria-pressed="true"] { background: var(--configuration-soft); border-color: var(--border-strong, var(--border)); color: var(--canvas-link-blue); }
 .strategy-profile-create-choice button > span { display: grid; gap: 1px; }
 .strategy-profile-create-choice button strong { color: var(--foreground); font-size: 11.5px; }
 .strategy-profile-create-choice button small { color: var(--muted-foreground); font-size: 9.5px; }
@@ -2727,7 +2727,7 @@
 .strategy-parameter-catalog > header small { color: var(--muted-foreground); font-size: 9.5px; line-height: 1.4; }
 .strategy-parameter-search { align-items: center; border-bottom: 1px solid var(--configuration-rule); color: var(--muted-foreground); display: flex; gap: 7px; padding: 10px 12px; }
 .strategy-parameter-search input { background: transparent; border: 0; color: var(--foreground); font-size: 11px; min-width: 0; outline: 0; width: 100%; }
-.strategy-parameter-search:focus-within { box-shadow: inset 0 -2px color-mix(in oklab, var(--canvas-link-blue) 60%, transparent); color: var(--canvas-link-blue); }
+.strategy-parameter-search:focus-within { box-shadow: inset 0 -2px var(--border-strong, var(--border)); color: var(--foreground); }
 .strategy-parameter-list { min-height: 0; overflow: auto; }
 .strategy-parameter-group { display: grid; }
 .strategy-parameter-group > header { align-items: center; background: var(--configuration-soft); border-bottom: 1px solid var(--configuration-rule); border-top: 1px solid var(--configuration-rule); display: flex; justify-content: space-between; padding: 8px 12px; }
@@ -2736,7 +2736,7 @@
 .strategy-parameter-group > header span { color: var(--muted-foreground); font-size: 10px; }
 .strategy-parameter-group > button { align-items: center; background: transparent; border: 0; border-bottom: 1px solid var(--configuration-rule); color: var(--foreground); cursor: pointer; display: flex; gap: 10px; justify-content: space-between; min-height: 54px; padding: 10px 12px; text-align: left; width: 100%; }
 .strategy-parameter-group > button:hover { background: var(--configuration-soft); }
-.strategy-parameter-group > button[aria-current="true"] { background: color-mix(in oklab, var(--canvas-link-blue) 7%, var(--surface)); box-shadow: inset 3px 0 var(--canvas-link-blue); }
+.strategy-parameter-group > button[aria-current="true"] { background: var(--configuration-soft); box-shadow: inset 3px 0 var(--border-strong, var(--border)); }
 .strategy-parameter-group > button > span { display: grid; gap: 3px; min-width: 0; }
 .strategy-parameter-list strong { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .strategy-parameter-list small { color: var(--muted-foreground); font-size: 8.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2777,6 +2777,7 @@
 .strategy-parameter-detail-page > section .strategy-parameter-documentation-copy > article { --documentation-tone: var(--info); align-items: start; background: color-mix(in oklab, var(--documentation-tone) 5%, var(--surface)); border: 1px solid color-mix(in oklab, var(--documentation-tone) 24%, var(--configuration-rule)); border-left: 3px solid var(--documentation-tone); border-radius: 7px; display: flex; gap: 11px; min-width: 0; padding: 15px; }
 .strategy-parameter-documentation-copy > article[data-tone="behavior"] { --documentation-tone: var(--success); }
 .strategy-parameter-documentation-copy > article[data-tone="impact"] { --documentation-tone: var(--canvas-link-blue); }
+.strategy-parameter-documentation-copy > article[data-tone="impact"] { border-color: var(--configuration-rule); border-left-color: var(--configuration-rule); }
 .strategy-parameter-documentation-copy > article[data-tone="warning"] { --documentation-tone: var(--warning); }
 .strategy-parameter-documentation-copy > article[data-tone="safety"] { --documentation-tone: var(--danger); }
 .strategy-parameter-documentation-copy > article > svg { color: var(--documentation-tone); flex: 0 0 auto; margin-top: 1px; }
@@ -3059,7 +3060,7 @@
   padding: 18px;
 }
 
-.strategy-guided-entity-list > article[data-selected="true"] { border-color: color-mix(in srgb, var(--canvas-link-blue) 52%, var(--configuration-rule)); }
+.strategy-guided-entity-list > article[data-selected="true"] { border-color: var(--border-strong, var(--configuration-rule)); }
 
 .strategy-guided-entity-list > article > .configuration-field { margin: 0; }
 

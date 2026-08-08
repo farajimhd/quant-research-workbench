@@ -1068,7 +1068,7 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
   const supportedSides = definition?.supported_sides?.length ? definition.supported_sides : ["long" as const];
   const initial = profile.lifecycle.initial_entry;
   const reentry = profile.lifecycle.reentry;
-  const advanced = flattenPrimitives(profile.parameters).filter((row) => !LEGACY_ENTRY_LOGIC_PATHS.has(row.path));
+  const advanced = flattenPrimitives(profile.parameters).filter((row) => !LEGACY_ENTRY_LOGIC_PATHS.has(row.path) && isDirectlyEditableStrategyParameter(row.path, row.value));
 
   function replaceProfile(nextProfile: StrategyProfile) {
     onChange("strategy", {
@@ -1424,8 +1424,8 @@ function GuidedCapitalRequestFields({ onChange, segment, value }: { onChange: (v
 
 function GuidedOrderIntentFields({ draft, eligibleSessions, onChange, segment, value }: { draft: Draft; eligibleSessions: string[]; onChange: (value: OrderIntentConfig) => void; segment: "execution" | "partial-fill" | "protection"; value: OrderIntentConfig }) {
   if (segment === "partial-fill") return <SelectField help="Choose the terminal behavior for only the broker-confirmed unfilled remainder. OMS always reconciles cumulative fills before acting." label="Partial-fill response" onChange={(partial_fill_policy) => onChange({ ...value, partial_fill_policy: partial_fill_policy as OrderIntentConfig["partial_fill_policy"] })} options={[{ label: "Finish the approved remainder", value: "complete_remainder" }, { label: "Accept the partial position", value: "accept_partial" }, { label: "Cancel the remainder", value: "cancel_remainder" }]} value={value.partial_fill_policy} />;
-  if (segment === "protection") return <SelectField help="Select the independent broker-held stop, catastrophic backstop, target, and trailing contract applied after confirmed fills." label="Protection profile" onChange={(protection_profile) => onChange({ ...value, protection_profile })} options={draft.oms.protection_profiles.map((row) => ({ label: `${row.name} · v${row.revision}`, value: row.profile_id }))} value={value.protection_profile} />;
-  return <><div className="guided-form-grid"><SelectField help="Select the broker-neutral execution behavior that OMS uses to choose price, repricing cadence, and terminal actions. OMS owns the tested terminal timing for the selected policy." label="Execution policy" onChange={(execution_policy) => onChange({ ...value, execution_policy })} options={draft.oms.execution_policies.map((row) => ({ label: `${readableLabel(row.name)} · v${row.revision}`, value: row.policy_id }))} searchable={false} value={value.execution_policy} /></div><p className="guided-inline-note"><ShieldCheck size={15} /> Eligible sessions: {eligibleSessions.map(readableLabel).join(", ") || "none"}. OMS derives compatible broker routing and applies tested terminal timing automatically.</p></>;
+  if (segment === "protection") return <SelectField help="Select the independent broker-held stop, catastrophic backstop, target, and trailing contract applied after confirmed fills." label="Protection profile" onChange={(protection_profile) => onChange({ ...value, protection_profile })} options={draft.oms.protection_profiles.map((row) => ({ description: row.description, label: `${row.name} · v${row.revision}`, value: row.profile_id }))} value={value.protection_profile} />;
+  return <><div className="guided-form-grid"><SelectField help="Select the broker-neutral execution behavior that OMS uses to choose price, repricing cadence, and terminal actions. OMS owns the tested terminal timing for the selected policy." label="Execution policy" onChange={(execution_policy) => onChange({ ...value, execution_policy })} options={draft.oms.execution_policies.map((row) => ({ description: row.description, label: `${readableLabel(row.name)} · v${row.revision}`, value: row.policy_id }))} searchable={false} value={value.execution_policy} /></div><p className="guided-inline-note"><ShieldCheck size={15} /> Eligible sessions: {eligibleSessions.map(readableLabel).join(", ") || "none"}. OMS derives compatible broker routing and applies tested terminal timing automatically.</p></>;
 }
 
 function GuidedActionForm({ sections }: { sections: Array<{ content: ReactNode; description: string; title: string }> }) {
@@ -1619,7 +1619,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
   }
 
   const advanced = flattenPrimitives(selected.parameters).filter((row) => (
-    !LEGACY_ENTRY_LOGIC_PATHS.has(row.path)
+    !LEGACY_ENTRY_LOGIC_PATHS.has(row.path) && isDirectlyEditableStrategyParameter(row.path, row.value)
   ));
   const catalogParameters = strategyEditableParameters(selected);
   const entryRules = selected.lifecycle.initial_entry;
@@ -3956,7 +3956,7 @@ function ParameterField({ definition, onChange, value }: { definition: FieldDefi
   if (definition.kind === "boolean") return <BooleanField help={definition.help} label={definition.label} onChange={onChange} value={Boolean(value)} />;
   if (definition.kind === "choice") return <SelectField help={definition.help} label={definition.label} onChange={onChange} options={(definition.choices ?? []).map((item) => ({ label: readableLabel(item), value: item }))} value={String(value)} />;
   if (definition.kind === "number") return <NumberField help={definition.help} label={definition.label} onChange={onChange} step={definition.step ?? 0.01} unit={definition.unit} value={Number(value)} />;
-  return <TextField help={definition.help} label={definition.label} onChange={onChange} value={String(value)} />;
+  return null;
 }
 
 function CapabilityField({ definition, onChange, value }: { definition: CapabilityParameter; onChange: (value: Primitive) => void; value: Primitive }) {
@@ -3978,8 +3978,9 @@ function OptionalNumberField({ help, label, minimum, onChange, step, unit, value
   return <label className="configuration-field" data-editable="true"><span>{label}</span><small>{fieldSummary(help)}</small><div className="configuration-number"><input min={minimum} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} placeholder="Automatic" step={step} type="number" value={value ?? ""} />{unit ? <em>{unit}</em> : null}</div></label>;
 }
 
-function SelectField({ disabled = false, help, label, onChange, options, searchable, value }: { disabled?: boolean; help: HelpContent; label: string; onChange: (value: string) => void; options: Array<{ label: string; value: string }>; searchable?: boolean; value: string }) {
-  return <div className="configuration-field configuration-lookup-field" data-editable={disabled ? "false" : "true"}><span>{label}</span><small>{fieldSummary(help)}</small>{disabled ? <strong>{options.find((option) => option.value === value)?.label ?? value}</strong> : <InventoryFilterSelect ariaLabel={label} className="configuration-lookup-button" onChange={onChange} options={options} searchable={searchable ?? options.length > 7} searchPlaceholder={`Find ${label.toLowerCase()}…`} value={value} />}</div>;
+function SelectField({ disabled = false, help, label, onChange, options, searchable, value }: { disabled?: boolean; help: HelpContent; label: string; onChange: (value: string) => void; options: Array<{ description?: string; label: string; value: string }>; searchable?: boolean; value: string }) {
+  const documentedOptions = options.map((option) => ({ ...option, description: option.description ?? choiceExplanation(option.label, option.value, help) }));
+  return <div className="configuration-field configuration-lookup-field" data-editable={disabled ? "false" : "true"}><span>{label}</span><small>{fieldSummary(help)}</small>{disabled ? <strong>{options.find((option) => option.value === value)?.label ?? value}</strong> : <InventoryFilterSelect ariaLabel={label} className="configuration-lookup-button" onChange={onChange} options={documentedOptions} searchable={searchable ?? options.length > 7} searchPlaceholder={`Find ${label.toLowerCase()}…`} value={value} />}</div>;
 }
 
 function BooleanField({ disabled = false, help, label, onChange, value }: { disabled?: boolean; help: HelpContent; label: string; onChange: (value: boolean) => void; value: boolean }) {
@@ -3988,6 +3989,41 @@ function BooleanField({ disabled = false, help, label, onChange, value }: { disa
 
 function fieldSummary(help: HelpContent) {
   return typeof help === "string" ? help : help.role;
+}
+
+const STRATEGY_CHOICE_EXPLANATIONS: Record<string, string> = {
+  accept_partial: "Keep the confirmed filled quantity and stop requesting the remainder.",
+  acceleration_slowdown: "Act when favorable price acceleration weakens, preserving gains before momentum fully reverses.",
+  all_available: "Ask Portfolio for every unit of capacity still available under the account mandate and current risk state.",
+  automatic: "Allow the configured authority to act without waiting for a manual confirmation step.",
+  close: "Request release of the entire broker-reconciled position.",
+  complete_remainder: "Continue working only the approved quantity that remains unfilled after reconciliation.",
+  confirm: "Require an explicit confirmation before the action may proceed.",
+  fixed_quantity: "Request a fixed number of shares; Portfolio may approve fewer or reject the request.",
+  favorable_move_pct: "Act after the position reaches the configured favorable percentage move.",
+  hybrid: "Use the stricter valid boundary produced by structural and volatility evidence.",
+  long: "Open by buying and reduce or close by selling.",
+  mandate_fraction: "Request a fraction of the cash capacity assigned to this Run Plan's account mandate.",
+  manual: "Prepare the action for a human operator without submitting it automatically.",
+  patient: "Favor passive pricing and slower repricing when the selected execution policy permits it.",
+  reduce: "Request only the configured fraction of the broker-reconciled position.",
+  regular: "Use the normal balance between fill probability and price discipline.",
+  risk_fraction: "Request exposure as a fraction of the risk budget; Portfolio converts it to account-specific quantity.",
+  short: "Open by short-selling and reduce or close by buying to cover; broker shortability remains mandatory.",
+  structure: "Anchor invalidation to the confirmed market structure that justified the position.",
+  urgent: "Prioritize a prompt fill while remaining inside the selected OMS policy and approved quantity.",
+  very_urgent: "Use the policy's fastest allowed repricing and terminal behavior for time-critical execution.",
+  volatility: "Place the boundary at the configured volatility multiple so distance adapts to current movement.",
+  volatility_multiple: "Act when the configured move or distance reaches the selected volatility multiple.",
+  cancel_remainder: "Cancel the broker-confirmed unfilled remainder and keep only completed fills.",
+};
+
+function choiceExplanation(label: string, value: string, help: HelpContent) {
+  if (typeof help !== "string") {
+    const documented = help.values?.[label] ?? help.values?.[readableLabel(value)] ?? help.values?.[value];
+    if (documented) return documented;
+  }
+  return STRATEGY_CHOICE_EXPLANATIONS[value] ?? `Select ${label} for this setting. ${fieldSummary(help)}`;
 }
 
 function ModeSelector({ modes, onChange }: { modes: RuntimeMode[]; onChange: (value: RuntimeMode[]) => void }) {
@@ -4037,7 +4073,7 @@ function sourceOptions(catalog: StrategyInput[], valueType?: string) {
 }
 
 function field(path: string, label: string, help: HelpContent, kind: FieldDefinition["kind"], choices?: readonly string[], unit?: string, step?: number): FieldDefinition {
-  return { path, label, help, kind, choices, unit, step };
+  return { path, label, help, kind: choices?.length ? "choice" : kind, choices, unit, step };
 }
 
 function flattenPrimitives(value: ParameterMap, prefix = ""): Array<{ path: string; value: Primitive }> {
@@ -4122,6 +4158,9 @@ function strategyEditableParameters(profile: StrategyProfile) {
     if (path.includes(".expression.")) return false;
     if (leaf === "operator" && !path.startsWith("parameters.")) return false;
     return true;
+  }).filter(({ path, value }) => {
+    if (typeof value !== "string") return true;
+    return Boolean(choicesFor(path));
   }).map((parameter, importance) => ({
     ...parameter,
     ...strategyCatalogGroupForPath(parameter.path),
@@ -4192,9 +4231,17 @@ function controlFor(value: Primitive): FieldDefinition["kind"] {
 function choicesFor(path: string): readonly string[] | undefined {
   if (path.endsWith(".method")) return ["structure", "volatility", "hybrid"];
   if (path.endsWith(".trigger")) return ["acceleration_slowdown", "favorable_move_pct", "volatility_multiple"];
+  if (path.endsWith(".side")) return ["long", "short"];
+  if (path.endsWith(".capital_request.mode")) return ["fixed_quantity", "mandate_fraction", "risk_fraction", "all_available"];
+  if (path.endsWith(".partial_fill_policy")) return ["complete_remainder", "accept_partial", "cancel_remainder"];
+  if (/\.exit\.rule_sets\.\d+\.action$/.test(path)) return ["close", "reduce"];
   if (path.endsWith(".entry_urgency")) return ["patient", "regular", "urgent", "very_urgent"];
   if (path.endsWith(".exit_urgency")) return ["urgent", "very_urgent"];
   return undefined;
+}
+
+function isDirectlyEditableStrategyParameter(path: string, value: Primitive) {
+  return typeof value !== "string" || Boolean(choicesFor(path));
 }
 
 function unitFor(path: string) {

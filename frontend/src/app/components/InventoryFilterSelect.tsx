@@ -2,7 +2,7 @@ import { ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
-export type InventoryFilterOption = { label: string; value: string };
+export type InventoryFilterOption = { description?: string; label: string; value: string };
 
 export function inventoryEligibilityOptions(label: string): InventoryFilterOption[] {
   return [{ value: "", label: `Any ${label.toLowerCase()}` }, { value: "eligible", label: "Eligible" }, { value: "ineligible", label: "Not eligible" }];
@@ -27,9 +27,10 @@ export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onCh
     const term = searchText.trim().toLocaleUpperCase();
     if (!searchable) return options;
     if (!term) return options.filter((option) => !option.value || option.value === normalizedValue);
-    return options.filter((option) => option.label.toLocaleUpperCase().includes(term) || option.value.toLocaleUpperCase().includes(term));
+    return options.filter((option) => option.label.toLocaleUpperCase().includes(term) || option.value.toLocaleUpperCase().includes(term) || option.description?.toLocaleUpperCase().includes(term));
   }, [normalizedValue, options, searchText, searchable]);
   const visibleOptions = searchable ? matchingOptions.slice(0, 100) : matchingOptions;
+  const hasDescriptions = options.some((option) => Boolean(option.description));
 
   const placeMenu = useCallback(() => {
     const button = buttonRef.current;
@@ -59,14 +60,14 @@ export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onCh
     const menuChrome = menuStyle ? Number.parseFloat(menuStyle.paddingLeft) + Number.parseFloat(menuStyle.paddingRight) + Number.parseFloat(menuStyle.borderLeftWidth) + Number.parseFloat(menuStyle.borderRightWidth) : 10 * overlayScale;
     const scrollbarAllowance = contentHeight > maxHeight ? 18 : 0;
     const textSafety = 28 * overlayScale;
-    const width = Math.min(window.innerWidth - 16, Math.max(rect.width, 170 * overlayScale, 210 * overlayScale, labelWidth + optionPadding + menuChrome + scrollbarAllowance + textSafety));
+    const width = Math.min(window.innerWidth - 16, Math.max(rect.width, 170 * overlayScale, hasDescriptions ? 380 * overlayScale : 210 * overlayScale, labelWidth + optionPadding + menuChrome + scrollbarAllowance + textSafety));
     setPlacement({
       left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
       maxHeight,
       top: openAbove ? Math.max(8, rect.top - renderedHeight - 4) : rect.bottom + 4,
       width,
     });
-  }, [options]);
+  }, [hasDescriptions, options]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -139,7 +140,7 @@ export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onCh
     </button>
     {open ? createPortal(<div className="inventory-filter-menu" ref={menuRef} style={placement}>
       {searchable ? <label className="inventory-filter-search"><span className="sr-only">Search {ariaLabel}</span><input aria-label={`Search ${ariaLabel}`} onChange={(event) => { setSearchText(event.target.value); setActiveIndex(0); }} onKeyDown={onSearchKeyDown} placeholder={searchPlaceholder} ref={searchRef} type="search" value={searchText} /></label> : null}
-      <div aria-label={ariaLabel} className="inventory-filter-options" id={menuId} role="listbox">{visibleOptions.map((option, index) => <button aria-selected={option.value === normalizedValue} className="inventory-filter-option" data-option-index={index} key={option.value} onClick={() => select(index)} onFocus={() => setActiveIndex(index)} onKeyDown={(event) => onOptionKeyDown(event, index)} role="option" tabIndex={activeIndex === index ? 0 : -1} type="button">{option.label}</button>)}</div>
+      <div aria-label={ariaLabel} className="inventory-filter-options" id={menuId} role="listbox">{visibleOptions.map((option, index) => <button aria-selected={option.value === normalizedValue} className="inventory-filter-option" data-detailed={option.description ? "true" : undefined} data-option-index={index} key={option.value} onClick={() => select(index)} onFocus={() => setActiveIndex(index)} onKeyDown={(event) => onOptionKeyDown(event, index)} role="option" tabIndex={activeIndex === index ? 0 : -1} type="button">{option.description ? <span><strong>{option.label}</strong><small>{option.description}</small></span> : option.label}</button>)}</div>
       {searchable && !searchText.trim() && options.length > visibleOptions.length ? <span className="inventory-filter-hint">Type to search {options.length - 1} values</span> : null}
       {searchable && searchText.trim() && matchingOptions.length > visibleOptions.length ? <span className="inventory-filter-hint">Refine to narrow {matchingOptions.length} matches</span> : null}
       {searchable && !visibleOptions.length ? <span className="inventory-filter-empty">No matching ticker</span> : null}
