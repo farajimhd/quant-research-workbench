@@ -24,7 +24,7 @@ class SolTeacherForecastGoldReviewCollectionTests(unittest.TestCase):
 
         self.assertEqual(decision["gold_verdict"], "wrong")
 
-    def test_rejects_inconsistent_correct_verdict(self) -> None:
+    def test_normalizes_reported_verdict_to_direction_only_authority(self) -> None:
         row = {
             "unit_id": "S00001::AAA",
             "reviewed_direction": "negative",
@@ -37,8 +37,13 @@ class SolTeacherForecastGoldReviewCollectionTests(unittest.TestCase):
             "confidence": "high",
             "rationale": "The guidance cut is adverse.",
         }
-        with self.assertRaisesRegex(RuntimeError, "changes direction"):
-            _validate_decision(row, "positive")
+        decision = _validate_decision(row, "positive")
+
+        self.assertEqual(decision["gold_verdict"], "wrong")
+        self.assertEqual(decision["reported_gold_verdict"], "correct")
+        self.assertEqual(
+            decision["verdict_normalization"], "direction_only_gold_authority"
+        )
 
 
 if __name__ == "__main__":

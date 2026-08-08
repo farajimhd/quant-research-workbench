@@ -243,6 +243,7 @@ def render_gold_review_packet(
             "## Review policy",
             "",
             "- Judge the direct trading direction for this issuer from the source as a whole.",
+            "- Gold verdict compares direction only; a different strength does not make the direction label wrong.",
             "- Positive and negative evidence may coexist; use mixed only when their economic importance is genuinely balanced.",
             "- Do not infer issuer impact from a contextual, peer, counterparty, or historical mention.",
             "- Mark policy_uncertain when a reasonable answer depends on an unresolved labeling boundary.",

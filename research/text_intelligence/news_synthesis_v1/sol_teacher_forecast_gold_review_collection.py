@@ -112,12 +112,12 @@ def _validate_decision(
     row: Mapping[str, Any], gold_direction: str
 ) -> dict[str, Any]:
     direction = str(row.get("reviewed_direction") or "")
-    verdict = str(row.get("gold_verdict") or "")
+    reported_verdict = str(row.get("gold_verdict") or "")
     attribution = str(row.get("issuer_attribution") or "")
     confidence = str(row.get("confidence") or "")
     if direction not in DIRECTIONS:
         raise RuntimeError(f"Invalid reviewed direction: {row.get('unit_id')}")
-    if verdict not in VERDICTS:
+    if reported_verdict not in VERDICTS:
         raise RuntimeError(f"Invalid gold verdict: {row.get('unit_id')}")
     if attribution not in ATTRIBUTIONS or confidence not in CONFIDENCE:
         raise RuntimeError(f"Invalid review classification: {row.get('unit_id')}")
@@ -135,15 +135,16 @@ def _validate_decision(
     )
     if not strength_valid:
         raise RuntimeError(f"Direction/strength mismatch: {row.get('unit_id')}")
-    if verdict == "correct" and direction != gold_direction:
-        raise RuntimeError(f"Correct verdict changes direction: {row.get('unit_id')}")
-    if verdict == "wrong" and direction == gold_direction:
-        raise RuntimeError(f"Wrong verdict retains direction: {row.get('unit_id')}")
+    verdict = (
+        "policy_uncertain"
+        if reported_verdict == "policy_uncertain"
+        else ("correct" if direction == gold_direction else "wrong")
+    )
     dominant = str(row.get("dominant_evidence") or "").strip()
     rationale = str(row.get("rationale") or "").strip()
     if not dominant or not rationale:
         raise RuntimeError(f"Review lacks substantive evidence: {row.get('unit_id')}")
-    return {
+    output = {
         "unit_id": str(row["unit_id"]),
         "reviewed_direction": direction,
         "gold_verdict": verdict,
@@ -157,3 +158,7 @@ def _validate_decision(
         "confidence": confidence,
         "rationale": rationale,
     }
+    if reported_verdict != verdict:
+        output["reported_gold_verdict"] = reported_verdict
+        output["verdict_normalization"] = "direction_only_gold_authority"
+    return output
