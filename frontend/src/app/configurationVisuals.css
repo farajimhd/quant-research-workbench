@@ -2430,7 +2430,7 @@
 .strategy-studio-workspace:has(.strategy-editor-guided) .strategy-editor-toolbar > span small { display: none; }
 .strategy-editor-guided .strategy-authoring { background: transparent; border: 0; border-radius: 0; gap: 34px; padding: 0; }
 .strategy-authoring-step-navigation { align-items: stretch; display: grid; gap: 12px; grid-template-columns: 230px minmax(0, 1fr) 230px; margin-left: auto; margin-right: auto; width: 100%; }
-.strategy-editor-guided .strategy-authoring-steps { background: transparent; border: 0; border-bottom: 1px solid var(--configuration-rule); border-radius: 0; grid-template-columns: repeat(6, minmax(0, 1fr)); min-width: 0; overflow-x: auto; }
+.strategy-editor-guided .strategy-authoring-steps { background: transparent; border: 0; border-bottom: 1px solid var(--configuration-rule); border-radius: 0; grid-template-columns: repeat(7, minmax(0, 1fr)); min-width: 0; overflow-x: auto; }
 .strategy-editor-guided .strategy-step-direction { align-self: center; background: var(--configuration-soft); border-color: transparent; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--configuration-rule); color: var(--foreground); font-weight: 620; justify-self: center; min-height: 36px; min-width: 80px; }
 .strategy-editor-guided .strategy-step-direction:not(:disabled):hover { background: color-mix(in oklab, var(--canvas-link-blue) 7%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--canvas-link-blue) 28%, var(--configuration-rule)); color: var(--canvas-link-blue); }
 .strategy-editor-guided .strategy-step-direction-next { background: var(--primary); box-shadow: none; color: var(--primary-foreground); }
@@ -2736,6 +2736,10 @@
   border-color: var(--border);
 }
 .strategy-editor-guided .strategy-technical-book[hidden] { display: none; }
+
+@media (max-width: 1500px) {
+  .strategy-authoring-step-navigation { grid-template-columns: 120px minmax(0, 1fr) 120px; }
+}
 
 @media (max-width: 900px) {
   .strategy-selection-page { padding-left: 0; padding-right: 0; }
