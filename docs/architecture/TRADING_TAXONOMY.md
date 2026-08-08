@@ -51,9 +51,14 @@ A strategy definition declares:
 - signal input references;
 - each input's timeframe, role, freshness, weight, and optional score or
   confidence threshold;
-- whether developing inputs are permitted;
-- its evaluation triggers; and
+- whether developing inputs are permitted; and
 - a presentation policy.
+
+Evaluation cadence is not a separate strategy setting. Each active lifecycle
+rule inherits publication timing from the sources and timeframes it references.
+The runtime routes a causal source update to the applicable flat- or
+open-position rules. Position, order, and explicit operator events remain
+system-owned runtime events rather than configurable strategy triggers.
 
 Automatic strategies must declare at least one indicator or signal input.
 Strategy decisions remain separate durable events with actions such as

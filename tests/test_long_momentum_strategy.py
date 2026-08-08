@@ -22,6 +22,7 @@ from src.trading_runtime.strategy_engine import (
     default_long_momentum_parameters,
     evaluate_entry_decision_rules,
     long_momentum_strategy_definition,
+    strategy_rule_timeframes,
 )
 from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner, RuntimeIbkrStrategyOrderPlanner
 from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
@@ -92,7 +93,7 @@ class LongMomentumStrategyTests(unittest.TestCase):
             "any",
         )
         self.assertEqual(config["taxonomy"]["indicators"][0]["timeframe"], "100ms")
-        self.assertIn("position_event", config["taxonomy"]["evaluation_triggers"])
+        self.assertNotIn("evaluation_triggers", config["taxonomy"])
         self.assertIn("signal.vwap_transition.score", {
             row["source_id"] for row in config["input_catalog"]
         })
@@ -100,27 +101,20 @@ class LongMomentumStrategyTests(unittest.TestCase):
             row["source_id"] for row in config["input_catalog"]
         })
 
-    def test_re_evaluation_rules_gate_by_event_source_and_campaign_state(self) -> None:
+    def test_flat_campaign_evaluates_only_updates_referenced_by_entry_rules(self) -> None:
         parameters = default_long_momentum_parameters()
-        parameters["re_evaluation"] = {
-            "rule_sets": [{
-                "rule_set_id": "company-news",
-                "name": "Company news",
-                "enabled": True,
-                "event_type": "signal_event",
-                "source_id": "signal.company_news.score",
-                "campaign_states": ["flat"],
-            }]
-        }
         engine = LongMomentumStrategyEngine()
 
         blocked = engine.evaluate(
             assignment(parameters=parameters),
-            confirmed_observation(),
+            confirmed_observation(
+                changed_source_ids=("signal.sec_filing.score",),
+                evaluation_events=("signal_event",),
+            ),
         )
         self.assertEqual(
             blocked.evaluation.signals[0].reason,
-            "re_evaluation_rules_not_matched",
+            "no_active_rule_source_updated",
         )
 
         admitted = engine.evaluate(
@@ -133,21 +127,79 @@ class LongMomentumStrategyTests(unittest.TestCase):
         )
         self.assertNotEqual(
             admitted.evaluation.signals[0].reason,
-            "re_evaluation_rules_not_matched",
+            "no_active_rule_source_updated",
         )
 
-    def test_order_and_position_events_bypass_configurable_re_evaluation_rules(self) -> None:
+    def test_source_timeframe_must_match_rule_dependency(self) -> None:
+        blocked = LongMomentumStrategyEngine().evaluate(
+            assignment(),
+            confirmed_observation(
+                changed_source_ids=("indicator.macd.line@1s",),
+            ),
+        )
+        admitted = LongMomentumStrategyEngine().evaluate(
+            assignment(),
+            confirmed_observation(
+                changed_source_ids=("indicator.macd.line@5s",),
+            ),
+        )
+
+        self.assertEqual(
+            blocked.evaluation.signals[0].reason,
+            "no_active_rule_source_updated",
+        )
+        self.assertNotEqual(
+            admitted.evaluation.signals[0].reason,
+            "no_active_rule_source_updated",
+        )
+
+    def test_replay_timeframes_include_entry_add_reentry_and_exit_rules(self) -> None:
         parameters = default_long_momentum_parameters()
-        parameters["re_evaluation"] = {"rule_sets": []}
+        parameters["phase_policy"] = {
+            "initial_entry": {
+                "add_steps": [{
+                    "enabled": True,
+                    "rules": {"groups": [{
+                        "enabled": True,
+                        "conditions": [{"left_timeframe": "10s", "right_timeframe": ""}],
+                    }]},
+                }],
+            },
+            "reentry": {
+                "rules": {"trigger": {"groups": [{
+                    "enabled": True,
+                    "conditions": [{"left_timeframe": "30s", "right_timeframe": ""}],
+                }]}},
+            },
+            "exit": {
+                "rule_sets": [{
+                    "enabled": True,
+                    "rules": {"groups": [{
+                        "enabled": True,
+                        "conditions": [{"left_timeframe": "1m", "right_timeframe": ""}],
+                    }]},
+                }],
+            },
+        }
+
+        timeframes = strategy_rule_timeframes(parameters)
+
+        self.assertTrue({"10s", "30s", "1m"} <= timeframes)
+
+    def test_order_and_position_events_bypass_source_relevance_routing(self) -> None:
+        parameters = default_long_momentum_parameters()
 
         result = LongMomentumStrategyEngine().evaluate(
             assignment(parameters=parameters),
-            confirmed_observation(evaluation_events=("order_event",)),
+            confirmed_observation(
+                changed_source_ids=("unrelated.source",),
+                evaluation_events=("order_event",),
+            ),
         )
 
         self.assertNotEqual(
             result.evaluation.signals[0].reason,
-            "re_evaluation_rules_not_matched",
+            "no_active_rule_source_updated",
         )
 
     def test_entry_rules_support_or_logic_across_explicit_sources(self) -> None:

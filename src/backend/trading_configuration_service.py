@@ -36,7 +36,7 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 11
+CONFIGURATION_SCHEMA_VERSION = 12
 CONFIGURATION_SECTIONS = {"strategy", "run_plans", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
@@ -604,18 +604,6 @@ def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
             "side": "long",
             "eligible_sessions": ["regular"],
             "adopt_manual_positions": True,
-        },
-        "re_evaluation": {
-            "rule_sets": [
-                {
-                    "rule_set_id": "indicator-updates",
-                    "name": "Indicator updates",
-                    "enabled": True,
-                    "event_type": "indicator_update",
-                    "source_id": "",
-                    "campaign_states": ["flat", "position_open"],
-                }
-            ]
         },
         "initial_entry": {
             **deepcopy(initial_rules),
@@ -1825,6 +1813,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                     legacy_reentry.get("enabled", True)
                 )
             lifecycle = _migrate_lifecycle_v10(lifecycle, parameters)
+            lifecycle.pop("re_evaluation", None)
             initial_entry = dict(lifecycle.get("initial_entry") or {})
             initial_capital = dict(initial_entry.get("capital_request") or {})
             initial_capital.pop("priority", None)
@@ -2151,7 +2140,7 @@ def _validate_strategy_lifecycle(
     lifecycle: dict[str, Any],
     raw_rule_set_catalog: list[dict[str, Any]],
 ) -> None:
-    required = {"trading_behavior", "re_evaluation", "initial_entry", "reentry", "exit"}
+    required = {"trading_behavior", "initial_entry", "reentry", "exit"}
     missing = required - set(lifecycle)
     if missing:
         raise ValueError(
@@ -2163,17 +2152,6 @@ def _validate_strategy_lifecycle(
     sessions = set(behavior.get("eligible_sessions") or [])
     if not sessions or not sessions <= {"premarket", "regular", "after_hours"}:
         raise ValueError("Strategy eligible sessions are unsupported")
-    re_evaluation = dict(lifecycle["re_evaluation"])
-    rule_sets = list(re_evaluation.get("rule_sets") or [])
-    _unique_ids(rule_sets, "rule_set_id", "Strategy re-evaluation rule set")
-    supported_events = {"indicator_update", "signal_event", "bar_close"}
-    supported_states = {"flat", "position_open"}
-    for rule_set in rule_sets:
-        if str(rule_set.get("event_type") or "") not in supported_events:
-            raise ValueError("Strategy re-evaluation event type is unsupported")
-        states = set(rule_set.get("campaign_states") or [])
-        if not states or not states <= supported_states:
-            raise ValueError("Strategy re-evaluation campaign states are unsupported")
     rule_set_ids = _unique_ids(
         raw_rule_set_catalog,
         "rule_set_id",
@@ -2459,7 +2437,6 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
         "veto": _materialize_rule_stage(dict(initial_entry.get("blockers") or {}), rule_set_catalog),
     }
     behavior = deepcopy(dict(lifecycle.get("trading_behavior") or {}))
-    re_evaluation = deepcopy(dict(lifecycle.get("re_evaluation") or {}))
     reentry = deepcopy(dict(lifecycle.get("reentry") or {}))
     reentry_rules = dict(reentry.pop("rules", {}) or {})
     parameters["reentry"] = reentry
@@ -2467,7 +2444,6 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
         dict(lifecycle.get("exit") or {}).get("rule_sets") or []
     )
     parameters["strategy_behavior"] = behavior
-    parameters["re_evaluation"] = re_evaluation
     parameters["phase_policy"] = {
         "initial_entry": {
             "capital_request": deepcopy(dict(initial_entry.get("capital_request") or {})),

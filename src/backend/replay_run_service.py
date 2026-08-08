@@ -46,7 +46,7 @@ from src.trading_runtime.strategy_engine import (
     StrategyAssignment,
     StrategyObservation,
     StrategyPermissions,
-    entry_rule_timeframes,
+    strategy_rule_timeframes,
     strategy_input_catalog,
     strategy_observation_source_values,
 )
@@ -948,7 +948,7 @@ class ReplayRunController:
         requests = {
             (assignment.ticker, timeframe)
             for assignment in self._strategy.assignments()
-            for timeframe in entry_rule_timeframes(assignment.parameters)
+            for timeframe in strategy_rule_timeframes(assignment.parameters)
         }
         if not requests:
             return []

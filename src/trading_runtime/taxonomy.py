@@ -5,8 +5,8 @@ from enum import StrEnum
 from typing import Any, Iterable
 
 
-TAXONOMY_SCHEMA_VERSION = 2
-SUPPORTED_TAXONOMY_SCHEMA_VERSIONS = {1, TAXONOMY_SCHEMA_VERSION}
+TAXONOMY_SCHEMA_VERSION = 3
+SUPPORTED_TAXONOMY_SCHEMA_VERSIONS = {1, 2, TAXONOMY_SCHEMA_VERSION}
 
 
 class IndicatorType(StrEnum):
@@ -178,18 +178,12 @@ class StrategyTaxonomy:
     indicators: tuple[StrategyInputRef, ...] = ()
     signals: tuple[StrategyInputRef, ...] = ()
     allow_developing_inputs: bool = False
-    evaluation_trigger: str = "signal_event"
-    evaluation_triggers: tuple[str, ...] = ()
     presentation: StrategyPresentation = field(default_factory=StrategyPresentation)
     schema_version: int = TAXONOMY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         if self.schema_version not in SUPPORTED_TAXONOMY_SCHEMA_VERSIONS:
             raise ValueError(f"Unsupported strategy taxonomy schema version: {self.schema_version}")
-        triggers = self.resolved_evaluation_triggers()
-        unsupported = set(triggers) - {"market_event", "bar_close", "indicator_update", "signal_event", "manual", "position_event", "order_event"}
-        if unsupported:
-            raise ValueError(f"Unsupported strategy evaluation trigger: {', '.join(sorted(unsupported))}")
         _reject_duplicate_inputs(self.indicators, "indicator")
         _reject_duplicate_inputs(self.signals, "signal")
 
@@ -199,13 +193,8 @@ class StrategyTaxonomy:
             "indicators": [_enum_payload(asdict(item)) for item in self.indicators],
             "signals": [_enum_payload(asdict(item)) for item in self.signals],
             "allow_developing_inputs": self.allow_developing_inputs,
-            "evaluation_trigger": self.evaluation_trigger,
-            "evaluation_triggers": list(self.resolved_evaluation_triggers()),
             "presentation": self.presentation.payload(),
         }
-
-    def resolved_evaluation_triggers(self) -> tuple[str, ...]:
-        return self.evaluation_triggers or (self.evaluation_trigger,)
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any] | None) -> "StrategyTaxonomy":
@@ -216,8 +205,6 @@ class StrategyTaxonomy:
             indicators=_input_refs(value.get("indicators")),
             signals=_input_refs(value.get("signals")),
             allow_developing_inputs=bool(value.get("allow_developing_inputs", False)),
-            evaluation_trigger=str(value.get("evaluation_trigger") or "signal_event"),
-            evaluation_triggers=tuple(str(item) for item in value.get("evaluation_triggers") or ()),
             presentation=StrategyPresentation(
                 show_entries=bool(presentation.get("show_entries", True)),
                 show_adds=bool(presentation.get("show_adds", True)),

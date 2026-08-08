@@ -132,20 +132,39 @@ def default_entry_decision_rules(parameters: dict[str, Any] | None = None) -> di
     }
 
 
-def entry_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
+def _rule_stage_timeframes(stage: dict[str, Any]) -> set[str]:
+    timeframes: set[str] = set()
+    for group in stage.get("groups") or []:
+        if not bool(group.get("enabled", True)):
+            continue
+        for condition in group.get("conditions") or []:
+            for key in ("left_timeframe", "right_timeframe"):
+                value = str(condition.get(key) or "")
+                if value not in {"", "event", "session"}:
+                    timeframes.add(value)
+    return timeframes
+
+
+def strategy_rule_timeframes(parameters: dict[str, Any]) -> set[str]:
+    """Return every derived-data timeframe referenced by active lifecycle rules."""
+
     timeframes: set[str] = set()
     for stage in dict(parameters.get("entry_rules") or {}).values():
-        if not isinstance(stage, dict):
-            continue
-        for group in stage.get("groups") or []:
-            if not bool(group.get("enabled", True)):
-                continue
-            for condition in group.get("conditions") or []:
-                for key in ("left_timeframe", "right_timeframe"):
-                    value = str(condition.get(key) or "")
-                    if value not in {"", "event", "session"}:
-                        timeframes.add(value)
-    return timeframes or {str(dict(parameters.get("entry") or {}).get("breakout_timeframe") or "1s")}
+        if isinstance(stage, dict):
+            timeframes.update(_rule_stage_timeframes(stage))
+    phase_policy = dict(parameters.get("phase_policy") or {})
+    for stage in dict(dict(phase_policy.get("reentry") or {}).get("rules") or {}).values():
+        if isinstance(stage, dict):
+            timeframes.update(_rule_stage_timeframes(stage))
+    for step in dict(phase_policy.get("initial_entry") or {}).get("add_steps") or []:
+        if bool(step.get("enabled", True)):
+            timeframes.update(_rule_stage_timeframes(dict(step.get("rules") or {})))
+    for route in dict(phase_policy.get("exit") or {}).get("rule_sets") or []:
+        if bool(route.get("enabled", True)):
+            timeframes.update(_rule_stage_timeframes(dict(route.get("rules") or {})))
+    return timeframes or {
+        str(dict(parameters.get("entry") or {}).get("breakout_timeframe") or "1s")
+    }
 
 
 class AssignmentStatus(StrEnum):
@@ -289,7 +308,7 @@ def long_momentum_strategy_definition() -> dict[str, Any]:
                 "execution.exit_urgency": ["urgent", "very_urgent"],
             },
             "taxonomy": {
-                "schema_version": 2,
+                "schema_version": 3,
                 "indicators": [
                     {"key": "flow_structure_composite", "timeframe": "100ms", "role": "confirmation", "required": False, "maximum_age_ms": 300, "minimum_score": 0.3, "minimum_confidence": 0.5},
                     {"key": "vwap", "timeframe": "5s", "role": "confirmation", "required": False, "maximum_age_ms": 6000},
@@ -305,8 +324,6 @@ def long_momentum_strategy_definition() -> dict[str, Any]:
                     {"key": "sec_filing", "role": "trigger", "required": False, "maximum_age_ms": 60000},
                 ],
                 "allow_developing_inputs": False,
-                "evaluation_trigger": "indicator_update",
-                "evaluation_triggers": ["indicator_update", "signal_event", "bar_close", "manual", "position_event", "order_event"],
                 "presentation": {
                     "label": "Long campaign",
                     "show_entries": True,
@@ -370,18 +387,6 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "minimum_remaining_quantity": 1.0,
         },
         "reentry": {"enabled": True, "cooldown_ms": 0, "maximum_attempts": 3, "require_new_confirmation": True},
-        "re_evaluation": {
-            "rule_sets": [
-                {
-                    "rule_set_id": "indicator-updates",
-                    "name": "Indicator updates",
-                    "enabled": True,
-                    "event_type": "indicator_update",
-                    "source_id": "",
-                    "campaign_states": ["flat", "position_open"],
-                }
-            ]
-        },
         "final_exit": {
             "qmd_score": -0.35,
             "qmd_confidence": 0.55,
@@ -480,7 +485,6 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
         raise ValueError("Unsupported profit-pocket trigger")
     if int(parameters["reentry"]["cooldown_ms"]) < 0 or int(parameters["reentry"]["maximum_attempts"]) < 0:
         raise ValueError("Re-entry cooldown and maximum attempts cannot be negative")
-    _validate_re_evaluation_policy(dict(parameters.get("re_evaluation") or {}))
     supported_urgencies = {
         "passive_limit",
         "aggressive_limit",
@@ -513,49 +517,100 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
     return parameters
 
 
-def _validate_re_evaluation_policy(policy: dict[str, Any]) -> None:
-    supported_events = {"indicator_update", "signal_event", "bar_close"}
-    supported_states = {"flat", "position_open"}
-    seen_ids: set[str] = set()
-    for rule_set in policy.get("rule_sets") or []:
-        rule_set_id = str(rule_set.get("rule_set_id") or "")
-        if not rule_set_id or rule_set_id in seen_ids:
-            raise ValueError("Re-evaluation rule-set IDs must be present and unique")
-        seen_ids.add(rule_set_id)
-        if str(rule_set.get("event_type") or "") not in supported_events:
-            raise ValueError("Unsupported strategy re-evaluation event type")
-        states = set(rule_set.get("campaign_states") or [])
-        if not states or not states <= supported_states:
-            raise ValueError("Unsupported strategy re-evaluation campaign state")
+def _rule_stage_source_dependencies(
+    stage: dict[str, Any],
+) -> set[tuple[str, str]]:
+    dependencies: set[tuple[str, str]] = set()
+    for group in stage.get("groups") or []:
+        if not bool(group.get("enabled", True)):
+            continue
+        for condition in group.get("conditions") or []:
+            for source_key, timeframe_key in (
+                ("left_source_id", "left_timeframe"),
+                ("right_source_id", "right_timeframe"),
+            ):
+                source_id = str(condition.get(source_key) or "")
+                if source_id:
+                    dependencies.add(
+                        (source_id, str(condition.get(timeframe_key) or ""))
+                    )
+    return dependencies
 
 
-def _re_evaluation_matches(
+def _decision_rules_source_dependencies(
+    rules: dict[str, Any],
+) -> set[tuple[str, str]]:
+    dependencies: set[tuple[str, str]] = set()
+    for stage in rules.values():
+        if isinstance(stage, dict):
+            dependencies.update(_rule_stage_source_dependencies(stage))
+    return dependencies
+
+
+def _active_rule_source_dependencies(
     parameters: dict[str, Any],
     observation: StrategyObservation,
+    *,
+    reentries: int,
+) -> set[tuple[str, str]]:
+    phase_policy = dict(parameters.get("phase_policy") or {})
+    if not observation.position_quantity:
+        if reentries:
+            return _decision_rules_source_dependencies(
+                dict(dict(phase_policy.get("reentry") or {}).get("rules") or {})
+            )
+        return _decision_rules_source_dependencies(
+            dict(parameters.get("entry_rules") or {})
+        )
+
+    # Open-position protection and trailing logic are code-owned mechanisms,
+    # not author-defined rule sets. Their authoritative market dependencies
+    # remain part of the active subscription alongside strategic exit/add rules.
+    dependencies = {
+        ("market.last_price", ""),
+        ("indicator.structure.swing_high", ""),
+        ("indicator.structure.swing_low", ""),
+    }
+    for route in dict(phase_policy.get("exit") or {}).get("rule_sets") or []:
+        if bool(route.get("enabled", True)):
+            dependencies.update(
+                _rule_stage_source_dependencies(dict(route.get("rules") or {}))
+            )
+    for step in dict(phase_policy.get("initial_entry") or {}).get("add_steps") or []:
+        if bool(step.get("enabled", True)):
+            dependencies.update(
+                _rule_stage_source_dependencies(dict(step.get("rules") or {}))
+            )
+    return dependencies
+
+
+def _observation_updates_active_rules(
+    parameters: dict[str, Any],
+    observation: StrategyObservation,
+    *,
+    reentries: int,
 ) -> bool:
-    evaluation_events = set(observation.evaluation_events)
-    if evaluation_events & {"manual", "position_event", "order_event"}:
+    if set(observation.evaluation_events) & {"manual", "position_event", "order_event"}:
         return True
-    policy = dict(parameters.get("re_evaluation") or {})
-    rule_sets = list(policy.get("rule_sets") or [])
-    if not rule_sets:
-        return False
-    campaign_state = "position_open" if observation.position_quantity else "flat"
-    changed_sources = set(observation.changed_source_ids)
-    for rule_set in rule_sets:
-        if not bool(rule_set.get("enabled", True)):
-            continue
-        if str(rule_set.get("event_type") or "") not in evaluation_events:
-            continue
-        if campaign_state not in set(rule_set.get("campaign_states") or []):
-            continue
-        source_id = str(rule_set.get("source_id") or "")
-        if source_id and not any(
-            changed == source_id or changed.startswith(f"{source_id}@")
-            for changed in changed_sources
-        ):
-            continue
+    if not observation.changed_source_ids:
+        # Older callers submit a complete causal snapshot without change metadata.
+        # Continue to evaluate those snapshots while source-aware publishers use
+        # the precise dependency routing below.
         return True
+    active_dependencies = _active_rule_source_dependencies(
+        parameters,
+        observation,
+        reentries=reentries,
+    )
+    for changed in observation.changed_source_ids:
+        changed_source_id, separator, changed_timeframe = changed.rpartition("@")
+        if not separator:
+            changed_source_id, changed_timeframe = changed, ""
+        for source_id, timeframe in active_dependencies:
+            if changed_source_id != source_id:
+                continue
+            if not changed_timeframe or not timeframe or changed_timeframe == timeframe:
+                return True
     return False
 
 
@@ -574,8 +629,12 @@ class LongMomentumStrategyEngine:
             return self._result(assignment, observation, "wait", "assignment_paused", 0.0, 1.0, state, status)
         if not assignment.permissions.observe:
             return self._result(assignment, observation, "wait", "observation_not_authorized", 0.0, 1.0, state, status)
-        if not _re_evaluation_matches(parameters, observation):
-            return self._result(assignment, observation, "wait", "re_evaluation_rules_not_matched", 0.0, 1.0, state, status)
+        if not _observation_updates_active_rules(
+            parameters,
+            observation,
+            reentries=int(state.get("reentries") or 0),
+        ):
+            return self._result(assignment, observation, "wait", "no_active_rule_source_updated", 0.0, 1.0, state, status)
 
         state["last_observed_at"] = observation.observed_at.isoformat()
         state["last_price"] = observation.price

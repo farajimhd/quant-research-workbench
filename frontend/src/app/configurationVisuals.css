@@ -2658,26 +2658,6 @@
 .strategy-entry-engine-fields .configuration-field input:not([type="checkbox"]) { min-height: 52px; }
 .strategy-entry-engine-fields { gap: 28px 24px; }
 .strategy-entry-engine-fields > .configuration-empty { grid-column: 1 / -1; }
-.strategy-re-evaluation-editor { display: grid; gap: 22px; }
-.strategy-re-evaluation-toolbar { align-items: end; border-bottom: 1px solid var(--configuration-rule); display: flex; justify-content: space-between; padding-bottom: 16px; }
-.strategy-re-evaluation-toolbar > span { display: grid; gap: 3px; }
-.strategy-re-evaluation-toolbar > span strong { font-size: 15px; }
-.strategy-re-evaluation-toolbar > span small { color: var(--muted-foreground); font-size: 12px; }
-.strategy-re-evaluation-rules { display: grid; gap: 18px; }
-.strategy-re-evaluation-rules > article { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 22px; padding: 20px; }
-.strategy-re-evaluation-rule-heading { align-items: end; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(180px, .35fr) auto; }
-.strategy-re-evaluation-rule-heading .configuration-field,
-.strategy-re-evaluation-rules .configuration-field { gap: 8px; }
-.strategy-re-evaluation-rule-heading .configuration-field > span,
-.strategy-re-evaluation-rules .configuration-field > span,
-.strategy-re-evaluation-rules .configuration-choice-set > legend { color: var(--muted-foreground); font-size: 11px; font-weight: 700; letter-spacing: .055em; text-transform: uppercase; }
-.strategy-re-evaluation-rule-heading .configuration-field > small,
-.strategy-re-evaluation-rules .configuration-field > small { display: none; }
-.strategy-re-evaluation-rules .configuration-lookup-button,
-.strategy-re-evaluation-rules .configuration-field input:not([type="checkbox"]) { min-height: 48px; }
-.strategy-re-evaluation-rules .configuration-choice-set { border: 0; border-top: 1px solid var(--configuration-rule); border-radius: 0; margin: 0; padding: 18px 0 0; }
-.strategy-re-evaluation-runtime-note { align-items: center; color: var(--muted-foreground); display: flex; font-size: 12px; gap: 8px; line-height: 1.5; margin: 0; }
-.strategy-re-evaluation-runtime-note svg { color: var(--success); flex: 0 0 auto; }
 .strategy-editor-guided .strategy-engine-parameter-group {
   background: var(--surface);
   border-color: var(--border);
@@ -2689,7 +2669,6 @@
   .strategy-selection-page { padding-left: 0; padding-right: 0; }
   .strategy-editor-guided .strategy-authoring-stage,
   .strategy-editor-guided .strategy-guided-navigation { width: 100%; }
-  .strategy-re-evaluation-rule-heading { grid-template-columns: 1fr; }
   .strategy-entry-rule-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
 }
 
@@ -3081,23 +3060,19 @@
 .strategy-entry-navigation button[aria-current="step"] > span { border-color: var(--canvas-link-blue); }
 
 .strategy-entry-fields .configuration-field,
-.strategy-entry-engine-fields .configuration-field,
-.strategy-re-evaluation-rules .configuration-field {
+.strategy-entry-engine-fields .configuration-field {
   align-content: start;
   display: grid;
 }
 
 .strategy-entry-fields .configuration-field > span,
-.strategy-entry-engine-fields .configuration-field > span,
-.strategy-re-evaluation-rules .configuration-field > span { order: 1; }
+.strategy-entry-engine-fields .configuration-field > span { order: 1; }
 
 .strategy-entry-fields .configuration-field > :is(input, select, strong, .configuration-number, .configuration-lookup-button),
-.strategy-entry-engine-fields .configuration-field > :is(input, select, strong, .configuration-number, .configuration-lookup-button),
-.strategy-re-evaluation-rules .configuration-field > :is(input, select, strong, .configuration-number, .configuration-lookup-button) { order: 2; }
+.strategy-entry-engine-fields .configuration-field > :is(input, select, strong, .configuration-number, .configuration-lookup-button) { order: 2; }
 
 .strategy-entry-fields .configuration-field > small,
-.strategy-entry-engine-fields .configuration-field > small,
-.strategy-re-evaluation-rules .configuration-field > small {
+.strategy-entry-engine-fields .configuration-field > small {
   color: var(--muted-foreground);
   order: 3;
 }
@@ -3141,23 +3116,6 @@
 .strategy-rule-set-editor .strategy-condition-index { display: none; }
 .strategy-rule-set-editor .strategy-source-detail { grid-column: 1; }
 
-.strategy-re-evaluation-editor { gap: 18px; }
-.strategy-re-evaluation-toolbar { border-bottom: 1px solid var(--configuration-rule); padding-bottom: 14px; }
-.strategy-re-evaluation-rules { gap: 0; }
-.strategy-re-evaluation-rules > article {
-  border: 0;
-  border-bottom: 1px solid var(--configuration-rule);
-  border-radius: 0;
-  gap: 20px;
-  padding: 22px 0;
-}
-.strategy-re-evaluation-rule-heading { align-items: center; grid-template-columns: minmax(0, 1fr) minmax(180px, .35fr) auto; }
-.strategy-re-evaluation-rule-identity { display: grid; gap: 4px; }
-.strategy-re-evaluation-rule-identity > span { color: var(--muted-foreground); font-size: 10px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
-.strategy-re-evaluation-rule-identity > strong { font-size: 16px; font-weight: 650; }
-.strategy-re-evaluation-rules .configuration-field > small { display: block; font-size: 11px; line-height: 1.45; }
-.strategy-re-evaluation-rules .configuration-choice-set { border-top: 0; padding-top: 0; }
-
 @media (max-width: 1050px) {
   .strategy-entry-layout { grid-template-columns: minmax(0, 1fr) 160px; }
   .strategy-rule-set-detail > section.strategy-rule-set-authoring { width: 88%; }
@@ -3169,7 +3127,6 @@
   .strategy-entry-navigation { display: flex; overflow-x: auto; width: 100%; }
   .strategy-entry-navigation::before { display: none; }
   .strategy-entry-navigation button { flex: 0 0 auto; padding-right: 16px; }
-  .strategy-re-evaluation-rule-heading { grid-template-columns: 1fr; }
   .strategy-rule-set-detail > section.strategy-rule-set-authoring { width: 100%; }
 }
 

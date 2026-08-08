@@ -73,7 +73,9 @@ These stages are not peers of Exit or Reentry. A Strategy Profile has the
 following primary behavioral areas:
 
 1. Trading Behavior: exactly one side (`long` or `short`), eligible sessions,
-   evaluation trigger, and manual-position adoption;
+   and manual-position adoption. Evaluation is derived from the sources and
+   timeframes referenced by the active lifecycle rules; it is not an
+   independent Strategy Profile gate;
 2. Initial Entry: opportunity, confirmation, and blocker rules, a relative
    capital request, an OMS execution policy, and zero or more ordered add steps;
 3. Reentry: independent opportunity, confirmation, and blocker rules, a
