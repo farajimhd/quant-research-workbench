@@ -1366,6 +1366,146 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         })
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
 
+    def test_clinical_hold_lifecycle_distinguishes_resolution_from_request(self) -> None:
+        cases = (
+            ("FDA removed the clinical hold on Alpha's trial.", "positive"),
+            ("FDA placed Alpha's trial on clinical hold.", "negative"),
+            ("Alpha requested removal of the clinical hold.", "negative"),
+        )
+        for index, (event, expected) in enumerate(cases):
+            with self.subTest(event=event):
+                document = self.engine.synthesize({
+                    "source_id": f"news-hold-lifecycle-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": event,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA) {event}",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
+    def test_reclassified_adverse_diagnosis_offsets_unresolved_hold(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-clinical-reassessment-with-hold",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": (
+                "Alpha investigator concluded reported case was not a case of "
+                "myelodysplastic syndrome and revised the diagnosis to anemia"
+            ),
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) said the investigator concluded "
+                "the reported case was not a case of myelodysplastic syndrome and "
+                "revised the diagnosis to anemia. Alpha continues to seek removal of "
+                "the clinical hold."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
+
+    def test_issuer_challenge_to_active_regulatory_hold_is_mixed(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-regulatory-challenge-with-hold",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha files complaint against FDA over clinical hold",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) filed a complaint against the FDA "
+                "requesting that the court lift the partial clinical hold imposed on "
+                "Alpha's study."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
+
+    def test_complete_class_two_response_supersedes_prior_crl(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-class-two-response-accepted",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "FDA accepts Alpha response as complete Class 2 resubmission",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) said FDA acknowledged its full "
+                "response to the Complete Response Letter as a complete Class 2 response. "
+                "The submission addresses issues raised in the prior CRL."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_rejected_investigation_petition_differs_from_rejected_application(self) -> None:
+        cases = (
+            ("NHTSA rejects petition to open investigation into Alpha vehicles", "positive"),
+            ("FDA rejects Alpha's application", "negative"),
+        )
+        for index, (title, expected) in enumerate(cases):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-rejection-object-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA). {title}.",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
+    def test_concluded_investigation_without_charges_is_positive(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-investigation-concluded",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Investigation concludes without charges",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) said the SEC will recommend no "
+                "charges and both investigations have concluded for the company."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_completed_convertible_note_repayment_is_deleveraging(self) -> None:
+        cases = (
+            ("Alpha repaid the final payment on its convertible notes", "positive"),
+            ("Alpha issued convertible notes", "negative"),
+        )
+        for index, (title, expected) in enumerate(cases):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-debt-transition-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA) {title}.",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
+    def test_lawsuit_dismissal_uses_defendant_or_plaintiff_role(self) -> None:
+        cases = (
+            ("Class action lawsuit against Alpha was dismissed without prejudice", "positive"),
+            ("Court dismissed Alpha Therapeutics' lawsuit", "negative"),
+        )
+        for index, (title, expected) in enumerate(cases):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-dismissal-role-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA). {title}.",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
+    def test_settlement_cash_direction_controls_issuer_sentiment(self) -> None:
+        cases = (
+            ("Alpha will receive a $38 million settlement payment", "positive"),
+            ("Alpha will pay a $38 million settlement penalty", "negative"),
+        )
+        for index, (title, expected) in enumerate(cases):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-settlement-role-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA) {title}.",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
     def test_focal_below_consensus_guidance_controls_realized_beat(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-focal-weak-guidance",

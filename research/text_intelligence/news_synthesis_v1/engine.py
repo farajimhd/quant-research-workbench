@@ -13,7 +13,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v40"
+ENGINE_VERSION = "news_synthesis_engine_v41"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -280,8 +280,8 @@ RULES = (
     _rule("regulatory.action", r"\b(?:trading halt|halted|resume trading|SEC action|regulatory action|compliance notice|formal investigation|clinical hold|license renewal|crackdown|advisory committee|regulator|letter of authorization|conditions? of authorization|reporting requirements?|(?:grant|grants|granted)\b.{0,100}\b(?:terrestrial|commercial|marketing|regulatory) authorization)\b|\b(?:FDA|FTC|SEC|European Commission|Nuclear Regulatory Commission|FERC|Federal Energy Regulatory Commission)\b.{0,180}\b(?:investigation|inquiry|subpoena|request(?:s|ed)? information|hold|cancel|issue|renew|order|action|notice|authoriz|reporting requirement|pre[- ]filing review)\w*\b|\benter(?:s|ed|ing)?\b.{0,80}\bpre[- ]filing review process\b.{0,120}\b(?:FERC|Federal Energy Regulatory Commission)\b|\b(?:NICE|National Institute for Health and Care Excellence|health technology assessment (?:body|agency)|payer)\b.{0,180}\b(?:reject(?:s|ed)?|does not recommend|cannot recommend|declines? to recommend|refus(?:e[sd]?|ing) coverage)\b|\b(?:reject(?:s|ed)?|does not recommend|cannot recommend|declines? to recommend|refus(?:e[sd]?|ing) coverage)\b.{0,180}\b(?:NICE|National Institute for Health and Care Excellence|health technology assessment (?:body|agency)|payer)\b", positive=("authorize", "authorization", "renew", "grant", "pre-filing review"), negative=("halt", "suspend", "noncompliance", "investigation", "inquiry", "subpoena", "crackdown", "cancel", "myocarditis", "pericarditis", "adverse", "reject", "does not recommend", "cannot recommend", "declines to recommend", "refuse")),
     _rule("clinical.regulatory_milestone", r"\b(?:FDA|EMA|NDA|BLA|USDA)\b.{0,180}\b(?:approv|reject|complete response|clinical hold|clearance|accept|authoriz|resubmission|acknowledge|submission|meeting|grant|nod|fast track|priority review|expand\w*\s+(?:the\s+)?indication)\w*\b|\b(?:grant(?:s|ed)?|agree(?:s|d)?)\b.{0,100}\b(?:meet|meeting)\b.{0,80}\bFDA\b|\b(?:plans?|intends?|expects?)\b.{0,80}\b(?:seek|file|submit)\b.{0,100}\b(?:FDA|EMA)\b.{0,80}\b(?:priority review|sNDA|NDA|BLA|application)\b|\b(?:receiv(?:e|es|ed)|secur(?:e|es|ed))\b.{0,80}\bCE mark\b|\b(?:complete response letter|clinical hold|primary endpoint|phase [123] (?:study|trial)|letter of authorization|regulatory submission|FDA nod|CE mark|fast track designation)\b", positive=("approve", "approval", "clearance", "accept", "authorize", "authorization", "grant", "nod", "CE mark", "met primary", "expands indication"), negative=("reject", "complete response", "hold", "did not meet", "missed", "myocarditis", "pericarditis", "cancel")),
     _rule("clinical.regulatory_milestone", r"\bfil(?:e[sd]?|ing)\b.{0,100}\b(?:response|submission|application)\b.{0,80}\b(?:FDA|EMA)\b|\b(?:withdraw(?:s|n|al)?|withdrew)\b.{0,100}\b(?:NDA|BLA|new drug application|application|submission)\b", positive=("file", "submitted"), negative=("withdraw", "withdrew")),
-    _rule("clinical.trial_result", r"\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b.*\b(?:endpoint|results?|data|efficacy|safety|survival|viral suppression|site)\b|\b(?:results?|data)\b.{0,120}\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b|\b(?:initiat(?:e[sd]?|ion)|commenc(?:e[sd]?|ement)|begin(?:s|ning)?)\b.{0,100}\b(?:Phase\s*[123][a-z]?\s+)?(?:clinical\s+)?(?:study|trial)\b|\bexpansion of\b.{0,100}\bclinical development program\b.{0,120}\bnew trial\b|\bpositive clinical (?:data|results?)\b|\b(?:met|achieved|did not meet|failed to meet|did not demonstrate)\b.{0,120}\b(?:primary\b.{0,60})?(?:endpoint|goal|dose[- ]response|statistical significance)\b|\b(?:primary|co-primary|secondary) endpoint\b.{0,100}\b(?:did not meet|failed to meet|missed)\b.{0,80}\b(?:statistical significance|endpoint)?\b|\b(?:shut(?:s|ting)? down|discontinues?|terminates?)\b.{0,100}\b(?:clinical trial|study|Phase\s*[123])\b|\b(?:statistically significant(?: and clinically meaningful)? improvement|statistically significant (?:adverse |unwanted |harmful )?(?:immune|immunologic|immunological) response (?:data|results?)|significantly reduces?|prevent(?:s|ed|ing)?\s+\d+(?:\.\d+)?%\s+of|\d+(?:\.\d+)?%\s+(?:vaccine )?efficacy|\d+(?:\.\d+)?%\s+reduction in (?:the )?risk|\d+(?:\.\d+)?%\s+of patients?.{0,80}\bachieved\b|first (?:patient|subject) (?:enrolled|dosed|screened)|(?:enrolls?|doses?|screens?) (?:the )?first (?:patient|subject)|(?:opens?|initiates?|announces?)\b.{0,80}\b(?:Phase\s*[123]\s+)?trial site|high efficacy|durable viral suppression|overall survival|sustained virologic response)\b", positive=("met", "positive", "improved", "prevented", "efficacy", "trial site", "initiation", "new trial", "first patient screened"), negative=("failed", "missed", "did not meet", "shut down", "discontinue", "terminate", "adverse")),
-    _rule("legal.proceeding", r"\b(?:lawsuit|litigation|investigation|subpoena|probe|targeted by (?:the )?probe|under investigation|settlement|arbitration|legal claim|security vulnerability|actively exploited vulnerability|data breach|claim for .{0,60}damages|seeking .{0,40}damages|patent peace|patent (?:is )?issued|issues? .{0,40}patent|(?:grant(?:s|ed)?|receiv(?:e|es|ed))\b.{0,80}\bpatent)\b|\b(?:judge|court)\b.{0,140}\b(?:rules?|ruled|finds?|found|calls?|called|strikes? down|invalidates?)\b.{0,100}\b(?:restriction|limitation|ban|rule|regulation)s?\b|\b(?:judge|court)\b.{0,140}\b(?:restriction|limitation|ban|rule|regulation)s?\b.{0,100}\b(?:arbitrary|unlawful|invalid|struck down)\b", positive=("seeking damages", "served a request", "files arbitration", "patent peace", "patent issued", "issues patent"), negative=("lawsuit", "investigation", "probe", "subpoena", "breach", "vulnerability", "discriminatory", "adverse treatment")),
+    _rule("clinical.trial_result", r"\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b.*\b(?:endpoint|results?|data|efficacy|safety|survival|viral suppression|site)\b|\b(?:results?|data)\b.{0,120}\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b|\b(?:initiat(?:e[sd]?|ion)|commenc(?:e[sd]?|ement)|begin(?:s|ning)?)\b.{0,100}\b(?:Phase\s*[123][a-z]?\s+)?(?:clinical\s+)?(?:study|trial)\b|\bexpansion of\b.{0,100}\bclinical development program\b.{0,120}\bnew trial\b|\bpositive clinical (?:data|results?)\b|\b(?:met|achieved|did not meet|failed to meet|did not demonstrate)\b.{0,120}\b(?:primary\b.{0,60})?(?:endpoint|goal|dose[- ]response|statistical significance)\b|\b(?:primary|co-primary|secondary) endpoint\b.{0,100}\b(?:did not meet|failed to meet|missed)\b.{0,80}\b(?:statistical significance|endpoint)?\b|\b(?:shut(?:s|ting)? down|discontinues?|terminates?)\b.{0,100}\b(?:clinical trial|study|Phase\s*[123])\b|\b(?:investigator|physician|assessment|review)\b.{0,160}\bconclud(?:e[sd]?|ing)\b.{0,100}\bnot (?:a )?case of\b.{0,120}\brevis(?:e[sd]?|ing) (?:the )?diagnosis\b|\b(?:statistically significant(?: and clinically meaningful)? improvement|statistically significant (?:adverse |unwanted |harmful )?(?:immune|immunologic|immunological) response (?:data|results?)|significantly reduces?|prevent(?:s|ed|ing)?\s+\d+(?:\.\d+)?%\s+of|\d+(?:\.\d+)?%\s+(?:vaccine )?efficacy|\d+(?:\.\d+)?%\s+reduction in (?:the )?risk|\d+(?:\.\d+)?%\s+of patients?.{0,80}\bachieved\b|first (?:patient|subject) (?:enrolled|dosed|screened)|(?:enrolls?|doses?|screens?) (?:the )?first (?:patient|subject)|(?:opens?|initiates?|announces?)\b.{0,80}\b(?:Phase\s*[123]\s+)?trial site|high efficacy|durable viral suppression|overall survival|sustained virologic response)\b", positive=("met", "positive", "improved", "prevented", "efficacy", "trial site", "initiation", "new trial", "first patient screened"), negative=("failed", "missed", "did not meet", "shut down", "discontinue", "terminate", "adverse")),
+    _rule("legal.proceeding", r"\b(?:lawsuit|litigation|investigation|subpoena|probe|targeted by (?:the )?probe|under investigation|settlement|arbitration|legal claim|security vulnerability|actively exploited vulnerability|data breach|claim for .{0,60}damages|seeking .{0,40}damages|patent peace|patent (?:is )?issued|issues? .{0,40}patent|(?:grant(?:s|ed)?|receiv(?:e|es|ed))\b.{0,80}\bpatent)\b|\bfil(?:e[sd]?|ing)\b.{0,80}\bcomplaint\b.{0,100}\bagainst\b|\b(?:judge|court)\b.{0,140}\b(?:rules?|ruled|finds?|found|calls?|called|strikes? down|invalidates?)\b.{0,100}\b(?:restriction|limitation|ban|rule|regulation)s?\b|\b(?:judge|court)\b.{0,140}\b(?:restriction|limitation|ban|rule|regulation)s?\b.{0,100}\b(?:arbitrary|unlawful|invalid|struck down)\b", positive=("seeking damages", "served a request", "files arbitration", "patent peace", "patent issued", "issues patent"), negative=("lawsuit", "investigation", "probe", "subpoena", "breach", "vulnerability", "discriminatory", "adverse treatment")),
     _rule("listing.market_structure", r"\b(?:reverse (?:stock|share) split|reverse split|stock split|share consolidation|share combination|delist(?:s|ed|ing)?|deslit|delisting|listing compliance|regains? compliance|regained compliance|continued listing|non[- ]compliance|minimum bid|late filing|failure to timely file|included in .{0,60}(?:Russell|S&P|Nasdaq).{0,20}index|IPO)\b", positive=("regain", "regained compliance", "approved listing", "included"), negative=("delist", "deslit", "noncompliance", "non-compliance", "late", "failure", "reverse split", "reverse share split", "reverse stock split")),
     _rule("commercial.contract", r"\b(?:awarded|wins?|receives?|secures?|sign(?:s|ed|ing)?|enters?|affirms?)\b.{0,120}\b(?:contract|order|award|agreements?|program|initiative)\b|\bselected\b.{0,120}\bto (?:provide|deliver|supply)\b.{0,120}\b(?:services?|consultancy|supervision|supply|systems?|stations?|equipment|products?|components?)\b|\b(?:expand(?:s|ed|ing)?|extend(?:s|ed|ing)?|renew(?:s|ed|ing)?)\b.{0,100}\b(?:sales |supply |service )?agreements?\b|\b(?:deal with\b.{0,100}\b(?:provid|supply)\w*|named\b.{0,100}\bofficial\b.{0,60}\b(?:broker|provider|supplier|partner))\b|\bcontract award\b|\b(?:waiver and amendment|amendment) agreement\b|\bwaiv(?:e|es|ed|ing)\b.{0,120}\bright to terminate\b.{0,120}\b(?:fund|financ|tranche|obligation)\w*\b|\b(?:contract|agreement)\s+(?:termination|cancellation|non[- ]renewal)\b|\b(?:termination|cancellation|non[- ]renewal)\b.{0,80}\b(?:contract|agreement)\b|\b(?:follow[- ]on )?(?:contract|order|agreement|program|initiative)\b.{0,120}\b(?:awarded|affirmed|won|win|received|secured|signed|terminated|cancelled|canceled|not renewed)\b", positive=("awarded", "affirmed", "wins", "win", "received", "secured", "signed", "selected", "expand", "extend", "renew", "contract award"), negative=("cancel", "terminate", "non-renewal", "not renewed")),
     _rule("product.milestone", r"\b(?:launch|unveil|reveal|debut)\w*\b.{0,80}\bsolutions?\b|\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|roll(?:s|ed|ing)? out|recall|discontinue|authoriz(?:e|es|ed|ing)|ships? (?:the )?first|first shipment|deliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)|release(?:s|d)? (?:the )?(?:final )?pricing|production milestone|assembly line|built? \d+)\w*\b.{0,120}\b(?:product|platform|service|(?:pilot|production|commercial) units?|feature|functionality|uploader|device|drug|treatment|vaccine|vehicle|system|game|headset|candidate|model|factory|use|panel|test|camera|dressing)\b|\bdeliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)\b|\b(?:product|feature|functionality|uploader|device|drug|treatment|vaccine|service|game|headset|vehicle|model|panel|test|camera|dressing)\b.{0,120}\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|release|recall|discontinue|delay|authoriz|available|roll(?:s|ed|ing)? out|assembly line|first shipment)\w*\b|\b(?:products?|goods?|inventory)\b.{0,120}\breturned\b.{0,100}\b(?:company|supplier|customer|distributor|retailer|regulator)\b|\b(?:new products?|product delay|(?:lead|investigational) (?:product candidate|drug|treatment|therapy|antibody)|delivery system|bodies coming down the assembly line)\b", positive=("launch", "unveil", "reveal", "debut", "commercializ", "introduc", "release", "approval", "authorize", "available", "roll out", "rolling out", "new", "assembly", "built", "affordable", "ships the first", "first shipment", "deliver"), negative=("recall", "returned", "delay", "discontinue")),
@@ -1636,13 +1636,194 @@ def _is_adverse_regulatory_response(normalized_text: str) -> bool:
 
 def _is_resolved_clinical_hold(normalized_text: str) -> bool:
     return bool(re.search(
-        r"\b(?:lift(?:s|ed|ing)?|remov(?:e[sd]?|ing)|resolv(?:e[sd]?|ing))\b"
+        r"\b(?:lift(?:s|ed|ing)?|lifting|remov(?:e[sd]?|ing)|removal|resolv(?:e[sd]?|ing))\b"
         r".{0,80}\bclinical hold\b|\bclinical hold\b.{0,80}"
-        r"\b(?:lift(?:s|ed|ing)?|remov(?:e[sd]?|ing)|resolv(?:e[sd]?|ing))\b|"
+        r"\b(?:lift(?:s|ed|ing)?|lifting|remov(?:e[sd]?|ing)|removal|resolv(?:e[sd]?|ing))\b|"
         r"\b(?:clearance|permission|authorization)\b.{0,100}\b(?:resume|begin)\b.{0,60}\b(?:trial|study|enrollment)\b|"
         r"\b(?:resume|begin)\b.{0,60}\b(?:trial|study|enrollment)\b.{0,100}\b(?:clearance|permission|authorization)\b",
         normalized_text,
     ))
+
+
+def _terminal_event_sentiment(
+    text: str,
+    concept: str,
+    entity: Mapping[str, Any] | None,
+    mention_terms: Sequence[str],
+) -> tuple[str, int] | None:
+    """Classify a current terminal transition before adverse-noun fallback.
+
+    The polarity belongs to the governing predicate and economic role: a
+    removed hold, dismissed claim, concluded investigation, repaid debt, or
+    received settlement is not a fresh hold, claim, investigation, financing,
+    or payment burden merely because that adverse noun remains in the text.
+    """
+    normalized = text.casefold()
+    if concept in {"clinical.regulatory_milestone", "regulatory.action", "legal.proceeding"}:
+        if concept in {"clinical.regulatory_milestone", "regulatory.action"} and re.search(
+            r"\b(?:seek(?:s|ing)?|request(?:s|ed|ing)?|ask(?:s|ed|ing)?|"
+            r"plans?|intends?|attempt(?:s|ed|ing)?|continues? to work)\b.{0,140}"
+            r"\b(?:lift(?:ing)?|removal|remove|resolve|resume)\b.{0,80}\bclinical hold\b|"
+            r"\bpotential lift\b.{0,80}\bclinical holds?\b",
+            normalized,
+        ):
+            # The request itself is not a favorable disposition; the named
+            # hold remains the current state until the authority lifts it.
+            return "negative", 4
+        if _is_resolved_clinical_hold(normalized):
+            return "positive", 3
+        if concept in {"clinical.regulatory_milestone", "regulatory.action"} and re.search(
+            r"\b(?:exchange|amex|nyse|nasdaq)\b.{0,100}"
+            r"\b(?:lift(?:s|ed|ing)?|lifting|remov(?:e[sd]?|ing)|removal)\b"
+            r".{0,80}\btrading halt\b|"
+            r"\b(?:lift(?:s|ed|ing)?|lifting|remov(?:e[sd]?|ing)|removal)\b"
+            r".{0,80}\btrading halt\b",
+            normalized,
+        ):
+            return "positive", 2
+        if concept in {"clinical.regulatory_milestone", "regulatory.action"} and not re.search(
+            r"\b(?:did not|does not|not|refus(?:e[sd]?|ing))\b.{0,60}"
+            r"\b(?:consider|accept|acknowledge|agree)\w*\b.{0,80}"
+            r"\b(?:complete response|class 2 resubmission)\b",
+            normalized,
+        ) and re.search(
+            r"\b(?:fda|ema)\b.{0,160}"
+            r"\b(?:acknowledg(?:e[sd]?|ing)|agree(?:s|d)?|accept(?:s|ed|ance)?|"
+            r"consider(?:s|ed|ing)?)\b.{0,140}"
+            r"\b(?:complete class 2 response|complete response|class 2 resubmission)\b|"
+            r"\b(?:complete class 2 response|class 2 resubmission)\b.{0,140}"
+            r"\b(?:acknowledg(?:e[sd]?|ing)|agree(?:s|d)?|accept(?:s|ed|ance)?|"
+            r"consider(?:s|ed|ing)?)\b",
+            normalized,
+        ):
+            return "positive", 2
+        if re.search(
+            r"\breject(?:s|ed|ing)\b.{0,100}\bpetition\b.{0,100}"
+            r"\b(?:open|begin|initiate)\b.{0,50}\binvestigation\b|"
+            r"\bpetition\b.{0,100}\b(?:open|begin|initiate)\b.{0,50}"
+            r"\binvestigation\b.{0,100}\breject(?:s|ed|ing)\b",
+            normalized,
+        ):
+            return "positive", 2
+        if concept == "legal.proceeding" and re.search(
+            r"\bfil(?:e[sd]?|ing)\b.{0,80}\bcomplaint\b.{0,80}"
+            r"\bagainst\b.{0,80}\b(?:fda|ema|regulator|agency)\b.{0,140}"
+            r"\b(?:request(?:s|ed|ing)?|seek(?:s|ing)?)\b.{0,80}"
+            r"\b(?:lift|remove|resolve)\b.{0,60}\bclinical hold\b",
+            normalized,
+        ):
+            return "positive", 2
+        if concept in {"clinical.regulatory_milestone", "regulatory.action"} and re.search(
+            r"\bresubmit(?:s|ted|ting)?\b.{0,160}"
+            r"\b(?:after|having)\b.{0,100}\b(?:address(?:es|ed|ing)?|resolv(?:e[sd]?|ing))\b"
+            r".{0,100}\b(?:complete response letter|crl|observations?|issues?)\b|"
+            r"\b(?:address(?:es|ed|ing)?|resolv(?:e[sd]?|ing))\b.{0,100}"
+            r"\b(?:complete response letter|crl|observations?|issues?)\b.{0,160}"
+            r"\bresubmit(?:s|ted|ting)?\b",
+            normalized,
+        ):
+            return "positive", 2
+    if concept == "capital.financing" and re.search(
+        r"\b(?:repaid|has repaid|have repaid|paid off|fully paid|final payment|completion of (?:the )?repayment)\b"
+        r".{0,120}\b(?:convertible|senior)?\s*(?:notes?|debt|obligations?)\b|"
+        r"\b(?:convertible|senior)?\s*(?:notes?|debt|obligations?)\b.{0,120}"
+        r"\b(?:repaid|has repaid|have repaid|paid off|fully paid|final payment)\b",
+        normalized,
+    ):
+        return "positive", 3
+    if concept in {"legal.proceeding", "regulatory.action"}:
+        if re.search(
+            r"\b(?:investigations?|inquiries|probes?)\b\s*"
+            r"(?:has|have|is|are|was|were)?\s*(?:conclud(?:e[sd]?|ing)|clos(?:e[sd]?|ing)|ended?)\b|"
+            r"\b(?:concludes?|closes?|ends?)\b.{0,30}\b(?:both\s+)?"
+            r"(?:investigations?|inquiries|probes?)\b|"
+            r"\b(?:not to recommend|no)\b.{0,50}\bcharges?\b",
+            normalized,
+        ):
+            return "positive", 2
+        dismissed_claim = re.search(
+            r"\b(?:class action|lawsuit|complaint|legal claim)\b.{0,100}"
+            r"\bdismiss(?:es|ed|al)?\b|\bdismiss(?:es|ed|al)?\b.{0,100}"
+            r"\b(?:class action|lawsuit|complaint|legal claim)\b",
+            normalized,
+        )
+        if dismissed_claim and entity is not None:
+            claim = re.search(r"\b(?:class action|lawsuit|complaint|legal claim)\b", text, re.I)
+            if claim and re.search(r"(?:'s|’s|['’])\s*$", text[:claim.start()], re.I) and _entity_in_quote(
+                entity,
+                text[max(0, claim.start() - 100):claim.start()],
+                mention_terms,
+            ):
+                return "negative", 2
+        if dismissed_claim and not re.search(
+            r"\b(?:files?|filed|brings?|brought)\b.{0,80}"
+            r"\b(?:lawsuit|complaint|claim)\b.{0,120}\bdismiss(?:es|ed|al)?\b",
+            normalized,
+        ):
+            return "positive", 2
+        payer = re.search(
+            r"\b(?:pays?|paid|paying|makes?|made)\b.{0,80}"
+            r"\b(?:payment|settlement|penalty|fine)\b|"
+            r"\bpayment\b.{0,60}\bby\b",
+            normalized,
+        )
+        if payer and (
+            entity is None
+            or _entity_in_quote(entity, text[:payer.end() + 100], mention_terms)
+            or re.search(r"\b(?:the company|it)\b", text[:payer.end() + 100], re.I)
+        ):
+            return "negative", 3
+        receipt = re.search(
+            r"\b(?:will\s+)?receiv(?:e[sd]?|ing)\b.{0,100}"
+            r"\b(?:payment|proceeds?|settlement)\b|"
+            r"\bpayment\b.{0,80}\bto\b|"
+            r"\b(?:after[- ]tax income|settlement income)\b",
+            normalized,
+        )
+        if receipt:
+            if entity is None:
+                return "positive", 3
+            role_window = text[max(0, receipt.start() - 180):receipt.end() + 120]
+            payment_to = re.search(r"\bpayment\b.{0,80}\bto\b", role_window, re.I)
+            against = re.search(r"\bagainst\b", text[:receipt.start()], re.I)
+            counterparty = bool(
+                against
+                and _entity_in_quote(
+                    entity,
+                    text[against.end():receipt.start()],
+                    mention_terms,
+                )
+            )
+            if (
+                not counterparty
+                and (
+                (
+                    re.search(r"\breceiv(?:e[sd]?|ing)\b", role_window, re.I)
+                    and _entity_in_quote(entity, role_window, mention_terms)
+                )
+                or (
+                    re.search(r"\b(?:after[- ]tax income|settlement income)\b", role_window, re.I)
+                    and _entity_in_quote(entity, text, mention_terms)
+                )
+                or (
+                    payment_to is not None
+                    and (
+                        _entity_in_quote(
+                            entity,
+                            role_window[payment_to.end():payment_to.end() + 100],
+                            mention_terms,
+                        )
+                        or re.search(
+                            r"\b(?:the company|it)\b",
+                            role_window[payment_to.end():payment_to.end() + 100],
+                            re.I,
+                        )
+                    )
+                )
+                )
+            ):
+                return "positive", 3
+    return None
 
 
 def _sentiment(
@@ -1657,6 +1838,14 @@ def _sentiment(
     if rule.statement_kind == "market_observation":
         return "neutral", 0
     normalized = text.casefold()
+    terminal_sentiment = _terminal_event_sentiment(
+        text,
+        rule.concept,
+        entity,
+        mention_terms,
+    )
+    if terminal_sentiment is not None:
+        return terminal_sentiment
     if (
         rule.concept == "operations.cost_efficiency"
         and re.search(
@@ -2094,6 +2283,13 @@ def _sentiment(
         ):
             return "positive", 2
     if rule.concept == "clinical.trial_result":
+        if re.search(
+            r"\b(?:investigator|physician|assessment|review)\b.{0,160}"
+            r"\bconclud(?:e[sd]?|ing)\b.{0,100}\bnot (?:a )?case of\b"
+            r".{0,120}\brevis(?:e[sd]?|ing) (?:the )?diagnosis\b",
+            normalized,
+        ):
+            return "positive", 2
         if re.search(
             r"\b(?:adverse|unwanted|harmful)\b.{0,60}"
             r"\b(?:immune|immunologic|immunological) response (?:data|results?)\b",
@@ -3473,7 +3669,8 @@ def _boilerplate_sentence(text: str) -> bool:
     value = text.lstrip(" -\t")
     return bool(re.match(
         r"(?:related\s*:|related (?:links?|news|articles?)|also read|now read|read more|continue reading|see also|source \[(?:external|provider_body)|"
-        r"image:|disclaimer:|click here|enter a symbol|analyze any stock|free stock analysis|to track all upcoming earnings|"
+        r"image:|disclaimer:|click here|details? about .{0,100} can be found here|"
+        r"enter a symbol|analyze any stock|free stock analysis|to track all upcoming earnings|"
         r"[A-Z][A-Za-z& -]{2,50} Software\s+(?:Manage|Streamline|Automate))\b",
         value,
         re.I,
@@ -3599,14 +3796,17 @@ def _apply_event_supersession(
                     "regulatory.action",
                 }
                 and re.search(
-                    r"\b(?:lift(?:s|ed|ing)?|remov(?:e[sd]?|ing)|resolv(?:e[sd]?|ing))\b"
+                    r"\b(?:lift(?:s|ed|ing)?|lifting|remov(?:e[sd]?|ing)|removal|resolv(?:e[sd]?|ing))\b"
                     r".{0,100}\bclinical hold\b|\bclear(?:s|ed|ing)?\b"
                     r".{0,100}\b(?:resume|begin enrolling)\b|"
                     r"\b(?:clearance|permission|authorization)\b.{0,100}\b(?:resume|begin)\b.{0,60}\b(?:trial|study|enrollment)\b|"
                     r"\b(?:resume|begin)\b.{0,60}\b(?:trial|study|enrollment)\b.{0,100}\b(?:clearance|permission|authorization)\b|"
                     r"\backnowledg(?:e[sd]?|ing)\b.{0,100}\bresubmission\b|"
                     r"\baccept(?:s|ed|ance)?\b.{0,80}\b(?:application|resubmission|submission)\b|"
-                    r"\bfil(?:e[sd]?|ing)\b.{0,100}\b(?:response|submission)\b.{0,80}\b(?:FDA|EMA)\b",
+                    r"\bfil(?:e[sd]?|ing)\b.{0,100}\b(?:response|submission)\b.{0,80}\b(?:FDA|EMA)\b|"
+                    r"\b(?:FDA|EMA)\b.{0,160}\b(?:agreed?|acknowledg(?:e[sd]?|ing)|"
+                    r"accept(?:s|ed|ance)?|consider(?:s|ed|ing)?)\b.{0,160}"
+                    r"\b(?:complete class 2 response|class 2 resubmission)\b",
                     quote,
                     re.I,
                 )
@@ -3635,8 +3835,9 @@ def _apply_event_supersession(
             ):
                 clean["semantic_sentiment"] = "neutral"
                 clean["sentiment_strength"] = 0
-            elif re.search(r"\bcomplete response letter\b", quote, re.I):
-                clean["sentiment_strength"] = 1
+            elif re.search(r"\b(?:complete response letter|CRL)\b", quote, re.I):
+                clean["semantic_sentiment"] = "neutral"
+                clean["sentiment_strength"] = 0
             elif re.search(
                 r"\b(?:concerns?|issues?)\b.{0,140}\bclinical hold\b.{0,140}\baddressed\b|"
                 r"\bclinical hold\b.{0,140}\b(?:concerns?|issues?)\b.{0,140}\baddressed\b",
@@ -3712,6 +3913,9 @@ def _apply_intrinsic_event_tradeoffs(
         elif concept == "capital.financing" and sentiment == "positive" and re.search(
             r"\b(?:conversion price|convertible|shares?|equity)\b",
             normalized,
+        ) and not re.search(
+            r"\b(?:repaid|repays?|paid off|fully paid|final payment|repayment)\b",
+            normalized,
         ) and (
             (entity := entity_by_id.get(str(row["entity_id"]))) is None
             or _subsidiary_ipo_role(
@@ -3728,6 +3932,14 @@ def _apply_intrinsic_event_tradeoffs(
             add_opposite(row, "negative", 2)
         elif concept == "legal.proceeding" and sentiment == "positive" and re.search(
             r"\b(?:derivative claims?|agreement to settle .{0,80}claims?)\b",
+            normalized,
+        ):
+            add_opposite(row, "negative", 2)
+        elif concept == "legal.proceeding" and sentiment == "positive" and re.search(
+            r"\bdismiss(?:es|ed|al)?\b.{0,100}\b(?:due to|because of)\b.{0,80}"
+            r"\b(?:lack|absence) of\b.{0,40}\b(?:fda|ema)?\s*approval\b|"
+            r"\b(?:lack|absence) of\b.{0,40}\b(?:fda|ema)?\s*approval\b"
+            r".{0,100}\bdismiss(?:es|ed|al)?\b",
             normalized,
         ):
             add_opposite(row, "negative", 2)

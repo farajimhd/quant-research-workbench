@@ -183,6 +183,18 @@ def derive_issuer_views(
             directional_rows,
             statement_by_id,
         )
+        legal_terminal_tradeoff = _legal_terminal_tradeoff(
+            directional_rows,
+            statement_by_id,
+        )
+        regulatory_challenge_tradeoff = _regulatory_challenge_tradeoff(
+            directional_rows,
+            statement_by_id,
+        )
+        clinical_reassessment_tradeoff = _clinical_reassessment_tradeoff(
+            directional_rows,
+            statement_by_id,
+        )
         negative_guidance_conflict = any(
             row.get("semantic_sentiment") == "negative"
             and int(row.get("sentiment_strength") or 0) >= 2
@@ -253,7 +265,11 @@ def derive_issuer_views(
             )
             for row in directional_rows
         )
-        if (
+        if legal_terminal_tradeoff or regulatory_challenge_tradeoff or clinical_reassessment_tradeoff:
+            sentiment = "mixed"
+            positive = max(positive, 2)
+            negative = max(negative, 2)
+        elif (
             current_adverse_regulatory_blocker
             and not current_favorable_regulatory_outcome
         ):
@@ -484,6 +500,88 @@ def _coordinated_financial_tradeoff(
             if gap <= 4:
                 return True
     return False
+
+
+def _legal_terminal_tradeoff(
+    rows: Iterable[Mapping[str, Any]],
+    statement_by_id: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    directions: set[str] = set()
+    for row in rows:
+        statement = statement_by_id.get(str(row.get("statement_id") or ""), {})
+        if statement.get("concept_leaf") != "legal.proceeding":
+            continue
+        quote = str((statement.get("evidence_spans") or [{}])[0].get("quote") or "")
+        if re.search(
+            r"\bdismiss(?:es|ed|al)?\b.{0,100}\b(?:due to|because of)\b.{0,80}"
+            r"\b(?:lack|absence) of\b.{0,40}\b(?:fda|ema)?\s*approval\b|"
+            r"\b(?:lack|absence) of\b.{0,40}\b(?:fda|ema)?\s*approval\b"
+            r".{0,100}\bdismiss(?:es|ed|al)?\b",
+            quote,
+            re.I,
+        ):
+            directions.add(str(row.get("semantic_sentiment") or ""))
+    return {"positive", "negative"} <= directions
+
+
+def _regulatory_challenge_tradeoff(
+    rows: Iterable[Mapping[str, Any]],
+    statement_by_id: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    legal_challenge = False
+    active_hold = False
+    for row in rows:
+        statement = statement_by_id.get(str(row.get("statement_id") or ""), {})
+        concept = str(statement.get("concept_leaf") or "")
+        quote = str((statement.get("evidence_spans") or [{}])[0].get("quote") or "")
+        if (
+            concept == "legal.proceeding"
+            and row.get("semantic_sentiment") == "positive"
+            and re.search(
+                r"\bfil(?:e[sd]?|ing)\b.{0,80}\bcomplaint\b.{0,80}"
+                r"\bagainst\b.{0,80}\b(?:fda|ema|regulator|agency)\b",
+                quote,
+                re.I,
+            )
+        ):
+            legal_challenge = True
+        if (
+            concept in {"clinical.regulatory_milestone", "regulatory.action"}
+            and row.get("semantic_sentiment") == "negative"
+            and re.search(r"\bclinical hold\b", quote, re.I)
+        ):
+            active_hold = True
+    return legal_challenge and active_hold
+
+
+def _clinical_reassessment_tradeoff(
+    rows: Iterable[Mapping[str, Any]],
+    statement_by_id: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    favorable_reassessment = False
+    active_hold = False
+    for row in rows:
+        statement = statement_by_id.get(str(row.get("statement_id") or ""), {})
+        concept = str(statement.get("concept_leaf") or "")
+        quote = str((statement.get("evidence_spans") or [{}])[0].get("quote") or "")
+        if (
+            concept == "clinical.trial_result"
+            and row.get("semantic_sentiment") == "positive"
+            and re.search(
+                r"\bconclud(?:e[sd]?|ing)\b.{0,100}\bnot (?:a )?case of\b"
+                r".{0,120}\brevis(?:e[sd]?|ing) (?:the )?diagnosis\b",
+                quote,
+                re.I,
+            )
+        ):
+            favorable_reassessment = True
+        if (
+            concept in {"clinical.regulatory_milestone", "regulatory.action"}
+            and row.get("semantic_sentiment") == "negative"
+            and re.search(r"\bclinical hold\b", quote, re.I)
+        ):
+            active_hold = True
+    return favorable_reassessment and active_hold
 
 
 def _evidence_package_key(statement: Mapping[str, Any]) -> str:
