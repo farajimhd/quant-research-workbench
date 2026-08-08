@@ -92,6 +92,22 @@ _REGULATORY_OUTCOME_PATTERNS = (
         ),
     ),
     (
+        "advisory_endorsement_withheld",
+        "adverse",
+        "market_access_blocked_or_delayed",
+        re.compile(
+            r"\b(?:FDA\s+)?(?:advisers?|advisors?|advisory (?:panel|committee)|panelists?)\b"
+            r".{0,180}\b(?:data|evidence|results?)\b.{0,100}"
+            r"\b(?:lack(?:s|ed|ing)?|insufficient|inadequate|unreliable|not reliable)\b"
+            r".{0,120}\b(?:endorse|recommend|support)\b.{0,60}\bapproval\b|"
+            r"\b(?:FDA\s+)?(?:advisers?|advisors?|advisory (?:panel|committee)|panelists?)\b"
+            r".{0,180}\b(?:declin(?:e[sd]?|ing)|fail(?:s|ed)?|refus(?:e[sd]?|ing)|"
+            r"did not|does not|cannot|can't)\b.{0,80}\b(?:endorse|recommend|support)\b"
+            r".{0,60}\bapproval\b",
+            re.I,
+        ),
+    ),
+    (
         "deficiency_identified",
         "adverse",
         "market_access_blocked_or_delayed",
@@ -347,7 +363,7 @@ def extract_regulatory_decision_facts(text: str) -> list[dict[str, Any]]:
             effective_effect = commercial_effect
             if outcome_class == "favorable" and re.search(
                 r"\b(?:attempt(?:s|ed|ing)?|seek(?:s|ing)?|aim(?:s|ed|ing)?|"
-                r"try(?:ing|ies|ied)?|plans?|intends?|expects?|will)\b.{0,50}$",
+                r"try(?:ing|ies|ied)?|plans?|intends?|expects?|will|awaits?|awaiting|pending)\b.{0,50}$",
                 text[max(0, match.start() - 70):match.start()],
                 re.I,
             ):

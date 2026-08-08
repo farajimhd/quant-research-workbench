@@ -24,32 +24,43 @@ def derive_issuer_views(
     views: list[dict[str, Any]] = []
     for entity_id in sorted(by_entity):
         rows = by_entity[entity_id]
-        positive = max((int(row["sentiment_strength"]) for row in rows if row["semantic_sentiment"] == "positive"), default=0)
-        negative = max((int(row["sentiment_strength"]) for row in rows if row["semantic_sentiment"] == "negative"), default=0)
+        directional_rows = rows if not statement_by_id else [
+            row
+            for row in rows
+            if _directionally_current(
+                statement_by_id.get(str(row.get("statement_id") or ""), {})
+            )
+        ]
+        directional_statement_ids = {
+            str(row.get("statement_id") or "") for row in directional_rows
+        }
+        positive = max((int(row["sentiment_strength"]) for row in directional_rows if row["semantic_sentiment"] == "positive"), default=0)
+        negative = max((int(row["sentiment_strength"]) for row in directional_rows if row["semantic_sentiment"] == "negative"), default=0)
         positive_ids = sorted({
             str(row["statement_id"])
-            for row in rows
+            for row in directional_rows
             if row["semantic_sentiment"] == "positive"
         })
         negative_ids = sorted({
             str(row["statement_id"])
-            for row in rows
+            for row in directional_rows
             if row["semantic_sentiment"] == "negative"
         })
         directional_packages: dict[str, dict[str, int]] = {
             "positive": {},
             "negative": {},
         }
-        for row in rows:
+        for row in directional_rows:
             direction = str(row.get("semantic_sentiment") or "")
             if direction not in directional_packages:
                 continue
             statement = statement_by_id.get(str(row["statement_id"]), {})
-            quote = str((statement.get("evidence_spans") or [{}])[0].get("quote") or "")
-            # A sentence can produce several mechanically duplicated rules. Count
-            # one evidence package per concept and normalized source span, while
-            # retaining distinct facts within the same article.
-            package_key = re.sub(r"\s+", " ", quote).strip().casefold()
+            # Count economic facts, not renderings. Headlines, teasers, body
+            # sentences, tables, and sibling concepts often restate the same
+            # metric or transaction. A canonical event/metric key keeps those
+            # repetitions from voting repeatedly while preserving genuinely
+            # distinct financial metrics and event classes.
+            package_key = _evidence_package_key(statement)
             directional_packages[direction][package_key] = max(
                 directional_packages[direction].get(package_key, 0),
                 int(row.get("sentiment_strength") or 0),
@@ -60,6 +71,7 @@ def derive_issuer_views(
             str(row["statement_id"])
             for row in rows
             if row["semantic_sentiment"] == "neutral"
+            or str(row.get("statement_id") or "") not in directional_statement_ids
         })
         guidance_relations = [
             str(fact.get("relation"))
@@ -89,7 +101,131 @@ def derive_issuer_views(
             if statement.get("concept_leaf") == "capital.financing"
             and re.search(r"\b(?:initial public offering|IPO)\b", str((statement.get("evidence_spans") or [{}])[0].get("quote", "")), re.I)
         ]
-        if ipo_quotes and any(re.search(r"\babove\b.{0,50}\b(?:expected )?(?:price )?range\b", quote, re.I) for quote in all_ipo_quotes):
+        negative_current_statement_ids = {
+            str(row.get("statement_id") or "")
+            for row in directional_rows
+            if row.get("semantic_sentiment") == "negative"
+        }
+        negative_financing_statement_ids = {
+            str(row.get("statement_id") or "")
+            for row in directional_rows
+            if row.get("semantic_sentiment") == "negative"
+            and statement_by_id.get(str(row.get("statement_id") or ""), {}).get("concept_leaf")
+            == "capital.financing"
+        }
+        current_financing_text = " ".join(
+            str((statement.get("evidence_spans") or [{}])[0].get("quote", ""))
+            for statement in issuer_statements
+            if _directionally_current(statement)
+        )
+        financing_benefit = bool(
+            (
+                re.search(r"\bconvertible preferred stock\b", current_financing_text, re.I)
+                and re.search(r"\bimmediate access to\b.{0,80}\bliquidity\b", current_financing_text, re.I)
+            )
+            or (
+                re.search(r"\bprivate placement\b", current_financing_text, re.I)
+                and re.search(
+                    r"\bnet proceeds\b.{0,180}\bworking capital\b.{0,180}"
+                    r"\bexpan(?:d|ds|ded|ding|sion)\b.{0,80}\boperations?\b",
+                    current_financing_text,
+                    re.I,
+                )
+            )
+            or (
+                re.search(
+                    r"\bstrategic investment\b.{0,100}\bin lieu of\b.{0,100}\boffering\b|"
+                    r"\bin lieu of\b.{0,100}\boffering\b.{0,100}\bstrategic investment\b",
+                    current_financing_text,
+                    re.I,
+                )
+                and re.search(
+                    r"\bstrategic investor\b.{0,120}\b(?:invest(?:s|ed|ment)|capital)\b",
+                    current_financing_text,
+                    re.I,
+                )
+            )
+        )
+        financing_tradeoff = bool(
+            negative_financing_statement_ids and financing_benefit
+        )
+        benchmarked_result_packages: dict[str, dict[str, int]] = {
+            "positive": {},
+            "negative": {},
+        }
+        for row in directional_rows:
+            direction = str(row.get("semantic_sentiment") or "")
+            if direction not in benchmarked_result_packages:
+                continue
+            statement = statement_by_id.get(str(row.get("statement_id") or ""), {})
+            if statement.get("concept_leaf") not in {
+                "earnings.performance",
+                "financial.operating_performance",
+            }:
+                continue
+            count = _benchmarked_result_cue_count(statement, direction)
+            if count:
+                key = _evidence_package_key(statement)
+                benchmarked_result_packages[direction][key] = max(
+                    benchmarked_result_packages[direction].get(key, 0),
+                    count,
+                )
+        benchmarked_result_positive = sum(
+            benchmarked_result_packages["positive"].values()
+        )
+        benchmarked_result_negative = sum(
+            benchmarked_result_packages["negative"].values()
+        )
+        negative_guidance_conflict = any(
+            row.get("semantic_sentiment") == "negative"
+            and int(row.get("sentiment_strength") or 0) >= 2
+            and statement_by_id.get(str(row.get("statement_id") or ""), {}).get("concept_leaf")
+            == "guidance.issued"
+            for row in directional_rows
+        )
+        positive_guidance_conflict = any(
+            row.get("semantic_sentiment") == "positive"
+            and int(row.get("sentiment_strength") or 0) >= 2
+            and statement_by_id.get(str(row.get("statement_id") or ""), {}).get("concept_leaf")
+            == "guidance.issued"
+            for row in directional_rows
+        )
+        positive_material_offset = any(
+            row.get("semantic_sentiment") == "positive"
+            and int(row.get("sentiment_strength") or 0) >= 2
+            and statement_by_id.get(str(row.get("statement_id") or ""), {}).get("concept_leaf")
+            in {
+                "financial.cash_flow",
+                "financial.margin",
+                "guidance.issued",
+                "operations.cost_efficiency",
+            }
+            for row in directional_rows
+        )
+        distress_restructuring = any(
+            str(statement.get("statement_id") or "") in negative_current_statement_ids
+            and
+            statement.get("concept_leaf") in {
+                "operations.business_update",
+                "credit.solvency",
+            }
+            and re.search(
+                r"\b(?:restructuring support agreement|pre[- ]negotiated restructuring|"
+                r"bankruptcy filing|file[sd]? for chapter 11|"
+                r"initiat(?:e[sd]?|ing) (?:voluntary )?proceedings under chapter 11)\b",
+                str((statement.get("evidence_spans") or [{}])[0].get("quote", "")),
+                re.I,
+            )
+            for statement in issuer_statements
+        )
+        if distress_restructuring:
+            sentiment = "negative"
+            negative = max(negative, 3)
+        elif financing_tradeoff:
+            sentiment = "mixed"
+            positive = max(positive, 2)
+            negative = max(negative, 2)
+        elif ipo_quotes and any(re.search(r"\babove\b.{0,50}\b(?:expected )?(?:price )?range\b", quote, re.I) for quote in all_ipo_quotes):
             sentiment = "positive"
             positive = max(positive, 3)
         elif ipo_quotes:
@@ -102,6 +238,33 @@ def derive_issuer_views(
         elif above >= 2 and not below:
             sentiment = "positive"
             positive = max(positive, 3)
+        elif (
+            benchmarked_result_positive >= 2
+            and not benchmarked_result_negative
+            and not negative_guidance_conflict
+        ):
+            sentiment = "positive"
+            positive = max(positive, 3)
+        elif (
+            benchmarked_result_negative >= 2
+            and not benchmarked_result_positive
+            and not positive_guidance_conflict
+            and not positive_material_offset
+        ):
+            sentiment = "negative"
+            negative = max(negative, 3)
+        elif (
+            positive_score >= negative_score + 2
+            and positive_score * 2 >= negative_score * 3
+            and positive > 0
+        ):
+            sentiment = "positive"
+        elif (
+            negative_score >= positive_score + 2
+            and negative_score * 2 >= positive_score * 3
+            and negative > 0
+        ):
+            sentiment = "negative"
         elif (
             positive_score >= max(12, negative_score * 2)
             and positive > negative
@@ -133,6 +296,95 @@ def derive_issuer_views(
             }
         )
     return views
+
+
+def _directionally_current(statement: Mapping[str, Any]) -> bool:
+    if statement.get("statement_kind") == "background":
+        return False
+    return statement.get("time_relation") != "historical"
+
+
+def _evidence_package_key(statement: Mapping[str, Any]) -> str:
+    concept = str(statement.get("concept_leaf") or "unknown")
+    quote = str((statement.get("evidence_spans") or [{}])[0].get("quote") or "")
+    normalized = re.sub(r"\s+", " ", quote).strip().casefold()
+
+    if concept.startswith("guidance."):
+        metrics = _financial_metric_keys(normalized) or ("outlook",)
+        horizons = tuple(sorted({
+            str(fact.get("horizon") or "").casefold()
+            for fact in statement.get("typed_facts", ())
+            if fact.get("horizon")
+        }))
+        if not horizons:
+            match = re.search(r"\b(q[1-4](?:\s+20\d{2})?|fy\s*\d{2,4}|full[- ]year)\b", normalized)
+            horizons = (match.group(1).replace(" ", ""),) if match else ("unspecified",)
+        return "guidance:" + "+".join((*metrics, *horizons))
+
+    if concept.startswith("earnings.") or concept.startswith("financial."):
+        metrics = _financial_metric_keys(normalized)
+        return "financial:" + "+".join(metrics or (concept.split(".", 1)[1],))
+
+    if concept.startswith("capital."):
+        if concept == "capital.financing":
+            return "capital:financing"
+        if concept in {"capital.deleveraging", "capital.structure"}:
+            return "capital:balance_sheet"
+        return concept
+
+    if concept == "clinical.regulatory_milestone" or concept.startswith("regulatory."):
+        return "medical_regulatory"
+    if concept == "product.milestone" and re.search(
+        r"\b(?:fda|ema|regulator|approv|authoriz|clearance)\w*\b",
+        normalized,
+        re.I,
+    ):
+        return "medical_regulatory"
+    if concept.startswith("clinical."):
+        return "clinical:" + concept.split(".", 1)[1]
+    if concept.startswith("legal."):
+        return "legal:" + concept.split(".", 1)[1]
+    return concept
+
+
+def _financial_metric_keys(normalized: str) -> tuple[str, ...]:
+    patterns = (
+        ("eps", r"\b(?:eps|earnings per share)\b"),
+        ("revenue", r"\b(?:revenues?|sales)\b"),
+        ("profit", r"\b(?:net income|profit|earnings|net loss|losses?)\b"),
+        ("margin", r"\b(?:gross|operating|ebitda|profit) margins?\b"),
+        ("cash_flow", r"\b(?:free cash flow|operating cash flow|cash burn)\b"),
+        ("ebitda", r"\bebitda\b"),
+        ("orders", r"\b(?:orders?|bookings|backlog|demand)\b"),
+    )
+    return tuple(key for key, pattern in patterns if re.search(pattern, normalized, re.I))
+
+
+def _benchmarked_result_cue_count(statement: Mapping[str, Any], direction: str) -> int:
+    quote = str((statement.get("evidence_spans") or [{}])[0].get("quote", ""))
+    if direction == "positive":
+        cue_pattern = r"\b(?:beat(?:s|en)?|surpass(?:es|ed|ing)?|above|better[- ]than)\b"
+        comparator_pattern = r"\b(?:expectations?|estimates?|consensus|views?)\b"
+    else:
+        cue_pattern = r"\b(?:miss(?:es|ed)?|below|worse[- ]than|downbeat)\b"
+        comparator_pattern = r"\b(?:expectations?|estimates?|consensus|views?)\b"
+    comparators = list(re.finditer(comparator_pattern, quote, re.I))
+    cue_starts: set[int] = set()
+    for cue in re.finditer(cue_pattern, quote, re.I):
+        if any(
+            max(cue.start() - comparator.end(), comparator.start() - cue.end(), 0)
+            <= 100
+            for comparator in comparators
+        ) or (
+            direction == "negative"
+            and re.search(
+                r"\b(?:earnings|results?)\b.{0,30}$",
+                quote[max(0, cue.start() - 40):cue.start()],
+                re.I,
+            )
+        ):
+            cue_starts.add(cue.start())
+    return len(cue_starts)
 
 
 def derive_synthesis(

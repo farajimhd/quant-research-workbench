@@ -13,8 +13,13 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v10"
-EXCHANGE_TICKER_RE = re.compile(r"\b(?:NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*([A-Z][A-Z0-9.\-]{0,9})\b", re.I)
+ENGINE_VERSION = "news_synthesis_engine_v36"
+EXCHANGE_TICKER_RE = re.compile(
+    r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
+    r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
+    r"(?P<ticker>[A-Z][A-Z0-9.\-]{0,9})\b",
+    re.I,
+)
 CASHTAG_RE = re.compile(r"(?<![A-Z0-9])\$([A-Z][A-Z0-9.\-]{0,9})\b")
 ROUNDUP_RE = re.compile(r"\b(?:stocks?|companies|biggest movers?|gainers?|losers?)\s+(?:moving|to watch)|\bmarket\s+(?:wrap|recap|update)\b", re.I)
 WHY_MOVING_RE = re.compile(r"\bwhy\s+(?:is|are|did)\b.*\b(?:stock|shares?)\b.*\bmov", re.I)
@@ -33,6 +38,10 @@ REGULATORY_RE = re.compile(r"\b(?:SEC|FDA|regulator|regulatory|trading halt|comp
 AUTOMATED_RE = re.compile(r"\b(?:automated market statistics|benzinga pro data|generated automatically)\b", re.I)
 EXCHANGE_PREFIX_RE = re.compile(
     r"^(?:NASDAQ|NYSE(?:\s+AMERICAN)?|NYSEAMERICAN|AMEX|OTC(?:QX|QB)?)\s*[:\-]\s*",
+    re.I,
+)
+CANADIAN_EXCHANGE_PREFIX_RE = re.compile(
+    r"^(?P<exchange>TSX|TSXV|CSE)\s*[:\-]\s*(?P<ticker>[A-Z][A-Z0-9.\-]{0,9})$",
     re.I,
 )
 
@@ -70,7 +79,13 @@ class IssuerIdentityIndex:
 
     def resolve(self, *, text: str, candidates: Sequence[str], timestamp: str) -> list[dict[str, Any]]:
         day = _as_date(timestamp)
-        explicit = {_normalize_ticker_identifier(value) for value in EXCHANGE_TICKER_RE.findall(text)} | {_normalize_ticker_identifier(value) for value in CASHTAG_RE.findall(text)}
+        explicit = {
+            _exchange_qualified_ticker_identifier(
+                match.group("exchange"),
+                match.group("ticker"),
+            )
+            for match in EXCHANGE_TICKER_RE.finditer(text)
+        } | {_normalize_ticker_identifier(value) for value in CASHTAG_RE.findall(text)}
         candidate_set = {_normalize_ticker_identifier(value) for value in candidates if value}
         explicit.discard("")
         candidate_set.discard("")
@@ -80,13 +95,23 @@ class IssuerIdentityIndex:
             if f" {alias} " not in normalized_text:
                 continue
             valid = [row for row in rows if row.valid_on(day)]
-            tickers = {row.ticker for row in valid}
+            tickers = {_normalize_ticker_identifier(row.ticker) for row in valid}
             preferred = tickers & candidate_set
             if preferred:
                 tickers = preferred
-            elif candidate_set and len(alias.split()) == 1:
+            elif len(alias.split()) == 1:
+                # A bare global brand token is too weak to establish security
+                # identity: ordinary prose routinely overlaps symbols' legacy
+                # aliases (for example trade, support, products, or total).
+                # Exact provider candidates retain candidate-scoped brand
+                # resolution, while evaluation targets are admitted later with
+                # separate provenance and locally grounded participation.
                 continue
-            issuer_ids = {row.issuer_id for row in valid if row.ticker in tickers}
+            issuer_ids = {
+                row.issuer_id
+                for row in valid
+                if _normalize_ticker_identifier(row.ticker) in tickers
+            }
             if len(tickers) == 1 or len(issuer_ids) == 1:
                 for ticker in tickers:
                     matches.setdefault(ticker, set()).add(f"issuer_alias:{alias}")
@@ -161,6 +186,18 @@ class IssuerIdentityIndex:
             })
         return entities
 
+    def supported_evaluation_targets(
+        self,
+        *,
+        candidates: Sequence[str],
+        timestamp: str,
+    ) -> list[dict[str, Any]]:
+        """Resolve scoring targets without representing them as provider evidence."""
+        entities = self.supported_candidates(candidates=candidates, timestamp=timestamp)
+        for entity in entities:
+            entity["identity_evidence"] = ["evaluation_target_only"]
+        return entities
+
     def mention_terms(self, entity: Mapping[str, Any]) -> tuple[str, ...]:
         """Return canonical names that may bind a resolved entity to a statement."""
         ticker = _normalize_ticker_identifier(entity.get("ticker"))
@@ -217,30 +254,31 @@ def _rule(
 RULES = (
     _rule("analyst.rating_action", r"\b(?:upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?|rates?|ratings?)\b(?:.{0,100})\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|perform|equal[- ]weight|sector perform|market perform|rating)\b|\b(?:series|round) of downgrades\b|\banalysts?\b.{0,80}\b(?:upgrade[sd]?|downgrade[sd]?)\b|\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|equal[- ]weight|sector perform|market perform)\s+rating\b|\((?:(?:NASDAQ|NYSE|AMEX|TSX|TSXV)\s*:\s*)?[A-Z][A-Z0-9.\-]{0,9}\)\s+\$?\d+(?:\.\d+)?\s+(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|market perform)\b|\banalysts? (?:have )?(?:provided|published|offered).{0,60}ratings?\b|\b(?:bullish|somewhat bullish|indifferent|somewhat bearish|bearish)\s*=\s*\d+", "assessment", positive=("upgrade", "buy", "outperform", "overweight"), negative=("downgrade", "sell", "underperform", "underweight")),
     _rule("analyst.price_target_action", r"\b(?:price target|target price|price objective|PT|PO|P/T|\$\d+(?:\.\d+)? target|target on)\b", "forecast", positive=("raises", "raised", "higher", "increases"), negative=("cuts", "cut", "lowers", "lowered")),
-    _rule("earnings.performance", r"\b(?:earnings|EPS|revenues?|sales|net income|profit|quarterly results?|financial results?)\b.{0,180}\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|above|below|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|rise|surge[sd]?|gain(?:s|ed)?|fell|drop(?:s|ped)?|declin(?:e|ed)|grew|increase[sd]?|decrease[sd]?|loss|up(?: from)?|down(?: from)?|narrowed|widened|inline)\b|\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|rose|rise|surge[sd]?|gain(?:s|ed)?|fell|drop(?:s|ped)?|grew|narrowed|widened|disappointing|swings? to)\b.{0,100}\b(?:earnings|EPS|revenues?|sales|profit|results?|losses?)\b|\b(?:EPS|earnings per share)\b.{0,30}\$?\s*\(\d+(?:\.\d+)?\)", positive=("beat", "above", "better-than-expected", "grew", "rose", "rise", "surge", "gain", "record", "increase", "up from", "narrowed", "swings to profit"), negative=("miss", "below", "weaker-than-expected", "fell", "drop", "decline", "decrease", "loss", "down", "widened", "disappointing")),
-    _rule("guidance.issued", r"\b(?:issues?|provid(?:e|es|ed)|guid(?:e|es|ed)|raises?|lower(?:s|ed)?|cuts?|reaffirm(?:s|ed|ing)?|withdraws?|updates?)\b.{0,100}\b(?:guidance|outlook|forecast|rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:not providing|declines? to provide|will not provide|withholds?)\b.{0,80}\bguidance\b|\b(?:guidance|outlook)\b.{0,100}\b(?:raised|lowered|cut|reaffirmed|withdrawn|unchanged|expects?|projection|projecting)\b|\b(?:sees|expects?|anticipates?|project(?:s|ed|ing)?|is looking for)\b.{0,120}\b(?:rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin|free cash flow)\b.{0,160}\bprojection\s*=|\b(?:profit|EPS|earnings|rev\.?|revenue|sales)\s+(?:forecast|outlook|guidance)\b.{0,160}\b(?:fell short|below|miss(?:es|ed)?|above|beat[sd]?)\b.{0,80}\b(?:street|consensus|analysts?'? estimates?|view)\b|\b(?:profit|EPS|earnings|rev\.?|revenue|sales)\s+(?:forecast|outlook|guidance)\b.{0,120}\bwhile\s+(?:analysts?'? estimates?|consensus)\b", "forecast", positive=("raise", "increas", "higher"), negative=("cut", "lower", "withdraw", "reduce", "weaker", "not providing", "declines to provide", "withhold")),
-    _rule("corporate_transaction.acquisition", r"\b(?:acquir(?:e|es|ed|ing)|acquisition|merger|takeover)\b|\b(?:will|would|to)\s+buys?\b|\bbuys?\b.{1,100}\bfor\s+\$|\bpurchase(?:s|d)? of .{0,100}\b(?:assets?|business|operations?)\b|\b(?:rumored?|possible|potential)?\s*bid for\b|\b(?:firm|binding|cash|takeover) offer for\b|\btakeover chatter in\b|\b(?:will|would|agrees? to) combine with\b|\bamalgamat(?:e|es|ed|ing) with\b|\b(?:complet(?:e|es|ed|ion) of|proposed) (?:the )?(?:business )?combination\b|\bproposed deal with\b", positive=("agreed", "complete", "closes", "approved", "purchase", "will combine", "amalgamat"), negative=("terminate", "withdraw", "no longer pursue", "blocked", "reject", "not in best interest")),
-    _rule("corporate_transaction.asset_sale", r"\b(?:asset sale|sale of .{0,100}(?:assets?|business|operations?)|closes? (?:the )?sale of|divest(?:s|ed|iture)|sell(?:s|ing)? its .*business)\b", positive=("complete", "closes", "proceeds"), negative=("distress",)),
-    _rule("capital.financing", r"\b(?:public offering|registered direct offering|private placement|mixed shelf|(?:stock|share|equity|securities) shelf|shelf (?:offering|registration)|at-the-market|ATM (?:program|offering)|convertible (?:senior )?notes?|(?:convertible |senior )?notes? offering|bond offering|debt financing|equity financing|issues? .{0,60}(?:debt|notes?|bonds?)|launch(?:es|ed)? .{0,60}(?:bond|notes?|debt)|files? for .{0,80}offering|prices? .{0,80}(?:offering|shares?|notes?|bonds?)|offer(?:s|ed|ing)? .{0,60} shares?|shares? offering|offering of .{0,80}(?:shares?|notes?|units?|securities)|sale (?:by us )?of .{0,80}(?:common stock|preferred stock|debt securities|warrants)|investment from .{0,80}funds?|term sheet .{0,100}investment|conversion price .{0,40}(?:share|stock))\b", positive=("investment from",), negative=("dilution", "offering", "placement", "convertible", "shelf", "prices")),
+    _rule("earnings.performance", r"\b(?:earnings|EPS|revenues?|sales|net income|profit|quarterly results?|financial results?)\b.{0,180}\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|above|below|better[- ]than[- ]expected|stronger[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|rise|surge[sd]?|gain(?:s|ed)?|fell|drop(?:s|ped)?|declin(?:e|ed)|grew|increase[sd]?|decrease[sd]?|loss|up(?: from)?|down(?: from)?|narrowed|widened|inline)\b|\b(?:reports?|reported|posts?|beat[sd]?|miss(?:es|ed)?|rose|rise|surge[sd]?|gain(?:s|ed)?|fell|drop(?:s|ped)?|grew|narrowed|widened|disappointing|swings? to)\b.{0,100}\b(?:earnings|EPS|revenues?|sales|profit|results?|losses?)\b|\bposts?\b.{0,40}\b(?:F?Q[1-4]|quarter(?:ly)?)\b.{0,40}\b(?:beat|miss)\b|\b(?:better|stronger|weaker)[- ]than[- ]expected results?\b|\b(?:EPS|earnings per share)\b.{0,30}\$?\s*\(\d+(?:\.\d+)?\)", positive=("beat", "above", "better-than-expected", "stronger-than-expected", "grew", "rose", "rise", "surge", "gain", "record", "increase", "up from", "narrowed", "swings to profit"), negative=("miss", "below", "weaker-than-expected", "fell", "drop", "decline", "decrease", "loss", "down", "widened", "disappointing")),
+    _rule("guidance.issued", r"\b(?:issues?|provid(?:e|es|ed)|guid(?:e|es|ed)|rais(?:e[sd]?|ing)|boost(?:s|ed|ing)?|increas(?:e[sd]?|ing)|lower(?:s|ed)?|cuts?|reaffirm(?:s|ed|ing)?|withdraws?|updates?)\b.{0,100}\b(?:guidance|outlook|forecast|rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:not providing|declines? to provide|will not provide|withholds?)\b.{0,80}\bguidance\b|\b(?:guidance|outlook)\b.{0,100}\b(?:raised|boosted|increased|lowered|cut|reaffirmed|withdrawn|unchanged|expects?|projection|projecting)\b|\b(?:sees|expects?|anticipates?|project(?:s|ed|ing)?|is looking for)\b.{0,120}\b(?:rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin|comparable[- ]store sales|same[- ]store sales|comps?|comp)\b|\bexpected to\s+(?:comp|report comparable[- ]store sales|report same[- ]store sales)\b|\b(?:rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin|free cash flow)\b.{0,160}\bprojection\s*=|\b(?:profit|EPS|earnings|rev\.?|revenue|sales)\s+(?:forecast|outlook|guidance)\b.{0,160}\b(?:fell short|below|miss(?:es|ed)?|above|beat[sd]?)\b.{0,80}\b(?:street|consensus|analysts?'? estimates?|view)\b|\b(?:profit|EPS|earnings|rev\.?|revenue|sales)\s+(?:forecast|outlook|guidance)\b.{0,120}\bwhile\s+(?:analysts?'? estimates?|consensus)\b", "forecast", positive=("raise", "boost", "increas", "higher"), negative=("cut", "lower", "withdraw", "reduce", "weaker", "not providing", "declines to provide", "withhold")),
+    _rule("corporate_transaction.acquisition", r"\b(?:acquir(?:e|es|ed|ing)|acquisitions?|merger|takeover)\b|\b(?:will|would|to)\s+buys?\b|\bwill\s+be\s+purchased\s+by\b|\bbuys?\b.{1,100}\bfor\s+\$|\bpurchase(?:s|d)? of .{0,100}\b(?:assets?|business|operations?)\b|\b(?:rumored?|possible|potential)?\s*bid for\b|\b(?:firm|binding|cash|takeover) offer for\b|\btakeover chatter in\b|\b(?:will|would|agrees? to) combine with\b|\bamalgamat(?:e|es|ed|ing) with\b|\b(?:complet(?:e|es|ed|ion) of|proposed) (?:the )?(?:business )?combination\b|\bproposed deal with\b", positive=("agreed", "complete", "closes", "approved", "purchase", "purchased", "will combine", "amalgamat"), negative=("terminate", "withdraw", "no longer pursue", "blocked", "reject", "not in best interest")),
+    _rule("corporate_transaction.asset_sale", r"\b(?:asset sale|sale of .{0,100}(?:assets?|business|operations?|units?|properties|buildings?|towers?|facilities|portfolio)|closes? (?:the )?sale of .{0,100}(?:assets?|business|operations?|units?|properties|buildings?|towers?|facilities|portfolio)|divest(?:s|ed|iture)|spin[- ]?off|sell(?:s|ing)? (?:its )?.{0,100}(?:business|operations?|units?|properties|buildings?|towers?|facilities|portfolio))\b", positive=("complete", "closes", "proceeds", "maximize shareholder value"), negative=("distress",)),
+    _rule("capital.financing", r"\b(?:public offering|registered direct offering|private placement|mixed shelf|(?:stock|share|equity|securities) shelf|shelf (?:offering|registration)|at-the-market|ATM (?:program|offering)|convertible (?:senior )?notes?|(?:convertible |senior )?notes? offering|bond offering|debt financing|equity financing|issues? .{0,60}(?:debt|notes?|bonds?)|launch(?:es|ed)? .{0,60}(?:bond|notes?|debt)|files? for .{0,80}offering|prices? .{0,80}(?:offering|shares?|notes?|bonds?)|(?:offer(?:s|ed)?|offering)\s+.{0,60}?\bshares?|shares? offering|offering of .{0,80}(?:shares?|notes?|units?|securities)|sale (?:by us )?of .{0,80}(?:common stock|preferred stock|debt securities|warrants)|investment from .{0,80}funds?|term sheet .{0,100}investment|conversion price .{0,40}(?:share|stock))\b", positive=("investment from",), negative=("dilution", "offering", "placement", "convertible", "shelf", "prices")),
     _rule("capital.return", r"\b(?:share repurchase|buyback|dividend|capital return)\b", positive=("restart", "increase", "raises", "special dividend", "fund capital return", "capital return"), negative=("suspend", "cut", "reduce")),
-    _rule("regulatory.action", r"\b(?:trading halt|halted|resume trading|SEC action|regulatory action|compliance notice|formal investigation|clinical hold|license renewal|crackdown|advisory committee|regulator|letter of authorization|conditions? of authorization|reporting requirements?|(?:grant|grants|granted)\b.{0,100}\b(?:terrestrial|commercial|marketing|regulatory) authorization)\b|\b(?:FDA|FTC|SEC|European Commission|Nuclear Regulatory Commission)\b.{0,180}\b(?:investigation|inquiry|subpoena|request(?:s|ed)? information|hold|cancel|issue|renew|order|action|notice|authoriz|reporting requirement)\w*\b", positive=("authorize", "authorization", "renew", "grant"), negative=("halt", "suspend", "noncompliance", "investigation", "inquiry", "subpoena", "crackdown", "cancel", "myocarditis", "pericarditis", "adverse")),
-    _rule("clinical.regulatory_milestone", r"\b(?:FDA|EMA|NDA|BLA|USDA)\b.{0,180}\b(?:approv|reject|complete response|clinical hold|clearance|accept|authoriz|resubmission|acknowledge|submission|meeting|grant|nod)\w*\b|\b(?:grant(?:s|ed)?|agree(?:s|d)?)\b.{0,100}\b(?:meet|meeting)\b.{0,80}\bFDA\b|\b(?:receiv(?:e|es|ed)|secur(?:e|es|ed))\b.{0,80}\bCE mark\b|\b(?:complete response letter|clinical hold|primary endpoint|phase [123] (?:study|trial)|letter of authorization|regulatory submission|FDA nod|CE mark)\b", positive=("approve", "approval", "clearance", "accept", "authorize", "authorization", "grant", "nod", "CE mark", "met primary"), negative=("reject", "complete response", "hold", "did not meet", "missed", "myocarditis", "pericarditis", "cancel")),
-    _rule("clinical.trial_result", r"\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b.*\b(?:endpoint|results?|data|efficacy|safety|survival|viral suppression)\b|\b(?:results?|data)\b.{0,120}\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b|\bpositive clinical (?:data|results?)\b|\b(?:met|achieved|did not meet|failed to meet|did not demonstrate)\b.{0,120}\b(?:primary\b.{0,60})?(?:endpoint|goal|dose[- ]response)\b|\b(?:statistically significant(?: and clinically meaningful)? improvement|significantly reduces?|\d+(?:\.\d+)?%\s+reduction in (?:the )?risk|\d+(?:\.\d+)?%\s+of patients?.{0,80}\bachieved\b|first (?:patient|subject) (?:enrolled|dosed)|(?:enrolls?|doses?) (?:the )?first (?:patient|subject)|high efficacy|durable viral suppression|overall survival|sustained virologic response)\b", positive=("met", "positive", "improved"), negative=("failed", "missed", "adverse")),
-    _rule("legal.proceeding", r"\b(?:lawsuit|litigation|investigation|subpoena|settlement|arbitration|legal claim|claim for .{0,60}damages|seeking .{0,40}damages|patent peace|(?:grant(?:s|ed)?|receiv(?:e|es|ed))\b.{0,80}\bpatent)\b|\b(?:judge|court)\b.{0,140}\b(?:rules?|ruled|finds?|found|calls?|called|strikes? down|invalidates?)\b.{0,100}\b(?:restriction|limitation|ban|rule|regulation)s?\b|\b(?:judge|court)\b.{0,140}\b(?:restriction|limitation|ban|rule|regulation)s?\b.{0,100}\b(?:arbitrary|unlawful|invalid|struck down)\b", positive=("seeking damages", "served a request", "files arbitration", "patent peace"), negative=("lawsuit", "investigation", "subpoena", "breach", "discriminatory", "adverse treatment")),
-    _rule("listing.market_structure", r"\b(?:reverse split|stock split|share consolidation|share combination|delist(?:s|ed|ing)?|deslit|delisting|listing compliance|regains? compliance|regained compliance|continued listing|non[- ]compliance|minimum bid|late filing|failure to timely file|included in .{0,60}(?:Russell|S&P|Nasdaq).{0,20}index|IPO)\b", positive=("regain", "regained compliance", "approved listing", "included"), negative=("delist", "deslit", "noncompliance", "non-compliance", "late", "failure", "reverse split")),
-    _rule("commercial.contract", r"\b(?:awarded|wins?|receives?|secures?|signs?|enters?|affirms?)\b.{0,120}\b(?:contract|order|award|agreements?|program|initiative)\b|\b(?:deal with\b.{0,100}\b(?:provid|supply)\w*|named\b.{0,100}\bofficial\b.{0,60}\b(?:broker|provider|supplier|partner))\b|\bcontract award\b|\b(?:waiver and amendment|amendment) agreement\b|\bwaiv(?:e|es|ed|ing)\b.{0,120}\bright to terminate\b.{0,120}\b(?:fund|financ|tranche|obligation)\w*\b|\b(?:contract|agreement)\s+(?:termination|cancellation|non[- ]renewal)\b|\b(?:termination|cancellation|non[- ]renewal)\b.{0,80}\b(?:contract|agreement)\b|\b(?:follow[- ]on )?(?:contract|order|agreement|program|initiative)\b.{0,120}\b(?:awarded|affirmed|won|win|received|secured|signed|terminated|cancelled|canceled|not renewed)\b", positive=("awarded", "affirmed", "wins", "win", "received", "secured", "signed", "contract award"), negative=("cancel", "terminate", "non-renewal", "not renewed")),
-    _rule("product.milestone", r"\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|roll(?:s|ed)? out|recall|discontinue|authoriz(?:e|es|ed|ing)|ships? (?:the )?first|first shipment|deliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)|release(?:s|d)? (?:the )?(?:final )?pricing|production milestone|assembly line|built? \d+)\w*\b.{0,120}\b(?:product|platform|service|device|drug|treatment|vaccine|vehicle|system|game|headset|candidate|model|factory|use|panel|test|camera|dressing)\b|\bdeliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)\b|\b(?:product|device|drug|treatment|vaccine|service|game|headset|vehicle|model|panel|test|camera|dressing)\b.{0,120}\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|release|recall|discontinue|delay|authoriz|assembly line|first shipment)\w*\b|\b(?:new products?|product delay|(?:lead|investigational) (?:product candidate|drug|treatment|therapy|antibody)|delivery system|bodies coming down the assembly line)\b", positive=("launch", "unveil", "reveal", "debut", "commercializ", "introduc", "release", "approval", "authorize", "new", "assembly", "built", "affordable", "ships the first", "first shipment", "deliver"), negative=("recall", "delay", "discontinue")),
+    _rule("regulatory.action", r"\b(?:trading halt|halted|resume trading|SEC action|regulatory action|compliance notice|formal investigation|clinical hold|license renewal|crackdown|advisory committee|regulator|letter of authorization|conditions? of authorization|reporting requirements?|(?:grant|grants|granted)\b.{0,100}\b(?:terrestrial|commercial|marketing|regulatory) authorization)\b|\b(?:FDA|FTC|SEC|European Commission|Nuclear Regulatory Commission|FERC|Federal Energy Regulatory Commission)\b.{0,180}\b(?:investigation|inquiry|subpoena|request(?:s|ed)? information|hold|cancel|issue|renew|order|action|notice|authoriz|reporting requirement|pre[- ]filing review)\w*\b|\benter(?:s|ed|ing)?\b.{0,80}\bpre[- ]filing review process\b.{0,120}\b(?:FERC|Federal Energy Regulatory Commission)\b|\b(?:NICE|National Institute for Health and Care Excellence|health technology assessment (?:body|agency)|payer)\b.{0,180}\b(?:reject(?:s|ed)?|does not recommend|cannot recommend|declines? to recommend|refus(?:e[sd]?|ing) coverage)\b|\b(?:reject(?:s|ed)?|does not recommend|cannot recommend|declines? to recommend|refus(?:e[sd]?|ing) coverage)\b.{0,180}\b(?:NICE|National Institute for Health and Care Excellence|health technology assessment (?:body|agency)|payer)\b", positive=("authorize", "authorization", "renew", "grant", "pre-filing review"), negative=("halt", "suspend", "noncompliance", "investigation", "inquiry", "subpoena", "crackdown", "cancel", "myocarditis", "pericarditis", "adverse", "reject", "does not recommend", "cannot recommend", "declines to recommend", "refuse")),
+    _rule("clinical.regulatory_milestone", r"\b(?:FDA|EMA|NDA|BLA|USDA)\b.{0,180}\b(?:approv|reject|complete response|clinical hold|clearance|accept|authoriz|resubmission|acknowledge|submission|meeting|grant|nod|fast track|expand\w*\s+(?:the\s+)?indication)\w*\b|\b(?:grant(?:s|ed)?|agree(?:s|d)?)\b.{0,100}\b(?:meet|meeting)\b.{0,80}\bFDA\b|\b(?:receiv(?:e|es|ed)|secur(?:e|es|ed))\b.{0,80}\bCE mark\b|\b(?:complete response letter|clinical hold|primary endpoint|phase [123] (?:study|trial)|letter of authorization|regulatory submission|FDA nod|CE mark|fast track designation)\b", positive=("approve", "approval", "clearance", "accept", "authorize", "authorization", "grant", "nod", "CE mark", "met primary", "expands indication"), negative=("reject", "complete response", "hold", "did not meet", "missed", "myocarditis", "pericarditis", "cancel")),
+    _rule("clinical.regulatory_milestone", r"\bfil(?:e[sd]?|ing)\b.{0,100}\b(?:response|submission|application)\b.{0,80}\b(?:FDA|EMA)\b|\b(?:withdraw(?:s|n|al)?|withdrew)\b.{0,100}\b(?:NDA|BLA|new drug application|application|submission)\b", positive=("file", "submitted"), negative=("withdraw", "withdrew")),
+    _rule("clinical.trial_result", r"\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b.*\b(?:endpoint|results?|data|efficacy|safety|survival|viral suppression|site)\b|\b(?:results?|data)\b.{0,120}\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b|\b(?:initiat(?:e[sd]?|ion)|commenc(?:e[sd]?|ement)|begin(?:s|ning)?)\b.{0,100}\b(?:Phase\s*[123][a-z]?\s+)?(?:clinical\s+)?(?:study|trial)\b|\bexpansion of\b.{0,100}\bclinical development program\b.{0,120}\bnew trial\b|\bpositive clinical (?:data|results?)\b|\b(?:met|achieved|did not meet|failed to meet|did not demonstrate)\b.{0,120}\b(?:primary\b.{0,60})?(?:endpoint|goal|dose[- ]response|statistical significance)\b|\b(?:primary|co-primary|secondary) endpoint\b.{0,100}\b(?:did not meet|failed to meet|missed)\b.{0,80}\b(?:statistical significance|endpoint)?\b|\b(?:shut(?:s|ting)? down|discontinues?|terminates?)\b.{0,100}\b(?:clinical trial|study|Phase\s*[123])\b|\b(?:statistically significant(?: and clinically meaningful)? improvement|significantly reduces?|prevent(?:s|ed|ing)?\s+\d+(?:\.\d+)?%\s+of|\d+(?:\.\d+)?%\s+(?:vaccine )?efficacy|\d+(?:\.\d+)?%\s+reduction in (?:the )?risk|\d+(?:\.\d+)?%\s+of patients?.{0,80}\bachieved\b|first (?:patient|subject) (?:enrolled|dosed|screened)|(?:enrolls?|doses?|screens?) (?:the )?first (?:patient|subject)|(?:opens?|initiates?|announces?)\b.{0,80}\b(?:Phase\s*[123]\s+)?trial site|high efficacy|durable viral suppression|overall survival|sustained virologic response)\b", positive=("met", "positive", "improved", "prevented", "efficacy", "trial site", "initiation", "new trial", "first patient screened"), negative=("failed", "missed", "did not meet", "shut down", "discontinue", "terminate", "adverse")),
+    _rule("legal.proceeding", r"\b(?:lawsuit|litigation|investigation|subpoena|probe|targeted by (?:the )?probe|under investigation|settlement|arbitration|legal claim|security vulnerability|actively exploited vulnerability|data breach|claim for .{0,60}damages|seeking .{0,40}damages|patent peace|patent (?:is )?issued|issues? .{0,40}patent|(?:grant(?:s|ed)?|receiv(?:e|es|ed))\b.{0,80}\bpatent)\b|\b(?:judge|court)\b.{0,140}\b(?:rules?|ruled|finds?|found|calls?|called|strikes? down|invalidates?)\b.{0,100}\b(?:restriction|limitation|ban|rule|regulation)s?\b|\b(?:judge|court)\b.{0,140}\b(?:restriction|limitation|ban|rule|regulation)s?\b.{0,100}\b(?:arbitrary|unlawful|invalid|struck down)\b", positive=("seeking damages", "served a request", "files arbitration", "patent peace", "patent issued", "issues patent"), negative=("lawsuit", "investigation", "probe", "subpoena", "breach", "vulnerability", "discriminatory", "adverse treatment")),
+    _rule("listing.market_structure", r"\b(?:reverse (?:stock|share) split|reverse split|stock split|share consolidation|share combination|delist(?:s|ed|ing)?|deslit|delisting|listing compliance|regains? compliance|regained compliance|continued listing|non[- ]compliance|minimum bid|late filing|failure to timely file|included in .{0,60}(?:Russell|S&P|Nasdaq).{0,20}index|IPO)\b", positive=("regain", "regained compliance", "approved listing", "included"), negative=("delist", "deslit", "noncompliance", "non-compliance", "late", "failure", "reverse split", "reverse share split", "reverse stock split")),
+    _rule("commercial.contract", r"\b(?:awarded|wins?|receives?|secures?|sign(?:s|ed|ing)?|enters?|affirms?)\b.{0,120}\b(?:contract|order|award|agreements?|program|initiative)\b|\bselected\b.{0,120}\bto (?:provide|deliver|supply)\b.{0,120}\b(?:services?|consultancy|supervision|supply|systems?|stations?|equipment|products?|components?)\b|\b(?:expand(?:s|ed|ing)?|extend(?:s|ed|ing)?|renew(?:s|ed|ing)?)\b.{0,100}\b(?:sales |supply |service )?agreements?\b|\b(?:deal with\b.{0,100}\b(?:provid|supply)\w*|named\b.{0,100}\bofficial\b.{0,60}\b(?:broker|provider|supplier|partner))\b|\bcontract award\b|\b(?:waiver and amendment|amendment) agreement\b|\bwaiv(?:e|es|ed|ing)\b.{0,120}\bright to terminate\b.{0,120}\b(?:fund|financ|tranche|obligation)\w*\b|\b(?:contract|agreement)\s+(?:termination|cancellation|non[- ]renewal)\b|\b(?:termination|cancellation|non[- ]renewal)\b.{0,80}\b(?:contract|agreement)\b|\b(?:follow[- ]on )?(?:contract|order|agreement|program|initiative)\b.{0,120}\b(?:awarded|affirmed|won|win|received|secured|signed|terminated|cancelled|canceled|not renewed)\b", positive=("awarded", "affirmed", "wins", "win", "received", "secured", "signed", "selected", "expand", "extend", "renew", "contract award"), negative=("cancel", "terminate", "non-renewal", "not renewed")),
+    _rule("product.milestone", r"\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|roll(?:s|ed|ing)? out|recall|discontinue|authoriz(?:e|es|ed|ing)|ships? (?:the )?first|first shipment|deliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)|release(?:s|d)? (?:the )?(?:final )?pricing|production milestone|assembly line|built? \d+)\w*\b.{0,120}\b(?:product|platform|service|feature|functionality|uploader|device|drug|treatment|vaccine|vehicle|system|game|headset|candidate|model|factory|use|panel|test|camera|dressing)\b|\bdeliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)\b|\b(?:product|feature|functionality|uploader|device|drug|treatment|vaccine|service|game|headset|vehicle|model|panel|test|camera|dressing)\b.{0,120}\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|release|recall|discontinue|delay|authoriz|available|roll(?:s|ed|ing)? out|assembly line|first shipment)\w*\b|\b(?:products?|goods?|inventory)\b.{0,120}\breturned\b.{0,100}\b(?:company|supplier|customer|distributor|retailer|regulator)\b|\b(?:new products?|product delay|(?:lead|investigational) (?:product candidate|drug|treatment|therapy|antibody)|delivery system|bodies coming down the assembly line)\b", positive=("launch", "unveil", "reveal", "debut", "commercializ", "introduc", "release", "approval", "authorize", "available", "roll out", "rolling out", "new", "assembly", "built", "affordable", "ships the first", "first shipment", "deliver"), negative=("recall", "returned", "delay", "discontinue")),
     _rule("governance.management_change", r"\b(?:appoints?|names?|elects?|resigns?|retires?|steps down|terminates?|replaces?|death|dies|died|passing)\b.{0,100}\b(?:chief executive|chief financial|CEO|CFO|president|founder|director|board)\b|\b(?:chief executive|chief financial|CEO|CFO|president|founder|director)\b.{0,80}\b(?:resigns?|retires?|steps down|appointed|named|terminated|replaced|dies|died|death|passing)\b", negative=("resign", "terminated", "steps down", "death", "dies", "died", "passing")),
-    _rule("operations.business_update", r"\b(?:business update|restructur|layoff|shutdown|expansion|job cuts?|workforce reduction|cut(?:s|ting)?\s+\d[\d,]*.{0,50}\b(?:jobs?|positions?)|service unaffected|operations? unaffected|opens? (?:a )?(?:store|facility|dispensary)|business performance)\w*\b", positive=("expansion", "growth", "unaffected", "opens"), negative=("layoff", "shutdown", "restructur", "cuts", "cutting")),
+    _rule("operations.business_update", r"\b(?:business update|restructur|layoff|shutdown|shut(?:s|ting)? down|ceas(?:e|es|ed|ing) operations?|expan(?:d|ds|ded|ding|sion)|job cuts?|workforce reduction|cut(?:s|ting)?\s+\d[\d,]*.{0,50}\b(?:jobs?|positions?)|service unaffected|operations? unaffected|opens? (?:a )?(?:store|clinic|location|facility|dispensary)|business performance|concerns? over (?:the )?sustainability of (?:this|the) business model)\w*\b", positive=("unaffected", "opens"), negative=("layoff", "shutdown", "shut down", "cease", "restructur", "cuts", "cutting", "sustainability")),
     _rule("earnings.release_schedule", r"\b(?:will (?:report|release|post)|will be reporting|scheduled to report|set to (?:report|announce)|reports? .{0,60} on (?:Monday|Tuesday|Wednesday|Thursday|Friday)|release earnings results|release .{0,40} financial results|earnings (?:date|call beginning|release)|after (?:the )?(?:opening|closing) bell|before (?:the )?opening bell|after market (?:close|hours)|ahead of .{0,30}(?:Q[1-4]|quarterly) earnings .{0,30}(?:Monday|Tuesday|Wednesday|Thursday|Friday))\b", "reference"),
     _rule("earnings.restatement", r"\b(?:restate|restatement|should no longer be relied upon)\b", negative=("restate", "no longer be relied")),
-    _rule("capital.deleveraging", r"\b(?:deleverag|(?:debt|notes?|bonds?) repayment|repayment of (?:outstanding )?(?:debt|borrowings|notes?|bonds?)|repay(?:s|ed)? .*(?:debt|notes?|bonds?)|reduce(?:s|d)? .*debt|cash tender offer\b.{0,160}\b(?:notes?|bonds?|debt))\w*\b", positive=("deleverag", "repay", "repayment", "reduce", "cash tender offer")),
+    _rule("capital.deleveraging", r"\b(?:deleverag|(?:debt|borrowings?|term loans?|notes?|bonds?) repayment|repayment of (?:all )?(?:outstanding )?(?:debt|borrowings?|term loans?|notes?|bonds?)|repay(?:s|ed)? .*(?:debt|borrowings?|term loans?|notes?|bonds?)|reduce(?:s|d)? .*debt|cash tender offer\b.{0,160}\b(?:notes?|bonds?|debt))\w*\b", positive=("deleverag", "repay", "repayment", "reduce", "cash tender offer")),
     _rule("capital.structure", r"\b(?:authorized shares|outstanding shares|share consolidation|capital structure|refinanc\w*|repurchas\w* .{0,80}(?:notes?|bonds?|debt)|convertible bonds?)\b", positive=("refinanc", "repurchas", "extend", "later maturity")),
-    _rule("credit.solvency", r"\b(?:bankrupt|chapter 11|default|going concern|insolven|liquidity crisis)\w*\b", negative=("bankrupt", "default", "going concern", "insolven", "crisis")),
+    _rule("credit.solvency", r"\b(?:bankrupt|chapter 11|default|going concern|substantial doubt|creditor protection|insolven|liquidity crisis|financing shortfall)\w*\b", negative=("bankrupt", "default", "going concern", "substantial doubt", "creditor protection", "insolven", "crisis", "shortfall")),
     _rule("financial.margin", r"\b(?:gross|operating|EBITDA|profit) margins?\b", positive=("expand", "improv", "increase", "accretive"), negative=("contract", "compress", "declin", "dilutive", "difficult", "struggle")),
     _rule("financial.operating_performance", r"\b(?:operating income|operating loss|OIBDA|EBITDA|profitability|net income|net loss|operating profit|results? of operations|return on (?:equity|assets)|ROE|ROA|(?:comparable|comp)(?: store)? (?:sales|net sales)|business performance|portfolio occupancy|rent collection)\b|\b(?:revenues?|sales)\b.{0,100}\b(?:rose|climbed|grew|growth|fell|slipped|declined|decreased|increased|up|down|vs\.?|compared with|year[- ]over[- ]year)\b|\b(?:occup(?:ied|ancy)|base rents? collected)\b.{0,40}\b\d+(?:\.\d+)?%", positive=("income", "profitab", "improv", "increase", "grew", "growth", "rose", "climbed", "recovered", " up ", "occupied", "collected"), negative=("loss", "declin", "deterior", "decrease", "fell", "slipped", " down ")),
     _rule("financial.cash_flow", r"\b(?:free cash flow|operating cash flow|cash burn)\b", positive=("positive", "increase", "improv"), negative=("negative", "burn", "declin")),
-    _rule("financial.liquidity", r"\b(?:cash runway|liquidity|cash and equivalents|working capital|(?:obtains?|obtained|receives?|received)\b.{0,120}\bloan\b.{0,100}\bPaycheck Protection Program|(?:obtains?|obtained|receives?|received)\b.{0,100}\bPaycheck Protection Program loan|PPP loan)\b", positive=("strong", "sufficient", "improv", "obtained", "receives", "PPP loan"), negative=("shortfall", "insufficient", "weak")),
+    _rule("financial.liquidity", r"\b(?:cash runway|liquidity|cash and equivalents|working capital|(?:enters?|entered|secures?|secured|obtains?|obtained)\b.{0,120}\b(?:revolving )?credit facility|(?:obtains?|obtained|receives?|received)\b.{0,120}\bloan\b.{0,100}\bPaycheck Protection Program|(?:obtains?|obtained|receives?|received)\b.{0,100}\bPaycheck Protection Program loan|PPP loan)\b", positive=("strong", "sufficient", "improv", "entered", "secured", "obtained", "receives", "credit facility", "PPP loan"), negative=("shortfall", "insufficient", "weak")),
     _rule("financial.loss_exposure", r"\b(?:(?:asset|goodwill|intangible|inventory|financial|accounting) impairment|impairment (?:charge|loss)|write[- ]?down|charge|loss exposure|additional losses?|catastrophe losses?)\b", negative=("impairment", "write", "charge", "loss", "catastrophe")),
     _rule("financial.internal_control", r"\b(?:material weakness|internal controls?|control deficiency)\b", negative=("weakness", "deficiency", "ineffective")),
     _rule("financial.credit_quality", r"\b(?:credit rating|credit quality|rating agency)\b", positive=("upgrade", "improv"), negative=("downgrade", "deterior")),
@@ -250,11 +288,11 @@ RULES = (
     _rule("ownership.position_change", r"\b(?:stake|ownership|position in|shares? of)\b.{0,160}\b(?:increased|decreased|sold|bought|acquired|trimmed|exited)\b|\b(?:increased|decreased|sold|bought|acquired|trimmed|exited)\b.{0,160}\b(?:stake|position in|shares? of)\b|\bnew\s+\d+(?:\.\d+)?%?\s+stake\b", positive=("increased", "bought", "acquired", "new stake"), negative=("decreased", "sold", "trimmed", "exited")),
     _rule("ownership.position", r"\b(?:owns? .{0,80}(?:shares?|stake)|ownership (?:stake|interest)|beneficial owner|stake in|position in .{0,80}(?:stock|shares?|company)|activist investor stake|activist (?:investor|campaign)|activist\b.{0,80}\btarget)\b", "background"),
     _rule("commercial.partnership", r"\b(?:partnership|collaboration|strategic alliance|joint venture|partner(?:s|ed|ing)? with|named\b.{0,80}\b(?:exclusive|official)\b.{0,60}\bpartner)\b", positive=("partnership", "collaboration", "alliance", "partnering", "partnered", "named")),
-    _rule("commercial.demand_condition", r"\b(?:strong|robust|growing|increas(?:e|ed|ing)|record|higher|weak|soft(?:ness)?|lukewarm|slower|lower|declin(?:e|ed|ing)|falling|delayed|pent-up)\b.{0,80}\b(?:demand|bookings|orders?|backlog|customer additions?|subscribers?|appetite)\b|\b(?:demand softness|lukewarm demand)\b|\b(?:customer|consumer|client|market) demand\b|\bdemand (?:for|from)\b|\bappetite for\b|\b(?:bookings|orders?|backlog|subscribers?)\b.{0,80}\b(?:grew|rose|increased|declined|fell|decreased|record|strong|weak)\b|\b(?:customers? lost|shortages?|client purchasing)\b|\b(?:customers?|clients?)\b.{0,100}\bsupport\b.{0,100}\b(?:efforts?|service|offering|platform|product)\b|\bsupport\b.{0,100}\befforts? to (?:offer|launch|commercialize)\b", positive=("strong", "robust", "growing", "increase", "record", "higher", "appetite", "support"), negative=("weak", "soft", "softness", "lukewarm", "declin", "slow", "lower", "lost", "shortage", "delayed", "falling")),
+    _rule("commercial.demand_condition", r"\b(?:strong|robust|growing|increas(?:e|ed|ing)|record|higher|weak|soft(?:ness)?|lukewarm|slower|lower|declin(?:e|ed|ing)|falling|delayed|pent-up)\b.{0,80}\b(?:demand|bookings|pre[- ]?orders?|orders?|deliveries|backlog|customer additions?|subscribers?|appetite)\b|\b(?:demand softness|lukewarm demand)\b|\b(?:customer|consumer|client|market) demand\b|\bdemand (?:for|from)\b|\bappetite for\b|\b(?:bookings|pre[- ]?orders?|orders?|deliveries|backlog|subscribers?)\b.{0,80}\b(?:grew|rose|increased|declined|fell|decreased|record|strong|weak)\b|\b(?:customers? lost|shortages?|client purchasing)\b|\b(?:customers?|clients?)\b.{0,100}\bsupport\b.{0,100}\b(?:efforts?|service|offering|platform|product)\b|\bsupport\b.{0,100}\befforts? to (?:offer|launch|commercialize)\b", positive=("strong", "robust", "growing", "increase", "record", "higher", "appetite", "support"), negative=("weak", "soft", "softness", "lukewarm", "declin", "slow", "lower", "lost", "shortage", "delayed", "falling")),
     _rule("commercial.competitive_position", r"\b(?:market share|competitive position|competition|competitor|competitive (?:advantage|disadvantage)|market leader|largest .{0,50}(?:company|provider|operator|producer)|first and only|well-positioned)\b", positive=("gain", "leading", "leader", "largest", "advantage", "first and only", "well-positioned"), negative=("lose", "pressure", "challeng", "disadvantage", "discriminatory")),
-    _rule("operations.workforce", r"\b(?:layoffs?|job cuts?|workforce reduction|cut(?:s|ting)?\s+\d[\d,]*.{0,50}\b(?:jobs?|positions?)|hires?|headcount|seasonal jobs?|creat(?:e|es|ed|ing) .{0,50}jobs?|jobs? (?:created|during construction)|employs? (?:over|approximately|about|more than)?\s*\d|workforce of \d|convert(?:s|ed|ing)? .{0,50}employees? (?:into|to)|welcome back .{0,30}workers?|train .{0,30}(?:new )?(?:workers?|employees?))\b", positive=("hire", "create", "convert", "welcome back"), negative=("layoff", "cut", "reduction")),
+    _rule("operations.workforce", r"\b(?:layoffs?|job cuts?|workforce reduction|reduc(?:e[sd]?|ing)\s+(?:its\s+|the\s+)?(?:global\s+)?workforce|(?:global\s+)?workforce\s+(?:is\s+|was\s+|will be\s+)?reduc(?:e[sd]?|ing)|cut(?:s|ting)?\s+\d[\d,]*.{0,50}\b(?:jobs?|positions?)|hires?|headcount|seasonal jobs?|creat(?:e|es|ed|ing) .{0,50}jobs?|jobs? (?:created|during construction)|employs? (?:over|approximately|about|more than)?\s*\d|workforce of \d|convert(?:s|ed|ing)? .{0,50}employees? (?:into|to)|welcome back .{0,30}workers?|train .{0,30}(?:new )?(?:workers?|employees?))\b", positive=("hire", "create", "convert", "welcome back"), negative=("layoff", "cut", "reduction", "reduce")),
     _rule("operations.capacity_change", r"\b(?:capacity|facility|plant|factory|fleet|operational scale|operating footprint|development inventory)\b.{0,160}\b(?:add|expand|open|close|shutdown|increase|reduce|double|order)\w*\b|\b(?:add|expand|open|close|shutdown|increase|reduce|double|order)\w*\b.{0,160}\b(?:capacity|facility|plant|factory|fleet|aircraft|airplanes?|operational scale|operating footprint|development inventory)\b", positive=("add", "expand", "open", "increase", "double", "order"), negative=("close", "shutdown", "reduce")),
-    _rule("strategy.strategic_alternatives", r"\b(?:strategic alternatives?|sale process|strategic transaction process)\b", "assessment", positive=("expedited", "advance", "continues"), negative=("terminat", "abandon", "ends")),
+    _rule("strategy.strategic_alternatives", r"\b(?:strategic alternatives?|sale process|strategic transaction process|(?:receives?|received)\b.{0,100}\b(?:privatization|capital[- ]alliance|strategic transaction) proposals?)\b", "assessment", positive=("expedited", "advance", "continues", "receives", "received"), negative=("terminat", "abandon", "ends")),
     _rule("governance.auditor_change", r"\b(?:auditor|accounting firm)\b.*\b(?:resign|dismiss|appoint|replace)\w*\b", negative=("resign", "dismiss")),
     _rule("governance.shareholder_vote", r"\b(?:shareholders?|stockholders?)\b.*\b(?:vote|meeting|proposal|proxy|director nominees?)\b|\b(?:proxy|director nominees?)\b.*\b(?:shareholders?|stockholders?)\b"),
     _rule("index.membership", r"\b(?:added to|removed from|join(?:s|ed)?|delete(?:d)?|replac(?:e|es|ed|ing))\b.*\b(?:index|S&P|Russell|Nasdaq-100)\b|\b(?:index|S&P|Russell|Nasdaq-100)\b.*\b(?:added|removed|join(?:s|ed)?|delete(?:d)?|replac(?:e|es|ed|ing))\b", positive=("added", "join"), negative=("removed", "delete")),
@@ -305,6 +343,9 @@ class NewsSynthesisEngine:
         if not source_id or not timestamp or not text:
             raise ValueError("source_id, source_timestamp, and source text are required")
         tickers = tuple(str(value) for value in source.get("tickers") or source.get("entity_terms") or () if value)
+        evaluation_tickers = tuple(
+            str(value) for value in source.get("evaluation_target_tickers") or () if value
+        )
         entities = self.identity_index.resolve(text=identity_text, candidates=tickers, timestamp=timestamp)
         if _has_issuer_scoped_rule(identity_text, self.rules) or _has_issuer_event_assertion(identity_text):
             entity_ids = {str(entity["entity_id"]) for entity in entities}
@@ -316,6 +357,19 @@ class NewsSynthesisEngine:
                     entities.append(candidate)
                     entity_ids.add(str(candidate["entity_id"]))
             entities.sort(key=lambda row: (str(row.get("ticker") or ""), str(row["entity_id"])))
+        entity_ids = {str(entity["entity_id"]) for entity in entities}
+        evaluation_only_entity_ids: set[str] = set()
+        for candidate in self.identity_index.supported_evaluation_targets(
+            candidates=evaluation_tickers,
+            timestamp=timestamp,
+        ):
+            entity_id = str(candidate["entity_id"])
+            if entity_id in entity_ids:
+                continue
+            entities.append(candidate)
+            entity_ids.add(entity_id)
+            evaluation_only_entity_ids.add(entity_id)
+        entities.sort(key=lambda row: (str(row.get("ticker") or ""), str(row["entity_id"])))
         envelope = _envelope(title, text, source)
         document_aliases = _document_ticker_aliases(identity_text)
         mention_terms = {
@@ -331,6 +385,11 @@ class NewsSynthesisEngine:
             source_field,
             mention_terms,
             title=title,
+            reference_year=_reference_year(source.get("source_timestamp")),
+            allow_single_subject_continuity=(
+                envelope["document_structure"]["value"] == "single_subject"
+            ),
+            evaluation_only_entity_ids=evaluation_only_entity_ids,
         )
         participations = _apply_attributed_claim_sources(
             statements,
@@ -372,13 +431,18 @@ class NewsSynthesisEngine:
         mention_terms: Mapping[str, Sequence[str]],
         *,
         title: str = "",
+        reference_year: int | None = None,
+        allow_single_subject_continuity: bool = True,
+        evaluation_only_entity_ids: set[str] | frozenset[str] = frozenset(),
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         statements: list[dict[str, Any]] = []
         participations: list[dict[str, Any]] = []
         previous_entity_ids: tuple[str, ...] = ()
+        previous_guidance_entity_ids: tuple[str, ...] = ()
         previous_guidance = False
         previous_performance = False
         previous_end = 0
+        local_fallback_seen: set[tuple[str, str, int, int]] = set()
         guidance_rule = next(rule for rule in self.rules if rule.concept == "guidance.issued")
         earnings_rule = next(rule for rule in self.rules if rule.concept == "earnings.performance")
         clinical_regulatory_rule = next(rule for rule in self.rules if rule.concept == "clinical.regulatory_milestone")
@@ -401,17 +465,8 @@ class NewsSynthesisEngine:
         navigation_block = False
         for lane_index, lane_field, lane_text, start, end, quote in semantic_rows:
             if lane_index != previous_lane:
-                directionally_covered_ids = {
-                    str(row["entity_id"])
-                    for row in participations
-                    if row["semantic_sentiment"] in {"positive", "negative"}
-                }
-                if lane_field == "title" and all(
-                    str(entity["entity_id"]) in directionally_covered_ids
-                    for entity in entities
-                ):
-                    break
                 previous_entity_ids = ()
+                previous_guidance_entity_ids = ()
                 previous_guidance = False
                 previous_performance = False
                 previous_end = 0
@@ -419,7 +474,7 @@ class NewsSynthesisEngine:
             if len(quote) < 8:
                 previous_lane = lane_index
                 continue
-            if _boilerplate_sentence(quote):
+            if _boilerplate_sentence(quote) or _forward_looking_boilerplate_sentence(quote):
                 navigation_block = navigation_block or bool(re.match(
                     r"\s*related links?\s*:?\s*$",
                     quote,
@@ -430,6 +485,7 @@ class NewsSynthesisEngine:
                 continue
             if "\n\n" in lane_text[previous_end:start]:
                 previous_entity_ids = ()
+                previous_guidance_entity_ids = ()
                 previous_guidance = False
                 previous_performance = False
                 navigation_block = False
@@ -440,7 +496,12 @@ class NewsSynthesisEngine:
             matched_rules = [
                 (rule, match)
                 for rule in self.rules
-                if (match := rule.pattern.search(quote)) and _rule_applicable(rule, quote)
+                if (match := rule.pattern.search(quote))
+                and _rule_applicable(
+                    rule,
+                    quote,
+                    context=lane_text[max(0, start - 80):min(len(lane_text), end + 120)],
+                )
             ]
             regulatory_facts = extract_regulatory_decision_facts(quote)
             if (
@@ -469,9 +530,46 @@ class NewsSynthesisEngine:
                 previous_entity_ids,
                 mention_terms,
                 inherit_subject=inherit_subject,
+                require_grounded_entity_ids=evaluation_only_entity_ids,
             )
+            if lane_field == "title" and (
+                regulatory_facts
+                or any(
+                    rule.concept == "clinical.regulatory_milestone"
+                    for rule, _match in matched_rules
+                )
+            ):
+                scoped_entities = _relationship_scoped_regulatory_entities(
+                    entities,
+                    scoped_entities,
+                    quote,
+                    mention_terms,
+                    regulatory_facts,
+                )
             if scoped_entities:
                 previous_entity_ids = tuple(str(row["entity_id"]) for row in scoped_entities)
+            if lane_field == "title" and scoped_entities and matched_rules:
+                # Body evidence carries the fuller event package.  Do not let
+                # an equivalent compressed headline discard body-only
+                # qualifiers such as ownership or proceeds. Distinct events
+                # sharing only an entity and concept remain independent.
+                matched_rules = [
+                    (rule, match)
+                    for rule, match in matched_rules
+                    if any(
+                        not _equivalent_prior_event(
+                            rule,
+                            quote,
+                            entity,
+                            statements,
+                            participations,
+                            reference_year=reference_year,
+                        )
+                        for entity in scoped_entities
+                    )
+                ]
+            span_participation_start = len(participations)
+            span_guidance_entity_ids: list[str] = []
             for rule, match in matched_rules:
                 sid = f"s{len(statements) + 1:04d}"
                 statement_quote = match.group(0) if rule.local_evidence and match is not None else quote
@@ -493,7 +591,8 @@ class NewsSynthesisEngine:
                     else "issuer_guidance"
                 )
                 typed_facts = extract_typed_facts([span], estimate_subject_role=estimate_role)
-                statements.append({"statement_id": sid, "statement_kind": rule.statement_kind, "concept_leaf": rule.concept, "epistemic_status": _epistemic(quote), "time_relation": _time_relation(quote, rule.statement_kind), "evidence_spans": [span], "typed_facts": typed_facts})
+                relation_text = quote
+                statements.append({"statement_id": sid, "statement_kind": rule.statement_kind, "concept_leaf": rule.concept, "epistemic_status": _epistemic(quote), "time_relation": _time_relation(relation_text, rule.statement_kind, reference_year=reference_year), "evidence_spans": [span], "typed_facts": typed_facts})
                 rule_entities = scoped_entities
                 if rule.concept in {"clinical.regulatory_milestone", "regulatory.action"}:
                     rule_entities = _regulatory_entities_for_facts(
@@ -502,10 +601,30 @@ class NewsSynthesisEngine:
                         typed_facts,
                         mention_terms,
                     )
+                elif rule.concept == "guidance.issued":
+                    rule_entities = _guidance_entities_for_quote(
+                        scoped_entities,
+                        statement_quote,
+                        mention_terms,
+                        inherited_entity_ids=previous_guidance_entity_ids,
+                    )
+                    span_guidance_entity_ids.extend(
+                        str(row["entity_id"]) for row in rule_entities
+                    )
                 for entity in rule_entities:
                     role = _semantic_role(quote, entity, rule.concept)
+                    sentiment_text = statement_quote
+                    if rule.concept == "capital.financing":
+                        sentiment_text = _financing_sentiment_text(
+                            lane_text,
+                            start,
+                            end,
+                            statement_quote,
+                            entity,
+                            mention_terms.get(str(entity["entity_id"]), ()),
+                        )
                     sentiment, strength = _sentiment(
-                        statement_quote,
+                        sentiment_text,
                         rule,
                         role,
                         typed_facts,
@@ -513,7 +632,70 @@ class NewsSynthesisEngine:
                         mention_terms=mention_terms.get(str(entity["entity_id"]), ()),
                     )
                     participations.append({"statement_id": sid, "entity_id": entity["entity_id"], "semantic_role": role, "discourse_role": "none", "semantic_sentiment": sentiment, "sentiment_strength": strength})
+            canonical_entity_ids = {
+                str(row.get("entity_id") or "")
+                for row in participations[span_participation_start:]
+            }
+            fallback_entities = [
+                entity
+                for entity in entities
+                if str(entity.get("identity_status") or "resolved") == "resolved"
+                and str(entity.get("entity_id") or "") not in canonical_entity_ids
+                and _entity_in_quote(
+                    entity,
+                    quote,
+                    mention_terms.get(str(entity.get("entity_id") or ""), ()),
+                )
+                and _entity_is_local_event_subject(
+                    entity,
+                    quote,
+                    mention_terms.get(str(entity.get("entity_id") or ""), ()),
+                )
+            ]
+            fallback_polarity = _strict_local_fallback_sentiment(quote)
+            if fallback_entities and fallback_polarity is not None:
+                fallback_rule = rules_by_concept["operations.business_update"]
+                sid = f"s{len(statements) + 1:04d}"
+                span = {
+                    "source_field": lane_field,
+                    "start": start,
+                    "end": end,
+                    "quote": quote,
+                }
+                fallback_statement = {
+                    "statement_id": sid,
+                    "statement_kind": fallback_rule.statement_kind,
+                    "concept_leaf": fallback_rule.concept,
+                    "epistemic_status": _epistemic(quote),
+                    "time_relation": _time_relation(
+                        quote,
+                        fallback_rule.statement_kind,
+                        reference_year=reference_year,
+                    ),
+                    "evidence_spans": [span],
+                    "typed_facts": extract_typed_facts([span]),
+                }
+                emitted = False
+                fallback_sentiment, fallback_strength = fallback_polarity
+                for entity in sorted(fallback_entities, key=lambda row: str(row["entity_id"])):
+                    key = (str(entity["entity_id"]), lane_field, start, end)
+                    if key in local_fallback_seen:
+                        continue
+                    local_fallback_seen.add(key)
+                    participations.append({
+                        "statement_id": sid,
+                        "entity_id": entity["entity_id"],
+                        "semantic_role": "affected_subject",
+                        "discourse_role": "none",
+                        "semantic_sentiment": fallback_sentiment,
+                        "sentiment_strength": fallback_strength,
+                    })
+                    emitted = True
+                if emitted:
+                    statements.append(fallback_statement)
             previous_guidance = any(rule.concept == "guidance.issued" for rule, _match in matched_rules)
+            if span_guidance_entity_ids:
+                previous_guidance_entity_ids = tuple(dict.fromkeys(span_guidance_entity_ids))
             previous_performance = any(rule.concept == "earnings.performance" for rule, _match in matched_rules)
             previous_end = end
             previous_lane = lane_index
@@ -523,57 +705,87 @@ class NewsSynthesisEngine:
             for statement in statements
             if _issuer_scoped_concept(str(statement.get("concept_leaf") or ""))
         ]
-        event_probe = text if not title or _normalize_alias(title) in _normalize_alias(text) else f"{title}\n{text}"
-        if entities and not issuer_statements and _has_issuer_event_assertion(event_probe):
-            fallback_rule = rules_by_concept["operations.business_update"]
-            if title:
-                fallback_start, fallback_end, fallback_quote = 0, len(title), title
-                fallback_source_field = "title"
-            else:
-                fallback_start, fallback_end, fallback_quote = next(
-                    (
-                        span
-                        for span in _semantic_spans(text)
-                        if len(span[2].strip()) >= 8 and not _boilerplate_sentence(span[2])
-                    ),
-                    (0, len(text), text),
-                )
-                fallback_source_field = source_field
-            statement = {
-                "statement_id": f"s{len(statements) + 1:04d}",
-                "statement_kind": fallback_rule.statement_kind,
-                "concept_leaf": fallback_rule.concept,
-                "epistemic_status": _epistemic(fallback_quote),
-                "time_relation": _time_relation(fallback_quote, fallback_rule.statement_kind),
-                "evidence_spans": [{
-                    "source_field": fallback_source_field,
-                    "start": fallback_start,
-                    "end": fallback_end,
-                    "quote": fallback_quote,
-                }],
-                "typed_facts": extract_typed_facts([{
-                    "source_field": fallback_source_field,
-                    "start": fallback_start,
-                    "end": fallback_end,
-                    "quote": fallback_quote,
-                }]),
-            }
-            statements.append(statement)
-            issuer_statements.append(statement)
-
         participating_ids = {
             str(participation.get("entity_id") or "")
             for participation in participations
         }
+        participating_pairs = {
+            (
+                str(participation.get("entity_id") or ""),
+                str(participation.get("statement_id") or ""),
+            )
+            for participation in participations
+        }
         for entity in entities:
             entity_id = str(entity.get("entity_id") or "")
-            if not entity_id or entity_id in participating_ids:
+            if not entity_id:
                 continue
-            for statement in issuer_statements:
+            require_local_scope = (
+                entity_id in evaluation_only_entity_ids
+                or (len(entities) > 1 and entity_id in participating_ids)
+            )
+            scoped_statements = (
+                [
+                    statement for statement in issuer_statements
+                    if (entity_id, str(statement.get("statement_id") or ""))
+                    not in participating_pairs
+                ]
+                if (
+                    (len(entities) == 1 and not require_local_scope)
+                    or (allow_single_subject_continuity and not require_local_scope)
+                )
+                else [
+                    statement
+                    for statement in issuer_statements
+                    if _entity_in_quote(
+                        entity,
+                        str((statement.get("evidence_spans") or [{}])[0].get("quote") or ""),
+                        mention_terms.get(entity_id, ()),
+                    )
+                ]
+            )
+            for statement in scoped_statements:
                 rule = rules_by_concept.get(str(statement.get("concept_leaf") or ""))
                 if rule is None:
                     continue
+                pair = (entity_id, str(statement.get("statement_id") or ""))
+                if pair in participating_pairs:
+                    continue
                 quote = str((statement.get("evidence_spans") or [{}])[0].get("quote") or "")
+                if rule.concept == "guidance.issued":
+                    guidance_entity_ids = {
+                        str(row.get("entity_id") or "")
+                        for row in _guidance_entities_for_quote(
+                            entities,
+                            quote,
+                            mention_terms,
+                            allow_unmentioned=False,
+                        )
+                    }
+                    if entity_id not in guidance_entity_ids:
+                        continue
+                if rule.concept in {"clinical.regulatory_milestone", "regulatory.action"}:
+                    explicit_regulatory_ids = {
+                        str(row.get("entity_id") or "")
+                        for row in entities
+                        if _entity_in_quote(
+                            row,
+                            quote,
+                            mention_terms.get(str(row.get("entity_id") or ""), ()),
+                        )
+                    }
+                    if explicit_regulatory_ids and entity_id not in explicit_regulatory_ids:
+                        continue
+                if (
+                    len(entities) > 1
+                    and statement.get("concept_leaf") == "operations.business_update"
+                    and not _entity_is_local_event_subject(
+                        entity,
+                        quote,
+                        mention_terms.get(entity_id, ()),
+                    )
+                ):
+                    continue
                 role = _semantic_role(quote, entity, rule.concept)
                 sentiment, strength = _sentiment(
                     quote,
@@ -591,6 +803,7 @@ class NewsSynthesisEngine:
                     "semantic_sentiment": sentiment,
                     "sentiment_strength": strength,
                 })
+                participating_pairs.add(pair)
         return statements, participations
 
 
@@ -779,16 +992,60 @@ def _contains_explicit_result_comparison(text: str) -> bool:
     ))
 
 
-def _rule_applicable(rule: ConceptRule, text: str) -> bool:
+def _rule_applicable(rule: ConceptRule, text: str, *, context: str | None = None) -> bool:
     """Apply cross-cutting semantic gates that cannot be expressed safely as noun regexes."""
     if rule.concept == "guidance.issued":
+        if (
+            re.search(r"\brais(?:e|es|ed|ing)\b.{0,80}\b(?:guidance|outlook|forecast)\b", text, re.I)
+            and not re.search(r"\b(?:cuts?|lowers?|reduces?|withdraws?)\b", text, re.I)
+            and re.search(
+                r"\b(?:prior|earlier|previous)\b.{0,100}\b(?:headline|report|statement)\b"
+                r".{0,120}\brais(?:e|es|ed|ing)\b.{0,80}\b(?:guidance|outlook|forecast)\b"
+                r".{0,120}\b(?:incorrect|inaccurate|wrong|error)\b",
+                context or text,
+                re.I,
+            )
+        ):
+            # A correction negates the proposition in the preceding clause;
+            # it is not a second current issuer-guidance event.
+            return False
+        explicit_guidance_semantics = re.search(
+            r"\b(?:guidance|outlook|forecast|projection)\b|"
+            r"\b(?:sees|expects?|anticipates?|projects?|targets?|is looking for)\b"
+            r".{0,120}\b(?:rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin|free cash flow|"
+            r"comparable[- ]store sales|same[- ]store sales|comps?|comp)\b|"
+            r"\bexpected to\s+(?:comp|report comparable[- ]store sales|report same[- ]store sales)\b|"
+            r"\b(?:raises?|boost(?:s|ed)?|lowers?|cuts?|reaffirm(?:s|ed)?|withdraws?)\b"
+            r".{0,60}\b(?:FY\d{0,4}|Q[1-4]|full[- ]year|fiscal[- ]year)\b"
+            r".{0,60}\b(?:rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin|free cash flow)\b",
+            text,
+            re.I,
+        )
+        bare_increase_or_boost = re.search(
+            r"\b(?:boost(?:s|ed|ing)?|increas(?:e[sd]?|ing)|rais(?:e[sd]?|ing)|"
+            r"lower(?:s|ed|ing)?|decreas(?:e[sd]?|ing)|reduc(?:e[sd]?|ing)|cuts?)\b",
+            text,
+            re.I,
+        )
+        if bare_increase_or_boost and explicit_guidance_semantics is None:
+            return False
         external_expectation = re.search(r"\b(?:analysts? expect|analysts? estimate|bulls? (?:will )?hope|predictions? for|consensus (?:calls|expects))\b", text, re.I)
+        external_estimate_action = re.search(
+            r"\b(?:analysts?|research (?:firm|analyst)|brokerage|the firm|we)\b"
+            r".{0,80}\b(?:rais(?:e[sd]?|ing)|increas(?:e[sd]?|ing)|lower(?:s|ed|ing)?|"
+            r"reduc(?:e[sd]?|ing)|cuts?|revis(?:e[sd]?|ing))\b"
+            r".{0,80}\b(?:EPS|earnings|revenue|sales|price target|estimates?|forecast)\b",
+            text,
+            re.I,
+        )
         explicit_issuer_action = re.search(
             r"\b(?:issue|issued|issuing|provided|guid(?:e[sd]?|ing)|rais(?:e[sd]?|ing)|"
             r"lower(?:s|ed|ing)?|cuts?|reaffirm(?:s|ed|ing)?|withdraw(?:s|n|ing)?|updated)\b",
             text,
             re.I,
         )
+        if external_estimate_action:
+            return False
         if external_expectation and not explicit_issuer_action:
             return False
     if rule.concept == "earnings.performance" and re.search(
@@ -806,7 +1063,7 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
         if realized_metric is None:
             return False
     if rule.concept in {"earnings.performance", "financial.operating_performance", "financial.cash_flow", "financial.liquidity"}:
-        projected = re.search(r"\b(?:forecast|guidance|project(?:s|ed|ing|ion)s?|estimate[sd]?|anticipates?|expects?|sees|reaffirm(?:s|ed|ing)?|is looking for|potential|could|may)\b", text, re.I)
+        projected = re.search(r"\b(?:forecast|guidance|guid(?:e[sd]?|ing)|project(?:s|ed|ing|ion)s?|estimate[sd]?|anticipates?|expects?|sees|reaffirm(?:s|ed|ing)?|is looking for|potential|could|may)\b", text, re.I)
         observed = re.search(r"\b(?:reports?|reported|actual|trailing[- ]twelve[- ]month|TTM|beats?|miss(?:ed|es)?|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|fell|grew|declined|slipped|climbed|increased|decreased|recovered|record)\b", text, re.I)
         if projected and not observed and not _contains_explicit_result_comparison(text):
             return False
@@ -834,6 +1091,28 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
             re.I,
         ):
             return False
+    if rule.concept == "capital.financing" and re.search(
+        r"\b(?:factors? (?:are |were )?(?:discussed|described|identified)|contained|disclosed)\b"
+        r".{0,160}\b(?:registration statement|initial public offering|IPO)\b|"
+        r"\b(?:registration statement|initial public offering|IPO)\b"
+        r".{0,160}\b(?:risk factors?|forward[- ]looking|previously filed)\b|"
+        r"\binformation (?:about|regarding)\b.{0,160}\b(?:set forth|contained)\b"
+        r".{0,120}\b(?:prospectus|initial public offering|IPO)\b",
+        text,
+        re.I,
+    ):
+        # A filing cited as risk-factor provenance is not a newly announced
+        # financing transaction.
+        return False
+    if rule.concept == "product.milestone" and re.search(
+        r"\bno\b.{0,80}\b(?:clinical )?(?:data|evidence|information)\b.{0,80}\bavailable\b|"
+        r"\b(?:clinical )?(?:data|evidence|information)\b.{0,80}\bnot available\b",
+        text,
+        re.I,
+    ):
+        # Availability of evidence is not commercial product availability,
+        # especially when the evidence is explicitly absent.
+        return False
     if rule.concept == "financial.loss_exposure" and re.search(
         r"\b(?:renal|kidney|vision|hearing|cognitive|physical) impairment\b|"
         r"\bpatients? with\b.{0,80}\bimpairment\b",
@@ -842,6 +1121,84 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
     ) and not re.search(
         r"\b(?:asset|goodwill|intangible|inventory|financial|accounting) impairment\b|"
         r"\bimpairment charge\b",
+        text,
+        re.I,
+    ):
+        return False
+    if rule.concept == "financial.loss_exposure" and re.search(
+        r"\b(?:in|takes?|taking|assumes?|assuming) charge of\b",
+        text,
+        re.I,
+    ) and not re.search(
+        r"\b(?:impairment|restructuring|accounting|financial|one[- ]time|non[- ]cash) charge\b",
+        text,
+        re.I,
+    ):
+        # Responsibility idiom, not an expense or loss recognition event.
+        return False
+    if rule.concept == "financial.loss_exposure" and re.fullmatch(
+        r"\s*(?:take|taking|takes?) charge[.!]?\s*",
+        text,
+        re.I,
+    ):
+        return False
+    if rule.concept == "financial.loss_exposure" and re.search(
+        r"\b(?:available|obtain(?:s|ed|ing)?|provided?|download(?:ed|able)?)\b.{0,80}\bfree of charge\b|"
+        r"\b(?:documents?|copies|filings?|proxy statements?)\b.{0,80}\b(?:free of|without) charge\b|"
+        r"\b(?:free of|without) charge\b.{0,120}\b(?:sec|website|documents?|copies|filings?|proxy statements?)\b",
+        text,
+        re.I,
+    ):
+        return False
+    if rule.concept == "operations.business_update" and re.search(
+        r"\b(?:loan|credit|borrower)\b.{0,100}\brestructur\w*\b|"
+        r"\brestructur\w*\b.{0,100}\b(?:loan|credit|borrower)\b",
+        text,
+        re.I,
+    ) and re.search(
+        r"\b(?:credit enhancements?|additional collateral|not expected\b.{0,80}\b(?:loss|charge)|"
+        r"no (?:expected )?(?:loss|charge))\b",
+        text,
+        re.I,
+    ):
+        return False
+    if rule.concept == "operations.business_update" and re.search(
+        r"\brestructuring (?:costs?|charges?|expenses?)\b.{0,50}"
+        r"\b(?:decreas(?:e[sd]?|ing)|declin(?:e[sd]?|ing)|fell|lower)\b",
+        text,
+        re.I,
+    ):
+        return False
+    if rule.concept == "guidance.issued" and re.search(
+        r"\b(?:Fed|Federal Reserve|central bank|policy)\b.{0,80}\brate cuts?\b|"
+        r"\brate cuts?\b.{0,80}\b(?:Fed|Federal Reserve|central bank|policy)\b",
+        text,
+        re.I,
+    ) and not re.search(
+        r"(?<!rate )\b(?:cuts?|lowers?|reduces?)\b.{0,20}\b(?:its |the |full[- ]year )?"
+        r"(?:guidance|outlook|forecast)\b",
+        text,
+        re.I,
+    ):
+        return False
+    if rule.concept == "strategy.valuation_assessment" and re.search(
+        r"\bexpensive\s+(?:capital|debt|funding|financing)\b",
+        text,
+        re.I,
+    ) and not re.search(
+        r"\b(?:valuation|valued|stock|shares?|equity|price|multiple|P/E|PE|PEG|overvalued)\b",
+        text,
+        re.I,
+    ):
+        return False
+    if rule.concept == "analyst.rating_action" and re.search(
+        r"\b(?:loan|credit|borrower|internal risk)\b.{0,100}\b(?:rating|upgrade|downgrade)\w*\b|"
+        r"\b(?:rating|upgrade|downgrade)\w*\b.{0,100}\b(?:loan|credit|borrower|internal risk)\b",
+        text,
+        re.I,
+    ) and not re.search(
+        r"\b(?:analysts?|brokerage|research firm|price target|buy|sell|outperform|underperform|"
+        r"overweight|underweight|market perform|sector perform)\b",
         text,
         re.I,
     ):
@@ -882,10 +1239,285 @@ def _rule_applicable(rule: ConceptRule, text: str) -> bool:
     return True
 
 
-def _time_relation(text: str, kind: str) -> str:
+def _time_relation(
+    text: str,
+    kind: str,
+    *,
+    reference_year: int | None = None,
+) -> str:
+    dated_lead = re.match(
+        r"\s*(?:title:\s*)?(?:in|during)\s+((?:19|20)\d{2})\b",
+        text,
+        re.I,
+    )
+    if (
+        dated_lead
+        and reference_year is not None
+        and int(dated_lead.group(1)) < reference_year
+    ):
+        return "historical"
+    dated_event = re.search(
+        r"\b(?:had |initially )?(?:receiv(?:e[sd]?|ing)|obtain(?:s|ed|ing)?|"
+        r"secur(?:e[sd]?|ing)|was granted|approv(?:e[sd]|ing)|launch(?:e[sd]?|ing)|"
+        r"acquir(?:e[sd]?|ing)|fil(?:e[sd]?|ing))\b.{0,120}"
+        r"\b(?:in|during)\s+((?:19|20)\d{2})\b",
+        text,
+        re.I,
+    )
+    if (
+        dated_event
+        and reference_year is not None
+        and int(dated_event.group(1)) < reference_year
+    ):
+        return "historical"
+    historical_cue = re.search(
+        r"\b(?:previously|formerly|earlier(?!\s+(?:today|this))|"
+        r"last (?:year|quarter|month)|prior (?:year|quarter|month)|"
+        r"had\s+(?:expected|projected|forecast|guided|cut|raised|lowered|reported|posted)|"
+        r"historically(?=\s*(?:,|reported\b|posted\b|had\b|was\b|were\b|did\b|"
+        r"lost\b|cut\b|fell\b|rose\b|grew\b|declined\b|increased\b|decreased\b|"
+        r"underperformed\b|outperformed\b)))",
+        text,
+        re.I,
+    )
+    comparator = re.search(
+        r"\b(?:vs\.?|versus|compared (?:with|to)|up from|down from)\b",
+        text,
+        re.I,
+    )
+    metric = r"(?:EPS|earnings|revenues?|sales|net income|profit|net loss|losses?)"
+    dated_metric = re.search(
+        rf"\b(?:(?:FY\s*)?((?:19|20)\d{{2}})\s+(?:adjusted\s+|diluted\s+)?{metric}|"
+        rf"{metric}\s+(?:for|in|during)\s+((?:19|20)\d{{2}}))\b",
+        text,
+        re.I,
+    )
+    dated_metric_year = next(
+        (int(value) for value in dated_metric.groups() if value),
+        None,
+    ) if dated_metric else None
+    if (
+        dated_metric
+        and reference_year is not None
+        and dated_metric_year is not None
+        and dated_metric_year < reference_year
+        and not re.search(
+            r"\b(?:reports?|reported|posts?|posted|announces?|announced|releases?|released)\b"
+            r".{0,80}$",
+            text[:dated_metric.start()],
+            re.I,
+        )
+    ):
+        return "historical"
+    dated_forecast = re.search(
+        r"\b(?:expects?|expected|projects?|projected|forecast|guided)\b"
+        r".{0,120}\b(?:in|for|during)\s+((?:19|20)\d{2})\b",
+        text,
+        re.I,
+    )
+    if (
+        kind == "forecast"
+        and reference_year is not None
+        and dated_forecast
+        and int(dated_forecast.group(1)) < reference_year
+    ):
+        return "historical"
+    current_forecast_revision = bool(
+        kind == "forecast"
+        and historical_cue
+        and (
+            re.search(
+                r"\b(?:now\s+)?(?:cuts?|cut|raises?|raised|lowers?|lowered|updates?|updated|"
+                r"revises?|revised|withdraws?|withdrew|reaffirms?|reaffirmed)\b",
+                text[:historical_cue.start()],
+                re.I,
+            )
+            and re.search(
+                r"\b(?:guidance|outlook|forecast|range|projection)\b",
+                text[historical_cue.start():],
+                re.I,
+            )
+            or re.search(
+                r"\bnow\s+(?:expects?|projects?|forecasts?|sees)\b",
+                text[:historical_cue.start()],
+                re.I,
+            )
+            and re.search(
+                r"\b(?:guidance|outlook|forecast|range|projection)\b",
+                text[historical_cue.start():],
+                re.I,
+            )
+        )
+    )
+    if historical_cue and (
+        re.match(r"\s*(?:title:\s*)?(?:previously|earlier|formerly|historically)\b", text, re.I)
+        or (kind == "forecast" and not current_forecast_revision)
+    ):
+        return "historical"
     if kind == "forecast" or re.search(r"\b(?:will|expects?|next year|future|project(?:s|ed|ing|ion)s?|evaluat(?:e|es|ed|ing)|consider(?:s|ed|ing)?|explor(?:e|es|ed|ing)|attempt(?:s|ed|ing)?)\b", text, re.I): return "forward"
-    if re.search(r"\b(?:previously|last (?:year|quarter|month)|historically)\b", text, re.I): return "historical"
+    # A current reported result remains current when its comparator is a prior
+    # period; the historical phrase qualifies the baseline, not the event.
+    if (
+        _reported_period_comparison_direction(_normalize_alias(text)) is not None
+        or re.search(
+            r"\b(?:EPS|earnings per share|revenues?|sales|net income|profit|net loss|losses?)\b"
+            r".{0,100}\b(?:up|down|higher|lower|increased|decreased|rose|fell|grew|declined)\b"
+            r".{0,80}\b(?:year earlier|same (?:period|quarter) last year|year[- ]over[- ]year|from)\b",
+            text,
+            re.I,
+        )
+    ):
+        return "current"
+    # Historical words frequently modify an antecedent, population, or
+    # comparator rather than the governing event. Keep a later completed or
+    # continuing action current instead of filtering the whole span.
+    if historical_cue and (
+        re.search(r"\b(?:from earlier|earlier today|last night)\b", text, re.I)
+        or re.search(
+            r"\b(?:approved?|reports?|reported|announces?|announced|presents?|presented|"
+            r"continu(?:e|es|ed|ing)|prices?|priced|closes?|closed|completes?|completed|"
+            r"terminates?|terminated|increases?|increased|decreases?|decreased|rose|fell|grew|declined)\b"
+            r".{0,100}\bpreviously\s+(?:treated|untreated|announced|filed|placed|explored)\b",
+            text,
+            re.I,
+        )
+        or re.search(
+            r"\bpreviously\s+(?:announced|filed|placed|explored)\b.{0,100}"
+            r"\b(?:is|are|was|were|has been|have been)?\s*"
+            r"(?:priced|closed|completed|terminated|continued|presented)\b",
+            text,
+            re.I,
+        )
+        or re.search(
+            r"\b(?:has|have|had)?\s*(?:expanded|extended|renewed|increased|completed)\b"
+            r".{0,100}\bpreviously[- ]announced\b",
+            text,
+            re.I,
+        )
+    ):
+        return "current"
+    if comparator and re.search(
+        r"\b(?:reports?|reported|posts?|posted|announces?|announced)\b.{0,140}"
+        r"\b(?:EPS|earnings|revenues?|sales|net income|profit|net loss|losses?)\b",
+        text,
+        re.I,
+    ):
+        return "current"
+    if comparator and re.search(
+        r"\b(?:loss(?:es)?|net loss)\b.{0,80}\b(?:narrowed|reduced|improved)\b|"
+        r"\b(?:narrowed|reduced|improved)\b.{0,80}\b(?:loss(?:es)?|net loss)\b",
+        text,
+        re.I,
+    ):
+        return "current"
+    if historical_cue:
+        return "historical"
     return "current"
+
+
+def _reference_year(value: Any) -> int | None:
+    match = re.match(r"\s*((?:19|20)\d{2})\b", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def _equivalent_prior_event(
+    rule: ConceptRule,
+    title_event_text: str,
+    entity: Mapping[str, Any],
+    statements: Sequence[Mapping[str, Any]],
+    participations: Sequence[Mapping[str, Any]],
+    *,
+    reference_year: int | None,
+) -> bool:
+    statement_by_id = {str(row["statement_id"]): row for row in statements}
+    title_time = _time_relation(
+        title_event_text,
+        rule.statement_kind,
+        reference_year=reference_year,
+    )
+    entity_id = str(entity.get("entity_id") or "")
+    for participation in participations:
+        if str(participation.get("entity_id") or "") != entity_id:
+            continue
+        statement = statement_by_id.get(str(participation.get("statement_id") or ""), {})
+        if (
+            statement.get("concept_leaf") != rule.concept
+            or statement.get("time_relation") != title_time
+        ):
+            continue
+        body_text = str((statement.get("evidence_spans") or [{}])[0].get("quote") or "")
+        if _event_text_overlap(title_event_text, body_text):
+            return True
+    return False
+
+
+def _event_text_overlap(left: str, right: str) -> bool:
+    distinct_left = set(re.findall(r"\b(?:another|separate|additional)\b", left, re.I))
+    distinct_right = set(re.findall(r"\b(?:another|separate|additional)\b", right, re.I))
+    if bool(distinct_left) != bool(distinct_right):
+        return False
+    terminal_pattern = r"\b(?:withdraw(?:s|n|ing)?|cancel(?:s|led|ing)?|reopen(?:s|ed|ing)?|clos(?:e|es|ed|ing))\b"
+    terminal_left = {value.casefold() for value in re.findall(terminal_pattern, left, re.I)}
+    terminal_right = {value.casefold() for value in re.findall(terminal_pattern, right, re.I)}
+    if terminal_left != terminal_right and (terminal_left or terminal_right):
+        return False
+    for extractor in (
+        lambda value: set(re.findall(
+            r"\b(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\b",
+            value,
+            re.I,
+        )),
+        lambda value: set(re.findall(
+            r"(?:[$£€]\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion))?)",
+            value,
+            re.I,
+        )),
+        lambda value: set(re.findall(
+            r"\b(?:separate|another|additional|new|launch(?:es|ed|ing)?|"
+            r"reopen(?:s|ed|ing)?|prices?|files?|complet(?:e|es|ed|ing)|"
+            r"clos(?:e|es|ed|ing)|announces?)\b",
+            value,
+            re.I,
+        )),
+        lambda value: set(re.findall(
+            r"\b\d+(?:\.\d+)?[-\s]*(?:thousand|million|billion)?[-\s]*"
+            r"(?:shares?|units?|securities)\b",
+            value,
+            re.I,
+        )),
+        lambda value: set(re.findall(
+            r"\b(?:today|yesterday|monday|tuesday|wednesday|thursday|friday|"
+            r"january|february|march|april|may|june|july|august|september|"
+            r"october|november|december|(?:19|20)\d{2})\b",
+            value,
+            re.I,
+        )),
+    ):
+        left_values = {item.casefold() for item in extractor(left)}
+        right_values = {item.casefold() for item in extractor(right)}
+        if left_values and right_values and left_values != right_values:
+            return False
+    stop = frozenset((
+        "a", "an", "and", "at", "by", "for", "from", "in", "is", "of",
+        "on", "the", "to", "will", "with",
+    ))
+
+    def tokens(value: str) -> set[str]:
+        result: set[str] = set()
+        for token in re.findall(r"[a-z0-9]+", _normalize_alias(value)):
+            if token in stop or len(token) < 3:
+                continue
+            for suffix in ("ing", "ed", "es", "s"):
+                if token.endswith(suffix) and len(token) > len(suffix) + 3:
+                    token = token[:-len(suffix)]
+                    break
+            result.add(token)
+        return result
+
+    left_tokens = tokens(left)
+    right_tokens = tokens(right)
+    common = left_tokens & right_tokens
+    return len(common) >= 2 and len(common) * 2 >= min(len(left_tokens), len(right_tokens))
 
 
 _ADVERSE_REGULATORY_RESPONSE_PATTERNS = tuple(re.compile(pattern) for pattern in (
@@ -1053,6 +1685,29 @@ def _sentiment(
             return "negative", 2
         return "neutral", 0
     if rule.concept == "capital.financing":
+        secondary_holder_sale = re.search(
+            r"\b(?:selling|existing) (?:stockholders?|shareholders?|holders?)\b|"
+            r"\bsecondary offering\b",
+            normalized,
+        )
+        issuer_primary_tranche = re.search(
+            r"\b(?:the\s+)?(?:company|issuer|we)\s+"
+            r"(?:(?:is|are|will|would|has|have)\s+)?"
+            r"(?:(?:offer(?:s|ed)?|offering)|issu(?:e|es|ed|ing)|sell(?:s|ing)?)\b"
+            r".{0,80}\b(?:new|newly issued|common|preferred)?\s*"
+            r"(?:stock|shares?|units?|securities)\b|"
+            r"\b(?:new|newly issued)\s+shares?\b|"
+            r"\bshares? offered by (?:the )?(?:company|issuer|us)\b",
+            normalized,
+        )
+        issuer_no_proceeds = re.search(
+            r"\b(?:will|would|does|did) not receive\b.{0,80}\bproceeds\b|"
+            r"\breceiv(?:e|es|ed|ing) no proceeds\b|"
+            r"\bno proceeds\b.{0,80}\b(?:company|issuer|us|we)\b",
+            normalized,
+        )
+        if secondary_holder_sale and issuer_no_proceeds and not issuer_primary_tranche:
+            return "neutral", 0
         if re.search(r"\b(?:initial public offering|IPO)\b", normalized):
             ipo_role = _subsidiary_ipo_role(entity, text, mention_terms)
             if ipo_role == "parent":
@@ -1092,6 +1747,13 @@ def _sentiment(
         if relations:
             return "neutral", 0
         if re.search(
+            r"\b(?:comparable[- ]store sales|same[- ]store sales|comps?|comp)\b"
+            r".{0,80}\bnegative\b|\bnegative\b.{0,80}"
+            r"\b(?:comparable[- ]store sales|same[- ]store sales|comps?|comp)\b",
+            normalized,
+        ):
+            return "negative", 3
+        if re.search(
             r"\b(?:profit|EPS|earnings|revenue|sales)\s+(?:forecast|outlook|guidance)\b"
             r".{0,120}\b(?:fell short of|below|miss(?:es|ed)?)\b.{0,60}"
             r"\b(?:the )?(?:street|consensus|analysts?'? estimates?|view)\b",
@@ -1104,7 +1766,13 @@ def _sentiment(
             normalized,
         ):
             return "negative", 3
-        if re.search(r"\brais(?:e|es|ed|ing)\b.{0,80}\b(?:guidance|outlook|forecast)\b", normalized):
+        explicitly_incorrect_prior_raise = re.search(
+            r"\b(?:prior|earlier|previous)\b.{0,100}\b(?:headline|report|statement)\b"
+            r".{0,120}\brais(?:e|es|ed|ing)\b.{0,80}\b(?:guidance|outlook|forecast)\b"
+            r".{0,100}\b(?:incorrect|inaccurate|wrong|error)\b",
+            normalized,
+        )
+        if not explicitly_incorrect_prior_raise and re.search(r"\brais(?:e|es|ed|ing)\b.{0,80}\b(?:guidance|outlook|forecast)\b", normalized):
             return "positive", 3
         if re.search(r"\b(?:cuts?|lowers?|reduc(?:e|es|ed|ing)|withdraws?|suspends?)\b.{0,60}\b(?:guidance|outlook|forecast)\b", normalized):
             return "negative", 3
@@ -1130,6 +1798,31 @@ def _sentiment(
         ):
             return "positive", 1
     if rule.concept in {"clinical.regulatory_milestone", "regulatory.action"}:
+        if re.search(
+            r"\b(?:withdraw(?:s|n|al)?|withdrew)\b.{0,100}"
+            r"\b(?:NDA|BLA|new drug application|application|submission)\b|"
+            r"\b(?:NDA|BLA|new drug application|application|submission)\b"
+            r".{0,100}\b(?:withdraw(?:s|n|al)?|withdrew)\b",
+            text,
+            re.I,
+        ):
+            return "negative", 3
+        if re.search(
+            r"\bfil(?:e[sd]?|ing)\b.{0,100}\b(?:response|submission|application)\b"
+            r".{0,80}\b(?:FDA|EMA)\b|"
+            r"\b(?:response|submission|application)\b.{0,80}\b(?:filed|submitted)\b"
+            r".{0,80}\b(?:FDA|EMA)\b",
+            text,
+            re.I,
+        ):
+            return "positive", 2
+        if rule.concept == "regulatory.action" and re.search(
+            r"\benter(?:s|ed|ing)?\b.{0,80}\bpre[- ]filing review process\b"
+            r".{0,120}\b(?:FERC|Federal Energy Regulatory Commission)\b",
+            text,
+            re.I,
+        ):
+            return "positive", 1
         if rule.concept == "regulatory.action" and re.search(
             r"\b(?:trading halt|halted)\b.{0,80}\bnews pending\b",
             normalized,
@@ -1143,6 +1836,34 @@ def _sentiment(
         # management confidence, and approvals of separate application
         # components remain independent evidence rather than canceling it.
         if re.search(
+            r"\b(?:upon|following|subject to|conditioned on|if|after)\b.{0,100}"
+            r"\b(?:FDA\s+)?(?:approval|clearance|authorization)\b",
+            normalized,
+        ) and not re.search(
+            r"\b(?:FDA|EMA|regulator\w*)\b.{0,80}"
+            r"\b(?:granted|approved|cleared|authorized)\b|"
+            r"\b(?:receiv(?:e[sd]?|ing)|obtain(?:s|ed|ing)?|secur(?:e[sd]?|ing))\b.{0,50}"
+            r"\b(?:approval|clearance|authorization)\b",
+            normalized,
+        ):
+            return "neutral", 0
+        if re.search(r"\bfast track designation\b", normalized):
+            return "neutral", 0
+        if re.search(
+            r"\b(?:FDA|EMA|regulator\w*)\b.{0,100}\bexpand\w*\b.{0,60}\bindication\b",
+            normalized,
+        ):
+            return "positive", 3
+        if re.search(
+            r"\bawait(?:s|ed|ing)?\b.{0,100}\b(?:decision|approval|clearance|authorization)\b|"
+            r"\b(?:committee|panel)\b.{0,80}\bwill discuss\b|"
+            r"\bpropos(?:e[sd]?|ing)\b.{0,100}\b(?:treatment|convert|approval|clearance)\b|"
+            r"\b(?:docket|public comments?|comments? submitted|meeting materials?|"
+            r"background materials?)\b",
+            normalized,
+        ):
+            return "neutral", 0
+        if re.search(
             r"\b(?:could|may|might|eventual|potential|even with)\b.{0,100}"
             r"\b(?:approval|clearance|authorization)\b|"
             r"\b(?:approval|clearance|authorization)\b.{0,100}\b(?:could|may|might|eventual|potential)\b",
@@ -1150,6 +1871,25 @@ def _sentiment(
         ) and not re.search(
             r"\b(?:granted|received|obtained|cleared|approved|acknowledged|accepted|lifted|removed)\b",
             normalized,
+        ):
+            return "neutral", 0
+        if re.search(
+            r"\b(?:prepare(?:s|d|ing)? to|plans? to|continues? to|working to|"
+            r"collaborat(?:e[sd]?|ing)(?: with .{0,50})? to)\b"
+            r".{0,100}\b(?:respond to|address|resolve|complete)\b.{0,100}"
+            r"\b(?:complete response letter|CRL|questions?|issues?|remediation activities)\b|"
+            r"\b(?:CRL|complete response letter)\b.{0,80}\bremediation activities\b|"
+            r"\bfollowing\b.{0,100}\bcomplete response letter\b.{0,100}"
+            r"\breceiv(?:e[sd]?|ing)\b",
+            text,
+            re.I,
+        ) and not re.search(
+            r"\b(?:today|currently|just)\b.{0,80}\b(?:receiv(?:e[sd]?)|issu(?:e[sd]?))\b"
+            r".{0,80}\b(?:complete response letter|CRL)\b|"
+            r"\b(?:receiv(?:e[sd]?)|issu(?:e[sd]?))\b.{0,80}"
+            r"\b(?:complete response letter|CRL)\b.{0,80}\b(?:today|currently|just)\b",
+            text,
+            re.I,
         ):
             return "neutral", 0
         regulatory_outcomes = {
@@ -1215,15 +1955,49 @@ def _sentiment(
         ):
             return "positive", 2
     if rule.concept == "clinical.trial_result":
+        if re.search(
+            r"\b(?:sample size|study duration|enrollment period|chosen assuming|"
+            r"statistical assumptions?|power calculation)\b",
+            normalized,
+        ) and not re.search(
+            r"\b(?:results?|met|failed|did not meet|demonstrated|showed|observed)\b",
+            normalized,
+        ):
+            return "neutral", 0
+        if re.search(
+            r"\b(?:primary|co-primary|secondary) endpoint\b.{0,100}"
+            r"\b(?:did not meet|failed to meet|missed)\b.{0,80}"
+            r"\b(?:statistical significance|endpoint)?\b",
+            normalized,
+        ):
+            return "negative", 3
+        if re.search(
+            r"\b(?:shut(?:s|ting)? down|discontinues?|terminates?)\b.{0,100}"
+            r"\b(?:clinical trial|study|phase [123])\b",
+            normalized,
+        ):
+            return "negative", 3
+        if re.search(
+            r"\b(?:initiat(?:e[sd]?|ion)|commenc(?:e[sd]?|ement)|begin(?:s|ning)?)\b"
+            r".{0,100}\b(?:phase\s*[123][a-z]?\s+)?(?:clinical\s+)?(?:study|trial)\b",
+            normalized,
+        ):
+            return "positive", 2
         if re.search(r"\b(?:did not|failed to)\b.{0,100}\b(?:meet|demonstrate|achieve)\b.{0,80}\b(?:primary )?(?:endpoint|goal|dose[- ]response)\b", normalized):
             return "negative", 3
-        if re.search(r"\b(?:met|meets|achieved|demonstrates?)\b.{0,120}\b(?:primary\b.{0,60})?(?:endpoints?|goals?|dose[- ]response)\b|\b(?:topline results?\b.{0,100}\bshowing efficacy|high efficacy|durable viral suppression|statistically significant(?: and clinically meaningful)? improvement|significantly reduces?|overall survival improvement|sustained virologic response)\b", normalized):
+        if re.search(r"\b(?:met|meets|achieved|demonstrates?)\b.{0,120}\b(?:primary\b.{0,60})?(?:endpoints?|goals?|dose[- ]response)\b|\b(?:topline results?\b.{0,100}\bshowing efficacy|high efficacy|durable viral suppression|statistically significant(?: and clinically meaningful)? improvement|significantly reduces?|prevent(?:s|ed|ing)?\s+\d+(?:\.\d+)? percent|\d+(?:\.\d+)? percent (?:vaccine )?efficacy|overall survival improvement|sustained virologic response)\b", normalized):
             return "positive", 3
+        if re.search(r"\b(?:opens?|initiates?|announces?)\b.{0,80}\b(?:phase [123] )?trial site\b", normalized):
+            return "positive", 2
         if re.search(r"\b(?:study|trial) results?\b.{0,80}\bpublished\b|\bpublished\b.{0,80}\b(?:study|trial) results?\b", normalized):
             return "positive", 2
         if re.search(r"\b(?:present|presentation)\w*\b.{0,100}\bupdated (?:data|results?)\b|\bupdated (?:data|results?)\b.{0,100}\b(?:present|presentation)\w*\b", normalized):
             return "positive", 1
         if re.search(r"\bfirst (?:patient|subject) (?:enrolled|dosed)\b|\b(?:enrolls?|doses?) (?:the )?first (?:patient|subject)\b", normalized):
+            return "positive", 2
+        if re.search(r"\bfirst (?:patient|subject) screened\b|\bscreens? (?:the )?first (?:patient|subject)\b", normalized):
+            return "positive", 1
+        if re.search(r"\bexpansion of\b.{0,100}\bclinical development program\b.{0,120}\bnew trial\b", normalized):
             return "positive", 2
         if re.search(r"\bpositive\b.{0,80}\bclinical (?:data|results?)\b|\bclinical (?:data|results?)\b.{0,80}\bpositive\b", normalized):
             return "positive", 2
@@ -1238,6 +2012,28 @@ def _sentiment(
             r"ships? (?:the )?first|first shipment|deliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)?|"
         r"release(?:s|d)? (?:the )?(?:final )?pricing|released?)\b",
         normalized,
+    ):
+        return "positive", 2
+    if rule.concept == "product.milestone" and re.search(
+        r"\b(?:products?|goods?|inventory)\b.{0,120}"
+        r"\b(?:will be|were|are|was|has been|have been)?\s*returned\b"
+        r".{0,100}\b(?:to (?:the )?company|to (?:the )?supplier|by (?:a |the )?"
+        r"(?:customer|distributor|retailer|regulator))\b|"
+        r"\b(?:customer|distributor|retailer|regulator)\b.{0,100}"
+        r"\breturn(?:s|ed|ing)?\b.{0,100}\b(?:products?|goods?|inventory)\b",
+        normalized,
+    ):
+        return "negative", 3
+    if (
+        rule.concept == "corporate_transaction.asset_sale"
+        and _material_cash_consideration(typed_facts)
+        and re.search(
+        r"\b(?:sell(?:s|ing)?|sale of)\b.{0,160}"
+        r"(?:\$\s*\d|\b\d+(?:\.\d+)?\s*(?:million|billion)\b)"
+        r".{0,80}\b(?:cash|proceeds?|earnout|consideration)\b",
+        text,
+        re.I,
+        )
     ):
         return "positive", 2
     if rule.concept == "financial.margin" and any(
@@ -1313,6 +2109,15 @@ def _sentiment(
             r"takes? effect|will become effective|will reduce)"
         )
         if re.search(
+            rf"\b{reverse_split}\b.{{0,180}}\b(?:synthetic share repurchase|"
+            rf"in connection with (?:the )?(?:closing|combination|spin[- ]?off)|"
+            rf"share distribution)\b|"
+            rf"\b(?:synthetic share repurchase|spin[- ]?off|share distribution)\b"
+            rf".{{0,180}}\b{reverse_split}\b",
+            normalized,
+        ):
+            return "neutral", 0
+        if re.search(
             rf"\btitle:\s*[^\n]*\b{reverse_split}\b|"
             rf"\b{reverse_split_action}\b.{{0,140}}\b{reverse_split}\b|"
             rf"\b{reverse_split}\b.{{0,140}}\b{reverse_split_action}\b",
@@ -1342,6 +2147,13 @@ def _sentiment(
         if re.search(r"\b(?:has |have |had )?regained compliance\b|\bregains compliance\b", normalized):
             return "positive", 2
     if rule.concept == "commercial.contract":
+        if re.search(
+            r"\b(?:waiting|review|statutory|regulatory) period\b.{0,100}"
+            r"\bextend(?:s|ed|ing)?\b.{0,80}\b(?:by )?agreement\b|"
+            r"\btolling agreement\b",
+            normalized,
+        ):
+            return "neutral", 0
         if re.search(
             r"\b(?:contract|agreement)\s+(?:termination|cancellation|non[- ]renewal)\b|"
             r"\b(?:termination|cancellation|non[- ]renewal)\b.{0,80}\b(?:contract|agreement)\b|"
@@ -1373,7 +2185,24 @@ def _sentiment(
             return "neutral", 0
         if re.search(r"\b(?:announc\w*|receiv\w*|win\w*|award\w*)\b.{0,80}\bcontract award\b|\bcontract award\b", normalized):
             return "positive", 2
-        if re.search(r"\b(?:awarded|wins?|receives?|secures?|signs?|enters?)\b.{0,120}\b(?:contract|agreement|award|order)\b", normalized):
+        if re.search(r"\b(?:awarded|wins?|receives?|secures?|sign(?:s|ed|ing)?|enters?)\b.{0,120}\b(?:contract|agreement|award|order)\b", normalized):
+            return "positive", 2
+        if any(
+            re.search(
+                r"\b(?:renew(?:s|ed|ing)?|extend(?:s|ed|ing)?|expand(?:s|ed|ing)?)\b"
+                r".{0,100}\bagreements?\b.{0,40}\bwith\s*$",
+                text[max(0, start - 180):start],
+                re.I,
+            )
+            for start, _end in _entity_mention_spans(entity, text, mention_terms)
+        ):
+            return "neutral", 0
+        if re.search(
+            r"\bselected\b.{0,120}\bto (?:provide|deliver|supply)\b|"
+            r"\b(?:expand(?:s|ed|ing)?|extend(?:s|ed|ing)?|renew(?:s|ed|ing)?)\b"
+            r".{0,100}\b(?:sales |supply |service )?agreements?\b",
+            normalized,
+        ):
             return "positive", 2
         if re.search(
             r"\b(?:enter(?:s|ed)? into)\b.{0,100}\bagreements?\b|"
@@ -1390,6 +2219,12 @@ def _sentiment(
             normalized,
         ):
             return "negative", 3
+        if re.search(
+            r"\b(?:has|have|had)?\s*expand(?:s|ed|ing)?\b.{0,100}"
+            r"\bpreviously[- ]announced\b.{0,100}\b(?:partnership|collaboration|alliance|joint venture)\b",
+            normalized,
+        ):
+            return "positive", 2
         if re.search(r"\bpreviously\b|\bhistorically\b", normalized) or re.search(
             r"\b(?:announced|began|entered|established|formed|launched|signed)\b"
             r".{0,120}\b(?:partnership|collaboration|alliance|joint venture)\b"
@@ -1416,12 +2251,35 @@ def _sentiment(
     if rule.concept in {"operations.business_update", "operations.workforce"}:
         if re.search(r"\b(?:excluding?|exclude[sd]?)\b.{0,80}\brestructuring\b|\bcontract restructuring\b", normalized):
             return "neutral", 0
+        if re.search(
+            r"\b(?:no|without)\s+(?:voluntary\s+)?workforce reduction\b|"
+            r"\bretain\w*\b.{0,100}\b(?:management|employees?|workforce)\b",
+            normalized,
+        ):
+            return "neutral", 0
+        if _distress_subject_is_other_entity(entity, text, mention_terms):
+            return "neutral", 0
+        if re.search(r"\bconcerns? over (?:the )?sustainability of (?:this|the) business model\b", normalized):
+            return "negative", 2
+        if (
+            rule.concept == "operations.business_update"
+            and re.search(
+                r"\b(?:expan(?:d|ds|ded|ding|sion)|opens?)\b.{0,100}"
+                r"\b(?:clinics?|locations?|networks?|stores?|facilit(?:y|ies)|dispensar(?:y|ies))\b",
+                normalized,
+            )
+        ):
+            return (
+                ("positive", 1)
+                if re.search(r"\b(?:consider(?:s|ed|ing)?|plans?|intends?|expects?|to expand)\b", normalized)
+                else ("positive", 2)
+            )
         if re.search(r"\b(?:layoffs?|laid off|job cuts?|workforce reduction|restructur\w*)\b", normalized):
             return "negative", 3
         if re.search(r"\b(?:downside risk|growth pressure|margin pressure)\b", normalized):
             return "negative", 3
         if rule.concept == "operations.business_update" and re.search(
-            r"\b(?:service outage|experiencing outages?|problems accessing|"
+                r"\b(?:service outage|experiencing outages?|problems accessing|"
             r"restricted from (?:unloading|shipping|selling)|export restrictions?|"
             r"block(?:s|ed|ing)?\b.{0,50}\bexports?)\b",
             normalized,
@@ -1435,7 +2293,7 @@ def _sentiment(
         if (
             rule.concept == "operations.business_update"
             and re.search(
-                r"\b(?:launch(?:es|ed)?|introduc(?:e|es|ed)|deliver(?:s|ed)?|"
+                r"\b(?:launch(?:es|ed)?|introduc(?:e|es|ed)|"
                 r"grant(?:s|ed)?\b.{0,80}\b(?:patent|authorization)|"
                 r"named\b.{0,80}\b(?:exclusive|official)\b|"
                 r"biggest\b.{0,160}\bprogram|focus(?:es|ed|ing)? more on)\b",
@@ -1451,6 +2309,13 @@ def _sentiment(
     if rule.concept == "financial.loss_exposure":
         return "negative", 3
     if rule.concept == "capital.return":
+        if re.search(
+            r"\bsynthetic share repurchase\b|"
+            r"\breturn\w*\b.{0,80}\bcapital\b.{0,80}\bshareholders?\b|"
+            r"\bcapital repayment\b",
+            normalized,
+        ):
+            return "positive", 2
         if re.search(r"\b(?:paus(?:e[sd]?|ing)|suspend(?:s|ed|ing)?|halt(?:s|ed|ing)?)\b.{0,80}\b(?:buyback|repurchase)\b", normalized):
             return "negative", 2
         if re.search(r"\b(?:authoriz(?:e[sd]?|ing)|approv(?:e[sd]?|ing)|enter(?:s|ed|ing)?|restart(?:s|ed|ing)?|commenc(?:e[sd]?|ing))\b.{0,100}\b(?:buyback|repurchase)\b|\b(?:buyback|repurchase)\b.{0,100}\b(?:authoriz(?:e[sd]?|ing)|approv(?:e[sd]?|ing))\b", normalized):
@@ -1461,17 +2326,53 @@ def _sentiment(
         r"\bnew\s+\d+(?:\.\d+)?%?\s+stake\b", normalized
     ):
         return "positive", 2
-    if rule.concept == "credit.solvency" and re.search(
-        r"\b(?:joint )?plan of reorganization\b.{0,100}\b(?:approved|confirmed)\b|"
-        r"\b(?:approved|confirmed)\b.{0,100}\b(?:joint )?plan of reorganization\b",
+    if rule.concept == "ownership.position_change" and re.search(
+        r"\b(?:hopefully|if|would|could|may|might)\b.{0,160}"
+        r"\b(?:stake|position|shares?|ownership)\b.{0,80}\b(?:acquir|buy|sell)\w*\b|"
+        r"\b(?:stake|position|shares?|ownership)\b.{0,80}\b(?:acquir|buy|sell)\w*\b"
+        r".{0,160}\b(?:hopefully|would|could|may|might)\b",
         normalized,
     ):
+        return "neutral", 0
+    if rule.concept == "credit.solvency" and re.search(
+        r"\b(?:joint )?(?:plan of reorganization|reorganization plan)\b.{0,100}\b(?:approved|confirmed|stands approved)\b|"
+        r"\b(?:approved|confirmed|stands approved)\b.{0,100}\b(?:joint )?(?:plan of reorganization|reorganization plan)\b",
+        normalized,
+    ):
+        if _distress_subject_is_other_entity(entity, text, mention_terms):
+            return "neutral", 0
         return "positive", 3
+    if rule.concept == "credit.solvency" and re.search(
+        r"\b(?:going concern|substantial doubt|creditor protection|financing shortfall)\b",
+        normalized,
+    ):
+        return "negative", 3
     if rule.concept == "credit.solvency" and re.search(r"\b(?:chapter 11|bankrupt(?:cy)?)\b", normalized):
-        if re.search(r"\b(?:exit|emerg(?:e|es|ed|ing)|plan (?:approved|confirmed))\b.{0,100}\b(?:chapter 11|bankrupt)|\b(?:chapter 11|bankrupt)\b.{0,100}\b(?:exit|emerg(?:e|es|ed|ing)|plan (?:approved|confirmed))\b", normalized):
+        if _distress_subject_is_other_entity(entity, text, mention_terms):
+            return "neutral", 0
+        if re.search(r"\b(?:successfully )?(?:complet(?:e[sd]?|ing)\b.{0,60})?(?:exit|emerg(?:e|es|ed|ing)|plan (?:approved|confirmed))\b.{0,100}\b(?:chapter 11|bankrupt)|\b(?:chapter 11|bankrupt)\b.{0,100}\b(?:exit|emerg(?:e|es|ed|ing)|plan (?:approved|confirmed)|reorganization (?:was )?(?:successfully )?completed)\b|\bsuccessfully completed\b.{0,80}\bchapter 11 reorganization\b", normalized):
             return "positive", 3
+        if re.search(
+            r"\bbankruptcy court\b.{0,100}\b(?:approval|approved|order|hearing|filing)\b|"
+            r"\bunder (?:[a-z]+ )?bankruptcy law\b",
+            normalized,
+        ) and not re.search(
+            r"\b(?:file[sd]?|filing|initiated|commenced|entered|petitioned|sought)\b"
+            r".{0,80}\b(?:chapter 11|bankrupt(?:cy)?|insolvency)\b",
+            normalized,
+        ):
+            return "neutral", 0
+        if _entity_is_non_debtor_in_bankruptcy_context(entity, text, mention_terms):
+            return "neutral", 0
         return "negative", 3
     if rule.concept == "legal.proceeding":
+        if re.search(
+            r"\bconfirms?\b.{0,80}\bsettlement agreement\b.{0,80}\beffective\b"
+            r".{0,120}\b(?:following|after)\b.{0,80}\b(?:emergence|exit)\b"
+            r".{0,50}\b(?:chapter 11|bankruptcy)\b",
+            normalized,
+        ):
+            return "neutral", 0
         if re.search(
             r"\b(?:judge|court)\b.{0,180}\b(?:restriction|limitation|ban|rule|regulation)s?\b"
             r".{0,100}\b(?:arbitrary|unlawful|invalid|struck down)\b|"
@@ -1480,6 +2381,12 @@ def _sentiment(
             normalized,
         ):
             return "positive", 1
+        if re.search(
+            r"\b(?:targeted by (?:the )?probe|under investigation|antitrust probe|"
+            r"criminal (?:antitrust )?investigation|receiv(?:e[sd]?) (?:a )?subpoena)\b",
+            normalized,
+        ):
+            return "negative", 2
         filing = re.search(
             r"\b(?:files?|filed|brings?|brought|initiates?|initiated)\b.{0,80}\b(?:lawsuit|complaint|action)\b.{0,100}\bagainst\b",
             normalized,
@@ -1502,6 +2409,17 @@ def _sentiment(
             return "positive", 2
         if re.search(r"\bsettlement\b.{0,220}\b(?:cash payment|warrant issuance|pay(?:s|ment)?)\b", normalized):
             return "negative", 2
+        settlement = re.search(r"\bsettlement agreement\b", normalized)
+        if entity is not None and settlement is not None:
+            with_cue = re.search(r"\bwith\b", normalized[settlement.end():])
+            if with_cue is not None:
+                counterparty_start = settlement.end() + with_cue.end()
+                if _entity_in_quote(
+                    entity,
+                    text[counterparty_start:counterparty_start + 100],
+                    mention_terms,
+                ):
+                    return "neutral", 0
         if re.search(r"\b(?:reaches?|announces?|entered into|approved)\b.{0,100}\bsettlement\b|\bsettlement agreement\b", normalized):
             return "positive", 2
     if rule.concept == "governance.management_change" and re.search(
@@ -1515,6 +2433,16 @@ def _sentiment(
     if rule.concept == "governance.management_change" and re.search(
         r"\b(?:resigns?|retires?|steps down)\b.{0,140}\b(?:interim|successor|appoints?|named)\b|"
         r"\b(?:interim|successor|appoints?|named)\b.{0,140}\b(?:resigns?|retires?|steps down)\b",
+        normalized,
+    ):
+        return "neutral", 0
+    if (
+        rule.concept == "governance.auditor_change"
+        and re.search(r"\bat the request of\b.{0,100}\b", normalized)
+        and re.search(r"\b(?:auditor|accounting firm)\b.{0,100}\bresign(?:s|ed|ation)?\b", normalized)
+        and re.search(r"\b(?:appoint(?:s|ed)|names?|named)\b.{0,120}\b(?:successor|new) auditor\b", normalized)
+    ) and not re.search(
+        r"\b(?:disagreement|dispute|dismiss(?:ed|al)?|qualified opinion|adverse finding)\b",
         normalized,
     ):
         return "neutral", 0
@@ -1551,6 +2479,7 @@ def _sentiment(
             return "positive", 2
         if role == "acquirer" and re.search(
             r"\b(?:agrees? to|will|to) (?:acquire|buy|purchase)\b|"
+            r"\b(?:has|have|had) acquired\b|"
             r"\b(?:closes?|completes?|approved?)\b.{0,80}\b(?:acquisition|purchase|merger)\b|"
             r"\bpurchase of\b.{0,100}\b(?:assets?|business|operations?)\b",
             normalized,
@@ -1582,6 +2511,14 @@ def _sentiment(
         normalized,
     ):
         return "positive", 1
+    if rule.concept == "capital.deleveraging" and re.search(
+        r"\b(?:proceeds?|funds?)\b.{0,120}\b(?:notes?|bonds?|debt)\s+offering\b.{0,160}"
+        r"\b(?:repay|repayment|pay down)\b.{0,80}\b(?:revolver|credit facility|debt|borrowings?)\b|"
+        r"\b(?:notes?|bonds?|debt)\s+offering\b.{0,160}\b(?:proceeds?|funds?)\b"
+        r".{0,120}\b(?:repay|repayment|pay down)\b",
+        normalized,
+    ):
+        return "neutral", 0
     if rule.concept == "strategy.operational_priority":
         if re.search(r"\bworking on\b.{0,100}\bprojects?\b|\bfocus(?:es|ed|ing)?(?: more)? on\b|\bbiggest\b.{0,160}\bprogram\b", normalized):
             return "positive", 1
@@ -1613,11 +2550,35 @@ def _positive_growth_fact(typed_facts: Sequence[Mapping[str, Any]]) -> bool:
     return False
 
 
+def _material_cash_consideration(typed_facts: Sequence[Mapping[str, Any]]) -> bool:
+    """Identify transaction cash amounts large enough to be decision-relevant."""
+    scales = {
+        "units": 1.0,
+        "thousand": 1e3,
+        "million": 1e6,
+        "billion": 1e9,
+        "trillion": 1e12,
+    }
+    for fact in typed_facts:
+        if fact.get("fact_type") != "money":
+            continue
+        try:
+            value = float(str(fact.get("value") or "0")) * scales.get(
+                str(fact.get("magnitude") or "units"),
+                1.0,
+            )
+        except ValueError:
+            continue
+        if value >= 100_000_000:
+            return True
+    return False
+
+
 _REPORTED_PERIOD_COMPARISON_RE = re.compile(
-    r"\b(?:adjusted\s+|diluted\s+)?(?:EPS|earnings per share|revenues?|sales|net income|profit)\b"
-    r".{0,60}?(?:E?\$|Â£|â‚¬)?\s*(?P<first>\(?-?\d[\d,]*(?:\.\d+)?\)?)(?P<first_unit>[KMBT])?\s*"
+    r"\b(?:adjusted\s+|diluted\s+)?(?P<metric>EPS|earnings per share|revenues?|sales|net income|profit|net loss|loss)\b"
+    r".{0,60}?(?:E?\$|Â£|â‚¬)?\s*(?P<first>\(?-?\d[\d,]*(?:\.\d+)?\)?)(?P<first_unit>\s*(?:K|M|B|T|thousand|million|billion|trillion))?\s*"
     r"(?P<operator>vs\.?|versus|compared (?:with|to)|up from|down from)\s*"
-    r"(?:E?\$|Â£|â‚¬)?\s*(?P<second>\(?-?\d[\d,]*(?:\.\d+)?\)?)(?P<second_unit>[KMBT])?"
+    r"(?:E?\$|Â£|â‚¬)?\s*(?P<second>\(?-?\d[\d,]*(?:\.\d+)?\)?)(?P<second_unit>\s*(?:K|M|B|T|thousand|million|billion|trillion))?"
     r"(?P<context>.{0,50})",
     re.I,
 )
@@ -1625,16 +2586,16 @@ _REPORTED_PERIOD_COMPARISON_RE = re.compile(
 
 def _reported_period_comparison_direction(normalized_text: str) -> str | None:
     """Compare realized metrics only when the comparator is a prior period."""
+    # Quarter identifiers are horizons, not numeric metric values. Removing
+    # them prevents text such as "revenue for Q1 up from $1.8M" from treating
+    # the 1 in Q1 as the reported revenue.
+    normalized_text = re.sub(r"\bq[1-4]\b", " ", normalized_text, flags=re.I)
     match = _REPORTED_PERIOD_COMPARISON_RE.search(normalized_text)
     if not match:
         return None
     operator = match.group("operator").casefold()
-    if operator == "up from":
-        return "positive"
-    if operator == "down from":
-        return "negative"
-    if not re.search(
-        r"\b(?:yoy|year[- ]over[- ]year|same (?:quarter|qtr)|last year|prior year|year ago)\b",
+    if operator not in {"up from", "down from"} and not re.search(
+        r"\b(?:yoy|year[- ]over[- ]year|same (?:quarter|qtr)|last year|prior year|year ago|in (?:19|20)\d{2})\b",
         match.group("context"),
         re.I,
     ):
@@ -1643,13 +2604,24 @@ def _reported_period_comparison_direction(normalized_text: str) -> str | None:
     def scaled_value(raw: str, unit: str | None) -> float:
         negative = raw.startswith("-") or (raw.startswith("(") and raw.endswith(")"))
         value = float(raw.strip("()-").replace(",", ""))
-        scale = {"k": 1e3, "m": 1e6, "b": 1e9, "t": 1e12}.get(
-            (unit or "").casefold(), 1.0
+        scale = {
+            "k": 1e3,
+            "thousand": 1e3,
+            "m": 1e6,
+            "million": 1e6,
+            "b": 1e9,
+            "billion": 1e9,
+            "t": 1e12,
+            "trillion": 1e12,
+        }.get(
+            (unit or "").strip().casefold(), 1.0
         )
         return (-value if negative else value) * scale
 
     first = scaled_value(match.group("first"), match.group("first_unit"))
     second = scaled_value(match.group("second"), match.group("second_unit"))
+    if match.group("metric").casefold() in {"loss", "net loss"}:
+        first, second = -abs(first), -abs(second)
     if first > second:
         return "positive"
     if first < second:
@@ -1855,6 +2827,7 @@ def _entities_for_quote(
     mention_terms: Mapping[str, Sequence[str]],
     *,
     inherit_subject: bool = False,
+    require_grounded_entity_ids: set[str] | frozenset[str] = frozenset(),
 ) -> list[Mapping[str, Any]]:
     explicit = [
         row
@@ -1869,9 +2842,13 @@ def _entities_for_quote(
         return explicit
     if not inherit_subject and not re.search(r"\b(?:the company|it|its|management|the board|shares?|stock)\b", quote, re.I):
         return []
-    if len(entities) == 1:
-        return [entities[0]]
     previous = set(previous_entity_ids)
+    if len(entities) == 1:
+        entity = entities[0]
+        entity_id = str(entity.get("entity_id") or "")
+        if entity_id in require_grounded_entity_ids and entity_id not in previous:
+            return []
+        return [entity]
     inherited = [row for row in entities if str(row["entity_id"]) in previous]
     if inherit_subject and inherited:
         return inherited
@@ -1948,6 +2925,19 @@ def _regulatory_entities_for_facts(
     if not decisions:
         return list(entities)
     selected_ids: set[str] = set()
+    licensee_cue = re.search(r"\b(?:its|the)\s+licensee\b", quote, re.I)
+    if licensee_cue is not None and any(
+        fact.get("outcome_class") == "adverse" for fact in decisions
+    ):
+        selected_ids.update(
+            str(entity["entity_id"])
+            for entity in entities
+            if _entity_in_quote(
+                entity,
+                quote[:licensee_cue.start()],
+                mention_terms.get(str(entity["entity_id"]), ()),
+            )
+        )
     for fact in decisions:
         subject = str(fact.get("subject_raw") or "")
         subject_entities = [
@@ -1985,6 +2975,140 @@ def _regulatory_entities_for_facts(
             )
     selected = [entity for entity in entities if str(entity["entity_id"]) in selected_ids]
     return selected or list(entities)
+
+
+def _guidance_entities_for_quote(
+    entities: Sequence[Mapping[str, Any]],
+    quote: str,
+    mention_terms: Mapping[str, Sequence[str]],
+    *,
+    inherited_entity_ids: Sequence[str] = (),
+    allow_unmentioned: bool = True,
+) -> list[Mapping[str, Any]]:
+    """Bind issuer guidance to the named subject, not a later counterparty."""
+    action = re.search(
+        r"\b(?:rais(?:e[sd]?|ing)|boost(?:s|ed|ing)?|increas(?:e[sd]?|ing)|"
+        r"lower(?:s|ed|ing)?|cut(?:s|ting)?|reaffirm(?:s|ed|ing)?|"
+        r"withdraw(?:s|n|ing)?|project(?:s|ed|ing)?|expect(?:s|ed|ing)?|"
+        r"anticipat(?:e[sd]?|ing)|sees?)\b",
+        quote,
+        re.I,
+    )
+    if action is None or len(entities) <= 1:
+        if action is None:
+            return list(entities)
+        mentioned = [
+            entity
+            for entity in entities
+            if _entity_mention_spans(
+                entity,
+                quote,
+                mention_terms.get(str(entity["entity_id"]), ()),
+            )
+        ]
+        if len(entities) == 1 and mentioned and all(
+            start >= action.end()
+            for start, _end in _entity_mention_spans(
+                entities[0],
+                quote,
+                mention_terms.get(str(entities[0]["entity_id"]), ()),
+            )
+        ) and not re.search(
+            r"\b(?:guidance|outlook|forecast)\b.{0,40}\b(?:from|by)\b",
+            quote,
+            re.I,
+        ):
+            return []
+        return list(entities)
+    preceding: list[tuple[int, Mapping[str, Any]]] = []
+    for entity in entities:
+        spans = _entity_mention_spans(
+            entity,
+            quote,
+            mention_terms.get(str(entity["entity_id"]), ()),
+        )
+        distances = [action.start() - end for _start, end in spans if end <= action.start()]
+        if distances:
+            preceding.append((min(distances), entity))
+    if preceding:
+        nearest = min(distance for distance, _entity in preceding)
+        return [entity for distance, entity in preceding if distance == nearest]
+    mentioned = any(
+        _entity_mention_spans(
+            entity,
+            quote,
+            mention_terms.get(str(entity["entity_id"]), ()),
+        )
+        for entity in entities
+    )
+    if mentioned:
+        return []
+    inherited = set(inherited_entity_ids)
+    if inherited:
+        return [
+            entity for entity in entities
+            if str(entity.get("entity_id") or "") in inherited
+        ]
+    return list(entities) if allow_unmentioned else []
+
+
+def _relationship_scoped_regulatory_entities(
+    entities: Sequence[Mapping[str, Any]],
+    scoped_entities: Sequence[Mapping[str, Any]],
+    quote: str,
+    mention_terms: Mapping[str, Sequence[str]],
+    regulatory_facts: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Attach a named approval to one explicit provider-scoped economic partner.
+
+    Headlines sometimes lead with the focal issuer but omit its exchange ticker:
+    ``Issuer partner Counterparty announces FDA approval``.  The relationship
+    makes the leading issuer an affected product partner, but it does not justify
+    propagating the event to arbitrary co-mentioned or ambiguous securities.
+    """
+    favorable = any(
+        fact.get("outcome_class") == "favorable" for fact in regulatory_facts
+    ) or bool(re.search(
+        r"\b(?:FDA|EMA|regulatory)\b.{0,60}\b(?:approval|authorization|clearance)\b",
+        quote,
+        re.I,
+    ))
+    if not favorable:
+        return list(scoped_entities)
+    provider_only = [
+        entity
+        for entity in entities
+        if "provider_candidate_only" in entity.get("identity_evidence", ())
+        and entity not in scoped_entities
+    ]
+    if len(provider_only) != 1 or not scoped_entities:
+        return list(scoped_entities)
+    relation = re.match(
+        r"\s*(?:title\s*:\s*)?[A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z][A-Za-z0-9&.'-]*){0,5}"
+        r"\s+(?:partner|licensee)\s+",
+        quote,
+        re.I,
+    )
+    action = re.search(
+        r"\b(?:announc(?:e[sd]?|ing)|receiv(?:e[sd]?|ing)|secur(?:e[sd]?|ing))\b"
+        r".{0,100}\b(?:FDA|EMA|regulatory)\b.{0,60}\b(?:approval|authorization|clearance)\b|"
+        r"\b(?:FDA|EMA|regulatory)\b.{0,60}\b(?:approval|authorization|clearance)\b",
+        quote,
+        re.I,
+    )
+    if relation is None or action is None or relation.end() >= action.start():
+        return list(scoped_entities)
+    counterparty_segment = quote[relation.end():action.start()]
+    if not any(
+        _entity_in_quote(
+            entity,
+            counterparty_segment,
+            mention_terms.get(str(entity["entity_id"]), ()),
+        )
+        for entity in scoped_entities
+    ):
+        return list(scoped_entities)
+    return [*scoped_entities, provider_only[0]]
 
 
 def _entity_mention_spans(
@@ -2034,6 +3158,7 @@ def _has_issuer_scoped_rule(
 _ISSUER_EVENT_ASSERTION_RE = re.compile(
     r"\b(?:announc\w*|report\w*|say(?:s|ing)?|said|see(?:s|ing)?|expect\w*|"
     r"grant\w*|approv\w*|authoriz\w*|launch\w*|introduc\w*|deliver\w*|obtain\w*|"
+    r"open\w*|extend\w*|renew\w*|publish\w*|resume\w*|consolidat\w*|extinguish\w*|"
     r"secur\w*|enter\w*|expand\w*|partner\w*|acquir\w*|buy(?:s|ing)?|"
     r"sell\w*|reject\w*|offer\w*|file\w*|rais\w*|cut\w*|"
     r"increase\w*|decrease\w*|declin\w*|gain\w*|loss(?:es)?|miss\w*|"
@@ -2065,15 +3190,189 @@ def _has_issuer_event_assertion(text: str) -> bool:
     return bool(_ISSUER_EVENT_ASSERTION_RE.search(text))
 
 
+_STRICT_LOCAL_EVENT_PREDICATE_RE = re.compile(
+    r"\b(?:announc(?:e[sd]?|ing)|expect(?:s|ed|ing)?|introduc(?:e[sd]?|ing)|"
+    r"obtain(?:s|ed|ing)?|resum(?:e[sd]?|ing)|start(?:s|ed|ing)?|stop(?:s|ped|ping)?|"
+    r"open(?:s|ed|ing)?|clos(?:e[sd]?|ing)|launch(?:e[sd]?|ing)|"
+    r"ship(?:s|ped|ping)?|extend(?:s|ed|ing)?|renew(?:s|ed|ing)?|"
+    r"merg(?:e[sd]?|ing)|consolidat(?:e[sd]?|ing)|award(?:s|ed|ing)?|"
+    r"grant(?:s|ed|ing)?|fil(?:e[sd]?|ing)|publish(?:es|ed|ing)?|"
+    r"acquir(?:e[sd]?|ing)|sell(?:s|ing)?|sold|invest(?:s|ed|ing)?|"
+    r"explor(?:e[sd]?|ing)|increas(?:e[sd]?|ing)|reduc(?:e[sd]?|ing)|"
+    r"extinguish(?:es|ed|ing)?|report(?:s|ed|ing)?|alleg(?:e[sd]?|ing)|"
+    r"downgrad(?:e[sd]?|ing)|affirm(?:s|ed|ing)?|dismiss(?:es|ed|ing)?)\b",
+    re.I,
+)
+
+
+def _entity_is_local_event_subject(
+    entity: Mapping[str, Any],
+    quote: str,
+    mention_terms: Sequence[str],
+) -> bool:
+    """Require a resolved, same-span entity to govern the fallback predicate."""
+    if (
+        not _has_issuer_event_assertion(quote)
+        or _boilerplate_sentence(quote)
+        or _forward_looking_boilerplate_sentence(quote)
+        or re.search(r"\bprice action\b|\bshares? (?:rose|fell|gained|lost|traded)\b", quote, re.I)
+    ):
+        return False
+    predicates = sorted(
+        (
+            *list(_STRICT_LOCAL_EVENT_PREDICATE_RE.finditer(quote)),
+            *list(_ISSUER_EVENT_ASSERTION_RE.finditer(quote)),
+        ),
+        key=lambda match: (match.start(), match.end()),
+    )
+    if not predicates:
+        return False
+    for start, end in _entity_mention_spans(entity, quote, mention_terms):
+        if any(0 <= predicate.start() - end <= 120 for predicate in predicates):
+            return True
+        if re.search(
+            r"\b(?:award(?:s|ed)?|grant(?:s|ed)?|dismiss(?:es|ed)?)\b.{0,80}\b(?:to|for)\b",
+            quote[max(0, start - 120):end],
+            re.I,
+        ):
+            return True
+    return False
+
+
+def _strict_local_fallback_sentiment(text: str) -> tuple[str, int] | None:
+    """Assign only weak polarity entailed by one atomic fallback span."""
+    if re.search(r"\b(?:rumou?r(?:ed)?|reportedly|may|might|could|considering)\b", text, re.I):
+        return "neutral", 0
+    positive = bool(re.search(
+        r"\b(?:extend(?:s|ed|ing)?|renew(?:s|ed|ing)?)\b.{0,100}\b(?:deal|contract|agreement)\b|"
+        r"\b(?:award(?:s|ed|ing)?|grant(?:s|ed|ing)?)\b.{0,100}\b(?:grant|award|funding)\b|"
+        r"\bextinguish(?:es|ed|ing)?\b.{0,100}\b(?:debt|notes?|obligations?)\b|"
+        r"\b(?:launch(?:e[sd]?|ing)|open(?:s|ed|ing)|ship(?:s|ped|ping)|publish(?:es|ed|ing))\b"
+        r".{0,140}\b(?:product|service|platform|connectivity|data|results?)\b|"
+        r"\b(?:favorable|positive)\b.{0,80}\b(?:data|results?|decision)\b",
+        text,
+        re.I,
+    ))
+    negative = bool(re.search(
+        r"\b(?:will not be available|unavailable|blocked?|downgrad(?:e[sd]?|ing)|"
+        r"shut(?:s|ting)? down|lost|loss|adverse allegation)\b|"
+        r"\bclos(?:e[sd]?|ing)\b.{0,80}\b(?:stores?|plants?|facilities?|offices?|sites?|mines?|operations?|businesses?|locations?)\b|"
+        r"\b(?:stores?|plants?|facilities?|offices?|sites?|mines?|operations?|businesses?|locations?)\b"
+        r".{0,80}\bclos(?:e[sd]?|ing)\b",
+        text,
+        re.I,
+    ))
+    if positive and negative:
+        return None
+    if positive:
+        return "positive", 1
+    if negative:
+        return "negative", 1
+    return "neutral", 0
+
+
 def _boilerplate_sentence(text: str) -> bool:
     """Reject navigation and ingestion metadata without altering authoritative source offsets."""
     value = text.lstrip(" -\t")
     return bool(re.match(
-        r"(?:related\s*:|related (?:links?|news|articles?)|also read|read more|continue reading|see also|source \[(?:external|provider_body)|"
-        r"image:|disclaimer:|click here|enter a symbol|analyze any stock|free stock analysis|to track all upcoming earnings)\b",
+        r"(?:related\s*:|related (?:links?|news|articles?)|also read|now read|read more|continue reading|see also|source \[(?:external|provider_body)|"
+        r"image:|disclaimer:|click here|enter a symbol|analyze any stock|free stock analysis|to track all upcoming earnings|"
+        r"[A-Z][A-Za-z& -]{2,50} Software\s+(?:Manage|Streamline|Automate))\b",
         value,
         re.I,
     ))
+
+
+def _forward_looking_boilerplate_sentence(text: str) -> bool:
+    """Exclude hypothetical safe-harbor language from event extraction."""
+    return bool(re.search(
+        r"\bforward[- ]looking statements?\b|"
+        r"^\s*[-*]\s*uncertainties surrounding\b|"
+        r"\bactual results? (?:could|may|might|will) differ materially\b|"
+        r"\brisks? and uncertainties\b.{0,120}\b(?:actual results?|future results?)\b|"
+        r"\bpossibility\b.{0,120}\banticipated synergies\b.{0,80}\bnot (?:be )?realized\b|"
+        r"\bdependence on\b.{0,100}\bnew product development\b|"
+        r"\brisks? and uncertainties (?:related to|relating to)\b.{0,160}\bability\b|"
+        r"\bchallenges? (?:related to|relating to)\b.{0,140}\bcompliance\b|"
+        r"\bimpact of\b.{0,100}\bsubstantial indebtedness\b|"
+        r"\b(?:no|cannot) assurance\b.{0,120}\b(?:will|would|may|might|could)\b",
+        text,
+        re.I,
+    ))
+
+
+def _entity_is_non_debtor_in_bankruptcy_context(
+    entity: Mapping[str, Any] | None,
+    text: str,
+    mention_terms: Sequence[str],
+) -> bool:
+    """Distinguish an acquirer, buyer, or settlement party from the debtor.
+
+    Bankruptcy frequently appears as provenance for an acquired asset or a
+    resolved claim.  It is adverse only when the focal issuer is the debtor;
+    the same token must not be transferred to a transaction counterparty.
+    """
+    if entity is None or not _entity_in_quote(entity, text, mention_terms):
+        return False
+    spans = _entity_mention_spans(entity, text, mention_terms)
+    if not spans:
+        return False
+    cue_matches = list(re.finditer(r"\b(?:chapter 11|bankrupt(?:cy|cies)?|insolven(?:t|cy))\b", text, re.I))
+    if not cue_matches:
+        return False
+    for start, end in spans:
+        local = text[max(0, start - 60):min(len(text), end + 220)]
+        if re.search(
+            r"\b(?:file[sd]?|filing|petition(?:ed)?|enter(?:s|ed|ing)?|seek(?:s|ing)?|"
+            r"initiat(?:e[sd]?|ing)|commenc(?:e[sd]?|ing)|"
+            r"under|in)\b.{0,45}\b(?:chapter 11|bankrupt(?:cy)?|insolven(?:t|cy))\b|"
+            r"\b(?:chapter 11|bankrupt(?:cy)?|insolven(?:t|cy))\b.{0,45}"
+            r"\b(?:filing|petition|proceedings?|protection)\b",
+            local,
+            re.I,
+        ):
+            return False
+    actor = any(
+        re.search(
+            r"\b(?:acquir(?:e|es|ed|ing)|buy(?:s|ing)?|bought|purchas(?:e|es|ed|ing)|"
+            r"settle(?:s|d|ment)|recover(?:s|ed|y)|receiv(?:e|es|ed|ing))\b",
+            text[max(0, start - 30):min(len(text), end + 140)],
+            re.I,
+        )
+        for start, end in spans
+    )
+    if not actor:
+        return False
+    return any(
+        min(abs(cue.start() - start), abs(cue.start() - end)) > 45
+        for cue in cue_matches
+        for start, end in spans
+    )
+
+
+def _distress_subject_is_other_entity(
+    entity: Mapping[str, Any] | None,
+    text: str,
+    mention_terms: Sequence[str],
+) -> bool:
+    """Detect an explicitly named debtor distinct from the focal issuer."""
+    if entity is None:
+        return False
+    subject_patterns = (
+        r"(?i:\brestructuring of)\s+(?P<subject>[A-Z][A-Za-z0-9&.' -]{1,70})",
+        r"(?P<subject>[A-Z][A-Za-z0-9&.' -]{1,70})'?s\s+"
+        r"(?i:plan of reorganization|emergence from bankruptcy|chapter 11|bankruptcy)",
+        r"(?i:\benable)\s+(?P<subject>[A-Z][A-Za-z0-9&.' -]{1,70})\s+"
+        r"(?i:to\s+emerge\s+from\s+chapter 11)",
+        r"(?P<subject>[A-Z][A-Za-z0-9&.' -]{1,70}),?\s+"
+        r"(?i:which\s+is\s+currently\s+before\s+(?:the\s+)?(?:U\.S\.\s+)?bankruptcy court)",
+    )
+    for pattern in subject_patterns:
+        for match in re.finditer(pattern, text):
+            subject = match.group("subject").strip(" ,.-")
+            if subject and not _entity_in_quote(entity, subject, mention_terms):
+                return True
+    return False
 
 
 def _apply_event_supersession(
@@ -2109,7 +3408,8 @@ def _apply_event_supersession(
                     r"\b(?:clearance|permission|authorization)\b.{0,100}\b(?:resume|begin)\b.{0,60}\b(?:trial|study|enrollment)\b|"
                     r"\b(?:resume|begin)\b.{0,60}\b(?:trial|study|enrollment)\b.{0,100}\b(?:clearance|permission|authorization)\b|"
                     r"\backnowledg(?:e[sd]?|ing)\b.{0,100}\bresubmission\b|"
-                    r"\baccept(?:s|ed|ance)?\b.{0,80}\b(?:application|resubmission)\b",
+                    r"\baccept(?:s|ed|ance)?\b.{0,80}\b(?:application|resubmission|submission)\b|"
+                    r"\bfil(?:e[sd]?|ing)\b.{0,100}\b(?:response|submission)\b.{0,80}\b(?:FDA|EMA)\b",
                     quote,
                     re.I,
                 )
@@ -2313,7 +3613,11 @@ def _sentence_spans(text: str) -> list[tuple[int, int, str]]:
 
 def _semantic_spans(text: str) -> list[tuple[int, int, str]]:
     """Keep rendered outlook table labels attached to their projection cells."""
-    raw = _sentence_spans(text)
+    raw = [
+        clause
+        for start, end, quote in _sentence_spans(text)
+        for clause in _temporal_clause_spans(start, end, quote, text)
+    ]
     spans: list[tuple[int, int, str]] = []
     index = 0
     while index < len(raw):
@@ -2351,6 +3655,155 @@ def _semantic_spans(text: str) -> list[tuple[int, int, str]]:
             spans.append((start, end, quote))
         index += 1
     return spans
+
+
+def _temporal_clause_spans(
+    start: int,
+    end: int,
+    quote: str,
+    source_text: str,
+) -> list[tuple[int, int, str]]:
+    """Separate historical subordinate clauses from their controlling event clause."""
+    historical = r"(?:previously|historically|formerly|last (?:year|quarter|month))"
+    leading = re.match(
+        rf"\s*(?:after|having|following|despite|although)\b"
+        rf"[^,;.!?]{{0,140}}\b{historical}\b[^,;.!?]{{0,100}},\s*",
+        quote,
+        re.I,
+    )
+    if leading:
+        comma = quote.rfind(",", 0, leading.end())
+        return _trimmed_source_spans(
+            source_text,
+            ((start, start + comma), (start + comma + 1, end)),
+        )
+    trailing = re.search(
+        rf"\s+\b(?:after|(?<!the )following|despite|although)\b"
+        rf"(?=[^,;.!?]{{0,100}}\b{historical}\b)",
+        quote,
+        re.I,
+    )
+    if trailing and trailing.start() > 0:
+        split = start + trailing.start()
+        return _trimmed_source_spans(source_text, ((start, split), (split, end)))
+    return [(start, end, quote)]
+
+
+def _trimmed_source_spans(
+    text: str,
+    bounds: Sequence[tuple[int, int]],
+) -> list[tuple[int, int, str]]:
+    result: list[tuple[int, int, str]] = []
+    for start, end in bounds:
+        while start < end and text[start].isspace():
+            start += 1
+        while end > start and text[end - 1].isspace():
+            end -= 1
+        if start < end:
+            result.append((start, end, text[start:end]))
+    return result
+
+
+def _financing_clause(text: str) -> bool:
+    return bool(re.search(
+        r"\b(?:public offering|secondary offering|private placement|"
+        r"bond offering|notes? offering|debt financing|"
+        r"selling (?:stockholders?|shareholders?|holders?)|"
+        r"existing (?:stockholders?|shareholders?|holders?)|"
+        r"offer(?:s|ed)?|offering|issu(?:e|es|ed|ing))\b"
+        r".{0,140}\b(?:shares?|stock|units?|securities)\b",
+        text,
+        re.I,
+    ))
+
+
+def _financing_sentiment_text(
+    text: str,
+    start: int,
+    end: int,
+    event_text: str,
+    entity: Mapping[str, Any],
+    mention_terms: Sequence[str],
+) -> str:
+    """Attach an issuer-bound proceeds predicate to one secondary-sale event."""
+    if not re.search(
+        r"\b(?:secondary offering|selling (?:stockholders?|shareholders?|holders?)|"
+        r"existing (?:stockholders?|shareholders?|holders?))\b",
+        event_text,
+        re.I,
+    ):
+        return event_text
+    paragraph_start = text.rfind("\n\n", 0, start) + 2
+    paragraph_end = text.find("\n\n", end)
+    if paragraph_end < 0:
+        paragraph_end = len(text)
+    paragraph = text[paragraph_start:paragraph_end]
+    rows = _sentence_spans(paragraph)
+    financing_rows = [row for row in rows if _financing_clause(row[2])]
+    aliases = {
+        _normalize_alias(value)
+        for value in (
+            *mention_terms,
+            str(entity.get("display_name") or ""),
+            str(entity.get("ticker") or ""),
+        )
+        if _normalize_alias(value)
+    }
+    candidates: list[str] = []
+    for _candidate_start, _candidate_end, candidate in rows:
+        if not _financing_proceeds_qualifier(candidate):
+            continue
+        normalized = _normalize_alias(candidate)
+        explicit_secondary = bool(re.search(
+            r"\b(?:selling|existing) (?:stockholders?|shareholders?|holders?)\b|"
+            r"\bshares? sold by\b|\bsecondary offering\b|\bholder sale\b|"
+            r"\bthat holder sale\b|\bfrom (?:the |that )?resale\b",
+            normalized,
+        ))
+        generic_subject = bool(re.search(
+            r"\b(?:the )?(?:company|issuer|registrant|we|it)\b",
+            normalized,
+        ))
+        explicit_entity = any(alias in normalized for alias in aliases if len(alias) >= 3)
+        named_reporting_subject = re.search(
+            r"(?:^|[,;]\s*)"
+            r"([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z][A-Za-z0-9&.'-]*){0,5})\s+"
+            r"(?:said|stated|announced|noted|reported|confirmed|indicated|disclosed)\b",
+            candidate,
+        )
+        foreign_named_subject = bool(
+            named_reporting_subject
+            and not any(
+                alias in _normalize_alias(named_reporting_subject.group(1))
+                for alias in aliases
+                if len(alias) >= 3
+            )
+        )
+        foreign_transaction = bool(re.search(
+            r"\b(?:asset sale|sale of (?:assets?|business|operations?)|"
+            r"acquisition|merger|contract)\b",
+            normalized,
+        ))
+        unambiguous_event = len(financing_rows) == 1
+        if (
+            not foreign_transaction
+            and not foreign_named_subject
+            and (generic_subject or explicit_entity)
+            and (unambiguous_event or explicit_secondary)
+        ):
+            candidates.append(candidate)
+    return "\n".join((event_text, *candidates)) if candidates else event_text
+
+
+def _financing_proceeds_qualifier(text: str) -> bool:
+    return bool(re.search(
+        r"\b(?:will|would|does|did)?\s*"
+        r"(?:not receive|receive no|receives no|received no)\b"
+        r".{0,80}\bproceeds\b|"
+        r"\bno proceeds\b",
+        text,
+        re.I,
+    ))
 
 
 def _coordinated_guidance_fragment(text: str) -> bool:
@@ -2410,7 +3863,6 @@ def _semantic_role(text: str, entity: Mapping[str, Any], concept: str) -> str:
             if re.search(rf"\b(?:takeover )?(?:bid|offer)\b.{{0,40}}\bfor\s+{name}\b", text, re.I): return "target"
             if re.search(rf"\b(?:firm|binding|cash|takeover)?\s*offer\b.{{0,40}}\bfor\s+{name}\b", text, re.I): return "target"
             if re.search(rf"\btakeover chatter\b.{{0,40}}\b(?:in|for)\s+{name}\b", text, re.I): return "target"
-            if re.search(rf"{name}.{{0,60}}\b(?:takeover )?(?:bid|offer)\b", text, re.I): return "target"
             if re.search(rf"{name}.*\b(?:acquir(?:e|es|ed|ing)|buys?|purchases?)\b", text, re.I): return "acquirer"
     return "affected_subject"
 
@@ -2445,6 +3897,7 @@ def _safe_alias(value: str) -> bool:
         "america", "american", "block", "capital", "company", "credit",
         "discover", "early", "element", "energy", "equity", "financial",
         "global", "group", "guidance", "holdings", "international",
+        "complete response letter",
         "investors", "mining", "national", "ordinary shares", "performance",
         "pharmaceuticals", "public", "securities", "solutions", "standard",
         "strategy", "target", "technology", "the company", "trading", "united",
@@ -2504,7 +3957,18 @@ def _candidate_scoped_alias_variants(values: Iterable[str]) -> tuple[str, ...]:
         }
     ))
 def _normalize_ticker_identifier(value: Any) -> str:
-    return EXCHANGE_PREFIX_RE.sub("", str(value or "").upper().strip())
+    raw = str(value or "").upper().strip()
+    canadian = CANADIAN_EXCHANGE_PREFIX_RE.match(raw)
+    if canadian:
+        return f"{canadian.group('exchange').upper()}:{canadian.group('ticker').upper()}"
+    return EXCHANGE_PREFIX_RE.sub("", raw)
+
+
+def _exchange_qualified_ticker_identifier(exchange: str, ticker: str) -> str:
+    exchange_key = re.sub(r"\s+", "", exchange.upper())
+    if exchange_key in {"TSX", "TSXV", "CSE"}:
+        return f"{exchange_key}:{ticker.upper()}"
+    return _normalize_ticker_identifier(ticker)
 def _as_date(value: str) -> date | None:
     try: return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
     except ValueError:

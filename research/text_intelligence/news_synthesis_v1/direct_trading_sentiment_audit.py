@@ -29,7 +29,8 @@ from .source_authority import discover_pairs, load_json
 
 
 AUDIT_VERSION = "direct_trading_sentiment_audit_v18"
-IDENTITY_SNAPSHOT_VERSION = "news_synthesis_benchmark_identity_snapshot_v3"
+IDENTITY_SNAPSHOT_VERSION = "news_synthesis_benchmark_identity_snapshot_v4"
+TICKER_IDENTITY_CONTRACT = "exchange_qualified_canadian_security_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,10 +57,15 @@ def article_source(
         "article_url": publication.get("article_url", ""),
         "url_domain": publication.get("url_domain", ""),
         "text": rendered.get("text", ""),
-        "tickers": list(dict.fromkeys((
-            *(str(value) for value in publication.get("provider_tickers", []) if value),
-            *(str(value) for value in additional_tickers if value),
-        ))),
+        "tickers": list(dict.fromkeys(
+            str(value) for value in publication.get("provider_tickers", []) if value
+        )),
+        # Evaluation scope is provenance, not source metadata.  Keep it out of
+        # provider candidate resolution so selecting a unit for scoring cannot
+        # change alias pruning or the article's provider-supported entity set.
+        "evaluation_target_tickers": list(dict.fromkeys(
+            str(value) for value in additional_tickers if value
+        )),
         "channels": publication.get("channels", []),
         "provider_tags": publication.get("provider_tags", []),
         "content_quality_flags": publication.get("content_quality_flags", []),
@@ -132,6 +138,7 @@ def build_benchmark_identity_snapshot(
     """
     articles = tuple(articles)
     aliases_by_ticker: dict[str, set[str]] = defaultdict(set)
+    provider_equivalent_pairs: set[tuple[str, str]] = set()
     tickers: set[str] = {
         ticker
         for value in supplemental_tickers
@@ -141,10 +148,50 @@ def build_benchmark_identity_snapshot(
     for article in articles:
         publication = article.get("publication", {})
         rendered = article.get("rendered_product", {})
-        for value in publication.get("provider_tickers") or ():
-            ticker = _normalize_ticker_identifier(value)
-            if ticker and re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
-                tickers.add(ticker)
+        provider_tickers = {
+            ticker
+            for value in publication.get("provider_tickers") or ()
+            if (ticker := _normalize_ticker_identifier(value))
+            and re.fullmatch(r"(?:(?:TSX|TSXV|CSE):)?[A-Z][A-Z0-9.\-]{0,9}", ticker)
+        }
+        tickers.update(provider_tickers)
+        raw_aliases_by_ticker: dict[str, set[str]] = defaultdict(set)
+        for candidate in article.get("point_in_time_issuer_candidates", []):
+            raw_ticker = _normalize_ticker_identifier(
+                candidate.get("display_symbol")
+                or candidate.get("ticker")
+                or candidate.get("canonical_instrument_id")
+            )
+            if not raw_ticker:
+                continue
+            for evidence in candidate.get("identity_evidence", []):
+                if not str(evidence).startswith("issuer_alias:"):
+                    continue
+                alias = str(evidence).split(":", 1)[1].strip()
+                if _benchmark_alias_safe(alias):
+                    raw_aliases_by_ticker[raw_ticker].add(alias)
+        for raw_ticker, raw_aliases in raw_aliases_by_ticker.items():
+            if re.fullmatch(
+                r"(?:(?:TSX|TSXV|CSE):)?[A-Z][A-Z0-9.\-]{0,9}",
+                raw_ticker,
+            ):
+                tickers.add(raw_ticker)
+                aliases_by_ticker[raw_ticker].update(raw_aliases)
+        disjoint_collision_tickers: set[str] = set()
+        for qualified in provider_tickers:
+            if not re.match(r"^(?:TSX|TSXV|CSE):", qualified):
+                continue
+            unqualified = qualified.split(":", 1)[1]
+            qualified_raw = {
+                _normalize_alias(value)
+                for value in raw_aliases_by_ticker.get(qualified, set())
+            }
+            unqualified_raw = {
+                _normalize_alias(value)
+                for value in raw_aliases_by_ticker.get(unqualified, set())
+            }
+            if qualified_raw and unqualified_raw and not (qualified_raw & unqualified_raw):
+                disjoint_collision_tickers.update((qualified, unqualified))
         rows = enrich_candidate_rows(
             article.get("point_in_time_issuer_candidates", []),
             title=str(publication.get("title") or ""),
@@ -152,6 +199,7 @@ def build_benchmark_identity_snapshot(
             rendered_text=str(rendered.get("text") or ""),
             authoritative_identifiers=publication.get("provider_tickers") or (),
         )
+        article_aliases_by_ticker: dict[str, set[str]] = defaultdict(set)
         for row in rows:
             ticker = _normalize_ticker_identifier(
                 row.get("display_symbol") or row.get("canonical_instrument_id")
@@ -165,8 +213,42 @@ def build_benchmark_identity_snapshot(
                 if not str(evidence).startswith("issuer_alias:"):
                     continue
                 alias = str(evidence).split(":", 1)[1].strip()
+                if (
+                    ticker in disjoint_collision_tickers
+                    and _normalize_alias(alias) not in {
+                        _normalize_alias(value)
+                        for value in raw_aliases_by_ticker.get(ticker, set())
+                    }
+                ):
+                    continue
                 if _benchmark_alias_safe(alias):
                     aliases_by_ticker[ticker].add(alias)
+                    article_aliases_by_ticker[ticker].add(alias)
+        for qualified in provider_tickers:
+            if not re.match(r"^(?:TSX|TSXV|CSE):", qualified):
+                continue
+            unqualified = qualified.split(":", 1)[1]
+            if unqualified not in provider_tickers:
+                continue
+            if {qualified, unqualified} <= disjoint_collision_tickers:
+                continue
+            qualified_aliases = article_aliases_by_ticker.get(qualified, set())
+            unqualified_aliases = article_aliases_by_ticker.get(unqualified, set())
+            normalized_qualified = {_normalize_alias(value) for value in qualified_aliases}
+            normalized_unqualified = {_normalize_alias(value) for value in unqualified_aliases}
+            if (
+                bool(qualified_aliases) != bool(unqualified_aliases)
+                or bool(normalized_qualified & normalized_unqualified)
+            ):
+                # Some providers emit both the venue-qualified Canadian symbol
+                # and its unqualified display form for the same issuer. Accept
+                # that article-local equivalence only when candidate alias
+                # evidence is one-sided or agrees; disjoint named issuers stay
+                # separate even when their surface symbols collide.
+                provider_equivalent_pairs.add((unqualified, qualified))
+                shared_aliases = qualified_aliases | unqualified_aliases
+                aliases_by_ticker[qualified].update(shared_aliases)
+                aliases_by_ticker[unqualified].update(shared_aliases)
 
     source_tickers = frozenset(tickers)
     for entity in reviewed_entities:
@@ -174,7 +256,9 @@ def build_benchmark_identity_snapshot(
         if (
             not ticker
             or ticker in source_tickers
-            or not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker)
+            or not re.fullmatch(
+                r"(?:(?:TSX|TSXV|CSE):)?[A-Z][A-Z0-9.\-]{0,9}", ticker
+            )
         ):
             continue
         tickers.add(ticker)
@@ -214,6 +298,8 @@ def build_benchmark_identity_snapshot(
         ordered = sorted(related)
         for ticker in ordered[1:]:
             union(ordered[0], ticker)
+    for unqualified, qualified in sorted(provider_equivalent_pairs):
+        union(unqualified, qualified)
 
     groups: dict[str, list[str]] = defaultdict(list)
     for ticker in sorted(tickers):
@@ -254,6 +340,7 @@ def build_benchmark_identity_snapshot(
     )
     snapshot = {
         "version": IDENTITY_SNAPSHOT_VERSION,
+        "ticker_identity_contract": TICKER_IDENTITY_CONTRACT,
         "source": "prediction_blind_candidate_contract_provider_and_reviewed_candidate_identifiers",
         "production_authority": False,
         "article_count": len(articles),

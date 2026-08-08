@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 
 from .contracts import validate_document
 from .sol_teacher_evaluation import (
+    _evaluation_scope_tickers,
     _reusable_converted_document,
     compare_eligible_directions,
     convert_sol_teacher_label,
@@ -14,6 +15,12 @@ from .sol_teacher_evaluation import (
 
 
 class SolTeacherEvaluationTests(unittest.TestCase):
+    def test_evaluation_scope_uses_eligible_identity_without_direction(self) -> None:
+        document = convert_sol_teacher_label(
+            self._article(), self._label(direction="negative")
+        )
+        self.assertEqual(_evaluation_scope_tickers(document), ("AAA",))
+
     def test_conversion_preserves_mixed_direction_and_current_eligibility(self) -> None:
         article = self._article()
         label = self._label(direction="mixed")

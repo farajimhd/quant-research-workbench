@@ -51,7 +51,7 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(document["entities"], [])
         self.assertIn("unresolved_identity", document["quality_flags"])
 
-    def test_provider_candidate_event_gets_fallback_issuer_view(self) -> None:
+    def test_provider_candidate_without_local_identity_remains_fail_closed(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-provider-fallback",
             "source_timestamp": "2026-08-03T12:00:00Z",
@@ -60,11 +60,47 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             "tickers": ["AAA"],
         })
         self.assertEqual([row["ticker"] for row in document["entities"]], ["AAA"])
-        self.assertEqual(len(document["issuer_views"]), 1)
-        self.assertIn(
-            "operations.business_update",
-            {row["concept_leaf"] for row in document["statements"]},
+        self.assertEqual(document["issuer_views"], [])
+        self.assertTrue(document["eligibility"])
+        self.assertTrue(all(not row["eligible"] for row in document["eligibility"]))
+
+    def test_strict_local_fallback_uses_same_span_resolved_subject(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-strict-local-fallback",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha opens developer connectivity",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) opened developer app connectivity.",
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "positive")
+        self.assertEqual(view["positive_strength"], 1)
+        fallback = next(
+            row for row in document["statements"]
+            if row["concept_leaf"] == "operations.business_update"
         )
+        self.assertEqual(
+            fallback["evidence_spans"][0]["quote"],
+            "Alpha Therapeutics Inc (NASDAQ:AAA) opened developer app connectivity.",
+        )
+
+    def test_strict_local_fallback_does_not_bind_transaction_counterparty(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-strict-local-counterparty",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Beta extends broadcast deal with Alpha",
+            "text": (
+                "Beta Holdings Corp (NYSE:BBB) extended a broadcast deal with "
+                "Alpha Therapeutics Inc (NASDAQ:AAA)."
+            ),
+            "tickers": ["AAA", "BBB"],
+        })
+        views = {
+            next(row["ticker"] for row in document["entities"] if row["entity_id"] == view["entity_id"]): view
+            for view in document["issuer_views"]
+        }
+        self.assertEqual(views["BBB"]["composite_sentiment"], "positive")
+        self.assertNotIn("AAA", views)
 
     def test_in_scope_provider_candidates_cannot_remain_statement_unbound(self) -> None:
         document = self.engine.synthesize({
@@ -93,6 +129,71 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
         self.assertIn(
             "provider_candidate_only",
+            document["entities"][0]["identity_evidence"],
+        )
+
+    def test_evaluation_target_is_not_provider_identity_evidence(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity(
+                "NSS",
+                "issuer:northstar",
+                "Northstar Systems Holdings",
+                ("Northstar Systems Holdings",),
+                "NYSE",
+            ),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-evaluation-target",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Northstar wins major customer contract",
+            "text": "Northstar wins a major customer contract. It expects deployment next quarter.",
+            "evaluation_target_tickers": ["NSS"],
+        })
+        self.assertEqual([row["ticker"] for row in document["entities"]], ["NSS"])
+        self.assertEqual(
+            document["entities"][0]["identity_evidence"],
+            ["evaluation_target_only"],
+        )
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_unmentioned_evaluation_target_cannot_trigger_single_subject_backfill(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-unmentioned-evaluation-target",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Unrelated company wins major contract",
+            "text": "Unrelated company wins a major customer contract. It expects deployment next quarter.",
+            "evaluation_target_tickers": ["AAA"],
+        })
+        self.assertEqual([row["ticker"] for row in document["entities"]], ["AAA"])
+        self.assertEqual(document["issuer_views"], [])
+        self.assertEqual(document["entities"][0]["identity_evidence"], ["evaluation_target_only"])
+
+    def test_unscoped_one_word_alias_does_not_create_entity_from_ordinary_prose(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("TOT", "issuer:total", "Total SE", ("Total",), "NYSE"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-generic-one-word-alias",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Industry costs decline",
+            "text": "The total cost declined during the quarter.",
+        })
+        self.assertEqual(document["entities"], [])
+
+    def test_provider_scope_preserves_distinctive_one_word_brand_resolution(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("DBX", "issuer:dropbox", "Dropbox Inc", ("Dropbox",), "NASDAQ"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-provider-one-word-brand",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Dropbox launches new service",
+            "text": "Dropbox launches a new enterprise service.",
+            "tickers": ["DBX"],
+        })
+        self.assertEqual([row["ticker"] for row in document["entities"]], ["DBX"])
+        self.assertIn(
+            "provider_candidate_supported",
             document["entities"][0]["identity_evidence"],
         )
 
@@ -142,6 +243,27 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             "tickers": ["NYSE:AAA"],
         })
         self.assertEqual([row["ticker"] for row in document["entities"]], ["AAA"])
+        self.assertEqual(len(document["issuer_views"]), 1)
+
+    def test_exchange_prefixed_identity_authority_does_not_duplicate_canonical_security(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity(
+                "TSX:AAA",
+                "issuer:aaa",
+                "Alpha Copper",
+                ("Alpha Copper", "TSX:AAA"),
+                "TSX",
+            ),
+        )))
+        text = "Alpha Copper (TSX:AAA) announced a public offering."
+        document = engine.synthesize({
+            "source_id": "news-prefixed-identity-authority",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["TSX:AAA"],
+        })
+        self.assertEqual([row["ticker"] for row in document["entities"]], ["TSX:AAA"])
         self.assertEqual(len(document["issuer_views"]), 1)
 
     def test_leading_article_and_corporate_suffix_alias_variants_compose(self) -> None:
@@ -668,7 +790,7 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         )
         document = self.engine.synthesize({
             "source_id": "news-coordinated-outlook",
-            "source_timestamp": "2026-08-03T12:00:00Z",
+            "source_timestamp": "2023-08-03T12:00:00Z",
             "title": title,
             "text": text,
             "tickers": ["AAA"],
@@ -971,6 +1093,22 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             for fact in facts
         ))
 
+    def test_external_estimate_increase_is_not_issuer_guidance(self) -> None:
+        text = (
+            "A research firm is increasing its 2026 EPS estimate for "
+            "Alpha Therapeutics Inc (NASDAQ:AAA) to $1.67."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-external-estimate-not-guidance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("estimate.revision", concepts)
+        self.assertNotIn("guidance.issued", concepts)
+
     def test_analyst_estimate_above_consensus_remains_positive(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-analyst-estimate-above-consensus",
@@ -1212,6 +1350,52 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         })
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
 
+    def test_advisory_panel_withheld_endorsement_is_adverse(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-advisory-endorsement-withheld",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "FDA advisers question Alpha application",
+            "text": (
+                "FDA advisers concluded that Alpha Therapeutics Inc (NASDAQ:AAA)'s data "
+                "lacks the requisite reliability to endorse approval. The agency is awaiting "
+                "a final decision."
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "negative")
+        self.assertEqual(view["negative_strength"], 4)
+
+    def test_counterparty_bankruptcy_is_not_issuer_insolvency(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-counterparty-bankruptcy",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha completes acquisition",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) acquired a portfolio from Beta Logistics, "
+                "which filed for Chapter 11 bankruptcy protection last year."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertNotEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_safe_harbor_risk_inventory_is_not_live_adverse_evidence(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-safe-harbor-risk-inventory",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports results",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported quarterly results above consensus. "
+                "Forward-looking risks include the possibility anticipated synergies may not be "
+                "realized, dependence on new product development, challenges relating to compliance, "
+                "and the impact of substantial indebtedness."
+            ),
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "positive")
+        self.assertEqual(view["negative_strength"], 0)
+
     def test_product_scoped_regulatory_setback_and_separate_clearance_are_mixed(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-product-scoped-regulatory-package",
@@ -1318,6 +1502,29 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         }
         self.assertEqual(views["AAA"]["composite_sentiment"], "negative")
         self.assertEqual(views["BBB"]["composite_sentiment"], "positive")
+
+    def test_provider_scoped_named_partner_shares_favorable_regulatory_milestone(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "Alpha Therapeutics", ("Alpha Therapeutics",)),
+            IssuerIdentity("BBB", "issuer:bbb", "Beta Holdings", ("Beta Holdings",)),
+        )))
+        text = "AlphaBio Partner Beta Holdings Announces FDA Approval for New Treatment"
+        document = engine.synthesize({
+            "source_id": "named-regulatory-partner",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA", "BBB"],
+        })
+        views = {
+            next(
+                entity["ticker"]
+                for entity in document["entities"]
+                if entity["entity_id"] == view["entity_id"]
+            ): view["composite_sentiment"]
+            for view in document["issuer_views"]
+        }
+        self.assertEqual(views, {"AAA": "positive", "BBB": "positive"})
 
     def test_lifted_clinical_hold_is_a_positive_regulatory_resolution(self) -> None:
         document = self.engine.synthesize({
@@ -1706,6 +1913,57 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(views["AAA"], "neutral")
         self.assertEqual(views["BBB"], "positive")
 
+    def test_offer_service_through_acquisition_is_not_a_takeover_offer(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) will offer a tax service through "
+            "the acquisition of Beta Holdings Corp (NYSE:BBB). Alpha also cut its guidance."
+        )
+        document = self.engine.synthesize({
+            "source_id": "service-offer-through-acquisition",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA", "BBB"],
+        })
+        alpha = next(entity for entity in document["entities"] if entity["ticker"] == "AAA")
+        acquisition_roles = [
+            row["semantic_role"]
+            for row in document["participations"]
+            if row["entity_id"] == alpha["entity_id"]
+            and next(
+                statement["concept_leaf"]
+                for statement in document["statements"]
+                if statement["statement_id"] == row["statement_id"]
+            ) == "corporate_transaction.acquisition"
+        ]
+        self.assertNotIn("target", acquisition_roles)
+
+    def test_named_issuer_guidance_does_not_propagate_to_acquisition_counterparty(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) raised guidance after acquiring "
+            "Beta Holdings Corp (NYSE:BBB). The company now projects EPS of $2.50."
+        )
+        document = self.engine.synthesize({
+            "source_id": "guidance-subject-vs-counterparty",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA", "BBB"],
+        })
+        guidance_entity_ids = {
+            row["entity_id"]
+            for row in document["participations"]
+            if next(
+                statement["concept_leaf"]
+                for statement in document["statements"]
+                if statement["statement_id"] == row["statement_id"]
+            ) == "guidance.issued"
+        }
+        alpha = next(entity for entity in document["entities"] if entity["ticker"] == "AAA")
+        beta = next(entity for entity in document["entities"] if entity["ticker"] == "BBB")
+        self.assertIn(alpha["entity_id"], guidance_entity_ids)
+        self.assertNotIn(beta["entity_id"], guidance_entity_ids)
+
     def test_dotted_company_initials_preserve_downgrade_and_entity_binding(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-dotted-company-name",
@@ -1752,7 +2010,7 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         })
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
 
-    def test_evidence_package_dominance_requires_overwhelming_cumulative_weight(self) -> None:
+    def test_evidence_package_dominance_uses_overall_directional_value(self) -> None:
         entities = [{"entity_id": "security:AAA", "entity_kind": "security"}]
         statements = [
             {
@@ -1781,7 +2039,820 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             participations[:2] + [participations[-1]],
             statements=statements,
         )
-        self.assertEqual(balanced[0]["composite_sentiment"], "mixed")
+        self.assertEqual(balanced[0]["composite_sentiment"], "negative")
+
+        repeated_weak_positive = derive_issuer_views(
+            entities,
+            [
+                {
+                    "statement_id": f"s{index}",
+                    "entity_id": "security:AAA",
+                    "semantic_sentiment": "positive" if index < 5 else "negative",
+                    "sentiment_strength": 2 if index < 5 else 3,
+                }
+                for index in range(1, 6)
+            ],
+            statements=statements,
+        )
+        self.assertEqual(
+            repeated_weak_positive[0]["composite_sentiment"],
+            "positive",
+        )
+
+    def test_repeated_renderings_of_one_metric_do_not_create_dominance(self) -> None:
+        entities = [{"entity_id": "security:AAA", "entity_kind": "security"}]
+        statements = [
+            {
+                "statement_id": "s1",
+                "concept_leaf": "earnings.performance",
+                "evidence_spans": [{"quote": "Alpha revenue rose 10%"}],
+            },
+            {
+                "statement_id": "s2",
+                "concept_leaf": "financial.operating_performance",
+                "evidence_spans": [{"quote": "Quarterly sales increased ten percent"}],
+            },
+            {
+                "statement_id": "s3",
+                "concept_leaf": "earnings.performance",
+                "evidence_spans": [{"quote": "Alpha EPS missed estimates"}],
+            },
+        ]
+        participations = [
+            {
+                "statement_id": statement_id,
+                "entity_id": "security:AAA",
+                "semantic_sentiment": direction,
+                "sentiment_strength": 2,
+            }
+            for statement_id, direction in (
+                ("s1", "positive"),
+                ("s2", "positive"),
+                ("s3", "negative"),
+            )
+        ]
+        self.assertEqual(
+            derive_issuer_views(entities, participations, statements=statements)[0]["composite_sentiment"],
+            "mixed",
+        )
+
+    def test_secondary_holder_offering_without_issuer_proceeds_is_neutral(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "secondary-holder-sale",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Selling shareholder offers Alpha shares",
+            "text": (
+                "A selling shareholder is offering shares of Alpha Therapeutics Inc "
+                "(NASDAQ:AAA). The company will not receive any proceeds from the offering."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_mixed_primary_secondary_offering_is_not_neutralized(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "mixed-primary-secondary-sale",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha and selling holders offer shares",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) is offering newly issued shares, "
+                "and existing shareholders are offering additional shares. The company "
+                "will receive proceeds from the newly issued shares but will not receive "
+                "proceeds from shares sold by existing shareholders."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_company_possessive_shareholders_remain_secondary_sellers(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "possessive-secondary-sellers",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha announces secondary offering",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) announces a secondary offering. "
+                "The company's shareholders are selling shares, and the company will "
+                "not receive any proceeds from the offering."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_unrelated_secondary_qualifier_does_not_neutralize_primary_offering(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "local-financing-qualifier-scope",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha launches public offering",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) is offering newly issued shares. "
+                "Existing shareholders of Gamma are selling shares, and that company "
+                "will not receive proceeds."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_secondary_proceeds_qualifier_order_and_intervening_context_do_not_change_direction(self) -> None:
+        cases = (
+            (
+                "The company will not receive any proceeds from the offering. "
+                "A selling shareholder is offering shares of Alpha Therapeutics Inc "
+                "(NASDAQ:AAA)."
+            ),
+            (
+                "A selling shareholder is offering shares of Alpha Therapeutics Inc "
+                "(NASDAQ:AAA). The registration covers 2 million shares. "
+                "The company will not receive any proceeds from the offering."
+            ),
+        )
+        for index, text in enumerate(cases):
+            with self.subTest(index=index):
+                document = self.engine.synthesize({
+                    "source_id": f"secondary-package-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": "Selling shareholder offers Alpha shares",
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(
+                    document["issuer_views"][0]["composite_sentiment"],
+                    "neutral",
+                )
+
+    def test_secondary_proceeds_predicate_accepts_issuer_alias_and_receive_no(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "secondary-explicit-issuer-proceeds",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Selling shareholder offers Alpha shares",
+            "text": (
+                "A selling shareholder is offering shares of Alpha Therapeutics Inc "
+                "(NASDAQ:AAA). Alpha Therapeutics will receive no proceeds from the sale."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_secondary_proceeds_predicate_accepts_registrant_synonym(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "secondary-registrant-proceeds",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Selling shareholder offers Alpha shares",
+            "text": (
+                "A selling shareholder is offering shares of Alpha Therapeutics Inc "
+                "(NASDAQ:AAA). The registrant will receive no proceeds from the sale."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_foreign_named_subject_does_not_supply_issuer_proceeds_qualifier(self) -> None:
+        for index, qualifier in enumerate((
+            "Gamma stated it will not receive proceeds from the sale.",
+            "Separately, Gamma confirmed it will not receive proceeds from the sale.",
+        )):
+            with self.subTest(index=index):
+                document = self.engine.synthesize({
+                    "source_id": f"foreign-proceeds-subject-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": "Selling shareholder offers Alpha shares",
+                    "text": (
+                        "A selling shareholder is offering shares of Alpha Therapeutics Inc "
+                        f"(NASDAQ:AAA). {qualifier}"
+                    ),
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(
+                    document["issuer_views"][0]["composite_sentiment"],
+                    "negative",
+                )
+
+    def test_primary_and_secondary_financing_legs_remain_separate(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "separate-primary-secondary-legs",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha and selling holder offer shares",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) is offering newly issued shares. "
+                "A selling shareholder is offering additional shares. The company will "
+                "not receive proceeds from shares sold by the selling shareholder."
+            ),
+            "tickers": ["AAA"],
+        })
+        financing_parts = [
+            row
+            for row in document["participations"]
+            if next(
+                statement for statement in document["statements"]
+                if statement["statement_id"] == row["statement_id"]
+            )["concept_leaf"] == "capital.financing"
+        ]
+        self.assertIn("negative", {row["semantic_sentiment"] for row in financing_parts})
+        self.assertIn("neutral", {row["semantic_sentiment"] for row in financing_parts})
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_historical_same_concept_body_does_not_suppress_current_headline(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "distinct-financing-events",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha launches public offering",
+            "text": (
+                "Last year, Alpha Therapeutics Inc (NASDAQ:AAA) completed a private placement."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_conflicting_financing_ordinals_prevent_headline_deduplication(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "distinct-ordinal-offerings",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha launches second public offering",
+            "text": (
+                "Earlier today Alpha Therapeutics Inc (NASDAQ:AAA) completed its first "
+                "public offering."
+            ),
+            "tickers": ["AAA"],
+        })
+        financing = [
+            statement for statement in document["statements"]
+            if statement["concept_leaf"] == "capital.financing"
+        ]
+        self.assertEqual(len(financing), 2)
+
+    def test_conflicting_financing_identity_features_prevent_headline_deduplication(self) -> None:
+        cases = (
+            (
+                "Alpha launches another public offering",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) completed a separate public offering.",
+            ),
+            (
+                "Alpha reopens public offering",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) closed a public offering.",
+            ),
+            (
+                "Alpha offers 20 million shares",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) offers 50 million shares.",
+            ),
+            (
+                "Alpha offers 20-million-share placement",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) offers 50-million-share placement.",
+            ),
+        )
+        for index, (title, text) in enumerate(cases):
+            with self.subTest(index=index):
+                document = self.engine.synthesize({
+                    "source_id": f"distinct-financing-feature-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                financing = [
+                    statement for statement in document["statements"]
+                    if statement["concept_leaf"] == "capital.financing"
+                ]
+                self.assertEqual(len(financing), 2)
+
+    def test_safe_harbor_risks_do_not_create_current_events(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "safe-harbor-only",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha forward-looking statement notice",
+            "text": (
+                "Forward-looking statements involve risks and uncertainties that may cause "
+                "actual results to differ materially from expectations."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["statements"], [])
+        self.assertEqual(document["issuer_views"], [])
+
+    def test_substantive_plan_subject_to_risk_is_not_safe_harbor(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "substantive-risk-qualified-plan",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha plans product launch",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) plans to launch its new product "
+                "subject to regulatory risks. Forward-looking statements involve risks "
+                "and uncertainties that may cause actual results to differ materially."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_historical_background_does_not_drive_current_composite(self) -> None:
+        views = derive_issuer_views(
+            [{"entity_id": "security:AAA", "entity_kind": "security"}],
+            [
+                {
+                    "statement_id": "s1",
+                    "entity_id": "security:AAA",
+                    "semantic_sentiment": "negative",
+                    "sentiment_strength": 3,
+                },
+                {
+                    "statement_id": "s2",
+                    "entity_id": "security:AAA",
+                    "semantic_sentiment": "positive",
+                    "sentiment_strength": 2,
+                },
+            ],
+            statements=[
+                {
+                    "statement_id": "s1",
+                    "statement_kind": "event",
+                    "time_relation": "historical",
+                    "concept_leaf": "legal.proceeding",
+                    "evidence_spans": [{"quote": "Previously, Alpha lost the case."}],
+                },
+                {
+                    "statement_id": "s2",
+                    "statement_kind": "event",
+                    "time_relation": "current",
+                    "concept_leaf": "legal.proceeding",
+                    "evidence_spans": [{"quote": "Alpha won the appeal."}],
+                },
+            ],
+        )
+        self.assertEqual(views[0]["composite_sentiment"], "positive")
+
+    def test_issuer_leading_historical_statement_does_not_drive_composite(self) -> None:
+        views = derive_issuer_views(
+            [{"entity_id": "security:AAA", "entity_kind": "security"}],
+            [{
+                "statement_id": "s1",
+                "entity_id": "security:AAA",
+                "semantic_sentiment": "negative",
+                "sentiment_strength": 3,
+            }],
+            statements=[{
+                "statement_id": "s1",
+                "statement_kind": "event",
+                "time_relation": "historical",
+                "concept_leaf": "legal.proceeding",
+                "evidence_spans": [{"quote": "Alpha previously lost the case."}],
+            }],
+        )
+        self.assertEqual(views[0]["composite_sentiment"], "neutral")
+
+    def test_current_event_with_subordinate_history_remains_directional(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "current-event-with-history",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha regains Nasdaq compliance",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) has regained compliance with Nasdaq "
+                "requirements following a previously completed reverse stock split."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_leading_history_overrides_reported_period_comparison(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "historical-comparison-background",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha business update",
+            "text": (
+                "Previously, Alpha Therapeutics Inc (NASDAQ:AAA) reported net loss "
+                "$2 million versus $5 million in the same quarter last year."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_non_temporal_after_clause_does_not_reactivate_history(self) -> None:
+        views = derive_issuer_views(
+            [{"entity_id": "security:AAA", "entity_kind": "security"}],
+            [{
+                "statement_id": "s1",
+                "entity_id": "security:AAA",
+                "semantic_sentiment": "negative",
+                "sentiment_strength": 3,
+            }],
+            statements=[{
+                "statement_id": "s1",
+                "statement_kind": "event",
+                "time_relation": "historical",
+                "concept_leaf": "legal.proceeding",
+                "evidence_spans": [{
+                    "quote": "Alpha said after markets closed that it previously lost the case."
+                }],
+            }],
+        )
+        self.assertEqual(views[0]["composite_sentiment"], "neutral")
+
+    def test_current_main_result_after_historical_loss_remains_current(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "current-profit-after-history",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports profit",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) now reports net income after "
+                "losses last year."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_explicitly_old_result_year_is_historical_as_of_source(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "old-result-year",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha business background",
+            "text": (
+                "In 2024, Alpha Therapeutics Inc (NASDAQ:AAA) reported revenue of "
+                "$100 million, up from $90 million in 2023."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_current_release_of_prior_period_results_remains_current(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "current-prior-period-release",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports full-year results",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported full-year 2025 revenue "
+                "of $100 million versus $90 million in 2024."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_the_following_results_is_not_a_temporal_subordinate_clause(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "following-results-grammar",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports results",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported the following historically "
+                "adjusted results: revenue increased 20 percent."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_historical_guidance_is_not_active_forward_guidance(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "historical-guidance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha business background",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) previously cut full-year revenue "
+                "guidance to $90 million."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_historical_guidance_variants_are_not_active(self) -> None:
+        cases = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) earlier cut revenue guidance to $90 million.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) had expected revenue of $90 million.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) expected revenue of $90 million in 2024.",
+        )
+        for index, text in enumerate(cases):
+            with self.subTest(index=index):
+                document = self.engine.synthesize({
+                    "source_id": f"historical-guidance-variant-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": "Alpha business background",
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(
+                    document["issuer_views"][0]["composite_sentiment"],
+                    "neutral",
+                )
+
+    def test_nonleading_old_metric_year_is_historical_background(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "possessive-old-metric-year",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha business background",
+            "text": (
+                "Alpha Therapeutics Inc's 2024 revenue was $100 million, up from "
+                "$90 million in 2023 (NASDAQ:AAA)."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_old_metric_year_grammar_variants_are_historical(self) -> None:
+        cases = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) revenue for 2024 was $100 million, up from $90 million.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) FY2024 revenue was $100 million, up from $90 million.",
+        )
+        for index, text in enumerate(cases):
+            with self.subTest(index=index):
+                document = self.engine.synthesize({
+                    "source_id": f"old-metric-year-variant-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": "Alpha business background",
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(
+                    document["issuer_views"][0]["composite_sentiment"],
+                    "neutral",
+                )
+
+    def test_historically_high_current_result_remains_current(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "historically-high-current-result",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports high revenue",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported historically high "
+                "revenue of $100 million."
+            ),
+            "tickers": ["AAA"],
+        })
+        result_statement = next(
+            statement for statement in document["statements"]
+            if statement["concept_leaf"] == "earnings.performance"
+        )
+        self.assertEqual(result_statement["time_relation"], "current")
+
+    def test_leading_subordinate_history_preserves_current_main_event(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "leading-history-current-contract",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha wins replacement contract",
+            "text": (
+                "After previously losing a contract, Alpha Therapeutics Inc "
+                "(NASDAQ:AAA) won a replacement contract."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_historical_modifier_does_not_suppress_current_event(self) -> None:
+        cases = (
+            (
+                "Alpha offering closes",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) closed a previously announced public offering.",
+                "negative",
+            ),
+            (
+                "Alpha receives approval",
+                "FDA approved Alpha Therapeutics Inc (NASDAQ:AAA) for previously treated patients.",
+                "positive",
+            ),
+            (
+                "Alpha reports sales growth",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported sales increased 8% from the same period last year.",
+                "positive",
+            ),
+        )
+        for index, (title, text, expected) in enumerate(cases):
+            with self.subTest(index=index):
+                document = self.engine.synthesize({
+                    "source_id": f"scoped-history-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(
+                    document["issuer_views"][0]["composite_sentiment"],
+                    expected,
+                )
+
+    def test_signed_distribution_agreement_is_extracted(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "signed-distribution-agreement",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha signs distribution agreement",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) has signed an exclusive "
+                "distribution agreement for its diagnostic platform."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_vaccine_prevention_percentage_is_positive_trial_evidence(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "vaccine-prevention-result",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha vaccine prevents disease",
+            "text": (
+                "Alpha Therapeutics Inc's (NASDAQ:AAA) vaccine prevented 70% "
+                "of infections among trial participants."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_compact_event_grammar_families_create_issuer_views(self) -> None:
+        cases = (
+            (
+                "Alpha secures liquidity",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) entered into a five-year revolving credit facility.",
+                "positive",
+            ),
+            (
+                "Alpha selected for services",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) was selected to provide design consultancy services.",
+                "positive",
+            ),
+            (
+                "Alpha results top expectations",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) posted stronger-than-expected results.",
+                "positive",
+            ),
+            (
+                "Alpha vulnerability exploited",
+                "An actively exploited security vulnerability affects Alpha Therapeutics Inc (NASDAQ:AAA).",
+                "negative",
+            ),
+            (
+                "Alpha sells unit",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) plans to sell its logistics unit.",
+                "neutral",
+            ),
+            (
+                "Alpha records deliveries",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported record vehicle deliveries.",
+                "positive",
+            ),
+            (
+                "Alpha opens trial site",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) opened a Phase 1 clinical trial site.",
+                "positive",
+            ),
+            (
+                "Alpha stops trial",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) shut down its Phase 3 clinical trial.",
+                "negative",
+            ),
+        )
+        for index, (title, source_text, expected) in enumerate(cases):
+            with self.subTest(index=index):
+                document = self.engine.synthesize({
+                    "source_id": f"compact-event-family-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": source_text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(
+                    document["issuer_views"][0]["composite_sentiment"],
+                    expected,
+                )
+
+    def test_single_subject_continuity_attaches_all_issuer_events(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "single-subject-continuity",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha announces capital plan",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) announced a reverse stock split. "
+                "The company also authorized a $500 million share repurchase program "
+                "and plans $400 million of acquisitions."
+            ),
+            "tickers": ["AAA"],
+        })
+        concepts = {
+            statement["concept_leaf"]
+            for statement in document["statements"]
+            if statement["statement_id"] in document["issuer_views"][0]["statement_ids"]
+        }
+        self.assertIn("listing.market_structure", concepts)
+        self.assertIn("capital.return", concepts)
+        self.assertIn("corporate_transaction.acquisition", concepts)
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
+
+    def test_transaction_mechanical_reverse_split_is_neutral(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "transaction-mechanical-reverse-split",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha returns capital",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) announced a synthetic share "
+                "repurchase that combines a capital repayment with a reverse stock split."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_document_access_free_of_charge_is_not_loss_exposure(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "free-document-access",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha wins patent",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) received a patent. Copies of "
+                "the filing are available free of charge at the SEC website."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_document_access_without_charge_and_background_ipo_are_not_events(self) -> None:
+        text = (
+            "The FDA granted approval to Alpha Therapeutics Inc (NASDAQ:AAA). "
+            "The proxy statement may be obtained without charge. Risk factors are "
+            "discussed in Alpha's registration statement for the initial public "
+            "offering filed with the SEC."
+        )
+        document = self.engine.synthesize({
+            "source_id": "administrative-charge-and-background-ipo",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertNotIn("financial.loss_exposure", concepts)
+        self.assertNotIn("capital.financing", concepts)
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_credit_workout_and_macro_assumptions_are_not_corporate_distress_or_guidance_cuts(self) -> None:
+        text = (
+            "Alpha Bank Inc (NASDAQ:AAA) restructured a borrower loan with credit "
+            "enhancements and does not expect any losses. Management does not assume "
+            "any Federal Reserve rate cuts in its outlook. The bank was quick to "
+            "downgrade the internal credit rating and redeemed expensive capital."
+        )
+        document = self.engine.synthesize({
+            "source_id": "bank-credit-workout-semantics",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertNotIn("guidance.issued", concepts)
+        self.assertNotIn("analyst.rating_action", concepts)
+        self.assertNotIn("strategy.valuation_assessment", concepts)
+        directional_business_updates = [
+            row
+            for row in document["participations"]
+            if next(
+                statement["concept_leaf"]
+                for statement in document["statements"]
+                if statement["statement_id"] == row["statement_id"]
+            ) == "operations.business_update"
+            and row["semantic_sentiment"] != "neutral"
+        ]
+        self.assertFalse(directional_business_updates)
+
+    def test_cash_asset_sale_is_positive_monetization(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "cash-asset-sale",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha sells operations",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) plans to sell its logistics "
+                "operations for $825 million in cash plus earnout consideration."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_restructuring_support_distress_dominates_mitigation(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "distress-restructuring-support",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha enters restructuring support agreement",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) entered a pre-negotiated "
+                "restructuring support agreement expected to reduce debt and improve liquidity."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_narrowing_net_loss_period_comparison_is_positive(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "narrowing-loss",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha narrows quarterly loss",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported net loss $2 million "
+                "versus $5 million in the same quarter last year."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_quarter_token_is_not_used_as_reported_metric_value(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "quarter-token-not-value",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reiterates guidance",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) expects to report $9.4M "
+                "in revenue for Q1, up from $1.8M year over year."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
 
     def test_article_local_ticker_alias_binds_headline_to_explicit_share_class(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((
@@ -1924,6 +2995,499 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             "tickers": ["AAA"],
         })
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_explicit_operating_expansion_is_positive(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-clinic-expansion",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha expands clinic network with Palm Beach location",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) expands its clinic network and is now accepting patients.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_headline_quarter_beat_without_earnings_noun_is_positive(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-fq3-beat",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Posts FQ3 Beat on Expense Control",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) posts FQ3 beat on expense control.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+        self.assertIn("earnings.performance", {row["concept_leaf"] for row in document["statements"]})
+
+    def test_solvency_distress_language_is_negative(self) -> None:
+        cases = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) says there is substantial doubt about its ability to continue.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) seeks creditor protection to pursue a restructuring plan.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) reports a financing shortfall and cuts planned trials.",
+        )
+        for index, text in enumerate(cases):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"news-solvency-language-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_agreement_expansion_and_selected_delivery_are_positive_contract_events(self) -> None:
+        cases = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) will expand its sales agreement with Beta.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) has been selected by Beta to deliver a satellite earth station.",
+        )
+        for index, text in enumerate(cases):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"news-contract-form-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+                self.assertIn("commercial.contract", {row["concept_leaf"] for row in document["statements"]})
+
+    def test_agreement_customer_is_neutral_while_renewing_supplier_is_positive(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "Alpha", ("Alpha",), "NASDAQ"),
+            IssuerIdentity("BBB", "issuer:bbb", "Beta Systems", ("Beta Systems",), "NASDAQ"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-role-aware-renewal",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha has renewed its services agreement with Beta Systems",
+            "text": "Alpha (NASDAQ:AAA) has renewed its services agreement with Beta Systems (NASDAQ:BBB).",
+            "tickers": ["AAA", "BBB"],
+        })
+        tickers = {row["entity_id"]: row["ticker"] for row in document["entities"]}
+        views = {tickers[row["entity_id"]]: row for row in document["issuer_views"]}
+        self.assertEqual(views["AAA"]["composite_sentiment"], "positive")
+        self.assertEqual(views["BBB"]["composite_sentiment"], "neutral")
+
+    def test_metric_expansion_is_not_operating_expansion(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-margin-loss-expanded",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports quarterly results",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) said operating margin loss expanded 250 basis points.",
+            "tickers": ["AAA"],
+        })
+        operations = {
+            row["statement_id"]: row
+            for row in document["participations"]
+            if row["entity_id"].endswith("AAA")
+        }
+        statement_by_id = {row["statement_id"]: row for row in document["statements"]}
+        self.assertFalse(any(
+            row["semantic_sentiment"] == "positive"
+            and statement_by_id[sid]["concept_leaf"] == "operations.business_update"
+            for sid, row in operations.items()
+        ))
+
+    def test_historical_or_remediation_crl_context_is_not_a_new_adverse_decision(self) -> None:
+        cases = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) prepares to respond to the complete response letter.",
+            "Following a complete response letter received last year, Alpha Therapeutics Inc (NASDAQ:AAA) continues to work to address remaining questions.",
+        )
+        for index, text in enumerate(cases):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"news-crl-context-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertNotEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_transaction_closing_is_not_operational_shutdown(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-transaction-closing",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha announces transaction closing",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) announced the closing of its business combination.",
+            "tickers": ["AAA"],
+        })
+        self.assertNotEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_current_expansion_of_previously_announced_collaboration_remains_current(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) has expanded its previously-announced "
+            "manufacturing collaboration with Beta Systems."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-current-collaboration-expansion",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertTrue(any(row["time_relation"] == "current" for row in document["statements"]))
+
+    def test_regulatory_waiting_period_extension_is_not_a_positive_contract(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) said the regulatory waiting period "
+            "has been extended several times by agreement with the FTC."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-waiting-period-extension",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertFalse(any(
+            row["semantic_sentiment"] == "positive"
+            for row in document["participations"]
+        ))
+
+    def test_anaphoric_business_model_sustainability_risk_is_negative(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-business-model-risk",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha finds a market niche",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) has found a niche in the market. "
+                "However, concerns over the sustainability of this business model remain."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_dilutive_financing_with_explicit_liquidity_or_operating_use_is_mixed(self) -> None:
+        cases = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) closed a private placement of warrants for $20 million. The net proceeds will fund working capital and expansion of its operations.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) launched a public offering of convertible preferred stock. Under the transaction, Alpha would obtain immediate access to $15 million in liquidity.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) will pursue a strategic investment in lieu of an offering of units while a strategic investor is expected to make a $50 million investment to purchase warrants.",
+        )
+        for index, text in enumerate(cases):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"news-financing-tradeoff-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
+
+    def test_benchmarked_earnings_direction_dominates_unbenchmarked_period_moves(self) -> None:
+        cases = (
+            (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) missed EPS estimates and revenue missed expectations. "
+                "Revenue increased 6 percent from last year.",
+                "negative",
+            ),
+            (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) beat EPS expectations and revenue beat estimates. "
+                "Revenue fell 9 percent from last year.",
+                "positive",
+            ),
+        )
+        for index, (text, expected) in enumerate(cases):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"news-benchmarked-package-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
+    def test_launched_or_rolling_product_functionality_is_current_positive(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) made its new photo uploader available "
+            "to most users and is rolling out the feature globally."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-live-product-rollout",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha rolls out new photo uploader",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_in_charge_of_business_is_not_a_financial_charge(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) will retain full ownership and be "
+            "exclusively in charge of its fast-growing battery business."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-responsibility-idiom",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha retains battery business",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertNotIn(
+            "financial.loss_exposure",
+            {row["concept_leaf"] for row in document["statements"]},
+        )
+
+    def test_regulator_or_distributor_product_return_is_adverse_despite_in_charge_idiom(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) received notice from the commission, "
+            "the corporation in charge of wholesale distribution, that Alpha's products "
+            "sold to the distributor will be returned to the company."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-product-return",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Distributor returns Alpha products",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_global_workforce_reduction_is_negative(self) -> None:
+        text = "Alpha Therapeutics Inc (NASDAQ:AAA) is reducing its global workforce by 10 percent."
+        document = self.engine.synthesize({
+            "source_id": "news-workforce-reduction",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reduces global workforce",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_hypothetical_stake_acquisition_is_not_a_current_positive_event(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) said that if a minority stake is "
+            "acquired, hopefully the investor would support its strategy."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-hypothetical-stake",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha discusses possible minority stake",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertNotEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_incorrect_prior_guidance_raise_does_not_offset_current_cut(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) cut FY2026 sales guidance. "
+            "A prior headline had indicated the company raised guidance; this was incorrect."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-guidance-correction",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha cuts FY2026 sales guidance",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_raise_word_outside_forecast_semantics_is_not_guidance(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) intends to address concerns the SEC "
+            "has raised regarding historical stock sales."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-raised-concerns",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha responds to SEC concerns",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertNotIn(
+            "guidance.issued",
+            {row["concept_leaf"] for row in document["statements"]},
+        )
+
+    def test_realized_lower_revenue_fragment_is_not_guidance(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) reported quarterly results. "
+            "Corporate revenue fell 40 percent from a year ago due to lower revenue, "
+            "partially offset by lower operating expenses."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-realized-lower-revenue",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports quarterly results",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertNotIn(
+            "guidance.issued",
+            {row["concept_leaf"] for row in document["statements"]},
+        )
+
+    def test_current_forecast_revision_remains_forward_with_earlier_baseline(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) now projects sales at the low end "
+            "of its earlier guidance range."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-current-guidance-revision",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha revises sales projection",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        guidance = [row for row in document["statements"] if row["concept_leaf"] == "guidance.issued"]
+        self.assertTrue(guidance)
+        self.assertTrue(all(row["time_relation"] == "forward" for row in guidance))
+
+    def test_negative_comparable_store_sales_outlook_is_adverse_guidance(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) units are expected to comp negative "
+            "25 to 35 percent in Q3 and negative 10 percent to flat in Q4."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-negative-comps-guidance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha gives quarterly comparable-sales outlook",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        guidance = [row for row in document["statements"] if row["concept_leaf"] == "guidance.issued"]
+        self.assertTrue(guidance)
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_guides_comp_sales_growth_is_not_realized_performance(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) guides comparable-store sales growth "
+            "of 2 to 4 percent for Q2."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-guides-comp-growth",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha guides Q2 comparable sales",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertIn("guidance.issued", concepts)
+        self.assertNotIn("financial.operating_performance", concepts)
+        self.assertNotIn("earnings.performance", concepts)
+
+    def test_absent_clinical_data_is_not_product_availability_and_nice_rejection_is_adverse(self) -> None:
+        text = (
+            "NICE does not recommend Alpha Therapeutics Inc's (NASDAQ:AAA) treatment. "
+            "No clinical data is available evaluating maintenance after consolidation therapy."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-nice-rejection",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "NICE does not recommend Alpha treatment",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertNotIn(
+            "product.milestone",
+            {row["concept_leaf"] for row in document["statements"]},
+        )
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_orderly_requested_auditor_transition_is_neutral(self) -> None:
+        text = (
+            "At the request of Alpha Therapeutics Inc (NASDAQ:AAA), the former auditor "
+            "resigned as auditor and the board appointed the successor auditor as the "
+            "new auditor. There were no disagreements."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-orderly-auditor-transition",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha appoints successor auditor",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_navigation_slogan_and_software_ad_are_not_issuer_events(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) was mentioned in a market roundup. "
+            "Take charge. Lease Management Software Manage the entire lease lifecycle "
+            "efficiently, from acquisition to termination."
+        )
+        document = self.engine.synthesize({
+            "source_id": "news-software-ad-navigation",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Market roundup",
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertFalse(any(
+            row["semantic_sentiment"] != "neutral"
+            for row in document["participations"]
+        ))
+
+    def test_complete_response_letter_is_not_an_issuer_alias(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("AAA", "issuer:aaa", "Alpha Therapeutics", ("Alpha Therapeutics",), "NASDAQ"),
+            IssuerIdentity("CRL", "issuer:crl", "Charles River Laboratories", ("Complete Response Letter",), "NYSE"),
+        )))
+        text = "The FDA issued a Complete Response Letter regarding Alpha Therapeutics (NASDAQ:AAA)."
+        document = engine.synthesize({
+            "source_id": "news-crl-alias-collision",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertNotIn("CRL", {row["ticker"] for row in document["entities"]})
+
+    def test_filed_or_accepted_regulatory_response_controls_historical_crl_context(self) -> None:
+        cases = (
+            "Alpha Therapeutics filed its complete response submission with the FDA. The FDA had issued a Complete Response Letter in 2022.",
+            "The FDA accepts Alpha Therapeutics' complete response submission. The 2022 Complete Response Letter requested additional information.",
+        )
+        for index, text in enumerate(cases):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"regulatory-response-resolution-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_withdrawn_regulatory_application_is_adverse_despite_eventual_approval_language(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) voluntarily withdrew its New Drug "
+            "Application after the FDA recommended an additional Phase 3 study to obtain approval."
+        )
+        document = self.engine.synthesize({
+            "source_id": "withdrawn-regulatory-application",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_navigation_restructuring_and_ipo_prospectus_provenance_are_not_live_events(self) -> None:
+        text = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) announced a product acquisition. "
+            "Now read: Another issuer restructures debt. Information about the directors "
+            "is set forth in Alpha's final prospectus for its initial public offering filed with the SEC."
+        )
+        document = self.engine.synthesize({
+            "source_id": "navigation-and-ipo-provenance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        concepts = {row["concept_leaf"] for row in document["statements"]}
+        self.assertNotIn("capital.financing", concepts)
+        self.assertFalse(any(
+            row["semantic_sentiment"] == "negative"
+            and next(
+                statement["concept_leaf"]
+                for statement in document["statements"]
+                if statement["statement_id"] == row["statement_id"]
+            ) == "operations.business_update"
+            for row in document["participations"]
+        ))
 
 
 if __name__ == "__main__":

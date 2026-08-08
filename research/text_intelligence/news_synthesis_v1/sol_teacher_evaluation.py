@@ -10,6 +10,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from .contracts import CONTRACT_VERSION, canonical_json, sha256_json, validate_document
 from .direct_trading_sentiment_audit import (
+    IDENTITY_SNAPSHOT_VERSION,
+    TICKER_IDENTITY_CONTRACT,
     article_source,
     build_benchmark_identity_snapshot,
 )
@@ -26,7 +28,7 @@ from .synthesis import derive_issuer_views, derive_synthesis
 
 
 CONVERSION_VERSION = "news_synthesis_sol_teacher_conversion_v2"
-EVALUATION_VERSION = "news_synthesis_sol_teacher_direction_evaluation_v1"
+EVALUATION_VERSION = "news_synthesis_sol_teacher_direction_evaluation_v3"
 CONCEPT_REGISTRY_VERSION = ConceptRegistry.load().version
 
 SOL_CONCEPT_TO_V1 = {
@@ -422,7 +424,12 @@ def evaluate_sol_teacher_population(
             predictions[sample_id] = prediction
         else:
             try:
-                prediction = engine.synthesize(article_source(items[sample_id]))
+                prediction = engine.synthesize(article_source(
+                    items[sample_id],
+                    additional_tickers=_evaluation_scope_tickers(
+                        converted_documents[sample_id]
+                    ),
+                ))
             except Exception as exc:  # retain genuine engine failures in the ledger
                 failures.append(
                     {"sample_id": sample_id, "error": f"{type(exc).__name__}: {exc}"}
@@ -562,7 +569,10 @@ def finalize_sol_teacher_evaluation(
             prediction = _reusable_prediction_document(prediction_path, article)
         if prediction is None:
             try:
-                prediction = engine.synthesize(article_source(article))
+                prediction = engine.synthesize(article_source(
+                    article,
+                    additional_tickers=_evaluation_scope_tickers(gold),
+                ))
             except Exception as exc:
                 failures.append(
                     {"sample_id": sample_id, "error": f"{type(exc).__name__}: {exc}"}
@@ -827,6 +837,21 @@ def _candidate_aliases(candidate: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for value in aliases if value))
 
 
+def _evaluation_scope_tickers(document: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return prediction-blind target identities, never target directions."""
+    eligible_entity_ids = {
+        str(row.get("entity_id") or "")
+        for row in document.get("eligibility", ())
+        if row.get("product") == "forecast_trigger" and bool(row.get("eligible"))
+    }
+    return tuple(dict.fromkeys(
+        str(entity.get("ticker") or "").upper()
+        for entity in document.get("entities", ())
+        if str(entity.get("entity_id") or "") in eligible_entity_ids
+        and str(entity.get("ticker") or "").strip()
+    ))
+
+
 def _issuer_evidence(
     article: Mapping[str, Any], candidate: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -936,7 +961,10 @@ def _reusable_identity_snapshot(
         return None
     rows = snapshot.get("identities", ())
     if (
-        int(snapshot.get("article_count") or 0) != expected_articles
+        str(snapshot.get("version") or "") != IDENTITY_SNAPSHOT_VERSION
+        or str(snapshot.get("ticker_identity_contract") or "")
+        != TICKER_IDENTITY_CONTRACT
+        or int(snapshot.get("article_count") or 0) != expected_articles
         or int(snapshot.get("identity_count") or 0) != len(rows)
         or str(snapshot.get("source_items_sha256") or "")
         != expected_source_items_sha256

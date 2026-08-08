@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from .direct_trading_sentiment_audit import (
+    IDENTITY_SNAPSHOT_VERSION,
+    TICKER_IDENTITY_CONTRACT,
     article_source,
     build_benchmark_identity_snapshot,
     certified_direct_trading_units,
@@ -52,7 +54,8 @@ class DirectTradingSentimentAuditTests(unittest.TestCase):
             },
             additional_tickers=("BBB", "AAA"),
         )
-        self.assertEqual(source["tickers"], ["AAA", "BBB"])
+        self.assertEqual(source["tickers"], ["AAA"])
+        self.assertEqual(source["evaluation_target_tickers"], ["BBB", "AAA"])
 
     def test_snapshot_accepts_reviewed_candidate_identifier_without_article_metadata(self) -> None:
         index, snapshot = build_benchmark_identity_snapshot(
@@ -157,6 +160,73 @@ class DirectTradingSentimentAuditTests(unittest.TestCase):
             [row["ticker"] for row in snapshot["identities"]],
             ["RTN"],
         )
+
+    def test_snapshot_preserves_canadian_exchange_qualified_security_key(self) -> None:
+        article = {
+            "publication": {
+                "title": "Enerflex reports results",
+                "teaser": "",
+                "provider_tickers": ["TSX:EFX"],
+            },
+            "rendered_product": {"text": "Enerflex reports results."},
+            "point_in_time_issuer_candidates": [{
+                "display_symbol": "TSX:EFX",
+                "identity_evidence": ["issuer_alias:enerflex"],
+            }],
+        }
+        _index, snapshot = build_benchmark_identity_snapshot((article,))
+        self.assertEqual(snapshot["version"], IDENTITY_SNAPSHOT_VERSION)
+        self.assertEqual(
+            snapshot["ticker_identity_contract"],
+            TICKER_IDENTITY_CONTRACT,
+        )
+        self.assertEqual(
+            [row["ticker"] for row in snapshot["identities"]],
+            ["TSX:EFX"],
+        )
+
+    def test_provider_dual_representation_shares_issuer_and_alias_evidence(self) -> None:
+        article = {
+            "publication": {
+                "title": "Osisko acquires royalties",
+                "teaser": "",
+                "provider_tickers": ["OR", "TSX:OR"],
+            },
+            "rendered_product": {"text": "Osisko acquires four royalties."},
+            "point_in_time_issuer_candidates": [{
+                "ticker": "OR",
+                "identity_evidence": ["issuer_alias:osisko"],
+            }],
+        }
+        index, snapshot = build_benchmark_identity_snapshot((article,))
+        rows = {row["ticker"]: row for row in snapshot["identities"]}
+        self.assertEqual(rows["OR"]["issuer_id"], rows["TSX:OR"]["issuer_id"])
+        self.assertEqual(rows["TSX:OR"]["aliases"], ["osisko"])
+        resolved = index.resolve(
+            text="Osisko acquires four royalties.",
+            candidates=("OR", "TSX:OR"),
+            timestamp="2026-08-03T12:00:00Z",
+        )
+        self.assertEqual({row["ticker"] for row in resolved}, {"OR", "TSX:OR"})
+
+    def test_colliding_cross_exchange_symbols_with_disjoint_aliases_stay_separate(self) -> None:
+        article = {
+            "publication": {
+                "title": "Equifax compares notes with Enerflex",
+                "teaser": "",
+                "provider_tickers": ["EFX", "TSX:EFX"],
+            },
+            "rendered_product": {"text": "Equifax compares notes with Enerflex."},
+            "point_in_time_issuer_candidates": [
+                {"ticker": "EFX", "identity_evidence": ["issuer_alias:equifax"]},
+                {"display_symbol": "TSX:EFX", "identity_evidence": ["issuer_alias:enerflex"]},
+            ],
+        }
+        _index, snapshot = build_benchmark_identity_snapshot((article,))
+        rows = {row["ticker"]: row for row in snapshot["identities"]}
+        self.assertNotEqual(rows["EFX"]["issuer_id"], rows["TSX:EFX"]["issuer_id"])
+        self.assertEqual(rows["EFX"]["aliases"], ["equifax"])
+        self.assertEqual(rows["TSX:EFX"]["aliases"], ["enerflex"])
 
     def test_manifest_comparison_uses_record_derived_legacy_missing_count(self) -> None:
         previous = {
