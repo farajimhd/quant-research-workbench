@@ -2628,11 +2628,16 @@
 .strategy-rule-expression-group > div { display: grid; gap: 8px; }
 .strategy-rule-expression-child { align-items: center; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) auto; position: relative; }
 .strategy-rule-expression-operator { background: var(--surface); color: var(--configuration-accent); font-size: 9px; font-weight: 800; grid-column: 1 / -1; justify-self: start; letter-spacing: .08em; margin: -3px 0 -3px 18px; padding: 0 6px; }
-.strategy-rule-expression-leaf { align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; display: grid; gap: 12px; grid-template-columns: auto minmax(0, 1fr) auto; min-height: 58px; padding: 10px 12px; }
-.strategy-rule-expression-leaf > svg { color: var(--configuration-accent); }
-.strategy-rule-expression-leaf > span { display: grid; gap: 3px; }
+.strategy-rule-expression-leaf { align-items: start; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; display: grid; gap: 12px; grid-template-columns: auto minmax(0, 1fr) auto; min-height: 58px; padding: 12px; }
+.strategy-rule-expression-leaf > svg { color: var(--configuration-accent); margin-top: 2px; }
+.strategy-rule-expression-copy { display: grid; gap: 3px; min-width: 0; }
 .strategy-rule-expression-leaf strong { font-size: 13px; font-weight: 650; }
 .strategy-rule-expression-leaf small { color: var(--muted-foreground); font-size: 11px; line-height: 1.4; }
+.strategy-rule-set-meaning { align-items: start; border-top: 1px solid var(--configuration-rule); display: grid; gap: 10px; grid-template-columns: auto minmax(0, 1fr); margin-top: 6px; padding-top: 8px; }
+.strategy-rule-set-meaning > span { color: var(--muted-foreground); font-size: 9px; font-weight: 720; letter-spacing: .07em; line-height: 1.5; text-transform: uppercase; }
+.strategy-rule-set-meaning > p { color: var(--foreground); display: block; font-size: 11px; line-height: 1.5; margin: 0; }
+.strategy-rule-set-meaning[data-enabled="false"] > p { color: var(--muted-foreground); }
+.strategy-rule-set-authoring > .strategy-rule-set-meaning { margin: 0 0 18px; }
 .strategy-rule-expression-summary { background: color-mix(in oklab, var(--configuration-accent) 5%, var(--surface)); border: 1px solid color-mix(in oklab, var(--configuration-accent) 24%, var(--border)); border-radius: 9px; display: grid; gap: 7px; padding: 14px 16px; }
 .strategy-rule-expression-summary span { color: var(--configuration-accent); font-size: 9px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
 .strategy-rule-expression-summary strong { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; font-weight: 550; line-height: 1.6; }
