@@ -51,6 +51,7 @@ class AsyncCheckpointManager:
         self.jobs: queue.Queue[tuple[dict[str, Any], list[tuple[Path, str]], dict[str, Any]] | None] = queue.Queue(maxsize=2)
         self.pending_paths: dict[Path, int] = {}
         self.pending_lock = threading.RLock()
+        self.worker_failure: BaseException | None = None
         self.worker = threading.Thread(target=self._worker, name="async-checkpoint-writer", daemon=True)
         self.worker.start()
 
@@ -66,7 +67,8 @@ class AsyncCheckpointManager:
         train_metrics: dict[str, float] | None = None,
         val_metrics: dict[str, float] | None = None,
         force: bool = False,
-    ) -> None:
+    ) -> bool:
+        self._raise_worker_failure()
         reasons: list[tuple[Path, str]] = []
         train_metrics = train_metrics or {}
         val_metrics = val_metrics or {}
@@ -99,7 +101,7 @@ class AsyncCheckpointManager:
                 f"Skipped checkpoint at {self.policy.clock_name} {step}; monitored loss is non-finite "
                 f"(train={train_loss}, val={val_loss})."
             )
-            return
+            return False
         if self.policy.save_best_train and train_loss is not None and train_loss < self.best_train_loss:
             self.best_train_loss = float(train_loss)
             reasons.append((self.checkpoint_dir / "checkpoint_best_train.pt", "best_train"))
@@ -109,11 +111,11 @@ class AsyncCheckpointManager:
         if archive_due or (force and self.policy.archive_on_force):
             reasons.append((self.checkpoint_dir / f"{self.policy.archive_prefix}_{step:012d}.pt", "archive"))
         if not reasons:
-            return
+            return False
         latest_only = all(reason == "latest" for _, reason in reasons)
         if latest_only and self.policy.skip_latest_if_busy and self.jobs.qsize() > 0:
             self._message(f"Skipped latest checkpoint at {self.policy.clock_name} {step}; checkpoint writer is still busy.")
-            return
+            return False
         if latest_due:
             self.last_latest_bucket = latest_bucket
         if archive_due:
@@ -130,7 +132,7 @@ class AsyncCheckpointManager:
             "train_loss": train_loss,
             "val_loss": val_loss,
         }
-        self._enqueue(cpu_payload, reasons, event, allow_pending=force)
+        return self._enqueue(cpu_payload, reasons, event, allow_pending=force)
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -155,17 +157,30 @@ class AsyncCheckpointManager:
         )
 
     def close(self, *, wait: bool = True, timeout: float | None = None) -> None:
-        try:
-            if wait:
-                self.jobs.put(None)
-            else:
-                self.jobs.put_nowait(None)
-        except queue.Full:
-            if wait:
-                self.jobs.put(None)
+        self._raise_worker_failure()
+        if not self.worker.is_alive():
             return
         if wait:
+            while True:
+                self._raise_worker_failure()
+                if not self.worker.is_alive():
+                    self._raise_worker_failure()
+                    return
+                try:
+                    self.jobs.put(None, timeout=1)
+                    break
+                except queue.Full:
+                    continue
+        else:
+            try:
+                self.jobs.put_nowait(None)
+            except queue.Full:
+                return
+        if wait:
             self.worker.join(timeout=timeout)
+            if self.worker.is_alive():
+                raise TimeoutError("checkpoint writer did not stop before the close timeout")
+            self._raise_worker_failure()
 
     def _enqueue(
         self,
@@ -174,7 +189,7 @@ class AsyncCheckpointManager:
         event: dict[str, Any],
         *,
         allow_pending: bool = False,
-    ) -> None:
+    ) -> bool:
         with self.pending_lock:
             filtered = []
             for path, reason in reasons:
@@ -186,12 +201,13 @@ class AsyncCheckpointManager:
                 filtered.append((path, reason))
             reasons = filtered
         if not reasons:
-            return
+            return False
         while True:
             try:
                 self.jobs.put((payload, reasons, event), timeout=1)
-                return
+                return True
             except queue.Full:
+                self._raise_worker_failure()
                 self._message("Checkpoint writer queue is full; waiting for previous save to finish.")
 
     def _worker(self) -> None:
@@ -205,6 +221,14 @@ class AsyncCheckpointManager:
                     atomic_torch_save(payload, path)
                     self._append_manifest({**event, "reason": reason, "path": str(path)})
                     self._message(f"Saved checkpoint {reason}: {path}")
+                except BaseException as exc:
+                    with self.pending_lock:
+                        if self.worker_failure is None:
+                            self.worker_failure = exc
+                    self._message(
+                        f"Checkpoint writer failed for {reason}: {exc.__class__.__name__}: {exc}"
+                    )
+                    return
                 finally:
                     with self.pending_lock:
                         resolved = path.resolve()
@@ -223,6 +247,12 @@ class AsyncCheckpointManager:
             self.message_callback(text)
         else:
             print(text, flush=True)
+
+    def _raise_worker_failure(self) -> None:
+        with self.pending_lock:
+            failure = self.worker_failure
+        if failure is not None:
+            raise RuntimeError("asynchronous checkpoint writer failed") from failure
 
 
 def to_cpu_payload(value: Any) -> Any:

@@ -20,6 +20,7 @@ from unittest.mock import patch
 import torch
 from rich.console import Console
 from rich.text import Text
+from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
 
 from research.bar_gpt.v1.audit_offline_shards import audit_shard
 from research.bar_gpt.v1.config import BAR_GPT_WANDB_PROJECT, BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig
@@ -87,6 +88,7 @@ from research.bar_gpt.v1.train import (
     _advance_cursors,
     _batch_eligibility_metrics,
     _checkpoint_policy,
+    checkpoint_payload,
     _condition_certification_coverage,
     _forward,
     _loaders,
@@ -94,8 +96,10 @@ from research.bar_gpt.v1.train import (
     _assert_finite_before_step,
     PreparedValidationBatches,
     _validation_milestones,
+    _validation_checkpoint_due,
     _wandb_metric_key,
     _resolved_warmup_samples,
+    restore_checkpoint,
     _resume_data_contract,
     _training_prefetcher,
     build_config as build_training_config,
@@ -1502,6 +1506,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--validation-blocks-per-slice"], "2")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "1")
         self.assertEqual(training_launcher_args["--epochs"], "1")
+        self.assertEqual(training_launcher_args["--checkpoint-validation-evaluations"], "1")
+        self.assertNotIn("--checkpoint-latest-samples", training_launcher_args)
         self.assertEqual(training_launcher_args["--wandb-project"], BAR_GPT_WANDB_PROJECT)
         self.assertEqual(training_launcher_args["--loader-workers"], "16")
         config = TrainConfig(warmup_samples=0, warmup_fraction=0.01)
@@ -1536,12 +1542,122 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(float(empty), 0.0)
 
     def test_checkpoint_policy_selects_on_validation_not_training_loss(self) -> None:
-        config = TrainConfig(checkpoint_latest_samples=123, checkpoint_archive_samples=456)
+        config = TrainConfig(checkpoint_validation_evaluations=3)
         policy = _checkpoint_policy(config)
         self.assertFalse(policy.save_best_train)
         self.assertTrue(policy.save_best_val)
-        self.assertEqual(policy.latest_steps, 123)
-        self.assertEqual(policy.archive_steps, 456)
+        self.assertEqual(policy.latest_steps, 1)
+        self.assertEqual(policy.archive_steps, 0)
+        self.assertEqual(policy.clock_name, "validation_evaluation")
+        self.assertFalse(_validation_checkpoint_due(0, 1))
+        self.assertTrue(_validation_checkpoint_due(1, 1))
+        self.assertTrue(_validation_checkpoint_due(3, 3))
+        self.assertFalse(_validation_checkpoint_due(4, 3))
+
+    def test_checkpoint_disk_write_runs_on_background_worker(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_save(_payload: object, _path: Path) -> None:
+            started.set()
+            if not release.wait(timeout=5):
+                raise TimeoutError("test did not release checkpoint writer")
+
+        policy = CheckpointPolicy(
+            latest_steps=1,
+            archive_steps=0,
+            save_best_train=False,
+            save_best_val=False,
+            archive_on_force=False,
+        )
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "research.mlops.checkpoints.atomic_torch_save", side_effect=blocking_save
+        ):
+            root = Path(directory)
+            manager = AsyncCheckpointManager(root / "checkpoints", root / "manifest.jsonl", policy)
+            manager.maybe_save(step=1, payload={"weight": torch.ones(1)}, force=True)
+            self.assertTrue(started.wait(timeout=2))
+            self.assertTrue(manager.worker.is_alive())
+            release.set()
+            manager.close(wait=True, timeout=5)
+            self.assertFalse(manager.worker.is_alive())
+
+    def test_checkpoint_worker_failure_is_raised_to_training(self) -> None:
+        failed = threading.Event()
+
+        def failing_save(_payload: object, _path: Path) -> None:
+            failed.set()
+            raise OSError("disk unavailable")
+
+        policy = CheckpointPolicy(
+            latest_steps=1, archive_steps=0,
+            save_best_train=False, save_best_val=False,
+            archive_on_force=False,
+        )
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "research.mlops.checkpoints.atomic_torch_save", side_effect=failing_save
+        ):
+            root = Path(directory)
+            manager = AsyncCheckpointManager(root / "checkpoints", root / "manifest.jsonl", policy)
+            self.assertTrue(manager.maybe_save(step=1, payload={"weight": torch.ones(1)}, force=True))
+            self.assertTrue(failed.wait(timeout=2))
+            manager.worker.join(timeout=2)
+            with self.assertRaisesRegex(RuntimeError, "asynchronous checkpoint writer failed"):
+                manager.close(wait=True, timeout=2)
+
+    def test_validation_checkpoint_roundtrip_restores_training_state(self) -> None:
+        model_config = BarGPTConfig(
+            d_model=32, n_layers=1, n_heads=4, n_kv_heads=2,
+            horizon_rank=8, timeframe_fourier_dim=8,
+        )
+        config = ExperimentConfig(
+            model=model_config,
+            data=self.data_config(),
+            train=TrainConfig(amp=False, cuda_prefetch=False),
+        )
+        model = BarGPTV1(model_config)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+        scheduler = SampleCosineRestartScheduler(
+            optimizer, warmup_samples=10, cycle_samples=100,
+            minimum_lr=3e-5, restart_decay=0.98,
+        )
+        scaler = torch.amp.GradScaler("cuda", enabled=False)
+        expected = {key: value.detach().clone() for key, value in model.state_dict().items()}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = AsyncCheckpointManager(
+                root / "checkpoints", root / "checkpoint_manifest.jsonl", _checkpoint_policy(config.train)
+            )
+            payload = checkpoint_payload(
+                model, optimizer, scaler, scheduler, manager, config,
+                samples_seen=131_072, batches_seen=1, optimizer_steps=1,
+                blocks_seen=32, units_seen={"AAA:2019-01"}, condition_blocks_seen=2,
+                epoch=0, epoch_start_samples=0,
+                data_cursors={0: CoverageCursor(11, 7)}, plan_hash="plan-1",
+                last_checkpoint_samples=131_072, validation_evaluations_completed=1,
+                wandb_run_id="wandb-1", validation_runs_in_epoch=1,
+                last_validation_samples=131_072,
+            )
+            manager.maybe_save(
+                step=1, payload=payload,
+                train_metrics={"train/loss": 1.0},
+                val_metrics={"validation_loss/total": 1.0},
+                force=True,
+            )
+            manager.close(wait=True, timeout=10)
+            self.assertFalse(manager.worker.is_alive())
+            with torch.no_grad():
+                for parameter in model.parameters():
+                    parameter.zero_()
+            restored = restore_checkpoint(
+                str(root / "checkpoints" / "checkpoint_latest.pt"),
+                model, optimizer, scaler, scheduler, torch.device("cpu"), config, "plan-1",
+            )
+        self.assertEqual(restored["samples_seen"], 131_072)
+        self.assertEqual(restored["validation_evaluations_completed"], 1)
+        self.assertEqual(restored["last_checkpoint_samples"], 131_072)
+        for key, value in model.state_dict().items():
+            torch.testing.assert_close(value, expected[key])
 
     def test_resume_contract_allows_loader_tuning_but_not_sampling_changes(self) -> None:
         base = {
@@ -1983,11 +2099,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(all(len(line) >= 159 for line in rendered_lines))
         self.assertTrue(any(line.startswith("│State") for line in rendered_lines))
         objective_line = next(line for line in rendered_lines if "Total" in line and "Gradient norm" in line)
-        self.assertGreater(objective_line.index("Gradient norm") - objective_line.index("0.123000"), 12)
+        self.assertIn(objective_line.index("Gradient norm"), range(40, 45))
+        self.assertIn(objective_line.index("Total loss"), range(80, 85))
         rendered = " ".join(output.getvalue().split())
         self.assertIn("running", rendered)
         self.assertIn("AAPL,SPY", rendered)
-        self.assertIn("checkpoint_latest.pt", rendered)
+        self.assertIn("checkpoint_latest", rendered)
         self.assertIn("Epoch 2/3", rendered)
         self.assertIn("25,000/100,000", rendered)
         self.assertIn("75/300", rendered)

@@ -99,6 +99,7 @@ class TrainingProgressState:
     validation_runs_completed: int = 0
     validation_runs_total: int = 0
     next_validation_origins: int = 0
+    checkpoint_stage_seconds: float | None = None
     last_checkpoint: str = "-"
     losses: dict[str, float] = field(default_factory=dict)
     eligibility: dict[str, float] = field(default_factory=dict)
@@ -388,7 +389,7 @@ class TrainingReporter:
             ("Next validation", s.next_validation_origins, "integer"),
             ("Checkpoint", checkpoint, "text"),
             ("Origin block", s.origin_bars, "integer"),
-            ("Unit index", s.current_unit_index if s.current_unit_index >= 0 else None, "integer"),
+            ("Checkpoint staging", s.checkpoint_stage_seconds, "seconds"),
         )
 
         messages = list(self.messages)
@@ -424,28 +425,26 @@ class TrainingReporter:
 def _paired_table(rows: Sequence[tuple[str, Any, str]]) -> Any:
     from rich.table import Table
 
-    table = Table.grid(expand=True, padding=(0, 0))
-    table.add_column(style="dim", no_wrap=True)
-    table.add_column(justify="right", no_wrap=True)
-    table.add_column(ratio=1)
-    table.add_column(style="dim", no_wrap=True)
-    table.add_column(justify="right", no_wrap=True)
     midpoint = (len(rows) + 1) // 2
-    left = list(rows[:midpoint])
-    right = list(rows[midpoint:])
-    for index, (left_label, left_value, left_style) in enumerate(left):
-        if index < len(right):
-            right_label, right_value, right_style = right[index]
-        else:
-            right_label, right_value, right_style = "", None, "text"
-        table.add_row(
-            left_label + " ",
-            _format_value(left_value, left_style),
-            "",
-            right_label + " " if right_label else "",
-            _format_value(right_value, right_style) if right_label else "",
-        )
+    table = Table.grid(expand=True, padding=(0, 0))
+    table.add_column(ratio=1)
+    table.add_column(ratio=1)
+    table.add_row(_metric_column(rows[:midpoint]), _metric_column(rows[midpoint:]))
     return table
+
+
+def _metric_column(rows: Sequence[tuple[str, Any, str]]) -> Any:
+    """Render one exact half-panel column with a two-cell left inset."""
+    from rich.table import Table
+
+    column = Table.grid(expand=True, padding=(0, 0))
+    column.add_column(width=2)
+    column.add_column(style="dim", no_wrap=True)
+    column.add_column(justify="right", no_wrap=True)
+    column.add_column(ratio=1)
+    for label, value, style in rows:
+        column.add_row("", label + " ", _format_value(value, style), "")
+    return column
 
 
 def _format_value(value: Any, style: str) -> str:

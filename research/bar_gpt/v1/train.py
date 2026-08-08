@@ -198,8 +198,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--minimum-learning-rate", type=float, default=train.minimum_learning_rate)
     parser.add_argument("--cosine-cycle-samples", type=int, default=train.cosine_cycle_samples)
     parser.add_argument("--cosine-restart-decay", type=float, default=train.cosine_restart_decay)
-    parser.add_argument("--checkpoint-latest-samples", type=int, default=train.checkpoint_latest_samples)
-    parser.add_argument("--checkpoint-archive-samples", type=int, default=train.checkpoint_archive_samples)
+    parser.add_argument(
+        "--checkpoint-validation-evaluations",
+        type=int,
+        default=train.checkpoint_validation_evaluations,
+        help="stage one resumable checkpoint after this many validation evaluations",
+    )
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=train.progress_layout)
     parser.add_argument("--autoregressive-weight", type=float, default=train.autoregressive_weight)
     parser.add_argument("--horizon-weight", type=float, default=train.horizon_weight)
@@ -313,8 +317,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         minimum_learning_rate=float(args.minimum_learning_rate),
         cosine_cycle_samples=int(args.cosine_cycle_samples),
         cosine_restart_decay=float(args.cosine_restart_decay),
-        checkpoint_latest_samples=int(args.checkpoint_latest_samples),
-        checkpoint_archive_samples=int(args.checkpoint_archive_samples),
+        checkpoint_validation_evaluations=int(args.checkpoint_validation_evaluations),
         progress_layout=str(args.progress_layout),
         autoregressive_weight=float(args.autoregressive_weight),
         horizon_weight=float(args.horizon_weight),
@@ -1184,7 +1187,8 @@ def checkpoint_payload(
     epoch_start_samples: int,
     data_cursors: dict[int, CoverageCursor],
     plan_hash: str,
-    last_latest_samples: int,
+    last_checkpoint_samples: int,
+    validation_evaluations_completed: int,
     wandb_run_id: str | None,
     validation_runs_in_epoch: int = 0,
     last_validation_samples: int = -1,
@@ -1206,7 +1210,8 @@ def checkpoint_payload(
         "epoch_start_samples": epoch_start_samples,
         "data_cursors": {str(worker): asdict(cursor) for worker, cursor in data_cursors.items()},
         "plan_hash": plan_hash,
-        "last_latest_samples": last_latest_samples,
+        "last_checkpoint_samples": last_checkpoint_samples,
+        "validation_evaluations_completed": validation_evaluations_completed,
         "validation_runs_in_epoch": validation_runs_in_epoch,
         "last_validation_samples": last_validation_samples,
         "wandb_run_id": wandb_run_id,
@@ -1326,8 +1331,10 @@ def _advance_cursors(
 
 def _checkpoint_policy(config: TrainConfig) -> CheckpointPolicy:
     return CheckpointPolicy(
-        latest_steps=max(1, config.checkpoint_latest_samples),
-        archive_steps=max(0, config.checkpoint_archive_samples),
+        # The trainer owns validation cadence. Every call represents one
+        # already-selected evaluation boundary.
+        latest_steps=1,
+        archive_steps=0,
         # Training loss is non-stationary across ticker and session regimes and
         # is not a valid selection criterion. Saving every new minimum also
         # synchronously clones the full state out of the training thread.
@@ -1339,10 +1346,16 @@ def _checkpoint_policy(config: TrainConfig) -> CheckpointPolicy:
         # The final forced save must queue behind an in-flight best/latest save;
         # skipping it would lose the newest durable data cursor on shutdown.
         skip_latest_if_busy=False,
-        clock_name="origin",
-        archive_prefix="checkpoint_origin",
+        clock_name="validation_evaluation",
+        archive_prefix="checkpoint_validation",
         archive_on_force=False,
     )
+
+
+def _validation_checkpoint_due(completed: int, frequency: int) -> bool:
+    if completed < 0 or frequency <= 0:
+        raise ValueError("validation checkpoint clock requires non-negative progress and positive frequency")
+    return completed > 0 and completed % frequency == 0
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -1660,7 +1673,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     units_seen = set(str(value) for value in restored.get("units_seen", []))
     condition_blocks_seen = int(restored.get("condition_blocks_seen", 0))
     resume_epoch = int(restored.get("epoch", 0))
-    last_latest_samples = int(restored.get("last_latest_samples", 0))
+    last_checkpoint_samples = int(
+        restored.get("last_checkpoint_samples", restored.get("last_latest_samples", 0))
+    )
     durable_cursors = dict(resume_cursors)
     epoch_start_samples = int(restored.get("epoch_start_samples", resume_epoch * epoch_plan_origins))
     state = TrainingProgressState(
@@ -1698,6 +1713,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     restored_validation_runs = restored.get("validation_runs_in_epoch")
     validation_state_missing = restored_validation_runs is None
     validation_runs_in_epoch = int(restored_validation_runs or 0)
+    validation_evaluations_completed = int(
+        restored.get(
+            "validation_evaluations_completed",
+            resume_epoch * len(validation_milestones) + validation_runs_in_epoch,
+        )
+    )
     epoch_validation_milestones = validation_milestones
     pending_resume_validation = bool(args.resume_checkpoint) and validation_state_missing
     next_validation = (
@@ -1716,6 +1737,56 @@ def main(argv: Iterable[str] | None = None) -> int:
     current_epoch = resume_epoch
     completed_normally = False
     active_iterator: DeviceBatchPrefetcher | None = None
+
+    def schedule_checkpoint(*, force: bool = False) -> None:
+        """Stage one consistent snapshot; the checkpoint worker owns disk I/O."""
+        nonlocal last_checkpoint_samples
+        snapshot_cursors = dict(durable_cursors)
+        staging_started = time.perf_counter()
+        queued = checkpointer.maybe_save(
+            step=validation_evaluations_completed,
+            payload_factory=lambda cursors=snapshot_cursors: checkpoint_payload(
+                model, optimizer, scaler, scheduler, checkpointer, config,
+                samples_seen=samples_seen, batches_seen=batches_seen,
+                optimizer_steps=optimizer_steps, epoch=current_epoch,
+                epoch_start_samples=epoch_start_samples,
+                blocks_seen=blocks_seen, units_seen=units_seen,
+                condition_blocks_seen=condition_blocks_seen,
+                data_cursors=cursors, plan_hash=plan.plan_hash,
+                last_checkpoint_samples=samples_seen,
+                validation_evaluations_completed=validation_evaluations_completed,
+                wandb_run_id=wandb_run_id,
+                validation_runs_in_epoch=validation_runs_in_epoch,
+                last_validation_samples=last_validation_samples,
+            ),
+            train_metrics=last_metrics,
+            val_metrics=last_val,
+            force=force,
+        )
+        staging_seconds = time.perf_counter() - staging_started
+        reporter.state.checkpoint_stage_seconds = staging_seconds
+        if queued:
+            reporter.message(
+                f"Checkpoint snapshot staged in {staging_seconds:.3f}s; background disk write queued"
+            )
+            last_checkpoint_samples = samples_seen
+        else:
+            reporter.message(f"Checkpoint request was not queued after {staging_seconds:.3f}s")
+
+    def checkpoint_after_validation() -> None:
+        if _validation_checkpoint_due(
+            validation_evaluations_completed,
+            config.train.checkpoint_validation_evaluations,
+        ):
+            reporter.phase("checkpointing")
+            reporter.message(
+                f"Staging checkpoint after validation {validation_evaluations_completed:,}"
+            )
+            # Force means the bounded writer queues this exact snapshot even
+            # if the prior latest-file replacement is still finishing.
+            schedule_checkpoint(force=True)
+        reporter.phase("running")
+
     try:
         with reporter:
             checkpointer.set_message_callback(reporter.message)
@@ -2060,9 +2131,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                             if telemetry_due:
                                 next_log = samples_seen + max(1, config.train.logging_samples)
                             reporter.validation(last_val)
-                            reporter.phase("running")
                             last_validation_samples = samples_seen
                             validation_runs_in_epoch += 1
+                            validation_evaluations_completed += 1
+                            checkpoint_after_validation()
                             if validation_runs_in_epoch < len(epoch_validation_milestones):
                                 next_validation = epoch_start_samples + epoch_validation_milestones[validation_runs_in_epoch]
                                 reporter.schedule_validation(next_validation)
@@ -2084,29 +2156,6 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 active_iterator = iterator
                                 pending_cursors = dict(durable_cursors)
                                 reporter.message("Training prefetch resumed from durable worker cursors")
-                        latest_due = samples_seen // max(1, config.train.checkpoint_latest_samples) > checkpointer.last_latest_bucket
-                        payload_latest_samples = samples_seen if latest_due else last_latest_samples
-                        snapshot_cursors = dict(durable_cursors)
-                        checkpointer.maybe_save(
-                            step=samples_seen,
-                            payload_factory=lambda cursors=snapshot_cursors, latest=payload_latest_samples: checkpoint_payload(
-                                model, optimizer, scaler, scheduler, checkpointer, config,
-                                samples_seen=samples_seen, batches_seen=batches_seen,
-                                optimizer_steps=optimizer_steps, epoch=current_epoch,
-                                epoch_start_samples=epoch_start_samples,
-                                blocks_seen=blocks_seen, units_seen=units_seen,
-                                condition_blocks_seen=condition_blocks_seen,
-                                data_cursors=cursors, plan_hash=plan.plan_hash,
-                                last_latest_samples=latest,
-                                wandb_run_id=wandb_run_id,
-                                validation_runs_in_epoch=validation_runs_in_epoch,
-                                last_validation_samples=last_validation_samples,
-                            ),
-                            train_metrics=last_metrics,
-                            val_metrics=last_val,
-                        )
-                        if latest_due:
-                            last_latest_samples = samples_seen
                         accumulation_count = 0
                         accumulated_origins = 0
                         accumulated_loader_wait = 0.0
@@ -2144,8 +2193,15 @@ def main(argv: Iterable[str] | None = None) -> int:
                         metrics_logger.log(last_val, samples_seen)
                     deferred_losses.flush(metrics_logger)
                     reporter.validation(last_val)
-                    reporter.phase("running")
                     last_validation_samples = samples_seen
+                    validation_runs_in_epoch += 1
+                    validation_evaluations_completed += 1
+                    # The durable cursor and epoch clock already describe the
+                    # next epoch at this boundary. Its validation schedule must
+                    # therefore resume from zero, not inherit the completed
+                    # epoch's final evaluation count.
+                    validation_runs_in_epoch = 0
+                    checkpoint_after_validation()
             if optimizer_steps == 0:
                 raise RuntimeError("coverage epoch produced no optimizer updates")
             stopped_at_limit = training_limit < planned_samples and samples_seen >= training_limit
@@ -2153,27 +2209,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             reporter.state.state = (
                 "interrupted" if _INTERRUPTED else ("stopped_at_limit" if stopped_at_limit else "completed")
             )
-            reporter.message("Saving final resumable checkpoint")
-            snapshot_cursors = dict(durable_cursors)
-            checkpointer.maybe_save(
-                step=samples_seen,
-                payload_factory=lambda cursors=snapshot_cursors: checkpoint_payload(
-                    model, optimizer, scaler, scheduler, checkpointer, config,
-                    samples_seen=samples_seen, batches_seen=batches_seen,
-                    optimizer_steps=optimizer_steps, epoch=current_epoch,
-                    epoch_start_samples=epoch_start_samples,
-                    blocks_seen=blocks_seen, units_seen=units_seen,
-                    condition_blocks_seen=condition_blocks_seen,
-                    data_cursors=cursors, plan_hash=plan.plan_hash,
-                    last_latest_samples=samples_seen,
-                    wandb_run_id=wandb_run_id,
-                    validation_runs_in_epoch=validation_runs_in_epoch,
-                    last_validation_samples=last_validation_samples,
-                ),
-                train_metrics=last_metrics,
-                val_metrics=last_val,
-                force=True,
-            )
+            if last_checkpoint_samples != samples_seen:
+                reporter.message("Staging final resumable checkpoint")
+                schedule_checkpoint(force=True)
+            else:
+                reporter.message("Final state already captured by the last validation checkpoint")
     except BaseException as failure:
         if active_iterator is not None:
             try:
@@ -2190,51 +2230,55 @@ def main(argv: Iterable[str] | None = None) -> int:
             f"Saving failure checkpoint at durable origin {samples_seen:,}: "
             f"{failure.__class__.__name__}"
         )
-        snapshot_cursors = dict(durable_cursors)
         try:
-            checkpointer.maybe_save(
-                step=samples_seen,
-                payload_factory=lambda cursors=snapshot_cursors: checkpoint_payload(
-                    model, optimizer, scaler, scheduler, checkpointer, config,
-                    samples_seen=samples_seen, batches_seen=batches_seen,
-                    optimizer_steps=optimizer_steps, epoch=current_epoch,
-                    epoch_start_samples=epoch_start_samples,
-                    blocks_seen=blocks_seen, units_seen=units_seen,
-                    condition_blocks_seen=condition_blocks_seen,
-                    data_cursors=cursors, plan_hash=plan.plan_hash,
-                    last_latest_samples=samples_seen,
-                    wandb_run_id=wandb_run_id,
-                    validation_runs_in_epoch=validation_runs_in_epoch,
-                    last_validation_samples=last_validation_samples,
-                ),
-                train_metrics=last_metrics,
-                val_metrics=last_val,
-                force=True,
-            )
+            schedule_checkpoint(force=True)
         except BaseException as checkpoint_failure:
             failure.add_note(
                 f"failure checkpoint also failed: {checkpoint_failure.__class__.__name__}: {checkpoint_failure}"
             )
         raise
     finally:
+        original_failure = sys.exc_info()[1]
+        cleanup_failures: list[BaseException] = []
         if active_iterator is not None:
-            active_iterator.close()
-        validation_cache.close()
-        checkpointer.close(wait=True, timeout=300)
-        metric_close_failure: BaseException | None = None
+            try:
+                active_iterator.close()
+            except BaseException as exc:
+                cleanup_failures.append(exc)
+        try:
+            validation_cache.close()
+        except BaseException as exc:
+            cleanup_failures.append(exc)
+        try:
+            checkpointer.close(wait=True, timeout=300)
+        except BaseException as exc:
+            cleanup_failures.append(exc)
         try:
             deferred_losses.flush(metrics_logger)
             metrics_logger.close(timeout=300)
         except BaseException as exc:
-            metric_close_failure = exc
+            cleanup_failures.append(exc)
         if wandb_run is not None:
             try:
-                exit_code = 130 if _INTERRUPTED else (1 if sys.exc_info()[0] is not None else 0)
+                exit_code = 130 if _INTERRUPTED else (1 if original_failure is not None else 0)
                 wandb_run.finish(exit_code=exit_code)
-            except Exception:
-                pass
-        if metric_close_failure is not None and sys.exc_info()[0] is None:
-            raise metric_close_failure
+            except BaseException as exc:
+                cleanup_failures.append(exc)
+        if cleanup_failures:
+            if original_failure is not None:
+                for cleanup_failure in cleanup_failures:
+                    original_failure.add_note(
+                        "training cleanup also failed: "
+                        f"{cleanup_failure.__class__.__name__}: {cleanup_failure}"
+                    )
+            else:
+                primary = cleanup_failures[0]
+                for cleanup_failure in cleanup_failures[1:]:
+                    primary.add_note(
+                        "additional cleanup failure: "
+                        f"{cleanup_failure.__class__.__name__}: {cleanup_failure}"
+                    )
+                raise primary
     write_model_card(
         paths.run_root / "model_card.json",
         {

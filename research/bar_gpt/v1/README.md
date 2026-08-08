@@ -420,11 +420,16 @@ Resume continues the same W&B run; `--wandb-mode disabled` is an explicit
 logging reset. Raw caches are deterministically rehydrated from the committed
 cursors rather than copied into checkpoints.
 Best-model selection uses fixed-panel validation loss. Training-loss minima are
-not checkpointed because ticker/session composition changes over the epoch;
-durable latest and archive checkpoints remain sample-clocked and Ctrl+C forces
-a final latest checkpoint. An unhandled loader or training failure first stops
-prefetch and forces a checkpoint at the last optimizer-committed global cursor;
-any partially prepared block replays. Loader concurrency and ClickHouse transport settings
+not checkpointed because ticker/session composition changes over the epoch.
+Normal training stages one consistent resumable snapshot immediately after
+each validation evaluation; `--checkpoint-validation-evaluations` can reduce
+that cadence, but defaults to one. GPU-to-CPU staging occurs while training
+prefetch is already paused for validation, and checkpoint file writes run on
+the bounded background writer while training resumes. The epoch-end validation
+checkpoint is also the final checkpoint, so it is not duplicated. Ctrl+C, an
+operator sample limit, or an unhandled failure still forces one safety
+checkpoint at the last optimizer-committed global cursor; any partially
+prepared block replays. Loader concurrency and ClickHouse transport settings
 may change when resuming, while model, sampling, and causal data contracts must
 still match exactly.
 

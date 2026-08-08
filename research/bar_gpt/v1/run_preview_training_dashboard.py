@@ -34,7 +34,7 @@ def _state() -> TrainingProgressState:
         device="cuda:0 NVIDIA RTX workstation",
         precision="bfloat16",
         output_dir=r"D:\TradingML\runtimes\bar_gpt\v1\train\preview",
-        model_parameters=87_432_704,
+        model_parameters=13_652_624,
         max_samples=402_653_184,
         epochs_total=1,
         epoch_index=1,
@@ -124,6 +124,7 @@ def main() -> None:
         )
         reporter.schedule_validation(120_795_955)
         state.last_checkpoint = r"D:\TradingML\runtimes\bar_gpt\v1\train\preview\checkpoint_latest.pt"
+        state.checkpoint_stage_seconds = 0.412
         reporter.messages.clear()
         reporter.messages.extend(
             (
