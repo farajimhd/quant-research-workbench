@@ -801,18 +801,18 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       ) : draft ? (
         <div className="configuration-expert-workspace">
           <div className="configuration-expert-editor">
-            {section === "strategy" ? <StrategyStudio approved={approved} draft={draft} label={label} onChange={(value) => updateDraft("strategy", value)} onDeleteProfile={deleteStrategyProfile} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
+            {section === "strategy" ? <StrategyStudio approved={approved} draft={draft} hasUnsavedChanges={dirtySection === "strategy"} label={label} onChange={(value) => updateDraft("strategy", value)} onDeleteProfile={deleteStrategyProfile} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} onSave={saveSection} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
             {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
             {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
             {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
             {section === "accounts" ? <AccountsEditor draft={draft} onChange={(value) => updateDraft("accounts", value)} /> : null}
           </div>
-          <div className="configuration-save-bar">
+          {section !== "strategy" ? <div className="configuration-save-bar">
             <span>{dirtySection === section ? "Unsaved draft changes" : "Draft matches saved configuration"}</span>
             <button className="button primary" disabled={dirtySection !== section || status === "saving"} onClick={saveSection} type="button">
               <Save size={15} /> {status === "saving" ? "Saving…" : "Save draft"}
             </button>
-          </div>
+          </div> : null}
         </div>
       ) : <ConfigurationLoading />}
         </>
@@ -1578,15 +1578,17 @@ function GuidedEmpty({ onSwitchToExpert }: { onSwitchToExpert: () => void }) {
   return <div className="guided-empty"><TriangleAlert size={20} /><h2>This step needs a base object</h2><p>Create the missing profile, Run Plan, mandate, OMS profile, policy, protection profile, or account in Expert mode. Guided setup does not create a Live-critical object implicitly.</p><button className="button primary" onClick={onSwitchToExpert} type="button"><Settings2 size={15} /> Open Expert editor</button></div>;
 }
 
-function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onDraftChange, onLabelChange, onPublish, publishing, revisions, section }: {
+function StrategyStudio({ approved, draft, hasUnsavedChanges, label, onChange, onDeleteProfile, onDraftChange, onLabelChange, onPublish, onSave, publishing, revisions, section }: {
   approved: Revision | null;
   draft: Draft;
+  hasUnsavedChanges: boolean;
   label: string;
   onChange: (value: StrategySection) => void;
   onDeleteProfile: (profileId: string) => Promise<Draft>;
   onDraftChange: (value: Draft) => void;
   onLabelChange: (value: string) => void;
   onPublish: () => void;
+  onSave: () => Promise<boolean>;
   publishing: boolean;
   revisions: Revision[];
   section: StrategySection;
@@ -1702,10 +1704,13 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
           advanced={advanced}
           draft={draft}
           entryRules={entryRules}
+          hasUnsavedChanges={hasUnsavedChanges}
           onProfileChange={replaceProfile}
           onRuleSetEdit={(ruleSetId, created) => { const ruleSet = created ?? selected.rule_set_catalog.find((row) => row.rule_set_id === ruleSetId); if (ruleSet) { setCatalogItem(strategyRuleSetCatalogItem(ruleSet, section.input_catalog)); setEditorMode("catalog"); } }}
           onStageChange={setActiveStage}
+          onSave={onSave}
           profile={selected}
+          saving={publishing}
           section={section}
         />
 
@@ -1956,15 +1961,18 @@ function ParameterDocumentation({ group, path, value }: { group: string; path: s
   </section>;
 }
 
-function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onProfileChange, onRuleSetEdit, onStageChange, profile, section }: {
+function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUnsavedChanges, onProfileChange, onRuleSetEdit, onSave, onStageChange, profile, saving, section }: {
   activeStage: StrategyAuthoringStage;
   advanced: Array<{ path: string; value: Primitive }>;
   draft: Draft;
   entryRules: EntryRules & { add_steps: AddStep[]; capital_request: CapitalRequestConfig; order_intent: OrderIntentConfig };
+  hasUnsavedChanges: boolean;
   onProfileChange: (value: StrategyProfile) => void;
   onRuleSetEdit: (ruleSetId: string, created?: RuleSetDefinition) => void;
+  onSave: () => Promise<boolean>;
   onStageChange: (value: StrategyAuthoringStage) => void;
   profile: StrategyProfile;
+  saving: boolean;
   section: StrategySection;
 }) {
   const [activeEntryPage, setActiveEntryPage] = useState<EntryAuthoringPage>("opportunity");
@@ -2001,6 +2009,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
   const activeExitRoute = profile.lifecycle.exit.rule_sets.find((route) => route.rule_set_id === selectedExitRouteId) ?? profile.lifecycle.exit.rule_sets[0];
   const activeCapabilityDefinition = section.capability_catalog.find((definition) => definition.capability_id === selectedCapabilityId) ?? section.capability_catalog[0];
   const activeCapabilityBinding = profile.capabilities.find((binding) => binding.capability_id === activeCapabilityDefinition?.capability_id);
+  const isFinalQuestion = activeIndex === stages.length - 1;
 
   function replaceInitialEntry(value: Partial<StrategyLifecycle["initial_entry"]>) {
     onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, ...value } } });
@@ -2074,15 +2083,16 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
       return;
     }
     if (activeIndex < stages.length - 1) onStageChange(stages[activeIndex + 1][0]);
+    else void onSave();
   }
 
   return <article className="strategy-authoring" aria-label={`${profile.name} strategy authoring flow`}>
     <div className="strategy-authoring-step-navigation">
-      <button aria-label="Previous configuration question" className="button compact strategy-step-direction" disabled={activeIndex <= 0 && activeStage !== "entry" && activeStage !== "position" && activeStage !== "exit"} onClick={previousQuestion} type="button">Previous</button>
+      <button aria-label="Previous configuration question" className="button compact strategy-step-direction strategy-step-direction-previous" disabled={activeIndex <= 0 && activeStage !== "entry" && activeStage !== "position" && activeStage !== "exit"} onClick={previousQuestion} type="button">&lt; Previous</button>
       <nav aria-label="Strategy configuration steps" className="strategy-authoring-steps">
         {stages.map(([stage, number, title, detail]) => <button aria-current={activeStage === stage ? "step" : undefined} key={stage} onClick={() => onStageChange(stage)} type="button"><span>{number}</span><strong>{title}</strong><small>{detail}</small></button>)}
       </nav>
-      <button aria-label="Next configuration question" className="button compact strategy-step-direction" disabled={activeIndex >= stages.length - 1 && activeStage !== "entry" && activeStage !== "position" && activeStage !== "exit"} onClick={nextQuestion} type="button">Next</button>
+      <button aria-label={isFinalQuestion ? "Save strategy draft" : "Next configuration question"} className="button compact primary strategy-step-direction strategy-step-direction-next" disabled={saving || (isFinalQuestion && !hasUnsavedChanges)} onClick={nextQuestion} type="button">Next &gt;</button>
     </div>
 
     <section className={`strategy-authoring-stage${activeStage === "entry" || activeStage === "position" || activeStage === "exit" ? " strategy-authoring-stage-entry" : ""}`}>

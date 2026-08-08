@@ -2433,8 +2433,10 @@
 .strategy-editor-guided .strategy-authoring-steps { background: transparent; border: 0; border-bottom: 1px solid var(--configuration-rule); border-radius: 0; grid-template-columns: repeat(6, minmax(0, 1fr)); min-width: 0; overflow-x: auto; }
 .strategy-editor-guided .strategy-step-direction { align-self: center; background: var(--configuration-soft); border-color: transparent; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--configuration-rule); color: var(--foreground); font-weight: 620; justify-self: center; min-height: 36px; min-width: 80px; }
 .strategy-editor-guided .strategy-step-direction:not(:disabled):hover { background: color-mix(in oklab, var(--canvas-link-blue) 7%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--canvas-link-blue) 28%, var(--configuration-rule)); color: var(--canvas-link-blue); }
+.strategy-editor-guided .strategy-step-direction-next { background: var(--primary); box-shadow: none; color: var(--primary-foreground); }
+.strategy-editor-guided .strategy-step-direction-next:not(:disabled):hover { background: color-mix(in oklab, var(--primary) 88%, var(--surface)); box-shadow: none; color: var(--primary-foreground); }
 .strategy-editor-guided .strategy-step-direction:disabled { background: transparent; box-shadow: inset 0 0 0 1px var(--configuration-rule); }
-.strategy-editor-guided .strategy-authoring-steps button { background: transparent; border: 0; color: var(--muted-foreground); display: flex; gap: 8px; justify-content: center; min-width: 120px; padding: 14px 10px; text-align: center; }
+.strategy-editor-guided .strategy-authoring-steps button { background: transparent; border: 0; color: var(--muted-foreground); display: flex; gap: 8px; justify-content: center; min-width: 0; padding: 14px 10px; text-align: center; }
 .strategy-editor-guided .strategy-authoring-steps button[aria-current="step"] { background: transparent; box-shadow: inset 0 -2px var(--canvas-link-blue); color: var(--foreground); }
 .strategy-editor-guided .strategy-authoring-steps button > span { background: var(--configuration-soft); flex: 0 0 auto; grid-row: auto; height: 20px; width: 20px; }
 .strategy-editor-guided .strategy-authoring-steps button[aria-current="step"] > span { background: var(--canvas-link-blue); color: white; }
