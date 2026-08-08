@@ -1423,13 +1423,29 @@ function GuidedCapitalRequestFields({ onChange, segment, value }: { onChange: (v
 }
 
 function GuidedOrderIntentFields({ draft, eligibleSessions, onChange, segment, value }: { draft: Draft; eligibleSessions: string[]; onChange: (value: OrderIntentConfig) => void; segment: "execution" | "partial-fill" | "protection"; value: OrderIntentConfig }) {
-  if (segment === "partial-fill") return <SelectField help="Choose the terminal behavior for only the broker-confirmed unfilled remainder. OMS always reconciles cumulative fills before acting." label="Partial-fill response" onChange={(partial_fill_policy) => onChange({ ...value, partial_fill_policy: partial_fill_policy as OrderIntentConfig["partial_fill_policy"] })} options={[{ label: "Finish the approved remainder", value: "complete_remainder" }, { label: "Accept the partial position", value: "accept_partial" }, { label: "Cancel the remainder", value: "cancel_remainder" }]} value={value.partial_fill_policy} />;
-  if (segment === "protection") return <SelectField help="Select the independent broker-held stop, catastrophic backstop, target, and trailing contract applied after confirmed fills." label="Protection profile" onChange={(protection_profile) => onChange({ ...value, protection_profile })} options={draft.oms.protection_profiles.map((row) => ({ description: row.description, label: `${row.name} · v${row.revision}`, value: row.profile_id }))} value={value.protection_profile} />;
-  return <><div className="guided-form-grid"><SelectField help="Select the broker-neutral execution behavior that OMS uses to choose price, repricing cadence, and terminal actions. OMS owns the tested terminal timing for the selected policy." label="Execution policy" onChange={(execution_policy) => onChange({ ...value, execution_policy })} options={draft.oms.execution_policies.map((row) => ({ description: executionPolicyLookupDescription(row), label: `${readableLabel(row.name)} · v${row.revision}`, value: row.policy_id }))} searchable={false} value={value.execution_policy} /></div><p className="guided-inline-note"><ShieldCheck size={15} /> Eligible sessions: {eligibleSessions.map(readableLabel).join(", ") || "none"}. OMS derives compatible broker routing and applies tested terminal timing automatically.</p></>;
+  if (segment === "partial-fill") {
+    const responses = {
+      accept_partial: { description: "Keep every broker-confirmed fill and stop requesting the unfilled quantity.", label: "Accept the partial position", remainder: "Stop working it" },
+      cancel_remainder: { description: "Cancel the broker-confirmed remainder after a partial fill while retaining shares already filled.", label: "Cancel the remainder", remainder: "Cancel immediately" },
+      complete_remainder: { description: "Keep every broker-confirmed fill and continue working only the true unfilled quantity under the selected execution policy.", label: "Finish the approved remainder", remainder: "Continue under policy" },
+    } as const;
+    const selected = responses[value.partial_fill_policy];
+    return <><SelectField help="Choose the terminal behavior for only the broker-confirmed unfilled remainder. OMS always reconciles cumulative fills before acting." label="Partial-fill response" onChange={(partial_fill_policy) => onChange({ ...value, partial_fill_policy: partial_fill_policy as OrderIntentConfig["partial_fill_policy"] })} options={Object.entries(responses).map(([responseValue, response]) => ({ description: response.description, label: response.label, value: responseValue }))} value={value.partial_fill_policy} /><GuidedSelectionGuide description={selected.description} eyebrow="Selected partial-fill response" facts={[{ label: "Confirmed fills", value: "Always retained" }, { label: "Unfilled remainder", value: selected.remainder }, { label: "Exposure accounting", value: "Broker reconciled first" }]} icon={<CheckCircle2 size={18} />} label={selected.label} note="This choice cannot duplicate or discard a confirmed fill. OMS reconciles cumulative broker fills before acting on the remainder." tone="remainder" /></>;
+  }
+  if (segment === "protection") {
+    const selected = draft.oms.protection_profiles.find((row) => row.profile_id === value.protection_profile) ?? draft.oms.protection_profiles[0];
+    return <><SelectField help="Select the independent broker-held stop, catastrophic backstop, target, and trailing contract applied after confirmed fills." label="Protection profile" onChange={(protection_profile) => onChange({ ...value, protection_profile })} options={draft.oms.protection_profiles.map((row) => ({ description: row.description, label: `${row.name} · v${row.revision}`, value: row.profile_id }))} value={value.protection_profile} />{selected ? <GuidedSelectionGuide description={selected.description} eyebrow="Selected protection profile" facts={[{ label: "Protected slices", value: String(selected.slices.length) }, { label: "Stop design", value: [...new Set(selected.slices.map((slice) => readableLabel(slice.stop.rule_type)))].join(", ") }, { label: "Add handling", value: readableLabel(selected.add_policy) }, { label: "Emergency repair", value: `${selected.emergency_repair_deadline_ms} ms` }]} icon={<ShieldCheck size={18} />} label={`${selected.name} · v${selected.revision}`} note={`${selected.mandatory_catastrophic_backstop ? "A broker-held catastrophic backstop is mandatory." : "A catastrophic backstop is not mandatory."} Protection attaches only to broker-confirmed fills and does not change approved quantity.`} tone="protection" /> : null}</>;
+  }
+  const selected = draft.oms.execution_policies.find((row) => row.policy_id === value.execution_policy) ?? draft.oms.execution_policies[0];
+  return <><div className="guided-form-grid"><SelectField help="Select the broker-neutral execution behavior that OMS uses to choose price, repricing cadence, and terminal actions. OMS owns the tested terminal timing for the selected policy." label="Execution policy" onChange={(execution_policy) => onChange({ ...value, execution_policy })} options={draft.oms.execution_policies.map((row) => ({ description: executionPolicyLookupDescription(row), label: `${readableLabel(row.name)} · v${row.revision}`, value: row.policy_id }))} searchable={false} value={value.execution_policy} /></div>{selected ? <GuidedSelectionGuide description={executionPolicyBehavior(selected)} eyebrow="Selected execution policy" facts={[{ label: "Quote authority", value: readableLabel(selected.quote_source) }, { label: "Working deadline", value: executionPolicyDuration(selected.envelope.deadline_ms) }, { label: "Repricing", value: selected.envelope.maximum_reprices ? `${selected.envelope.maximum_reprices} max · ${selected.envelope.minimum_reprice_interval_ms} ms apart` : "No OMS reprices" }, { label: "Unfilled remainder", value: readableLabel(selected.partial_fill_policy) }]} icon={<Send size={18} />} label={`${readableLabel(selected.name)} · v${selected.revision}`} note={`Eligible sessions: ${eligibleSessions.map(readableLabel).join(", ") || "none"}. OMS chooses compatible broker routing and cannot exceed Portfolio's approved quantity or the policy's price envelope.`} tone="execution" /> : null}</>;
 }
 
-function executionPolicyLookupDescription(policy: ExecutionPolicyConfig): string {
-  const behavior = ({
+function GuidedSelectionGuide({ description, eyebrow, facts, icon, label, note, tone }: { description: string; eyebrow: string; facts: Array<{ label: string; value: string }>; icon: ReactNode; label: string; note: string; tone: "execution" | "protection" | "remainder" }) {
+  return <section className="strategy-selected-guide" data-tone={tone}><header><span>{icon}</span><div><small>{eyebrow}</small><strong>{label}</strong></div></header><div className="strategy-selected-guide-description">{description}</div><dl>{facts.map((fact) => <div key={fact.label}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}</dl><footer><ShieldCheck size={15} /><span>{note}</span></footer></section>;
+}
+
+function executionPolicyBehavior(policy: ExecutionPolicyConfig): string {
+  return ({
     passive: "Posts at the near-side quote without crossing the spread, prioritizing price quality over fill certainty.",
     midpoint: "Posts at the current bid-ask midpoint, seeking spread improvement while accepting that the order may not fill.",
     adaptive_patient: "Starts at the near-side quote and advances only to midpoint after repeated attempts, favoring price quality over speed.",
@@ -1440,13 +1456,18 @@ function executionPolicyLookupDescription(policy: ExecutionPolicyConfig): string
     ibkr_native_adaptive: "Uses urgent touch pricing without OMS repricing. The current runtime does not delegate this policy to a broker-native adaptive algorithm.",
     cancel_if_not_filled: "Moves from passive toward executable pricing while time remains, then cancels the unfilled remainder at the deadline.",
   } as Record<string, string>)[policy.name] ?? policy.description;
-  const deadline = policy.envelope.deadline_ms >= 1_000
-    ? `${round(policy.envelope.deadline_ms / 1_000)} s`
-    : `${policy.envelope.deadline_ms} ms`;
+}
+
+function executionPolicyDuration(milliseconds: number): string {
+  return milliseconds >= 1_000 ? `${round(milliseconds / 1_000)} s` : `${milliseconds} ms`;
+}
+
+function executionPolicyLookupDescription(policy: ExecutionPolicyConfig): string {
+  const deadline = executionPolicyDuration(policy.envelope.deadline_ms);
   const repricing = policy.envelope.maximum_reprices
     ? `Up to ${policy.envelope.maximum_reprices} reprice${policy.envelope.maximum_reprices === 1 ? "" : "s"}, no more often than every ${policy.envelope.minimum_reprice_interval_ms} ms, within ${deadline}.`
     : `No OMS reprices; the working deadline is ${deadline}.`;
-  return `${behavior} ${repricing}`;
+  return `${executionPolicyBehavior(policy)} ${repricing}`;
 }
 
 function GuidedActionForm({ sections }: { sections: Array<{ content: ReactNode; description: string; title: string }> }) {
