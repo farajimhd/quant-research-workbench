@@ -4,6 +4,7 @@ import hashlib
 import html
 import json
 import re
+from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -64,6 +65,8 @@ def create_gold_review_packets(
         )
     index.sort(key=lambda row: row["unit_id"])
     write_json_atomic(output_root / "review_index.json", index)
+    review_batches = build_review_batches(index)
+    write_json_atomic(output_root / "review_batches.json", review_batches)
     manifest = {
         "version": GOLD_REVIEW_VERSION,
         "generated_at_utc": datetime.now(UTC).isoformat(),
@@ -85,6 +88,7 @@ def create_gold_review_packets(
                 or ""
             ),
             "review_index_sha256": sha256_json(index),
+            "review_batches_sha256": sha256_json(review_batches),
             "packet_set_sha256": sha256_json(packet_hashes),
         },
     }
@@ -93,6 +97,69 @@ def create_gold_review_packets(
         render_gold_review_summary(manifest), encoding="utf-8"
     )
     return manifest
+
+
+def build_review_batches(
+    index: list[Mapping[str, Any]],
+    *,
+    target_chars: int = 160_000,
+    max_articles: int = 30,
+) -> list[dict[str, Any]]:
+    by_article: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in index:
+        by_article[str(row["sample_id"])].append(row)
+    groups = []
+    for sample_id in sorted(by_article):
+        rows = sorted(by_article[sample_id], key=lambda row: str(row["unit_id"]))
+        # The source is duplicated across same-article unit packets. Reviewers
+        # read it once, then review the additional issuer label sections.
+        estimated_chars = max(int(row["packet_chars"]) for row in rows)
+        estimated_chars += 1_500 * (len(rows) - 1)
+        groups.append((sample_id, rows, estimated_chars))
+
+    batches: list[dict[str, Any]] = []
+    pending: list[tuple[str, list[Mapping[str, Any]], int]] = []
+    pending_chars = 0
+
+    def flush() -> None:
+        nonlocal pending, pending_chars
+        if not pending:
+            return
+        batch_number = len(batches) + 1
+        batches.append(
+            {
+                "batch_id": f"G{batch_number:04d}",
+                "article_count": len(pending),
+                "issuer_units": sum(len(rows) for _, rows, _ in pending),
+                "estimated_review_chars": pending_chars,
+                "oversized_source": pending_chars > target_chars,
+                "articles": [
+                    {
+                        "sample_id": sample_id,
+                        "packet_paths": [str(row["relative_path"]) for row in rows],
+                        "unit_ids": [str(row["unit_id"]) for row in rows],
+                        "estimated_review_chars": estimated_chars,
+                    }
+                    for sample_id, rows, estimated_chars in pending
+                ],
+            }
+        )
+        pending = []
+        pending_chars = 0
+
+    for group in groups:
+        estimated_chars = group[2]
+        if pending and (
+            pending_chars + estimated_chars > target_chars
+            or len(pending) >= max_articles
+        ):
+            flush()
+        pending.append(group)
+        pending_chars += estimated_chars
+        if estimated_chars > target_chars:
+            flush()
+    flush()
+    return batches
 
 
 def render_gold_review_packet(

@@ -2,10 +2,44 @@ from __future__ import annotations
 
 import unittest
 
-from .sol_teacher_forecast_gold_review import render_gold_review_packet
+from .sol_teacher_forecast_gold_review import (
+    build_review_batches,
+    render_gold_review_packet,
+)
 
 
 class SolTeacherForecastGoldReviewTests(unittest.TestCase):
+    def test_review_batches_keep_same_article_units_together(self) -> None:
+        index = [
+            {
+                "sample_id": "S00001",
+                "unit_id": "S00001::AAA",
+                "packet_chars": 1_000,
+                "relative_path": "audit_files/S00001__AAA.md",
+            },
+            {
+                "sample_id": "S00001",
+                "unit_id": "S00001::BBB",
+                "packet_chars": 1_000,
+                "relative_path": "audit_files/S00001__BBB.md",
+            },
+            {
+                "sample_id": "S00002",
+                "unit_id": "S00002::CCC",
+                "packet_chars": 2_000,
+                "relative_path": "audit_files/S00002__CCC.md",
+            },
+        ]
+
+        batches = build_review_batches(index, target_chars=2_600)
+
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(batches[0]["issuer_units"], 2)
+        self.assertEqual(
+            batches[0]["articles"][0]["unit_ids"],
+            ["S00001::AAA", "S00001::BBB"],
+        )
+
     def test_packet_is_prediction_blind_and_contains_complete_source(self) -> None:
         article = {
             "sample_id": "S00001",
