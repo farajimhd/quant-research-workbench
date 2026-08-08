@@ -5,7 +5,7 @@ import datetime as dt
 import io
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import torch
 import polars as pl
@@ -34,7 +34,7 @@ from research.bar_gpt.v1.cohort import (
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig
 from research.bar_gpt.v1.data import BarView, causal_asof_indices, densify_one_second_view, horizon_target_indices, rollup_intraday_view
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
-from research.bar_gpt.v1.model import BarGPTV1
+from research.bar_gpt.v1.model import BarGPTV1, CausalSelfAttention, RMSNorm
 from research.bar_gpt.v1.loader import (
     ClickHouseBarStreamConfig,
     TickerInterval,
@@ -69,6 +69,63 @@ def builder_args() -> argparse.Namespace:
 
 
 class BuilderSqlTest(unittest.TestCase):
+    def test_rms_norm_preserves_fp32_reference_numerics(self) -> None:
+        value = torch.randn(2, 5, 16, dtype=torch.bfloat16)
+        norm = RMSNorm(16)
+        actual = norm(value)
+        value_float = value.float()
+        expected = (
+            value_float
+            * torch.rsqrt(value_float.pow(2).mean(dim=-1, keepdim=True) + norm.eps)
+        ).to(dtype=value.dtype) * norm.weight
+        torch.testing.assert_close(actual, expected)
+
+    def test_attention_passes_unexpanded_kv_heads_to_native_gqa(self) -> None:
+        config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.0)
+        attention = CausalSelfAttention(config).eval()
+        value = torch.randn(2, 7, 32)
+        with patch(
+            "research.bar_gpt.v1.model.F.scaled_dot_product_attention",
+            wraps=torch.nn.functional.scaled_dot_product_attention,
+        ) as sdpa:
+            output = attention(value)
+        self.assertEqual(output.shape, value.shape)
+        query, key, val = sdpa.call_args.args[:3]
+        self.assertEqual(query.shape[1], 4)
+        self.assertEqual(key.shape[1], 2)
+        self.assertEqual(val.shape[1], 2)
+        self.assertTrue(sdpa.call_args.kwargs["enable_gqa"])
+
+    def test_native_gqa_matches_explicit_kv_repetition(self) -> None:
+        query = torch.randn(2, 4, 7, 8, requires_grad=True)
+        key = torch.randn(2, 2, 7, 8, requires_grad=True)
+        value = torch.randn(2, 2, 7, 8, requires_grad=True)
+        local_mask = torch.ones(7, 7, dtype=torch.bool).tril()
+        native = torch.nn.functional.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=local_mask,
+            enable_gqa=True,
+        )
+        explicit = torch.nn.functional.scaled_dot_product_attention(
+            query,
+            key.repeat_interleave(2, dim=1),
+            value.repeat_interleave(2, dim=1),
+            attn_mask=local_mask,
+        )
+        torch.testing.assert_close(native, explicit)
+        native.sum().backward(retain_graph=True)
+        native_gradients = (query.grad.clone(), key.grad.clone(), value.grad.clone())
+        query.grad = key.grad = value.grad = None
+        explicit.sum().backward()
+        for actual, expected in zip(
+            (query.grad, key.grad, value.grad),
+            native_gradients,
+            strict=True,
+        ):
+            torch.testing.assert_close(actual, expected)
+
     def test_condition_sidecar_materializes_only_flagged_event_seconds(self) -> None:
         args = parse_intraday_args([
             "--date", "2020-01-02", "--artifact-mode", "conditions-only",

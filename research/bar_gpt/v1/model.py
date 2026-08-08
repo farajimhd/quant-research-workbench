@@ -38,7 +38,8 @@ class RMSNorm(nn.Module):
         self.eps = float(eps)
 
     def forward(self, value: torch.Tensor) -> torch.Tensor:
-        normalized = value.float() * torch.rsqrt(value.float().pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        value_float = value.float()
+        normalized = value_float * torch.rsqrt(value_float.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         return normalized.to(dtype=value.dtype) * self.weight
 
 
@@ -85,10 +86,7 @@ class CausalSelfAttention(nn.Module):
         cosine, sine = self.rope(length, value.device, value.dtype)
         query = query * cosine + _rotate_half(query) * sine
         key = key * cosine + _rotate_half(key) * sine
-        if self.n_kv_heads != self.n_heads:
-            repeats = self.n_heads // self.n_kv_heads
-            key = key.repeat_interleave(repeats, dim=1)
-            val = val.repeat_interleave(repeats, dim=1)
+        enable_gqa = self.n_kv_heads != self.n_heads
         if attention_window is None or int(attention_window) >= length:
             attended = F.scaled_dot_product_attention(
                 query,
@@ -96,6 +94,7 @@ class CausalSelfAttention(nn.Module):
                 val,
                 dropout_p=self.dropout if self.training else 0.0,
                 is_causal=True,
+                enable_gqa=enable_gqa,
             )
         else:
             window = int(attention_window)
@@ -112,6 +111,7 @@ class CausalSelfAttention(nn.Module):
                 attn_mask=allowed,
                 dropout_p=self.dropout if self.training else 0.0,
                 is_causal=False,
+                enable_gqa=enable_gqa,
             )
         attended = attended.transpose(1, 2).contiguous().view(batch, length, -1)
         return self.out_proj(attended)

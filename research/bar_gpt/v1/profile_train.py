@@ -14,7 +14,7 @@ from typing import Iterable
 import torch
 
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, TrainConfig
-from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME
+from research.bar_gpt.v1.data import BarGPTBatch, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME
 from research.bar_gpt.v1.loader import (
     BarGPTIterableDataset,
     ClickHouseBarStreamConfig,
@@ -102,7 +102,89 @@ class ProfileResult:
     optimizer_seconds: float = 0.0
     metric_seconds: float = 0.0
     projected_metric_overhead_fraction: float = 0.0
+    sdpa_audit_state: str = "not_run"
+    sdpa_backend_counts: tuple[tuple[str, int], ...] = ()
+    sdpa_expected_calls: int = 0
+    sdpa_audit_seconds: float = 0.0
+    sdpa_audit_message: str = ""
     message: str = ""
+
+
+def _sdpa_backend(key: str) -> str | None:
+    """Classify the concrete forward SDPA operator emitted by torch.profiler."""
+    lowered = key.lower()
+    if "backward" in lowered:
+        return None
+    if "scaled_dot_product" not in lowered and "flash_attention" not in lowered:
+        return None
+    if "flash" in lowered:
+        return "flash"
+    if "efficient" in lowered:
+        return "memory_efficient"
+    if "cudnn" in lowered:
+        return "cudnn"
+    if "math" in lowered:
+        return "math"
+    # The public dispatcher is always present and does not identify the
+    # selected implementation, so exclude it rather than double counting.
+    if lowered.endswith("scaled_dot_product_attention"):
+        return None
+    return "other"
+
+
+def _sdpa_attention_mode(event: object) -> str:
+    """Identify masked-local versus causal SDPA from the dispatcher parent."""
+    parent = getattr(event, "cpu_parent", None)
+    while parent is not None:
+        if str(getattr(parent, "key", "")) == "aten::scaled_dot_product_attention":
+            shapes = getattr(parent, "input_shapes", ())
+            mask_shape = shapes[3] if len(shapes) > 3 else ()
+            return "local_mask" if mask_shape else "causal"
+        parent = getattr(parent, "cpu_parent", None)
+    return "unknown"
+
+
+def _profile_sdpa_backends(
+    model: torch.nn.Module,
+    batch: BarGPTBatch,
+    data: DataConfig,
+    *,
+    device: torch.device,
+) -> tuple[str, tuple[tuple[str, int], ...], float, str]:
+    """Audit one real forward after timing; never include it in throughput."""
+    if device.type != "cuda":
+        return "not_run", (), 0.0, "CUDA is required for an SDPA kernel audit"
+    counts: dict[str, int] = {}
+    started = time.perf_counter()
+    try:
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            record_shapes=True,
+        ) as trace:
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                audited_output = model(
+                    batch.views,
+                    timeframe_us=TIMEFRAME_US_BY_NAME,
+                    pathway_ids=PATHWAY_ID_BY_NAME,
+                    base_view="1s",
+                    origin_indices=batch.origin_indices,
+                    asof_indices=batch.asof_indices,
+                    attention_windows=data.attention_window_by_name,
+                    horizon_ids=torch.arange(len(data.horizons_us), device=device),
+                )
+            torch.cuda.synchronize(device)
+        del audited_output
+        for event in trace.events():
+            backend = _sdpa_backend(str(event.key))
+            if backend is not None:
+                label = f"{_sdpa_attention_mode(event)}/{backend}"
+                counts[label] = counts.get(label, 0) + 1
+    except (RuntimeError, OSError) as exc:
+        return "failed", (), time.perf_counter() - started, str(exc)
+    elapsed = time.perf_counter() - started
+    if not counts:
+        return "unreported", (), elapsed, "torch.profiler emitted no concrete SDPA backend operator"
+    return "passed", tuple(sorted(counts.items())), elapsed, ""
 
 
 def _parse_candidates(value: str) -> tuple[ProfileCandidate, ...]:
@@ -211,6 +293,15 @@ def _atomic_json(path: Path, value: object) -> None:
     os.replace(temporary, path)
 
 
+def _runtime_evidence(device: torch.device) -> dict[str, str]:
+    cuda_available = device.type == "cuda" and torch.cuda.is_available()
+    return {
+        "torch_version": str(torch.__version__),
+        "cuda_version": str(torch.version.cuda or "unavailable"),
+        "device_name": torch.cuda.get_device_name(device) if cuda_available else str(device),
+    }
+
+
 class ProfileReporter:
     def __init__(self, layout: str) -> None:
         self.layout = layout
@@ -240,6 +331,7 @@ class ProfileReporter:
         intraday_context = ", ".join(f"{name}={bars}" for name, bars in data.intraday_context_bars)
         calendar_context = ", ".join(f"{name}={bars}" for name, bars in data.calendar_context_bars)
         horizons = ", ".join(f"{value // 1_000_000}s" for value in data.horizons_us)
+        runtime = _runtime_evidence(device)
         if self.rich:
             from rich.console import Console
             from rich.table import Table
@@ -250,12 +342,20 @@ class ProfileReporter:
             run.add_column("Value")
             run.add_row("W&B", "disabled; no initialization, recording, or upload")
             run.add_row("Device", str(device))
+            run.add_row(
+                "Runtime",
+                f"{runtime['device_name']} | PyTorch {runtime['torch_version']} | CUDA {runtime['cuda_version']}",
+            )
             run.add_row("Data", f"{args.data_source} | [{args.start_date}, {args.end_date})")
             run.add_row("Shard root", str(args.offline_shard_root))
             run.add_row("Warm-up / measured", f"{args.warmup_steps} / {args.measured_steps} optimizer updates")
             run.add_row(
                 "Metric-cost audit",
                 f"one isolated reduction; amortized across {train.training_metrics_interval_samples:,} origins",
+            )
+            run.add_row(
+                "SDPA kernel audit",
+                "one extra real forward after timing; excluded from throughput",
             )
             run.add_row("Precision", "BF16 autocast")
             run.add_row("Intraday context", intraday_context)
@@ -304,12 +404,21 @@ class ProfileReporter:
         print("BarGPT performance profile", flush=True)
         print("  W&B                 disabled; no initialization, recording, or upload", flush=True)
         print(f"  Device              {device}", flush=True)
+        print(
+            f"  Runtime             {runtime['device_name']}, PyTorch {runtime['torch_version']}, "
+            f"CUDA {runtime['cuda_version']}",
+            flush=True,
+        )
         print(f"  Data                {args.data_source} [{args.start_date}, {args.end_date})", flush=True)
         print(f"  Shard root          {args.offline_shard_root}", flush=True)
         print(f"  Warm-up / measured  {args.warmup_steps} / {args.measured_steps} optimizer updates", flush=True)
         print(
             f"  Metric-cost audit   one isolated reduction, amortized across "
             f"{train.training_metrics_interval_samples:,} origins",
+            flush=True,
+        )
+        print(
+            "  SDPA kernel audit   one extra real forward after timing; excluded from throughput",
             flush=True,
         )
         print("  Precision           BF16 autocast", flush=True)
@@ -384,6 +493,7 @@ class ProfileReporter:
             table.add_column("backward", justify="right")
             table.add_column("optimizer", justify="right")
             table.add_column("metric amortized", justify="right")
+            table.add_column("SDPA backend", justify="right")
             for result in results:
                 steps = max(1, result.optimizer_steps)
                 table.add_row(
@@ -396,6 +506,12 @@ class ProfileReporter:
                     f"{result.backward_seconds * 1000 / steps:,.1f} ms",
                     f"{result.optimizer_seconds * 1000 / steps:,.1f} ms",
                     f"{result.projected_metric_overhead_fraction * 100:,.3f}%",
+                    (
+                        ", ".join(f"{name}:{count}" for name, count in result.sdpa_backend_counts)
+                        + f" ({sum(count for _name, count in result.sdpa_backend_counts)}/{result.sdpa_expected_calls})"
+                        if result.sdpa_backend_counts
+                        else result.sdpa_audit_state
+                    ),
                 )
             Console().print(table)
         for result in results:
@@ -409,9 +525,14 @@ class ProfileReporter:
                 f"metric_raw={result.metric_seconds * 1000:.1f}ms "
                 f"metric_amortized={result.projected_metric_overhead_fraction * 100:.3f}% "
                 f"loader_wait={result.loader_wait_seconds * 1000 / steps:.1f}ms/update "
-                f"parameters={result.model_parameters:,}",
+                f"parameters={result.model_parameters:,} "
+                f"sdpa={','.join(f'{name}:{count}' for name, count in result.sdpa_backend_counts) or result.sdpa_audit_state} "
+                f"sdpa_calls={sum(count for _name, count in result.sdpa_backend_counts)}/{result.sdpa_expected_calls} "
+                f"sdpa_audit={result.sdpa_audit_seconds * 1000:.1f}ms",
                 flush=True,
             )
+            if result.sdpa_audit_message:
+                print(f"  SDPA audit detail: {result.sdpa_audit_message}", flush=True)
         print(f"selected={selected.candidate.name if selected else 'none'}", flush=True)
 
 
@@ -476,6 +597,12 @@ def _profile_candidate(
     measured_started = 0.0
     measured_finished = 0.0
     measured_metric = 0.0
+    sdpa_audit_state = "not_run"
+    sdpa_backend_counts: tuple[tuple[str, int], ...] = ()
+    sdpa_expected_calls = model_config.n_layers * len(data.attention_window_by_name)
+    sdpa_audit_seconds = 0.0
+    sdpa_audit_message = ""
+    measured_allocated = measured_reserved = total_device = 0
     try:
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
@@ -581,6 +708,21 @@ def _profile_candidate(
         metric_accumulator.finalize()
         finalization_seconds = time.perf_counter() - metric_started
         measured_metric = reduction_seconds * candidate.accumulation + finalization_seconds
+        if device.type == "cuda":
+            measured_allocated = int(torch.cuda.max_memory_allocated(device))
+            measured_reserved = int(torch.cuda.max_memory_reserved(device))
+            total_device = int(torch.cuda.get_device_properties(device).total_memory)
+        optimizer.zero_grad(set_to_none=True)
+        del output, loss_result, loss
+        sdpa_audit_state, sdpa_backend_counts, sdpa_audit_seconds, sdpa_audit_message = (
+            _profile_sdpa_backends(model, batch, data, device=device)
+        )
+        observed_sdpa_calls = sum(count for _name, count in sdpa_backend_counts)
+        if sdpa_audit_state == "passed" and observed_sdpa_calls != sdpa_expected_calls:
+            sdpa_audit_state = "partial"
+            sdpa_audit_message = (
+                f"observed {observed_sdpa_calls} concrete SDPA calls; expected {sdpa_expected_calls}"
+            )
     finally:
         prefetcher.close()
     elapsed = max(measured_finished - measured_started, 1e-9)
@@ -595,12 +737,6 @@ def _profile_candidate(
     projected_metric_overhead = (
         (measured_metric / metric_interval_updates) / max(baseline_update_seconds, 1e-9)
     )
-    if device.type == "cuda":
-        allocated = int(torch.cuda.max_memory_allocated(device))
-        reserved = int(torch.cuda.max_memory_reserved(device))
-        total_device = int(torch.cuda.get_device_properties(device).total_memory)
-    else:
-        allocated = reserved = total_device = 0
     return ProfileResult(
         candidate=candidate,
         state="passed",
@@ -612,10 +748,10 @@ def _profile_candidate(
         gpu_seconds=measured_gpu,
         origins_per_second=measured_origins / elapsed,
         encoded_tokens_per_second=measured_tokens / elapsed,
-        peak_allocated_bytes=allocated,
-        peak_reserved_bytes=reserved,
+        peak_allocated_bytes=measured_allocated,
+        peak_reserved_bytes=measured_reserved,
         total_device_bytes=total_device,
-        memory_fraction=reserved / total_device if total_device else 0.0,
+        memory_fraction=measured_reserved / total_device if total_device else 0.0,
         model_parameters=model_parameters,
         effective_blocks_per_update=candidate.microbatch * candidate.accumulation,
         recommended_accumulation=max(1, math.ceil(int(args.target_effective_blocks) / candidate.microbatch)),
@@ -624,6 +760,11 @@ def _profile_candidate(
         optimizer_seconds=measured_optimizer,
         metric_seconds=measured_metric,
         projected_metric_overhead_fraction=projected_metric_overhead,
+        sdpa_audit_state=sdpa_audit_state,
+        sdpa_backend_counts=sdpa_backend_counts,
+        sdpa_expected_calls=sdpa_expected_calls,
+        sdpa_audit_seconds=sdpa_audit_seconds,
+        sdpa_audit_message=sdpa_audit_message,
     )
 
 
@@ -732,6 +873,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     }
     summary = {
         "device": str(device),
+        "runtime": _runtime_evidence(device),
         "args": vars(args),
         "selected": asdict(selected) if selected else None,
         "selected_by_model": selected_by_model,
