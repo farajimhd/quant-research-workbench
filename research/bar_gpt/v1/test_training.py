@@ -79,7 +79,7 @@ from research.bar_gpt.v1.offline_shards import (
     validate_origin_context,
     write_unit,
 )
-from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter, _ratio_markup
+from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter, _format_value, _ratio_markup
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES, build_next_bar_targets, build_physical_horizon_targets
 from research.bar_gpt.v1.train import (
@@ -1940,6 +1940,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(ratio.plain, "12/34")
         ratio_styles = {str(span.style) for span in ratio.spans}
         self.assertTrue({"bold bright_cyan", "bold bright_yellow", "bold bright_magenta"} <= ratio_styles)
+        rate = Text.from_markup(_format_value(65_114, "rate"))
+        self.assertEqual(rate.plain, "65,114 origins/s")
+        self.assertTrue(any(str(span.style) == "dim" and rate.plain[span.start:span.end] == "origins/s" for span in rate.spans))
 
         state = TrainingProgressState(
             run_name="smoke", device="cuda", precision="bf16", output_dir=r"D:\TradingML\runtimes\bar_gpt\v1\train\smoke",
@@ -1979,6 +1982,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(rendered_lines)
         self.assertTrue(all(len(line) >= 159 for line in rendered_lines))
         self.assertTrue(any(line.startswith("│State") for line in rendered_lines))
+        objective_line = next(line for line in rendered_lines if "Total" in line and "Gradient norm" in line)
+        self.assertGreater(objective_line.index("Gradient norm") - objective_line.index("0.123000"), 12)
         rendered = " ".join(output.getvalue().split())
         self.assertIn("running", rendered)
         self.assertIn("AAPL,SPY", rendered)

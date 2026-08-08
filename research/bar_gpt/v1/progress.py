@@ -291,7 +291,7 @@ class TrainingReporter:
         """Build the complete dashboard; the panel schema never depends on terminal size."""
         from rich.layout import Layout
         from rich.panel import Panel
-        from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
+        from rich.progress import BarColumn, Progress, TextColumn
         from rich.table import Table
 
         s = self.state
@@ -311,13 +311,13 @@ class TrainingReporter:
             f"[bold]State[/] {_safe(s.state)}",
             f"[bold]Run[/] {_safe(s.run_name)}",
             f"[bold]Device[/] {_safe(s.device)} / {_safe(s.precision)}",
-            f"[bold]Overall speed[/] [bold bright_green]{rate:,.0f} origins/s[/]",
+            f"[bold]Overall speed[/] [bold bright_green]{rate:,.0f}[/] [dim]origins/s[/]",
         )
         header.add_row(
-            f"[bold]Model[/] {s.model_parameters:,} parameters",
+            f"[bold]Model[/] {s.model_parameters:,} [dim]parameters[/]",
             f"[bold]Elapsed[/] {_duration(elapsed)}",
             f"[bold]Output[/] {_safe(s.output_dir)}",
-            f"[bold]GPU duty[/] {s.gpu_duty_cycle * 100:.2f}%",
+            f"[bold]GPU duty[/] {s.gpu_duty_cycle * 100:.2f}[dim]%[/]",
         )
 
         def progress_line(label: str, completed: int, total: int, color: str) -> Any:
@@ -325,7 +325,7 @@ class TrainingReporter:
                 TextColumn(f"[bold {color}]{label:<12}[/]"),
                 BarColumn(complete_style=color, finished_style="green", bar_width=None),
                 TextColumn(_ratio_markup(completed, total)),
-                TaskProgressColumn(),
+                TextColumn("{task.percentage:>3.0f}[dim]%[/]"),
                 expand=True,
             )
             visual_total = max(total, completed, 1)
@@ -424,9 +424,10 @@ class TrainingReporter:
 def _paired_table(rows: Sequence[tuple[str, Any, str]]) -> Any:
     from rich.table import Table
 
-    table = Table.grid(padding=(0, 1))
+    table = Table.grid(expand=True, padding=(0, 0))
     table.add_column(style="dim", no_wrap=True)
     table.add_column(justify="right", no_wrap=True)
+    table.add_column(ratio=1)
     table.add_column(style="dim", no_wrap=True)
     table.add_column(justify="right", no_wrap=True)
     midpoint = (len(rows) + 1) // 2
@@ -438,9 +439,10 @@ def _paired_table(rows: Sequence[tuple[str, Any, str]]) -> Any:
         else:
             right_label, right_value, right_style = "", None, "text"
         table.add_row(
-            left_label,
+            left_label + " ",
             _format_value(left_value, left_style),
-            right_label,
+            "",
+            right_label + " " if right_label else "",
             _format_value(right_value, right_style) if right_label else "",
         )
     return table
@@ -463,17 +465,17 @@ def _format_value(value: Any, style: str) -> str:
     if style == "loss":
         return f"{numeric:.6f}"
     if style == "percent":
-        return f"{numeric * 100:.2f}%"
+        return f"{numeric * 100:.2f}[dim]%[/]"
     if style == "bps":
-        return f"{numeric:.3f} bps"
+        return f"{numeric:.3f} [dim]bps[/]"
     if style == "integer":
         return f"{int(numeric):,}"
     if style == "scientific":
         return f"{numeric:.3e}"
     if style == "rate":
-        return f"{numeric:,.0f}/s"
+        return f"{numeric:,.0f} [dim]origins/s[/]"
     if style == "seconds":
-        return f"{numeric:.3f}s"
+        return f"{numeric:.3f}[dim]s[/]"
     return f"{numeric:.4f}"
 
 
@@ -498,7 +500,15 @@ def _duration(value: float) -> str:
     seconds = max(0, int(value))
     hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
-    return f"{hours:d}h {minutes:02d}m" if hours else (f"{minutes:d}m {secs:02d}s" if minutes else f"{secs:d}s")
+    return (
+        f"{hours:d}[dim]h[/] {minutes:02d}[dim]m[/]"
+        if hours
+        else (
+            f"{minutes:d}[dim]m[/] {secs:02d}[dim]s[/]"
+            if minutes
+            else f"{secs:d}[dim]s[/]"
+        )
+    )
 
 
 def _schedule_status(state: TrainingProgressState) -> tuple[str, float]:
