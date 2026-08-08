@@ -2077,9 +2077,13 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
   }
 
   return <article className="strategy-authoring" aria-label={`${profile.name} strategy authoring flow`}>
-    <nav aria-label="Strategy configuration steps" className="strategy-authoring-steps">
-      {stages.map(([stage, number, title, detail]) => <button aria-current={activeStage === stage ? "step" : undefined} key={stage} onClick={() => onStageChange(stage)} type="button"><span>{number}</span><strong>{title}</strong><small>{detail}</small></button>)}
-    </nav>
+    <div className="strategy-authoring-step-navigation">
+      <button aria-label="Previous configuration question" className="button compact strategy-step-direction" disabled={activeIndex <= 0 && activeStage !== "entry" && activeStage !== "position" && activeStage !== "exit"} onClick={previousQuestion} type="button">Previous</button>
+      <nav aria-label="Strategy configuration steps" className="strategy-authoring-steps">
+        {stages.map(([stage, number, title, detail]) => <button aria-current={activeStage === stage ? "step" : undefined} key={stage} onClick={() => onStageChange(stage)} type="button"><span>{number}</span><strong>{title}</strong><small>{detail}</small></button>)}
+      </nav>
+      <button aria-label="Next configuration question" className="button compact strategy-step-direction" disabled={activeIndex >= stages.length - 1 && activeStage !== "entry" && activeStage !== "position" && activeStage !== "exit"} onClick={nextQuestion} type="button">Next</button>
+    </div>
 
     <section className={`strategy-authoring-stage${activeStage === "entry" || activeStage === "position" || activeStage === "exit" ? " strategy-authoring-stage-entry" : ""}`}>
       {activeStage === "identity" ? <>
@@ -2139,11 +2143,6 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, onPro
         <StrategyEngineParameterGroup items={remainingParameters} onChange={(path, value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, path, value) })} summary="Definition-specific values not assigned to another lifecycle step" title="Other engine parameters" />
       </> : null}
     </section>
-    <footer className="strategy-guided-navigation">
-      <button className="button" disabled={activeIndex <= 0 && activeStage !== "entry" && activeStage !== "position" && activeStage !== "exit"} onClick={previousQuestion} type="button"><ArrowLeft size={14} /> Previous question</button>
-      <span>{activeStage === "entry" ? `Enter question ${activeEntryIndex + 1} of ${ENTRY_AUTHORING_PAGES.length}` : activeStage === "position" ? `Manage question ${activeManageIndex + 1} of ${MANAGE_AUTHORING_PAGES.length}` : activeStage === "exit" ? `Exit question ${activeExitIndex + 1} of ${EXIT_AUTHORING_PAGES.length}` : `Question ${activeIndex + 1} of ${stages.length}`}</span>
-      <button className="button primary" disabled={activeIndex >= stages.length - 1 && activeStage !== "entry" && activeStage !== "position" && activeStage !== "exit"} onClick={nextQuestion} type="button">Next question <ArrowRight size={14} /></button>
-    </footer>
   </article>;
 }
 
