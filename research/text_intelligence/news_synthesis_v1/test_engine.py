@@ -197,6 +197,113 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             document["entities"][0]["identity_evidence"],
         )
 
+    def test_sparse_investor_and_preclinical_presentations_are_neutral_events(self) -> None:
+        for text in (
+            "Alpha Therapeutics releases an investor presentation.",
+            "Alpha Therapeutics highlights presentation of preclinical data at a conference.",
+        ):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": text,
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+                self.assertIn(
+                    "corporate.communication_event",
+                    {row["concept_leaf"] for row in document["statements"]},
+                )
+
+    def test_board_election_inflections_create_neutral_governance_view(self) -> None:
+        for verb in ("elected", "electing"):
+            text = f"Jordan Smith was {verb} to the Alpha Therapeutics board."
+            document = self.engine.synthesize({
+                "source_id": f"news-board-{verb}",
+                "source_timestamp": "2026-08-03T12:00:00Z",
+                "title": text,
+                "text": text,
+                "tickers": ["AAA"],
+            })
+            self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_unveils_new_solution_is_product_milestone(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-new-solution",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha unveils new cloud solution",
+            "text": "Alpha Therapeutics unveils a new cloud solution for hospitals.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_statistically_significant_immune_response_has_adverse_override(self) -> None:
+        cases = (
+            ("Alpha reports statistically significant immune response data.", "positive"),
+            ("Alpha reports statistically significant adverse immune response data.", "negative"),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": text,
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
+    def test_planned_priority_review_request_is_weak_positive(self) -> None:
+        text = "Alpha Therapeutics plans to seek FDA priority review for its sNDA."
+        document = self.engine.synthesize({
+            "source_id": "news-priority-review-plan",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+        self.assertEqual(document["issuer_views"][0]["positive_strength"], 1)
+
+    def test_first_pilot_unit_shipment_is_product_milestone(self) -> None:
+        text = "Alpha Therapeutics ships first pilot units to hospital production teams."
+        document = self.engine.synthesize({
+            "source_id": "news-first-pilot-units",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_product_update_and_office_opening_have_typed_sparse_views(self) -> None:
+        cases = (
+            ("Alpha Therapeutics provides an update on AlphaCare.", "neutral"),
+            ("Alpha Therapeutics opens an office in Qatar.", "positive"),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": text,
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], expected)
+
+    def test_named_product_market_unavailability_uses_local_negative_fallback(self) -> None:
+        text = "Alpha Therapeutics says Alpha AI will not be available in China."
+        document = self.engine.synthesize({
+            "source_id": "news-product-unavailable",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": text,
+            "text": text,
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
     def test_contract_termination_dominates_reactive_mitigation(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-contract-loss",
@@ -831,6 +938,21 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(view["positive_strength"], 3)
         self.assertEqual(view["negative_strength"], 3)
         self.assertEqual(view["composite_sentiment"], "positive")
+
+    def test_hypothetical_solution_success_in_risk_inventory_is_not_a_product_milestone(self) -> None:
+        doc = self.engine.synthesize({
+            "source_id": "news-hypothetical-solution-risk",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha risk factors",
+            "text": (
+                "Alpha Therapeutics risks include the degree of its success at introducing "
+                "new or improved products and solutions that gain market share."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertFalse(
+            any(row["concept_leaf"] == "product.milestone" for row in doc["statements"])
+        )
 
     def test_guidance_range_above_consensus_is_positive(self) -> None:
         document = self.engine.synthesize({
