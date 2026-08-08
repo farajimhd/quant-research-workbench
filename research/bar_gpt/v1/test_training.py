@@ -122,6 +122,8 @@ from research.bar_gpt.v1.run_pilot_offline_shards import commands as pilot_comma
 from research.bar_gpt.v1.run_train import DEFAULT_ARGS as training_launcher_args
 from research.bar_gpt.v1.run_train_model_comparison import (
     COMPARISON_RUNS,
+    DEFAULT_WANDB_MODE,
+    _launcher_command as comparison_launcher_command,
     comparison_run_name,
     trainer_argv as comparison_trainer_argv,
 )
@@ -1986,6 +1988,20 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--loader-workers"], "16")
         self.assertEqual(training_launcher_args["--ready-queue-blocks"], "1024")
         self.assertEqual(training_launcher_args["--worker-prefetch-batches"], "8")
+        self.assertEqual(training_launcher_args["--wandb-mode"], "online")
+
+    def test_comparison_launcher_uses_online_wandb_without_normal_cli_noise(self) -> None:
+        self.assertEqual(DEFAULT_WANDB_MODE, "online")
+        parsed = parse_training_args(comparison_trainer_argv("current", run_stamp="fixed"))
+        self.assertEqual(parsed.wandb_mode, "online")
+        normal = comparison_launcher_command(
+            "current", run_stamp="fixed", wandb_mode=DEFAULT_WANDB_MODE, execute=True
+        )
+        self.assertNotIn("--wandb-mode", normal)
+        offline = comparison_launcher_command(
+            "current", run_stamp="fixed", wandb_mode="offline", execute=True
+        )
+        self.assertEqual(offline[offline.index("--wandb-mode") + 1], "offline")
 
     def test_one_epoch_comparison_runs_match_profiled_winners(self) -> None:
         expected = {

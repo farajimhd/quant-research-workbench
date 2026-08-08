@@ -62,6 +62,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--amp-dtype": "bf16",
     "--progress-layout": "auto",
     "--wandb-project": BAR_GPT_WANDB_PROJECT,
+    "--wandb-mode": "online",
 }
 DEFAULT_FLAGS: tuple[str, ...] = ("--amp", "--cuda-prefetch", "--no-compile-model")
 

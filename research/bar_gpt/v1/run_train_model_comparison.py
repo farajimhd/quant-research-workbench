@@ -33,6 +33,7 @@ COMPARISON_RUNS: dict[str, ComparisonRun] = {
     "large": ComparisonRun("large", microbatch=8, accumulation=4),
     "xlarge": ComparisonRun("xlarge", microbatch=8, accumulation=4),
 }
+DEFAULT_WANDB_MODE = "online"
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -49,7 +50,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--wandb-mode",
         choices=("auto", "online", "offline", "disabled"),
-        default="auto",
+        default=DEFAULT_WANDB_MODE,
+        help="override the normal online W&B logging mode",
     )
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -62,17 +64,20 @@ def comparison_run_name(model_size: str, run_stamp: str) -> str:
     )
 
 
-def trainer_argv(model_size: str, *, run_stamp: str, wandb_mode: str = "auto") -> list[str]:
+def trainer_argv(
+    model_size: str,
+    *,
+    run_stamp: str,
+    wandb_mode: str = DEFAULT_WANDB_MODE,
+) -> list[str]:
     run = COMPARISON_RUNS[model_size]
     model = MODEL_SIZE_PRESETS[model_size]
-    return [
+    argv = [
         *default_argv(),
         "--run-name",
         comparison_run_name(model_size, run_stamp),
         "--wandb-project",
         BAR_GPT_WANDB_PROJECT,
-        "--wandb-mode",
-        wandb_mode,
         "--epochs",
         "1",
         "--batch-size",
@@ -88,6 +93,9 @@ def trainer_argv(model_size: str, *, run_stamp: str, wandb_mode: str = "auto") -
         "--n-kv-heads",
         str(model["n_kv_heads"]),
     ]
+    if wandb_mode != DEFAULT_WANDB_MODE:
+        argv.extend(("--wandb-mode", wandb_mode))
+    return argv
 
 
 def _launcher_command(model_size: str, *, run_stamp: str, wandb_mode: str, execute: bool) -> list[str]:
@@ -100,9 +108,9 @@ def _launcher_command(model_size: str, *, run_stamp: str, wandb_mode: str, execu
         model_size,
         "--run-stamp",
         run_stamp,
-        "--wandb-mode",
-        wandb_mode,
     ]
+    if wandb_mode != DEFAULT_WANDB_MODE:
+        command.extend(("--wandb-mode", wandb_mode))
     if execute:
         command.append("--execute")
     return command
