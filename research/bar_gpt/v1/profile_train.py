@@ -22,6 +22,7 @@ from research.bar_gpt.v1.loader import (
 )
 from research.bar_gpt.v1.offline_shards import OfflineShardDataset, discover_offline_units, make_offline_dataloader
 from research.bar_gpt.v1.model import BarGPTV1
+from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.objectives import compute_loss
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
 from research.bar_gpt.v1.train import preflight
@@ -96,6 +97,11 @@ class ProfileResult:
     model_parameters: int
     effective_blocks_per_update: int
     recommended_accumulation: int
+    forward_seconds: float = 0.0
+    backward_seconds: float = 0.0
+    optimizer_seconds: float = 0.0
+    metric_seconds: float = 0.0
+    projected_metric_overhead_fraction: float = 0.0
     message: str = ""
 
 
@@ -220,6 +226,136 @@ class ProfileReporter:
             )
             self._progress.start()
 
+    def configuration(
+        self,
+        args: argparse.Namespace,
+        candidates: tuple[ProfileCandidate, ...],
+        device: torch.device,
+    ) -> None:
+        if self.layout == "none":
+            return
+        train = TrainConfig()
+        data = DataConfig()
+        model_defaults = BarGPTConfig()
+        intraday_context = ", ".join(f"{name}={bars}" for name, bars in data.intraday_context_bars)
+        calendar_context = ", ".join(f"{name}={bars}" for name, bars in data.calendar_context_bars)
+        horizons = ", ".join(f"{value // 1_000_000}s" for value in data.horizons_us)
+        if self.rich:
+            from rich.console import Console
+            from rich.table import Table
+
+            console = Console()
+            run = Table(title="BarGPT performance profile", show_header=False)
+            run.add_column("Setting", style="bold cyan")
+            run.add_column("Value")
+            run.add_row("W&B", "disabled; no initialization, recording, or upload")
+            run.add_row("Device", str(device))
+            run.add_row("Data", f"{args.data_source} | [{args.start_date}, {args.end_date})")
+            run.add_row("Shard root", str(args.offline_shard_root))
+            run.add_row("Warm-up / measured", f"{args.warmup_steps} / {args.measured_steps} optimizer updates")
+            run.add_row(
+                "Metric-cost audit",
+                f"one isolated reduction; amortized across {train.training_metrics_interval_samples:,} origins",
+            )
+            run.add_row("Precision", "BF16 autocast")
+            run.add_row("Intraday context", intraday_context)
+            run.add_row("Calendar context", calendar_context)
+            run.add_row("Prediction horizons", horizons)
+            run.add_row(
+                "Shared model settings",
+                f"dropout {model_defaults.dropout:g} | FF multiplier {model_defaults.ff_multiplier:.4g} | "
+                f"horizon rank {model_defaults.horizon_rank} | quantiles {', '.join(map(str, model_defaults.quantiles))}",
+            )
+            run.add_row("Optimizer", f"AdamW | peak LR {train.learning_rate:g} | weight decay {train.weight_decay:g}")
+            run.add_row("Gradient clipping", f"global norm {train.grad_clip_norm:g}")
+            run.add_row(
+                "Loss weights",
+                f"AR {train.autoregressive_weight:g} | horizon {train.horizon_weight:g} | "
+                f"availability {train.availability_weight:g} | latent {train.latent_prediction_weight:g} | "
+                f"condition positive {train.condition_positive_weight:g}",
+            )
+            run.add_row(
+                "Scheduler in trainer",
+                f"sample-clock cosine warm restarts | cycle {train.cosine_cycle_samples:,} origins | "
+                f"minimum LR {train.minimum_learning_rate:g} | restart decay {train.cosine_restart_decay:g}",
+            )
+            run.add_row(
+                "Scheduler warning",
+                f"configured warm-up {train.warmup_fraction:.1%} is currently not applied by that scheduler",
+            )
+            console.print(run)
+            candidates_table = Table(title="Candidates")
+            for name in ("Model", "Width", "Layers", "Heads", "KV", "Micro", "Accum", "Effective", "Workers", "Prefetch", "Compile"):
+                candidates_table.add_column(name, justify="right" if name != "Model" else "left")
+            for candidate in candidates:
+                model = MODEL_SIZE_PRESETS[candidate.model_size]
+                candidates_table.add_row(
+                    candidate.model_size,
+                    str(model["d_model"]),
+                    str(model["n_layers"]),
+                    str(model["n_heads"]),
+                    str(model["n_kv_heads"]),
+                    str(candidate.microbatch),
+                    str(candidate.accumulation),
+                    str(candidate.microbatch * candidate.accumulation),
+                    str(candidate.workers),
+                    "yes" if candidate.cuda_prefetch else "no",
+                    "yes" if candidate.compile_model else "no",
+                )
+            console.print(candidates_table)
+            return
+        print("BarGPT performance profile", flush=True)
+        print("  W&B                 disabled; no initialization, recording, or upload", flush=True)
+        print(f"  Device              {device}", flush=True)
+        print(f"  Data                {args.data_source} [{args.start_date}, {args.end_date})", flush=True)
+        print(f"  Shard root          {args.offline_shard_root}", flush=True)
+        print(f"  Warm-up / measured  {args.warmup_steps} / {args.measured_steps} optimizer updates", flush=True)
+        print(
+            f"  Metric-cost audit   one isolated reduction, amortized across "
+            f"{train.training_metrics_interval_samples:,} origins",
+            flush=True,
+        )
+        print("  Precision           BF16 autocast", flush=True)
+        print(f"  Intraday context    {intraday_context}", flush=True)
+        print(f"  Calendar context    {calendar_context}", flush=True)
+        print(f"  Horizons            {horizons}", flush=True)
+        print(
+            f"  Model settings      dropout {model_defaults.dropout:g}, FF multiplier {model_defaults.ff_multiplier:.4g}, "
+            f"horizon rank {model_defaults.horizon_rank}, quantiles {', '.join(map(str, model_defaults.quantiles))}",
+            flush=True,
+        )
+        print(
+            f"  Optimizer           AdamW, peak LR {train.learning_rate:g}, weight decay {train.weight_decay:g}, "
+            f"gradient norm clip {train.grad_clip_norm:g}",
+            flush=True,
+        )
+        print(
+            f"  Loss weights        AR {train.autoregressive_weight:g}, horizon {train.horizon_weight:g}, "
+            f"availability {train.availability_weight:g}, latent {train.latent_prediction_weight:g}, "
+            f"condition positive {train.condition_positive_weight:g}",
+            flush=True,
+        )
+        print(
+            f"  Scheduler           cosine warm restarts, cycle {train.cosine_cycle_samples:,} origins, "
+            f"minimum LR {train.minimum_learning_rate:g}, restart decay {train.cosine_restart_decay:g}",
+            flush=True,
+        )
+        print(
+            f"  Scheduler warning   configured warm-up {train.warmup_fraction:.1%} is not currently applied",
+            flush=True,
+        )
+        print("Candidates", flush=True)
+        for candidate in candidates:
+            model = MODEL_SIZE_PRESETS[candidate.model_size]
+            print(
+                f"  {candidate.model_size:<8} width={model['d_model']} layers={model['n_layers']} "
+                f"heads={model['n_heads']} kv={model['n_kv_heads']} micro={candidate.microbatch} "
+                f"accum={candidate.accumulation} effective={candidate.microbatch * candidate.accumulation} "
+                f"workers={candidate.workers} prefetch={'yes' if candidate.cuda_prefetch else 'no'} "
+                f"compile={'yes' if candidate.compile_model else 'no'}",
+                flush=True,
+            )
+
     def start(self, candidate: ProfileCandidate, index: int, total: int) -> None:
         if self._progress is not None:
             if self._task is None:
@@ -250,17 +386,38 @@ class ProfileReporter:
             table.add_column("origins/s", justify="right")
             table.add_column("tokens/s", justify="right")
             table.add_column("GPU memory", justify="right")
+            table.add_column("forward", justify="right")
+            table.add_column("backward", justify="right")
+            table.add_column("optimizer", justify="right")
+            table.add_column("metric amortized", justify="right")
             for result in results:
+                steps = max(1, result.optimizer_steps)
                 table.add_row(
                     result.candidate.name,
                     result.state,
                     f"{result.origins_per_second:,.0f}",
                     f"{result.encoded_tokens_per_second:,.0f}",
                     f"{result.memory_fraction * 100:,.1f}%",
+                    f"{result.forward_seconds * 1000 / steps:,.1f} ms",
+                    f"{result.backward_seconds * 1000 / steps:,.1f} ms",
+                    f"{result.optimizer_seconds * 1000 / steps:,.1f} ms",
+                    f"{result.projected_metric_overhead_fraction * 100:,.3f}%",
                 )
             Console().print(table)
         for result in results:
-            print(json.dumps(asdict(result), default=str, sort_keys=True), flush=True)
+            steps = max(1, result.optimizer_steps)
+            print(
+                f"result {result.candidate.model_size}: state={result.state} "
+                f"origins/s={result.origins_per_second:,.0f} memory={result.memory_fraction * 100:.1f}% "
+                f"forward={result.forward_seconds * 1000 / steps:.1f}ms/update "
+                f"backward={result.backward_seconds * 1000 / steps:.1f}ms/update "
+                f"optimizer={result.optimizer_seconds * 1000 / steps:.1f}ms/update "
+                f"metric_raw={result.metric_seconds * 1000:.1f}ms "
+                f"metric_amortized={result.projected_metric_overhead_fraction * 100:.3f}% "
+                f"loader_wait={result.loader_wait_seconds * 1000 / steps:.1f}ms/update "
+                f"parameters={result.model_parameters:,}",
+                flush=True,
+            )
         print(f"selected={selected.candidate.name if selected else 'none'}", flush=True)
 
 
@@ -321,7 +478,10 @@ def _profile_candidate(
     total_steps = int(args.warmup_steps) + int(args.measured_steps)
     measured_origins = measured_tokens = 0
     measured_loader = measured_gpu = 0.0
+    measured_forward = measured_backward = measured_optimizer = 0.0
     measured_started = 0.0
+    measured_finished = 0.0
+    measured_metric = 0.0
     try:
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
@@ -333,15 +493,17 @@ def _profile_candidate(
             optimizer.zero_grad(set_to_none=True)
             step_origins = step_tokens = 0
             step_loader = step_gpu = 0.0
-            gpu_event_pairs: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
+            step_forward = step_backward = step_optimizer = 0.0
+            forward_events: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
+            backward_events: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
             for _micro in range(candidate.accumulation):
                 batch, wait = prefetcher.next()
-                started = time.perf_counter()
-                gpu_start_event = gpu_end_event = None
+                forward_started = time.perf_counter()
+                forward_start_event = forward_end_event = None
                 if device.type == "cuda":
-                    gpu_start_event = torch.cuda.Event(enable_timing=True)
-                    gpu_end_event = torch.cuda.Event(enable_timing=True)
-                    gpu_start_event.record()
+                    forward_start_event = torch.cuda.Event(enable_timing=True)
+                    forward_end_event = torch.cuda.Event(enable_timing=True)
+                    forward_start_event.record()
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
                     output = model(
                         batch.views,
@@ -353,17 +515,29 @@ def _profile_candidate(
                         attention_windows=data.attention_window_by_name,
                         horizon_ids=torch.arange(len(data.horizons_us), device=device),
                     )
-                    loss = compute_loss(output, batch, train_config, model_config.quantiles).loss / candidate.accumulation
-                loss.backward()
-                if gpu_end_event is not None and gpu_start_event is not None:
-                    gpu_end_event.record()
-                    gpu_event_pairs.append((gpu_start_event, gpu_end_event))
+                    loss_result = compute_loss(output, batch, train_config, model_config.quantiles)
+                    loss = loss_result.loss / candidate.accumulation
+                if forward_end_event is not None and forward_start_event is not None:
+                    forward_end_event.record()
+                    forward_events.append((forward_start_event, forward_end_event))
                 else:
-                    step_gpu += time.perf_counter() - started
+                    step_forward += time.perf_counter() - forward_started
+                backward_started = time.perf_counter()
+                backward_start_event = backward_end_event = None
+                if device.type == "cuda":
+                    backward_start_event = torch.cuda.Event(enable_timing=True)
+                    backward_end_event = torch.cuda.Event(enable_timing=True)
+                    backward_start_event.record()
+                loss.backward()
+                if backward_end_event is not None and backward_start_event is not None:
+                    backward_end_event.record()
+                    backward_events.append((backward_start_event, backward_end_event))
+                else:
+                    step_backward += time.perf_counter() - backward_started
                 step_loader += wait
                 step_origins += batch.origin_count
                 step_tokens += sum(int(value.shape[0] * value.shape[1]) for value in batch.views.values())
-            started = time.perf_counter()
+            optimizer_started = time.perf_counter()
             step_start_event = step_end_event = None
             if device.type == "cuda":
                 step_start_event = torch.cuda.Event(enable_timing=True)
@@ -373,20 +547,60 @@ def _profile_candidate(
             optimizer.step()
             if step_end_event is not None and step_start_event is not None:
                 step_end_event.record()
-                gpu_event_pairs.append((step_start_event, step_end_event))
                 step_end_event.synchronize()
-                step_gpu += sum(start.elapsed_time(end) / 1_000.0 for start, end in gpu_event_pairs)
+                step_forward += sum(start.elapsed_time(end) / 1_000.0 for start, end in forward_events)
+                step_backward += sum(start.elapsed_time(end) / 1_000.0 for start, end in backward_events)
+                step_optimizer += step_start_event.elapsed_time(step_end_event) / 1_000.0
             else:
-                step_gpu += time.perf_counter() - started
+                step_optimizer += time.perf_counter() - optimizer_started
+            step_gpu = step_forward + step_backward + step_optimizer
             if step >= int(args.warmup_steps):
                 measured_origins += step_origins
                 measured_tokens += step_tokens
                 measured_loader += step_loader
                 measured_gpu += step_gpu
+                measured_forward += step_forward
+                measured_backward += step_backward
+                measured_optimizer += step_optimizer
                 reporter.step(candidate, step - int(args.warmup_steps) + 1, int(args.measured_steps))
+        measured_finished = time.perf_counter()
+        # Profile periodic training metrics separately from the throughput
+        # window using the final existing forward output. Scale the reduction
+        # portion by accumulation; finalization is paid once per metric update.
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        metric_accumulator = ValidationAccumulator(
+            data.horizons_us,
+            model_config.quantiles,
+            namespace="train",
+            include_loss_metrics=False,
+            include_condition_metrics=False,
+            include_ranking_metrics=False,
+            include_confidence_metrics=False,
+        )
+        metric_started = time.perf_counter()
+        metric_accumulator.update(output, batch, loss_result)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        reduction_seconds = time.perf_counter() - metric_started
+        metric_started = time.perf_counter()
+        metric_accumulator.finalize()
+        finalization_seconds = time.perf_counter() - metric_started
+        measured_metric = reduction_seconds * candidate.accumulation + finalization_seconds
     finally:
         prefetcher.close()
-    elapsed = max(time.perf_counter() - measured_started, 1e-9)
+    elapsed = max(measured_finished - measured_started, 1e-9)
+    baseline_update_seconds = elapsed / max(1, int(args.measured_steps))
+    metric_interval_updates = max(
+        1,
+        math.ceil(
+            TrainConfig().training_metrics_interval_samples
+            / max(1, candidate.microbatch * candidate.accumulation * candidate.origin_bars)
+        ),
+    )
+    projected_metric_overhead = (
+        (measured_metric / metric_interval_updates) / max(baseline_update_seconds, 1e-9)
+    )
     if device.type == "cuda":
         allocated = int(torch.cuda.max_memory_allocated(device))
         reserved = int(torch.cuda.max_memory_reserved(device))
@@ -411,6 +625,11 @@ def _profile_candidate(
         model_parameters=model_parameters,
         effective_blocks_per_update=candidate.microbatch * candidate.accumulation,
         recommended_accumulation=max(1, math.ceil(int(args.target_effective_blocks) / candidate.microbatch)),
+        forward_seconds=measured_forward,
+        backward_seconds=measured_backward,
+        optimizer_seconds=measured_optimizer,
+        metric_seconds=measured_metric,
+        projected_metric_overhead_fraction=projected_metric_overhead,
     )
 
 
@@ -426,6 +645,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     run_root = output_root / time.strftime("%Y%m%d_%H%M%S")
     run_root.mkdir(parents=True, exist_ok=True)
     reporter = ProfileReporter(str(args.progress_layout))
+    reporter.configuration(args, candidates, device)
     results: list[ProfileResult] = []
     oom_microbatch: dict[tuple[str, int, int, bool], int] = {}
     jsonl = run_root / "profile.jsonl"

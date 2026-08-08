@@ -2635,8 +2635,45 @@ function ruleSetMeaning(ruleSet: Pick<RuleSetDefinition, "conditions" | "enabled
   return `${meaning}${disabledCount ? ` ${disabledCount} disabled condition${disabledCount === 1 ? " is" : "s are"} excluded.` : ""}`;
 }
 
+function RuleEvidenceOperand({ catalog, sourceId, timeframe }: { catalog: StrategyInput[]; sourceId: string; timeframe: string }) {
+  const source = inputSource(catalog, sourceId);
+  return <span className="strategy-rule-evidence-operand"><strong>{source?.label ?? readableLabel(sourceId)}</strong>{timeframe ? <small>{timeframe}</small> : null}</span>;
+}
+
+function RuleConditionMeaning({ catalog, condition }: { catalog: StrategyInput[]; condition: RuleCondition }) {
+  const relation = condition.comparator === "above_by_bps"
+    ? `${condition.value ?? 0} bps above`
+    : ({
+        equals: "equals",
+        greater_or_equal: "is at least",
+        greater_than: "is greater than",
+        is_true: "is true",
+        less_or_equal: "is at most",
+        less_than: "is less than",
+      }[condition.comparator] ?? readableLabel(condition.comparator).toLocaleLowerCase());
+  const showTarget = condition.comparator !== "is_true";
+  return <div aria-hidden="true" className="strategy-rule-evidence-expression">
+    <RuleEvidenceOperand catalog={catalog} sourceId={condition.left_source_id} timeframe={condition.left_timeframe} />
+    <span className="strategy-rule-evidence-relation">{relation}</span>
+    {showTarget ? condition.right_source_id
+      ? <RuleEvidenceOperand catalog={catalog} sourceId={condition.right_source_id} timeframe={condition.right_timeframe} />
+      : <strong className="strategy-rule-evidence-value">{condition.value === null || condition.value === undefined ? "Unset" : String(condition.value)}</strong> : null}
+  </div>;
+}
+
 function RuleSetMeaning({ catalog, ruleSet }: { catalog: StrategyInput[]; ruleSet: Pick<RuleSetDefinition, "conditions" | "enabled" | "operator" | "required_score"> }) {
-  return <div className="strategy-rule-set-meaning" data-enabled={ruleSet.enabled ? "true" : "false"}><span>{ruleSet.enabled ? "Passes when" : "If enabled, passes when"}</span><p>{ruleSetMeaning(ruleSet, catalog)}</p></div>;
+  const enabledConditions = ruleSet.conditions.filter((condition) => condition.enabled);
+  const disabledCount = ruleSet.conditions.length - enabledConditions.length;
+  const score = ruleSet.required_score <= 1 ? `${Math.round(ruleSet.required_score * 100)}%` : String(ruleSet.required_score);
+  const logic = ruleSet.operator === "score" ? `Score ≥ ${score}` : ruleSet.operator.toLocaleUpperCase();
+  return <div className="strategy-rule-set-meaning" data-enabled={ruleSet.enabled ? "true" : "false"}>
+    <span className="sr-only">{ruleSetMeaning(ruleSet, catalog)}</span>
+    <header aria-hidden="true"><span>{ruleSet.enabled ? "Passes when" : "If enabled"}</span><strong>{logic}</strong></header>
+    {enabledConditions.length ? <div className="strategy-rule-evidence-list">
+      {enabledConditions.map((condition, index) => <div className="strategy-rule-evidence-clause" key={condition.condition_id}>{index ? <span className="strategy-rule-evidence-logic">{ruleSet.operator === "all" ? "AND" : ruleSet.operator === "any" ? "OR" : "PLUS"}</span> : null}<RuleConditionMeaning catalog={catalog} condition={condition} /></div>)}
+    </div> : <p className="strategy-rule-evidence-empty">No enabled conditions are configured.</p>}
+    {disabledCount ? <small className="strategy-rule-evidence-disabled">{disabledCount} disabled condition{disabledCount === 1 ? "" : "s"} excluded</small> : null}
+  </div>;
 }
 
 function RuleExpressionEditor({ catalog, expression, onChange, onEditRuleSet, ruleSets }: { catalog: StrategyInput[]; expression: RuleExpression; onChange: (value: RuleExpression) => void; onEditRuleSet: (ruleSetId: string) => void; ruleSets: RuleSetDefinition[] }) {

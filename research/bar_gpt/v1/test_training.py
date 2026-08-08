@@ -82,6 +82,7 @@ from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES, build_next_bar_targets, build_physical_horizon_targets
 from research.bar_gpt.v1.train import (
+    _DeferredUpdateLossBuffer,
     _advance_cursors,
     _batch_eligibility_metrics,
     _checkpoint_policy,
@@ -92,6 +93,7 @@ from research.bar_gpt.v1.train import (
     _assert_finite_before_step,
     PreparedValidationBatches,
     _validation_milestones,
+    _wandb_metric_key,
     _resolved_warmup_samples,
     _resume_data_contract,
     _training_prefetcher,
@@ -101,7 +103,7 @@ from research.bar_gpt.v1.train import (
     sequential_coverage_counts,
     validate,
 )
-from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS, _model_config, _parse_candidates
+from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS, ProfileReporter, _model_config, _parse_candidates, parse_args as parse_profile_args
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
 from research.bar_gpt.v1.run_build_offline_dataset import (
     commands as offline_dataset_commands,
@@ -115,6 +117,8 @@ from research.bar_gpt.v1.run_train_model_comparison import (
     comparison_run_name,
     trainer_argv as comparison_trainer_argv,
 )
+from research.bar_gpt.v1.run_profile_model_performance import parse_args as parse_performance_profile_args, profiler_argv
+from research.mlops.metrics import AsyncJsonlMetricLogger
 from research.mlops.schedulers import SampleWarmupCosineScheduler
 
 
@@ -1237,8 +1241,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
             validation_cache = PreparedValidationBatches(validation_loader)
             try:
                 metrics = validate(model, validation_cache, experiment, device)
-                self.assertEqual(metrics["val/batches"], 1.0)
-                self.assertGreater(metrics["val/origins"], 0.0)
+                self.assertEqual(metrics["validation_data/batches"], 1.0)
+                self.assertGreater(metrics["validation_data/origins"], 0.0)
                 self.assertTrue(model.training)
             finally:
                 validation_cache.close()
@@ -1587,9 +1591,78 @@ class LoaderTrainerContractTest(unittest.TestCase):
         accumulator = ValidationAccumulator(self.data_config().horizons_us, model_config.quantiles)
         accumulator.update(output, batch, loss)
         validation = accumulator.finalize()
-        self.assertEqual(validation["val/origins"], 6.0)
-        self.assertIn("val/horizon_1s_median_mae", validation)
-        self.assertEqual(validation["val/horizon_1s_halt_pause_within_horizon_positives"], 0.0)
+        self.assertEqual(validation["validation_data/origins"], 6.0)
+        self.assertIn("validation_return/mae_bps_1s", validation)
+        self.assertIn("validation_direction/balanced_accuracy_1s", validation)
+        self.assertIn("validation_direction/mcc_1s", validation)
+        self.assertEqual(validation["validation_condition_halt_pause/positives_1s"], 0.0)
+        grouped_counts: dict[str, int] = {}
+        for key in validation:
+            group = key.split("/", 1)[0]
+            grouped_counts[group] = grouped_counts.get(group, 0) + 1
+        self.assertLessEqual(max(grouped_counts.values()), 16)
+
+    def test_endpoint_mae_is_reported_in_inverse_transformed_basis_points(self) -> None:
+        examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=self.data_config()
+        ))[:1]
+        batch = collate_examples(examples).to("cpu")
+        model_config = BarGPTConfig(d_model=32, n_layers=1, n_heads=4, n_kv_heads=2, horizon_rank=8)
+        output = BarGPTV1(model_config)(
+            batch.views,
+            timeframe_us=TIMEFRAME_US_BY_NAME,
+            pathway_ids=PATHWAY_ID_BY_NAME,
+            base_view="1s",
+            origin_indices=batch.origin_indices,
+            asof_indices=batch.asof_indices,
+            horizon_ids=torch.arange(len(self.data_config().horizons_us)),
+        )
+        assert output.horizon_quantiles is not None and batch.horizon_targets is not None
+        median_index = model_config.quantiles.index(0.5)
+        batch.horizon_targets[..., 0] = 0.0
+        output.horizon_quantiles[..., 0, median_index] = torch.asinh(torch.tensor(0.01))
+        loss = compute_loss(output, batch, TrainConfig(), model_config.quantiles)
+        accumulator = ValidationAccumulator(
+            self.data_config().horizons_us,
+            model_config.quantiles,
+            include_condition_metrics=False,
+            include_ranking_metrics=False,
+            include_confidence_metrics=False,
+        )
+        accumulator.update(output, batch, loss)
+        metrics = accumulator.finalize()
+        self.assertAlmostEqual(metrics["validation_return/mae_bps_1s"], 1.0, places=5)
+
+    def test_deferred_update_losses_preserve_each_update_and_async_logging(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logger = AsyncJsonlMetricLogger(Path(directory) / "metrics.jsonl")
+            buffer = _DeferredUpdateLossBuffer()
+            buffer.append(
+                {"train/loss": torch.tensor(8.0), "train/gradient_norm": torch.tensor(3.0)},
+                origins=4,
+                step=4,
+                metadata={"train/optimizer_steps": 1.0},
+            )
+            buffer.append(
+                {"train/loss": torch.tensor(20.0), "train/gradient_norm": torch.tensor(5.0)},
+                origins=4,
+                step=8,
+                metadata={"train/optimizer_steps": 2.0},
+            )
+            buffer.flush(logger)
+            logger.close()
+            rows = [json.loads(line) for line in (Path(directory) / "metrics.jsonl").read_text().splitlines()]
+        self.assertEqual([row["step"] for row in rows], [4, 8])
+        self.assertEqual([row["train/loss"] for row in rows], [2.0, 5.0])
+        self.assertEqual([row["train/gradient_norm"] for row in rows], [3.0, 5.0])
+
+    def test_wandb_metric_categories_are_first_level_and_bounded(self) -> None:
+        self.assertEqual(_wandb_metric_key("train/loss"), "train_loss/total")
+        self.assertEqual(_wandb_metric_key("train/loss_horizon"), "train_loss/horizon")
+        self.assertEqual(_wandb_metric_key("train/loader_wait_seconds"), "train_runtime/loader_wait_seconds")
+        self.assertEqual(_wandb_metric_key("val/loss"), "validation_loss/total")
+        self.assertEqual(TrainConfig().training_metrics_interval_samples, 8_388_608)
 
     def test_cursor_advances_per_worker_only_after_consumed_batch(self) -> None:
         examples = list(build_session_examples(
@@ -1690,6 +1763,22 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual((resolved["current"].d_model, resolved["current"].n_layers), (384, 8))
         self.assertEqual((resolved["xlarge"].d_model, resolved["xlarge"].n_layers), (1024, 16))
         self.assertEqual({config.dropout for config in resolved.values()}, {0.08})
+
+    def test_performance_profiler_uses_selected_training_shape_and_readable_output(self) -> None:
+        launcher_args = parse_performance_profile_args(["--model-size", "medium", "--progress-layout", "text"])
+        resolved = profiler_argv(launcher_args)
+        candidates = _parse_candidates(resolved[resolved.index("--candidates") + 1])
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual((candidates[0].model_size, candidates[0].microbatch, candidates[0].accumulation), ("medium", 16, 2))
+        profile_args = parse_profile_args(resolved)
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            ProfileReporter("text").configuration(profile_args, candidates, torch.device("cpu"))
+        rendered = stream.getvalue()
+        self.assertIn("W&B                 disabled", rendered)
+        self.assertIn("Scheduler", rendered)
+        self.assertIn("configured warm-up 1.0% is not currently applied", rendered)
+        self.assertIn("medium", rendered)
 
     def test_training_launcher_uses_selected_worker_owned_profile(self) -> None:
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")

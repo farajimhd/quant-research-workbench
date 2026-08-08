@@ -272,6 +272,7 @@ class TrainConfig:
     # below that cadence forces a CUDA-to-host scalar transfer after every
     # update and prevents the CPU from getting ahead of the GPU.
     logging_samples: int = 1_048_576
+    training_metrics_interval_samples: int = 8_388_608
     validation_batches: int = 16
     # Validation is intentionally spread across the epoch to expose drift;
     # the epoch-end evaluation is included in this count.
@@ -301,6 +302,8 @@ class TrainConfig:
             raise ValueError("max_samples cannot be negative")
         if self.gradient_accumulation_steps <= 0:
             raise ValueError("gradient_accumulation_steps must be positive")
+        if self.training_metrics_interval_samples <= 0:
+            raise ValueError("training_metrics_interval_samples must be positive")
         if self.validation_runs_per_epoch != 100 or self.validation_batches <= 0:
             raise ValueError("BarGPT v1 requires exactly 100 validation evaluations per epoch")
         if self.validation_interval_samples < 0 or self.validation_initial_samples <= 0 or self.warmup_samples < 0:

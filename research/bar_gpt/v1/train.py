@@ -11,7 +11,7 @@ import signal
 import sys
 import threading
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
@@ -65,7 +65,7 @@ from research.mlops.clickhouse import (
 )
 from research.mlops.env import load_env_files
 from research.mlops.manifest import write_run_manifest
-from research.mlops.metrics import JsonlMetricLogger
+from research.mlops.metrics import AsyncJsonlMetricLogger
 from research.mlops.model_artifacts import parameter_summary, write_model_artifacts, write_model_card
 from research.mlops.paths import RunPaths, default_run_root
 from research.mlops.schedulers import SampleCosineRestartScheduler
@@ -184,6 +184,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=train.gradient_accumulation_steps)
     parser.add_argument("--cuda-prefetch", action=argparse.BooleanOptionalAction, default=train.cuda_prefetch)
     parser.add_argument("--logging-samples", type=int, default=train.logging_samples)
+    parser.add_argument(
+        "--training-metrics-interval-samples",
+        type=int,
+        default=train.training_metrics_interval_samples,
+    )
     parser.add_argument("--validation-interval-samples", type=int, default=train.validation_interval_samples)
     parser.add_argument("--validation-initial-samples", type=int, default=train.validation_initial_samples)
     parser.add_argument("--validation-batches", type=int, default=train.validation_batches)
@@ -298,6 +303,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         wandb_mode=str(args.wandb_mode),
         wandb_init_timeout=int(args.wandb_init_timeout),
         logging_samples=int(args.logging_samples),
+        training_metrics_interval_samples=int(args.training_metrics_interval_samples),
         validation_interval_samples=int(args.validation_interval_samples),
         validation_initial_samples=int(args.validation_initial_samples),
         validation_batches=int(args.validation_batches),
@@ -991,6 +997,97 @@ def _batch_eligibility_metrics(batch: BarGPTBatch) -> dict[str, torch.Tensor]:
     return result
 
 
+def _wandb_metric_key(key: str) -> str:
+    """Put the semantic metric category at W&B's first grouping level."""
+    if key == "train/loss":
+        return "train_loss/total"
+    if key.startswith("train/loss_"):
+        return "train_loss/" + key.removeprefix("train/loss_")
+    if key == "val/loss":
+        return "validation_loss/total"
+    if key.startswith("val/loss_"):
+        return "validation_loss/" + key.removeprefix("val/loss_")
+    if key.startswith("train/loader_stage_"):
+        return "train_runtime_loader/" + key.removeprefix("train/loader_stage_")
+    train_groups = {
+        "samples_seen": "train_progress/origins_seen",
+        "batches_seen": "train_progress/microbatches_seen",
+        "optimizer_steps": "train_progress/optimizer_steps",
+        "blocks_seen": "train_progress/blocks_seen",
+        "units_seen": "train_progress/units_seen",
+        "condition_blocks_seen": "train_progress/condition_blocks_seen",
+        "accumulation_microbatches": "train_optimization/accumulation_microbatches",
+        "learning_rate": "train_optimization/learning_rate",
+        "gradient_norm": "train_optimization/gradient_norm",
+        "amp_scale": "train_optimization/amp_scale",
+        "loader_wait_seconds": "train_runtime/loader_wait_seconds",
+        "gpu_seconds": "train_runtime/gpu_seconds",
+        "gpu_duty_cycle": "train_runtime/gpu_duty_cycle",
+        "host_cache_batches": "train_runtime/host_cache_batches",
+        "host_cache_capacity": "train_runtime/host_cache_capacity",
+        "origins_per_second": "train_runtime/origins_per_second",
+        "condition_positive_rate": "train_data/condition_positive_rate",
+    }
+    if key.startswith("train/"):
+        leaf = key.removeprefix("train/")
+        return train_groups.get(leaf, f"train_misc/{leaf}")
+    return key
+
+
+@dataclass(slots=True)
+class _DeferredUpdateLossBuffer:
+    names: tuple[str, ...] = ()
+    rows: list[torch.Tensor] = field(default_factory=list)
+    steps: list[int] = field(default_factory=list)
+    metadata: list[dict[str, float]] = field(default_factory=list)
+
+    def append(
+        self,
+        metrics: dict[str, torch.Tensor],
+        *,
+        origins: int,
+        step: int,
+        metadata: dict[str, float],
+    ) -> None:
+        names = tuple(
+            key
+            for key in metrics
+            if key == "train/loss" or key.startswith("train/loss_") or key == "train/gradient_norm"
+        )
+        if self.names and names != self.names:
+            raise RuntimeError(f"training loss schema changed: expected={self.names}, actual={names}")
+        self.names = names
+        values = []
+        for key in names:
+            value = metrics[key].detach()
+            values.append(value if key == "train/gradient_norm" else value / max(1, origins))
+        self.rows.append(torch.stack(values))
+        self.steps.append(int(step))
+        self.metadata.append(dict(metadata))
+
+    def flush(self, logger: AsyncJsonlMetricLogger) -> None:
+        if not self.rows:
+            return
+        values = torch.stack(self.rows).cpu().tolist()
+        for step, row, metadata in zip(self.steps, values, self.metadata, strict=True):
+            logger.log(
+                {
+                    **{name: float(value) for name, value in zip(self.names, row, strict=True)},
+                    **metadata,
+                },
+                step,
+            )
+        self.rows.clear()
+        self.steps.clear()
+        self.metadata.clear()
+
+    def merge_last(self, metrics: dict[str, float]) -> bool:
+        if not self.metadata:
+            return False
+        self.metadata[-1].update(metrics)
+        return True
+
+
 class PreparedValidationBatches:
     """Materialize the fixed held-out panel once while training begins."""
 
@@ -1237,7 +1334,7 @@ def _checkpoint_policy(config: TrainConfig) -> CheckpointPolicy:
         save_best_train=False,
         save_best_val=True,
         monitor_train_key="train/loss",
-        monitor_val_key="val/loss",
+        monitor_val_key="validation_loss/total",
         threshold_intervals=True,
         # The final forced save must queue behind an in-flight best/latest save;
         # skipping it would lose the newest durable data cursor on shutdown.
@@ -1498,7 +1595,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         run_id=str(resumed_wandb_id) if resumed_wandb_id else None,
     )
     wandb_run_id = str(getattr(wandb_run, "id", "")) or None
-    metrics_logger = JsonlMetricLogger(paths.metrics_path, wandb_run)
+    metrics_logger = AsyncJsonlMetricLogger(
+        paths.metrics_path,
+        wandb_run,
+        wandb_key_mapper=_wandb_metric_key,
+    )
     write_run_manifest(
         paths.manifest_path,
         repo_root=REPO_ROOT,
@@ -1590,6 +1691,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     reporter = TrainingReporter(state, layout=config.train.progress_layout)
     next_log = samples_seen
+    metric_interval = max(1, config.train.training_metrics_interval_samples)
+    next_training_metrics = ((samples_seen // metric_interval) + 1) * metric_interval
+    deferred_losses = _DeferredUpdateLossBuffer()
     restored_validation_runs = restored.get("validation_runs_in_epoch")
     validation_state_missing = restored_validation_runs is None
     validation_runs_in_epoch = int(restored_validation_runs or 0)
@@ -1668,6 +1772,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 accumulated_condition_blocks = 0
                 pending_cursors = dict(durable_cursors)
                 exhausted = False
+                periodic_training_metrics: ValidationAccumulator | None = None
                 while True:
                     if training_limit > 0 and samples_seen >= training_limit:
                         break
@@ -1678,6 +1783,25 @@ def main(argv: Iterable[str] | None = None) -> int:
                         batch = None
                         loader_wait = 0.0
                     if batch is not None:
+                        if accumulation_count == 0:
+                            nominal_update_origins = (
+                                config.data.batch_size
+                                * config.data.origin_bars_1s
+                                * config.train.gradient_accumulation_steps
+                            )
+                            periodic_training_metrics = (
+                                ValidationAccumulator(
+                                    config.data.horizons_us,
+                                    config.model.quantiles,
+                                    namespace="train",
+                                    include_loss_metrics=False,
+                                    include_condition_metrics=False,
+                                    include_ranking_metrics=False,
+                                    include_confidence_metrics=False,
+                                )
+                                if samples_seen + nominal_update_origins >= next_training_metrics
+                                else None
+                            )
                         gpu_started = time.perf_counter()
                         gpu_start_event = gpu_end_event = None
                         if device.type == "cuda":
@@ -1685,7 +1809,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                             gpu_end_event = torch.cuda.Event(enable_timing=True)
                             gpu_start_event.record()
                         with torch.autocast(device_type=device.type, dtype=_amp_dtype(config.train.amp_dtype), enabled=config.train.amp and device.type == "cuda"):
-                            _, result = _forward(model, batch, config)
+                            output, result = _forward(model, batch, config)
                             scaled_loss = result.loss / config.train.gradient_accumulation_steps
                         if device.type != "cuda" and not torch.isfinite(result.loss):
                             detail = _nonfinite_loss_diagnostic(result, batch)
@@ -1706,6 +1830,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                             scaler.scale(scaled_loss).backward()
                         else:
                             scaled_loss.backward()
+                        if periodic_training_metrics is not None:
+                            # Reuse this update's existing predictions. This
+                            # adds bounded reductions only at the configured
+                            # sample-clock interval and never another forward.
+                            periodic_training_metrics.update(output, batch, result)
                         if gpu_end_event is not None and gpu_start_event is not None:
                             gpu_end_event.record()
                             gpu_event_pairs.append((gpu_start_event, gpu_end_event))
@@ -1763,7 +1892,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                             for parameter in model.parameters():
                                 if parameter.grad is not None:
                                     parameter.grad.mul_(correction)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
+                        gradient_norm = torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), config.train.grad_clip_norm
+                        )
                         if scaler.is_enabled():
                             scaler.step(optimizer)
                             scaler.update()
@@ -1846,6 +1977,37 @@ def main(argv: Iterable[str] | None = None) -> int:
                                     "train/host_cache_capacity": float(iterator.cache_capacity),
                                 }
                             )
+                        update_metadata = {
+                            "train/samples_seen": float(samples_seen),
+                            "train/batches_seen": float(batches_seen),
+                            "train/optimizer_steps": float(optimizer_steps),
+                            "train/blocks_seen": float(blocks_seen),
+                            "train/units_seen": float(len(units_seen)),
+                            "train/condition_blocks_seen": float(condition_blocks_seen),
+                            "train/accumulation_microbatches": float(accumulation_count),
+                            "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
+                            "train/amp_scale": float(scaler.get_scale()) if scaler.is_enabled() else 1.0,
+                        }
+                        if telemetry_due:
+                            update_metadata.update(
+                                {
+                                    key: value
+                                    for key, value in metrics.items()
+                                    if not (key == "train/loss" or key.startswith("train/loss_"))
+                                }
+                            )
+                        if periodic_training_metrics is not None and samples_seen >= next_training_metrics:
+                            update_metadata.update(periodic_training_metrics.finalize())
+                            while next_training_metrics <= samples_seen:
+                                next_training_metrics += metric_interval
+                        deferred_device_metrics = dict(accumulated_metrics)
+                        deferred_device_metrics["train/gradient_norm"] = gradient_norm.detach()
+                        deferred_losses.append(
+                            deferred_device_metrics,
+                            origins=accumulated_origins,
+                            step=samples_seen,
+                            metadata=update_metadata,
+                        )
                         assert batch is not None or exhausted
                         reporter.update(
                             metrics,
@@ -1854,13 +2016,17 @@ def main(argv: Iterable[str] | None = None) -> int:
                             unit_indices=batch.unit_indices if batch is not None else (),
                             block_offsets=batch.block_offsets if batch is not None else (),
                         )
-                        if telemetry_due:
-                            metrics_logger.log(metrics, samples_seen)
-                            next_log = samples_seen + max(1, config.train.logging_samples)
-                        if (
+                        validation_due = (
                             samples_seen >= next_validation
                             and validation_runs_in_epoch < len(epoch_validation_milestones) - 1
-                        ):
+                        )
+                        if telemetry_due and not validation_due:
+                            # One batched device-to-host transfer flushes exact
+                            # per-update losses; file and W&B writes happen on
+                            # the background metric-writer thread.
+                            deferred_losses.flush(metrics_logger)
+                            next_log = samples_seen + max(1, config.train.logging_samples)
+                        if validation_due:
                             # Do not let a full training cache continue issuing
                             # ClickHouse work while the held-out loader starts
                             # its own workers. Durable cursors describe only
@@ -1872,8 +2038,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                             if not validation_cache.ready:
                                 reporter.message("Waiting for initial fixed validation panel preparation")
                             last_val = validate(model, validation_cache, config, device)
-                            metrics_logger.log(last_val, samples_seen)
-                            reporter.validation(last_val["val/loss"])
+                            if not deferred_losses.merge_last(last_val):
+                                metrics_logger.log(last_val, samples_seen)
+                            deferred_losses.flush(metrics_logger)
+                            if telemetry_due:
+                                next_log = samples_seen + max(1, config.train.logging_samples)
+                            reporter.validation(last_val["validation_loss/total"])
                             last_validation_samples = samples_seen
                             validation_runs_in_epoch += 1
                             if validation_runs_in_epoch < len(epoch_validation_milestones):
@@ -1932,6 +2102,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                         accumulated_blocks = 0
                         accumulated_units = set()
                         accumulated_condition_blocks = 0
+                        periodic_training_metrics = None
                     if exhausted or _INTERRUPTED or (training_limit > 0 and samples_seen >= training_limit):
                         if _INTERRUPTED and accumulation_count:
                             optimizer.zero_grad(set_to_none=True)
@@ -1950,8 +2121,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                     if not validation_cache.ready:
                         reporter.message("Waiting for initial fixed validation panel preparation")
                     last_val = validate(model, validation_cache, config, device)
-                    metrics_logger.log(last_val, samples_seen)
-                    reporter.validation(last_val["val/loss"])
+                    if not deferred_losses.merge_last(last_val):
+                        metrics_logger.log(last_val, samples_seen)
+                    deferred_losses.flush(metrics_logger)
+                    reporter.validation(last_val["validation_loss/total"])
                     last_validation_samples = samples_seen
             if optimizer_steps == 0:
                 raise RuntimeError("coverage epoch produced no optimizer updates")
@@ -2028,12 +2201,20 @@ def main(argv: Iterable[str] | None = None) -> int:
             active_iterator.close()
         validation_cache.close()
         checkpointer.close(wait=True, timeout=300)
+        metric_close_failure: BaseException | None = None
+        try:
+            deferred_losses.flush(metrics_logger)
+            metrics_logger.close(timeout=300)
+        except BaseException as exc:
+            metric_close_failure = exc
         if wandb_run is not None:
             try:
                 exit_code = 130 if _INTERRUPTED else (1 if sys.exc_info()[0] is not None else 0)
                 wandb_run.finish(exit_code=exit_code)
             except Exception:
                 pass
+        if metric_close_failure is not None and sys.exc_info()[0] is None:
+            raise metric_close_failure
     write_model_card(
         paths.run_root / "model_card.json",
         {

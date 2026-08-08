@@ -389,9 +389,12 @@ workers while training begins, then the same prepared batches are reused for
 every validation. Validation uses the training batch shape and CUDA transfer
 path. Validation runs 100 times per coverage epoch: an early
 checkpoint-sized health check, evenly spaced intermediate checks, and one at
-completion. It reports loss,
-per-horizon median MAE, return-sign accuracy, binary Brier score, quantile
-coverage, and rare-condition average precision. At an intermediate validation
+completion. Each evaluation makes exactly one pass and derives every metric
+from those same forward outputs. It reports grouped validation loss, endpoint
+MAE in inverse-transformed log-return basis points, balanced directional
+accuracy, MCC, rank IC, high-confidence directional accuracy, binary Brier
+score, quantile coverage and calibration error, and rare-condition average
+precision. At an intermediate validation
 boundary, training prefetch is stopped first; validation evaluates the already
 prepared host batches, then training restarts from consumed durable cursors.
 Unconsumed training blocks replay safely rather than being marked complete.
@@ -406,11 +409,13 @@ and six horizons from 5 seconds through 1 hour. `--max-samples 0` means the
 complete coverage epoch; a positive value is an operator safety or diagnostic
 cap and does not shorten the full-epoch learning-rate curve.
 
-AdamW uses a `3e-4` peak learning rate and `0.1` weight decay. A shared MLOps
-sample-clock scheduler starts at `3e-5`, linearly warms over the first 1% of the
-resolved run population (about 75.6 million origins for the current epoch), then
-performs one monotonic cosine decay to `3e-5` at the coverage-plan ceiling.
-Explicit `--warmup-samples` overrides the fractional default. Scheduler,
+AdamW uses a `3e-4` peak learning rate and `0.1` weight decay. The current shared
+MLOps scheduler is a sample-clock cosine warm-restart schedule with a
+100,000,000-origin cycle, `3e-5` minimum learning rate, and `0.98` peak decay at
+each restart. The configuration still resolves a 1% warm-up value, but the
+instantiated restart scheduler does not currently apply it; the performance
+profiler reports this mismatch explicitly rather than describing the warm-up as
+active. Scheduler,
 optimizer, scaler, RNG, plan, logical data cursors, validation schedule,
 checkpoint-manager state, and W&B run ID are part of every resumable checkpoint.
 Resume continues the same W&B run; `--wandb-mode disabled` is an explicit
@@ -446,8 +451,25 @@ manifest and checkpoint config instead of being learned as always negative.
 Profile the complete Arrow-to-optimizer path before the first full run:
 
 ```powershell
-python -B -m research.bar_gpt.v1.run_profile_train
+python -B -m research.bar_gpt.v1.run_profile_model_performance --model-size current
 ```
+
+This dedicated performance command never initializes or uploads to W&B. It
+prints the data, architecture, microbatch, accumulation, optimizer, precision,
+scheduler, loader, and measurement contract as readable labeled sections before
+running. It separately measures forward, backward, optimizer, loader-wait,
+throughput, parameter count, and peak-memory results. It also measures one
+periodic metric reduction outside the throughput window and reports its
+projected amortized overhead at the 64-update cadence. Use `--print-config-only`
+to inspect the complete contract without loading shards or allocating the model.
+
+The main trainer does not run a startup profiler. Exact per-update losses are
+buffered as detached device scalars, copied in one batch at existing telemetry
+boundaries, and written to JSONL/W&B on a background thread. More expensive
+training metrics run every 8,388,608 origins (64 full optimizer updates) using
+the already-produced predictions and no extra forward pass. W&B keys put their
+semantic category at the first level (`train_loss`, `train_direction`,
+`validation_return`, and so on), with at most 16 scalar series in any group.
 
 The joint candidate sweep measures loader wait, GPU time, origins/second,
 encoded tokens/second, parameter count, effective blocks per update, the
