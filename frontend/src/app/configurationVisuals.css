@@ -3022,6 +3022,58 @@
 
 .strategy-entry-question-surface { min-width: 0; }
 
+.strategy-lifecycle-navigation {
+  max-height: min(620px, calc(100vh - 360px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+}
+
+.strategy-guided-entity-list {
+  display: grid;
+  gap: 14px;
+}
+
+.strategy-guided-entity-list > header {
+  align-items: center;
+  border-bottom: 1px solid var(--configuration-rule);
+  display: flex;
+  justify-content: space-between;
+  padding: 0 0 14px;
+}
+
+.strategy-guided-entity-list > header > span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.strategy-guided-entity-list > article {
+  border: 1px solid var(--configuration-rule);
+  border-radius: 10px;
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.strategy-guided-entity-list > article[data-selected="true"] { border-color: color-mix(in srgb, var(--canvas-link-blue) 52%, var(--configuration-rule)); }
+
+.strategy-guided-entity-list > article > .configuration-field { margin: 0; }
+
+.strategy-guided-entity-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.strategy-capability-focus {
+  display: grid;
+  gap: 28px;
+}
+
 .strategy-entry-navigation {
   border: 0;
   display: grid;
@@ -3134,6 +3186,7 @@
   .strategy-editor-guided .strategy-authoring-stage-entry { width: 100%; }
   .strategy-entry-layout { display: flex; flex-direction: column-reverse; }
   .strategy-entry-navigation { display: flex; overflow-x: auto; width: 100%; }
+  .strategy-lifecycle-navigation { max-height: none; overflow-y: hidden; }
   .strategy-entry-navigation::before { display: none; }
   .strategy-entry-navigation button { flex: 0 0 auto; padding-right: 16px; }
   .strategy-rule-set-detail > section.strategy-rule-set-authoring { width: 100%; }
