@@ -45,6 +45,25 @@ class SolTeacherForecastGoldReviewCollectionTests(unittest.TestCase):
             decision["verdict_normalization"], "direction_only_gold_authority"
         )
 
+    def test_normalizes_numeric_string_strengths(self) -> None:
+        row = {
+            "unit_id": "S00001::AAA",
+            "reviewed_direction": "mixed",
+            "gold_verdict": "correct",
+            "positive_strength": "2",
+            "negative_strength": "2",
+            "dominant_evidence": "Material evidence exists on both sides.",
+            "countervailing_evidence": "The opposing evidence is balanced.",
+            "issuer_attribution": "supported",
+            "confidence": "high",
+            "rationale": "The two effects have comparable economic importance.",
+        }
+
+        decision = _validate_decision(row, "mixed")
+
+        self.assertEqual(decision["positive_strength"], 2)
+        self.assertEqual(decision["negative_strength"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -121,11 +121,11 @@ def _validate_decision(
         raise RuntimeError(f"Invalid gold verdict: {row.get('unit_id')}")
     if attribution not in ATTRIBUTIONS or confidence not in CONFIDENCE:
         raise RuntimeError(f"Invalid review classification: {row.get('unit_id')}")
-    positive = row.get("positive_strength")
-    negative = row.get("negative_strength")
-    if not isinstance(positive, int) or positive not in range(4):
+    positive = _strength(row.get("positive_strength"))
+    negative = _strength(row.get("negative_strength"))
+    if positive is None:
         raise RuntimeError(f"Invalid positive strength: {row.get('unit_id')}")
-    if not isinstance(negative, int) or negative not in range(4):
+    if negative is None:
         raise RuntimeError(f"Invalid negative strength: {row.get('unit_id')}")
     strength_valid = (
         (direction == "positive" and positive > negative)
@@ -162,3 +162,13 @@ def _validate_decision(
         output["reported_gold_verdict"] = reported_verdict
         output["verdict_normalization"] = "direction_only_gold_authority"
     return output
+
+
+def _strength(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value in range(4):
+        return value
+    if isinstance(value, str) and value in {"0", "1", "2", "3"}:
+        return int(value)
+    return None
