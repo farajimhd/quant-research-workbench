@@ -53,7 +53,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             self.assertEqual(_resolved_source_account_id(accounts["paper"]), "DU-PAPER-TEST")
             self.assertEqual(_resolved_source_account_id(accounts["cash"]), "U-CASH-TEST")
 
-    def test_schema_v13_migration_adds_lifecycle_phase_modes(self) -> None:
+    def test_schema_v14_migration_adds_phase_modes_and_removes_manual_adoption(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
@@ -63,6 +63,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             legacy = _default_draft()
         legacy["schema_version"] = 6
+        legacy["strategy"]["profiles"][0]["lifecycle"]["trading_behavior"][
+            "adopt_manual_positions"
+        ] = True
         initial_intent = legacy["strategy"]["profiles"][0]["lifecycle"][
             "initial_entry"
         ]["order_intent"]
@@ -75,7 +78,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 13)
+        self.assertEqual(migrated["schema_version"], 14)
         lifecycle = migrated["strategy"]["profiles"][0]["lifecycle"]
         self.assertEqual(lifecycle["phase_modes"], {
             "initial_entry": "automatic",
@@ -84,6 +87,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             "exit": "automatic",
         })
         self.assertNotIn("evaluation_trigger", lifecycle["trading_behavior"])
+        self.assertNotIn("adopt_manual_positions", lifecycle["trading_behavior"])
         self.assertNotIn("re_evaluation", lifecycle)
         migrated_intent = migrated["strategy"]["profiles"][0]["lifecycle"][
             "initial_entry"
@@ -101,7 +105,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             migrated_oms["protection_profile_id"],
         )
 
-    def test_schema_v13_maps_legacy_disabled_reentry_to_manual_mode(self) -> None:
+    def test_schema_v14_maps_legacy_disabled_reentry_to_manual_mode(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
@@ -131,7 +135,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 13)
+        self.assertEqual(draft["schema_version"], 14)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(

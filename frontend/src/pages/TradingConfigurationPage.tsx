@@ -282,7 +282,6 @@ type StrategyLifecycle = {
     exit: StrategyPhaseMode;
   };
   trading_behavior: {
-    adopt_manual_positions: boolean;
     eligible_sessions: string[];
     side: "long" | "short";
   };
@@ -519,6 +518,10 @@ function normalizeDraft(payload: any): Draft {
         ...profile.lifecycle,
         phase_modes: phaseModes,
         reentry: { ...profile.lifecycle?.reentry, enabled: phaseModes.reentry === "automatic" },
+        trading_behavior: {
+          eligible_sessions: profile.lifecycle?.trading_behavior?.eligible_sessions ?? ["regular"],
+          side: profile.lifecycle?.trading_behavior?.side ?? "long",
+        },
       },
     };
   };
@@ -1219,12 +1222,6 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
       content: <DecisionOptions onChange={(side) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, side: side as "long" | "short" } } })} options={supportedSides.map((side) => ({ detail: side === "long" ? "Buy to open; sell to reduce or close." : "Short-sell to open; buy to cover.", label: readableLabel(side), recommended: side === "long", value: side }))} value={profile.lifecycle.trading_behavior.side} />,
     },
     {
-      id: "manual-adoption", section: "Behavior", title: "May this plan take over a manually opened position?",
-      description: "A managed campaign can adopt an existing position and apply the configured exit and protection behavior.",
-      guide: "Adoption does not create a new entry order. Account, side, ticker ownership, and reconciliation must all match before management begins.",
-      content: <DecisionOptions onChange={(value) => replaceProfile({ ...profile, lifecycle: { ...profile.lifecycle, trading_behavior: { ...profile.lifecycle.trading_behavior, adopt_manual_positions: value === "yes" } } })} options={[{ label: "Allow adoption", detail: "Manage a compatible manual position with this lifecycle.", recommended: true, value: "yes" }, { label: "Do not adopt", detail: "Manage only positions opened by this strategy campaign.", value: "no" }]} value={profile.lifecycle.trading_behavior.adopt_manual_positions ? "yes" : "no"} />,
-    },
-    {
       id: "sessions", section: "Behavior", title: "When may a new entry be evaluated?",
       description: "Select every market session in which initial entries, adds, and reentries may become eligible.",
       guide: "Protective exits remain active whenever exposure exists. OMS derives compatible broker session instructions from this choice.",
@@ -1594,7 +1591,7 @@ function blankStrategyProfile(source: StrategyProfile, draft: Draft): StrategyPr
     rule_set_catalog: [],
     lifecycle: {
       phase_modes: { initial_entry: "automatic", manage: "automatic", reentry: "automatic", exit: "automatic" },
-      trading_behavior: { adopt_manual_positions: false, eligible_sessions: ["regular"], side: source.lifecycle.trading_behavior.side },
+      trading_behavior: { eligible_sessions: ["regular"], side: source.lifecycle.trading_behavior.side },
       initial_entry: { add_steps: [], blockers: emptyStage(), capital_request: deepClone(capitalRequest), confirmation: emptyStage(), opportunity: emptyStage(), order_intent: deepClone(orderIntent) },
       reentry: { capital_request: deepClone(capitalRequest), cooldown_ms: 0, enabled: true, maximum_attempts: 0, order_intent: deepClone(orderIntent), require_new_confirmation: true, rules: { blockers: emptyStage(), confirmation: emptyStage(), opportunity: emptyStage() } },
       exit: { rule_sets: [{ action: "close", enabled: false, name: "Strategic exit", order_intent: deepClone(orderIntent), position_fraction: 1, rule_set_id: "strategic-exit", rules: emptyStage(), summary: "Define the evidence that should close the position.", timing: { active_after_ms: 0, expires_after_ms: 0 } }] },
@@ -2559,12 +2556,6 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
             </label>
           ))}</div>
         </div>
-        <BooleanField
-          help="When enabled, a campaign may take ownership of a manually opened position and manage its adds and exits. When disabled, manual positions remain outside strategy control."
-          label="Adopt manual positions"
-          onChange={(adopt_manual_positions) => update({ ...behavior, adopt_manual_positions })}
-          value={behavior.adopt_manual_positions}
-        />
       </div>
     </>
   );
@@ -4672,7 +4663,6 @@ function strategyParameterDocumentation(path: string, group: string, value: Cata
 
   if (path.includes("eligible_sessions")) return { ...base, role: ["This session is one of the time windows in which the strategy may create exposure-increasing actions."], timing: ["The session gate is checked before initial entry, position adds, and reentry. Existing-position protection and emergency action remain active outside eligible sessions."], impact: ["Adding a session expands when the strategy may take risk; removing it narrows opportunity and can prevent otherwise valid evidence from producing an entry request."], caution: ["Session eligibility is not a protection schedule. Broker-held stops and account safety supervision must remain active regardless of this value."], cautionTone: "safety" };
   if (path.endsWith(".side")) return { ...base, role: ["Side reserves the campaign's trade direction and determines whether entry intent seeks long or short exposure."], timing: ["It is applied when the campaign is created and is carried into entry, add, reentry, and exit interpretation."], impact: ["Changing side reverses the economic meaning of price movement, evidence comparisons, and closing orders. It is a fundamental strategy change, not a display preference."], caution: ["Review every directional evidence source and exit rule after changing side. A rule written for long behavior may be logically wrong for short behavior even if the schema accepts it."], cautionTone: "warning" };
-  if (path.includes("adopt_manual_positions")) return { ...base, role: ["This setting allows a strategy campaign to adopt a compatible position that was opened outside the strategy."], timing: ["Adoption is considered when runtime ownership reconciliation finds an unowned position matching this profile's direction and account scope."], impact: [value ? "Compatible manual positions may enter the strategy lifecycle and become subject to its management and strategic exits." : "Manual positions remain outside this strategy's campaign ownership."], caution: ["Adoption changes ownership and automated behavior. Confirm account, symbol, side, and protection state before enabling it."], cautionTone: "warning" };
 
   if (path.includes(".groups.") && leaf === "operator") return { ...base, role: ["The group operator determines how the enabled conditions inside one evidence path are combined."], timing: ["It is evaluated after each enabled condition has produced a pass, fail, or score result for the current event."], impact: ["All requires every enabled condition; Any requires at least one; Score compares accumulated evidence with Required Score. The choice directly changes how selective the strategy is."], caution: ["A permissive operator can increase trade frequency substantially. Disabled conditions do not contribute, so review the effective enabled set together with this operator."], cautionTone: "warning" };
   if (leaf === "comparator") return { ...base, role: ["The comparator defines the relationship that must hold between the left evidence source and either the right source or configured literal value."], timing: ["It runs whenever its parent evidence stage is evaluated and the condition is enabled."], impact: ["Changing the comparator can invert or materially widen the condition. The same inputs can move from passing to failing without either source changing."], caution: ["Confirm units, direction, and timeframe on both operands. Comparing a percentage to a price, or a current value to a differently timed value, can produce valid-looking but meaningless evidence."], cautionTone: "warning" };

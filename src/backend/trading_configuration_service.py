@@ -36,7 +36,7 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 13
+CONFIGURATION_SCHEMA_VERSION = 14
 CONFIGURATION_SECTIONS = {"strategy", "run_plans", "portfolio", "oms", "accounts"}
 SUPPORTED_URGENCIES = {
     "passive_limit",
@@ -609,7 +609,6 @@ def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
         "trading_behavior": {
             "side": "long",
             "eligible_sessions": ["regular"],
-            "adopt_manual_positions": True,
         },
         "initial_entry": {
             **deepcopy(initial_rules),
@@ -1187,6 +1186,15 @@ def _migrate_lifecycle_v13(
     if not had_phase_modes and not legacy_reentry_enabled:
         modes["reentry"] = "manual"
     result["reentry"]["enabled"] = modes["reentry"] == "automatic"
+    return result
+
+
+def _migrate_lifecycle_v14(
+    lifecycle: dict[str, Any],
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    result = _migrate_lifecycle_v13(lifecycle, parameters)
+    result.setdefault("trading_behavior", {}).pop("adopt_manual_positions", None)
     return result
 
 
@@ -1837,7 +1845,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 lifecycle["reentry"]["enabled"] = bool(
                     legacy_reentry.get("enabled", True)
                 )
-            lifecycle = _migrate_lifecycle_v13(lifecycle, parameters)
+            lifecycle = _migrate_lifecycle_v14(lifecycle, parameters)
             lifecycle.pop("re_evaluation", None)
             initial_entry = dict(lifecycle.get("initial_entry") or {})
             initial_capital = dict(initial_entry.get("capital_request") or {})
