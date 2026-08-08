@@ -154,19 +154,31 @@ _REGULATORY_OUTCOME_PATTERNS = (
 )
 
 _GUIDANCE_METRIC = (
-    r"(?:adjusted\s+|diluted\s+)?EPS|earnings per share|"
+    r"(?:adjusted\s+|diluted\s+|non-GAAP\s+)?EPS|"
+    r"(?:adjusted\s+|diluted\s+|non-GAAP\s+)?earnings(?: per share)?|"
+    r"loss(?: per share)?|"
     r"rev\.?|"
     r"(?:core\s+|organic\s+)?(?:revenue|sales) growth|"
     r"(?:adjusted\s+)?EBITDA|(?:revenues?|sales|profit)|(?:gross|operating|EBITDA) margin"
 )
 _COMPARISON_VALUE_ATOM = (
-    r"(?:(?:E?\$|£|€)\s*)?\(?\d[\d,]*(?:\.\d+)?\)?\s*"
-    r"(?:%|percent|trillion|billion|million|thousand|[TBMK])?"
+    r"(?:(?:E?\$|£|€)\s*)?\(?[-+]?\d[\d,]*(?:\.\d+)?\)?\s*"
+    r"(?:%|percent\b|trillion\b|billion\b|million\b|thousand\b|[TBMK]\b|(?:-\s*)?cents?\b)?"
 )
 _COMPARISON_VALUE = (
     rf"{_COMPARISON_VALUE_ATOM}(?:\s*(?:-|â€“|â€”|to)\s*{_COMPARISON_VALUE_ATOM})?"
 )
 _ESTIMATE_LABEL = r"(?:analysts?'?\s+)?(?:consensus\s+)?(?:est\.?|estimates?|consensus)"
+_CONSENSUS_LABEL = (
+    r"(?:wall\s+street(?:'s)?|the\s+street(?:'s)?|street(?:'s)?|"
+    r"analysts?'?(?:\s+(?:consensus|estimates?|forecast|view))?|"
+    r"consensus|estimates?|expectations?)"
+)
+_GUIDANCE_VALUE_INTRO = (
+    r"(?:(?:was|were|is|are|reported|posted)\s+)?"
+    r"(?:guidance\s*)?(?:of|at|around|approximately|between|for|~|"
+    r"in\s+(?:the\s+)?range\s+of)?\s*(?:just\s+)?"
+)
 GUIDANCE_COMPARISON_RE = re.compile(
     rf"\b(?P<metric>{_GUIDANCE_METRIC})(?=\s)\s*"
     rf"(?:guidance\s*)?(?:of|at|around|approximately|between|~)?\s*"
@@ -191,6 +203,48 @@ OUTLOOK_ESTIMATE_COMPARISON_RE = re.compile(
     rf".{{0,100}}?\b(?:while|vs\.?|versus|compared (?:with|to))\s+"
     rf"(?:(?:analysts?'?\s+)?(?:estimates?|consensus|street)(?:\s+(?:estimate|view))?\s*)"
     rf"(?:stand(?:s|ing)?\s+)?(?:at|of)?\s*(?P<comparator>{_COMPARISON_VALUE})",
+    re.I,
+)
+GUIDANCE_RELATIONAL_COMPARISON_RE = re.compile(
+    rf"\b(?P<metric>{_GUIDANCE_METRIC})(?=\s)\s*{_GUIDANCE_VALUE_INTRO}"
+    rf"(?P<subject>{_COMPARISON_VALUE})(?:\s+per\s+share)?\s*[,;]?\s*"
+    rf"(?:(?:also|once\s+again)\s+)?"
+    rf"(?P<relation>vs\.?|versus|compared\s+(?:with|to)|"
+    rf"(?:well\s+|mostly\s+|slightly\s+)?(?:below|above|under|short\s+of)|"
+    rf"fell\s+short\s+of|beat(?:s|ing)?)\s*"
+    rf"(?:(?P<label>{_CONSENSUS_LABEL})\s*[,;]?\s*)?"
+    rf"(?:which\s+(?:stands?|stood)\s+at\s+|(?:estimate|forecast|view)\s+(?:of|at)\s+|"
+    rf"(?:estimates?|consensus)\s+(?:of|at|for)\s+|of\s+|at\s+|for\s+)?"
+    rf"(?P<comparator>{_COMPARISON_VALUE})",
+    re.I,
+)
+GUIDANCE_PARENTHETICAL_COMPARISON_RE = re.compile(
+    rf"\b(?P<metric>{_GUIDANCE_METRIC})(?=\s)\s*{_GUIDANCE_VALUE_INTRO}"
+    rf"(?P<subject>{_COMPARISON_VALUE})(?:\s+per\s+share)?\s*[,;]?\s*"
+    rf"\(\s*(?P<label>{_CONSENSUS_LABEL})\s*"
+    rf"(?:estimate|forecast|view)?\s*(?:of|at)?\s*"
+    rf"(?P<comparator>{_COMPARISON_VALUE})\s*\)",
+    re.I,
+)
+GUIDANCE_PRIOR_COMPARISON_RE = re.compile(
+    rf"\b(?P<metric>{_GUIDANCE_METRIC})(?=\s)\s*{_GUIDANCE_VALUE_INTRO}"
+    rf"(?P<subject>{_COMPARISON_VALUE})(?:\s+per\s+share)?\s*[,;]?\s*"
+    rf"(?:vs\.?|versus|compared\s+(?:with|to))\s*"
+    rf"(?:the\s+)?(?:prior|previous|earlier)\s+"
+    rf"(?:guidance|forecasts?|outlooks?|ranges?)(?:\s+of|\s+at)?\s*"
+    rf"(?P<comparator>{_COMPARISON_VALUE})",
+    re.I,
+)
+GUIDANCE_PREVIOUSLY_SEEN_COMPARISON_RE = re.compile(
+    rf"\b(?P<metric>{_GUIDANCE_METRIC})(?=\s)\s*{_GUIDANCE_VALUE_INTRO}"
+    rf"(?P<subject>{_COMPARISON_VALUE})(?:\s+per\s+share)?\s*[,;]\s*"
+    rf"(?:had\s+)?(?:seen|expected|forecast|guided)\s*"
+    rf"(?P<comparator>{_COMPARISON_VALUE})",
+    re.I,
+)
+GUIDANCE_METRIC_VALUE_RE = re.compile(
+    rf"\b(?P<metric>{_GUIDANCE_METRIC})(?=\s)\s*{_GUIDANCE_VALUE_INTRO}"
+    rf"(?P<value>{_COMPARISON_VALUE})(?:\s+per\s+share)?",
     re.I,
 )
 MANAGEMENT_RANGE_POSITION_RE = re.compile(
@@ -236,8 +290,8 @@ _OPERATING_RISK_PATTERNS = (
     ),
 )
 _COMPARISON_NUMBER_RE = re.compile(
-    r"(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
-    r"(?P<unit>%|percent|trillion|billion|million|thousand|[TBMK])?",
+    r"(?P<value>[-+]?\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<unit>%|percent\b|trillion\b|billion\b|million\b|thousand\b|[TBMK]\b|cents?\b)?",
     re.I,
 )
 _COMPARISON_SCALE = {
@@ -245,6 +299,7 @@ _COMPARISON_SCALE = {
     "b": Decimal("1e9"), "billion": Decimal("1e9"),
     "m": Decimal("1e6"), "million": Decimal("1e6"),
     "k": Decimal("1e3"), "thousand": Decimal("1e3"),
+    "cent": Decimal("0.01"), "cents": Decimal("0.01"),
     "%": Decimal("1"), "percent": Decimal("1"), "": Decimal("1"),
 }
 
@@ -512,7 +567,163 @@ def _extract_estimate_comparisons(
             "relation": relation,
             **({"horizon": horizon} if (horizon := _comparison_horizon(text, match.start())) else {}),
         })
+    structured_patterns = (
+        (GUIDANCE_RELATIONAL_COMPARISON_RE, "consensus_estimate", True),
+        (GUIDANCE_PARENTHETICAL_COMPARISON_RE, "consensus_estimate", False),
+        (GUIDANCE_PRIOR_COMPARISON_RE, "management_guidance", False),
+        (GUIDANCE_PREVIOUSLY_SEEN_COMPARISON_RE, "management_guidance", False),
+    )
+    for pattern, comparator_role, validate_authored_relation in structured_patterns:
+        for match in pattern.finditer(text):
+            if (
+                pattern is GUIDANCE_RELATIONAL_COMPARISON_RE
+                and re.fullmatch(
+                    r"vs\.?|versus|compared\s+(?:with|to)",
+                    match.group("relation").strip(),
+                    re.I,
+                )
+                and not match.group("label")
+            ):
+                # A bare versus comparison is commonly a prior period (and
+                # may begin with a token such as 3Q19), not an analyst
+                # benchmark. Consensus facts require an explicit source.
+                continue
+            metric = _normalize_comparison_metric(match.group("metric"))
+            subject = _comparison_bounds_for_metric(match.group("subject"), metric)
+            comparator = _comparison_bounds_for_metric(match.group("comparator"), metric)
+            if subject is None or comparator is None:
+                continue
+            subject_low, subject_high = subject
+            comparator_low, comparator_high = comparator
+            if comparator_role == "management_guidance":
+                relation = (
+                    "below"
+                    if subject_low <= comparator_low and subject_high < comparator_high
+                    else "above"
+                    if subject_low > comparator_low and subject_high >= comparator_high
+                    else "in_line"
+                )
+            else:
+                relation = (
+                    "below" if subject_high < comparator_low
+                    else "above" if subject_low > comparator_high
+                    else "in_line"
+                )
+            if validate_authored_relation:
+                authored = _authored_comparison_relation(match.group("relation"))
+                if authored is not None and authored != relation:
+                    continue
+            fact = {
+                "fact_type": "estimate_comparison",
+                "metric": metric,
+                "subject_role": subject_role,
+                "comparator_role": comparator_role,
+                "subject_raw": match.group("subject").strip(),
+                "comparator_raw": match.group("comparator").strip(),
+                "subject_lower_value": _decimal_text(subject_low),
+                "subject_upper_value": _decimal_text(subject_high),
+                "comparator_lower_value": _decimal_text(comparator_low),
+                "comparator_upper_value": _decimal_text(comparator_high),
+                "relation": relation,
+                **({"horizon": horizon} if (horizon := _comparison_horizon(text, match.start())) else {}),
+            }
+            key = (
+                fact["metric"],
+                fact.get("horizon"),
+                fact["comparator_role"],
+                fact["subject_lower_value"],
+                fact["subject_upper_value"],
+                fact["comparator_lower_value"],
+                fact["comparator_upper_value"],
+            )
+            existing_keys = {
+                (
+                    row.get("metric"), row.get("horizon"), row.get("comparator_role"),
+                    row.get("subject_lower_value"), row.get("subject_upper_value"),
+                    row.get("comparator_lower_value"), row.get("comparator_upper_value"),
+                )
+                for row in comparisons
+            }
+            if key not in existing_keys:
+                comparisons.append(fact)
+    for fact in _extract_adjacent_guidance_comparisons(text, subject_role):
+        key = (
+            fact["metric"], fact.get("horizon"), fact["comparator_role"],
+            fact["subject_lower_value"], fact["subject_upper_value"],
+            fact["comparator_lower_value"], fact["comparator_upper_value"],
+        )
+        if key not in {
+            (
+                row.get("metric"), row.get("horizon"), row.get("comparator_role"),
+                row.get("subject_lower_value"), row.get("subject_upper_value"),
+                row.get("comparator_lower_value"), row.get("comparator_upper_value"),
+            )
+            for row in comparisons
+        }:
+            comparisons.append(fact)
     return comparisons
+
+
+def _extract_adjacent_guidance_comparisons(
+    text: str,
+    subject_role: str,
+) -> list[dict[str, Any]]:
+    boundary = re.search(
+        r"(?<=[.!?])\s+(?=(?:analysts?|wall street|the street|consensus)\b)",
+        text,
+        re.I,
+    )
+    if boundary is None:
+        return []
+    issuer_clause = text[:boundary.start()]
+    comparator_clause = text[boundary.end():]
+    if not re.search(
+        r"\b(?:sees|expects?|anticipates?|projects?|forecasts?|guidance|outlook)\b",
+        issuer_clause,
+        re.I,
+    ) or not re.search(
+        r"\b(?:analysts?|wall street|the street|consensus)\b.{0,80}"
+        r"\b(?:project(?:s|ed)?|expect(?:s|ed)?|estimate(?:s|d)?|forecast(?:s|ed)?)\b",
+        comparator_clause,
+        re.I,
+    ):
+        return []
+    issuer_values: dict[str, tuple[re.Match[str], tuple[Decimal, Decimal]]] = {}
+    comparator_values: dict[str, tuple[re.Match[str], tuple[Decimal, Decimal]]] = {}
+    for match in GUIDANCE_METRIC_VALUE_RE.finditer(issuer_clause):
+        metric = _normalize_comparison_metric(match.group("metric"))
+        if bounds := _comparison_bounds_for_metric(match.group("value"), metric):
+            issuer_values.setdefault(metric, (match, bounds))
+    for match in GUIDANCE_METRIC_VALUE_RE.finditer(comparator_clause):
+        metric = _normalize_comparison_metric(match.group("metric"))
+        if bounds := _comparison_bounds_for_metric(match.group("value"), metric):
+            comparator_values.setdefault(metric, (match, bounds))
+    facts: list[dict[str, Any]] = []
+    for metric in sorted(issuer_values.keys() & comparator_values.keys()):
+        issuer_match, (subject_low, subject_high) = issuer_values[metric]
+        comparator_match, (comparator_low, comparator_high) = comparator_values[metric]
+        relation = (
+            "below" if subject_high < comparator_low
+            else "above" if subject_low > comparator_high
+            else "in_line"
+        )
+        facts.append({
+            "fact_type": "estimate_comparison",
+            "metric": metric,
+            "subject_role": subject_role,
+            "comparator_role": "consensus_estimate",
+            "subject_raw": issuer_match.group("value").strip(),
+            "comparator_raw": comparator_match.group("value").strip(),
+            "subject_lower_value": _decimal_text(subject_low),
+            "subject_upper_value": _decimal_text(subject_high),
+            "comparator_lower_value": _decimal_text(comparator_low),
+            "comparator_upper_value": _decimal_text(comparator_high),
+            "relation": relation,
+            **({"horizon": horizon} if (
+                horizon := _comparison_horizon(issuer_clause, issuer_match.start())
+            ) else {}),
+        })
+    return facts
 
 
 def _extract_estimate_revision_facts(text: str) -> list[dict[str, Any]]:
@@ -592,26 +803,69 @@ def _comparison_horizon(text: str, metric_start: int) -> str | None:
 
 
 def _comparison_bounds(raw: str) -> tuple[Decimal, Decimal] | None:
-    values: list[Decimal] = []
+    parsed: list[tuple[Decimal, str]] = []
+    normalized_raw = re.sub(r"(?<=\d)-(?=cents?\b)", " ", raw, flags=re.I)
     try:
-        for match in _COMPARISON_NUMBER_RE.finditer(raw):
-            value = Decimal(match.group("value").replace(",", ""))
-            if "(" in raw[max(0, match.start() - 2):match.end() + 1] and ")" in raw[match.start():match.end() + 2]:
+        for match in _COMPARISON_NUMBER_RE.finditer(normalized_raw):
+            value_text = match.group("value").replace(",", "")
+            if (
+                value_text.startswith("-")
+                and parsed
+                and re.search(r"[A-Za-z0-9%)]\s*$", normalized_raw[:match.start()])
+            ):
+                # A compact range such as 37-47 cents uses the hyphen as a
+                # delimiter, not as the sign of the upper endpoint.
+                value_text = value_text[1:]
+            value = Decimal(value_text)
+            if "(" in normalized_raw[max(0, match.start() - 2):match.end() + 1] and ")" in normalized_raw[match.start():match.end() + 2]:
                 value = -value
-            scale = _COMPARISON_SCALE[(match.group("unit") or "").casefold()]
-            values.append(value * scale)
+            parsed.append((value, (match.group("unit") or "").casefold()))
     except (InvalidOperation, KeyError):
         return None
-    if not values:
+    if not parsed:
         return None
+    explicit_units = {unit for _value, unit in parsed if unit}
+    if len(explicit_units) > 1:
+        # A structured range must use one economic scale. Do not compare a
+        # malformed or genuinely mixed-unit range by accident.
+        return None
+    inherited_unit = next(iter(explicit_units), "")
+    values = [
+        value * _COMPARISON_SCALE[unit or inherited_unit]
+        for value, unit in parsed
+    ]
     return (min(values), max(values))
+
+
+def _comparison_bounds_for_metric(
+    raw: str,
+    metric: str,
+) -> tuple[Decimal, Decimal] | None:
+    bounds = _comparison_bounds(raw)
+    if bounds is None or metric != "eps_loss":
+        return bounds
+    low, high = bounds
+    # A larger quoted loss is economically lower. Convert loss magnitudes to
+    # signed EPS before comparing the issuer range with the benchmark range.
+    return (-high, -low)
+
+
+def _authored_comparison_relation(raw: str) -> str | None:
+    normalized = " ".join(str(raw).casefold().split())
+    if re.search(r"\b(?:below|under|short of|fell short of)\b", normalized):
+        return "below"
+    if re.search(r"\b(?:above|beat|beats|beating)\b", normalized):
+        return "above"
+    return None
 
 
 def _normalize_comparison_metric(raw: str) -> str:
     metric = " ".join(raw.casefold().split())
-    if "eps" in metric or "earnings per share" in metric:
+    if "loss" in metric:
+        return "eps_loss"
+    if "eps" in metric or "earnings" in metric:
         return "eps"
-    if re.fullmatch(r"rev\.?", metric):
+    if re.fullmatch(r"rev\.?|revenues?", metric):
         return "revenue"
     return metric.replace(" ", "_")
 

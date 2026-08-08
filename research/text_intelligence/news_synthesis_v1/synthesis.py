@@ -81,7 +81,10 @@ def derive_issuer_views(
             for fact in statement.get("typed_facts", ())
             if fact.get("fact_type") == "estimate_comparison"
             and fact.get("subject_role") == "issuer_guidance"
-            and fact.get("comparator_role") == "consensus_estimate"
+            and fact.get("comparator_role") in {
+                "consensus_estimate",
+                "management_guidance",
+            }
         ]
         below = guidance_relations.count("below")
         above = guidance_relations.count("above")
@@ -176,6 +179,10 @@ def derive_issuer_views(
         benchmarked_result_negative = sum(
             benchmarked_result_packages["negative"].values()
         )
+        coordinated_financial_tradeoff = _coordinated_financial_tradeoff(
+            directional_rows,
+            statement_by_id,
+        )
         negative_guidance_conflict = any(
             row.get("semantic_sentiment") == "negative"
             and int(row.get("sentiment_strength") or 0) >= 2
@@ -189,6 +196,18 @@ def derive_issuer_views(
             and statement_by_id.get(str(row.get("statement_id") or ""), {}).get("concept_leaf")
             == "guidance.issued"
             for row in directional_rows
+        )
+        focal_adverse_guidance = bool(below and not above) and any(
+            re.search(
+                r"^\s*(?:Title|Teaser):.{0,180}"
+                r"(?:\b(?:weak|weaker|lower(?:s|ed)?|cut|cuts|disappointing|"
+                r"below)\b.{0,80}\b(?:guidance|outlook|forecasts?)\b|"
+                r"\b(?:guidance|outlook|forecasts?)\b.{0,100}"
+                r"\b(?:shares?\s+(?:down|lower)|plung(?:e|es|ed)|tumbles?|crushed)\b)",
+                str((statement.get("evidence_spans") or [{}])[0].get("quote", "")),
+                re.I,
+            )
+            for statement in issuer_statements
         )
         positive_material_offset = any(
             row.get("semantic_sentiment") == "positive"
@@ -244,6 +263,13 @@ def derive_issuer_views(
             # or unchanged guidance are mitigation, not resolution.
             sentiment = "negative"
             negative = max(negative, 3)
+        elif focal_adverse_guidance:
+            # When the source itself identifies below-benchmark forward
+            # guidance as the focal event, historical realized beats are
+            # context rather than an equal current offset. The numeric fact is
+            # required so qualitative headline language alone cannot control.
+            sentiment = "negative"
+            negative = max(negative, 3)
         elif distress_restructuring:
             sentiment = "negative"
             negative = max(negative, 3)
@@ -251,6 +277,13 @@ def derive_issuer_views(
             sentiment = "mixed"
             positive = max(positive, 2)
             negative = max(negative, 2)
+        elif coordinated_financial_tradeoff and not negative_guidance_conflict:
+            # Adjacent metric-specific realized results are one coordinated
+            # package. Material beats and deteriorations both remain visible
+            # instead of being outvoted by duplicate concept renderings.
+            sentiment = "mixed"
+            positive = max(positive, 3)
+            negative = max(negative, 3)
         elif ipo_quotes and any(re.search(r"\babove\b.{0,50}\b(?:expected )?(?:price )?range\b", quote, re.I) for quote in all_ipo_quotes):
             sentiment = "positive"
             positive = max(positive, 3)
@@ -411,6 +444,46 @@ def _is_active_regulatory_blocker(statement: Mapping[str, Any]) -> bool:
         quote,
         re.I,
     ))
+
+
+def _coordinated_financial_tradeoff(
+    rows: Iterable[Mapping[str, Any]],
+    statement_by_id: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    financial: list[tuple[str, int, int, str]] = []
+    concepts = {"earnings.performance", "financial.operating_performance"}
+    for row in rows:
+        direction = str(row.get("semantic_sentiment") or "")
+        if direction not in {"positive", "negative"}:
+            continue
+        if int(row.get("sentiment_strength") or 0) < 3:
+            continue
+        statement = statement_by_id.get(str(row.get("statement_id") or ""), {})
+        if statement.get("concept_leaf") not in concepts:
+            continue
+        span = (statement.get("evidence_spans") or [{}])[0]
+        quote = str(span.get("quote") or "")
+        if not re.search(
+            r"\b(?:vs\.?|versus|up from|down from|compared (?:with|to)|"
+            r"beats?|miss(?:es|ed)?)\b",
+            quote,
+            re.I,
+        ):
+            continue
+        financial.append((
+            direction,
+            int(span.get("start") or 0),
+            int(span.get("end") or 0),
+            str(span.get("source_field") or ""),
+        ))
+    for left in financial:
+        for right in financial:
+            if left[0] == right[0] or left[3] != right[3] or left[1] == right[1]:
+                continue
+            gap = max(left[1], right[1]) - min(left[2], right[2])
+            if gap <= 4:
+                return True
+    return False
 
 
 def _evidence_package_key(statement: Mapping[str, Any]) -> str:

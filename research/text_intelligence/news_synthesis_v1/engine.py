@@ -13,7 +13,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v39"
+ENGINE_VERSION = "news_synthesis_engine_v40"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -255,7 +255,24 @@ RULES = (
     _rule("analyst.rating_action", r"\b(?:upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?|rates?|ratings?)\b(?:.{0,100})\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|perform|equal[- ]weight|sector perform|market perform|rating)\b|\b(?:series|round) of downgrades\b|\banalysts?\b.{0,80}\b(?:upgrade[sd]?|downgrade[sd]?)\b|\b(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|equal[- ]weight|sector perform|market perform)\s+rating\b|\((?:(?:NASDAQ|NYSE|AMEX|TSX|TSXV)\s*:\s*)?[A-Z][A-Z0-9.\-]{0,9}\)\s+\$?\d+(?:\.\d+)?\s+(?:buy|sell|hold|outperform|underperform|overweight|underweight|neutral|market perform)\b|\banalysts? (?:have )?(?:provided|published|offered).{0,60}ratings?\b|\b(?:bullish|somewhat bullish|indifferent|somewhat bearish|bearish)\s*=\s*\d+", "assessment", positive=("upgrade", "buy", "outperform", "overweight"), negative=("downgrade", "sell", "underperform", "underweight")),
     _rule("analyst.price_target_action", r"\b(?:price target|target price|price objective|PT|PO|P/T|\$\d+(?:\.\d+)? target|target on)\b", "forecast", positive=("raises", "raised", "higher", "increases"), negative=("cuts", "cut", "lowers", "lowered")),
     _rule("earnings.performance", r"\b(?:earnings|EPS|revenues?|sales|net income|profit|quarterly results?|financial results?)\b.{0,180}\b(?:reports?|reported|beat[sd]?|miss(?:es|ed)?|above|below|better[- ]than[- ]expected|stronger[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|rise|surge[sd]?|gain(?:s|ed)?|fell|drop(?:s|ped)?|declin(?:e|ed)|grew|increase[sd]?|decrease[sd]?|loss|up(?: from)?|down(?: from)?|narrowed|widened|inline)\b|\b(?:reports?|reported|posts?|beat[sd]?|miss(?:es|ed)?|rose|rise|surge[sd]?|gain(?:s|ed)?|fell|drop(?:s|ped)?|grew|narrowed|widened|disappointing|swings? to)\b.{0,100}\b(?:earnings|EPS|revenues?|sales|profit|results?|losses?)\b|\bposts?\b.{0,40}\b(?:F?Q[1-4]|quarter(?:ly)?)\b.{0,40}\b(?:beat|miss)\b|\b(?:better|stronger|weaker)[- ]than[- ]expected results?\b|\b(?:EPS|earnings per share)\b.{0,30}\$?\s*\(\d+(?:\.\d+)?\)", positive=("beat", "above", "better-than-expected", "stronger-than-expected", "grew", "rose", "rise", "surge", "gain", "record", "increase", "up from", "narrowed", "swings to profit"), negative=("miss", "below", "weaker-than-expected", "fell", "drop", "decline", "decrease", "loss", "down", "widened", "disappointing")),
-    _rule("guidance.issued", r"\b(?:issues?|provid(?:e|es|ed)|guid(?:e|es|ed)|rais(?:e[sd]?|ing)|boost(?:s|ed|ing)?|increas(?:e[sd]?|ing)|lower(?:s|ed)?|cuts?|reaffirm(?:s|ed|ing)?|withdraws?|updates?)\b.{0,100}\b(?:guidance|outlook|forecast|rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:not providing|declines? to provide|will not provide|withholds?)\b.{0,80}\bguidance\b|\b(?:guidance|outlook)\b.{0,100}\b(?:raised|boosted|increased|lowered|cut|reaffirmed|withdrawn|unchanged|expects?|projection|projecting)\b|\b(?:sees|expects?|anticipates?|project(?:s|ed|ing)?|is looking for)\b.{0,120}\b(?:rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin|comparable[- ]store sales|same[- ]store sales|comps?|comp)\b|\bexpected to\s+(?:comp|report comparable[- ]store sales|report same[- ]store sales)\b|\b(?:rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin|free cash flow)\b.{0,160}\bprojection\s*=|\b(?:profit|EPS|earnings|rev\.?|revenue|sales)\s+(?:forecast|outlook|guidance)\b.{0,160}\b(?:fell short|below|miss(?:es|ed)?|above|beat[sd]?)\b.{0,80}\b(?:street|consensus|analysts?'? estimates?|view)\b|\b(?:profit|EPS|earnings|rev\.?|revenue|sales)\s+(?:forecast|outlook|guidance)\b.{0,120}\bwhile\s+(?:analysts?'? estimates?|consensus)\b", "forecast", positive=("raise", "boost", "increas", "higher"), negative=("cut", "lower", "withdraw", "reduce", "weaker", "not providing", "declines to provide", "withhold")),
+    _rule(
+        "earnings.performance",
+        r"\b(?:EPS|earnings per share|revenues?|sales)\b\s+"
+        r"(?:was|were)\s+.{0,50}\b(?:vs\.?|versus)\s+"
+        r"(?:analysts?'?\s+)?(?:estimates?|consensus)\b",
+        "event",
+    ),
+    _rule("guidance.issued", r"\b(?:issues?|provid(?:e|es|ed)|guid(?:e|es|ed)|rais(?:e[sd]?|ing)|boost(?:s|ed|ing)?|increas(?:e[sd]?|ing)|lower(?:s|ed)?|cuts?|reaffirm(?:s|ed|ing)?|withdraws?|updates?)\b.{0,100}\b(?:guidance|outlook|forecast|rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin)\b|\b(?:not providing|declines? to provide|will not provide|withholds?)\b.{0,80}\bguidance\b|\b(?:guidance|outlook)\b.{0,100}\b(?:raised|boosted|increased|lowered|cut|reaffirmed|withdrawn|unchanged|expects?|projection|projecting)\b|\b(?:sees?|saw|expects?|anticipates?|project(?:s|ed|ing)?|is looking for)\b.{0,120}\b(?:rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin|comparable[- ]store sales|same[- ]store sales|comps?|comp)\b|\bexpected to\s+(?:comp|report comparable[- ]store sales|report same[- ]store sales)\b|\b(?:rev\.?|revenue|sales|earnings|EPS|EBITDA|growth|margin|free cash flow)\b.{0,160}\bprojection\s*=|\b(?:profit|EPS|earnings|rev\.?|revenue|sales)\s+(?:forecast|outlook|guidance)\b.{0,160}\b(?:fell short|below|miss(?:es|ed)?|above|beat[sd]?)\b.{0,80}\b(?:street|consensus|analysts?'? estimates?|view)\b|\b(?:profit|EPS|earnings|rev\.?|revenue|sales)\s+(?:forecast|outlook|guidance)\b.{0,120}\bwhile\s+(?:analysts?'? estimates?|consensus)\b", "forecast", positive=("raise", "boost", "increas", "higher"), negative=("cut", "lower", "withdraw", "reduce", "weaker", "not providing", "declines to provide", "withhold")),
+    _rule(
+        "guidance.issued",
+        r"\b(?:guidance|outlook|forecast)\b.{0,180}"
+        r"\b(?:EPS|earnings|loss|revenue|sales|EBITDA|margin)\b.{0,160}"
+        r"\b(?:consensus|estimate|expectations?|street|short of|below|above|versus|vs\.?)\b|"
+        r"\bforecast(?:s|ed|ing)?\b.{0,80}\bloss\b",
+        "forecast",
+        positive=("above", "beat"),
+        negative=("below", "short of", "weak", "lower", "loss"),
+    ),
     _rule("corporate_transaction.acquisition", r"\b(?:acquir(?:e|es|ed|ing)|acquisitions?|merger|takeover)\b|\b(?:will|would|to)\s+buys?\b|\bwill\s+be\s+purchased\s+by\b|\bbuys?\b.{1,100}\bfor\s+\$|\bpurchase(?:s|d)? of .{0,100}\b(?:assets?|business|operations?)\b|\b(?:rumored?|possible|potential)?\s*bid for\b|\b(?:firm|binding|cash|takeover) offer for\b|\btakeover chatter in\b|\b(?:will|would|agrees? to) combine with\b|\bamalgamat(?:e|es|ed|ing) with\b|\b(?:complet(?:e|es|ed|ion) of|proposed) (?:the )?(?:business )?combination\b|\bproposed deal with\b", positive=("agreed", "complete", "closes", "approved", "purchase", "purchased", "will combine", "amalgamat"), negative=("terminate", "withdraw", "no longer pursue", "blocked", "reject", "not in best interest")),
     _rule("corporate_transaction.asset_sale", r"\b(?:asset sale|sale of .{0,100}(?:assets?|business|operations?|units?|properties|buildings?|towers?|facilities|portfolio)|closes? (?:the )?sale of .{0,100}(?:assets?|business|operations?|units?|properties|buildings?|towers?|facilities|portfolio)|divest(?:s|ed|iture)|spin[- ]?off|sell(?:s|ing)? (?:its )?.{0,100}(?:business|operations?|units?|properties|buildings?|towers?|facilities|portfolio))\b", positive=("complete", "closes", "proceeds", "maximize shareholder value"), negative=("distress",)),
     _rule("capital.financing", r"\b(?:public offering|registered direct offering|private placement|mixed shelf|(?:stock|share|equity|securities) shelf|shelf (?:offering|registration)|at-the-market|ATM (?:program|offering)|convertible (?:senior )?notes?|(?:convertible |senior )?notes? offering|bond offering|debt financing|equity financing|issues? .{0,60}(?:debt|notes?|bonds?)|launch(?:es|ed)? .{0,60}(?:bond|notes?|debt)|files? for .{0,80}offering|prices? .{0,80}(?:offering|shares?|notes?|bonds?)|(?:offer(?:s|ed)?|offering)\s+.{0,60}?\bshares?|shares? offering|offering of .{0,80}(?:shares?|notes?|units?|securities)|sale (?:by us )?of .{0,80}(?:common stock|preferred stock|debt securities|warrants)|investment from .{0,80}funds?|term sheet .{0,100}investment|conversion price .{0,40}(?:share|stock))\b", positive=("investment from",), negative=("dilution", "offering", "placement", "convertible", "shelf", "prices")),
@@ -464,7 +481,9 @@ class NewsSynthesisEngine:
         ]
         previous_lane = -1
         navigation_block = False
-        for lane_index, lane_field, lane_text, start, end, quote in semantic_rows:
+        for semantic_index, (
+            lane_index, lane_field, lane_text, start, end, quote
+        ) in enumerate(semantic_rows):
             if lane_index != previous_lane:
                 previous_entity_ids = ()
                 previous_guidance_entity_ids = ()
@@ -591,9 +610,29 @@ class NewsSynthesisEngine:
                     if rule.concept in {"earnings.performance", "financial.operating_performance"}
                     else "issuer_guidance"
                 )
-                typed_facts = extract_typed_facts([span], estimate_subject_role=estimate_role)
+                fact_span = span
+                evidence_spans = [span]
+                if rule.concept == "guidance.issued":
+                    fact_quote, comparator_span = _guidance_fact_context(
+                        semantic_rows,
+                        semantic_index,
+                        quote,
+                        lane_text,
+                        end,
+                    )
+                    if fact_quote != statement_quote:
+                        fact_span = {
+                            **span,
+                            "end": comparator_span["end"],
+                            "quote": fact_quote,
+                        }
+                        evidence_spans.append(comparator_span)
+                typed_facts = extract_typed_facts(
+                    [fact_span],
+                    estimate_subject_role=estimate_role,
+                )
                 relation_text = quote
-                statements.append({"statement_id": sid, "statement_kind": rule.statement_kind, "concept_leaf": rule.concept, "epistemic_status": _epistemic(quote), "time_relation": _time_relation(relation_text, rule.statement_kind, reference_year=reference_year), "evidence_spans": [span], "typed_facts": typed_facts})
+                statements.append({"statement_id": sid, "statement_kind": rule.statement_kind, "concept_leaf": rule.concept, "epistemic_status": _epistemic(quote), "time_relation": _time_relation(relation_text, rule.statement_kind, reference_year=reference_year), "evidence_spans": evidence_spans, "typed_facts": typed_facts})
                 rule_entities = scoped_entities
                 if rule.concept in {"clinical.regulatory_milestone", "regulatory.action"}:
                     rule_entities = _regulatory_entities_for_facts(
@@ -987,7 +1026,7 @@ def _contains_explicit_result_comparison(text: str) -> bool:
     return bool(re.search(
         r"\b(?:adjusted\s+|diluted\s+)?(?:EPS|earnings per share|revenues?|sales)\b"
         r".{0,120}\b(?:vs\.?|versus|compared (?:with|to))\b"
-        r".{0,80}\b(?:est\.?|estimate|consensus)\b",
+        r".{0,80}\b(?:est\.?|estimates?|consensus)\b",
         text,
         re.I,
     ))
@@ -1062,8 +1101,31 @@ def _rule_applicable(rule: ConceptRule, text: str, *, context: str | None = None
             re.I,
         )
         if realized_metric is None:
+            realized_metric = re.search(
+                r"\b(?:EPS|earnings|revenues?|sales)\b\s+(?:was|were)\s+"
+                r".{0,50}\b(?:vs\.?|versus)\s+"
+                r"(?:analysts?'?\s+)?(?:estimates?|consensus)\b",
+                text,
+                re.I,
+            )
+        if realized_metric is None:
             return False
     if rule.concept in {"earnings.performance", "financial.operating_performance", "financial.cash_flow", "financial.liquidity"}:
+        explicit_metric_guidance = re.search(
+            r"\b(?:EPS|earnings|revenue|sales|EBITDA|margin)\s+"
+            r"(?:guidance|outlook|forecast)\b|"
+            r"\b(?:guidance|outlook|forecast)\b.{0,80}"
+            r"\b(?:EPS|earnings|revenue|sales|EBITDA|margin)\b",
+            text,
+            re.I,
+        )
+        realized_reporting = re.search(
+            r"\b(?:reports?|reported|posts?|posted|actual results?)\b",
+            text,
+            re.I,
+        )
+        if explicit_metric_guidance and not realized_reporting:
+            return False
         projected = re.search(r"\b(?:forecast|guidance|guid(?:e[sd]?|ing)|project(?:s|ed|ing|ion)s?|estimate[sd]?|anticipates?|expects?|sees|reaffirm(?:s|ed|ing)?|is looking for|potential|could|may)\b", text, re.I)
         observed = re.search(r"\b(?:reports?|reported|actual|trailing[- ]twelve[- ]month|TTM|beats?|miss(?:ed|es)?|better[- ]than[- ]expected|weaker[- ]than[- ]expected|rose|fell|grew|declined|slipped|climbed|increased|decreased|recovered|record)\b", text, re.I)
         if projected and not observed and not _contains_explicit_result_comparison(text):
@@ -1770,7 +1832,10 @@ def _sentiment(
             for fact in typed_facts
             if fact.get("fact_type") == "estimate_comparison"
             and fact.get("subject_role") == "issuer_guidance"
-            and fact.get("comparator_role") == "consensus_estimate"
+            and fact.get("comparator_role") in {
+                "consensus_estimate",
+                "management_guidance",
+            }
         }
         if "below" in relations and "above" not in relations:
             return "negative", 3
@@ -1778,6 +1843,15 @@ def _sentiment(
             return "positive", 3
         if relations:
             return "neutral", 0
+        revision_directions = {
+            str(fact.get("direction"))
+            for fact in typed_facts
+            if fact.get("fact_type") == "estimate_revision"
+        }
+        if "down" in revision_directions and "up" not in revision_directions:
+            return "negative", 3
+        if "up" in revision_directions and "down" not in revision_directions:
+            return "positive", 3
         if re.search(
             r"\b(?:comparable[- ]store sales|same[- ]store sales|comps?|comp)\b"
             r".{0,80}\bnegative\b|\bnegative\b.{0,80}"
@@ -2674,6 +2748,35 @@ _REPORTED_PERIOD_COMPARISON_RE = re.compile(
 
 def _reported_period_comparison_direction(normalized_text: str) -> str | None:
     """Compare realized metrics only when the comparator is a prior period."""
+    state_comparison = re.search(
+        r"\b(?:adj(?:usted)?\.?\s+)?(?:EBITDA|income|profit)\s+"
+        r"(?P<first_state>loss|gain|profit)\b.{0,30}?"
+        r"(?P<first>\d[\d,]*(?:\.\d+)?)\s*(?P<first_unit>[KMBT])?\s*"
+        r"(?:vs\.?|versus|compared (?:with|to))\s*"
+        r"(?P<second_state>loss|gain|profit)\b.{0,30}?"
+        r"(?P<second>\d[\d,]*(?:\.\d+)?)\s*(?P<second_unit>[KMBT])?"
+        r".{0,50}\b(?:yoy|year[- ]over[- ]year|last year|prior year|year ago)\b",
+        normalized_text,
+        re.I,
+    )
+    if state_comparison:
+        def state_value(state: str, raw: str, unit: str | None) -> float:
+            value = float(raw.replace(",", "")) * {
+                "k": 1e3, "m": 1e6, "b": 1e9, "t": 1e12,
+            }.get((unit or "").casefold(), 1.0)
+            return -value if state.casefold() == "loss" else value
+
+        first = state_value(
+            state_comparison.group("first_state"),
+            state_comparison.group("first"),
+            state_comparison.group("first_unit"),
+        )
+        second = state_value(
+            state_comparison.group("second_state"),
+            state_comparison.group("second"),
+            state_comparison.group("second_unit"),
+        )
+        return "positive" if first > second else "negative" if first < second else "neutral"
     # Quarter identifiers are horizons, not numeric metric values. Removing
     # them prevents text such as "revenue for Q1 up from $1.8M" from treating
     # the 1 in Q1 as the reported revenue.
@@ -3705,6 +3808,44 @@ def _sentence_spans(text: str) -> list[tuple[int, int, str]]:
     return spans
 
 
+def _guidance_fact_context(
+    semantic_rows: Sequence[tuple[int, str, str, int, int, str]],
+    semantic_index: int,
+    quote: str,
+    lane_text: str,
+    end: int,
+) -> tuple[str, dict[str, Any] | None]:
+    if semantic_index + 1 >= len(semantic_rows):
+        return quote, None
+    next_lane, next_field, _text, next_start, next_end, next_quote = semantic_rows[
+        semantic_index + 1
+    ]
+    current_lane = semantic_rows[semantic_index][0]
+    if next_lane != current_lane or "\n\n" in lane_text[end:next_start]:
+        return quote, None
+    if not re.match(
+        r"\s*(?:analysts?|wall street|the street|consensus)\b",
+        next_quote,
+        re.I,
+    ):
+        return quote, None
+    if not re.search(
+        r"\b(?:sees|expects?|anticipates?|projects?|forecasts?|guidance|outlook)\b"
+        r".{0,220}\b(?:EPS|earnings|loss|revenue|sales|EBITDA|margin)\b|"
+        r"\b(?:EPS|earnings|loss|revenue|sales|EBITDA|margin)\b.{0,220}"
+        r"\b(?:guidance|outlook|forecast)\b",
+        quote,
+        re.I,
+    ):
+        return quote, None
+    return f"{quote} {next_quote}", {
+        "source_field": next_field,
+        "start": next_start,
+        "end": next_end,
+        "quote": next_quote,
+    }
+
+
 def _semantic_spans(text: str) -> list[tuple[int, int, str]]:
     """Keep rendered outlook table labels attached to their projection cells."""
     raw = [
@@ -3728,27 +3869,55 @@ def _semantic_spans(text: str) -> list[tuple[int, int, str]]:
                 spans.append((start, next_end, text[start:next_end].strip()))
                 index += 2
                 continue
-        comparison_split = re.search(
-            r",\s+(?=(?:adjusted\s+|diluted\s+)?(?:EPS|earnings per share|revenues?|sales)\b"
-            r".{0,100}(?:\b(?:vs\.?|versus)\b.{0,80}\b(?:est\.?|estimate|consensus)\b|"
-            r"\b(?:beats?|miss(?:es|ed)?)\b.{0,80}\b(?:est\.?|estimate|consensus)\b))",
-            quote,
-            re.I,
-        )
-        if comparison_split and re.search(
-            r"(?:\b(?:vs\.?|versus)\b.{0,80}\b(?:est\.?|estimate|consensus)\b|"
-            r"\b(?:beats?|miss(?:es|ed)?)\b.{0,80}\b(?:est\.?|estimate|consensus)\b)",
-            quote[:comparison_split.start()],
-            re.I,
-        ):
-            split_at = start + comparison_split.end()
-            left_end = start + comparison_split.start()
-            spans.append((start, left_end, text[start:left_end].strip()))
-            spans.append((split_at, end, text[split_at:end].strip()))
-        else:
-            spans.append((start, end, quote))
+        spans.extend(_split_reported_metric_clauses(start, end, quote, text))
         index += 1
     return spans
+
+
+_REPORTED_METRIC_CLAUSE_START_RE = re.compile(
+    r"(?:adj(?:usted)?\.?\s+|diluted\s+|non-GAAP\s+)?"
+    r"(?:EPS|earnings per share|revenues?|sales|EBITDA|net income|profit|net loss|loss)\b",
+    re.I,
+)
+_REPORTED_METRIC_COMPARISON_CUE_RE = re.compile(
+    r"\b(?:vs\.?|versus|up from|down from|compared (?:with|to))\b|"
+    r"\b(?:beats?|miss(?:es|ed)?)\b.{0,80}\b(?:est\.?|estimate|consensus)\b",
+    re.I,
+)
+
+
+def _split_reported_metric_clauses(
+    start: int,
+    end: int,
+    quote: str,
+    source_text: str,
+) -> list[tuple[int, int, str]]:
+    """Separate coordinated realized metrics so opposite directions both vote."""
+    boundaries = [
+        match
+        for match in re.finditer(r",\s+", quote)
+        if _REPORTED_METRIC_CLAUSE_START_RE.match(quote, match.end())
+    ]
+    if not boundaries:
+        return [(start, end, quote)]
+    offsets = [0, *(match.end() for match in boundaries), len(quote)]
+    raw_chunks = [
+        quote[offsets[index]:offsets[index + 1]]
+        for index in range(len(offsets) - 1)
+    ]
+    if not all(
+        _REPORTED_METRIC_COMPARISON_CUE_RE.search(chunk)
+        for chunk in raw_chunks
+    ):
+        return [(start, end, quote)]
+    result: list[tuple[int, int, str]] = []
+    for index, raw_chunk in enumerate(raw_chunks):
+        leading = len(raw_chunk) - len(raw_chunk.lstrip())
+        chunk = raw_chunk.strip().rstrip(",")
+        chunk_start = start + offsets[index] + leading
+        chunk_end = chunk_start + len(chunk)
+        result.append((chunk_start, chunk_end, source_text[chunk_start:chunk_end].strip()))
+    return result
 
 
 def _temporal_clause_spans(

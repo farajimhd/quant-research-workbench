@@ -1116,6 +1116,301 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(comparison["subject_upper_value"], "295000000")
         self.assertEqual(comparison["relation"], "in_line")
 
+    def test_parenthetical_consensus_guidance_rows_emit_comparisons(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-parenthetical-guidance-comparisons",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha issues Q1 outlook below consensus",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) sees Q1 revenue of "
+                "$91 million-$96 million (consensus $101.3 million), adjusted "
+                "EPS of $0.47-$0.53 (consensus $0.58)."
+            ),
+            "tickers": ["AAA"],
+        })
+        comparisons = [
+            fact
+            for row in document["statements"]
+            if row["concept_leaf"] == "guidance.issued"
+            for fact in row["typed_facts"]
+            if fact["fact_type"] == "estimate_comparison"
+        ]
+        self.assertEqual({fact["metric"] for fact in comparisons}, {"revenue", "eps"})
+        self.assertTrue(all(fact["relation"] == "below" for fact in comparisons))
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_per_share_filler_and_prior_guidance_ranges_are_structured(self) -> None:
+        cases = (
+            (
+                "Alpha expects Q4 earnings of 73 cents to 77 cents per share, "
+                "versus analysts' estimates of 78 cents per share.",
+                "consensus_estimate",
+            ),
+            (
+                "Alpha now expects FY adjusted earnings of $4.50 to $4.70 per share, "
+                "versus earlier forecast of $4.60 to $5.00 per share.",
+                "management_guidance",
+            ),
+        )
+        for index, (text, comparator_role) in enumerate(cases):
+            with self.subTest(comparator_role=comparator_role):
+                document = self.engine.synthesize({
+                    "source_id": f"news-guidance-comparator-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": "Alpha issues outlook",
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA) {text}",
+                    "tickers": ["AAA"],
+                })
+                comparisons = [
+                    fact
+                    for row in document["statements"]
+                    if row["concept_leaf"] == "guidance.issued"
+                    for fact in row["typed_facts"]
+                    if fact["fact_type"] == "estimate_comparison"
+                    and fact["comparator_role"] == comparator_role
+                ]
+                self.assertTrue(comparisons)
+                self.assertTrue(all(fact["relation"] == "below" for fact in comparisons))
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_adjacent_analyst_metric_list_is_bounded_guidance_context(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-adjacent-guidance-comparator",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha issues weak forecast",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) expects Q4 adjusted earnings "
+                "of $0.75-$0.95 per share and revenue of $4.7 billion-$5.7 billion. "
+                "Analysts projected earnings of $1.08 per share and revenue of "
+                "$6.13 billion."
+            ),
+            "tickers": ["AAA"],
+        })
+        comparisons = [
+            fact
+            for row in document["statements"]
+            if row["concept_leaf"] == "guidance.issued"
+            for fact in row["typed_facts"]
+            if fact["fact_type"] == "estimate_comparison"
+        ]
+        self.assertEqual({fact["metric"] for fact in comparisons}, {"eps", "revenue"})
+        self.assertTrue(all(fact["relation"] == "below" for fact in comparisons))
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+        guidance = next(
+            row for row in document["statements"]
+            if row["concept_leaf"] == "guidance.issued"
+            and any(
+                fact["fact_type"] == "estimate_comparison"
+                for fact in row["typed_facts"]
+            )
+        )
+        evidence_text = " ".join(
+            span["quote"] for span in guidance["evidence_spans"]
+        )
+        self.assertIn("Analysts projected", evidence_text)
+
+    def test_adjacent_guidance_context_does_not_cross_paragraph_boundary(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-guidance-comparator-new-paragraph",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha provides outlook",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) expects Q4 earnings of $0.75-$0.95.\n\n"
+                "Analysts projected earnings of $1.08."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertFalse(any(
+            fact["fact_type"] == "estimate_comparison"
+            for row in document["statements"]
+            if row["concept_leaf"] == "guidance.issued"
+            for fact in row["typed_facts"]
+        ))
+
+    def test_forecast_loss_comparison_uses_signed_economics(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-guidance-loss-comparison",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha forecast disappoints",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) forecast a loss of 9 cents "
+                "to 11 cents per share for Q1. Analysts expected a loss of 1 cent "
+                "per share."
+            ),
+            "tickers": ["AAA"],
+        })
+        comparisons = [
+            fact
+            for row in document["statements"]
+            if row["concept_leaf"] == "guidance.issued"
+            for fact in row["typed_facts"]
+            if fact["fact_type"] == "estimate_comparison"
+        ]
+        self.assertTrue(comparisons)
+        self.assertEqual(comparisons[0]["metric"], "eps_loss")
+        self.assertEqual(comparisons[0]["relation"], "below")
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_authored_guidance_relation_must_agree_with_numeric_bounds(self) -> None:
+        facts = extract_typed_facts([{
+            "source_field": "rendered_text",
+            "start": 0,
+            "end": 42,
+            "quote": "EPS of $2.10 above consensus of $2.20",
+        }])
+        self.assertFalse(any(
+            fact["fact_type"] == "estimate_comparison" for fact in facts
+        ))
+
+    def test_bare_versus_period_token_is_not_consensus(self) -> None:
+        facts = extract_typed_facts([{
+            "source_field": "rendered_text",
+            "start": 0,
+            "end": 30,
+            "quote": "Sales growth 2.7% versus 3Q19",
+        }])
+        self.assertFalse(any(
+            fact["fact_type"] == "estimate_comparison" for fact in facts
+        ))
+
+    def test_trailing_range_scale_applies_to_both_endpoints(self) -> None:
+        facts = extract_typed_facts([{
+            "source_field": "rendered_text",
+            "start": 0,
+            "end": 70,
+            "quote": (
+                "Revenue guidance $3.93-$3.98 billion versus prior guidance "
+                "$3.986-$4.08 billion"
+            ),
+        }], estimate_subject_role="issuer_guidance")
+        comparison = next(
+            fact for fact in facts
+            if fact["fact_type"] == "estimate_comparison"
+            and fact["comparator_role"] == "management_guidance"
+        )
+        self.assertEqual(comparison["subject_lower_value"], "3930000000")
+        self.assertEqual(comparison["subject_upper_value"], "3980000000")
+        self.assertEqual(comparison["relation"], "below")
+
+    def test_previously_seen_guidance_range_is_management_comparator(self) -> None:
+        facts = extract_typed_facts([{
+            "source_field": "rendered_text",
+            "start": 0,
+            "end": 48,
+            "quote": "FY EBITDA $147-$162M, had seen $180-$250M",
+        }], estimate_subject_role="issuer_guidance")
+        comparison = next(
+            fact for fact in facts
+            if fact["fact_type"] == "estimate_comparison"
+        )
+        self.assertEqual(comparison["comparator_role"], "management_guidance")
+        self.assertEqual(comparison["relation"], "below")
+
+    def test_realized_copular_result_comparison_is_structured(self) -> None:
+        facts = extract_typed_facts([{
+            "source_field": "rendered_text",
+            "start": 0,
+            "end": 48,
+            "quote": "Sales were $28.04M versus estimates $28.72M",
+        }], estimate_subject_role="reported_result")
+        comparison = next(
+            fact for fact in facts if fact["fact_type"] == "estimate_comparison"
+        )
+        self.assertEqual(comparison["metric"], "sales")
+        self.assertEqual(comparison["relation"], "below")
+
+    def test_explicit_guidance_metric_is_not_realized_performance(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-guidance-not-realized",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha issues disappointing guidance",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) EPS guidance of $0.20-$0.21 "
+                "fell short of consensus $0.24."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertFalse(any(
+            row["concept_leaf"] in {
+                "earnings.performance", "financial.operating_performance"
+            }
+            for row in document["statements"]
+        ))
+
+    def test_adjacent_realized_beat_and_miss_form_mixed_package(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-adjacent-realized-tradeoff",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports quarterly results",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported Q2 adjusted EPS "
+                "$0.17 versus estimates $0.12. Sales were $28.04 million versus "
+                "estimates $28.72 million."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
+
+    def test_adverse_guidance_controls_adjacent_realized_tradeoff(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-adverse-guidance-controls-results",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha posts sales miss and weak guidance",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported Q4 EPS $1.95 "
+                "versus estimates $1.67. Sales were $13.48 billion versus "
+                "estimates $13.62 billion. The company guided Q1 earnings "
+                "$0.35-$0.40 versus consensus $0.49."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_focal_below_consensus_guidance_controls_realized_beat(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-focal-weak-guidance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha posts earnings beat, issues weak Q4 forecast",
+            "text": (
+                "Title: Alpha posts earnings beat, issues weak Q4 forecast\n"
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported Q3 EPS of $1.20 "
+                "versus consensus of $0.80. For Q4, Alpha projects earnings of "
+                "$0.73 to $0.77 per share versus analysts' estimates of $0.78."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_nonfocal_small_guidance_miss_does_not_force_negative(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-nonfocal-guidance-miss",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha reports record results and provides outlook",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported Q3 EPS of $2.00 "
+                "versus consensus of $1.00 and record revenue. Alpha sees Q4 "
+                "EPS of $2.09 versus consensus of $2.10."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertNotEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_coordinated_reported_metrics_preserve_opposite_directions(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-coordinated-reported-metrics",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": (
+                "Alpha Q1 EPS $(0.84) Down From $(0.02) YoY, Sales $58.0M "
+                "Beat $57.2M Estimate, Adj. EBITDA Loss $3.8M vs Gain $4.6M YoY"
+            ),
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) reported quarterly results.",
+            "tickers": ["AAA"],
+        })
+        view = document["issuer_views"][0]
+        self.assertTrue(view["positive_statement_ids"])
+        self.assertTrue(view["negative_statement_ids"])
+        self.assertEqual(view["composite_sentiment"], "mixed")
+
     def test_reported_numeric_comparisons_split_metrics_and_drive_direction(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-reported-comparisons",
