@@ -18,7 +18,10 @@
 .sidebar-collapsed .sidebar-nav { padding-top: 8px; }
 .collapse-button { top: 8px; }
 
-.trading-configuration-page[data-configuration-section="strategy"] { --configuration-accent: var(--muted-foreground); }
+.trading-configuration-page[data-configuration-section="strategy"] {
+  --configuration-accent: var(--muted-foreground);
+  --configuration-section-accent: var(--canvas-link-blue);
+}
 .trading-configuration-page[data-configuration-section="assignments"] { --configuration-accent: var(--canvas-link-violet); }
 .trading-configuration-page[data-configuration-section="portfolio"] { --configuration-accent: var(--canvas-link-green); }
 .trading-configuration-page[data-configuration-section="oms"] { --configuration-accent: var(--canvas-link-cyan); }
@@ -27,6 +30,7 @@
 
 .trading-configuration-page {
   --configuration-accent: var(--primary);
+  --configuration-section-accent: var(--configuration-accent);
   gap: 14px;
   margin: 0;
   max-width: none;
@@ -2424,7 +2428,7 @@
 .strategy-selection-icon { align-items: center; background: transparent; border: 1px solid var(--configuration-rule); border-radius: 8px; color: var(--canvas-link-blue); display: flex; height: 40px; justify-content: center; width: 40px; }
 .strategy-editor-toolbar { align-items: center; border-bottom: 1px solid var(--configuration-rule); display: flex; gap: 12px; margin-left: auto; margin-right: auto; max-width: var(--strategy-workspace-max); padding-bottom: 12px; width: 100%; }
 .strategy-editor-toolbar > span { display: grid; gap: 1px; }
-.strategy-editor-toolbar > span strong { color: var(--canvas-link-blue); text-transform: uppercase; }
+.strategy-editor-toolbar > span strong { color: var(--configuration-section-accent); text-transform: uppercase; }
 .strategy-editor-toolbar > span small { color: var(--muted-foreground); }
 .strategy-editor-modes { align-items: center; background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 8px; display: flex; gap: 3px; margin-left: auto; padding: 3px; }
 .strategy-editor-modes button { align-items: center; background: transparent; border: 0; border-radius: 6px; color: var(--muted-foreground); cursor: pointer; display: inline-flex; gap: 6px; min-height: 32px; padding: 6px 10px; }
@@ -2843,7 +2847,7 @@
 .strategy-parameter-detail-page > section span { color: var(--muted-foreground); font-size: 12px; }
 .strategy-parameter-detail-page > section strong { font-family: var(--font-mono); font-size: 13px; font-weight: 520; overflow-wrap: anywhere; }
 .strategy-parameter-detail-page > footer { align-items: start; background: var(--configuration-soft); border-top: 1px solid var(--configuration-rule); display: flex; gap: 12px; margin-top: auto; padding: 18px 24px; }
-.strategy-parameter-detail-page > footer svg { color: var(--canvas-link-blue); }
+.strategy-parameter-detail-page > footer svg { color: var(--configuration-section-accent); }
 .strategy-parameter-detail-page > footer div { display: grid; gap: 4px; }
 .strategy-parameter-detail-page > footer p { margin: 0; }
 .strategy-parameter-detail-page > .strategy-parameter-editor { display: block; padding: 24px; }
