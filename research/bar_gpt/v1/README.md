@@ -706,10 +706,12 @@ python -B -m research.bar_gpt.v1.run_preview_training_dashboard --empty
 ```
 
 The first command shows representative synthetic training and validation
-values. The `--empty` form proves that every panel, heading, and placeholder is
-present before the first update. The production Rich display uses the same
-renderer and expects a terminal of at least 120 columns by 36 rows. Redirected
-training output remains periodic plain text.
+values and automatically fills the visible terminal. The `--empty` form proves
+that every panel, heading, and placeholder is present before the first update.
+Use `--width` and `--height` only to force dimensions during layout testing.
+The production Rich display uses the same renderer and expects a terminal of at
+least 120 columns by 36 rows. Redirected training output remains periodic plain
+text.
 
 ```powershell
 python -B -m research.bar_gpt.v1.run_linear_probe `

@@ -1934,13 +1934,18 @@ def main(argv: Iterable[str] | None = None) -> int:
                             )
                         if telemetry_due:
                             metric_names = tuple(accumulated_metrics)
+                            # Gradient norm is already computed for clipping. Include it
+                            # in the existing batched device-to-host telemetry transfer,
+                            # avoiding a separate GPU synchronization for the terminal.
                             metric_values = torch.stack(
                                 [accumulated_metrics[key] for key in metric_names]
+                                + [gradient_norm.detach()]
                             ).cpu().tolist()
                             metrics = {
                                 key: float(value) / max(1, accumulated_origins)
-                                for key, value in zip(metric_names, metric_values, strict=True)
+                                for key, value in zip(metric_names, metric_values[:-1], strict=True)
                             }
+                            metrics["train/gradient_norm"] = float(metric_values[-1])
                             metrics.update(
                                 {
                                     "train/samples_seen": float(samples_seen),
@@ -2001,8 +2006,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                                     if not (key == "train/loss" or key.startswith("train/loss_"))
                                 }
                             )
+                        periodic_metrics: dict[str, float] = {}
                         if periodic_training_metrics is not None and samples_seen >= next_training_metrics:
-                            update_metadata.update(periodic_training_metrics.finalize())
+                            periodic_metrics = periodic_training_metrics.finalize()
+                            update_metadata.update(periodic_metrics)
                             while next_training_metrics <= samples_seen:
                                 next_training_metrics += metric_interval
                         deferred_device_metrics = dict(accumulated_metrics)
@@ -2014,8 +2021,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                             metadata=update_metadata,
                         )
                         assert batch is not None or exhausted
+                        reporter_metrics = dict(metrics)
+                        reporter_metrics["train/amp_scale"] = update_metadata["train/amp_scale"]
+                        reporter_metrics.update(periodic_metrics)
                         reporter.update(
-                            metrics,
+                            reporter_metrics,
                             tickers=batch.tickers if batch is not None else (),
                             dates=batch.local_dates if batch is not None else (),
                             unit_indices=batch.unit_indices if batch is not None else (),

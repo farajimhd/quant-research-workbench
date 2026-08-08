@@ -12,8 +12,14 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Render the BarGPT training dashboard with synthetic data only."
     )
-    parser.add_argument("--width", type=int, default=160, help="preview width in terminal columns")
-    parser.add_argument("--height", type=int, default=42, help="preview height in terminal rows")
+    parser.add_argument(
+        "--width", type=int, default=None,
+        help="override terminal width for layout testing; defaults to the visible terminal width",
+    )
+    parser.add_argument(
+        "--height", type=int, default=None,
+        help="override terminal height for layout testing; defaults to the visible terminal height",
+    )
     parser.add_argument(
         "--empty",
         action="store_true",
@@ -47,7 +53,9 @@ def _state() -> TrainingProgressState:
 
 def main() -> None:
     args = _parser().parse_args()
-    if args.width < 120 or args.height < 36:
+    if args.width is not None and args.width < 120:
+        raise SystemExit("preview requires --width 120 or greater")
+    if args.height is not None and args.height < 36:
         raise SystemExit("preview requires at least --width 120 and --height 36")
     state = _state()
     reporter = TrainingReporter(state, layout="none")
@@ -72,6 +80,12 @@ def main() -> None:
                 "train/loss_latent_prediction": 0.005733,
                 "train/gradient_norm": 0.8421,
                 "train/condition_positive_rate": 0.0047,
+                "train_return/mae_bps_macro": 7.012,
+                "train_direction/balanced_accuracy_macro": 0.5714,
+                "train_direction/mcc_macro": 0.1428,
+                "train_calibration/error_macro": 0.0244,
+                "train_availability/brier_macro": 0.0811,
+                "train_coverage_q90/macro": 0.8927,
                 "train/learning_rate": 2.74e-4,
                 "train/amp_scale": 1.0,
                 "train/origins_per_second": 65_114.0,
@@ -119,7 +133,12 @@ def main() -> None:
                 "15:04:10 Training prefetch resumed from durable cursors",
             )
         )
-    console = Console(width=args.width, height=args.height, force_terminal=True)
+    console_options = {"force_terminal": True}
+    if args.width is not None:
+        console_options["width"] = args.width
+    if args.height is not None:
+        console_options["height"] = args.height
+    console = Console(**console_options)
     reporter._console = console
     console.print(reporter.render())
 

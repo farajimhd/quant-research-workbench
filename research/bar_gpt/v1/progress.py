@@ -20,6 +20,12 @@ TRAINING_OBJECTIVES: tuple[tuple[str, str, str], ...] = (
     ("Latent prediction", "train/loss_latent_prediction", "loss"),
     ("Gradient norm", "train/gradient_norm", "number"),
     ("Condition positive", "train/condition_positive_rate", "percent"),
+    ("Return MAE", "train_return/mae_bps_macro", "bps"),
+    ("Balanced accuracy", "train_direction/balanced_accuracy_macro", "percent"),
+    ("MCC", "train_direction/mcc_macro", "number"),
+    ("Calibration error", "train_calibration/error_macro", "percent"),
+    ("Availability Brier", "train_availability/brier_macro", "number"),
+    ("q90 coverage", "train_coverage_q90/macro", "percent"),
 )
 
 VALIDATION_SCORECARD: tuple[tuple[str, str, str], ...] = (
@@ -97,6 +103,7 @@ class TrainingProgressState:
     losses: dict[str, float] = field(default_factory=dict)
     eligibility: dict[str, float] = field(default_factory=dict)
     validation_metrics: dict[str, float] = field(default_factory=dict)
+    training_metrics: dict[str, float] = field(default_factory=dict)
     last_message: str = ""
 
 
@@ -191,6 +198,15 @@ class TrainingReporter:
                 s.losses[key.removeprefix("train/loss_")] = float(value)
         if "train/condition_positive_rate" in metrics:
             s.eligibility["condition_positive_rate"] = float(metrics["train/condition_positive_rate"])
+        for key, value in metrics.items():
+            if key.startswith((
+                "train_return/",
+                "train_direction/",
+                "train_calibration/",
+                "train_availability/",
+                "train_coverage_",
+            )):
+                s.training_metrics[str(key)] = float(value)
         if tickers:
             s.active_tickers = ",".join(tickers)
         if dates:
@@ -288,24 +304,27 @@ class TrainingReporter:
         unit_eta = unit_remaining / rate if unit_remaining and rate > 0 else 0.0
         schedule_phase, schedule_progress = _schedule_status(s)
 
-        header = Table.grid(padding=(0, 2))
-        header.add_column(no_wrap=True); header.add_column(no_wrap=True); header.add_column(no_wrap=True)
+        header = Table.grid(expand=True, padding=(0, 1))
+        header.add_column(no_wrap=True); header.add_column(no_wrap=True)
+        header.add_column(no_wrap=True); header.add_column(no_wrap=True)
         header.add_row(
             f"[bold]State[/] {_safe(s.state)}",
             f"[bold]Run[/] {_safe(s.run_name)}",
             f"[bold]Device[/] {_safe(s.device)} / {_safe(s.precision)}",
+            f"[bold]Overall speed[/] [bold bright_green]{rate:,.0f} origins/s[/]",
         )
         header.add_row(
             f"[bold]Model[/] {s.model_parameters:,} parameters",
             f"[bold]Elapsed[/] {_duration(elapsed)}",
             f"[bold]Output[/] {_safe(s.output_dir)}",
+            f"[bold]GPU duty[/] {s.gpu_duty_cycle * 100:.2f}%",
         )
 
         def progress_line(label: str, completed: int, total: int, color: str) -> Any:
             progress = Progress(
                 TextColumn(f"[bold {color}]{label:<12}[/]"),
                 BarColumn(complete_style=color, finished_style="green", bar_width=None),
-                TextColumn(f"{completed:,}/{total:,}"),
+                TextColumn(_ratio_markup(completed, total)),
                 TaskProgressColumn(),
                 expand=True,
             )
@@ -321,7 +340,7 @@ class TrainingReporter:
         eta_table = Table.grid(padding=(0, 2))
         eta_table.add_column(); eta_table.add_column(); eta_table.add_column(); eta_table.add_column()
         eta_table.add_row(
-            f"[bold]Epoch[/] {s.epoch_index}/{s.epochs_total}",
+            f"[bold]Epoch[/] {_ratio_markup(s.epoch_index, s.epochs_total)}",
             f"[bold]Run ETA[/] {_duration(eta) if eta else '-'}",
             f"[bold]Finish[/] {finish_at}",
             f"[bold]Unit ETA[/] {_duration(unit_eta) if unit_eta else '-'}",
@@ -332,6 +351,7 @@ class TrainingReporter:
         train_values.update({f"train/loss_{key}": value for key, value in s.losses.items()})
         train_values["train/gradient_norm"] = s.gradient_norm
         train_values["train/condition_positive_rate"] = s.eligibility.get("condition_positive_rate")
+        train_values.update(s.training_metrics)
         objective_rows = [(label, train_values.get(key), style) for label, key, style in TRAINING_OBJECTIVES]
         validation_rows = [
             (label, s.validation_metrics.get(key), style) for label, key, style in VALIDATION_SCORECARD
@@ -349,22 +369,22 @@ class TrainingReporter:
             ("Loader wait", s.loader_wait_seconds, "seconds"),
             ("GPU time", s.gpu_seconds, "seconds"),
             ("GPU duty", s.gpu_duty_cycle, "percent"),
-            ("Host cache", f"{s.host_cache_batches}/{s.host_cache_capacity} batches", "text"),
+            ("Host cache", (s.host_cache_batches, s.host_cache_capacity, " batches"), "ratio"),
             ("CUDA prefetch", "on" if s.cuda_prefetch else "off", "text"),
             ("Microbatches", s.batches_seen, "integer"),
         )
         checkpoint = Path(s.last_checkpoint).name if s.last_checkpoint not in ("", "-") else "-"
         data_rows = (
-            ("Origins", f"{s.samples_seen:,}/{s.max_samples:,}", "text"),
-            ("Blocks", f"{s.blocks_seen:,}/{s.planned_blocks:,}", "text"),
-            ("Units touched", f"{s.units_seen:,}/{s.planned_units:,}", "text"),
+            ("Origins", (s.samples_seen, s.max_samples, ""), "ratio"),
+            ("Blocks", (s.blocks_seen, s.planned_blocks, ""), "ratio"),
+            ("Units touched", (s.units_seen, s.planned_units, ""), "ratio"),
             ("Condition blocks", s.condition_blocks_seen, "integer"),
             ("Active tickers", s.active_tickers, "text"),
             ("Active dates", s.active_dates, "text"),
             ("Current unit", f"{s.current_unit_ticker}:{s.current_unit_month}", "text"),
-            ("Unit block", f"{s.current_unit_block:,}/{s.current_unit_blocks:,}", "text"),
+            ("Unit block", (s.current_unit_block, s.current_unit_blocks, ""), "ratio"),
             ("Unit origins", s.current_unit_origins, "integer"),
-            ("Validations", f"{s.validation_runs_completed:,}/{s.validation_runs_total:,}", "text"),
+            ("Validations", (s.validation_runs_completed, s.validation_runs_total, ""), "ratio"),
             ("Next validation", s.next_validation_origins, "integer"),
             ("Checkpoint", checkpoint, "text"),
             ("Origin block", s.origin_bars, "integer"),
@@ -380,19 +400,19 @@ class TrainingReporter:
 
         root = Layout(name="root")
         root.split_column(
-            Layout(Panel(header, title="BarGPT v1 training", border_style="cyan"), name="header", size=4),
-            Layout(Panel(progress_group, title="Progress and ETA", border_style="cyan"), name="progress", size=7),
+            Layout(Panel(header, title="BarGPT v1 training", border_style="cyan", padding=(0, 0)), name="header", size=4),
+            Layout(Panel(progress_group, title="Progress and ETA", border_style="cyan", padding=(0, 0)), name="progress", size=7),
             Layout(name="scores", size=11),
             Layout(name="operations", size=9),
-            Layout(Panel(message_table, title="Recent events", border_style="yellow"), name="messages", minimum_size=6),
+            Layout(Panel(message_table, title="Recent events", border_style="yellow", padding=(0, 0)), name="messages", minimum_size=6),
         )
         root["scores"].split_row(
-            Layout(Panel(_paired_table(objective_rows), title="Training objectives", border_style="magenta")),
-            Layout(Panel(_paired_table(validation_rows), title="Validation scorecard", border_style="bright_magenta")),
+            Layout(Panel(_paired_table(objective_rows), title="Training loss and metrics", border_style="magenta", padding=(0, 0))),
+            Layout(Panel(_paired_table(validation_rows), title="Validation scorecard", border_style="bright_magenta", padding=(0, 0))),
         )
         root["operations"].split_row(
-            Layout(Panel(_paired_table(runtime_rows), title="Optimization and runtime", border_style="blue")),
-            Layout(Panel(_paired_table(data_rows), title="Data and durability", border_style="green")),
+            Layout(Panel(_paired_table(runtime_rows), title="Optimization and runtime", border_style="blue", padding=(0, 0))),
+            Layout(Panel(_paired_table(data_rows), title="Data and durability", border_style="green", padding=(0, 0))),
         )
         return root
 
@@ -431,6 +451,9 @@ def _format_value(value: Any, style: str) -> str:
         return "-"
     if style == "text":
         return _safe(str(value))
+    if style == "ratio":
+        numerator, denominator, suffix = value
+        return _ratio_markup(int(numerator), int(denominator), str(suffix))
     try:
         numeric = float(value)
     except (TypeError, ValueError):
@@ -452,6 +475,17 @@ def _format_value(value: Any, style: str) -> str:
     if style == "seconds":
         return f"{numeric:.3f}s"
     return f"{numeric:.4f}"
+
+
+def _ratio_markup(numerator: int, denominator: int, suffix: str = "") -> str:
+    from rich.markup import escape
+
+    return (
+        f"[bold bright_cyan]{numerator:,}[/]"
+        f"[bold bright_yellow]/[/]"
+        f"[bold bright_magenta]{denominator:,}[/]"
+        f"[dim]{escape(suffix)}[/]"
+    )
 
 
 def _safe(value: str) -> str:

@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 import torch
 from rich.console import Console
+from rich.text import Text
 
 from research.bar_gpt.v1.audit_offline_shards import audit_shard
 from research.bar_gpt.v1.config import BAR_GPT_WANDB_PROJECT, BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig
@@ -78,7 +79,7 @@ from research.bar_gpt.v1.offline_shards import (
     validate_origin_context,
     write_unit,
 )
-from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
+from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter, _ratio_markup
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import TARGET_NAMES, build_next_bar_targets, build_physical_horizon_targets
 from research.bar_gpt.v1.train import (
@@ -1935,6 +1936,11 @@ class LoaderTrainerContractTest(unittest.TestCase):
             )
 
     def test_training_dashboard_keeps_a_fixed_complete_schema(self) -> None:
+        ratio = Text.from_markup(_ratio_markup(12, 34))
+        self.assertEqual(ratio.plain, "12/34")
+        ratio_styles = {str(span.style) for span in ratio.spans}
+        self.assertTrue({"bold bright_cyan", "bold bright_yellow", "bold bright_magenta"} <= ratio_styles)
+
         state = TrainingProgressState(
             run_name="smoke", device="cuda", precision="bf16", output_dir=r"D:\TradingML\runtimes\bar_gpt\v1\train\smoke",
             model_parameters=12_345, max_samples=300_000, samples_seen=125_000, batches_seen=12,
@@ -1969,6 +1975,10 @@ class LoaderTrainerContractTest(unittest.TestCase):
         reporter._console = Console(file=output, width=160, height=42, force_terminal=False, color_system=None)
         reporter.messages.append("12:00:00 source certified")
         reporter._console.print(reporter._render())
+        rendered_lines = output.getvalue().splitlines()
+        self.assertTrue(rendered_lines)
+        self.assertTrue(all(len(line) >= 159 for line in rendered_lines))
+        self.assertTrue(any(line.startswith("│State") for line in rendered_lines))
         rendered = " ".join(output.getvalue().split())
         self.assertIn("running", rendered)
         self.assertIn("AAPL,SPY", rendered)
@@ -1980,7 +1990,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertIn("cosine", rendered)
         for heading in (
             "Progress and ETA",
-            "Training objectives",
+            "Training loss and metrics",
             "Validation scorecard",
             "Optimization and runtime",
             "Data and durability",
@@ -1989,6 +1999,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
             "Balanced accuracy",
             "MCC",
             "q90 coverage",
+            "Overall speed",
+            "Training loss and metrics",
         ):
             self.assertIn(heading, output.getvalue())
 
@@ -2002,7 +2014,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             file=empty_output, width=160, height=42, force_terminal=False, color_system=None
         )
         empty_reporter._console.print(empty_reporter.render())
-        self.assertIn("Training objectives", empty_output.getvalue())
+        self.assertIn("Training loss and metrics", empty_output.getvalue())
         self.assertIn("Validation scorecard", empty_output.getvalue())
         self.assertIn("Latent prediction", empty_output.getvalue())
         self.assertIn("Top 20% accuracy", empty_output.getvalue())
