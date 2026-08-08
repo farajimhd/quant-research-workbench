@@ -1990,6 +1990,20 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--worker-prefetch-batches"], "8")
         self.assertEqual(training_launcher_args["--wandb-mode"], "online")
 
+    def test_offline_training_loads_runtime_secrets_before_wandb_initialization(self) -> None:
+        source = Path(__file__).with_name("train.py").read_text(encoding="utf-8")
+        environment_load = source.index(
+            "load_env_files(discover_clickhouse_env_files(), verbose=True)"
+        )
+        config_build = source.index("config = build_config(args)", environment_load)
+        wandb_init = source.index("wandb_run = init_wandb(", config_build)
+        self.assertLess(environment_load, config_build)
+        self.assertLess(config_build, wandb_init)
+        self.assertEqual(
+            source.count("load_env_files(discover_clickhouse_env_files(), verbose=True)"),
+            1,
+        )
+
     def test_comparison_launcher_uses_online_wandb_without_normal_cli_noise(self) -> None:
         self.assertEqual(DEFAULT_WANDB_MODE, "online")
         parsed = parse_training_args(comparison_trainer_argv("current", run_stamp="fixed"))

@@ -1365,6 +1365,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _handle_interrupt)
     args = parse_args(argv)
+    # Offline-shard training does not need a ClickHouse client, but it still
+    # needs runtime credentials such as WANDB_API_KEY from the workstation
+    # secrets authority. Discovery prints paths only; secret values are never
+    # logged or copied into manifests.
+    load_env_files(discover_clickhouse_env_files(), verbose=True)
     config = build_config(args)
     set_seed(config.train.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1411,7 +1416,6 @@ def main(argv: Iterable[str] | None = None) -> int:
             "condition_luld_rows": str(condition_counts[3]),
         }
     else:
-        load_env_files(discover_clickhouse_env_files(), verbose=True)
         clickhouse_client = ClickHouseHttpClient(
             default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
         )
