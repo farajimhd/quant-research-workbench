@@ -600,42 +600,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     }
     campaign_id = str(state["campaign_id"])
     runs: dict[str, str] = dict(state.get("runs", {}))
-    profiles = set(state.get("profiles", []))
     for index, name in enumerate(names, start=1):
         run_key = f"architecture/{name}"
-        if name not in profiles:
-            architecture = by_name[name]
-            profile_command = [
-                sys.executable, "-B", "-m", "research.bar_gpt.v1.profile_train",
-                "--data-source", "offline",
-                "--offline-shard-root", str(args.shard_root),
-                "--start-date", "2019-01-01",
-                "--end-date", "2019-02-01",
-                "--candidates",
-                f"{name}:4096:{architecture.microbatch}:{architecture.accumulation}:{args.workers}:1:0",
-                "--ready-queue-blocks", "1024",
-                "--worker-prefetch-batches", "8",
-                "--target-effective-blocks", "32",
-                "--warmup-steps", "2",
-                "--measured-steps", "10",
-                "--output-root", str(output_root / "profiles" / name),
-                "--device", "cuda",
-                "--sdpa-audit",
-            ]
-            print(f"[profile {index}/{len(names)}] checking fit and runtime for {name}", flush=True)
-            profile_result = subprocess.run(
-                profile_command,
-                cwd=str(Path(__file__).resolve().parents[3]),
-                check=False,
-            )
-            if profile_result.returncode:
-                raise RuntimeError(
-                    f"profile for {name} failed with exit code {profile_result.returncode}; "
-                    "training was not started"
-                )
-            profiles.add(name)
-            state["profiles"] = sorted(profiles)
-            _atomic_state(state_path, state)
         if run_key in runs:
             print(f"[{index}/{len(names)}] {name}: already complete", flush=True)
             continue

@@ -345,10 +345,12 @@ python -B -m research.bar_gpt.v1.run_model_discovery --execute
 ```
 
 The launcher builds and hash-certifies one reusable block manifest, then runs
-one child process at a time. Before each architecture's long run, a bounded
-fit/runtime profile records forward, backward, optimizer, loader-wait, memory,
-metric-overhead, and SDPA-kernel evidence and fails before training if the
-selected microbatch is not safe. The fixed panels are approximately 200 million
+one training child process at a time. It reuses the batch configurations chosen
+by the preceding workstation sweep: `32x1`, `16x2`, or `8x4` depending on model
+size, with an effective batch of 32 blocks throughout. It does not repeat GPU
+profiling inside the discovery campaign; the standalone profiler remains the
+authority when hardware, model structure, or the shard contract changes. The
+fixed panels are approximately 200 million
 training origins per epoch, 500 thousand monitor origins every 25 million
 training origins, 5 million validation origins after each epoch, and a separate
 5 million-origin locked test used only for the final two recipes. Held-out
