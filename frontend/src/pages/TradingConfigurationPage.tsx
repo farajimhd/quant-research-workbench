@@ -400,6 +400,12 @@ type DiscoveryCapability = {
   category: string;
   provider: string;
   output_type: string;
+  capability_type: "market_data" | "indicator" | "signal" | "reference" | "system";
+  priority: "p0" | "p1" | "p2" | "p3";
+  availability: "implemented" | "planned_realtime" | "strategy_specific" | "offline_only" | "reference_only";
+  inputs: string[];
+  fields: string[];
+  calculation: string;
   timeframes: string[];
   enabled: boolean;
   configurable: boolean;
@@ -417,6 +423,7 @@ type WatchlistConfig = {
   ranking_field: string;
   maximum_size: number;
   refresh_interval_ms: number;
+  membership_expiry: "end_of_trading_day" | "time_to_live" | "never";
   membership_ttl_ms: number;
   manual_inclusions: string[];
   manual_exclusions: string[];
@@ -431,6 +438,20 @@ type MarketDiscoverySection = {
   rule_sets: RuleSetDefinition[];
   watchlists: WatchlistConfig[];
 };
+
+function normalizedDiscoveryCapability(capability: DiscoveryCapability): DiscoveryCapability {
+  const value = capability as DiscoveryCapability & Partial<DiscoveryCapability>;
+  const inferredType: DiscoveryCapability["capability_type"] = value.output_type === "system" ? "system" : ["news", "sec"].includes(value.provider?.toLocaleLowerCase()) ? "signal" : "indicator";
+  return {
+    ...capability,
+    availability: value.availability ?? "implemented",
+    calculation: value.calculation ?? value.description ?? "QMD publishes this causally available observation.",
+    capability_type: value.capability_type ?? inferredType,
+    fields: value.fields ?? [value.capability_id],
+    inputs: value.inputs ?? [value.provider || "QMD"],
+    priority: value.priority ?? (value.system_required ? "p0" : "p2"),
+  } as DiscoveryCapability;
+}
 
 type PortfolioPolicy = Record<string, Primitive | string[]>;
 type Mandate = {
@@ -1743,31 +1764,47 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
   const [mode, setMode] = useState<"catalog" | "guided">("guided");
   const [guidedStep, setGuidedStep] = useState<"core" | "watchlists" | "history">("core");
   const [capabilityQuery, setCapabilityQuery] = useState("");
+  const [capabilityTypeFilter, setCapabilityTypeFilter] = useState("all");
+  const [capabilityStatusFilter, setCapabilityStatusFilter] = useState("all");
   const [capabilityToAddId, setCapabilityToAddId] = useState("");
   const [selectedCapabilityId, setSelectedCapabilityId] = useState(section.core_scan.calculations[0]?.capability_id ?? "");
   const [selectedWatchlistId, setSelectedWatchlistId] = useState(section.watchlists[0]?.watchlist_id ?? "");
   const [watchlistView, setWatchlistView] = useState<"select" | "guided">("select");
   const [watchlistQuestionIndex, setWatchlistQuestionIndex] = useState(0);
-  const selectedCapability = section.core_scan.calculations.find((row) => row.capability_id === selectedCapabilityId) ?? section.core_scan.calculations[0];
+  const discoveryCapabilities = useMemo(() => section.core_scan.calculations.map(normalizedDiscoveryCapability), [section.core_scan.calculations]);
+  const selectedCapability = discoveryCapabilities.find((row) => row.capability_id === selectedCapabilityId) ?? discoveryCapabilities[0];
   const selectedWatchlist = section.watchlists.find((row) => row.watchlist_id === selectedWatchlistId) ?? section.watchlists[0];
   const watchlistQuestion = WATCHLIST_GUIDED_STEPS[watchlistQuestionIndex] as WatchlistGuidedStep;
   const groupedCapabilities = useMemo(() => {
     const groups = new Map<string, DiscoveryCapability[]>();
     const query = capabilityQuery.trim().toLocaleLowerCase();
-    section.core_scan.calculations.filter((capability) => !query || [capability.name, capability.category, capability.provider, capability.description].some((value) => value.toLocaleLowerCase().includes(query))).forEach((capability) => {
+    discoveryCapabilities.filter((capability) => !query || [capability.name, capability.category, capability.provider, capability.description].some((value) => value.toLocaleLowerCase().includes(query))).forEach((capability) => {
       const key = capability.tier === "core" ? "Core Scan" : capability.category || "Watchlist calculations";
       groups.set(key, [...(groups.get(key) ?? []), capability]);
     });
     return [...groups.entries()];
-  }, [capabilityQuery, section.core_scan.calculations]);
+  }, [capabilityQuery, discoveryCapabilities]);
   const visibleCapabilityCount = groupedCapabilities.reduce((count, [, capabilities]) => count + capabilities.length, 0);
   const activeDiscoveryCapabilities = useMemo(
-    () => section.core_scan.calculations.filter((capability) => capability.enabled || capability.system_required),
-    [section.core_scan.calculations],
+    () => discoveryCapabilities.filter((capability) => capability.enabled || capability.system_required),
+    [discoveryCapabilities],
   );
+  const filteredDiscoveryCapabilities = useMemo(() => {
+    const query = capabilityQuery.trim().toLocaleLowerCase();
+    return discoveryCapabilities.filter((capability) => {
+      const matchesQuery = !query || [capability.name, capability.category, capability.provider, capability.description, capability.calculation, ...capability.inputs, ...capability.fields].some((value) => value.toLocaleLowerCase().includes(query));
+      const matchesType = capabilityTypeFilter === "all" || capability.capability_type === capabilityTypeFilter;
+      const matchesStatus = capabilityStatusFilter === "all"
+        || (capabilityStatusFilter === "active" && capability.enabled)
+        || (capabilityStatusFilter === "required" && capability.system_required)
+        || (capabilityStatusFilter === "modifiable" && capability.configurable)
+        || (capabilityStatusFilter === "unavailable" && !["implemented", "reference_only"].includes(capability.availability));
+      return matchesQuery && matchesType && matchesStatus;
+    });
+  }, [capabilityQuery, capabilityStatusFilter, capabilityTypeFilter, discoveryCapabilities]);
   const availableDiscoveryCapabilities = useMemo(
-    () => section.core_scan.calculations.filter((capability) => capability.configurable && !capability.system_required && !capability.enabled),
-    [section.core_scan.calculations],
+    () => discoveryCapabilities.filter((capability) => capability.configurable && !capability.system_required && !capability.enabled),
+    [discoveryCapabilities],
   );
 
   useEffect(() => {
@@ -1784,7 +1821,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
     const next: WatchlistConfig = {
       watchlist_id: watchlistId, name: "Untitled Watchlist", description: "", enabled: true,
       source_scan_id: section.core_scan.scan_id, inclusion_rule_sets: [], exclusion_rule_sets: [], ranking_field: "liquidity-rank",
-      maximum_size: 100, refresh_interval_ms: 1000, membership_ttl_ms: 300000, manual_inclusions: [], manual_exclusions: [],
+      maximum_size: 100, refresh_interval_ms: 1000, membership_expiry: "end_of_trading_day", membership_ttl_ms: 300000, manual_inclusions: [], manual_exclusions: [],
       calculations: section.core_scan.calculations.filter((row) => row.tier === "watchlist" && row.enabled).map((row) => row.capability_id), membership_history: [],
     };
     onChange({ ...section, watchlists: [...section.watchlists, next] });
@@ -1838,16 +1875,16 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
     {mode === "catalog" ? <div className="configuration-workbench strategy-editor-catalog discovery-capability-workbench">
       <aside className="strategy-parameter-catalog">
         <header><div><span>QMD capability catalog</span><strong>{visibleCapabilityCount} of {section.core_scan.calculations.length}</strong></div><p>Review every QMD extraction, indicator, signal, quality check, and membership service.</p></header>
-        <label className="strategy-parameter-search"><Search aria-hidden="true" size={15} /><input aria-label="Search QMD capabilities" onChange={(event) => setCapabilityQuery(event.target.value)} placeholder="Search capabilities" type="search" value={capabilityQuery} /></label>
+        <label className="strategy-parameter-search"><Search aria-hidden="true" size={15} /><input aria-label="Search QMD capabilities" onChange={(event) => setCapabilityQuery(event.target.value)} placeholder="Search names, fields, inputs" type="search" value={capabilityQuery} /></label>
         <div className="strategy-parameter-list">{groupedCapabilities.map(([group, capabilities]) => <section className="strategy-parameter-group" key={group}><header><strong>{group}</strong><span>{capabilities.length}</span></header>{capabilities.map((capability) => <button aria-current={capability.capability_id === selectedCapability?.capability_id ? "true" : undefined} key={capability.capability_id} onClick={() => setSelectedCapabilityId(capability.capability_id)} type="button"><span><strong>{capability.name}</strong><small>{capability.provider} · {capability.configurable ? "Configurable" : capability.system_required ? "Required" : "Read only"}</small></span><ChevronRight size={14} /></button>)}</section>)}{visibleCapabilityCount === 0 ? <div className="strategy-parameter-empty-list"><Search size={18} /><span>No capabilities match this search.</span></div> : null}</div>
       </aside>
       <main className="strategy-parameter-detail-page discovery-capability-detail">
         {selectedCapability ? <>
-          <header><span>{selectedCapability.category}</span><h2>{selectedCapability.name}</h2><p>{selectedCapability.description}</p></header>
+          <header><span>{readableLabel(selectedCapability.capability_type)} · {readableLabel(selectedCapability.availability)}</span><h2>{selectedCapability.name}</h2><p>{selectedCapability.calculation || selectedCapability.description}</p></header>
           <section className="discovery-capability-control">
             <label className="configuration-field configuration-boolean"><span>Enabled</span><small>{selectedCapability.configurable ? "Controls whether this capability belongs to the active configuration. Disabled capabilities remain available in the catalog." : "This behavior is active but owned by QMD and cannot be changed here."}</small><input checked={selectedCapability.enabled} disabled={!selectedCapability.configurable || selectedCapability.system_required} onChange={(event) => setDiscoveryCapabilityEnabled(selectedCapability.capability_id, event.target.checked)} type="checkbox" /></label>
           </section>
-          <ParameterDocumentation documentation={{ role: [`${selectedCapability.provider} owns this ${selectedCapability.output_type} output and publishes it for Scanner, Watchlists, and eligible Strategy rules.`], timing: [selectedCapability.timeframes.length ? `Available calculation clocks: ${selectedCapability.timeframes.join(", ")}.` : "The service owns its publication clock and causal availability."], impact: [selectedCapability.tier === "core" ? "Core Scan evaluates it across the broad Security Universe." : "It is intended for the smaller candidate set after Core Scan nomination."], caution: [selectedCapability.configurable ? "Changing it affects future Watchlist resolution after publication." : "The control is intentionally read-only. Disabled styling means non-editable, not inactive."], cautionTone: "information" }} group={selectedCapability.category} path={selectedCapability.capability_id} value={selectedCapability.enabled} />
+          <ParameterDocumentation documentation={{ role: [`${selectedCapability.provider} publishes ${selectedCapability.fields.join(", ") || selectedCapability.output_type} from ${selectedCapability.inputs.join(", ") || "service-owned inputs"}.`], timing: [selectedCapability.timeframes.length ? `Available calculation clocks: ${selectedCapability.timeframes.join(", ")}.` : "The service owns its publication clock and causal availability."], impact: [selectedCapability.calculation || selectedCapability.description], caution: [!["implemented", "reference_only"].includes(selectedCapability.availability) ? "This family is visible for design completeness but unavailable to the active scanner." : selectedCapability.configurable ? "Changing it affects future Watchlist resolution after publication." : "The control is intentionally read-only because QMD owns this required behavior."], cautionTone: "information" }} group={selectedCapability.category} path={selectedCapability.capability_id} value={selectedCapability.enabled} />
         </> : null}
       </main>
     </div> : <article className="strategy-authoring discovery-guided-authoring">
@@ -1861,22 +1898,29 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
           <header className="strategy-identity-intro"><h2>Review what QMD evaluates across the market</h2></header>
           <div className="discovery-core-summary"><article><span>Security universe</span><strong>{section.security_universe.name}</strong><p>{section.security_universe.description}</p><em>System managed</em></article><article><span>Published default</span><strong>{section.core_scan.name}</strong><p>{section.core_scan.description}</p><em>{activeDiscoveryCapabilities.length} active capabilities</em></article></div>
           <header className="discovery-capability-heading">
-            <div><span>Active capabilities</span><strong>{activeDiscoveryCapabilities.length} of {section.core_scan.calculations.length}</strong><small>Required capabilities are fixed. Modifiable capabilities can be removed and added again from the catalog.</small></div>
+            <div><span>QMD capability inventory</span><strong>{filteredDiscoveryCapabilities.length} shown · {activeDiscoveryCapabilities.length} active</strong><small>Required capabilities are fixed. Unavailable families remain visible and disabled.</small></div>
             <div className="discovery-capability-add">
               <InventoryFilterSelect ariaLabel="Capability to add" className="configuration-lookup-button" onChange={setCapabilityToAddId} options={availableDiscoveryCapabilities.length ? availableDiscoveryCapabilities.map((capability) => ({ description: capability.description, label: capability.name, value: capability.capability_id })) : [{ description: "Every available capability is already active.", label: "No available capabilities", value: "" }]} searchable={availableDiscoveryCapabilities.length > 7} searchPlaceholder="Find a capability…" value={capabilityToAddId} />
               <button className="button compact" disabled={!capabilityToAddId} onClick={addDiscoveryCapability} type="button"><Plus size={14} /> Add</button>
             </div>
           </header>
+          <div className="discovery-capability-filters">
+            <label><Search size={15} /><input aria-label="Filter Core Scan capabilities" onChange={(event) => setCapabilityQuery(event.target.value)} placeholder="Search names, calculations, inputs or outputs" type="search" value={capabilityQuery} /></label>
+            <div aria-label="Capability type filters" role="group">{[["all", "All types"], ["market_data", "Market data"], ["indicator", "Indicators"], ["signal", "Signals"], ["reference", "Reference"], ["system", "System"]].map(([value, label]) => <button aria-pressed={capabilityTypeFilter === value} key={value} onClick={() => setCapabilityTypeFilter(value)} type="button">{label}</button>)}</div>
+            <div aria-label="Capability status filters" role="group">{[["all", "All status"], ["active", "Active"], ["required", "Required"], ["modifiable", "Modifiable"], ["unavailable", "Unavailable"]].map(([value, label]) => <button aria-pressed={capabilityStatusFilter === value} key={value} onClick={() => setCapabilityStatusFilter(value)} type="button">{label}</button>)}</div>
+          </div>
           <div className="discovery-capability-matrix">
-            {activeDiscoveryCapabilities.map((capability, index) => {
+            {filteredDiscoveryCapabilities.map((capability, index) => {
               const removable = capability.configurable && !capability.system_required;
-              const status = capability.system_required ? "Required" : capability.configurable ? "Modifiable" : "Read only";
+              const available = ["implemented", "reference_only"].includes(capability.availability);
+              const status = !available ? "Unavailable" : capability.system_required ? "Required" : capability.configurable ? capability.enabled ? "Modifiable" : "Available" : "Read only";
               return <article data-status={status.toLowerCase().replaceAll(" ", "-")} key={capability.capability_id}>
-                <span aria-label={`Capability ${index + 1} of ${activeDiscoveryCapabilities.length}`} className="discovery-capability-index">{index + 1}</span>
-                <div className="discovery-capability-copy"><strong>{capability.name}</strong><small>{capability.description}</small><span>{capability.provider} · {capability.timeframes.length ? capability.timeframes.join(", ") : "Service clock"}</span></div>
-                <div className="discovery-capability-actions"><em>{status}</em>{removable ? <button aria-label={`Remove ${capability.name}`} className="button compact danger" onClick={() => setDiscoveryCapabilityEnabled(capability.capability_id, false)} type="button"><Trash2 size={13} /> Remove</button> : null}</div>
+                <span aria-label={`Capability ${index + 1} of ${filteredDiscoveryCapabilities.length}`} className="discovery-capability-index">{index + 1}</span>
+                <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type={capability.capability_type}>{readableLabel(capability.capability_type)}</span><span>{capability.priority.toUpperCase()}</span></div><small>{capability.calculation || capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ") || "Service owned"}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.slice(0, 8).join(", ") || capability.output_type}{capability.fields.length > 8 ? ` +${capability.fields.length - 8} more` : ""}</dd></div><div><dt>Cadence</dt><dd>{capability.timeframes.length ? capability.timeframes.join(", ") : "Service clock"}</dd></div></dl></div>
+                <div className="discovery-capability-actions"><em>{status}</em>{removable && capability.enabled ? <button aria-label={`Remove ${capability.name}`} className="button compact danger" onClick={() => setDiscoveryCapabilityEnabled(capability.capability_id, false)} type="button"><Trash2 size={13} /> Remove</button> : null}</div>
               </article>;
             })}
+            {!filteredDiscoveryCapabilities.length ? <EmptyState title="No matching capabilities" detail="Change the search or predefined filters to show QMD capabilities." /> : null}
           </div>
         </> : null}
         {guidedStep === "watchlists" ? watchlistView === "select" ? <div className="discovery-watchlist-selection">
@@ -1898,12 +1942,12 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
           </div>
           <section className="discovery-watchlist-question">
             {watchlistQuestion === "identity" ? <><header><h2>Name and describe this Watchlist</h2></header><div className="strategy-identity-fields"><label className="strategy-identity-field"><span>Watchlist name</span><input onChange={(event) => replaceWatchlist({ ...selectedWatchlist, name: event.target.value })} value={selectedWatchlist.name} /><small>Strategies use this name when selecting their discovery source.</small></label><label className="strategy-identity-field"><span>Description</span><textarea onChange={(event) => replaceWatchlist({ ...selectedWatchlist, description: event.target.value })} rows={3} value={selectedWatchlist.description} /><small>Explain which candidates this Watchlist is intended to retain.</small></label><label className="configuration-field configuration-boolean"><span>Enabled</span><small>Controls whether this Watchlist is enabled in the published configuration. Runtime membership resolution remains fail-closed until its resolver is connected.</small><input checked={selectedWatchlist.enabled} onChange={(event) => replaceWatchlist({ ...selectedWatchlist, enabled: event.target.checked })} type="checkbox" /></label></div></> : null}
-            {watchlistQuestion === "rules" ? <><header><h2>Which candidates may enter or must be excluded?</h2></header><WatchlistRuleChoices onChange={replaceWatchlist} ruleSets={section.rule_sets} watchlist={selectedWatchlist} /></> : null}
+            {watchlistQuestion === "rules" ? <><header><h2>Which candidates may enter or must be excluded?</h2></header><WatchlistRuleChoices capabilities={discoveryCapabilities} onChange={replaceWatchlist} ruleSets={section.rule_sets} watchlist={selectedWatchlist} /></> : null}
             {watchlistQuestion === "ranking" ? <><header><h2>How should passing candidates be ranked and limited?</h2></header><div className="configuration-field-grid"><SelectField help="QMD sorts passing candidates by this published observation before applying maximum membership." label="Ranking field" onChange={(ranking_field) => replaceWatchlist({ ...selectedWatchlist, ranking_field })} options={section.core_scan.calculations.filter((row) => row.enabled).map((row) => ({ description: row.description, label: row.name, value: row.capability_id }))} searchable value={selectedWatchlist.ranking_field} /><NumberField help="Maximum current membership after ranking and exclusions." label="Maximum members" minimum={1} onChange={(maximum_size) => replaceWatchlist({ ...selectedWatchlist, maximum_size })} step={1} unit="symbols" value={selectedWatchlist.maximum_size} /></div></> : null}
-            {watchlistQuestion === "timing" ? <><header><h2>How often should membership be refreshed and expire?</h2></header><div className="configuration-field-grid"><NumberField help="How often QMD resolves the Watchlist from its source scan." label="Refresh interval" minimum={1} onChange={(refresh_interval_ms) => replaceWatchlist({ ...selectedWatchlist, refresh_interval_ms })} step={100} unit="ms" value={selectedWatchlist.refresh_interval_ms} /><NumberField help="How long membership remains valid without a confirming refresh. Zero means no automatic expiry." label="Membership TTL" minimum={0} onChange={(membership_ttl_ms) => replaceWatchlist({ ...selectedWatchlist, membership_ttl_ms })} step={1000} unit="ms" value={selectedWatchlist.membership_ttl_ms} /></div></> : null}
+            {watchlistQuestion === "timing" ? <><header><h2>How often should membership be refreshed and expire?</h2></header><div className="configuration-field-grid"><NumberField help="How often QMD resolves the Watchlist from its source scan." label="Refresh interval" minimum={1} onChange={(refresh_interval_ms) => replaceWatchlist({ ...selectedWatchlist, refresh_interval_ms })} step={100} unit="ms" value={selectedWatchlist.refresh_interval_ms} /><fieldset className="configuration-choice-set discovery-expiry-policy"><legend>Membership expiry</legend><p>A symbol leaves at the end of its New York trading day by default. Choose an override only when this Watchlist requires different persistence.</p><div>{[["end_of_trading_day", "End of trading day", "Remove the symbol at the applicable New York session boundary."], ["time_to_live", "Time to live", "Remove membership when it is not reconfirmed within a fixed duration."], ["never", "No automatic expiry", "Keep membership until a rule or manual action removes it."]].map(([value, label, detail]) => <label key={value}><input checked={selectedWatchlist.membership_expiry === value} name={`expiry-${selectedWatchlist.watchlist_id}`} onChange={() => replaceWatchlist({ ...selectedWatchlist, membership_expiry: value as WatchlistConfig["membership_expiry"] })} type="radio" /><span><strong>{label}</strong><small>{detail}</small></span></label>)}</div></fieldset>{selectedWatchlist.membership_expiry === "time_to_live" ? <NumberField help="Positive duration without a confirming refresh before membership expires." label="Membership TTL" minimum={1} onChange={(membership_ttl_ms) => replaceWatchlist({ ...selectedWatchlist, membership_ttl_ms })} step={1000} unit="ms" value={selectedWatchlist.membership_ttl_ms} /> : null}</div></> : null}
             {watchlistQuestion === "overrides" ? <><header><h2>Which symbols should always be included or excluded?</h2></header><div className="configuration-field-grid"><TextField help="Comma-separated symbols forced into membership. Every override is recorded in membership history." label="Manual inclusions" onChange={(value) => replaceWatchlist({ ...selectedWatchlist, manual_inclusions: value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean) })} value={selectedWatchlist.manual_inclusions.join(", ")} /><TextField help="Comma-separated symbols excluded after rules pass. Every override is recorded in membership history." label="Manual exclusions" onChange={(value) => replaceWatchlist({ ...selectedWatchlist, manual_exclusions: value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean) })} value={selectedWatchlist.manual_exclusions.join(", ")} /></div></> : null}
             {watchlistQuestion === "calculations" ? <><header><h2>Which focused calculations should run for members?</h2></header><fieldset className="configuration-choice-set discovery-calculation-choices"><legend>Focused calculations</legend><p>These higher-cost calculations run only for current Watchlist members when causal QMD membership resolution is available.</p><div>{section.core_scan.calculations.filter((row) => row.tier === "watchlist" && row.enabled).map((capability) => <label key={capability.capability_id}><input checked={selectedWatchlist.calculations.includes(capability.capability_id)} onChange={(event) => replaceWatchlist({ ...selectedWatchlist, calculations: event.target.checked ? [...selectedWatchlist.calculations, capability.capability_id] : selectedWatchlist.calculations.filter((id) => id !== capability.capability_id) })} type="checkbox" /><span><strong>{capability.name}</strong><small>{capability.description}</small></span></label>)}</div></fieldset></> : null}
-            {watchlistQuestion === "review" ? <><header><h2>Review this Watchlist</h2></header><div className="discovery-watchlist-review"><article><span>Source</span><strong>{section.core_scan.name}</strong><small>Core Scan candidates</small></article><article><span>Membership</span><strong>Up to {selectedWatchlist.maximum_size} symbols</strong><small>Refreshes every {selectedWatchlist.refresh_interval_ms} ms</small></article><article><span>Rules</span><strong>{selectedWatchlist.inclusion_rule_sets.length} include · {selectedWatchlist.exclusion_rule_sets.length} exclude</strong><small>{selectedWatchlist.manual_inclusions.length} manual inclusions · {selectedWatchlist.manual_exclusions.length} manual exclusions</small></article><article><span>Focused work</span><strong>{selectedWatchlist.calculations.length} calculations</strong><small>{selectedWatchlist.enabled ? "Enabled in this configuration" : "Disabled in this configuration"}</small></article></div></> : null}
+            {watchlistQuestion === "review" ? <><header><h2>Review this Watchlist</h2></header><div className="discovery-watchlist-review"><article><span>Source</span><strong>{section.core_scan.name}</strong><small>Core Scan candidates</small></article><article><span>Membership</span><strong>Up to {selectedWatchlist.maximum_size} symbols</strong><small>Refreshes every {selectedWatchlist.refresh_interval_ms} ms · {selectedWatchlist.membership_expiry === "end_of_trading_day" ? "expires at trading-day end" : selectedWatchlist.membership_expiry === "time_to_live" ? `expires after ${selectedWatchlist.membership_ttl_ms} ms` : "no automatic expiry"}</small></article><article><span>Rules</span><strong>{selectedWatchlist.inclusion_rule_sets.length} include · {selectedWatchlist.exclusion_rule_sets.length} exclude</strong><small>{selectedWatchlist.manual_inclusions.length} manual inclusions · {selectedWatchlist.manual_exclusions.length} manual exclusions</small></article><article><span>Focused work</span><strong>{selectedWatchlist.calculations.length} calculations</strong><small>{selectedWatchlist.enabled ? "Enabled in this configuration" : "Disabled in this configuration"}</small></article></div></> : null}
           </section>
         </div> : <EmptyState title="Watchlist unavailable" detail="Return to the Watchlist list and choose another configuration." /> : null}
         {guidedStep === "history" ? <><header className="strategy-identity-intro"><h2>Trace every Watchlist membership change</h2></header><div className="discovery-history-intro"><BadgeCheck size={20} /><div><strong>Append-only membership evidence contract</strong><p>Add, remove, expiry, and manual-override events retain the Watchlist identity, configuration snapshot, event and availability clocks, causal rule, rank, scores, and reason. Current membership will be a projection of this history once the causal resolver is connected.</p></div></div><div className="discovery-history-list">{section.watchlists.flatMap((watchlist) => watchlist.membership_history.map((event, index) => <article key={`${watchlist.watchlist_id}-${index}`}><strong>{String(event.ticker ?? "Unknown symbol")}</strong><span>{watchlist.name}</span><small>{String(event.reason ?? "Membership event")}</small></article>))}{section.watchlists.every((watchlist) => !watchlist.membership_history.length) ? <EmptyState title="No recorded membership events" detail="The runtime resolver is not connected, and session configuration does not fabricate history." /> : null}</div></> : null}
@@ -1912,12 +1956,33 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
   </div>;
 }
 
-function WatchlistRuleChoices({ onChange, ruleSets, watchlist }: { onChange: (value: WatchlistConfig) => void; ruleSets: RuleSetDefinition[]; watchlist: WatchlistConfig }) {
-  const groups: Array<{ key: "inclusion_rule_sets" | "exclusion_rule_sets"; label: string; detail: string }> = [
-    { key: "inclusion_rule_sets", label: "Inclusion rules", detail: "A candidate must pass the selected reusable evidence before ranking." },
-    { key: "exclusion_rule_sets", label: "Exclusion rules", detail: "A passing exclusion removes the candidate even when inclusion rules pass." },
-  ];
-  return <div className="discovery-rule-choices">{groups.map((group) => <fieldset className="configuration-choice-set" key={group.key}><legend>{group.label}</legend><p>{group.detail}</p><div>{ruleSets.map((ruleSet) => <label key={ruleSet.rule_set_id}><input checked={watchlist[group.key].includes(ruleSet.rule_set_id)} onChange={(event) => onChange({ ...watchlist, [group.key]: event.target.checked ? [...watchlist[group.key], ruleSet.rule_set_id] : watchlist[group.key].filter((id) => id !== ruleSet.rule_set_id) })} type="checkbox" /><span><strong>{ruleSet.name}</strong><small>{ruleSet.description || `${ruleSet.conditions.length} configured conditions`}</small></span></label>)}</div></fieldset>)}</div>;
+function WatchlistRuleChoices({ capabilities, onChange, ruleSets, watchlist }: { capabilities: DiscoveryCapability[]; onChange: (value: WatchlistConfig) => void; ruleSets: RuleSetDefinition[]; watchlist: WatchlistConfig }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
+  const catalog: StrategyInput[] = capabilities.map((capability) => ({ category: capability.category, label: capability.name, parameter: capability.capability_id, provider: capability.provider, runtime_field: capability.fields[0] ?? capability.capability_id, source_id: capability.capability_id, summary: capability.calculation || capability.description, timeframes: capability.timeframes, value_type: capability.output_type }));
+  const visibleRules = ruleSets.filter((ruleSet) => {
+    const sourceTypes = new Set(ruleSet.conditions.map((condition) => capabilities.find((capability) => capability.capability_id === condition.left_source_id)?.capability_type).filter(Boolean));
+    const selected = watchlist.inclusion_rule_sets.includes(ruleSet.rule_set_id) || watchlist.exclusion_rule_sets.includes(ruleSet.rule_set_id);
+    const matchesFilter = filter === "all" || (filter === "selected" && selected) || sourceTypes.has(filter as DiscoveryCapability["capability_type"]);
+    const search = query.trim().toLocaleLowerCase();
+    return matchesFilter && (!search || [ruleSet.name, ruleSet.description, ruleSetMeaning(ruleSet, catalog)].some((value) => value.toLocaleLowerCase().includes(search)));
+  });
+  function assign(ruleSetId: string, target: "include" | "exclude" | "unused") {
+    onChange({
+      ...watchlist,
+      inclusion_rule_sets: target === "include" ? [...watchlist.inclusion_rule_sets.filter((id) => id !== ruleSetId), ruleSetId] : watchlist.inclusion_rule_sets.filter((id) => id !== ruleSetId),
+      exclusion_rule_sets: target === "exclude" ? [...watchlist.exclusion_rule_sets.filter((id) => id !== ruleSetId), ruleSetId] : watchlist.exclusion_rule_sets.filter((id) => id !== ruleSetId),
+    });
+  }
+  return <div className="discovery-rule-catalog">
+    <header><div><span>Reusable rule sets</span><strong>{visibleRules.length} of {ruleSets.length}</strong><small>Choose whether each passing rule admits or excludes a Core Scan candidate.</small></div><label><Search size={15} /><input aria-label="Search Watchlist rules" onChange={(event) => setQuery(event.target.value)} placeholder="Search rule meaning" type="search" value={query} /></label></header>
+    <div className="discovery-rule-filters" role="group" aria-label="Watchlist rule filters">{[["all", "All"], ["selected", "Selected"], ["market_data", "Market data"], ["indicator", "Indicators"], ["signal", "Signals"], ["reference", "Reference"]].map(([value, label]) => <button aria-pressed={filter === value} key={value} onClick={() => setFilter(value)} type="button">{label}</button>)}</div>
+    <div className="discovery-rule-card-list">{visibleRules.map((ruleSet, index) => {
+      const assignment = watchlist.inclusion_rule_sets.includes(ruleSet.rule_set_id) ? "include" : watchlist.exclusion_rule_sets.includes(ruleSet.rule_set_id) ? "exclude" : "unused";
+      const types = [...new Set(ruleSet.conditions.map((condition) => capabilities.find((capability) => capability.capability_id === condition.left_source_id)?.capability_type).filter(Boolean))];
+      return <article data-assignment={assignment} key={ruleSet.rule_set_id}><span className="discovery-capability-index">{index + 1}</span><div><header><strong>{ruleSet.name}</strong><span>{types.length ? types.map((type) => readableLabel(String(type))).join(" · ") : "Rule set"}</span></header>{ruleSet.description ? <p>{ruleSet.description}</p> : null}<RuleSetMeaning catalog={catalog} ruleSet={ruleSet} /></div><div className="discovery-rule-assignment" role="group" aria-label={`Use ${ruleSet.name}`}><button aria-pressed={assignment === "include"} onClick={() => assign(ruleSet.rule_set_id, assignment === "include" ? "unused" : "include")} type="button">Include</button><button aria-pressed={assignment === "exclude"} onClick={() => assign(ruleSet.rule_set_id, assignment === "exclude" ? "unused" : "exclude")} type="button">Exclude</button></div></article>;
+    })}{!visibleRules.length ? <EmptyState title="No matching rule sets" detail="Change the search or filter to show reusable Watchlist rules." /> : null}</div>
+  </div>;
 }
 
 function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onDraftChange, onLabelChange, onPublish, publishing, revisions, section }: {

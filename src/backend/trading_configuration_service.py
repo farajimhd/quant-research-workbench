@@ -36,7 +36,7 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 15
+CONFIGURATION_SCHEMA_VERSION = 16
 CONFIGURATION_SECTIONS = {
     "strategy",
     "market_discovery",
@@ -1247,14 +1247,83 @@ def _default_universe(runtime_assignments: list[dict[str, Any]]) -> dict[str, An
     }
 
 
+def _qmd_family_capabilities() -> list[dict[str, Any]]:
+    """UI projection of the complete QMD indicator-family authority catalog.
+
+    The Rust catalog remains calculation authority. This projection makes every
+    family visible in configuration, including deliberately unavailable work,
+    without presenting planned calculations as active runtime behavior.
+    """
+
+    rows = [
+        ("core_bars", "Core OHLCV Bars", "market_data", "p0", "implemented", "trades, quotes", "open, high, low, close, volume, dollar volume, trade count, VWAP, return, range", "Aggregates causally available trades and NBBO quotes into non-overlapping OHLCV bars; VWAP is trade-price times size divided by accumulated size."),
+        ("quote_mid_spread_bars", "Quote Midpoint and Spread Bars", "market_data", "p0", "implemented", "quotes", "bid, ask and midpoint OHLC; mean and closing spread", "Samples NBBO bid and ask updates, calculates midpoint as (bid + ask) / 2 and spread as ask - bid, then aggregates each value over the bar."),
+        ("session_context", "Session Context", "reference", "p1", "planned_realtime", "bars, session clock, previous-day context", "session phase, minutes from open/close, gap, previous close/high/low", "Joins each bar to the New York trading-session clock and the causally available previous-session snapshot. This family is documented but not currently calculated."),
+        ("opening_range", "Opening Range and ORB State", "signal", "p1", "planned_realtime", "bars, session clock", "opening-range high/low, range width, break and reclaim state", "Builds the opening high and low during the configured opening interval, then compares later prices with the frozen range. This family is documented but not currently calculated."),
+        ("tape_rates", "Tape and Quote Event Rates", "indicator", "p0", "implemented", "trades, quotes", "trade rate, quote rate, share rate, dollar-volume rate, acceleration", "Counts eligible trade and quote events in rolling event-time windows and divides counts or size by elapsed time; acceleration compares the current rate with its prior window."),
+        ("tape_pressure", "Tape Pressure and Imbalance", "indicator", "p0", "implemented", "trades, quotes", "buy/sell volume, signed flow, imbalance, uptick/downtick pressure", "Classifies trade direction against the prevailing NBBO and price changes, accumulates signed size, and normalizes buy minus sell activity by total classified activity."),
+        ("flow_structure_composite", "Flow-Structure Composite", "signal", "p0", "implemented", "quotes, trades, aggregation rules, market structure", "flow score, structure score, confidence, divergence and composite state", "Combines causal tape pressure, liquidity and confirmed structure observations into confidence-weighted component scores. The canonical 100 ms observations are summarized into higher non-overlapping timeframes."),
+        ("large_trade_activity", "Large Trade Activity", "indicator", "p1", "implemented", "trades", "large-trade count, shares, notional, side imbalance", "Identifies trades above the configured causal size threshold, then aggregates their count, shares, notional value and classified side imbalance by timeframe."),
+        ("nbbo_liquidity", "NBBO Liquidity and Friction", "indicator", "p0", "implemented", "quotes, trades", "spread, spread bps, quoted size, depth imbalance, trade-through and slippage proxies", "Uses the prevailing NBBO to calculate absolute and basis-point spread, displayed-size imbalance and execution-friction proxies without requiring order-book depth."),
+        ("volume_relative", "Relative Volume and Dollar Volume", "indicator", "p1", "planned_realtime", "bars, daily context", "relative volume, relative dollar volume, volume percentile", "Compares cumulative or interval volume with point-in-time historical baselines for the same session interval. This family is documented but not currently calculated."),
+        ("volume_classic", "Classic Volume Indicators", "indicator", "p2", "planned_realtime", "bars", "OBV, AD, ADOSC, CMF, MFI, PVT, NVI, PVI, EOM, KVO, force index", "Applies standard price-volume accumulation and money-flow formulas to closed bars. This family is documented but not currently calculated."),
+        ("momentum_core", "Core Momentum Oscillators", "indicator", "p1", "implemented", "bars", "RSI 14, MACD line/signal/histogram, one-bar return, price versus VWAP", "Calculates RSI from smoothed gains and losses, MACD from fast minus slow exponential averages, and price displacement relative to the current causal VWAP."),
+        ("momentum_extended", "Extended Momentum Oscillators", "indicator", "p2", "strategy_specific", "bars", "stochastic, CCI, ROC, Williams %R, PPO, TRIX and related oscillators", "Applies additional closed-bar momentum formulas only when a strategy explicitly requests them; they are not enabled in the broad Core Scan."),
+        ("trend_moving_averages", "Moving Averages and Trend Overlays", "indicator", "p1", "implemented", "bars", "SMA, EMA, WMA, DEMA, TEMA, KAMA, VWMA and price-distance fields", "Computes rolling and exponentially weighted averages from closed bars and publishes both the average and the current price distance from selected windows."),
+        ("trend_directional", "Directional Trend Indicators", "indicator", "p1", "planned_realtime", "bars", "ADX, +DI, -DI, directional movement, Supertrend, PSAR, Ichimoku", "Derives directional movement and trend overlays from high, low and close series. This family is documented but not currently calculated."),
+        ("volatility_core", "Core Volatility Indicators", "indicator", "p1", "implemented", "bars", "true range, ATR, realized volatility, Bollinger width, range percent", "Calculates true range from current high/low and previous close, smooths it into ATR, and derives dispersion and channel width from rolling closed-bar returns."),
+        ("volatility_extended", "Extended Volatility and Channels", "indicator", "p2", "strategy_specific", "bars", "Keltner, Donchian, historical volatility, normalized ATR and channel position", "Builds additional volatility channels and normalized range measures from closed bars only when a selected strategy requires them."),
+        ("price_action", "Price Action and Candle Shape", "indicator", "p1", "planned_realtime", "bars", "body, wick and gap ratios; breakout, pullback and exhaustion state", "Normalizes candle body, wick, gap and location measurements by price or range, then derives reusable closed-bar price-action states. This family is documented but not currently calculated."),
+        ("qmd_generic_structure", "QMD Generic Market Structure", "signal", "p0", "implemented", "eligible trades, extended-session state, timeframe level books", "developing and confirmed swings, breaks, reclaims, structure state, executed-volume footprints", "Updates causal extrema from eligible trades, freezes a level on the first opposing trade, promotes levels independently by timeframe and records break/reclaim lifecycle with executed-volume evidence."),
+        ("shock_features", "Shock and Abnormality Features", "signal", "p1", "planned_realtime", "bars, tick indicators, rolling baselines", "return, volume, spread, rate and imbalance z-scores; shock state", "Standardizes current movement, activity and friction against trailing point-in-time baselines to identify abnormal changes. This family is documented but not currently calculated."),
+        ("cross_timeframe_confirmation", "Cross-Timeframe Confirmation", "signal", "p2", "strategy_specific", "bars, indicators", "direction agreement, trend alignment, confirmation score", "Aligns only causally closed values from multiple timeframes and combines their agreement into a strategy-requested confirmation score."),
+        ("statistics", "Statistical Features", "indicator", "p3", "offline_only", "bars, indicator history", "rolling moments, correlations, regressions, ranks and distribution diagnostics", "Computes vectorized statistical features from stored point-in-time histories for research and models; it is intentionally unavailable in the live scan."),
+        ("cycles", "Cycle Indicators", "indicator", "p3", "offline_only", "bars", "Hilbert-transform and cycle-period families", "Applies cycle-analysis transforms to stored closed bars for research; it is intentionally unavailable in the live scan."),
+        ("candlestick_patterns", "Candlestick Pattern Recognition", "signal", "p3", "offline_only", "bars", "TA-Lib candlestick pattern family", "Evaluates named multi-candle shape templates over stored closed bars; it is intentionally unavailable in the live scan."),
+        ("performance", "Performance and Risk Metrics", "system", "p3", "offline_only", "orders, fills, portfolio, bars", "returns, drawdown, Sharpe, exposure, turnover and execution metrics", "Combines order, fill, position and valuation histories after execution. These metrics belong to portfolio analysis, not QMD live symbol scanning."),
+        ("reference_context", "Reference and Fundamental Context", "reference", "p1", "reference_only", "point-in-time reference services", "identity, venue, security type, corporate/fundamental and routing attributes", "Loads versioned reference snapshots whose availability precedes evaluation; values are joined by point-in-time instrument identity rather than calculated from ticks."),
+    ]
+    timeframe_map = {
+        "market_data": ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"],
+        "indicator": ["1s", "10s", "30s", "1m", "5m", "1h"],
+        "signal": ["100ms", "1s", "10s", "30s", "1m", "5m", "1h"],
+        "reference": ["session", "1d"],
+        "system": [],
+    }
+    result: list[dict[str, Any]] = []
+    for key, name, capability_type, priority, availability, inputs, fields, calculation in rows:
+        implemented = availability in {"implemented", "reference_only"}
+        required = implemented and priority == "p0"
+        result.append({
+            "capability_id": f"qmd.family.{key}",
+            "name": name,
+            "description": calculation,
+            "calculation": calculation,
+            "category": "QMD indicator families",
+            "provider": "QMD",
+            "output_type": "family",
+            "capability_type": capability_type,
+            "priority": priority,
+            "availability": availability,
+            "inputs": [value.strip() for value in inputs.split(",")],
+            "fields": [value.strip() for value in fields.split(",")],
+            "timeframes": timeframe_map[capability_type],
+            "enabled": implemented,
+            "configurable": implemented and not required,
+            "system_required": required,
+            "tier": "core",
+        })
+    return result
+
+
 def _default_market_discovery(
     runtime_assignments: list[dict[str, Any]],
     rule_sets: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """QMD-owned discovery configuration exposed without moving calculations into Strategy."""
 
-    calculation_rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    calculation_rows: list[dict[str, Any]] = _qmd_family_capabilities()
+    seen: set[str] = {str(row["capability_id"]) for row in calculation_rows}
     for source in strategy_input_catalog():
         capability_id = str(source.get("source_id") or "")
         if not capability_id or capability_id in seen:
@@ -1270,6 +1339,12 @@ def _default_market_discovery(
             "category": str(source.get("category") or source.get("provider") or "Market observations"),
             "provider": str(source.get("provider") or "QMD"),
             "output_type": str(source.get("value_type") or "number"),
+            "capability_type": "signal" if provider in {"news", "sec"} else "indicator",
+            "priority": "p0" if tier == "core" else "p2",
+            "availability": "implemented",
+            "inputs": [str(source.get("provider") or "QMD")],
+            "fields": [str(source.get("field") or source.get("source_id") or capability_id)],
+            "calculation": str(source.get("summary") or "Published from causally available QMD observations."),
             "timeframes": list(source.get("timeframes") or []),
             "enabled": True,
             "configurable": tier == "watchlist",
@@ -1295,6 +1370,12 @@ def _default_market_discovery(
             "category": category,
             "provider": "QMD",
             "output_type": "system",
+            "capability_type": "signal" if capability_id in {"news-events", "sec-events"} else "system",
+            "priority": "p0" if required else "p2",
+            "availability": "implemented",
+            "inputs": ["QMD services"],
+            "fields": [capability_id],
+            "calculation": description,
             "timeframes": [],
             "enabled": True,
             "configurable": not required,
@@ -1334,6 +1415,7 @@ def _default_market_discovery(
             "ranking_field": "liquidity-rank",
             "maximum_size": 250,
             "refresh_interval_ms": 1000,
+            "membership_expiry": "end_of_trading_day",
             "membership_ttl_ms": 300000,
             "manual_inclusions": symbols,
             "manual_exclusions": [],
@@ -1556,8 +1638,13 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
             raise ValueError(f"Watchlist {watchlist.get('name')} maximum size must be positive")
         if int(watchlist.get("refresh_interval_ms") or 0) <= 0:
             raise ValueError(f"Watchlist {watchlist.get('name')} refresh interval must be positive")
+        expiry = str(watchlist.get("membership_expiry") or "end_of_trading_day")
+        if expiry not in {"end_of_trading_day", "time_to_live", "never"}:
+            raise ValueError(f"Watchlist {watchlist.get('name')} has an unknown membership expiry policy")
         if int(watchlist.get("membership_ttl_ms") or 0) < 0:
             raise ValueError(f"Watchlist {watchlist.get('name')} membership TTL cannot be negative")
+        if expiry == "time_to_live" and int(watchlist.get("membership_ttl_ms") or 0) <= 0:
+            raise ValueError(f"Watchlist {watchlist.get('name')} membership TTL must be positive")
         unknown = set(watchlist.get("calculations") or []) - calculation_ids
         if unknown:
             raise ValueError(f"Watchlist {watchlist.get('name')} references unknown QMD capabilities")
@@ -2010,6 +2097,12 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 "category": str(default_calculation.get("category") or ""),
                 "provider": str(default_calculation.get("provider") or "QMD"),
                 "output_type": str(default_calculation.get("output_type") or "number"),
+                "capability_type": str(default_calculation.get("capability_type") or "indicator"),
+                "priority": str(default_calculation.get("priority") or "p2"),
+                "availability": str(default_calculation.get("availability") or "implemented"),
+                "inputs": list(default_calculation.get("inputs") or []),
+                "fields": list(default_calculation.get("fields") or []),
+                "calculation": str(default_calculation.get("calculation") or default_calculation.get("description") or ""),
                 "timeframes": list(default_calculation.get("timeframes") or []),
                 "configurable": bool(default_calculation.get("configurable")),
                 "system_required": bool(default_calculation.get("system_required")),
@@ -2025,6 +2118,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             for row in dict(result["market_discovery"].get("core_scan") or {}).get("calculations") or []
         }
         for watchlist in result["market_discovery"].get("watchlists") or []:
+            watchlist.setdefault("membership_expiry", "end_of_trading_day")
             if str(watchlist.get("ranking_field") or "") not in discovery_calculation_ids:
                 watchlist["ranking_field"] = "liquidity-rank"
         legacy_run_plans = dict(

@@ -61,7 +61,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             self.assertEqual(_resolved_source_account_id(accounts["paper"]), "DU-PAPER-TEST")
             self.assertEqual(_resolved_source_account_id(accounts["cash"]), "U-CASH-TEST")
 
-    def test_schema_v15_migration_adds_phase_modes_and_market_discovery(self) -> None:
+    def test_schema_v16_migration_adds_phase_modes_and_market_discovery(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
@@ -89,7 +89,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 15)
+        self.assertEqual(migrated["schema_version"], 16)
         self.assertTrue(migrated["market_discovery"]["core_scan"]["calculations"])
         self.assertTrue(migrated["market_discovery"]["watchlists"])
         capabilities = {
@@ -101,6 +101,13 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertIn("causally available market price", capabilities["Last price"]["description"])
         self.assertTrue(capabilities["Company news score"]["configurable"])
         self.assertFalse(capabilities["Company news score"]["system_required"])
+        self.assertEqual(capabilities["Core OHLCV Bars"]["capability_type"], "market_data")
+        self.assertEqual(capabilities["Core OHLCV Bars"]["availability"], "implemented")
+        self.assertTrue(capabilities["Core OHLCV Bars"]["fields"])
+        self.assertEqual(
+            migrated["market_discovery"]["watchlists"][0]["membership_expiry"],
+            "end_of_trading_day",
+        )
         lifecycle = migrated["strategy"]["profiles"][0]["lifecycle"]
         self.assertEqual(lifecycle["phase_modes"], {
             "initial_entry": "automatic",
@@ -146,6 +153,23 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing required QMD capabilities"):
             _validate_market_discovery(discovery)
 
+    def test_watchlist_defaults_to_end_of_trading_day_expiry(self) -> None:
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), patch(
+            "src.backend.trading_configuration_service.list_strategy_assignments",
+            return_value=[],
+        ):
+            discovery = deepcopy(_default_draft()["market_discovery"])
+
+        watchlist = discovery["watchlists"][0]
+        self.assertEqual(watchlist["membership_expiry"], "end_of_trading_day")
+        watchlist["membership_expiry"] = "time_to_live"
+        watchlist["membership_ttl_ms"] = 0
+        with self.assertRaisesRegex(ValueError, "membership TTL must be positive"):
+            _validate_market_discovery(discovery)
+
     def test_schema_v14_maps_legacy_disabled_reentry_to_manual_mode(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
@@ -176,7 +200,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 15)
+        self.assertEqual(draft["schema_version"], 16)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(
