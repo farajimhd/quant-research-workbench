@@ -1308,6 +1308,7 @@ def _qmd_family_capabilities() -> list[dict[str, Any]]:
             "inputs": [value.strip() for value in inputs.split(",")],
             "fields": [value.strip() for value in fields.split(",")],
             "timeframes": timeframe_map[capability_type],
+            "selected_timeframes": list(timeframe_map[capability_type]),
             "enabled": implemented,
             "configurable": implemented and not required,
             "system_required": required,
@@ -1362,6 +1363,7 @@ def _default_market_discovery(
             "fields": [str(source.get("field") or source.get("source_id") or capability_id)],
             "calculation": str(source.get("summary") or "Published from causally available QMD observations."),
             "timeframes": list(source.get("timeframes") or []),
+            "selected_timeframes": list(source.get("timeframes") or []),
             "enabled": True,
             "configurable": tier == "watchlist",
             "system_required": tier == "core",
@@ -1393,6 +1395,7 @@ def _default_market_discovery(
             "fields": [capability_id],
             "calculation": description,
             "timeframes": [],
+            "selected_timeframes": [],
             "enabled": True,
             "configurable": not required,
             "system_required": required,
@@ -1642,6 +1645,24 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         if bool(calculation.get("system_required")) and not bool(calculation.get("enabled")):
             raise ValueError(
                 f"Required QMD capability {calculation.get('name')} cannot be disabled"
+            )
+        supported_timeframes = {
+            str(value) for value in calculation.get("timeframes") or [] if str(value)
+        }
+        selected_timeframes = [
+            str(value)
+            for value in calculation.get("selected_timeframes") or []
+            if str(value)
+        ]
+        unknown_timeframes = set(selected_timeframes) - supported_timeframes
+        if unknown_timeframes:
+            raise ValueError(
+                f"QMD capability {calculation.get('name')} selects unsupported calculation cadences: "
+                + ", ".join(sorted(unknown_timeframes))
+            )
+        if bool(calculation.get("enabled")) and supported_timeframes and not selected_timeframes:
+            raise ValueError(
+                f"Enabled QMD capability {calculation.get('name')} requires at least one calculation cadence"
             )
     watchlists = list(section.get("watchlists") or [])
     if not watchlists:
@@ -2124,10 +2145,27 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 "system_required": bool(default_calculation.get("system_required")),
                 "tier": str(default_calculation.get("tier") or "core"),
             })
+            supported_timeframes = list(calculation["timeframes"])
+            selected_timeframes = [
+                str(value)
+                for value in calculation.get("selected_timeframes") or supported_timeframes
+                if str(value) in supported_timeframes
+            ]
+            calculation["selected_timeframes"] = selected_timeframes or supported_timeframes
             if calculation["system_required"]:
                 calculation["enabled"] = True
             merged_calculations.append(calculation)
-        merged_calculations.extend(current_calculations.values())
+        for calculation in current_calculations.values():
+            supported_timeframes = [
+                str(value) for value in calculation.get("timeframes") or [] if str(value)
+            ]
+            selected_timeframes = [
+                str(value)
+                for value in calculation.get("selected_timeframes") or supported_timeframes
+                if str(value) in supported_timeframes
+            ]
+            calculation["selected_timeframes"] = selected_timeframes or supported_timeframes
+            merged_calculations.append(calculation)
         result["market_discovery"]["core_scan"]["calculations"] = merged_calculations
         discovery_calculation_ids = {
             str(row.get("capability_id") or "")

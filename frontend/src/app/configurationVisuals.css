@@ -412,11 +412,52 @@
 .discovery-capability-matrix > article[data-status="required"] .discovery-capability-index { color: var(--configuration-section-accent); }
 .discovery-capability-matrix > article[data-status="modifiable"] .discovery-capability-actions em { color: var(--configuration-section-accent); }
 .discovery-capability-matrix > article[data-status="unavailable"] { background: var(--configuration-soft); opacity: .72; }
+.discovery-capability-dialog-backdrop { background: color-mix(in oklab, var(--foreground) 22%, transparent); padding: 24px; }
+.discovery-capability-dialog { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: min(760px, calc(var(--app-zoomed-viewport-height, 100vh) - 48px)); max-width: min(820px, calc(var(--app-zoomed-viewport-width, 100vw) - 48px)); overflow: hidden; padding: 0; width: min(820px, calc(var(--app-zoomed-viewport-width, 100vw) - 48px)); }
+.discovery-capability-dialog-header { align-items: start; border-bottom: 1px solid var(--configuration-rule); display: flex; justify-content: space-between; padding: 20px 22px; }
+.discovery-capability-dialog-header > div { display: grid; gap: 4px; }
+.discovery-capability-dialog-header span { color: var(--muted-foreground); font-size: 10px; font-weight: 720; letter-spacing: .07em; text-transform: uppercase; }
+.discovery-capability-dialog-header h2 { font-size: 21px; font-weight: 680; margin: 0; }
+.discovery-capability-dialog-header p { color: var(--muted-foreground); font-size: 12px; line-height: 1.5; margin: 0; max-width: 66ch; }
+.discovery-capability-dialog-header > button { align-items: center; background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 7px; color: var(--muted-foreground); cursor: pointer; display: flex; flex: 0 0 auto; height: 34px; justify-content: center; width: 34px; }
+.discovery-capability-dialog-header > button:hover { color: var(--foreground); }
+.discovery-capability-dialog-body { display: grid; gap: 18px; min-height: 0; overflow: auto; padding: 20px 22px; }
+.discovery-capability-dialog-definition { display: grid; gap: 11px; }
+.discovery-capability-dialog-definition > p { color: var(--foreground); font-size: 13px; line-height: 1.55; margin: 0; }
+.discovery-capability-dialog-definition dl { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.discovery-capability-dialog-definition dl > div { border-top: 1px solid var(--configuration-rule); display: grid; gap: 4px; padding-top: 9px; }
+.discovery-capability-dialog-definition dt { color: var(--muted-foreground); font-size: 9.5px; font-weight: 720; letter-spacing: .06em; text-transform: uppercase; }
+.discovery-capability-dialog-definition dd { font-size: 11px; line-height: 1.45; margin: 0; }
+.discovery-capability-dialog-enabled { border: 1px solid var(--configuration-rule); border-radius: 9px; min-height: 66px; padding: 12px 14px; }
+.discovery-capability-dialog-cadences { border: 0; border-top: 1px solid var(--configuration-rule); margin: 0; padding: 17px 0 0; }
+.discovery-capability-dialog-cadences > legend { color: var(--muted-foreground); font-size: 10px; font-weight: 720; letter-spacing: .06em; padding: 0; text-transform: uppercase; }
+.discovery-capability-dialog-cadences > p { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.45; margin: 5px 0 12px; }
+.discovery-capability-dialog-cadences > div { display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.discovery-capability-dialog-cadences label { align-items: center; border: 1px solid var(--configuration-rule); border-radius: 8px; cursor: pointer; display: grid; gap: 9px; grid-template-columns: auto minmax(0, 1fr); min-height: 52px; padding: 8px 10px; }
+.discovery-capability-dialog-cadences label:has(input:checked) { border-color: color-mix(in oklab, var(--configuration-section-accent) 48%, var(--configuration-rule)); }
+.discovery-capability-dialog-cadences label:has(input:disabled) { cursor: not-allowed; opacity: .6; }
+.discovery-capability-dialog-cadences label span { display: grid; gap: 2px; }
+.discovery-capability-dialog-cadences label strong { font-size: 11.5px; }
+.discovery-capability-dialog-cadences label small { color: var(--muted-foreground); font-size: 9px; }
+.discovery-capability-dialog-error { align-items: center; color: var(--danger); display: flex; font-size: 11px; gap: 6px; margin-top: 10px; }
+.discovery-capability-dialog-service-clock { align-items: start; border-top: 1px solid var(--configuration-rule); display: grid; gap: 10px; grid-template-columns: auto minmax(0, 1fr); padding-top: 16px; }
+.discovery-capability-dialog-service-clock svg { color: var(--muted-foreground); }
+.discovery-capability-dialog-service-clock strong { font-size: 12px; }
+.discovery-capability-dialog-service-clock p { color: var(--muted-foreground); font-size: 11px; line-height: 1.45; margin: 3px 0 0; }
+.discovery-capability-dialog-actions { align-items: center; border-top: 1px solid var(--configuration-rule); display: flex; gap: 8px; justify-content: flex-end; padding: 14px 22px; }
 
 @media (max-width: 760px) {
   .discovery-capability-heading { grid-template-columns: minmax(0, 1fr); }
   .discovery-capability-matrix > article { align-items: start; grid-template-columns: 34px minmax(0, 1fr); }
   .discovery-capability-actions { grid-column: 2; justify-content: flex-start; }
+  .discovery-capability-dialog-cadences > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .discovery-capability-dialog-backdrop { padding: 10px; }
+  .discovery-capability-dialog { max-height: calc(var(--app-zoomed-viewport-height, 100vh) - 20px); max-width: calc(var(--app-zoomed-viewport-width, 100vw) - 20px); width: calc(var(--app-zoomed-viewport-width, 100vw) - 20px); }
+  .discovery-capability-dialog-definition dl,
+  .discovery-capability-dialog-cadences > div { grid-template-columns: 1fr; }
 }
 
 .discovery-watchlist-heading { align-items: end; display: flex; justify-content: space-between; }

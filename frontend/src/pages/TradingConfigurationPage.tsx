@@ -407,6 +407,7 @@ type DiscoveryCapability = {
   fields: string[];
   calculation: string;
   timeframes: string[];
+  selected_timeframes: string[];
   enabled: boolean;
   configurable: boolean;
   system_required: boolean;
@@ -473,6 +474,7 @@ function normalizedDiscoveryCapability(capability: DiscoveryCapability): Discove
     fields: value.fields ?? [value.capability_id],
     inputs: value.inputs ?? [value.provider || "QMD"],
     priority: value.priority ?? (value.system_required ? "p0" : "p2"),
+    selected_timeframes: value.selected_timeframes ?? value.timeframes ?? [],
   } as DiscoveryCapability;
 }
 
@@ -1790,12 +1792,14 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
   const [capabilityTypeFilter, setCapabilityTypeFilter] = useState("all");
   const [capabilityStatusFilter, setCapabilityStatusFilter] = useState("all");
   const [capabilityToAddId, setCapabilityToAddId] = useState("");
+  const [editingCapabilityId, setEditingCapabilityId] = useState<string | null>(null);
   const [selectedCapabilityId, setSelectedCapabilityId] = useState(section.core_scan.calculations[0]?.capability_id ?? "");
   const [selectedWatchlistId, setSelectedWatchlistId] = useState(section.watchlists[0]?.watchlist_id ?? "");
   const [watchlistView, setWatchlistView] = useState<"select" | "guided">("select");
   const [watchlistQuestionIndex, setWatchlistQuestionIndex] = useState(0);
   const discoveryCapabilities = useMemo(() => section.core_scan.calculations.map(normalizedDiscoveryCapability), [section.core_scan.calculations]);
   const selectedCapability = discoveryCapabilities.find((row) => row.capability_id === selectedCapabilityId) ?? discoveryCapabilities[0];
+  const editingCapability = discoveryCapabilities.find((row) => row.capability_id === editingCapabilityId) ?? null;
   const selectedWatchlist = section.watchlists.find((row) => row.watchlist_id === selectedWatchlistId) ?? section.watchlists[0];
   const watchlistQuestion = WATCHLIST_GUIDED_STEPS[watchlistQuestionIndex] as WatchlistGuidedStep;
   const groupedCapabilities = useMemo(() => {
@@ -1867,19 +1871,29 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
     setWatchlistQuestionIndex((index) => index + 1);
   }
 
-  function setDiscoveryCapabilityEnabled(capabilityId: string, enabled: boolean) {
-    const capability = section.core_scan.calculations.find((row) => row.capability_id === capabilityId);
-    if (!capability || (!enabled && (capability.system_required || !capability.configurable))) return;
-    const calculations = section.core_scan.calculations.map((row) => row.capability_id === capabilityId ? { ...row, enabled } : row);
+  function replaceDiscoveryCapability(nextCapability: DiscoveryCapability) {
+    const current = section.core_scan.calculations.find((row) => row.capability_id === nextCapability.capability_id);
+    if (!current || !current.configurable || current.system_required) return;
+    const supportedTimeframes = new Set(current.timeframes ?? []);
+    const selectedTimeframes = nextCapability.selected_timeframes.filter((value) => supportedTimeframes.has(value));
+    if (nextCapability.enabled && supportedTimeframes.size && !selectedTimeframes.length) return;
+    const next = { ...current, enabled: nextCapability.enabled, selected_timeframes: selectedTimeframes };
+    const calculations = section.core_scan.calculations.map((row) => row.capability_id === next.capability_id ? next : row);
     const fallbackRankingField = calculations.find((row) => row.enabled && row.capability_id === "liquidity-rank")?.capability_id
       ?? calculations.find((row) => row.enabled && row.system_required)?.capability_id
       ?? "";
-    const watchlists = section.watchlists.map((watchlist) => enabled ? watchlist : {
+    const watchlists = section.watchlists.map((watchlist) => next.enabled ? watchlist : {
       ...watchlist,
-      calculations: watchlist.calculations.filter((id) => id !== capabilityId),
-      ranking_field: watchlist.ranking_field === capabilityId ? fallbackRankingField : watchlist.ranking_field,
+      calculations: watchlist.calculations.filter((id) => id !== next.capability_id),
+      ranking_field: watchlist.ranking_field === next.capability_id ? fallbackRankingField : watchlist.ranking_field,
     });
     onChange({ ...section, core_scan: { ...section.core_scan, calculations }, watchlists });
+  }
+
+  function setDiscoveryCapabilityEnabled(capabilityId: string, enabled: boolean) {
+    const capability = discoveryCapabilities.find((row) => row.capability_id === capabilityId);
+    if (!capability) return;
+    replaceDiscoveryCapability({ ...capability, enabled });
   }
 
   function addDiscoveryCapability() {
@@ -1939,8 +1953,8 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
               const status = !available ? "Unavailable" : capability.system_required ? "Required" : capability.configurable ? capability.enabled ? "Modifiable" : "Available" : "Read only";
               return <article data-status={status.toLowerCase().replaceAll(" ", "-")} key={capability.capability_id}>
                 <span aria-label={`Capability ${index + 1} of ${filteredDiscoveryCapabilities.length}`} className="discovery-capability-index">{index + 1}</span>
-                <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type={capability.capability_type}>{capabilityTypeLabel(capability.capability_type)}</span><span>{capability.priority.toUpperCase()}</span></div><small>{capability.calculation || capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ") || "Service owned"}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.slice(0, 8).join(", ") || capability.output_type}{capability.fields.length > 8 ? ` +${capability.fields.length - 8} more` : ""}</dd></div><div><dt>Cadence</dt><dd>{capability.timeframes.length ? capability.timeframes.join(", ") : "Service clock"}</dd></div></dl></div>
-                <div className="discovery-capability-actions"><em>{status}</em>{removable && capability.enabled ? <button aria-label={`Remove ${capability.name}`} className="button compact danger" onClick={() => setDiscoveryCapabilityEnabled(capability.capability_id, false)} type="button"><Trash2 size={13} /> Remove</button> : null}</div>
+                <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type={capability.capability_type}>{capabilityTypeLabel(capability.capability_type)}</span><span>{capability.priority.toUpperCase()}</span></div><small>{capability.calculation || capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ") || "Service owned"}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.slice(0, 8).join(", ") || capability.output_type}{capability.fields.length > 8 ? ` +${capability.fields.length - 8} more` : ""}</dd></div><div><dt>{capability.enabled ? "Active cadence" : "Supported cadence"}</dt><dd>{(capability.enabled ? capability.selected_timeframes : capability.timeframes).length ? (capability.enabled ? capability.selected_timeframes : capability.timeframes).join(", ") : "Service clock"}</dd></div></dl></div>
+                <div className="discovery-capability-actions"><em>{status}</em>{removable && available ? <button aria-label={`Modify ${capability.name}`} className="button compact secondary" onClick={() => setEditingCapabilityId(capability.capability_id)} type="button"><PencilLine size={13} /> Modify</button> : null}{removable && capability.enabled ? <button aria-label={`Remove ${capability.name}`} className="button compact danger" onClick={() => setDiscoveryCapabilityEnabled(capability.capability_id, false)} type="button"><Trash2 size={13} /> Remove</button> : null}</div>
               </article>;
             })}
             {!filteredDiscoveryCapabilities.length ? <EmptyState title="No matching capabilities" detail="Change the search or predefined filters to show QMD capabilities." /> : null}
@@ -1976,7 +1990,53 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
         {guidedStep === "history" ? <><header className="strategy-identity-intro"><h2>Trace every Watchlist membership change</h2></header><div className="discovery-history-intro"><BadgeCheck size={20} /><div><strong>Append-only membership evidence contract</strong><p>Add, remove, expiry, and manual-override events retain the Watchlist identity, configuration snapshot, event and availability clocks, causal rule, rank, scores, and reason. Current membership will be a projection of this history once the causal resolver is connected.</p></div></div><div className="discovery-history-list">{section.watchlists.flatMap((watchlist) => watchlist.membership_history.map((event, index) => <article key={`${watchlist.watchlist_id}-${index}`}><strong>{String(event.ticker ?? "Unknown symbol")}</strong><span>{watchlist.name}</span><small>{String(event.reason ?? "Membership event")}</small></article>))}{section.watchlists.every((watchlist) => !watchlist.membership_history.length) ? <EmptyState title="No recorded membership events" detail="The runtime resolver is not connected, and session configuration does not fabricate history." /> : null}</div></> : null}
       </section>
     </article>}
+    {editingCapability ? <DiscoveryCapabilityDialog capability={editingCapability} key={editingCapability.capability_id} onCancel={() => setEditingCapabilityId(null)} onSave={(next) => { replaceDiscoveryCapability(next); setEditingCapabilityId(null); }} /> : null}
   </div>;
+}
+
+function DiscoveryCapabilityDialog({ capability, onCancel, onSave }: { capability: DiscoveryCapability; onCancel: () => void; onSave: (value: DiscoveryCapability) => void }) {
+  const titleId = `${useId()}-title`;
+  const descriptionId = `${useId()}-description`;
+  const firstControl = useRef<HTMLInputElement>(null);
+  const onCancelRef = useRef(onCancel);
+  const [draft, setDraft] = useState(capability);
+  onCancelRef.current = onCancel;
+  const hasCadenceSelection = !draft.enabled || !draft.timeframes.length || draft.selected_timeframes.length > 0;
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    firstControl.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onCancelRef.current(); };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+      previouslyFocused?.focus();
+    };
+  }, []);
+  function toggleTimeframe(timeframe: string, selected: boolean) {
+    setDraft((current) => ({
+      ...current,
+      selected_timeframes: selected
+        ? current.timeframes.filter((value) => value === timeframe || current.selected_timeframes.includes(value))
+        : current.selected_timeframes.filter((value) => value !== timeframe),
+    }));
+  }
+  return createPortal(
+    <div className="modal-backdrop discovery-capability-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+      <section aria-describedby={descriptionId} aria-labelledby={titleId} aria-modal="true" className="modal-panel discovery-capability-dialog" role="dialog">
+        <header className="discovery-capability-dialog-header"><div><span>Modify QMD capability</span><h2 id={titleId}>{capability.name}</h2><p id={descriptionId}>Change how this capability participates in the session configuration. Its QMD-owned definition remains fixed.</p></div><button aria-label="Close capability editor" onClick={onCancel} type="button"><X size={18} /></button></header>
+        <div className="discovery-capability-dialog-body">
+          <section className="discovery-capability-dialog-definition"><div className="discovery-capability-title"><span data-type={capability.capability_type}>{capabilityTypeLabel(capability.capability_type)}</span><span>{capability.priority.toUpperCase()}</span></div><p>{capability.calculation || capability.description}</p><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ") || "Service owned"}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.join(", ") || capability.output_type}</dd></div></dl></section>
+          <label className="configuration-field configuration-boolean discovery-capability-dialog-enabled"><span>{draft.tier === "core" ? "Active in Core Scan" : "Available to Watchlists"}</span><small>{draft.tier === "core" ? "When disabled, QMD does not publish this optional Core Scan capability." : "When enabled, Watchlists may select this focused calculation for their current members."}</small><input checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} ref={firstControl} type="checkbox" /></label>
+          {draft.timeframes.length ? <fieldset className="discovery-capability-dialog-cadences"><legend>Calculation cadence</legend><p>Select when QMD calculates and publishes this capability. At least one cadence is required while it is active.</p><div>{draft.timeframes.map((timeframe) => <label key={timeframe}><input checked={draft.selected_timeframes.includes(timeframe)} disabled={!draft.enabled} onChange={(event) => toggleTimeframe(timeframe, event.target.checked)} type="checkbox" /><span><strong>{timeframe}</strong><small>{draft.selected_timeframes.includes(timeframe) ? "Calculated and published" : "Not requested"}</small></span></label>)}</div>{!hasCadenceSelection ? <small className="discovery-capability-dialog-error"><TriangleAlert size={14} /> Select at least one calculation cadence.</small> : null}</fieldset> : <div className="discovery-capability-dialog-service-clock"><Settings2 size={17} /><div><strong>Service-owned publication clock</strong><p>This capability does not expose a configurable cadence.</p></div></div>}
+        </div>
+        <footer className="discovery-capability-dialog-actions"><button className="button secondary" onClick={onCancel} type="button">Cancel</button><button className="button" disabled={!hasCadenceSelection} onClick={() => onSave(draft)} type="button"><Save size={15} /> Save changes</button></footer>
+      </section>
+    </div>,
+    document.body,
+  );
 }
 
 function WatchlistRuleChoices({ capabilities, onChange, ruleSets, watchlist }: { capabilities: DiscoveryCapability[]; onChange: (value: WatchlistConfig) => void; ruleSets: RuleSetDefinition[]; watchlist: WatchlistConfig }) {

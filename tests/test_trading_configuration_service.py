@@ -177,6 +177,31 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "membership TTL must be positive"):
             _validate_market_discovery(discovery)
 
+    def test_market_discovery_validates_selected_calculation_cadences(self) -> None:
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), patch(
+            "src.backend.trading_configuration_service.list_strategy_assignments",
+            return_value=[],
+        ):
+            discovery = deepcopy(_default_draft()["market_discovery"])
+
+        capability = next(
+            row
+            for row in discovery["core_scan"]["calculations"]
+            if row["configurable"] and row["enabled"] and row["timeframes"]
+        )
+        self.assertEqual(capability["selected_timeframes"], capability["timeframes"])
+
+        capability["selected_timeframes"] = ["unsupported-clock"]
+        with self.assertRaisesRegex(ValueError, "unsupported calculation cadences"):
+            _validate_market_discovery(discovery)
+
+        capability["selected_timeframes"] = []
+        with self.assertRaisesRegex(ValueError, "requires at least one calculation cadence"):
+            _validate_market_discovery(discovery)
+
     def test_schema_v14_maps_legacy_disabled_reentry_to_manual_mode(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
