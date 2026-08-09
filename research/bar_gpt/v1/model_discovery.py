@@ -383,6 +383,14 @@ def _ranking_key(metrics: dict[str, float]) -> tuple[float, float, float]:
     )
 
 
+def _resume_if_available(command: list[str], run_root: Path) -> list[str]:
+    checkpoint = run_root / "checkpoints" / "checkpoint_latest.pt"
+    if checkpoint.is_file():
+        print(f"Resuming interrupted run from {checkpoint}", flush=True)
+        return [*command, "--resume-checkpoint", str(checkpoint)]
+    return command
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     if args.workers <= 0:
@@ -483,6 +491,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             seed=int(args.seed),
             run_name=run_name,
         )
+        command = _resume_if_available(command, output_root / "runs" / run_name)
         print(f"[{index}/{len(names)}] starting {name}", flush=True)
         print("Command: " + " ".join(shlex.quote(value) for value in command), flush=True)
         result = subprocess.run(command, cwd=str(Path(__file__).resolve().parents[3]), check=False)
@@ -543,6 +552,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 learning_rate=learning_rate,
                 dropout=dropout,
             )
+            command = _resume_if_available(command, output_root / "runs" / run_name)
             print(f"[quality {quality_index}/{quality_total}] starting {run_key}", flush=True)
             result = subprocess.run(command, cwd=str(Path(__file__).resolve().parents[3]), check=False)
             if result.returncode:

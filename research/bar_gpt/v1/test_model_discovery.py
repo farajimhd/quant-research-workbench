@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from research.bar_gpt.v1.model_discovery import (
     _balanced_sample,
     _held_out_panel,
     _ranking_key,
+    _resume_if_available,
 )
 from research.bar_gpt.v1.offline_shards import OfflineBlockRef, OfflineShardDataset, OfflineShardUnit
 from research.bar_gpt.v1.train import _wandb_metric_key, parse_args
@@ -131,6 +133,15 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "scheduler configuration"):
             second.load_state_dict(state)
+
+    def test_campaign_reuses_latest_checkpoint_after_interruption(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_root = Path(directory)
+            checkpoint = run_root / "checkpoints" / "checkpoint_latest.pt"
+            checkpoint.parent.mkdir(parents=True)
+            checkpoint.touch()
+            command = _resume_if_available(["python", "train"], run_root)
+            self.assertEqual(command[-2:], ["--resume-checkpoint", str(checkpoint)])
 
 
 if __name__ == "__main__":
