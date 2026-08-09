@@ -4286,6 +4286,22 @@
   padding-right: var(--configuration-nesting-gutter);
 }
 
+/* Keep the capability rows narrower than the surrounding Core Scan controls.
+   This more specific rule intentionally wins over the shared stage-child width. */
+.trading-configuration-page .discovery-guided-stage > .discovery-capability-matrix {
+  justify-self: center;
+  max-width: 85%;
+  width: 85%;
+}
+
+@media (max-width: 760px) {
+  .trading-configuration-page .discovery-guided-stage > .discovery-capability-matrix {
+    justify-self: stretch;
+    max-width: 100%;
+    width: 100%;
+  }
+}
+
 /* Retire the former page-specific reading widths. They remain responsive
    because every percentage is resolved against the immediate parent. */
 .trading-configuration-page .strategy-editor-guided .strategy-authoring-stage,
