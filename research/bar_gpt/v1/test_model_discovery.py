@@ -11,12 +11,15 @@ import torch
 from research.bar_gpt.v1.model_discovery import (
     ARCHITECTURE_GRID,
     DISCOVERY_WANDB_PROJECT,
+    DISCOVERY_ORIGIN_BARS_1S,
     _balanced_sample,
     _held_out_panel,
     _ranking_key,
     _resume_if_available,
+    discovery_data_config,
 )
 from research.bar_gpt.v1.offline_shards import OfflineBlockRef, OfflineShardDataset, OfflineShardUnit
+from research.bar_gpt.v1.offline_shards import shard_compatibility_hash
 from research.bar_gpt.v1.train import _wandb_metric_key, parse_args
 from research.mlops.schedulers import SampleWarmupCosineScheduler
 
@@ -69,6 +72,14 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         args = parse_args(("--validation-batches", "0", "--scheduler-mode", "single-cosine"))
         self.assertEqual(args.validation_batches, 0)
         self.assertEqual(args.scheduler_mode, "single-cosine")
+
+    def test_discovery_uses_the_certified_4096_origin_shard_contract(self) -> None:
+        config = discovery_data_config()
+        self.assertEqual(config.origin_bars_1s, DISCOVERY_ORIGIN_BARS_1S)
+        self.assertEqual(
+            shard_compatibility_hash(config),
+            "69764c7c56e67856b8f8fc2a202fb1a61b2366b01387faa5e1a179d4461ce92e",
+        )
 
     def test_ranking_is_quality_first(self) -> None:
         better_loss = {"validation_loss/total": 0.2, "validation_direction/mcc_macro": 0.0}

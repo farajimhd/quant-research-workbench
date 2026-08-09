@@ -9,7 +9,7 @@ import shlex
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -25,6 +25,7 @@ from research.bar_gpt.v1.offline_shards import (
 
 DISCOVERY_CONTRACT_VERSION = 1
 DISCOVERY_WANDB_PROJECT = "bar gpt model discovery"
+DISCOVERY_ORIGIN_BARS_1S = 4_096
 DEFAULT_SHARD_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\model_discovery")
 
@@ -50,6 +51,11 @@ ARCHITECTURE_GRID: tuple[Architecture, ...] = (
     Architecture("width_1024x12", 1024, 12, 16, 8, 8, 4),
     Architecture("xlarge_1024x16", 1024, 16, 16, 8, 8, 4),
 )
+
+
+def discovery_data_config() -> DataConfig:
+    """Return the exact model-ready block contract used by the v3 shards."""
+    return replace(DataConfig(), origin_bars_1s=DISCOVERY_ORIGIN_BARS_1S)
 
 
 def _hash(seed: int, label: str, *values: object) -> bytes:
@@ -185,7 +191,7 @@ def build_discovery_manifest(
     locked_test_origins: int = 5_000_000,
     seed: int = 17,
 ) -> dict[str, Any]:
-    config = DataConfig()
+    config = discovery_data_config()
     training_units = discover_offline_units(
         shard_root,
         config,
@@ -329,6 +335,7 @@ def _trainer_command(
         "--wandb-project", project,
         "--wandb-mode", wandb_mode,
         "--epochs", "2",
+        "--origin-bars-1s", str(DISCOVERY_ORIGIN_BARS_1S),
         "--batch-size", str(architecture.microbatch),
         "--gradient-accumulation-steps", str(architecture.accumulation),
         "--loader-workers", str(workers),
@@ -426,7 +433,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             seed=int(args.seed),
         )
     else:
-        load_discovery_manifest(manifest_path, shard_root=Path(args.shard_root), config=DataConfig())
+        load_discovery_manifest(
+            manifest_path,
+            shard_root=Path(args.shard_root),
+            config=discovery_data_config(),
+        )
         print(f"Reusing verified manifest: {manifest_path}", flush=True)
     state_path = output_root / "campaign_state.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {
