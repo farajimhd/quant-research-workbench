@@ -564,6 +564,21 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ), self.assertRaisesRegex(ValueError, "action authority cap"):
             _validate_draft(draft, require_runtime_ready=False)
 
+    def test_account_mandate_cap_does_not_block_exposure_reducing_exit(self) -> None:
+        draft = self._draft()
+        draft["portfolio"]["mandates"][0]["maximum_action_authority"] = "confirm"
+        draft["run_plans"]["plans"][0]["action_authority"].update({
+            "initial_entry": "confirm",
+            "add": "confirm",
+            "reentry": "confirm",
+            "strategic_exit": "automatic",
+        })
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ):
+            _validate_draft(draft, require_runtime_ready=False)
+
     def test_profile_deletion_persists_despite_unrelated_authority_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

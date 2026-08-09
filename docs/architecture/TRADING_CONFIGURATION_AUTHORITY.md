@@ -28,7 +28,7 @@ The product deliberately separates concepts that were previously grouped under
 | OMS Profile | Reusable versioned execution and protection behavior |
 | Account | Stable application identity mapped to broker or simulated sessions |
 | Portfolio Policy | Reusable account safety, exposure, capital, and loss envelope |
-| Strategy-account mandate | Rule assigning a Run Plan to an account, with allocation topology, risk limits, and a maximum action-authority cap |
+| Strategy-account mandate | Rule assigning a Run Plan to an account, with allocation topology, risk limits, and a maximum authority cap for exposure-increasing actions; exits may remain automatic because they reduce exposure |
 | Watch Universe | Versioned source of symbols that Run Plans may evaluate; configured symbols, an approved Scanner view, or a Watchlist |
 | Watch Universe Resolver | Runtime authority that materializes versioned, point-in-time eligible ticker membership from QMD Scanner or another registered source |
 | Strategy Run Plan | Reusable launch contract combining a Strategy Profile, Watch Universe, environment eligibility, per-action authority, OMS profile, and account mandates |

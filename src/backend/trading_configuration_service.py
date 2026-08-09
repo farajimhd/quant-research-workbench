@@ -1617,7 +1617,7 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         default_authority = str(action_authority.get("default") or "confirm")
         effective_authorities = [
             default_authority if str(action_authority.get(action) or "inherit") == "inherit" else str(action_authority.get(action))
-            for action in ("initial_entry", "add", "reentry", "strategic_exit")
+            for action in ("initial_entry", "add", "reentry")
         ]
         for mandate in enabled_mandates:
             maximum_authority = str(mandate.get("maximum_action_authority") or "manual")
