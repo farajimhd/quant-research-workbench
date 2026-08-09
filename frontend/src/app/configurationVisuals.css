@@ -4276,6 +4276,12 @@
   padding-right: 0;
 }
 
+.trading-configuration-page .discovery-history-intro {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
 .trading-configuration-page .discovery-guided-authoring > :is(
   .strategy-authoring-step-navigation,
   .strategy-authoring-stage
