@@ -41,6 +41,28 @@ RULE_COMPARATORS = {
     "less_than",
 }
 
+STRATEGY_INPUT_SUMMARIES = {
+    "market.last_price": "The most recent causally available market price used to compare the instrument with structural levels, indicators, and protection boundaries.",
+    "market.previous_close": "The completed prior regular-session close used as a stable reference for gaps, returns, and price-location rules.",
+    "market.previous_high": "The completed prior regular-session high used as a reference level for breakout and continuation rules.",
+    "indicator.structure.swing_high": "The latest QMD-confirmed structural high for the selected timeframe, used as resistance and breakout evidence.",
+    "indicator.structure.swing_low": "The latest QMD-confirmed structural low for the selected timeframe, used as support and invalidation evidence.",
+    "indicator.structure.bullish_choch": "A QMD structure event that becomes true when price action confirms a bullish change of character on the selected timeframe.",
+    "indicator.vwap.value": "The selected timeframe's volume-weighted average price, used to judge whether trading occurs above, below, or through accepted value.",
+    "indicator.vwap.slope": "The rate and direction of VWAP movement in basis points per second, used to distinguish rising, flat, and falling value.",
+    "indicator.flow_structure.score": "QMD's signed composite of directional order flow and market structure, used to rank bullish versus bearish alignment.",
+    "indicator.flow_structure.confidence": "QMD's confidence in the current flow-structure composite, used to require stronger evidence before acting on its score.",
+    "indicator.macd.line": "The MACD fast-minus-slow momentum line for the selected timeframe, used to measure directional momentum.",
+    "indicator.macd.signal": "The smoothed MACD signal line for the selected timeframe, used as the comparison baseline for momentum confirmation.",
+    "indicator.macd.histogram": "The distance between the MACD and signal lines, used to measure whether momentum is strengthening or weakening.",
+    "signal.price_volume_expansion.score": "A scored QMD event measuring whether price movement is confirmed by expanding trading activity and volume.",
+    "signal.vwap_transition.score": "A scored QMD event measuring the strength of a price transition through VWAP and subsequent acceptance or rejection.",
+    "signal.flow_price_divergence.score": "A scored QMD event measuring disagreement between directional order flow and observed price movement.",
+    "signal.liquidity_dislocation.score": "A scored QMD event measuring abnormal liquidity loss, spread stress, or order-book displacement.",
+    "signal.company_news.score": "A point-in-time company-news signal summarizing the direction and strength of newly available issuer information.",
+    "signal.sec_filing.score": "A point-in-time SEC filing signal summarizing the direction and strength of newly available issuer disclosures.",
+}
+
 
 def strategy_input_catalog() -> list[dict[str, Any]]:
     """Code-owned strategy inputs and their authoritative runtime projections."""
@@ -2257,7 +2279,10 @@ def _input(
         "value_type": value_type,
         "timeframes": timeframes,
         "parameter": parameter,
-        "summary": f"{label} supplied by {provider}; the configured timeframe is part of the rule contract.",
+        "summary": STRATEGY_INPUT_SUMMARIES.get(
+            source_id,
+            f"{label} supplied by {provider}; the configured timeframe is part of the rule contract.",
+        ),
     }
 
 

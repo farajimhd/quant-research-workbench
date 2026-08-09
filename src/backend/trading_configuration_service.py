@@ -1524,6 +1524,17 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         raise ValueError("Market Discovery requires one Core Scan")
     calculations = list(core_scan.get("calculations") or [])
     calculation_ids = _unique_ids(calculations, "capability_id", "QMD capability")
+    required_calculation_ids = {
+        str(row.get("capability_id") or "")
+        for row in _default_market_discovery([], []).get("core_scan", {}).get("calculations", [])
+        if bool(row.get("system_required"))
+    }
+    missing_required = required_calculation_ids - calculation_ids
+    if missing_required:
+        raise ValueError(
+            "Market Discovery is missing required QMD capabilities: "
+            + ", ".join(sorted(missing_required))
+        )
     rule_set_ids = _unique_ids(
         list(section.get("rule_sets") or []),
         "rule_set_id",
@@ -1994,6 +2005,12 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             capability_id = str(default_calculation.get("capability_id") or "")
             calculation = {**default_calculation, **current_calculations.pop(capability_id, {})}
             calculation.update({
+                "name": str(default_calculation.get("name") or capability_id),
+                "description": str(default_calculation.get("description") or ""),
+                "category": str(default_calculation.get("category") or ""),
+                "provider": str(default_calculation.get("provider") or "QMD"),
+                "output_type": str(default_calculation.get("output_type") or "number"),
+                "timeframes": list(default_calculation.get("timeframes") or []),
                 "configurable": bool(default_calculation.get("configurable")),
                 "system_required": bool(default_calculation.get("system_required")),
                 "tier": str(default_calculation.get("tier") or "core"),

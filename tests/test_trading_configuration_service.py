@@ -12,6 +12,7 @@ from src.backend.trading_configuration_service import (
     _migrate_draft,
     _resolved_source_account_id,
     _validate_draft,
+    _validate_market_discovery,
     approved_configuration,
     capability_catalog,
     configuration_base,
@@ -70,6 +71,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             legacy = _default_draft()
         legacy["schema_version"] = 6
+        for capability in legacy["market_discovery"]["core_scan"]["calculations"]:
+            if capability["name"] == "Last price":
+                capability["description"] = "Legacy repeated provider copy."
         legacy["strategy"]["profiles"][0]["lifecycle"]["trading_behavior"][
             "adopt_manual_positions"
         ] = True
@@ -94,6 +98,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         }
         self.assertTrue(capabilities["Last price"]["system_required"])
         self.assertFalse(capabilities["Last price"]["configurable"])
+        self.assertIn("causally available market price", capabilities["Last price"]["description"])
         self.assertTrue(capabilities["Company news score"]["configurable"])
         self.assertFalse(capabilities["Company news score"]["system_required"])
         lifecycle = migrated["strategy"]["profiles"][0]["lifecycle"]
@@ -121,6 +126,25 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             migrated_intent["protection_profile"],
             migrated_oms["protection_profile_id"],
         )
+
+    def test_market_discovery_rejects_removal_of_required_capability(self) -> None:
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), patch(
+            "src.backend.trading_configuration_service.list_strategy_assignments",
+            return_value=[],
+        ):
+            discovery = deepcopy(_default_draft()["market_discovery"])
+
+        discovery["core_scan"]["calculations"] = [
+            row
+            for row in discovery["core_scan"]["calculations"]
+            if row["capability_id"] != "market.last_price"
+        ]
+
+        with self.assertRaisesRegex(ValueError, "missing required QMD capabilities"):
+            _validate_market_discovery(discovery)
 
     def test_schema_v14_maps_legacy_disabled_reentry_to_manual_mode(self) -> None:
         with patch(
