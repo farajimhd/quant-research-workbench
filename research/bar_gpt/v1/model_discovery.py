@@ -63,13 +63,102 @@ def _hash(seed: int, label: str, *values: object) -> bytes:
     return hashlib.sha256(raw.encode("utf-8")).digest()
 
 
-def enumerate_block_refs(units: Sequence[OfflineShardUnit]) -> tuple[OfflineBlockRef, ...]:
-    refs: list[OfflineBlockRef] = []
+def _balanced_units(
+    units: Sequence[OfflineShardUnit],
+    *,
+    units_per_ticker: int,
+    seed: int,
+    label: str,
+) -> tuple[OfflineShardUnit, ...]:
+    """Select time-spread ticker-months before opening multi-gigabyte shards."""
+    by_ticker: dict[str, list[OfflineShardUnit]] = {}
     for unit in units:
+        by_ticker.setdefault(unit.unit_key.partition(":")[0], []).append(unit)
+    selected: list[OfflineShardUnit] = []
+    for ticker in sorted(by_ticker):
+        ordered = sorted(by_ticker[ticker], key=lambda unit: unit.unit_key)
+        count = min(int(units_per_ticker), len(ordered))
+        for slot in range(count):
+            left = slot * len(ordered) // count
+            right = max(left + 1, (slot + 1) * len(ordered) // count)
+            segment = ordered[left:right]
+            selected.append(min(segment, key=lambda unit: _hash(seed, label, ticker, unit.unit_key)))
+    return tuple(selected)
+
+
+def enumerate_block_refs(
+    units: Sequence[OfflineShardUnit],
+    *,
+    label: str = "panel",
+    cache_path: Path | None = None,
+) -> tuple[OfflineBlockRef, ...]:
+    units = tuple(units)
+    unit_keys_hash = hashlib.sha256(
+        "\n".join(unit.unit_key for unit in units).encode("utf-8")
+    ).hexdigest()
+    cached: dict[str, tuple[OfflineBlockRef, ...]] = {}
+    rewrite_cache = False
+    if cache_path is not None and cache_path.is_file():
+        lines = cache_path.read_text(encoding="utf-8").splitlines()
+        try:
+            header = json.loads(lines[0])
+            if (
+                int(header.get("contract_version", -1)) == DISCOVERY_CONTRACT_VERSION
+                and header.get("unit_keys_hash") == unit_keys_hash
+            ):
+                for line in lines[1:]:
+                    try:
+                        row = json.loads(line)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        rewrite_cache = True
+                        break
+                    key = str(row["unit_key"])
+                    if key in cached:
+                        raise RuntimeError(f"duplicate cached shard index row: {key}")
+                    cached[key] = tuple(OfflineBlockRef(**item) for item in row["refs"])
+            else:
+                print(f"Discarding incompatible cached {label} shard index", flush=True)
+                rewrite_cache = True
+        except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            print(f"Discarding incomplete cached {label} shard index", flush=True)
+            cached = {}
+            rewrite_cache = True
+    if cache_path is not None and (not cache_path.is_file() or rewrite_cache):
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        header = json.dumps({
+                "contract_version": DISCOVERY_CONTRACT_VERSION,
+                "unit_keys_hash": unit_keys_hash,
+                "units": len(units),
+                "label": label,
+            }, sort_keys=True)
+        rows = [header]
+        rows.extend(
+            json.dumps({
+                "unit_key": key,
+                "refs": [asdict(ref) for ref in values],
+            }, separators=(",", ":"))
+            for key, values in cached.items()
+        )
+        temporary = cache_path.with_suffix(cache_path.suffix + f".tmp.{os.getpid()}")
+        temporary.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        os.replace(temporary, cache_path)
+    refs: list[OfflineBlockRef] = []
+    started = time.perf_counter()
+    for index, unit in enumerate(units, start=1):
+        if unit.unit_key in cached:
+            unit_refs = cached[unit.unit_key]
+            refs.extend(unit_refs)
+            print(
+                f"Indexing {label} shards {index:,}/{len(units):,}: "
+                f"{unit.unit_key} cached | blocks={len(refs):,}",
+                flush=True,
+            )
+            continue
         shard = load_shard(unit.path)
+        unit_refs: list[OfflineBlockRef] = []
         for session_index, session in enumerate(shard["sessions"]):
             for block_index, block in enumerate(session["blocks"]):
-                refs.append(OfflineBlockRef(
+                unit_refs.append(OfflineBlockRef(
                     unit_key=unit.unit_key,
                     session_index=session_index,
                     block_index=block_index,
@@ -82,6 +171,24 @@ def enumerate_block_refs(units: Sequence[OfflineShardUnit]) -> tuple[OfflineBloc
                     unit_index=int(block["unit_index"]),
                     block_offset=int(block["block_offset"]),
                 ))
+        refs.extend(unit_refs)
+        del shard
+        if cache_path is not None:
+            with cache_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "unit_key": unit.unit_key,
+                    "refs": [asdict(ref) for ref in unit_refs],
+                }, separators=(",", ":")) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        elapsed = max(time.perf_counter() - started, 1e-9)
+        rate = index / elapsed
+        eta = (len(units) - index) / rate if rate else 0.0
+        print(
+            f"Indexing {label} shards {index:,}/{len(units):,}: {unit.unit_key} | "
+            f"blocks={len(refs):,} rate={rate:.2f} shards/s eta={eta / 60:.1f}m",
+            flush=True,
+        )
     return tuple(refs)
 
 
@@ -207,8 +314,35 @@ def build_discovery_manifest(
         start_date="2026-01-01",
         end_date="2026-08-01",
     )
-    training_refs = enumerate_block_refs(training_units)
-    held_out_refs = enumerate_block_refs(held_out_units)
+    selected_training_units = _balanced_units(
+        training_units,
+        units_per_ticker=3,
+        seed=seed,
+        label="train_units",
+    )
+    selected_held_out_units = _balanced_units(
+        held_out_units,
+        units_per_ticker=2,
+        seed=seed,
+        label="held_out_units",
+    )
+    index_root = output_path.parent / "manifest_index_v1"
+    print(
+        f"Selected {len(selected_training_units):,}/{len(training_units):,} training shards "
+        f"and {len(selected_held_out_units):,}/{len(held_out_units):,} held-out shards "
+        "using deterministic time-stratified ticker coverage",
+        flush=True,
+    )
+    training_refs = enumerate_block_refs(
+        selected_training_units,
+        label="training",
+        cache_path=index_root / "training.jsonl",
+    )
+    held_out_refs = enumerate_block_refs(
+        selected_held_out_units,
+        label="held-out",
+        cache_path=index_root / "held_out.jsonl",
+    )
     train = _balanced_sample(
         training_refs,
         target_origins=train_origins,

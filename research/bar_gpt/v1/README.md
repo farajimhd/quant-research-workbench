@@ -355,6 +355,12 @@ training origins, 5 million validation origins after each epoch, and a separate
 panels reserve disjoint ticker-dates. Every evaluation consumes its complete
 manifest panel; it is never truncated by model microbatch size.
 
+Manifest construction first selects three time-spread months per training
+ticker and two months per held-out ticker, rather than opening every shard in
+the catalog. It prints per-shard rate and ETA while indexing. Completed shard
+indices are durably cached under `model_discovery/manifest_index_v1`, so an
+interrupted manifest build resumes without reopening completed shards.
+
 The architecture stage contains eight width/depth shapes from 384x8 through
 1024x16, with an effective batch of 32 blocks for every run. Each model sees the
 same manifest for two epochs, a 4-million-origin warm-up, and one cosine decay

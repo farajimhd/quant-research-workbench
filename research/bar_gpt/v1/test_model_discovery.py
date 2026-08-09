@@ -13,6 +13,8 @@ from research.bar_gpt.v1.model_discovery import (
     DISCOVERY_WANDB_PROJECT,
     DISCOVERY_ORIGIN_BARS_1S,
     _balanced_sample,
+    _balanced_units,
+    enumerate_block_refs,
     _held_out_panel,
     _ranking_key,
     _resume_if_available,
@@ -61,6 +63,63 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         monitor_dates = {(item.ticker, item.local_date) for item in monitor}
         validation_dates = {(item.ticker, item.local_date) for item in validation}
         self.assertFalse(monitor_dates & validation_dates)
+
+    def test_shard_preselection_is_ticker_balanced_and_time_spread(self) -> None:
+        units = tuple(
+            OfflineShardUnit(
+                unit_key=f"{ticker}:2020-{month:02d}",
+                path=Path(f"{ticker}-{month}.pt"),
+                sessions=1,
+                blocks=1,
+                origins=100,
+                stable_unit_index=month,
+                condition_positive_counts=(0, 0, 0, 0),
+            )
+            for ticker in ("AAA", "BBB")
+            for month in range(1, 13)
+        )
+        selected = _balanced_units(units, units_per_ticker=3, seed=17, label="train")
+        self.assertEqual(len(selected), 6)
+        for ticker in ("AAA", "BBB"):
+            months = sorted(int(unit.unit_key[-2:]) for unit in selected if unit.unit_key.startswith(ticker))
+            self.assertTrue(1 <= months[0] <= 4)
+            self.assertTrue(5 <= months[1] <= 8)
+            self.assertTrue(9 <= months[2] <= 12)
+
+    def test_block_index_cache_avoids_reopening_completed_shards(self) -> None:
+        unit = OfflineShardUnit(
+            unit_key="AAA:2020-01",
+            path=Path("unused.pt"),
+            sessions=1,
+            blocks=1,
+            origins=100,
+            stable_unit_index=7,
+            condition_positive_counts=(0, 0, 0, 0),
+        )
+        shard = {
+            "sessions": [{
+                "ticker": "AAA",
+                "local_date": "2020-01-02",
+                "blocks": [{
+                    "origin_indices": torch.arange(100),
+                    "activity_regime": 1,
+                    "session_phase": "regular_midday",
+                    "has_condition_target": False,
+                    "unit_index": 7,
+                    "block_offset": 0,
+                }],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "index.jsonl"
+            with patch("research.bar_gpt.v1.model_discovery.load_shard", return_value=shard):
+                first = enumerate_block_refs((unit,), label="test", cache_path=cache)
+            with patch(
+                "research.bar_gpt.v1.model_discovery.load_shard",
+                side_effect=AssertionError("cache should avoid shard reopen"),
+            ):
+                repeated = enumerate_block_refs((unit,), label="test", cache_path=cache)
+        self.assertEqual(first, repeated)
 
     def test_metric_namespaces_remain_separate_at_wandb_first_level(self) -> None:
         for namespace in ("monitor", "validation", "locked_test"):
