@@ -4447,9 +4447,12 @@
   padding-right: var(--configuration-nesting-gutter);
 }
 
-/* Keep the capability rows narrower than the surrounding Core Scan controls.
+/* Keep the capability filters and the rows they control on one shared column.
    This more specific rule intentionally wins over the shared stage-child width. */
-.trading-configuration-page .discovery-guided-stage > .discovery-capability-matrix {
+.trading-configuration-page .discovery-guided-stage > :is(
+  .discovery-capability-filters,
+  .discovery-capability-matrix
+) {
   justify-self: center;
   max-width: 85%;
   width: 85%;
@@ -4471,7 +4474,10 @@
 }
 
 @media (max-width: 760px) {
-  .trading-configuration-page .discovery-guided-stage > .discovery-capability-matrix,
+  .trading-configuration-page .discovery-guided-stage > :is(
+    .discovery-capability-filters,
+    .discovery-capability-matrix
+  ),
   .trading-configuration-page .discovery-watchlist-selection > :is(
     .discovery-watchlist-create,
     .discovery-watchlist-available
