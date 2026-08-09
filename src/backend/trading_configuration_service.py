@@ -1333,13 +1333,66 @@ def _strategy_input_capability_type(source_id: str) -> str:
     return "system"
 
 
+def _pending_text_intelligence_label_capabilities() -> list[dict[str, Any]]:
+    """Expose future causal label signals without claiming runtime support.
+
+    TODO(text-intelligence-label-events): After the canonical News and SEC label
+    event contracts are finalized, connect their validated event projections to
+    StrategyObservation.news_labeled/sec_labeled, retain label provenance in
+    source_signal_ids, and promote these rows to ``implemented``. Do not derive
+    either flag from process health or from the mere arrival of source text.
+    """
+
+    return [
+        {
+            "capability_id": source_id,
+            "name": name,
+            "description": description,
+            "category": "Text Intelligence labels",
+            "provider": "Text Intelligence",
+            "output_type": "boolean",
+            "capability_type": "signal",
+            "priority": "p1",
+            "availability": "integration_pending",
+            "inputs": inputs,
+            "fields": [runtime_field],
+            "calculation": description,
+            "timeframes": ["event"],
+            "selected_timeframes": ["event"],
+            "enabled": False,
+            "configurable": False,
+            "system_required": False,
+            "tier": "core",
+        }
+        for source_id, name, runtime_field, inputs, description in [
+            (
+                "signal.news_labeled",
+                "News labeled",
+                "news_labeled",
+                ["causally available company-news event", "validated Text Intelligence news label"],
+                "Turns true only on a news event for which Text Intelligence publishes a valid point-in-time label. Missing, failed, stale, or unavailable labeling remains false.",
+            ),
+            (
+                "signal.sec_labeled",
+                "SEC labeled",
+                "sec_labeled",
+                ["causally available SEC filing event", "validated Text Intelligence SEC label"],
+                "Turns true only on an SEC event for which Text Intelligence publishes a valid point-in-time label. Missing, failed, stale, or unavailable labeling remains false.",
+            ),
+        ]
+    ]
+
+
 def _default_market_discovery(
     runtime_assignments: list[dict[str, Any]],
     rule_sets: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """QMD-owned discovery configuration exposed without moving calculations into Strategy."""
 
-    calculation_rows: list[dict[str, Any]] = _qmd_family_capabilities()
+    calculation_rows: list[dict[str, Any]] = [
+        *_qmd_family_capabilities(),
+        *_pending_text_intelligence_label_capabilities(),
+    ]
     seen: set[str] = {str(row["capability_id"]) for row in calculation_rows}
     for source in strategy_input_catalog():
         capability_id = str(source.get("source_id") or "")

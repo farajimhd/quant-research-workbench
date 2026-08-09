@@ -111,6 +111,15 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(capabilities["Bullish change of character"]["capability_type"], "signal")
         self.assertEqual(capabilities["Company news score"]["capability_type"], "signal")
         self.assertEqual(capabilities["News observations"]["capability_type"], "event")
+        self.assertEqual(capabilities["News labeled"]["capability_type"], "signal")
+        self.assertEqual(capabilities["News labeled"]["tier"], "core")
+        self.assertEqual(capabilities["News labeled"]["availability"], "integration_pending")
+        self.assertFalse(capabilities["News labeled"]["enabled"])
+        self.assertFalse(capabilities["News labeled"]["configurable"])
+        self.assertEqual(capabilities["SEC labeled"]["capability_type"], "signal")
+        self.assertEqual(capabilities["SEC labeled"]["tier"], "core")
+        self.assertEqual(capabilities["SEC labeled"]["availability"], "integration_pending")
+        self.assertFalse(capabilities["SEC labeled"]["enabled"])
         self.assertEqual(
             migrated["market_discovery"]["watchlists"][0]["membership_expiry"],
             "end_of_trading_day",

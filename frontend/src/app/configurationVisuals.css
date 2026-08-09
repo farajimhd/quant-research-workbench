@@ -411,7 +411,8 @@
 .discovery-capability-actions em { color: var(--muted-foreground); font-size: 10px; font-style: normal; font-weight: 650; white-space: nowrap; }
 .discovery-capability-matrix > article[data-status="required"] .discovery-capability-index { color: var(--configuration-section-accent); }
 .discovery-capability-matrix > article[data-status="modifiable"] .discovery-capability-actions em { color: var(--configuration-section-accent); }
-.discovery-capability-matrix > article[data-status="unavailable"] { background: var(--configuration-soft); opacity: .72; }
+.discovery-capability-matrix > article[data-status="unavailable"],
+.discovery-capability-matrix > article[data-status="integration-pending"] { background: var(--configuration-soft); opacity: .72; }
 .discovery-capability-dialog-backdrop { background: color-mix(in oklab, var(--foreground) 22%, transparent); padding: 24px; }
 .discovery-capability-dialog { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: min(760px, calc(var(--app-zoomed-viewport-height, 100vh) - 48px)); max-width: min(820px, calc(var(--app-zoomed-viewport-width, 100vw) - 48px)); overflow: hidden; padding: 0; width: min(820px, calc(var(--app-zoomed-viewport-width, 100vw) - 48px)); }
 .discovery-capability-dialog-header { align-items: start; border-bottom: 1px solid var(--configuration-rule); display: flex; justify-content: space-between; padding: 20px 22px; }

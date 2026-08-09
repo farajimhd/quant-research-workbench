@@ -61,6 +61,8 @@ STRATEGY_INPUT_SUMMARIES = {
     "signal.liquidity_dislocation.score": "A scored QMD event measuring abnormal liquidity loss, spread stress, or order-book displacement.",
     "signal.company_news.score": "A point-in-time company-news signal summarizing the direction and strength of newly available issuer information.",
     "signal.sec_filing.score": "A point-in-time SEC filing signal summarizing the direction and strength of newly available issuer disclosures.",
+    "signal.news_labeled": "True only for a causally available news event that Text Intelligence successfully labeled under its validated contract; service health or an unlabeled event never turns it on.",
+    "signal.sec_labeled": "True only for a causally available SEC event that Text Intelligence successfully labeled under its validated contract; service health or an unlabeled filing never turns it on.",
 }
 
 
@@ -87,6 +89,8 @@ def strategy_input_catalog() -> list[dict[str, Any]]:
         _input("signal.liquidity_dislocation.score", "Liquidity dislocation score", "QMD market signal", "qmd", "liquidity_dislocation_score", "score", ["100ms"], parameter="score"),
         _input("signal.company_news.score", "Company news score", "News signal", "news", "news_score", "score", ["event"], parameter="score"),
         _input("signal.sec_filing.score", "SEC filing score", "SEC signal", "sec", "sec_filing_score", "score", ["event"], parameter="score"),
+        _input("signal.news_labeled", "News labeled", "Text Intelligence signal", "text-intelligence", "news_labeled", "boolean", ["event"], parameter="labeled"),
+        _input("signal.sec_labeled", "SEC labeled", "Text Intelligence signal", "text-intelligence", "sec_labeled", "boolean", ["event"], parameter="labeled"),
     ]
 
 
@@ -273,6 +277,13 @@ class StrategyObservation:
     vwap_transition_score: float = 0.0
     news_score: float = 0.0
     sec_filing_score: float = 0.0
+    # TODO(text-intelligence-label-events): Populate these flags only after the
+    # canonical News and SEC label-event contracts are finalized. The adapter
+    # must require validated point-in-time label evidence, preserve its event id
+    # in source_signal_ids, and leave the flag false for unavailable, failed, or
+    # merely service-healthy states.
+    news_labeled: bool = False
+    sec_labeled: bool = False
     flow_price_divergence_score: float = 0.0
     liquidity_dislocation_score: float = 0.0
     volatility: float = 0.0

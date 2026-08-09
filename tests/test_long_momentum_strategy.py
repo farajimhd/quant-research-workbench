@@ -22,6 +22,7 @@ from src.trading_runtime.strategy_engine import (
     default_long_momentum_parameters,
     evaluate_entry_decision_rules,
     long_momentum_strategy_definition,
+    strategy_input_catalog,
     strategy_rule_timeframes,
 )
 from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner, RuntimeIbkrStrategyOrderPlanner
@@ -100,6 +101,12 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertIn("signal.sec_filing.score", {
             row["source_id"] for row in config["input_catalog"]
         })
+        catalog = {row["source_id"]: row for row in strategy_input_catalog()}
+        self.assertEqual(catalog["signal.news_labeled"]["runtime_field"], "news_labeled")
+        self.assertEqual(catalog["signal.news_labeled"]["value_type"], "boolean")
+        self.assertEqual(catalog["signal.sec_labeled"]["runtime_field"], "sec_labeled")
+        self.assertFalse(confirmed_observation().news_labeled)
+        self.assertFalse(confirmed_observation().sec_labeled)
 
     def test_flat_campaign_evaluates_only_updates_referenced_by_entry_rules(self) -> None:
         parameters = default_long_momentum_parameters()

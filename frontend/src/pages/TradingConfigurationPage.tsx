@@ -402,7 +402,7 @@ type DiscoveryCapability = {
   output_type: string;
   capability_type: "market_data" | "indicator" | "signal" | "event" | "reference" | "system";
   priority: "p0" | "p1" | "p2" | "p3";
-  availability: "implemented" | "planned_realtime" | "strategy_specific" | "offline_only" | "reference_only";
+  availability: "implemented" | "integration_pending" | "planned_realtime" | "strategy_specific" | "offline_only" | "reference_only";
   inputs: string[];
   fields: string[];
   calculation: string;
@@ -1950,7 +1950,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
             {filteredDiscoveryCapabilities.map((capability, index) => {
               const removable = capability.configurable && !capability.system_required;
               const available = ["implemented", "reference_only"].includes(capability.availability);
-              const status = !available ? "Unavailable" : capability.system_required ? "Required" : capability.configurable ? capability.enabled ? "Modifiable" : "Available" : "Read only";
+              const status = capability.availability === "integration_pending" ? "Integration pending" : !available ? "Unavailable" : capability.system_required ? "Required" : capability.configurable ? capability.enabled ? "Modifiable" : "Available" : "Read only";
               return <article data-status={status.toLowerCase().replaceAll(" ", "-")} key={capability.capability_id}>
                 <span aria-label={`Capability ${index + 1} of ${filteredDiscoveryCapabilities.length}`} className="discovery-capability-index">{index + 1}</span>
                 <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type={capability.capability_type}>{capabilityTypeLabel(capability.capability_type)}</span><span>{capability.priority.toUpperCase()}</span></div><small>{capability.calculation || capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ") || "Service owned"}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.slice(0, 8).join(", ") || capability.output_type}{capability.fields.length > 8 ? ` +${capability.fields.length - 8} more` : ""}</dd></div><div><dt>{capability.enabled ? "Active cadence" : "Supported cadence"}</dt><dd>{(capability.enabled ? capability.selected_timeframes : capability.timeframes).length ? (capability.enabled ? capability.selected_timeframes : capability.timeframes).join(", ") : "Service clock"}</dd></div></dl></div>
