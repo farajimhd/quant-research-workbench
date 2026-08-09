@@ -19,6 +19,7 @@ from research.bar_gpt.v1.model_discovery import (
     _ranking_key,
     _resume_if_available,
     discovery_data_config,
+    discovery_shard_compatibility_hash,
 )
 from research.bar_gpt.v1.offline_shards import OfflineBlockRef, OfflineShardDataset, OfflineShardUnit
 from research.bar_gpt.v1.offline_shards import shard_compatibility_hash
@@ -139,6 +140,13 @@ class ModelDiscoveryContractTest(unittest.TestCase):
             shard_compatibility_hash(config),
             "69764c7c56e67856b8f8fc2a202fb1a61b2366b01387faa5e1a179d4461ce92e",
         )
+
+    def test_manifest_hash_survives_runtime_condition_target_masking(self) -> None:
+        config = discovery_data_config()
+        certified_hash = discovery_shard_compatibility_hash(config)
+        config.condition_target_active = (False, True, False, True)
+        self.assertEqual(discovery_shard_compatibility_hash(config), certified_hash)
+        self.assertNotEqual(shard_compatibility_hash(config), certified_hash)
 
     def test_ranking_is_quality_first(self) -> None:
         better_loss = {"validation_loss/total": 0.2, "validation_direction/mcc_macro": 0.0}

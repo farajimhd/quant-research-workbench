@@ -58,6 +58,22 @@ def discovery_data_config() -> DataConfig:
     return replace(DataConfig(), origin_bars_1s=DISCOVERY_ORIGIN_BARS_1S)
 
 
+def discovery_shard_compatibility_hash(config: DataConfig) -> str:
+    """Hash only the immutable shard contract used by discovery manifests.
+
+    Training preflight updates ``condition_target_active`` from positive-count
+    evidence after the shards and manifest have already been certified.  That
+    flag controls loss masking only; it cannot change a stored shard tensor.
+    Normalize it to the build-time value so the manifest remains valid across
+    that runtime transition.
+    """
+    storage_config = replace(
+        config,
+        condition_target_active=(True, True, True, True),
+    )
+    return shard_compatibility_hash(storage_config)
+
+
 def _hash(seed: int, label: str, *values: object) -> bytes:
     raw = "|".join((str(seed), label, *(str(value) for value in values)))
     return hashlib.sha256(raw.encode("utf-8")).digest()
@@ -382,7 +398,7 @@ def build_discovery_manifest(
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "seed": seed,
         "shard_root": str(shard_root),
-        "shard_config_hash": shard_compatibility_hash(config),
+        "shard_config_hash": discovery_shard_compatibility_hash(config),
         "ranges": {"train": ["2019-01-01", "2021-01-01"], "held_out": ["2026-01-01", "2026-08-01"]},
         "targets": {
             "train_origins_per_epoch": train_origins,
@@ -408,7 +424,7 @@ def load_discovery_manifest(path: Path, *, shard_root: Path, config: DataConfig)
         raise RuntimeError("unsupported BarGPT discovery manifest contract")
     if Path(value.get("shard_root", "")) != shard_root:
         raise RuntimeError("discovery manifest shard root does not match the requested shard root")
-    if value.get("shard_config_hash") != shard_compatibility_hash(config):
+    if value.get("shard_config_hash") != discovery_shard_compatibility_hash(config):
         raise RuntimeError("discovery manifest is incompatible with the configured shard contract")
     stored_hash = str(value.get("manifest_hash", ""))
     unsigned = dict(value)
