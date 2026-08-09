@@ -423,6 +423,8 @@ type WatchlistConfig = {
   calculations: string[];
   membership_history: Array<Record<string, unknown>>;
 };
+const WATCHLIST_GUIDED_STEPS = ["identity", "rules", "ranking", "timing", "overrides", "calculations", "review"] as const;
+type WatchlistGuidedStep = typeof WATCHLIST_GUIDED_STEPS[number];
 type MarketDiscoverySection = {
   security_universe: { universe_id: string; name: string; description: string; enabled: boolean; configurable: boolean };
   core_scan: { scan_id: string; name: string; description: string; refresh_interval_ms: number; published: boolean; calculations: DiscoveryCapability[] };
@@ -1744,8 +1746,11 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
   const [capabilityToAddId, setCapabilityToAddId] = useState("");
   const [selectedCapabilityId, setSelectedCapabilityId] = useState(section.core_scan.calculations[0]?.capability_id ?? "");
   const [selectedWatchlistId, setSelectedWatchlistId] = useState(section.watchlists[0]?.watchlist_id ?? "");
+  const [watchlistView, setWatchlistView] = useState<"select" | "guided">("select");
+  const [watchlistQuestionIndex, setWatchlistQuestionIndex] = useState(0);
   const selectedCapability = section.core_scan.calculations.find((row) => row.capability_id === selectedCapabilityId) ?? section.core_scan.calculations[0];
   const selectedWatchlist = section.watchlists.find((row) => row.watchlist_id === selectedWatchlistId) ?? section.watchlists[0];
+  const watchlistQuestion = WATCHLIST_GUIDED_STEPS[watchlistQuestionIndex] as WatchlistGuidedStep;
   const groupedCapabilities = useMemo(() => {
     const groups = new Map<string, DiscoveryCapability[]>();
     const query = capabilityQuery.trim().toLocaleLowerCase();
@@ -1784,6 +1789,22 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
     };
     onChange({ ...section, watchlists: [...section.watchlists, next] });
     setSelectedWatchlistId(watchlistId);
+    setWatchlistQuestionIndex(0);
+    setWatchlistView("guided");
+  }
+
+  function configureWatchlist(watchlistId: string) {
+    setSelectedWatchlistId(watchlistId);
+    setWatchlistQuestionIndex(0);
+    setWatchlistView("guided");
+  }
+
+  function nextWatchlistQuestion() {
+    if (watchlistQuestionIndex >= WATCHLIST_GUIDED_STEPS.length - 1) {
+      setWatchlistView("select");
+      return;
+    }
+    setWatchlistQuestionIndex((index) => index + 1);
   }
 
   function setDiscoveryCapabilityEnabled(capabilityId: string, enabled: boolean) {
@@ -1860,27 +1881,33 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
             })}
           </div>
         </> : null}
-        {guidedStep === "watchlists" && selectedWatchlist ? <>
-          <header className="strategy-identity-intro discovery-watchlist-heading"><h2>Configure reusable Watchlists</h2><button className="button compact" onClick={addWatchlist} type="button"><Plus size={14} /> New Watchlist</button></header>
-          <p className="configuration-safety-note discovery-runtime-notice"><TriangleAlert size={15} /> QMD rule membership is stored and published, but automatic causal membership resolution is not yet connected to trading runtime. Until that resolver exists, publication compiles only the explicit manual inclusion snapshot and remains fail-closed for unresolved symbols.</p>
-          <div className="discovery-watchlist-layout">
-            <nav>{section.watchlists.map((watchlist) => <button aria-current={watchlist.watchlist_id === selectedWatchlist.watchlist_id ? "true" : undefined} key={watchlist.watchlist_id} onClick={() => setSelectedWatchlistId(watchlist.watchlist_id)} type="button"><strong>{watchlist.name}</strong><small>{watchlist.maximum_size} members · {watchlist.refresh_interval_ms} ms</small></button>)}</nav>
-            <div className="strategy-identity-fields">
-              <label className="strategy-identity-field"><span>Watchlist name</span><input onChange={(event) => replaceWatchlist({ ...selectedWatchlist, name: event.target.value })} value={selectedWatchlist.name} /><small>Used when a Strategy selects its discovery source.</small></label>
-              <label className="strategy-identity-field"><span>Description</span><textarea onChange={(event) => replaceWatchlist({ ...selectedWatchlist, description: event.target.value })} rows={3} value={selectedWatchlist.description} /><small>Explain which candidates this Watchlist is intended to retain.</small></label>
-              <div className="configuration-field-grid">
-                <SelectField help="QMD sorts passing candidates by this published observation before applying maximum membership." label="Ranking field" onChange={(ranking_field) => replaceWatchlist({ ...selectedWatchlist, ranking_field })} options={section.core_scan.calculations.filter((row) => row.enabled).map((row) => ({ label: row.name, value: row.capability_id }))} value={selectedWatchlist.ranking_field} />
-                <NumberField help="Maximum current membership after ranking and exclusions." label="Maximum members" minimum={1} onChange={(maximum_size) => replaceWatchlist({ ...selectedWatchlist, maximum_size })} step={1} unit="symbols" value={selectedWatchlist.maximum_size} />
-                <NumberField help="How often QMD resolves the Watchlist from its source scan." label="Refresh interval" minimum={1} onChange={(refresh_interval_ms) => replaceWatchlist({ ...selectedWatchlist, refresh_interval_ms })} step={100} unit="ms" value={selectedWatchlist.refresh_interval_ms} />
-                <NumberField help="How long membership remains valid without a confirming refresh. Zero means no automatic expiry." label="Membership TTL" minimum={0} onChange={(membership_ttl_ms) => replaceWatchlist({ ...selectedWatchlist, membership_ttl_ms })} step={1000} unit="ms" value={selectedWatchlist.membership_ttl_ms} />
-                <TextField help="Comma-separated symbols forced into membership. Every override is recorded in membership history." label="Manual inclusions" onChange={(value) => replaceWatchlist({ ...selectedWatchlist, manual_inclusions: value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean) })} value={selectedWatchlist.manual_inclusions.join(", ")} />
-                <TextField help="Comma-separated symbols excluded after rules pass. Every override is recorded in membership history." label="Manual exclusions" onChange={(value) => replaceWatchlist({ ...selectedWatchlist, manual_exclusions: value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean) })} value={selectedWatchlist.manual_exclusions.join(", ")} />
-              </div>
-              <WatchlistRuleChoices onChange={replaceWatchlist} ruleSets={section.rule_sets} watchlist={selectedWatchlist} />
-              <fieldset className="configuration-choice-set discovery-calculation-choices"><legend>Focused calculations</legend><p>These higher-cost calculations are designated for current Watchlist members when causal QMD membership resolution is available.</p><div>{section.core_scan.calculations.filter((row) => row.tier === "watchlist" && row.enabled).map((capability) => <label key={capability.capability_id}><input checked={selectedWatchlist.calculations.includes(capability.capability_id)} onChange={(event) => replaceWatchlist({ ...selectedWatchlist, calculations: event.target.checked ? [...selectedWatchlist.calculations, capability.capability_id] : selectedWatchlist.calculations.filter((id) => id !== capability.capability_id) })} type="checkbox" /><span><strong>{capability.name}</strong><small>{capability.description}</small></span></label>)}</div></fieldset>
-            </div>
+        {guidedStep === "watchlists" ? watchlistView === "select" ? <div className="discovery-watchlist-selection">
+          <section className="discovery-watchlist-create" aria-label="Create a Watchlist">
+            <span>Create a Watchlist</span>
+            <button onClick={addWatchlist} type="button"><span><Plus size={17} /></span><span><strong>New Watchlist</strong><small>Build candidate membership from the Core Scan</small></span><ArrowRight size={15} /></button>
+          </section>
+          <section className="discovery-watchlist-available" aria-label="Available Watchlists">
+            <header><span>Available Watchlists</span><h2>Choose a Watchlist to configure</h2><p>Open an existing Watchlist or create one above. Configuration starts after you choose.</p></header>
+            <div>{section.watchlists.map((watchlist) => <article key={watchlist.watchlist_id}><span className="discovery-watchlist-card-icon"><ScanSearch size={17} /></span><span><strong>{watchlist.name}</strong><small>{watchlist.description || "No description yet."}</small><em>{watchlist.maximum_size} members · refreshes every {watchlist.refresh_interval_ms} ms</em></span><button className="button compact" onClick={() => configureWatchlist(watchlist.watchlist_id)} type="button">Configure <ArrowRight size={13} /></button></article>)}{section.watchlists.length === 0 ? <EmptyState title="No Watchlists configured" detail="Create a Watchlist to define how QMD narrows Core Scan candidates for strategies." /> : null}</div>
+          </section>
+          <p className="configuration-safety-note discovery-runtime-notice"><TriangleAlert size={15} /> Automatic causal membership resolution is not connected to trading runtime. Publication remains fail-closed and uses only explicit manual inclusions until the resolver is available.</p>
+        </div> : selectedWatchlist ? <div className="discovery-watchlist-guide">
+          <header className="discovery-watchlist-editor-toolbar"><button className="button compact" onClick={() => setWatchlistView("select")} type="button"><ArrowLeft size={14} /> All Watchlists</button><span><strong>{selectedWatchlist.name}</strong><small>Guided configuration</small></span></header>
+          <div className="discovery-watchlist-step-navigation">
+            <button aria-label="Previous Watchlist question" className="button compact discovery-watchlist-direction" disabled={watchlistQuestionIndex === 0} onClick={() => setWatchlistQuestionIndex((index) => Math.max(0, index - 1))} type="button"><ArrowLeft size={14} /> Previous</button>
+            <nav aria-label="Watchlist configuration steps">{([['identity', '1', 'Identity'], ['rules', '2', 'Rules'], ['ranking', '3', 'Ranking'], ['timing', '4', 'Timing'], ['overrides', '5', 'Overrides'], ['calculations', '6', 'Calculations'], ['review', '7', 'Review']] as const).map(([id, number, label], index) => <button aria-current={watchlistQuestion === id ? "step" : undefined} key={id} onClick={() => setWatchlistQuestionIndex(index)} type="button"><span>{number}</span><strong>{label}</strong></button>)}</nav>
+            <button aria-label={watchlistQuestion === "review" ? "Finish Watchlist configuration" : "Next Watchlist question"} className="button compact primary discovery-watchlist-direction" onClick={nextWatchlistQuestion} type="button">{watchlistQuestion === "review" ? "Done" : "Next"} <ArrowRight size={14} /></button>
           </div>
-        </> : null}
+          <section className="discovery-watchlist-question">
+            {watchlistQuestion === "identity" ? <><header><h2>Name and describe this Watchlist</h2></header><div className="strategy-identity-fields"><label className="strategy-identity-field"><span>Watchlist name</span><input onChange={(event) => replaceWatchlist({ ...selectedWatchlist, name: event.target.value })} value={selectedWatchlist.name} /><small>Strategies use this name when selecting their discovery source.</small></label><label className="strategy-identity-field"><span>Description</span><textarea onChange={(event) => replaceWatchlist({ ...selectedWatchlist, description: event.target.value })} rows={3} value={selectedWatchlist.description} /><small>Explain which candidates this Watchlist is intended to retain.</small></label><label className="configuration-field configuration-boolean"><span>Enabled</span><small>Controls whether this Watchlist is enabled in the published configuration. Runtime membership resolution remains fail-closed until its resolver is connected.</small><input checked={selectedWatchlist.enabled} onChange={(event) => replaceWatchlist({ ...selectedWatchlist, enabled: event.target.checked })} type="checkbox" /></label></div></> : null}
+            {watchlistQuestion === "rules" ? <><header><h2>Which candidates may enter or must be excluded?</h2></header><WatchlistRuleChoices onChange={replaceWatchlist} ruleSets={section.rule_sets} watchlist={selectedWatchlist} /></> : null}
+            {watchlistQuestion === "ranking" ? <><header><h2>How should passing candidates be ranked and limited?</h2></header><div className="configuration-field-grid"><SelectField help="QMD sorts passing candidates by this published observation before applying maximum membership." label="Ranking field" onChange={(ranking_field) => replaceWatchlist({ ...selectedWatchlist, ranking_field })} options={section.core_scan.calculations.filter((row) => row.enabled).map((row) => ({ description: row.description, label: row.name, value: row.capability_id }))} searchable value={selectedWatchlist.ranking_field} /><NumberField help="Maximum current membership after ranking and exclusions." label="Maximum members" minimum={1} onChange={(maximum_size) => replaceWatchlist({ ...selectedWatchlist, maximum_size })} step={1} unit="symbols" value={selectedWatchlist.maximum_size} /></div></> : null}
+            {watchlistQuestion === "timing" ? <><header><h2>How often should membership be refreshed and expire?</h2></header><div className="configuration-field-grid"><NumberField help="How often QMD resolves the Watchlist from its source scan." label="Refresh interval" minimum={1} onChange={(refresh_interval_ms) => replaceWatchlist({ ...selectedWatchlist, refresh_interval_ms })} step={100} unit="ms" value={selectedWatchlist.refresh_interval_ms} /><NumberField help="How long membership remains valid without a confirming refresh. Zero means no automatic expiry." label="Membership TTL" minimum={0} onChange={(membership_ttl_ms) => replaceWatchlist({ ...selectedWatchlist, membership_ttl_ms })} step={1000} unit="ms" value={selectedWatchlist.membership_ttl_ms} /></div></> : null}
+            {watchlistQuestion === "overrides" ? <><header><h2>Which symbols should always be included or excluded?</h2></header><div className="configuration-field-grid"><TextField help="Comma-separated symbols forced into membership. Every override is recorded in membership history." label="Manual inclusions" onChange={(value) => replaceWatchlist({ ...selectedWatchlist, manual_inclusions: value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean) })} value={selectedWatchlist.manual_inclusions.join(", ")} /><TextField help="Comma-separated symbols excluded after rules pass. Every override is recorded in membership history." label="Manual exclusions" onChange={(value) => replaceWatchlist({ ...selectedWatchlist, manual_exclusions: value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean) })} value={selectedWatchlist.manual_exclusions.join(", ")} /></div></> : null}
+            {watchlistQuestion === "calculations" ? <><header><h2>Which focused calculations should run for members?</h2></header><fieldset className="configuration-choice-set discovery-calculation-choices"><legend>Focused calculations</legend><p>These higher-cost calculations run only for current Watchlist members when causal QMD membership resolution is available.</p><div>{section.core_scan.calculations.filter((row) => row.tier === "watchlist" && row.enabled).map((capability) => <label key={capability.capability_id}><input checked={selectedWatchlist.calculations.includes(capability.capability_id)} onChange={(event) => replaceWatchlist({ ...selectedWatchlist, calculations: event.target.checked ? [...selectedWatchlist.calculations, capability.capability_id] : selectedWatchlist.calculations.filter((id) => id !== capability.capability_id) })} type="checkbox" /><span><strong>{capability.name}</strong><small>{capability.description}</small></span></label>)}</div></fieldset></> : null}
+            {watchlistQuestion === "review" ? <><header><h2>Review this Watchlist</h2></header><div className="discovery-watchlist-review"><article><span>Source</span><strong>{section.core_scan.name}</strong><small>Core Scan candidates</small></article><article><span>Membership</span><strong>Up to {selectedWatchlist.maximum_size} symbols</strong><small>Refreshes every {selectedWatchlist.refresh_interval_ms} ms</small></article><article><span>Rules</span><strong>{selectedWatchlist.inclusion_rule_sets.length} include · {selectedWatchlist.exclusion_rule_sets.length} exclude</strong><small>{selectedWatchlist.manual_inclusions.length} manual inclusions · {selectedWatchlist.manual_exclusions.length} manual exclusions</small></article><article><span>Focused work</span><strong>{selectedWatchlist.calculations.length} calculations</strong><small>{selectedWatchlist.enabled ? "Enabled in this configuration" : "Disabled in this configuration"}</small></article></div></> : null}
+          </section>
+        </div> : <EmptyState title="Watchlist unavailable" detail="Return to the Watchlist list and choose another configuration." /> : null}
         {guidedStep === "history" ? <><header className="strategy-identity-intro"><h2>Trace every Watchlist membership change</h2></header><div className="discovery-history-intro"><BadgeCheck size={20} /><div><strong>Append-only membership evidence contract</strong><p>Add, remove, expiry, and manual-override events retain the Watchlist identity, configuration snapshot, event and availability clocks, causal rule, rank, scores, and reason. Current membership will be a projection of this history once the causal resolver is connected.</p></div></div><div className="discovery-history-list">{section.watchlists.flatMap((watchlist) => watchlist.membership_history.map((event, index) => <article key={`${watchlist.watchlist_id}-${index}`}><strong>{String(event.ticker ?? "Unknown symbol")}</strong><span>{watchlist.name}</span><small>{String(event.reason ?? "Membership event")}</small></article>))}{section.watchlists.every((watchlist) => !watchlist.membership_history.length) ? <EmptyState title="No recorded membership events" detail="The runtime resolver is not connected, and session configuration does not fabricate history." /> : null}</div></> : null}
       </section>
     </article>}
