@@ -24,10 +24,12 @@ def build_model_mermaid() -> str:
       G["Autoregressive heads\\nnext-bar reconstruction per intraday view"]
       H["Physical horizon head\\n6 horizons x 14 target channels x quantiles"]
       I["Availability heads\\nvalidity and event-risk masks"]
+      J["Direction heads\\nneutral-aware up/down logits"]
       A --> B --> C --> D --> E --> F
       F --> G
       F --> H
       F --> I
+      F --> J
     """
 
 
@@ -161,9 +163,11 @@ class BarGPTOutput:
     embeddings: torch.Tensor
     scale_embeddings: dict[str, torch.Tensor]
     autoregressive: dict[str, torch.Tensor]
+    autoregressive_direction_logits: dict[str, torch.Tensor]
     latent_predictions: dict[str, torch.Tensor]
     horizon_quantiles: torch.Tensor | None
     horizon_availability_logits: torch.Tensor | None
+    horizon_direction_logits: torch.Tensor | None
 
 
 class ContinuousTimeframeEmbedding(nn.Module):
@@ -210,6 +214,7 @@ class BarGPTV1(nn.Module):
             raise ValueError("target_dim must leave room for continuous and availability targets")
         self.autoregressive_continuous_head = nn.Linear(config.d_model, self.continuous_target_dim, bias=False)
         self.autoregressive_availability_head = nn.Linear(config.d_model, AVAILABILITY_TARGET_COUNT, bias=True)
+        self.autoregressive_direction_head = nn.Linear(config.d_model, 1, bias=True)
         self.latent_prediction_head = nn.Linear(config.d_model, config.d_model, bias=False)
         self.horizon_embedding = nn.Embedding(config.max_horizons, config.horizon_rank)
         self.horizon_state = nn.Linear(config.d_model, config.horizon_rank, bias=False)
@@ -220,6 +225,7 @@ class BarGPTV1(nn.Module):
         )
 
         self.horizon_availability_head = nn.Linear(config.horizon_rank, AVAILABILITY_TARGET_COUNT, bias=True)
+        self.horizon_direction_head = nn.Linear(config.horizon_rank, 1, bias=True)
 
     def encode(
         self,
@@ -280,6 +286,7 @@ class BarGPTV1(nn.Module):
             attention_windows=attention_windows,
         )
         autoregressive = {}
+        autoregressive_direction_logits = {}
         latent_predictions = {}
         for name in AUTOREGRESSIVE_VIEW_NAMES:
             if name not in encoded:
@@ -291,10 +298,12 @@ class BarGPTV1(nn.Module):
                 (self.autoregressive_continuous_head(state[:, :-1]), self.autoregressive_availability_head(state[:, :-1])),
                 dim=-1,
             )
+            autoregressive_direction_logits[name] = self.autoregressive_direction_head(state[:, :-1]).squeeze(-1)
         for name, state in encoded.items():
             latent_predictions[name] = self.latent_prediction_head(state[:, :-1])
         quantiles = None
         availability_logits = None
+        direction_logits = None
         if horizon_ids is not None:
             if horizon_ids.ndim != 1:
                 raise ValueError("horizon_ids must have shape [H]")
@@ -315,13 +324,16 @@ class BarGPTV1(nn.Module):
             else:
                 quantiles = raw_quantiles
             availability_logits = self.horizon_availability_head(conditioned)
+            direction_logits = self.horizon_direction_head(conditioned).squeeze(-1)
         return BarGPTOutput(
             embeddings=fused,
             scale_embeddings=encoded,
             autoregressive=autoregressive,
+            autoregressive_direction_logits=autoregressive_direction_logits,
             latent_predictions=latent_predictions,
             horizon_quantiles=quantiles,
             horizon_availability_logits=availability_logits,
+            horizon_direction_logits=direction_logits,
         )
 
     def embed(

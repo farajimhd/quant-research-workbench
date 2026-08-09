@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 import torch
 
-from research.bar_gpt.v1.data import BarGPTBatch
+from research.bar_gpt.v1.data import AUTOREGRESSIVE_VIEW_NAMES, BarGPTBatch
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.model import BarGPTOutput
 from research.bar_gpt.v1.objectives import BarGPTLoss
@@ -58,6 +58,18 @@ def _macro(values: list[float]) -> float:
     return float(sum(finite) / len(finite)) if finite else float("nan")
 
 
+def _direction_scores(confusion: torch.Tensor) -> tuple[float, float, float]:
+    tp, tn, fp, fn = (float(value) for value in confusion)
+    tpr = tp / (tp + fn) if tp + fn else float("nan")
+    tnr = tn / (tn + fp) if tn + fp else float("nan")
+    balanced = _macro([tpr, tnr])
+    total = tp + tn + fp + fn
+    accuracy = (tp + tn) / total if total else float("nan")
+    denominator = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    mcc = ((tp * tn) - (fp * fn)) / denominator if denominator else float("nan")
+    return accuracy, balanced, mcc
+
+
 @dataclass(slots=True)
 class ValidationAccumulator:
     horizons_us: tuple[int, ...]
@@ -67,6 +79,7 @@ class ValidationAccumulator:
     include_condition_metrics: bool = True
     include_ranking_metrics: bool = True
     include_confidence_metrics: bool = True
+    direction_neutral_bps: float = 1.0
     weighted_metrics: dict[str, float] = field(default_factory=dict)
     metric_weight: float = 0.0
     origins: int = 0
@@ -76,6 +89,11 @@ class ValidationAccumulator:
     zero_endpoint_abs_error_bps: torch.Tensor | None = None
     persistence_endpoint_abs_error_bps: torch.Tensor | None = None
     direction_confusion: torch.Tensor | None = None
+    direction_neutral_count: torch.Tensor | None = None
+    direction_total_count: torch.Tensor | None = None
+    autoregressive_direction_confusion: dict[str, torch.Tensor] = field(default_factory=dict)
+    autoregressive_direction_neutral_count: dict[str, float] = field(default_factory=dict)
+    autoregressive_direction_total_count: dict[str, float] = field(default_factory=dict)
     binary_brier: torch.Tensor | None = None
     binary_count: torch.Tensor | None = None
     coverage_hits: torch.Tensor | None = None
@@ -97,10 +115,39 @@ class ValidationAccumulator:
                 leaf = key.removeprefix("train/").removeprefix("loss_")
                 if leaf == "loss":
                     leaf = "total"
-                name = f"{self.namespace}_loss/{leaf}"
+                ar_view_leaf = leaf.removeprefix("ar_")
+                group = (
+                    f"{self.namespace}_loss_ar_views"
+                    if ar_view_leaf in AUTOREGRESSIVE_VIEW_NAMES
+                    else f"{self.namespace}_loss"
+                )
+                name = f"{group}/{leaf}"
                 self.weighted_metrics[name] = self.weighted_metrics.get(name, 0.0) + float(value) * weight
+        transformed_threshold = math.asinh(float(self.direction_neutral_bps) / 100.0)
+        for name, logits in output.autoregressive_direction_logits.items():
+            target = batch.autoregressive_targets[name][:, : logits.shape[1], 0]
+            valid = batch.autoregressive_mask[name][:, : logits.shape[1], 0]
+            directional = valid & (target.abs() > transformed_threshold)
+            predicted_positive = logits.detach() > 0
+            target_positive = target > transformed_threshold
+            confusion = torch.stack(
+                (
+                    (predicted_positive & target_positive & directional).sum(),
+                    ((~predicted_positive) & (~target_positive) & directional).sum(),
+                    (predicted_positive & (~target_positive) & directional).sum(),
+                    ((~predicted_positive) & target_positive & directional).sum(),
+                )
+            ).double().cpu()
+            previous = self.autoregressive_direction_confusion.get(name)
+            self.autoregressive_direction_confusion[name] = confusion if previous is None else previous + confusion
+            total = float(valid.sum())
+            neutral = float((valid & ~directional).sum())
+            self.autoregressive_direction_total_count[name] = self.autoregressive_direction_total_count.get(name, 0.0) + total
+            self.autoregressive_direction_neutral_count[name] = self.autoregressive_direction_neutral_count.get(name, 0.0) + neutral
         if output.horizon_quantiles is None or output.horizon_availability_logits is None:
             return
+        if output.horizon_direction_logits is None:
+            raise RuntimeError("physical-horizon direction logits are required for metrics")
         assert batch.horizon_targets is not None and batch.horizon_mask is not None
         continuous_target = batch.horizon_targets[..., :CONTINUOUS_TARGET_COUNT]
         continuous_mask = batch.horizon_mask[..., :CONTINUOUS_TARGET_COUNT] & batch.origin_mask[:, :, None, None]
@@ -152,18 +199,23 @@ class ValidationAccumulator:
             else self.persistence_endpoint_abs_error_bps + persistence_error_sum
         )
 
-        predicted_positive = endpoint_prediction >= 0
-        target_positive = endpoint_target >= 0
+        directional_mask = endpoint_mask & (endpoint_target.abs() > transformed_threshold)
+        predicted_positive = output.horizon_direction_logits.detach() > 0
+        target_positive = endpoint_target > transformed_threshold
         confusion = torch.stack(
             (
-                (predicted_positive & target_positive & endpoint_mask).sum((0, 1)),
-                ((~predicted_positive) & (~target_positive) & endpoint_mask).sum((0, 1)),
-                (predicted_positive & (~target_positive) & endpoint_mask).sum((0, 1)),
-                ((~predicted_positive) & target_positive & endpoint_mask).sum((0, 1)),
+                (predicted_positive & target_positive & directional_mask).sum((0, 1)),
+                ((~predicted_positive) & (~target_positive) & directional_mask).sum((0, 1)),
+                (predicted_positive & (~target_positive) & directional_mask).sum((0, 1)),
+                ((~predicted_positive) & target_positive & directional_mask).sum((0, 1)),
             ),
             dim=-1,
         ).double().cpu()
         self.direction_confusion = confusion if self.direction_confusion is None else self.direction_confusion + confusion
+        neutral_count = (endpoint_mask & ~directional_mask).sum((0, 1)).double().cpu()
+        total_count = endpoint_mask.sum((0, 1)).double().cpu()
+        self.direction_neutral_count = neutral_count if self.direction_neutral_count is None else self.direction_neutral_count + neutral_count
+        self.direction_total_count = total_count if self.direction_total_count is None else self.direction_total_count + total_count
 
         endpoint_quantiles = output.horizon_quantiles[..., 0, :].detach()
         coverage_hits = (
@@ -187,23 +239,23 @@ class ValidationAccumulator:
 
         if self.include_ranking_metrics or self.include_confidence_metrics:
             for horizon_index in range(len(self.horizons_us)):
-                selected = endpoint_mask[:, :, horizon_index]
-                if not torch.any(selected):
-                    continue
                 if self.include_ranking_metrics:
-                    self.endpoint_scores.setdefault(horizon_index, []).append(
-                        predicted_bps[:, :, horizon_index][selected].detach().float().cpu()
-                    )
-                    self.endpoint_targets.setdefault(horizon_index, []).append(
-                        target_bps[:, :, horizon_index][selected].detach().float().cpu()
-                    )
-                if self.include_confidence_metrics:
+                    selected = endpoint_mask[:, :, horizon_index]
+                    if torch.any(selected):
+                        self.endpoint_scores.setdefault(horizon_index, []).append(
+                            predicted_bps[:, :, horizon_index][selected].detach().float().cpu()
+                        )
+                        self.endpoint_targets.setdefault(horizon_index, []).append(
+                            target_bps[:, :, horizon_index][selected].detach().float().cpu()
+                        )
+                directional = directional_mask[:, :, horizon_index]
+                if self.include_confidence_metrics and torch.any(directional):
                     self.direction_confidence.setdefault(horizon_index, []).append(
-                        predicted_bps[:, :, horizon_index][selected].abs().detach().float().cpu()
+                        output.horizon_direction_logits[:, :, horizon_index][directional].abs().detach().float().cpu()
                     )
                     self.direction_correct.setdefault(horizon_index, []).append(
-                        (predicted_positive[:, :, horizon_index][selected]
-                         == target_positive[:, :, horizon_index][selected]).detach().cpu()
+                        (predicted_positive[:, :, horizon_index][directional]
+                         == target_positive[:, :, horizon_index][directional]).detach().cpu()
                     )
 
         if self.include_condition_metrics:
@@ -226,6 +278,27 @@ class ValidationAccumulator:
         metrics = {key: value / self.metric_weight for key, value in self.weighted_metrics.items()}
         metrics[f"{self.namespace}_data/origins"] = float(self.origins)
         metrics[f"{self.namespace}_data/batches"] = float(self.batches)
+        ar_accuracy_values: list[float] = []
+        ar_balanced_values: list[float] = []
+        ar_mcc_values: list[float] = []
+        ar_neutral_values: list[float] = []
+        for name in sorted(self.autoregressive_direction_confusion):
+            accuracy, balanced, mcc = _direction_scores(self.autoregressive_direction_confusion[name])
+            total = self.autoregressive_direction_total_count[name]
+            neutral_fraction = self.autoregressive_direction_neutral_count[name] / total if total else float("nan")
+            metrics[f"{self.namespace}_ar_direction_accuracy/accuracy_{name}"] = accuracy
+            metrics[f"{self.namespace}_ar_direction_balanced/balanced_accuracy_{name}"] = balanced
+            metrics[f"{self.namespace}_ar_direction_mcc/mcc_{name}"] = mcc
+            metrics[f"{self.namespace}_ar_direction_neutral/neutral_fraction_{name}"] = neutral_fraction
+            ar_accuracy_values.append(accuracy)
+            ar_balanced_values.append(balanced)
+            ar_mcc_values.append(mcc)
+            ar_neutral_values.append(neutral_fraction)
+        if ar_accuracy_values:
+            metrics[f"{self.namespace}_ar_direction_accuracy/accuracy_macro"] = _macro(ar_accuracy_values)
+            metrics[f"{self.namespace}_ar_direction_balanced/balanced_accuracy_macro"] = _macro(ar_balanced_values)
+            metrics[f"{self.namespace}_ar_direction_mcc/mcc_macro"] = _macro(ar_mcc_values)
+            metrics[f"{self.namespace}_ar_direction_neutral/neutral_fraction_macro"] = _macro(ar_neutral_values)
         if self.endpoint_abs_error_bps is None or self.endpoint_count is None:
             return metrics
 
@@ -235,7 +308,9 @@ class ValidationAccumulator:
         coverage = self.coverage_hits / self.coverage_count.clamp_min(1)
         brier = self.binary_brier / self.binary_count.clamp_min(1)
         balanced_values: list[float] = []
+        accuracy_values: list[float] = []
         mcc_values: list[float] = []
+        neutral_values: list[float] = []
         mae_values: list[float] = []
         brier_values: list[float] = []
         calibration_values: list[float] = []
@@ -263,16 +338,17 @@ class ValidationAccumulator:
             zero_skill_values.append(zero_skill)
             brier_values.append(brier_value)
 
-            tp, tn, fp, fn = (float(value) for value in self.direction_confusion[horizon_index])
-            tpr = tp / (tp + fn) if tp + fn else float("nan")
-            tnr = tn / (tn + fp) if tn + fp else float("nan")
-            balanced = _macro([tpr, tnr])
-            denominator = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
-            mcc = ((tp * tn) - (fp * fn)) / denominator if denominator else float("nan")
+            accuracy, balanced, mcc = _direction_scores(self.direction_confusion[horizon_index])
+            direction_total = float(self.direction_total_count[horizon_index])
+            neutral_fraction = float(self.direction_neutral_count[horizon_index]) / direction_total if direction_total else float("nan")
+            metrics[f"{self.namespace}_direction_accuracy/accuracy_{label}"] = accuracy
             metrics[f"{self.namespace}_direction/balanced_accuracy_{label}"] = balanced
             metrics[f"{self.namespace}_direction/mcc_{label}"] = mcc
+            metrics[f"{self.namespace}_direction_neutral/neutral_fraction_{label}"] = neutral_fraction
+            accuracy_values.append(accuracy)
             balanced_values.append(balanced)
             mcc_values.append(mcc)
+            neutral_values.append(neutral_fraction)
 
             errors = []
             for quantile_index, quantile in enumerate(self.quantiles):
@@ -307,8 +383,10 @@ class ValidationAccumulator:
         metrics[f"{self.namespace}_baseline/persistence_mae_bps_macro"] = _macro(persistence_mae_values)
         metrics[f"{self.namespace}_return/mae_skill_vs_zero_macro"] = _macro(zero_skill_values)
         metrics[f"{self.namespace}_availability/brier_macro"] = _macro(brier_values)
+        metrics[f"{self.namespace}_direction_accuracy/accuracy_macro"] = _macro(accuracy_values)
         metrics[f"{self.namespace}_direction/balanced_accuracy_macro"] = _macro(balanced_values)
         metrics[f"{self.namespace}_direction/mcc_macro"] = _macro(mcc_values)
+        metrics[f"{self.namespace}_direction_neutral/neutral_fraction_macro"] = _macro(neutral_values)
         metrics[f"{self.namespace}_calibration/error_macro"] = _macro(calibration_values)
         for quantile_index, quantile in enumerate(self.quantiles):
             quantile_label = f"q{int(round(quantile * 100)):02d}"

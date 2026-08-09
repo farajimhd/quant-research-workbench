@@ -23,9 +23,11 @@ from research.bar_gpt.v1.offline_shards import (
 )
 
 
-DISCOVERY_CONTRACT_VERSION = 1
+DISCOVERY_CONTRACT_VERSION = 2
 DISCOVERY_WANDB_PROJECT = "bar gpt model discovery"
 DISCOVERY_ORIGIN_BARS_1S = 4_096
+DISCOVERY_TRAIN_ORIGINS_PER_EPOCH = 100_000_000
+DISCOVERY_EPOCHS = 2
 DEFAULT_SHARD_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\model_discovery")
 
@@ -308,7 +310,7 @@ def build_discovery_manifest(
     *,
     shard_root: Path,
     output_path: Path,
-    train_origins: int = 200_000_000,
+    train_origins: int = DISCOVERY_TRAIN_ORIGINS_PER_EPOCH,
     monitor_origins: int = 500_000,
     validation_origins: int = 5_000_000,
     locked_test_origins: int = 5_000_000,
@@ -484,7 +486,7 @@ def _trainer_command(
         "--run-name", run_name,
         "--wandb-project", project,
         "--wandb-mode", wandb_mode,
-        "--epochs", "2",
+        "--epochs", str(DISCOVERY_EPOCHS),
         "--origin-bars-1s", str(DISCOVERY_ORIGIN_BARS_1S),
         "--batch-size", str(architecture.microbatch),
         "--gradient-accumulation-steps", str(architecture.accumulation),
@@ -496,6 +498,8 @@ def _trainer_command(
         "--dropout", str(dropout),
         "--learning-rate", str(learning_rate),
         "--weight-decay", "0.1",
+        "--direction-weight", "0.1",
+        "--direction-neutral-bps", "1.0",
         "--warmup-samples", "4000000",
         "--minimum-learning-rate", "0.00003",
         "--scheduler-mode", "single-cosine",
@@ -531,11 +535,12 @@ def _final_validation_metrics(run_root: Path) -> dict[str, float]:
     return result
 
 
-def _ranking_key(metrics: dict[str, float]) -> tuple[float, float, float]:
-    """Quality-first ranking; direction and return error break close loss ties."""
+def _ranking_key(metrics: dict[str, float]) -> tuple[float, float, float, float]:
+    """Quality-first ranking; both direction paths and return error break close loss ties."""
     return (
         metrics.get("validation_loss/total", float("inf")),
         -metrics.get("validation_direction/mcc_macro", float("-inf")),
+        -metrics.get("validation_ar_direction_mcc/mcc_macro", float("-inf")),
         metrics.get("validation_return/mae_bps_macro", float("inf")),
     )
 
@@ -560,10 +565,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     if unknown:
         raise ValueError(f"unknown architectures: {unknown}")
     output_root = Path(args.output_root)
-    manifest_path = output_root / "fixed_panels_v1.json"
+    manifest_path = output_root / "fixed_panels_v2.json"
     print(f"W&B project: {args.wandb_project}", flush=True)
     print("Metric namespaces: monitor_*, validation_*, locked_test_*", flush=True)
-    print("Fixed campaign: 200M train origins x 2 epochs; 500K monitor / 25M; 5M validation / epoch; 5M locked test for finalists", flush=True)
+    print(
+        f"Fixed campaign: {DISCOVERY_TRAIN_ORIGINS_PER_EPOCH // 1_000_000}M train origins x "
+        f"{DISCOVERY_EPOCHS} epochs ({DISCOVERY_TRAIN_ORIGINS_PER_EPOCH * DISCOVERY_EPOCHS // 1_000_000}M total); "
+        "500K monitor / 25M; 5M validation / epoch; 5M locked test for finalists",
+        flush=True,
+    )
     if not args.execute:
         print(f"Manifest: {manifest_path}", flush=True)
         for name in names:
@@ -589,9 +599,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             config=discovery_data_config(),
         )
         print(f"Reusing verified manifest: {manifest_path}", flush=True)
-    state_path = output_root / "campaign_state.json"
+    state_path = output_root / "campaign_state_v2.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {
-        "contract_version": 1,
+        "contract_version": DISCOVERY_CONTRACT_VERSION,
         "campaign_id": time.strftime("%Y%m%d-%H%M%S"),
         "manifest": str(manifest_path),
         "runs": {},
@@ -658,7 +668,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 print(f"[quality {quality_index}/{quality_total}] {run_key}: already complete", flush=True)
                 continue
             # The architecture-grid anchor already used this exact recipe; reuse
-            # its completed run instead of spending another 400M exposures.
+            # its completed run instead of spending another 200M exposures.
             if learning_rate == 3e-4 and dropout == 0.08:
                 runs[run_key] = runs[f"architecture/{architecture_name}"]
                 state["runs"] = runs

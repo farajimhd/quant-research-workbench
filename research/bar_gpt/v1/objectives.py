@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 
 from dataclasses import dataclass
@@ -74,11 +76,33 @@ def _mixed_point_loss(
     return continuous, availability
 
 
+def _direction_loss(
+    logits: torch.Tensor,
+    endpoint_target: torch.Tensor,
+    endpoint_mask: torch.Tensor,
+    sample_weights: torch.Tensor,
+    neutral_bps: float,
+) -> torch.Tensor:
+    """Binary up/down loss outside a configurable neutral return band."""
+    if logits.shape != endpoint_target.shape or endpoint_target.shape != endpoint_mask.shape:
+        raise ValueError("direction logits, endpoint targets, and masks must have identical shapes")
+    transformed_threshold = math.asinh(float(neutral_bps) / 100.0)
+    directional_mask = endpoint_mask & (endpoint_target.abs() > transformed_threshold)
+    labels = endpoint_target > transformed_threshold
+    loss = torch.nn.functional.binary_cross_entropy_with_logits(
+        logits,
+        labels.to(logits.dtype),
+        reduction="none",
+    )
+    return _weighted_mean(loss, directional_mask, sample_weights)
+
+
 def compute_loss(output: BarGPTOutput, batch: BarGPTBatch, config: TrainConfig, quantiles: tuple[float, ...]) -> BarGPTLoss:
     if batch.horizon_targets is None or batch.horizon_mask is None:
         raise ValueError("physical horizon targets must be materialized on the training device before loss computation")
     ar_continuous: list[torch.Tensor] = []
     ar_availability: list[torch.Tensor] = []
+    ar_direction_losses: list[torch.Tensor] = []
     latent_losses: list[torch.Tensor] = []
     metrics: dict[str, torch.Tensor] = {}
     for name, prediction in output.autoregressive.items():
@@ -89,7 +113,19 @@ def compute_loss(output: BarGPTOutput, batch: BarGPTBatch, config: TrainConfig, 
         )
         ar_continuous.append(continuous)
         ar_availability.append(availability)
-        metrics[f"train/loss_ar_{name}"] = (continuous + config.availability_weight * availability).detach()
+        direction = _direction_loss(
+            output.autoregressive_direction_logits[name],
+            target[..., 0],
+            mask[..., 0],
+            batch.sample_weights,
+            config.direction_neutral_bps,
+        )
+        ar_direction_losses.append(direction)
+        metrics[f"train/loss_ar_{name}"] = (
+            continuous
+            + config.availability_weight * availability
+            + config.direction_weight * direction
+        ).detach()
         latent_prediction = output.latent_predictions[name]
         latent_target = output.scale_embeddings[name][:, 1 : 1 + latent_prediction.shape[1]].detach()
         latent_mask = mask.any(dim=-1)
@@ -99,9 +135,11 @@ def compute_loss(output: BarGPTOutput, batch: BarGPTBatch, config: TrainConfig, 
     zero = output.embeddings.sum() * 0.0
     ar_cont = torch.stack(ar_continuous).mean() if ar_continuous else zero
     ar_avail = torch.stack(ar_availability).mean() if ar_availability else zero
+    ar_direction = torch.stack(ar_direction_losses).mean() if ar_direction_losses else zero
     latent_loss = torch.stack(latent_losses).mean() if latent_losses else zero
     horizon_cont = zero
     horizon_avail = zero
+    horizon_direction = zero
     if output.horizon_quantiles is not None:
         target = batch.horizon_targets[..., :CONTINUOUS_TARGET_COUNT]
         mask = batch.horizon_mask[..., :CONTINUOUS_TARGET_COUNT] & batch.origin_mask[:, :, None, None]
@@ -123,8 +161,18 @@ def compute_loss(output: BarGPTOutput, batch: BarGPTBatch, config: TrainConfig, 
             pos_weight=positive_weights,
         )
         horizon_avail = _weighted_mean(bce, mask, batch.sample_weights)
-    ar_loss = ar_cont + config.availability_weight * ar_avail
-    horizon_loss = horizon_cont + config.availability_weight * horizon_avail
+    if output.horizon_direction_logits is not None:
+        endpoint_target = batch.horizon_targets[..., 0]
+        endpoint_mask = batch.horizon_mask[..., 0] & batch.origin_mask[:, :, None]
+        horizon_direction = _direction_loss(
+            output.horizon_direction_logits,
+            endpoint_target,
+            endpoint_mask,
+            batch.sample_weights,
+            config.direction_neutral_bps,
+        )
+    ar_loss = ar_cont + config.availability_weight * ar_avail + config.direction_weight * ar_direction
+    horizon_loss = horizon_cont + config.availability_weight * horizon_avail + config.direction_weight * horizon_direction
     total = (
         config.autoregressive_weight * ar_loss
         + config.horizon_weight * horizon_loss
@@ -137,8 +185,10 @@ def compute_loss(output: BarGPTOutput, batch: BarGPTBatch, config: TrainConfig, 
             "train/loss_horizon": horizon_loss.detach(),
             "train/loss_ar_continuous": ar_cont.detach(),
             "train/loss_ar_availability": ar_avail.detach(),
+            "train/loss_ar_direction": ar_direction.detach(),
             "train/loss_horizon_quantile": horizon_cont.detach(),
             "train/loss_horizon_availability": horizon_avail.detach(),
+            "train/loss_horizon_direction": horizon_direction.detach(),
             "train/loss_latent_prediction": latent_loss.detach(),
         }
     )

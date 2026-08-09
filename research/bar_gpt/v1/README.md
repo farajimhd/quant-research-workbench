@@ -350,8 +350,8 @@ by the preceding workstation sweep: `32x1`, `16x2`, or `8x4` depending on model
 size, with an effective batch of 32 blocks throughout. It does not repeat GPU
 profiling inside the discovery campaign; the standalone profiler remains the
 authority when hardware, model structure, or the shard contract changes. The
-fixed panels are approximately 200 million
-training origins per epoch, 500 thousand monitor origins every 25 million
+fixed panels are approximately 100 million
+training origins per epoch (200 million across two epochs), 500 thousand monitor origins every 25 million
 training origins, 5 million validation origins after each epoch, and a separate
 5 million-origin locked test used only for the final two recipes. Held-out
 panels reserve disjoint ticker-dates. Every evaluation consumes its complete
@@ -371,7 +371,7 @@ the fixed learning-rate (`1.5e-4`, `3e-4`) by dropout (`0.04`, `0.08`, `0.12`)
 grid. Exact duplicate anchor recipes are reused. The best two refined recipes
 are then evaluated on the locked test.
 
-Campaign state is durable under `model_discovery/campaign_state.json`; rerunning
+Campaign state is durable under `model_discovery/campaign_state_v2.json`; rerunning
 the same command verifies the manifest and skips completed runs. Training,
 monitoring, validation, and locked-test metrics are written asynchronously.
 W&B uses the distinct project `bar gpt model discovery` and non-overlapping
@@ -541,6 +541,12 @@ training metrics run every 8,388,608 origins (64 full optimizer updates) using
 the already-produced predictions and no extra forward pass. W&B keys put their
 semantic category at the first level (`train_loss`, `train_direction`,
 `validation_return`, and so on), with at most 16 scalar series in any group.
+Direction supervision uses dedicated autoregressive and physical-horizon logits,
+so classification gradients do not distort the calibrated return quantiles.
+Targets within the configurable one-basis-point neutral band are excluded from
+binary up/down loss and accuracy, while their fraction is reported separately.
+Accuracy, balanced accuracy, and MCC are reported per physical horizon and per
+autoregressive intraday view, together with macro averages.
 
 The joint candidate sweep measures loader wait, GPU time, origins/second,
 encoded tokens/second, parameter count, effective blocks per update, the
@@ -774,8 +780,8 @@ The audit reports near-constant and zero feature channels, strongest absolute
 correlations, target valid fractions, and retained condition blocks. Profiler
 and audit evidence stays under `D:\TradingML\runtimes\bar_gpt\v1`.
 
-The objective combines dense next-bar Huber and availability losses, direct
-multi-horizon pinball loss, horizon availability BCE, and stop-gradient
+The objective combines dense next-bar Huber, availability, and direction losses,
+direct multi-horizon pinball, availability, and direction losses, and stop-gradient
 next-state cosine prediction. A separate frozen ridge-probe job evaluates
 whether embeddings retain held-out return information:
 

@@ -295,6 +295,8 @@ class TrainConfig:
     horizon_weight: float = 1.0
     availability_weight: float = 0.25
     condition_positive_weight: float = 32.0
+    direction_weight: float = 0.10
+    direction_neutral_bps: float = 1.0
     latent_prediction_weight: float = 0.05
 
     def validate(self) -> None:
@@ -322,6 +324,10 @@ class TrainConfig:
             raise ValueError("scheduler_mode must be cosine-restarts or single-cosine")
         if self.grad_clip_norm <= 0:
             raise ValueError("grad_clip_norm must be positive")
+        if self.direction_weight < 0:
+            raise ValueError("direction_weight cannot be negative")
+        if self.direction_neutral_bps < 0:
+            raise ValueError("direction_neutral_bps cannot be negative")
 
 
 @dataclass(slots=True)

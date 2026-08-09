@@ -213,6 +213,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--horizon-weight", type=float, default=train.horizon_weight)
     parser.add_argument("--availability-weight", type=float, default=train.availability_weight)
     parser.add_argument("--condition-positive-weight", type=float, default=train.condition_positive_weight)
+    parser.add_argument("--direction-weight", type=float, default=train.direction_weight)
+    parser.add_argument("--direction-neutral-bps", type=float, default=train.direction_neutral_bps)
     parser.add_argument("--latent-prediction-weight", type=float, default=train.latent_prediction_weight)
     parser.add_argument("--wandb-project", default=train.wandb_project)
     parser.add_argument("--wandb-entity", default=train.wandb_entity)
@@ -338,6 +340,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         horizon_weight=float(args.horizon_weight),
         availability_weight=float(args.availability_weight),
         condition_positive_weight=float(args.condition_positive_weight),
+        direction_weight=float(args.direction_weight),
+        direction_neutral_bps=float(args.direction_neutral_bps),
         latent_prediction_weight=float(args.latent_prediction_weight),
     )
     train.validate()
@@ -1050,7 +1054,12 @@ def _wandb_metric_key(key: str) -> str:
     if key == "train/loss":
         return "train_loss/total"
     if key.startswith("train/loss_"):
-        return "train_loss/" + key.removeprefix("train/loss_")
+        leaf = key.removeprefix("train/loss_")
+        return (
+            "train_loss_ar_views/" + leaf
+            if leaf.removeprefix("ar_") in AUTOREGRESSIVE_VIEW_NAMES
+            else "train_loss/" + leaf
+        )
     if key == "val/loss":
         return "validation_loss/total"
     if key.startswith("val/loss_"):
@@ -1232,6 +1241,7 @@ def validate(
         config.data.horizons_us,
         config.model.quantiles,
         namespace=namespace,
+        direction_neutral_bps=config.train.direction_neutral_bps,
     )
     iterator = DeviceBatchPrefetcher(
         loader,
@@ -1667,8 +1677,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         output_contract={
             "embedding": ["B", "N_origins", config.model.d_model],
             "autoregressive": {name: ["B", "T_view-1", config.model.target_dim] for name in AUTOREGRESSIVE_VIEW_NAMES},
+            "autoregressive_direction_logits": {name: ["B", "T_view-1"] for name in AUTOREGRESSIVE_VIEW_NAMES},
             "physical_horizon_quantiles": ["B", "N_origins", len(config.data.horizons_us), config.model.target_dim - 8, len(config.model.quantiles)],
             "physical_horizon_availability_logits": ["B", "N_origins", len(config.data.horizons_us), 8],
+            "physical_horizon_direction_logits": ["B", "N_origins", len(config.data.horizons_us)],
         },
         architecture_mermaid=build_model_mermaid(),
         summary_notes=(
@@ -2028,6 +2040,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                                     include_condition_metrics=False,
                                     include_ranking_metrics=False,
                                     include_confidence_metrics=False,
+                                    direction_neutral_bps=config.train.direction_neutral_bps,
                                 )
                                 if samples_seen + nominal_update_origins >= next_training_metrics
                                 else None

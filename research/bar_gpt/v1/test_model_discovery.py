@@ -12,6 +12,8 @@ from research.bar_gpt.v1.model_discovery import (
     ARCHITECTURE_GRID,
     DISCOVERY_WANDB_PROJECT,
     DISCOVERY_ORIGIN_BARS_1S,
+    DISCOVERY_EPOCHS,
+    DISCOVERY_TRAIN_ORIGINS_PER_EPOCH,
     _balanced_sample,
     _balanced_units,
     enumerate_block_refs,
@@ -47,6 +49,8 @@ class ModelDiscoveryContractTest(unittest.TestCase):
     def test_architecture_grid_keeps_effective_batch_fixed(self) -> None:
         self.assertEqual(len(ARCHITECTURE_GRID), 8)
         self.assertEqual({item.microbatch * item.accumulation for item in ARCHITECTURE_GRID}, {32})
+        self.assertEqual(DISCOVERY_TRAIN_ORIGINS_PER_EPOCH, 100_000_000)
+        self.assertEqual(DISCOVERY_EPOCHS * DISCOVERY_TRAIN_ORIGINS_PER_EPOCH, 200_000_000)
 
     def test_fixed_panel_sampling_is_deterministic_and_date_disjoint(self) -> None:
         refs = tuple(
