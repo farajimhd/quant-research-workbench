@@ -400,6 +400,7 @@
   text-transform: uppercase;
 }
 .discovery-capability-title > span[data-type="signal"] { color: #b45309; }
+.discovery-capability-title > span[data-type="event"] { color: #9333ea; }
 .discovery-capability-title > span[data-type="indicator"] { color: #2563eb; }
 .discovery-capability-title > span[data-type="market_data"] { color: #047857; }
 .discovery-capability-copy dl { display: grid; gap: 8px 18px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 2px 0 0; }

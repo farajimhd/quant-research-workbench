@@ -104,6 +104,13 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(capabilities["Core OHLCV Bars"]["capability_type"], "market_data")
         self.assertEqual(capabilities["Core OHLCV Bars"]["availability"], "implemented")
         self.assertTrue(capabilities["Core OHLCV Bars"]["fields"])
+        self.assertEqual(capabilities["Last price"]["capability_type"], "market_data")
+        self.assertEqual(capabilities["Previous close"]["capability_type"], "reference")
+        self.assertEqual(capabilities["Previous high"]["capability_type"], "reference")
+        self.assertEqual(capabilities["Confirmed swing high"]["capability_type"], "indicator")
+        self.assertEqual(capabilities["Bullish change of character"]["capability_type"], "signal")
+        self.assertEqual(capabilities["Company news score"]["capability_type"], "signal")
+        self.assertEqual(capabilities["News observations"]["capability_type"], "event")
         self.assertEqual(
             migrated["market_discovery"]["watchlists"][0]["membership_expiry"],
             "end_of_trading_day",

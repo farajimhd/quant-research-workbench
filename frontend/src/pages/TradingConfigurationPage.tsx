@@ -400,7 +400,7 @@ type DiscoveryCapability = {
   category: string;
   provider: string;
   output_type: string;
-  capability_type: "market_data" | "indicator" | "signal" | "reference" | "system";
+  capability_type: "market_data" | "indicator" | "signal" | "event" | "reference" | "system";
   priority: "p0" | "p1" | "p2" | "p3";
   availability: "implemented" | "planned_realtime" | "strategy_specific" | "offline_only" | "reference_only";
   inputs: string[];
@@ -439,14 +439,37 @@ type MarketDiscoverySection = {
   watchlists: WatchlistConfig[];
 };
 
+function canonicalCapabilityType(capability: Partial<DiscoveryCapability>): DiscoveryCapability["capability_type"] {
+  const id = capability.capability_id ?? "";
+  if (id === "market.last_price") return "market_data";
+  if (id.startsWith("market.")) return "reference";
+  if (id === "indicator.structure.bullish_choch" || id.startsWith("signal.")) return "signal";
+  if (id.startsWith("indicator.")) return "indicator";
+  if (["news-events", "sec-events"].includes(id)) return "event";
+  if (capability.capability_type) return capability.capability_type;
+  if (capability.output_type === "system") return "system";
+  if (["news", "sec"].includes(capability.provider?.toLocaleLowerCase() ?? "")) return "event";
+  return "indicator";
+}
+
+function capabilityTypeLabel(type: DiscoveryCapability["capability_type"]): string {
+  return {
+    event: "Event",
+    indicator: "Indicator",
+    market_data: "Market data",
+    reference: "Reference data",
+    signal: "Signal",
+    system: "System",
+  }[type];
+}
+
 function normalizedDiscoveryCapability(capability: DiscoveryCapability): DiscoveryCapability {
   const value = capability as DiscoveryCapability & Partial<DiscoveryCapability>;
-  const inferredType: DiscoveryCapability["capability_type"] = value.output_type === "system" ? "system" : ["news", "sec"].includes(value.provider?.toLocaleLowerCase()) ? "signal" : "indicator";
   return {
     ...capability,
     availability: value.availability ?? "implemented",
     calculation: value.calculation ?? value.description ?? "QMD publishes this causally available observation.",
-    capability_type: value.capability_type ?? inferredType,
+    capability_type: canonicalCapabilityType(value),
     fields: value.fields ?? [value.capability_id],
     inputs: value.inputs ?? [value.provider || "QMD"],
     priority: value.priority ?? (value.system_required ? "p0" : "p2"),
@@ -1880,7 +1903,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
       </aside>
       <main className="strategy-parameter-detail-page discovery-capability-detail">
         {selectedCapability ? <>
-          <header><span>{readableLabel(selectedCapability.capability_type)} · {readableLabel(selectedCapability.availability)}</span><h2>{selectedCapability.name}</h2><p>{selectedCapability.calculation || selectedCapability.description}</p></header>
+          <header><span>{capabilityTypeLabel(selectedCapability.capability_type)} · {readableLabel(selectedCapability.availability)}</span><h2>{selectedCapability.name}</h2><p>{selectedCapability.calculation || selectedCapability.description}</p></header>
           <section className="discovery-capability-control">
             <label className="configuration-field configuration-boolean"><span>Enabled</span><small>{selectedCapability.configurable ? "Controls whether this capability belongs to the active configuration. Disabled capabilities remain available in the catalog." : "This behavior is active but owned by QMD and cannot be changed here."}</small><input checked={selectedCapability.enabled} disabled={!selectedCapability.configurable || selectedCapability.system_required} onChange={(event) => setDiscoveryCapabilityEnabled(selectedCapability.capability_id, event.target.checked)} type="checkbox" /></label>
           </section>
@@ -1906,7 +1929,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
           </header>
           <div className="discovery-capability-filters">
             <label><Search size={15} /><input aria-label="Filter Core Scan capabilities" onChange={(event) => setCapabilityQuery(event.target.value)} placeholder="Search names, calculations, inputs or outputs" type="search" value={capabilityQuery} /></label>
-            <div aria-label="Capability type filters" role="group">{[["all", "All types"], ["market_data", "Market data"], ["indicator", "Indicators"], ["signal", "Signals"], ["reference", "Reference"], ["system", "System"]].map(([value, label]) => <button aria-pressed={capabilityTypeFilter === value} key={value} onClick={() => setCapabilityTypeFilter(value)} type="button">{label}</button>)}</div>
+            <div aria-label="Capability type filters" role="group">{[["all", "All types"], ["market_data", "Market data"], ["reference", "Reference data"], ["indicator", "Indicators"], ["signal", "Signals"], ["event", "Events"], ["system", "System"]].map(([value, label]) => <button aria-pressed={capabilityTypeFilter === value} key={value} onClick={() => setCapabilityTypeFilter(value)} type="button">{label}</button>)}</div>
             <div aria-label="Capability status filters" role="group">{[["all", "All status"], ["active", "Active"], ["required", "Required"], ["modifiable", "Modifiable"], ["unavailable", "Unavailable"]].map(([value, label]) => <button aria-pressed={capabilityStatusFilter === value} key={value} onClick={() => setCapabilityStatusFilter(value)} type="button">{label}</button>)}</div>
           </div>
           <div className="discovery-capability-matrix">
@@ -1916,7 +1939,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
               const status = !available ? "Unavailable" : capability.system_required ? "Required" : capability.configurable ? capability.enabled ? "Modifiable" : "Available" : "Read only";
               return <article data-status={status.toLowerCase().replaceAll(" ", "-")} key={capability.capability_id}>
                 <span aria-label={`Capability ${index + 1} of ${filteredDiscoveryCapabilities.length}`} className="discovery-capability-index">{index + 1}</span>
-                <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type={capability.capability_type}>{readableLabel(capability.capability_type)}</span><span>{capability.priority.toUpperCase()}</span></div><small>{capability.calculation || capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ") || "Service owned"}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.slice(0, 8).join(", ") || capability.output_type}{capability.fields.length > 8 ? ` +${capability.fields.length - 8} more` : ""}</dd></div><div><dt>Cadence</dt><dd>{capability.timeframes.length ? capability.timeframes.join(", ") : "Service clock"}</dd></div></dl></div>
+                <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type={capability.capability_type}>{capabilityTypeLabel(capability.capability_type)}</span><span>{capability.priority.toUpperCase()}</span></div><small>{capability.calculation || capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ") || "Service owned"}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.slice(0, 8).join(", ") || capability.output_type}{capability.fields.length > 8 ? ` +${capability.fields.length - 8} more` : ""}</dd></div><div><dt>Cadence</dt><dd>{capability.timeframes.length ? capability.timeframes.join(", ") : "Service clock"}</dd></div></dl></div>
                 <div className="discovery-capability-actions"><em>{status}</em>{removable && capability.enabled ? <button aria-label={`Remove ${capability.name}`} className="button compact danger" onClick={() => setDiscoveryCapabilityEnabled(capability.capability_id, false)} type="button"><Trash2 size={13} /> Remove</button> : null}</div>
               </article>;
             })}
@@ -1976,11 +1999,11 @@ function WatchlistRuleChoices({ capabilities, onChange, ruleSets, watchlist }: {
   }
   return <div className="discovery-rule-catalog">
     <header><div><span>Reusable rule sets</span><strong>{visibleRules.length} of {ruleSets.length}</strong><small>Choose whether each passing rule admits or excludes a Core Scan candidate.</small></div><label><Search size={15} /><input aria-label="Search Watchlist rules" onChange={(event) => setQuery(event.target.value)} placeholder="Search rule meaning" type="search" value={query} /></label></header>
-    <div className="discovery-rule-filters" role="group" aria-label="Watchlist rule filters">{[["all", "All"], ["selected", "Selected"], ["market_data", "Market data"], ["indicator", "Indicators"], ["signal", "Signals"], ["reference", "Reference"]].map(([value, label]) => <button aria-pressed={filter === value} key={value} onClick={() => setFilter(value)} type="button">{label}</button>)}</div>
+    <div className="discovery-rule-filters" role="group" aria-label="Watchlist rule filters">{[["all", "All"], ["selected", "Selected"], ["market_data", "Market data"], ["reference", "Reference data"], ["indicator", "Indicators"], ["signal", "Signals"], ["event", "Events"]].map(([value, label]) => <button aria-pressed={filter === value} key={value} onClick={() => setFilter(value)} type="button">{label}</button>)}</div>
     <div className="discovery-rule-card-list">{visibleRules.map((ruleSet, index) => {
       const assignment = watchlist.inclusion_rule_sets.includes(ruleSet.rule_set_id) ? "include" : watchlist.exclusion_rule_sets.includes(ruleSet.rule_set_id) ? "exclude" : "unused";
       const types = [...new Set(ruleSet.conditions.map((condition) => capabilities.find((capability) => capability.capability_id === condition.left_source_id)?.capability_type).filter(Boolean))];
-      return <article data-assignment={assignment} key={ruleSet.rule_set_id}><span className="discovery-capability-index">{index + 1}</span><div><header><strong>{ruleSet.name}</strong><span>{types.length ? types.map((type) => readableLabel(String(type))).join(" · ") : "Rule set"}</span></header>{ruleSet.description ? <p>{ruleSet.description}</p> : null}<RuleSetMeaning catalog={catalog} ruleSet={ruleSet} /></div><div className="discovery-rule-assignment" role="group" aria-label={`Use ${ruleSet.name}`}><button aria-pressed={assignment === "include"} onClick={() => assign(ruleSet.rule_set_id, assignment === "include" ? "unused" : "include")} type="button">Include</button><button aria-pressed={assignment === "exclude"} onClick={() => assign(ruleSet.rule_set_id, assignment === "exclude" ? "unused" : "exclude")} type="button">Exclude</button></div></article>;
+      return <article data-assignment={assignment} key={ruleSet.rule_set_id}><span className="discovery-capability-index">{index + 1}</span><div><header><strong>{ruleSet.name}</strong><span>{types.length ? types.map((type) => capabilityTypeLabel(type as DiscoveryCapability["capability_type"])).join(" · ") : "Rule set"}</span></header>{ruleSet.description ? <p>{ruleSet.description}</p> : null}<RuleSetMeaning catalog={catalog} ruleSet={ruleSet} /></div><div className="discovery-rule-assignment" role="group" aria-label={`Use ${ruleSet.name}`}><button aria-pressed={assignment === "include"} onClick={() => assign(ruleSet.rule_set_id, assignment === "include" ? "unused" : "include")} type="button">Include</button><button aria-pressed={assignment === "exclude"} onClick={() => assign(ruleSet.rule_set_id, assignment === "exclude" ? "unused" : "exclude")} type="button">Exclude</button></div></article>;
     })}{!visibleRules.length ? <EmptyState title="No matching rule sets" detail="Change the search or filter to show reusable Watchlist rules." /> : null}</div>
   </div>;
 }

@@ -1316,6 +1316,22 @@ def _qmd_family_capabilities() -> list[dict[str, Any]]:
     return result
 
 
+def _strategy_input_capability_type(source_id: str) -> str:
+    """Classify strategy inputs by semantic authority, not provider name."""
+
+    if source_id == "market.last_price":
+        return "market_data"
+    if source_id.startswith("market."):
+        return "reference"
+    if source_id == "indicator.structure.bullish_choch":
+        return "signal"
+    if source_id.startswith("signal."):
+        return "signal"
+    if source_id.startswith("indicator."):
+        return "indicator"
+    return "system"
+
+
 def _default_market_discovery(
     runtime_assignments: list[dict[str, Any]],
     rule_sets: list[dict[str, Any]] | None = None,
@@ -1339,7 +1355,7 @@ def _default_market_discovery(
             "category": str(source.get("category") or source.get("provider") or "Market observations"),
             "provider": str(source.get("provider") or "QMD"),
             "output_type": str(source.get("value_type") or "number"),
-            "capability_type": "signal" if provider in {"news", "sec"} else "indicator",
+            "capability_type": _strategy_input_capability_type(capability_id),
             "priority": "p0" if tier == "core" else "p2",
             "availability": "implemented",
             "inputs": [str(source.get("provider") or "QMD")],
@@ -1370,7 +1386,7 @@ def _default_market_discovery(
             "category": category,
             "provider": "QMD",
             "output_type": "system",
-            "capability_type": "signal" if capability_id in {"news-events", "sec-events"} else "system",
+            "capability_type": "event" if capability_id in {"news-events", "sec-events"} else "system",
             "priority": "p0" if required else "p2",
             "availability": "implemented",
             "inputs": ["QMD services"],
