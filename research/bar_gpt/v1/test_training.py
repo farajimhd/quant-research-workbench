@@ -105,6 +105,7 @@ from research.bar_gpt.v1.train import (
     restore_checkpoint,
     _resume_data_contract,
     _preserve_training_prefetch_during_validation,
+    ReusableValidationBatches,
     _training_prefetcher,
     build_config as build_training_config,
     parse_args as parse_training_args,
@@ -408,6 +409,56 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(cached.batch_count, 2)
         finally:
             cached.close()
+
+    def test_reusable_validation_batches_reiterate_without_materializing(self) -> None:
+        first = {"batch": 1}
+        second = {"batch": 2}
+        loader = torch.utils.data.DataLoader([first, second], batch_size=None, num_workers=0)
+        streamed = ReusableValidationBatches(loader)
+        try:
+            self.assertEqual(list(streamed), [first, second])
+            self.assertEqual(list(streamed), [first, second])
+            self.assertTrue(streamed.ready)
+            self.assertEqual(streamed.batch_count, 0)
+            self.assertFalse(hasattr(streamed, "_batches"))
+        finally:
+            streamed.close()
+
+    def test_prefetcher_can_release_iterator_without_stopping_reusable_workers(self) -> None:
+        class OwnedIterator:
+            def __init__(self) -> None:
+                self.stopped = 0
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise StopIteration
+
+            def _shutdown_workers(self) -> None:
+                self.stopped += 1
+
+        owned = OwnedIterator()
+        prefetcher = DeviceBatchPrefetcher(
+            owned,
+            torch.device("cpu"),
+            enabled=False,
+            close_iterator=False,
+        )
+        prefetcher.close()
+        self.assertEqual(owned.stopped, 0)
+
+    def test_offline_loader_can_retain_validation_workers(self) -> None:
+        dataset = object.__new__(OfflineShardDataset)
+        data = DataConfig(loader_workers=2, batch_size=1, worker_prefetch_batches=1)
+        loader = make_offline_dataloader(
+            dataset,
+            data,
+            drop_last=False,
+            persistent_workers=True,
+        )
+        self.assertTrue(loader.persistent_workers)
+        self.assertEqual(loader.prefetch_factor, 1)
 
     def test_offline_training_prefetch_is_preserved_during_validation(self) -> None:
         offline_loader = SimpleNamespace(dataset=object.__new__(OfflineShardDataset))
@@ -1271,7 +1322,17 @@ class LoaderTrainerContractTest(unittest.TestCase):
             optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
             cursors: dict[int, CoverageCursor] = {}
             training = _training_prefetcher(train_loader, experiment, device)
-            validation_cache = PreparedValidationBatches(validation_loader)
+            reusable_validation_loader = make_offline_dataloader(
+                validation_loader.dataset,
+                dataclasses.replace(
+                    runtime_data,
+                    worker_prefetch_batches=1,
+                    persistent_workers=True,
+                ),
+                drop_last=False,
+                persistent_workers=True,
+            )
+            validation_cache = ReusableValidationBatches(reusable_validation_loader)
             try:
                 for _ in range(16):
                     batch = next(training)
@@ -1287,6 +1348,15 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 metrics = validate(model, validation_cache, experiment, device)
                 self.assertEqual(metrics["validation_data/batches"], 1.0)
                 self.assertGreater(metrics["validation_data/origins"], 0.0)
+                first_validation_pids = tuple(
+                    worker.pid for worker in reusable_validation_loader._iterator._workers
+                )
+                repeated_metrics = validate(model, validation_cache, experiment, device)
+                second_validation_pids = tuple(
+                    worker.pid for worker in reusable_validation_loader._iterator._workers
+                )
+                self.assertEqual(repeated_metrics["validation_data/origins"], metrics["validation_data/origins"])
+                self.assertEqual(second_validation_pids, first_validation_pids)
                 self.assertTrue(model.training)
                 resumed_batch = next(training)
                 for worker, unit, block in zip(

@@ -12,6 +12,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
@@ -76,6 +77,7 @@ from research.mlops.wandb_utils import init_wandb
 
 
 JOB_TYPE = "train"
+DISCOVERY_VALIDATION_WORKERS = 8
 _INTERRUPTED = False
 _RESUME_RUNTIME_DATA_FIELDS = frozenset(
     {
@@ -833,11 +835,19 @@ def _loaders(
             resume_cursors=resume_cursors,
             block_refs=panel_refs(manifest, "train") if manifest is not None else (),
         )
-        validation_workers = min(int(config.data.loader_workers), len(config.data.validation_slices))
+        validation_workers = min(
+            DISCOVERY_VALIDATION_WORKERS,
+            int(config.data.loader_workers),
+            len(config.data.validation_slices),
+        ) if manifest is not None else min(
+            int(config.data.loader_workers),
+            len(config.data.validation_slices),
+        )
         validation_data = replace(
             config.data,
             loader_workers=validation_workers,
-            persistent_workers=False,
+            worker_prefetch_batches=(1 if manifest is not None else config.data.worker_prefetch_batches),
+            persistent_workers=manifest is not None,
             balance_activity_regimes=False,
         )
         validation_dataset = OfflineShardDataset(
@@ -850,7 +860,12 @@ def _loaders(
         )
         return (
             make_offline_dataloader(train_dataset, config.data, drop_last=False),
-            make_offline_dataloader(validation_dataset, validation_data, drop_last=False),
+            make_offline_dataloader(
+                validation_dataset,
+                validation_data,
+                drop_last=False,
+                persistent_workers=manifest is not None,
+            ),
         )
     stream = _stream_config(config.data)
     if validation_plan is None:
@@ -1174,6 +1189,34 @@ class PreparedValidationBatches:
         self._thread.join(timeout=30.0)
 
 
+class ReusableValidationBatches:
+    """Reiterate a fixed panel without retaining its collated batches in RAM."""
+
+    def __init__(self, loader: DataLoader[Any]) -> None:
+        self._loader = loader
+
+    @property
+    def ready(self) -> bool:
+        # Discovery validation is intentionally lazy: worker creation and the
+        # bounded prefetch queue begin only when an evaluation is due.
+        return True
+
+    @property
+    def batch_count(self) -> int:
+        return 0
+
+    def __iter__(self) -> Iterator[BarGPTBatch]:
+        return iter(self._loader)
+
+    def close(self) -> None:
+        iterator = getattr(self._loader, "_iterator", None)
+        shutdown = getattr(iterator, "_shutdown_workers", None)
+        if callable(shutdown):
+            shutdown()
+        if hasattr(self._loader, "_iterator"):
+            self._loader._iterator = None
+
+
 @torch.no_grad()
 def validate(
     model: torch.nn.Module,
@@ -1190,7 +1233,12 @@ def validate(
         config.model.quantiles,
         namespace=namespace,
     )
-    iterator = DeviceBatchPrefetcher(loader, device, enabled=config.train.cuda_prefetch)
+    iterator = DeviceBatchPrefetcher(
+        loader,
+        device,
+        enabled=config.train.cuda_prefetch,
+        close_iterator=not isinstance(loader, ReusableValidationBatches),
+    )
     try:
         completed = 0
         while max_batches is None or completed < max_batches:
@@ -1661,14 +1709,23 @@ def main(argv: Iterable[str] | None = None) -> int:
         offline_train_units=offline_train_units,
         offline_validation_units=offline_validation_units,
     )
-    validation_cache = PreparedValidationBatches(validation_loader)
+    validation_cache = (
+        ReusableValidationBatches(validation_loader)
+        if discovery_manifest is not None
+        else PreparedValidationBatches(validation_loader)
+    )
     full_validation_cache = validation_cache
     if discovery_manifest is not None:
-        validation_workers = min(int(config.data.loader_workers), len(config.data.validation_slices))
+        validation_workers = min(
+            DISCOVERY_VALIDATION_WORKERS,
+            int(config.data.loader_workers),
+            len(config.data.validation_slices),
+        )
         validation_data = replace(
             config.data,
             loader_workers=validation_workers,
-            persistent_workers=False,
+            worker_prefetch_batches=1,
+            persistent_workers=True,
             balance_activity_regimes=False,
         )
         full_validation_dataset = OfflineShardDataset(
@@ -1677,8 +1734,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             shuffle_units=False,
             block_refs=panel_refs(discovery_manifest, "validation"),
         )
-        full_validation_cache = PreparedValidationBatches(
-            make_offline_dataloader(full_validation_dataset, validation_data, drop_last=False)
+        full_validation_cache = ReusableValidationBatches(
+            make_offline_dataloader(
+                full_validation_dataset,
+                validation_data,
+                drop_last=False,
+                persistent_workers=True,
+            )
         )
     resumed_wandb_id = restored.get("wandb_run_id")
     if args.resume_checkpoint and config.train.wandb_mode != "disabled" and not resumed_wandb_id:
@@ -1887,7 +1949,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "Condition targets: active=" + evidence["condition_active_targets"]
                 + "; loss-ineligible=" + evidence["condition_inactive_targets"]
             )
-            reporter.message("Preparing fixed validation panel in parallel with training")
+            reporter.message(
+                "Validation panels use bounded reusable streams"
+                if discovery_manifest is not None
+                else "Preparing fixed validation panel in parallel with training"
+            )
             for epoch in range(resume_epoch, max(1, config.train.epochs)):
                 current_epoch = epoch
                 if epoch != resume_epoch:
@@ -2336,6 +2402,16 @@ def main(argv: Iterable[str] | None = None) -> int:
             else:
                 reporter.message("Final state already captured by the last validation checkpoint")
     except BaseException as failure:
+        try:
+            (paths.run_root / "failure_traceback.log").write_text(
+                "".join(traceback.format_exception(failure)),
+                encoding="utf-8",
+            )
+        except BaseException as traceback_failure:
+            failure.add_note(
+                "failure traceback persistence also failed: "
+                f"{traceback_failure.__class__.__name__}: {traceback_failure}"
+            )
         if active_iterator is not None:
             try:
                 active_iterator.close()

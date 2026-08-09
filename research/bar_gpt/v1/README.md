@@ -378,6 +378,14 @@ W&B uses the distinct project `bar gpt model discovery` and non-overlapping
 first-level namespaces `monitor_*`, `validation_*`, and `locked_test_*`, so the
 three evaluation populations cannot merge into one chart series.
 
+Discovery monitor and validation panels are streamed lazily from their fixed
+block references through at most eight reusable workers with one prefetched
+batch per worker. The trainer never retains the complete 5-million-origin
+validation panel as collated pinned-memory batches. Validation workers persist
+between evaluations, while the independent training prefetch iterator remains
+alive across monitor passes. Locked-test evaluation uses the same bounded
+streaming policy for its single pass.
+
 The canonical launcher now trains from certified v3 offline shards. Its bounded
 training selection is `[2019-01-01, 2022-01-01)` and its fixed validation
 selection is `[2026-01-01, 2026-08-01)`. One coverage epoch is one deterministic

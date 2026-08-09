@@ -138,9 +138,11 @@ class DeviceBatchPrefetcher:
         *,
         enabled: bool,
         host_cache_batches: int = 0,
+        close_iterator: bool = True,
     ) -> None:
         self.device = device
         self.enabled = bool(enabled and device.type == "cuda")
+        self.close_iterator = bool(close_iterator)
         self.stream = torch.cuda.Stream(device=device) if self.enabled else None
         self.host_cache = HostBatchCache(loader, capacity_batches=host_cache_batches) if host_cache_batches else None
         self.iterator: Iterator[BarGPTBatch] | None = None if self.host_cache is not None else iter(loader)
@@ -207,9 +209,9 @@ class DeviceBatchPrefetcher:
     def close(self) -> None:
         if self.host_cache is not None:
             self.host_cache.close()
-        else:
+        elif self.close_iterator:
             _shutdown_loader_iterator(self.iterator)
-            self.iterator = None
+        self.iterator = None
 
     def __enter__(self) -> "DeviceBatchPrefetcher":
         return self

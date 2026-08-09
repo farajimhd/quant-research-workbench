@@ -16,7 +16,7 @@ from research.bar_gpt.v1.model_discovery import (
     panel_refs,
 )
 from research.bar_gpt.v1.offline_shards import OfflineShardDataset, discover_offline_units, make_offline_dataloader
-from research.bar_gpt.v1.train import PreparedValidationBatches, _wandb_metric_key, validate
+from research.bar_gpt.v1.train import DISCOVERY_VALIDATION_WORKERS, _wandb_metric_key, validate
 from research.mlops.metrics import AsyncJsonlMetricLogger
 from research.mlops.wandb_utils import init_wandb
 
@@ -44,7 +44,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     raw_config = checkpoint["config"]
     model_config = BarGPTConfig(**raw_config["model"])
     data_values = dict(raw_config["data"])
-    data_values.update(batch_size=int(args.batch_size), loader_workers=int(args.loader_workers))
+    data_values.update(
+        batch_size=int(args.batch_size),
+        loader_workers=min(DISCOVERY_VALIDATION_WORKERS, int(args.loader_workers)),
+        worker_prefetch_batches=1,
+        persistent_workers=False,
+    )
     data_config = DataConfig(**data_values)
     train_values = dict(raw_config["train"])
     train_values["output_root"] = Path(train_values["output_root"])
@@ -65,14 +70,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         start_date=manifest["ranges"]["held_out"][0],
         end_date=manifest["ranges"]["held_out"][1],
     )
-    evaluation_data = replace(data_config, persistent_workers=False, balance_activity_regimes=False)
+    evaluation_data = replace(
+        data_config,
+        balance_activity_regimes=False,
+    )
     dataset = OfflineShardDataset(
         units,
         seed=train_config.seed,
         shuffle_units=False,
         block_refs=panel_refs(manifest, "locked_test"),
     )
-    cache = PreparedValidationBatches(make_offline_dataloader(dataset, evaluation_data, drop_last=False))
+    loader = make_offline_dataloader(dataset, evaluation_data, drop_last=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = BarGPTV1(model_config).to(device)
     model.load_state_dict(checkpoint["model"], strict=True)
@@ -89,7 +97,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     logger = AsyncJsonlMetricLogger(run_root / "metrics.jsonl", wandb_run, wandb_key_mapper=_wandb_metric_key)
     try:
-        metrics = validate(model, cache, config, device, namespace="locked_test", max_batches=None)
+        metrics = validate(model, loader, config, device, namespace="locked_test", max_batches=None)
         step = int(checkpoint.get("samples_seen", 0))
         logger.log(metrics, step)
         (run_root / "summary.json").write_text(
@@ -97,7 +105,6 @@ def main(argv: Iterable[str] | None = None) -> int:
             encoding="utf-8",
         )
     finally:
-        cache.close()
         logger.close(timeout=300)
         if wandb_run is not None:
             wandb_run.finish()

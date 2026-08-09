@@ -1103,11 +1103,12 @@ def make_offline_dataloader(
     config: DataConfig,
     *,
     drop_last: bool,
+    persistent_workers: bool = False,
 ) -> DataLoader[CompiledBlock]:
     kwargs: dict[str, Any] = {}
     if config.loader_workers > 0:
         kwargs["prefetch_factor"] = int(config.worker_prefetch_batches)
-        kwargs["persistent_workers"] = False
+        kwargs["persistent_workers"] = bool(persistent_workers)
         kwargs["in_order"] = False
     return DataLoader(
         dataset,
