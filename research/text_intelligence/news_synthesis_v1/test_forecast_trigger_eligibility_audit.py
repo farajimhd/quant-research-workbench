@@ -5,6 +5,7 @@ from .forecast_trigger_eligibility_audit import (
     certified_forecast_units,
     eligibility_gate_trace,
     predicted_forecast_units,
+    render_eligibility_packet,
 )
 
 
@@ -96,3 +97,53 @@ def test_gate_trace_is_issuer_specific() -> None:
     assert first["positive_or_negative_implication"] is True
     assert second["current_event_or_forward_guidance"] is False
     assert second["positive_or_negative_implication"] is False
+
+
+def test_packet_headings_use_supplied_engine_version() -> None:
+    record = {
+        "unit_id": "N1::AAA",
+        "sample_id": "N1",
+        "ticker": "AAA",
+        "gold_entity_id": "gold-e1",
+        "prediction_entity_id": "pred-e1",
+        "gold_forecast_eligible": False,
+        "predicted_forecast_eligible": True,
+        "confusion": "FP",
+        "scoring_status": "scored",
+    }
+    article = {
+        "publication": {"title": "Alpha update"},
+        "rendered_product": {"text": "Alpha reported an update."},
+    }
+    gold = {"entities": [{"entity_id": "gold-e1", "ticker": "AAA"}]}
+    prediction = {
+        "entities": [
+            {
+                "entity_id": "pred-e1",
+                "entity_kind": "security",
+                "ticker": "AAA",
+                "identity_status": "resolved",
+            }
+        ],
+        "envelope": {
+            "communication_purpose": {"value": "report"},
+            "information_origin": {"value": "editorial"},
+        },
+        "eligibility": [
+            {
+                "entity_id": "pred-e1",
+                "product": "forecast_trigger",
+                "eligible": True,
+                "reasons": ["eligible_under:forecast_trigger"],
+            }
+        ],
+    }
+    packet = render_eligibility_packet(
+        record,
+        article,
+        gold,
+        prediction,
+        engine_version="news_synthesis_engine_v48",
+    )
+    assert "## news_synthesis_engine_v48 predicted entity" in packet
+    assert "## V44 predicted entity" not in packet

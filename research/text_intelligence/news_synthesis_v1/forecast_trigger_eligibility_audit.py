@@ -824,7 +824,13 @@ def generate_audit_packets(
         )
         gold_document = population.certified_documents[sample_id]
         article = population.articles[sample_id]
-        packet = render_eligibility_packet(row, article, gold_document, prediction)
+        packet = render_eligibility_packet(
+            row,
+            article,
+            gold_document,
+            prediction,
+            engine_version=_manifest_engine_version(audit_manifest),
+        )
         folder = (
             "identity_or_coverage_issue"
             if row.get("scoring_status") != "scored"
@@ -897,6 +903,8 @@ def render_eligibility_packet(
     article: Mapping[str, Any],
     gold_document: Mapping[str, Any],
     prediction: Mapping[str, Any],
+    *,
+    engine_version: str,
 ) -> str:
     gold_entity_id = str(record["gold_entity_id"])
     prediction_entity_id = str(record.get("prediction_entity_id") or "")
@@ -941,9 +949,9 @@ def render_eligibility_packet(
         + str(rendered.get("text") or "")
         + "\n\n## Certified gold entity and eligibility\n\n```json\n"
         + json.dumps(gold_context, indent=2, ensure_ascii=False)
-        + "\n```\n\n## V44 predicted entity, statements, and participations\n\n```json\n"
+        + f"\n```\n\n## {engine_version} predicted entity, statements, and participations\n\n```json\n"
         + json.dumps(prediction_context, indent=2, ensure_ascii=False)
-        + "\n```\n\n## V44 forecast-trigger gate trace\n\n```json\n"
+        + f"\n```\n\n## {engine_version} forecast-trigger gate trace\n\n```json\n"
         + json.dumps(decision_trace, indent=2, ensure_ascii=False)
         + "\n```\n"
     )
