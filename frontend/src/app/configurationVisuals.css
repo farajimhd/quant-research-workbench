@@ -171,10 +171,49 @@
 }
 
 .discovery-capability-workbench {
-  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
   margin: 18px auto 0;
   max-width: var(--strategy-workspace-max);
   width: 100%;
+}
+
+.discovery-capability-workbench .strategy-parameter-catalog {
+  grid-template-rows: auto auto minmax(260px, 1fr);
+  min-height: min(680px, calc(100vh - 230px));
+}
+
+.discovery-capability-workbench .strategy-parameter-catalog > header p {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.discovery-capability-workbench .strategy-parameter-group > button {
+  min-height: 60px;
+  padding-block: 11px;
+}
+
+.discovery-capability-workbench .strategy-parameter-list strong {
+  font-size: 11.5px;
+  font-weight: 620;
+}
+
+.discovery-capability-workbench .strategy-parameter-list small {
+  font-size: 9px;
+}
+
+.strategy-parameter-empty-list {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  flex-direction: column;
+  font-size: 10.5px;
+  gap: 8px;
+  justify-content: center;
+  min-height: 150px;
+  padding: 24px;
+  text-align: center;
 }
 
 .discovery-capability-detail,
@@ -568,20 +607,6 @@
 .account-config-card { padding: 12px; }
 .configuration-safety-note { background: color-mix(in oklab, var(--success) 5%, var(--surface)); border-radius: 6px; font-size: 10.5px; line-height: 1.5; }
 
-.configuration-save-bar {
-  align-items: center;
-  backdrop-filter: blur(12px);
-  background: color-mix(in oklab, var(--surface) 92%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  bottom: 12px;
-  box-shadow: 0 8px 24px color-mix(in oklab, var(--foreground) 8%, transparent);
-  min-height: 48px;
-  padding: 7px 9px 7px 14px;
-  position: sticky;
-  z-index: 8;
-}
-.configuration-save-bar > span { font-size: 10.5px; }
 .configuration-json-inspector { border-radius: 8px; opacity: .86; }
 .configuration-json-inspector > summary { min-height: 44px; }
 
@@ -1033,7 +1058,6 @@
   .account-config-grid,
   .mandate-grid,
   .configuration-revision-layout { grid-template-columns: 1fr; }
-  .configuration-save-bar { bottom: 8px; }
 }
 
 @media (max-width: 560px) {
@@ -1560,12 +1584,6 @@
   color: var(--muted-foreground);
   padding-left: 12px;
 }
-.configuration-save-bar {
-  background: color-mix(in oklab, var(--surface) 96%, transparent);
-  border-color: var(--configuration-rule);
-  border-radius: 7px;
-  box-shadow: 0 8px 22px color-mix(in oklab, var(--foreground) 6%, transparent);
-}
 .configuration-json-inspector { opacity: .72; }
 
 @container configuration-workbench (max-width: 1050px) {
@@ -1761,7 +1779,6 @@
 .strategy-handoff-card > header > svg,
 .strategy-handoff-card > header span { color: var(--handoff-card-accent); }
 
-.configuration-save-bar { background: var(--surface); border-color: var(--border); border-radius: 9px; box-shadow: none; }
 .trading-configuration-page .button.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
 .trading-configuration-page .button.primary:hover:not(:disabled) { background: color-mix(in oklab, var(--primary) 88%, var(--foreground)); }
 

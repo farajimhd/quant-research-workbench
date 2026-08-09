@@ -14,20 +14,27 @@ from src.backend.trading_configuration_service import (
     _validate_draft,
     approved_configuration,
     capability_catalog,
-    configuration_draft,
-    delete_strategy_profile,
+    configuration_base,
     publish_configuration,
     replay_configuration_snapshot,
-    replace_configuration_draft,
     resolve_runtime_configuration,
     resolve_runtime_configurations,
-    update_configuration_section,
 )
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.strategy_engine import long_momentum_strategy_definition
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
+    def test_legacy_server_draft_table_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            row = journal._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'trading_configuration_draft'"
+            ).fetchone()
+            journal.close()
+
+        self.assertIsNone(row)
+
     def test_environment_bound_paper_and_cash_accounts_keep_ids_out_of_draft(self) -> None:
         with patch.dict(os.environ, {
             "IBKR_PAPER_ACCOUNT_ID": "DU-PAPER-TEST",
@@ -237,17 +244,16 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
             draft = self._draft()
-            journal.save_trading_configuration_draft(draft)
             with self._service_patches(journal):
                 published = publish_configuration(
                     label="Replay acceptance",
                     canvas_revision="canvas-1",
                     canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
+                    configuration=draft,
                 )
-                saved_draft = configuration_draft()
+                saved_draft = configuration_base()
                 oms = draft["oms"]
                 oms["profiles"][0]["settings"]["entry_urgency"] = "patient"
-                update_configuration_section("oms", oms)
                 pinned = replay_configuration_snapshot()
                 latest = approved_configuration(required=True)
             journal.close()
@@ -264,22 +270,24 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             "long-momentum-balanced",
         )
         self.assertTrue(published["payload"]["run_plans"]["plans"][0]["compiled"])
-        self.assertEqual(saved_draft["run_plans"], draft["run_plans"])
+        self.assertEqual(saved_draft["run_plans"], published["payload"]["run_plans"])
 
     def test_publish_is_idempotent_for_identical_content(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
-            journal.save_trading_configuration_draft(self._draft())
+            draft = self._draft()
             with self._service_patches(journal):
                 first = publish_configuration(
                     label="First label",
                     canvas_revision="canvas-1",
                     canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
+                    configuration=draft,
                 )
                 second = publish_configuration(
                     label="Second label",
                     canvas_revision="canvas-1",
                     canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
+                    configuration=first["payload"],
                 )
             journal.close()
 
@@ -289,18 +297,24 @@ class TradingConfigurationServiceTests(unittest.TestCase):
     def test_published_strategy_requires_a_new_draft_identity_for_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
-            journal.save_trading_configuration_draft(self._draft())
+            draft = self._draft()
             with self._service_patches(journal):
                 published = publish_configuration(
                     label="Immutable strategy",
                     canvas_revision="canvas-1",
                     canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
+                    configuration=draft,
                 )
-                current = configuration_draft()
+                current = deepcopy(published["payload"])
                 immutable = deepcopy(current)
                 immutable["strategy"]["profiles"][0]["name"] = "Changed in place"
                 with self.assertRaisesRegex(ValueError, "immutable"):
-                    replace_configuration_draft(immutable)
+                    publish_configuration(
+                        label="Invalid mutation",
+                        canvas_revision="canvas-2",
+                        canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
+                        configuration=immutable,
+                    )
 
                 source = current["strategy"]["profiles"][0]
                 clone = deepcopy(source)
@@ -314,35 +328,32 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                     "derived_from_profile_id": source["profile_id"],
                 })
                 current["strategy"]["profiles"].append(clone)
-                saved = replace_configuration_draft(current)
+                saved = publish_configuration(
+                    label="Cloned strategy",
+                    canvas_revision="canvas-2",
+                    canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
+                    configuration=current,
+                    strategy_profile_id=clone["profile_id"],
+                )
             journal.close()
 
         self.assertEqual(
             published["payload"]["strategy"]["profiles"][0]["publication_status"],
             "published",
         )
-        self.assertEqual(saved["strategy"]["profiles"][-1]["derived_from_profile_id"], source["profile_id"])
+        self.assertEqual(saved["payload"]["strategy"]["profiles"][-1]["derived_from_profile_id"], source["profile_id"])
 
-    def test_complete_draft_replacement_is_atomic(self) -> None:
+    def test_unpublished_session_configuration_is_not_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
             original = self._draft()
-            journal.save_trading_configuration_draft(original)
-            replacement = deepcopy(original)
-            replacement["strategy"]["profiles"][0]["name"] = "Cloned profile"
-            replacement["run_plans"]["plans"][0]["name"] = "Cloned Run Plan"
+            session_configuration = deepcopy(original)
+            session_configuration["strategy"]["profiles"][0]["name"] = "Session-only name"
             with self._service_patches(journal):
-                saved = replace_configuration_draft(replacement)
-                invalid = deepcopy(replacement)
-                invalid["run_plans"]["plans"][0]["profile_id"] = "missing-profile"
-                with self.assertRaisesRegex(ValueError, "unknown Strategy Profile"):
-                    replace_configuration_draft(invalid)
-                reloaded = journal.trading_configuration_draft()
+                reloaded = configuration_base()
             journal.close()
 
-        self.assertEqual(saved["strategy"]["profiles"][0]["name"], "Cloned profile")
-        self.assertEqual(saved["run_plans"]["plans"][0]["name"], "Cloned Run Plan")
-        self.assertEqual(reloaded["run_plans"]["plans"][0]["name"], "Cloned Run Plan")
+        self.assertNotEqual(reloaded["strategy"]["profiles"][0]["name"], "Session-only name")
 
     def test_runtime_projection_uses_account_mandate_and_capability_settings(self) -> None:
         draft = self._draft()
@@ -465,23 +476,20 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(assignment["profile_id"], "long-momentum-balanced")
         self.assertIn("entry_rules", assignment["resolved_parameters"])
 
-    def test_incomplete_deployment_can_be_saved_but_not_published(self) -> None:
+    def test_incomplete_session_configuration_cannot_be_published(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
             draft = self._draft()
             draft["portfolio"]["mandates"] = []
-            journal.save_trading_configuration_draft(draft)
             with self._service_patches(journal):
-                saved = update_configuration_section("run_plans", draft["run_plans"])
                 with self.assertRaisesRegex(ValueError, "requires at least one account mandate"):
                     publish_configuration(
                         label="Incomplete release",
                         canvas_revision="canvas-1",
                         canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
+                        configuration=draft,
                     )
             journal.close()
-
-        self.assertEqual(saved["run_plans"]["plans"][0]["run_plan_id"], "balanced-replay")
 
     def test_unknown_strategy_input_cannot_enter_runtime_projection(self) -> None:
         draft = self._draft()
@@ -533,11 +541,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ), self.assertRaisesRegex(ValueError, "must remain protected"):
             _validate_draft(draft, require_runtime_ready=False)
 
-    def test_cloned_strategy_profile_persists_in_the_authoritative_draft(self) -> None:
+    def test_unpublished_strategy_clone_remains_outside_backend_authority(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
             draft = self._draft()
-            journal.save_trading_configuration_draft(draft)
             clone = deepcopy(draft["strategy"]["profiles"][0])
             clone.update({
                 "profile_id": "long-momentum-clone",
@@ -548,18 +555,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             strategy = deepcopy(draft["strategy"])
             strategy["profiles"].append(clone)
             with self._service_patches(journal):
-                saved = update_configuration_section("strategy", strategy)
-                reloaded = journal.trading_configuration_draft()
+                reloaded = configuration_base()
             journal.close()
 
-        self.assertEqual(
-            saved["strategy"]["profiles"][-1]["profile_id"],
-            "long-momentum-clone",
-        )
-        self.assertEqual(
-            reloaded["strategy"]["profiles"][-1]["profile_id"],
-            "long-momentum-clone",
-        )
+        self.assertNotIn("long-momentum-clone", {row["profile_id"] for row in reloaded["strategy"]["profiles"]})
 
     def test_strategy_definition_rejects_non_single_side_profile(self) -> None:
         draft = self._draft()
@@ -630,37 +629,6 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             return_value=long_momentum_strategy_definition(),
         ):
             _validate_draft(draft, require_runtime_ready=False)
-
-    def test_profile_deletion_persists_despite_unrelated_authority_error(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            journal = TradingJournal(Path(directory) / "journal.sqlite3")
-            draft = self._draft()
-            source = draft["strategy"]["profiles"][0]
-            user_profile = deepcopy(source)
-            user_profile.update({
-                "profile_id": "user-momentum",
-                "name": "User momentum",
-                "origin": "user",
-                "protected": False,
-            })
-            draft["strategy"]["profiles"].append(user_profile)
-            draft["run_plans"]["plans"][0]["profile_id"] = user_profile["profile_id"]
-            draft["portfolio"]["mandates"][0]["maximum_action_authority"] = "confirm"
-            draft["run_plans"]["plans"][0]["action_authority"]["strategic_exit"] = "automatic"
-            journal.save_trading_configuration_draft(draft)
-            with self._service_patches(journal):
-                saved = delete_strategy_profile(user_profile["profile_id"])
-                reloaded = configuration_draft()
-            journal.close()
-
-        self.assertNotIn(user_profile["profile_id"], {
-            row["profile_id"] for row in saved["strategy"]["profiles"]
-        })
-        self.assertEqual(
-            saved["run_plans"]["plans"][0]["profile_id"],
-            saved["strategy"]["default_profile_id"],
-        )
-        self.assertEqual(saved, reloaded)
 
     def test_schema_v9_migration_removes_generic_priorities(self) -> None:
         raw = self._draft()

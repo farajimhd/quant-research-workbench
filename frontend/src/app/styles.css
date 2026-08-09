@@ -21693,8 +21693,7 @@ button {
 .configuration-detail,
 .configuration-group,
 .configuration-json-inspector,
-.configuration-guide,
-.configuration-save-bar {
+.configuration-guide {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -22004,18 +22003,6 @@ button {
 .configuration-json-inspector > header span { color: var(--muted-foreground); font-size: 10px; }
 .configuration-json-inspector > header button { align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 5px; color: var(--foreground); cursor: pointer; display: flex; font-size: 9px; gap: 5px; padding: 5px 7px; }
 .configuration-json-inspector pre { background: color-mix(in oklab, var(--surface-alt) 76%, var(--surface)); color: var(--foreground); font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; margin: 0; max-height: 520px; overflow: auto; padding: 13px; tab-size: 2; }
-
-.configuration-save-bar {
-  align-items: center;
-  bottom: 10px;
-  box-shadow: var(--menu-shadow);
-  display: flex;
-  justify-content: space-between;
-  padding: 9px 10px 9px 13px;
-  position: sticky;
-  z-index: 100;
-}
-.configuration-save-bar > span { color: var(--muted-foreground); font-size: 10px; }
 
 .configuration-two-column { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .configuration-readiness { display: grid; gap: 8px; }
@@ -22753,7 +22740,6 @@ button {
 .configuration-group > header strong { font-size: 16.25px; }
 .configuration-revision-badge span,
 .configuration-field > span,
-.configuration-save-bar > span,
 .configuration-enabled,
 .configuration-readiness > span,
 .configuration-publish-proof > span { font-size: 12.5px; }
@@ -22945,8 +22931,6 @@ button {
   .capability-fields { grid-template-columns: minmax(0, 1fr); }
   .configuration-detail-heading { flex-direction: column; }
   .configuration-heading-actions { width: 100%; }
-  .configuration-save-bar { align-items: stretch; flex-direction: column; gap: 8px; }
-  .configuration-save-bar button { justify-content: center; width: 100%; }
   .strategy-stage-controls,
   .strategy-rule-group > header,
   .strategy-rule-condition { display: grid; grid-template-columns: minmax(0, 1fr); }

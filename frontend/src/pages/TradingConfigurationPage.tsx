@@ -621,19 +621,20 @@ function serializeDraft(draft: Draft) {
   return { ...rest, run_plans: { plans: assignments.deployments, universes: assignments.universes } };
 }
 
-function serializeSection(section: TradingConfigurationSection, value: unknown) {
-  if (section !== "assignments") return value;
-  const runPlans = value as AssignmentSection;
-  return { plans: runPlans.deployments, universes: runPlans.universes };
+const CONFIGURATION_SESSION_KEY = "trading-configuration-session-v1";
+
+function readSessionConfiguration(base: Draft): Draft {
+  try {
+    const stored = window.sessionStorage.getItem(CONFIGURATION_SESSION_KEY);
+    return stored ? normalizeDraft(JSON.parse(stored)) : base;
+  } catch {
+    window.sessionStorage.removeItem(CONFIGURATION_SESSION_KEY);
+    return base;
+  }
 }
 
-function draftSectionValue(draft: Draft, section: Exclude<TradingConfigurationSection, "revisions">): unknown {
-  if (section === "discovery") return draft.market_discovery;
-  return draft[section];
-}
-
-function backendSectionName(section: Exclude<TradingConfigurationSection, "revisions">) {
-  return section === "discovery" ? "market_discovery" : section;
+function writeSessionConfiguration(draft: Draft) {
+  window.sessionStorage.setItem(CONFIGURATION_SESSION_KEY, JSON.stringify(serializeDraft(draft)));
 }
 
 type ConfigurationExperience = "guided" | "expert";
@@ -718,7 +719,6 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   const [approved, setApproved] = useState<Revision | null>(null);
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [label, setLabel] = useState("");
-  const [dirtySection, setDirtySection] = useState<TradingConfigurationSection | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "saving" | "saved" | "error">("loading");
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"success" | "error">("success");
@@ -732,16 +732,15 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     let cancelled = false;
     setStatus("loading");
     Promise.all([
-      api<Draft>("/api/trading/configuration/draft"),
+      api<Draft>("/api/trading/configuration/base"),
       api<{ approved: Revision | null }>("/api/trading/configuration/approved"),
       api<{ rows: Revision[] }>("/api/trading/configuration/revisions"),
     ])
       .then(([nextDraft, approvedPayload, revisionPayload]) => {
         if (cancelled) return;
-        setDraft(normalizeDraft(nextDraft));
+        setDraft(readSessionConfiguration(normalizeDraft(nextDraft)));
         setApproved(approvedPayload.approved ? { ...approvedPayload.approved, payload: normalizeDraft(approvedPayload.approved.payload) as Revision["payload"] } : null);
         setRevisions(revisionPayload.rows.map((row) => ({ ...row, payload: normalizeDraft(row.payload) as Revision["payload"] })));
-        setDirtySection(null);
         setStatus("ready");
       })
       .catch((reason) => {
@@ -754,15 +753,19 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   }, [section]);
 
   function updateDraft<K extends keyof Draft>(key: K, value: Draft[K]) {
-    setDraft((current) => current ? { ...current, [key]: value } : current);
-    setDirtySection(section);
+    setDraft((current) => {
+      if (!current) return current;
+      const next = { ...current, [key]: value };
+      writeSessionConfiguration(next);
+      return next;
+    });
     setMessage("");
     setStatus("ready");
   }
 
   function updateConfigurationBook(value: Draft) {
+    writeSessionConfiguration(value);
     setDraft(value);
-    setDirtySection("strategy");
     setMessage("");
     setStatus("ready");
   }
@@ -780,75 +783,41 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   }
 
   async function persistSections(next: Draft, sections: Array<Exclude<TradingConfigurationSection, "revisions">>, successMessage: string) {
-    setStatus("saving");
-    setMessage("");
-    try {
-      const saved = sections.length > 1
-        ? await api<Draft>("/api/trading/configuration/draft", { body: JSON.stringify({ payload: serializeDraft(next) }), method: "PUT" })
-        : await api<Draft>(`/api/trading/configuration/draft/${backendSectionName(sections[0])}`, { body: JSON.stringify({ payload: serializeSection(sections[0], draftSectionValue(next, sections[0])) }), method: "PUT" });
-      const normalized = normalizeDraft(saved);
-      setDraft(normalized);
-      setDirtySection(null);
-      setStatus("saved");
-      setMessageTone("success");
-      setMessage(successMessage);
-      return normalized;
-    } catch (reason) {
-      setStatus("error");
-      setMessageTone("error");
-      setMessage(reason instanceof Error ? reason.message : String(reason));
-      throw reason;
-    }
+    void sections;
+    writeSessionConfiguration(next);
+    setDraft(next);
+    setStatus("ready");
+    setMessageTone("success");
+    setMessage(successMessage);
+    return next;
   }
 
-  async function saveAndContinue(nextStep: GuidedStep) {
+  function continueSession(nextStep: GuidedStep) {
     if (!draft || section === "revisions") return;
-    if (await saveSection()) navigateGuidedStep(nextStep, setOmsGuidedStage);
-  }
-
-  async function saveSection() {
-    if (!draft || section === "revisions") return false;
-    setStatus("saving");
-    setMessage("");
-    try {
-      const saveWholeBook = section === "strategy";
-      const editableSection = section as Exclude<TradingConfigurationSection, "revisions">;
-      const nextDraft = await api<Draft>(saveWholeBook ? "/api/trading/configuration/draft" : `/api/trading/configuration/draft/${backendSectionName(editableSection)}`, {
-        body: JSON.stringify({ payload: saveWholeBook ? serializeDraft(draft) : serializeSection(section, draftSectionValue(draft, editableSection)) }),
-        method: "PUT",
-      });
-      setDraft(normalizeDraft(nextDraft));
-      setDirtySection(null);
-      setStatus("saved");
-      setMessageTone("success");
-      setMessage("Draft saved. Active and approved runs remain unchanged until you publish a release.");
-      return true;
-    } catch (reason) {
-      setStatus("error");
-      setMessageTone("error");
-      setMessage(reason instanceof Error ? reason.message : String(reason));
-      return false;
-    }
+    navigateGuidedStep(nextStep, setOmsGuidedStage);
   }
 
   async function deleteStrategyProfile(profileId: string) {
-    setStatus("saving");
-    setMessage("");
-    try {
-      const saved = await api<Draft>(`/api/trading/configuration/draft/strategy/profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
-      const normalized = normalizeDraft(saved);
-      setDraft(normalized);
-      setDirtySection(null);
-      setStatus("saved");
-      setMessageTone("success");
-      setMessage("Strategy deleted permanently.");
-      return normalized;
-    } catch (reason) {
-      setStatus("error");
-      setMessageTone("error");
-      setMessage(reason instanceof Error ? reason.message : String(reason));
-      throw reason;
-    }
+    if (!draft) throw new Error("Configuration session is unavailable");
+    const profile = draft.strategy.profiles.find((row) => row.profile_id === profileId);
+    if (!profile) throw new Error(`Unknown Strategy Profile: ${profileId}`);
+    if (profile.publication_status === "published") throw new Error("Published strategies are immutable and cannot be deleted; clone one to create a new strategy");
+    if (profile.protected || profileId === draft.strategy.default_profile_id) throw new Error("The protected default Strategy Profile cannot be deleted");
+    const fallbackId = draft.strategy.default_profile_id;
+    const next = normalizeDraft({
+      ...draft,
+      strategy: { ...draft.strategy, profiles: draft.strategy.profiles.filter((row) => row.profile_id !== profileId) },
+      assignments: {
+        ...draft.assignments,
+        deployments: draft.assignments.deployments.map((row) => row.profile_id === profileId ? { ...row, profile_id: fallbackId } : row),
+      },
+    });
+    writeSessionConfiguration(next);
+    setDraft(next);
+    setStatus("ready");
+    setMessageTone("success");
+    setMessage("Strategy removed from this session.");
+    return next;
   }
 
   async function publish(strategyProfileId = "") {
@@ -859,12 +828,12 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       const canvas = canvasApprovalSnapshot();
       if (!canvas.ready) throw new Error("Configure at least one Canvas container before publishing.");
       const revision = await api<Revision>("/api/trading/configuration/publish", {
-        body: JSON.stringify({ canvas_profile: canvas.profile, canvas_revision: canvas.revision, label, strategy_profile_id: strategyProfileId }),
+        body: JSON.stringify({ canvas_profile: canvas.profile, canvas_revision: canvas.revision, configuration: serializeDraft(draft), label, strategy_profile_id: strategyProfileId }),
         method: "POST",
       });
       setApproved(revision);
-      const savedDraft = await api<Draft>("/api/trading/configuration/draft");
-      setDraft(normalizeDraft(savedDraft));
+      window.sessionStorage.removeItem(CONFIGURATION_SESSION_KEY);
+      setDraft(normalizeDraft(revision.payload));
       setRevisions((current) => [revision, ...current.filter((row) => row.revision_id !== revision.revision_id)]);
       window.dispatchEvent(new CustomEvent("quant-trading-configuration-published"));
       setLabel("");
@@ -898,7 +867,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           draft={draft}
           pending={status === "saving"}
           onApplyRecommended={(next) => persistSections(next, ["strategy", "assignments"], "Protected Strategy and OMS starting points applied. Account and risk decisions were preserved for review.")}
-          onCloneApproved={(next) => persistSections(next, ["strategy", "assignments", "portfolio", "oms", "accounts"], "The approved release was cloned into the mutable draft. Runtime authority remains unchanged until publication.")}
+          onCloneApproved={(next) => persistSections(next, ["strategy", "assignments", "portfolio", "oms", "accounts"], "The approved release was copied into this session. Runtime authority remains unchanged until publication.")}
           onStart={(value) => { setExperience(value); if (value === "guided") navigateGuidedStep("strategy", setOmsGuidedStage); }}
         />
       ) : (
@@ -919,7 +888,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
             label={label}
             omsStage={omsGuidedStage}
             onChange={updateDraft}
-            onContinue={(step) => void saveAndContinue(step)}
+            onContinue={continueSession}
             onLabelChange={setLabel}
             onOmsStageChange={setOmsGuidedStage}
             onPublish={publish}
@@ -938,7 +907,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           label={label}
           omsStage={omsGuidedStage}
           onChange={updateDraft}
-          onContinue={(step) => void saveAndContinue(step)}
+          onContinue={continueSession}
           onLabelChange={setLabel}
           onOmsStageChange={setOmsGuidedStage}
           onPublish={publish}
@@ -960,19 +929,13 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       ) : draft ? (
         <div className="configuration-expert-workspace">
           <div className="configuration-expert-editor">
-            {section === "strategy" ? <StrategyStudio approved={approved} draft={draft} hasUnsavedChanges={dirtySection === "strategy"} label={label} onChange={(value) => updateDraft("strategy", value)} onDeleteProfile={deleteStrategyProfile} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} onSave={saveSection} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
+            {section === "strategy" ? <StrategyStudio approved={approved} draft={draft} label={label} onChange={(value) => updateDraft("strategy", value)} onDeleteProfile={deleteStrategyProfile} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
             {section === "discovery" ? <MarketDiscoveryStudio onChange={(value) => updateDraft("market_discovery", value)} section={draft.market_discovery} /> : null}
             {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
             {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
             {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
             {section === "accounts" ? <AccountsEditor draft={draft} onChange={(value) => updateDraft("accounts", value)} /> : null}
           </div>
-          {section !== "strategy" ? <div className="configuration-save-bar">
-            <span>{dirtySection === section ? "Unsaved draft changes" : "Draft matches saved configuration"}</span>
-            <button className="button primary" disabled={dirtySection !== section || status === "saving"} onClick={saveSection} type="button">
-              <Save size={15} /> {status === "saving" ? "Saving…" : "Save draft"}
-            </button>
-          </div> : null}
         </div>
       ) : <ConfigurationLoading />}
         </>
@@ -1011,7 +974,7 @@ function ExpertWorkspaceGuide({ section }: { section: Exclude<TradingConfigurati
   const guidance = EXPERT_GUIDANCE[section];
   return <section className="configuration-expert-guide">
     <div><span>Expert workspace</span><h2>{SECTION_META[section].title} contract</h2><p>{guidance.outcome}</p></div>
-    <dl><div><dt>Authority boundary</dt><dd>{guidance.authority}</dd></div><div><dt>Work by subject</dt><dd>{guidance.subjects.map((subject) => <span key={subject}><Check size={12} />{subject}</span>)}</dd></div><div><dt>Release behavior</dt><dd>Changes affect only this draft until validation and publication.</dd></div></dl>
+    <dl><div><dt>Authority boundary</dt><dd>{guidance.authority}</dd></div><div><dt>Work by subject</dt><dd>{guidance.subjects.map((subject) => <span key={subject}><Check size={12} />{subject}</span>)}</dd></div><div><dt>Release behavior</dt><dd>Changes remain in this browser session until validation and publication.</dd></div></dl>
   </section>;
 }
 
@@ -1059,8 +1022,8 @@ function ConfigurationStudioHome({ approved, draft, onApplyRecommended, onCloneA
   const recommended = recommendedDraft(draft);
   return <section className="configuration-studio-home">
     <header>
-      <div><span>Choose how to begin</span><h2>Choose your starting point</h2><p>Every option edits the same schema-v{draft.schema_version} draft; publication is required before runtime.</p></div>
-      <div className="configuration-home-authority"><ShieldCheck size={18} /><span><strong>One authority</strong><small>Guided choices become canonical draft patches</small></span></div>
+      <div><span>Choose how to begin</span><h2>Choose your starting point</h2><p>Every option edits the same schema-v{draft.schema_version} session configuration; publication is required before runtime.</p></div>
+      <div className="configuration-home-authority"><ShieldCheck size={18} /><span><strong>One authority</strong><small>Guided choices update this browser session</small></span></div>
     </header>
     <div className="configuration-start-paths">
       <button className="recommended" onClick={() => setSelectedPath("recommended")} type="button"><span className="configuration-path-icon"><Sparkles size={19} /></span><span><em>Fastest safe start</em><strong>Use recommended setup</strong><small>Apply the protected Strategy and system OMS starting points, then review account and risk decisions.</small></span><ChevronRight size={18} /></button>
@@ -1078,9 +1041,9 @@ function ConfigurationStudioHome({ approved, draft, onApplyRecommended, onCloneA
       <footer><p>This does not publish or enable Live. You will review all inherited mandate, protection, and broker bindings before approval.</p><button className="button primary" disabled={pending || !systemProfile || !systemOms || !deployment} onClick={() => void onApplyRecommended(recommended).then(() => onStart("guided"))} type="button">{pending ? "Applying…" : "Apply and review"}<ArrowRight size={15} /></button></footer>
     </div> : null}
     {selectedPath === "clone" && approved ? <div className="configuration-path-confirmation">
-      <header><div><span>Clone preview</span><strong>Replace the mutable draft with release {approved.revision}</strong></div><button aria-label="Close preview" onClick={() => setSelectedPath(null)} type="button"><X size={16} /></button></header>
+      <header><div><span>Copy preview</span><strong>Copy release {approved.revision} into this session</strong></div><button aria-label="Close preview" onClick={() => setSelectedPath(null)} type="button"><X size={16} /></button></header>
       <div className="configuration-clone-summary"><BadgeCheck size={17} /><p><strong>{approved.label}</strong><span>{approved.payload.strategy.profiles.length} strategies · {approved.payload.assignments.deployments.length} compiled runtimes · {approved.payload.portfolio.mandates.length} mandates · {approved.payload.accounts.bindings.length} accounts</span></p></div>
-      <footer><p>The approved release remains immutable. Only the draft is replaced, and it still requires publication to affect new runs.</p><button className="button primary" disabled={pending} onClick={() => void onCloneApproved(cloneApprovedDraft(approved, draft)).then(() => onStart("guided"))} type="button">{pending ? "Cloning…" : "Clone into draft"}<ArrowRight size={15} /></button></footer>
+      <footer><p>The approved release remains immutable. Only this session is replaced, and publication is still required to affect new runs.</p><button className="button primary" disabled={pending} onClick={() => void onCloneApproved(cloneApprovedDraft(approved, draft)).then(() => onStart("guided"))} type="button">{pending ? "Copying…" : "Copy into session"}<ArrowRight size={15} /></button></footer>
     </div> : null}
   </section>;
 }
@@ -1189,7 +1152,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   if (step === "accounts") questions.push(
     <GuidedQuestion description="This binding connects the setup to simulated state or an externally discovered IBKR account. Runtime synchronizes cash, positions, buying power, and orders before Portfolio acts." key="account-selection" label="Which account will this configuration use?" status="Account selected"><div className="guided-confirmed-choice"><BadgeCheck size={20} /><span><strong>{account.name}</strong><small>{readableLabel(account.account_class)} · Portfolio policy {account.portfolio_policy_id}</small></span></div></GuidedQuestion>,
     <GuidedQuestion description="Paper and Live require an exact broker account and session match. Replay and Backtest use deterministic simulated account state instead." key="account-modes" label="Which modes may bind this account?" status={account.modes.length ? "Configured" : "Needs decision"}><ModeSelector modes={account.modes} onChange={(modes) => replaceAccount({ ...account, modes })} /></GuidedQuestion>,
-    ...(account.modes.some((mode) => mode === "paper" || mode === "live") ? [<GuidedQuestion description="The broker account ID is resolved only by the local runtime environment. Publication and broker preflight fail closed when the resolved identity differs from IBKR discovery." key="account-broker" label="Confirm the broker account and gateway session" status={(account.source_account_env || account.source_account_id.trim()) && account.session_key.trim() ? "Needs broker verification" : "Invalid"}><div className="guided-form-grid">{account.source_account_env ? <div className="configuration-fixed-value"><span>IBKR account ID source</span><strong>{account.source_account_env}</strong><small>Resolved only in the local runtime; the account ID is not saved in the configuration draft.</small></div> : <TextField help="Enter the exact IBKR account identifier returned by the active broker session. It is an identity, not a display label." label="IBKR account ID" onChange={(source_account_id) => replaceAccount({ ...account, source_account_id })} value={account.source_account_id} />}<TextField help="Enter the configured gateway session identity that owns this account connection." label="Session key" onChange={(session_key) => replaceAccount({ ...account, session_key })} value={account.session_key} /></div></GuidedQuestion>] : []),
+    ...(account.modes.some((mode) => mode === "paper" || mode === "live") ? [<GuidedQuestion description="The broker account ID is resolved only by the local runtime environment. Publication and broker preflight fail closed when the resolved identity differs from IBKR discovery." key="account-broker" label="Confirm the broker account and gateway session" status={(account.source_account_env || account.source_account_id.trim()) && account.session_key.trim() ? "Needs broker verification" : "Invalid"}><div className="guided-form-grid">{account.source_account_env ? <div className="configuration-fixed-value"><span>IBKR account ID source</span><strong>{account.source_account_env}</strong><small>Resolved only in the local runtime; the account ID is not stored in configuration.</small></div> : <TextField help="Enter the exact IBKR account identifier returned by the active broker session. It is an identity, not a display label." label="IBKR account ID" onChange={(source_account_id) => replaceAccount({ ...account, source_account_id })} value={account.source_account_id} />}<TextField help="Enter the configured gateway session identity that owns this account connection." label="Session key" onChange={(session_key) => replaceAccount({ ...account, session_key })} value={account.session_key} /></div></GuidedQuestion>] : []),
   );
   const questionCount = questions.length;
   const safeQuestionIndex = Math.min(questionIndex, Math.max(questionCount - 1, 0));
@@ -1336,7 +1299,7 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     },
     {
       id: "availability", section: "Behavior", title: "Should this strategy remain available to new runs?",
-      description: "Availability controls whether the backend may compile this Strategy for a new run. Turning it off preserves the complete draft and historical references.",
+      description: "Availability controls whether the backend may compile this Strategy for a new run. Turning it off preserves the complete configuration and historical references.",
       guide: "Disable a profile when it must remain auditable but unavailable to new runtime configurations.",
       content: <BooleanField help="Allow new runtime configurations to use this Strategy." label="Available for use" onChange={(enabled) => replaceProfile({ ...profile, enabled })} value={profile.enabled} />,
     },
@@ -1535,11 +1498,11 @@ function StrategyStartWorkflow({ cloneSourceId, mode, name, onClone, onCloneSour
       <button aria-pressed={mode === "clone"} onClick={() => onModeChange("clone")} type="button"><span className="strategy-start-icon"><Clipboard size={18} /></span><span><small>Reuse proven structure</small><strong>Clone an existing strategy</strong><em>Inspect its behavior and capabilities first, then create an independent copy with a new name.</em></span><ChevronRight size={17} /></button>
     </div>
     {mode === "create" ? <section className="strategy-create-workflow">
-      <header><span>New strategy</span><strong>Start with a clean decision set</strong><p>Nothing is enabled for trading. Complete the required lifecycle questions before this draft can be saved or published.</p></header>
+      <header><span>New strategy</span><strong>Start with a clean decision set</strong><p>Nothing is enabled for trading. Complete the required lifecycle questions before this strategy can be published.</p></header>
       <div className="strategy-blank-summary">
         <span><Check size={15} /><span><strong>No active entry logic</strong><small>Opportunity, confirmation, and blocker rules begin empty.</small></span></span>
         <span><Check size={15} /><span><strong>No position management</strong><small>Adds, reentry, strategic exits, and optional capabilities begin disabled.</small></span></span>
-        <span><Check size={15} /><span><strong>Safe draft only</strong><small>The protected system fallback remains unchanged until this strategy is complete and published.</small></span></span>
+        <span><Check size={15} /><span><strong>Session only</strong><small>The protected system fallback remains unchanged until this strategy is complete and published.</small></span></span>
       </div>
       <NextActionArea active description="Give the blank draft a distinct operator-facing name." focusKey="create-name" title="Name the new strategy">
         <div className="strategy-start-name"><TextField help={nameConflict ? "Choose a name not already used by another Strategy Profile." : "You can refine this name in the next question."} label="Strategy name" nextAction onChange={onNameChange} value={name} />{nameConflict ? <span role="alert">A strategy with this name already exists.</span> : null}</div>
@@ -1765,7 +1728,7 @@ function GuidedReview({ approved, draft, label, onLabelChange, onPublish, onRetu
   const rows = reviewRows(draft, approved);
   return <div className="guided-review">
     <header><span>Final step</span><h2>Review the effective configuration</h2><p>Resolve anything marked invalid or needing a decision. Publication freezes the entire draft and configured Canvas for new runs.</p></header>
-    <div className="guided-review-layout"><div className="guided-review-matrix">{rows.map((row) => { const Icon = row.icon; return <article key={row.step}><span><Icon size={18} /><strong>{row.label}</strong></span><span>{row.selection}</span><em data-state={row.state.toLowerCase().replaceAll(" ", "-")}>{row.state}</em><button onClick={() => navigateGuidedStep(row.step, () => undefined)} type="button">Change <ChevronRight size={13} /></button></article>; })}</div><aside><RevisionPublisher approved={approved} draft={draft} guided label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} /></aside><details className="guided-technical-preview"><summary>Show the technical runtime preview <ChevronRight size={15} /></summary><EffectiveConfigurationPreview updatedAt={draft.updated_at || ""} /></details></div>
+    <div className="guided-review-layout"><div className="guided-review-matrix">{rows.map((row) => { const Icon = row.icon; return <article key={row.step}><span><Icon size={18} /><strong>{row.label}</strong></span><span>{row.selection}</span><em data-state={row.state.toLowerCase().replaceAll(" ", "-")}>{row.state}</em><button onClick={() => navigateGuidedStep(row.step, () => undefined)} type="button">Change <ChevronRight size={13} /></button></article>; })}</div><aside><RevisionPublisher approved={approved} draft={draft} guided label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} /></aside><details className="guided-technical-preview"><summary>Show the technical runtime preview <ChevronRight size={15} /></summary><EffectiveConfigurationPreview draft={draft} /></details></div>
     <button className="button" onClick={onReturn} type="button"><ArrowLeft size={15} /> Back to accounts</button>
   </div>;
 }
@@ -1777,18 +1740,21 @@ function GuidedEmpty({ onSwitchToExpert }: { onSwitchToExpert: () => void }) {
 function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: MarketDiscoverySection) => void; section: MarketDiscoverySection }) {
   const [mode, setMode] = useState<"catalog" | "guided">("guided");
   const [guidedStep, setGuidedStep] = useState<"core" | "watchlists" | "history">("core");
+  const [capabilityQuery, setCapabilityQuery] = useState("");
   const [selectedCapabilityId, setSelectedCapabilityId] = useState(section.core_scan.calculations[0]?.capability_id ?? "");
   const [selectedWatchlistId, setSelectedWatchlistId] = useState(section.watchlists[0]?.watchlist_id ?? "");
   const selectedCapability = section.core_scan.calculations.find((row) => row.capability_id === selectedCapabilityId) ?? section.core_scan.calculations[0];
   const selectedWatchlist = section.watchlists.find((row) => row.watchlist_id === selectedWatchlistId) ?? section.watchlists[0];
   const groupedCapabilities = useMemo(() => {
     const groups = new Map<string, DiscoveryCapability[]>();
-    section.core_scan.calculations.forEach((capability) => {
+    const query = capabilityQuery.trim().toLocaleLowerCase();
+    section.core_scan.calculations.filter((capability) => !query || [capability.name, capability.category, capability.provider, capability.description].some((value) => value.toLocaleLowerCase().includes(query))).forEach((capability) => {
       const key = capability.tier === "core" ? "Core Scan" : capability.category || "Watchlist calculations";
       groups.set(key, [...(groups.get(key) ?? []), capability]);
     });
     return [...groups.entries()];
-  }, [section.core_scan.calculations]);
+  }, [capabilityQuery, section.core_scan.calculations]);
+  const visibleCapabilityCount = groupedCapabilities.reduce((count, [, capabilities]) => count + capabilities.length, 0);
 
   function replaceWatchlist(next: WatchlistConfig) {
     onChange({ ...section, watchlists: section.watchlists.map((row) => row.watchlist_id === next.watchlist_id ? next : row) });
@@ -1816,14 +1782,15 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
     </nav>
     {mode === "catalog" ? <div className="configuration-workbench strategy-editor-catalog discovery-capability-workbench">
       <aside className="strategy-parameter-catalog">
-        <header><div><span>QMD capability catalog</span><strong>{section.core_scan.calculations.length} visible</strong></div><p>Every active extraction, indicator, signal, quality check, and membership service is listed.</p></header>
-        <div className="strategy-parameter-list">{groupedCapabilities.map(([group, capabilities]) => <section key={group}><header><span>{group}</span><small>{capabilities.length}</small></header>{capabilities.map((capability) => <button aria-current={capability.capability_id === selectedCapability?.capability_id ? "true" : undefined} key={capability.capability_id} onClick={() => setSelectedCapabilityId(capability.capability_id)} type="button"><span><strong>{capability.name}</strong><small>{capability.provider} · {capability.configurable ? "Configurable" : capability.system_required ? "Required" : "Read only"}</small></span><ChevronRight size={14} /></button>)}</section>)}</div>
+        <header><div><span>QMD capability catalog</span><strong>{visibleCapabilityCount} of {section.core_scan.calculations.length}</strong></div><p>Review every QMD extraction, indicator, signal, quality check, and membership service.</p></header>
+        <label className="strategy-parameter-search"><Search aria-hidden="true" size={15} /><input aria-label="Search QMD capabilities" onChange={(event) => setCapabilityQuery(event.target.value)} placeholder="Search capabilities" type="search" value={capabilityQuery} /></label>
+        <div className="strategy-parameter-list">{groupedCapabilities.map(([group, capabilities]) => <section className="strategy-parameter-group" key={group}><header><strong>{group}</strong><span>{capabilities.length}</span></header>{capabilities.map((capability) => <button aria-current={capability.capability_id === selectedCapability?.capability_id ? "true" : undefined} key={capability.capability_id} onClick={() => setSelectedCapabilityId(capability.capability_id)} type="button"><span><strong>{capability.name}</strong><small>{capability.provider} · {capability.configurable ? "Configurable" : capability.system_required ? "Required" : "Read only"}</small></span><ChevronRight size={14} /></button>)}</section>)}{visibleCapabilityCount === 0 ? <div className="strategy-parameter-empty-list"><Search size={18} /><span>No capabilities match this search.</span></div> : null}</div>
       </aside>
       <main className="strategy-parameter-detail-page discovery-capability-detail">
         {selectedCapability ? <>
           <header><span>{selectedCapability.category}</span><h2>{selectedCapability.name}</h2><p>{selectedCapability.description}</p></header>
           <section className="discovery-capability-control">
-            <label className="configuration-field configuration-boolean"><span>Enabled</span><small>{selectedCapability.configurable ? "This calculation may be disabled for this draft." : "This behavior is active but owned by QMD and cannot be changed here."}</small><input checked={selectedCapability.enabled} disabled={!selectedCapability.configurable || selectedCapability.system_required} onChange={(event) => onChange({ ...section, core_scan: { ...section.core_scan, calculations: section.core_scan.calculations.map((row) => row.capability_id === selectedCapability.capability_id ? { ...row, enabled: event.target.checked } : row) } })} type="checkbox" /></label>
+            <label className="configuration-field configuration-boolean"><span>Enabled</span><small>{selectedCapability.configurable ? "This calculation may be disabled for this session." : "This behavior is active but owned by QMD and cannot be changed here."}</small><input checked={selectedCapability.enabled} disabled={!selectedCapability.configurable || selectedCapability.system_required} onChange={(event) => onChange({ ...section, core_scan: { ...section.core_scan, calculations: section.core_scan.calculations.map((row) => row.capability_id === selectedCapability.capability_id ? { ...row, enabled: event.target.checked } : row) } })} type="checkbox" /></label>
           </section>
           <ParameterDocumentation documentation={{ role: [`${selectedCapability.provider} owns this ${selectedCapability.output_type} output and publishes it for Scanner, Watchlists, and eligible Strategy rules.`], timing: [selectedCapability.timeframes.length ? `Available calculation clocks: ${selectedCapability.timeframes.join(", ")}.` : "The service owns its publication clock and causal availability."], impact: [selectedCapability.tier === "core" ? "Core Scan evaluates it across the broad Security Universe." : "It is intended for the smaller candidate set after Core Scan nomination."], caution: [selectedCapability.configurable ? "Changing it affects future Watchlist resolution after publication." : "The control is intentionally read-only. Disabled styling means non-editable, not inactive."], cautionTone: "information" }} group={selectedCapability.category} path={selectedCapability.capability_id} value={selectedCapability.enabled} />
         </> : null}
@@ -1859,7 +1826,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
             </div>
           </div>
         </> : null}
-        {guidedStep === "history" ? <><header className="strategy-identity-intro"><h2>Trace every Watchlist membership change</h2></header><div className="discovery-history-intro"><BadgeCheck size={20} /><div><strong>Append-only membership evidence contract</strong><p>Add, remove, expiry, and manual-override events retain the Watchlist identity, configuration snapshot, event and availability clocks, causal rule, rank, scores, and reason. Current membership will be a projection of this history once the causal resolver is connected.</p></div></div><div className="discovery-history-list">{section.watchlists.flatMap((watchlist) => watchlist.membership_history.map((event, index) => <article key={`${watchlist.watchlist_id}-${index}`}><strong>{String(event.ticker ?? "Unknown symbol")}</strong><span>{watchlist.name}</span><small>{String(event.reason ?? "Membership event")}</small></article>))}{section.watchlists.every((watchlist) => !watchlist.membership_history.length) ? <EmptyState title="No recorded membership events" detail="The runtime resolver is not connected, and draft configuration does not fabricate history." /> : null}</div></> : null}
+        {guidedStep === "history" ? <><header className="strategy-identity-intro"><h2>Trace every Watchlist membership change</h2></header><div className="discovery-history-intro"><BadgeCheck size={20} /><div><strong>Append-only membership evidence contract</strong><p>Add, remove, expiry, and manual-override events retain the Watchlist identity, configuration snapshot, event and availability clocks, causal rule, rank, scores, and reason. Current membership will be a projection of this history once the causal resolver is connected.</p></div></div><div className="discovery-history-list">{section.watchlists.flatMap((watchlist) => watchlist.membership_history.map((event, index) => <article key={`${watchlist.watchlist_id}-${index}`}><strong>{String(event.ticker ?? "Unknown symbol")}</strong><span>{watchlist.name}</span><small>{String(event.reason ?? "Membership event")}</small></article>))}{section.watchlists.every((watchlist) => !watchlist.membership_history.length) ? <EmptyState title="No recorded membership events" detail="The runtime resolver is not connected, and session configuration does not fabricate history." /> : null}</div></> : null}
       </section>
     </article>}
   </div>;
@@ -1873,17 +1840,15 @@ function WatchlistRuleChoices({ onChange, ruleSets, watchlist }: { onChange: (va
   return <div className="discovery-rule-choices">{groups.map((group) => <fieldset className="configuration-choice-set" key={group.key}><legend>{group.label}</legend><p>{group.detail}</p><div>{ruleSets.map((ruleSet) => <label key={ruleSet.rule_set_id}><input checked={watchlist[group.key].includes(ruleSet.rule_set_id)} onChange={(event) => onChange({ ...watchlist, [group.key]: event.target.checked ? [...watchlist[group.key], ruleSet.rule_set_id] : watchlist[group.key].filter((id) => id !== ruleSet.rule_set_id) })} type="checkbox" /><span><strong>{ruleSet.name}</strong><small>{ruleSet.description || `${ruleSet.conditions.length} configured conditions`}</small></span></label>)}</div></fieldset>)}</div>;
 }
 
-function StrategyStudio({ approved, draft, hasUnsavedChanges, label, onChange, onDeleteProfile, onDraftChange, onLabelChange, onPublish, onSave, publishing, revisions, section }: {
+function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onDraftChange, onLabelChange, onPublish, publishing, revisions, section }: {
   approved: Revision | null;
   draft: Draft;
-  hasUnsavedChanges: boolean;
   label: string;
   onChange: (value: StrategySection) => void;
   onDeleteProfile: (profileId: string) => Promise<Draft>;
   onDraftChange: (value: Draft) => void;
   onLabelChange: (value: string) => void;
   onPublish: (profileId: string) => void;
-  onSave: () => Promise<boolean>;
   publishing: boolean;
   revisions: Revision[];
   section: StrategySection;
@@ -1934,8 +1899,7 @@ function StrategyStudio({ approved, draft, hasUnsavedChanges, label, onChange, o
     setCreationName("");
   }
 
-  async function publishSelected() {
-    if (hasUnsavedChanges && !(await onSave())) return;
+  function publishSelected() {
     onPublish(selected.profile_id);
   }
 
@@ -2000,18 +1964,15 @@ function StrategyStudio({ approved, draft, hasUnsavedChanges, label, onChange, o
           approved={approved}
           draft={draft}
           entryRules={entryRules}
-          hasUnsavedChanges={hasUnsavedChanges}
           label={label}
           onLabelChange={onLabelChange}
           onProfileChange={replaceProfile}
           onPublish={() => void publishSelected()}
           onRuleSetEdit={(ruleSetId, created) => { const ruleSet = created ?? selected.rule_set_catalog.find((row) => row.rule_set_id === ruleSetId); if (ruleSet) { setCatalogItem(strategyRuleSetCatalogItem(ruleSet, section.input_catalog)); setEditorMode("catalog"); } }}
           onStageChange={setActiveStage}
-          onSave={onSave}
           profile={selected}
           publishing={publishing}
           revisions={revisions}
-          saving={publishing}
           section={section}
         />
 
@@ -2121,7 +2082,7 @@ function StrategyStudio({ approved, draft, hasUnsavedChanges, label, onChange, o
 
           <StoryChapter marker="09" eyebrow="Approved release" title="Validate and freeze the complete runtime configuration">
             <div className="strategy-book-prose">
-              <p>The draft has no runtime authority. Publication validates all references and freezes Strategy, Run Plan, Portfolio, OMS, account, safety, and Canvas configuration into one release. Each new run pins one release; later draft changes cannot alter an active run.</p>
+              <p>The browser session has no runtime authority. Publication validates all references and freezes Strategy, Run Plan, Portfolio, OMS, account, safety, and Canvas configuration into one release. Each new run pins one release; later session changes cannot alter an active run.</p>
             </div>
             <BookConfigurationSurface label="Review and publish the release">
               <RevisionPublisher approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={() => onPublish(selected.profile_id)} publishing={publishing} revisions={revisions} />
@@ -2269,24 +2230,21 @@ function ParameterDocumentation({ documentation: suppliedDocumentation, group, p
   </section>;
 }
 
-function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRules, hasUnsavedChanges, label, onLabelChange, onProfileChange, onPublish, onRuleSetEdit, onSave, onStageChange, profile, publishing, revisions, saving, section }: {
+function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRules, label, onLabelChange, onProfileChange, onPublish, onRuleSetEdit, onStageChange, profile, publishing, revisions, section }: {
   activeStage: StrategyAuthoringStage;
   advanced: Array<{ path: string; value: Primitive }>;
   approved: Revision | null;
   draft: Draft;
   entryRules: EntryRules & { add_steps: AddStep[]; capital_request: CapitalRequestConfig; order_intent: OrderIntentConfig };
-  hasUnsavedChanges: boolean;
   label: string;
   onLabelChange: (value: string) => void;
   onProfileChange: (value: StrategyProfile) => void;
   onPublish: () => void;
   onRuleSetEdit: (ruleSetId: string, created?: RuleSetDefinition) => void;
-  onSave: () => Promise<boolean>;
   onStageChange: (value: StrategyAuthoringStage) => void;
   profile: StrategyProfile;
   publishing: boolean;
   revisions: Revision[];
-  saving: boolean;
   section: StrategySection;
 }) {
   const [activeEntryPage, setActiveEntryPage] = useState<EntryAuthoringPage>("mode");
@@ -2442,7 +2400,6 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
       return;
     }
     if (activeIndex < stages.length - 1) changeStage(stages[activeIndex + 1][0]);
-    else void onSave();
   }
 
   return <article className="strategy-authoring" aria-label={`${profile.name} strategy authoring flow`}>
@@ -2451,7 +2408,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
       <nav aria-label="Strategy configuration steps" className="strategy-authoring-steps">
         {stages.map(([stage, number, title, detail]) => <button aria-current={activeStage === stage ? "step" : undefined} key={stage} onClick={() => changeStage(stage)} type="button"><span>{number}</span><strong>{title}</strong><small>{detail}</small></button>)}
       </nav>
-      <button aria-label={isFinalQuestion ? "Save strategy draft" : "Next configuration question"} className="button compact primary strategy-step-direction strategy-step-direction-next" disabled={saving || (isFinalQuestion && !hasUnsavedChanges)} onClick={nextQuestion} type="button">Next &gt;</button>
+      {isFinalQuestion ? <span /> : <button aria-label="Next configuration question" className="button compact primary strategy-step-direction strategy-step-direction-next" onClick={nextQuestion} type="button">Next &gt;</button>}
     </div>
 
     <section className={`strategy-authoring-stage${activeStage === "entry" || activeStage === "position" || activeStage === "reentry" || activeStage === "exit" ? " strategy-authoring-stage-entry" : ""}`}>
@@ -2553,7 +2510,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
           <article><span>Environments</span><strong>{profile.composition.allowed_environments.map(readableLabel).join(", ")}</strong></article>
           <article><span>Default authority</span><strong>{readableLabel(profile.composition.action_authority.default)}</strong></article>
         </div>
-        <div className="strategy-safety-lock"><BadgeCheck size={19} /><div><strong>{profile.publication_status === "published" ? "Published and immutable" : "Draft strategy"}</strong><p>{profile.publication_status === "published" ? "Runtime results remain permanently associated with this identity. Clone it to make changes." : "Next saves the draft. Publish from the final review to activate it for new runs."}</p></div></div>
+        <div className="strategy-safety-lock"><BadgeCheck size={19} /><div><strong>{profile.publication_status === "published" ? "Published and immutable" : "Unpublished strategy"}</strong><p>{profile.publication_status === "published" ? "Runtime results remain permanently associated with this identity. Clone it to make changes." : "Changes remain in this browser session. Publish from the final review to retain and activate them for new runs."}</p></div></div>
         {profile.publication_status !== "published" ? <RevisionPublisher approved={approved} draft={draft} guided label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} /> : null}
         <StrategyEngineParameterGroup items={remainingParameters} onChange={(path, value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, path, value) })} summary="Definition-specific values not assigned to another lifecycle step" title="Other engine parameters" />
       </> : null}
@@ -3274,7 +3231,7 @@ function LegacyDecisionRulesEditor({ catalog, importRules, onChange, rules, stag
   title: string;
 }) {
   const [openedGroupIds, setOpenedGroupIds] = useState<Set<string>>(new Set());
-  if (!rules) return <EmptyState title="Decision rules unavailable" detail="Reload the migrated configuration draft to receive the typed source model." />;
+  if (!rules) return <EmptyState title="Decision rules unavailable" detail="Reload the configuration session to receive the typed source model." />;
 
   function replaceStage(stageName: keyof EntryRules, stage: RuleStage) {
     onChange({ ...rules, [stageName]: stage });
@@ -3997,7 +3954,7 @@ function sectionParameterHelp(section: ConfigurableSection, path: string) {
     modes: "Limits which runtime modes may bind this account.",
     partial_fill_policy: "Controls what OMS does with the broker-confirmed unfilled remainder.",
     quote_source: "Selects the authoritative quote feed used by this execution policy.",
-    source_account_env: "Names the local environment key that resolves the broker account without storing its value in the draft.",
+    source_account_env: "Names the local environment key that resolves the broker account without storing its value in configuration.",
   };
   return specific[leaf] ?? `Changes ${readableLabel(leaf).toLowerCase()} for this ${section === "assignments" ? "Run Plan configuration" : readableLabel(section)}.`;
 }
@@ -4052,8 +4009,8 @@ function sectionParameterDocumentation(section: ConfigurableSection, item: Secti
   const value = Array.isArray(item.value) ? item.value.join(", ") : String(item.value ?? "Automatic");
   return {
     role: [item.detail, sectionAuthority(section)],
-    timing: [`The draft value is ${value}. It applies only to new runs after the configuration is validated and published.`],
-    impact: [`Changing ${item.label.toLowerCase()} updates the canonical ${readableLabel(section)} draft used by every guided and catalog view.`],
+    timing: [`The session value is ${value}. It applies only to new runs after the configuration is validated and published.`],
+    impact: [`Changing ${item.label.toLowerCase()} updates the ${readableLabel(section)} configuration used by every guided and catalog view in this session.`],
     caution: [section === "accounts" ? "Verify broker identity and session ownership before enabling Paper or Live. Secret account values are never stored through this catalog." : "Review dependent references and safety limits before publication; active pinned runs remain unchanged."],
     cautionTone: section === "accounts" || section === "portfolio" || section === "oms" ? "safety" : "warning",
   };
@@ -4180,7 +4137,7 @@ function WatchUniverseEditor({ onChange, section, selectedId }: {
         <SelectField help="Configured symbols are runtime-ready. Scanner and Watchlist may be designed here, but publication stays blocked until their point-in-time membership resolver is registered." label="Source" onChange={(source) => replace({ ...universe, source: source as WatchUniverse["source"] })} options={["configured_symbols", "scanner_view", "watchlist"].map((value) => ({ label: readableLabel(value), value }))} value={universe.source} />
       </div>
       {universe.source !== "configured_symbols" ? (
-        <p className="configuration-safety-note"><TriangleAlert size={15} /> Draft-only source: connect and validate the {readableLabel(universe.source)} membership resolver before this release can be published.</p>
+        <p className="configuration-safety-note"><TriangleAlert size={15} /> Unresolved source: connect and validate the {readableLabel(universe.source)} membership resolver before this release can be published.</p>
       ) : null}
       {universe.source === "configured_symbols" ? (
         <label className="configuration-text-field">
@@ -4581,7 +4538,7 @@ function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: A
 
 function RevisionBadge({ approved }: { approved: Revision | null }) {
   const Icon = approved ? BadgeCheck : LockKeyhole;
-  return <div className="configuration-revision-badge" data-approved={approved ? "true" : "false"}><span className="configuration-revision-icon"><Icon aria-hidden="true" size={16} /></span><span className="configuration-revision-copy"><small>Runtime authority</small><strong>{approved ? `Release ${approved.revision}` : "Draft only"}</strong><span>{approved ? approved.label : "Publish to activate"}</span></span></div>;
+  return <div className="configuration-revision-badge" data-approved={approved ? "true" : "false"}><span className="configuration-revision-icon"><Icon aria-hidden="true" size={16} /></span><span className="configuration-revision-copy"><small>Runtime authority</small><strong>{approved ? `Release ${approved.revision}` : "Session only"}</strong><span>{approved ? approved.label : "Publish to retain"}</span></span></div>;
 }
 
 function RevisionPublisher({ approved, draft, guided = false, label, onLabelChange, onPublish, publishing, revisions }: {
@@ -4659,20 +4616,20 @@ function publishCheckLabel(label: string) {
   return label;
 }
 
-function EffectiveConfigurationPreview({ updatedAt }: { updatedAt: string }) {
+function EffectiveConfigurationPreview({ draft }: { draft: Draft }) {
   const [mode, setMode] = useState<RuntimeMode>("replay");
   const [payload, setPayload] = useState<{ accounts: Array<Record<string, unknown>>; runtime_count: number; source: string } | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
     let cancelled = false;
     setError("");
-    api<{ accounts: Array<Record<string, unknown>>; runtime_count: number; source: string }>(`/api/trading/configuration/effective?mode=${mode}`)
+    api<{ accounts: Array<Record<string, unknown>>; runtime_count: number; source: string }>("/api/trading/configuration/effective/session", { body: JSON.stringify({ configuration: serializeDraft(draft), mode }), method: "POST" })
       .then((value) => { if (!cancelled) setPayload(value); })
       .catch((reason) => { if (!cancelled) { setPayload(null); setError(reason instanceof Error ? reason.message : String(reason)); } });
     return () => { cancelled = true; };
-  }, [mode, updatedAt]);
-  return <ConfigGroup summary="Backend-resolved saved-draft evidence. This is the exact account, policy, compiled contract, and mode projection that a new runtime will consume after publication." title="Effective configuration preview">
-    <div className="configuration-toolbar"><SelectField help="Resolve the saved draft for one runtime mode." label="Runtime mode" onChange={(value) => setMode(value as RuntimeMode)} options={["replay", "backtest", "backtest_debug", "paper", "live"].map((value) => ({ label: readableLabel(value), value }))} value={mode} /></div>
+  }, [draft, mode]);
+  return <ConfigGroup summary="Backend-resolved session evidence. This is the exact account, policy, compiled contract, and mode projection that publication will validate." title="Effective configuration preview">
+    <div className="configuration-toolbar"><SelectField help="Resolve this session's configuration for one runtime mode." label="Runtime mode" onChange={(value) => setMode(value as RuntimeMode)} options={["replay", "backtest", "backtest_debug", "paper", "live"].map((value) => ({ label: readableLabel(value), value }))} value={mode} /></div>
     {error ? <p className="configuration-safety-note"><TriangleAlert size={15} /> {error}</p> : null}
     {payload ? <><p className="configuration-section-guide">{payload.runtime_count} eligible compiled runtime{payload.runtime_count === 1 ? "" : "s"} · {payload.accounts.length} bound account{payload.accounts.length === 1 ? "" : "s"} · {readableLabel(payload.source)}</p><div className="mandate-grid">{payload.accounts.map((account) => <article className="mandate-card" key={String(account.account_key)}><header><div><strong>{String(account.name || account.account_key)}</strong><span>{String(account.account_key)} · {String(account.account_class)}</span></div></header><div className="configuration-fixed-value"><span>Broker/session binding</span><strong>{String(account.source_account_env || account.source_account_id || "Simulated")}</strong><small>{String(account.session_key)} · {String(account.policy_identity)}</small></div><div className="configuration-fixed-value"><span>Eligible compiled runtimes</span><strong>{Array.isArray(account.run_plan_ids) ? account.run_plan_ids.length : 0}</strong><small>{Array.isArray(account.run_plan_ids) ? account.run_plan_ids.join(", ") || "None for this mode" : "None for this mode"}</small></div></article>)}</div></> : null}
   </ConfigGroup>;
@@ -4731,7 +4688,7 @@ function configurationGroupStory(title: string) {
     "Readiness confirms required configuration references exist. It does not prove future broker connectivity, market-data health, or Live order acceptance.",
   ];
   if (normalized.includes("effective configuration")) return [
-    "Runtime mode selects the backend projection to inspect. The result shows resolved accounts, policies, and eligible Run Plans from the saved draft; it is read-only derived evidence.",
+    "Runtime mode selects the backend projection to inspect. The result shows resolved accounts, policies, and eligible Run Plans from this browser session; it is read-only derived evidence.",
   ];
   return [];
 }
@@ -4928,7 +4885,7 @@ function EmptyState({ detail, title }: { detail: string; title: string }) {
 }
 
 function ConfigurationLoading() {
-  return <div className="configuration-empty"><strong>Loading configuration</strong><span>Reading the current draft and approved release…</span></div>;
+  return <div className="configuration-empty"><strong>Loading configuration</strong><span>Reading the approved base for this browser session…</span></div>;
 }
 
 function updateCapability(profile: StrategyProfile, id: string, binding: CapabilityBinding): StrategyProfile {
@@ -5153,7 +5110,7 @@ function strategyParameterDocumentation(path: string, group: string, value: Cata
   const current = value === null || value === undefined || value === "" ? "unset" : typeof value === "boolean" ? (value ? "enabled" : "disabled") : `set to ${String(value)}`;
   const base: StrategyParameterDocumentation = {
     role: [`This parameter belongs to ${group} and is stored in the Strategy Profile. Its current value is ${current}.`],
-    timing: ["The strategy reads this value only when execution reaches the lifecycle stage shown by this catalog group. Editing the draft does not affect a running campaign until the configuration is validated and published in a release."],
+    timing: ["The strategy reads this value only when execution reaches the lifecycle stage shown by this catalog group. Editing this session does not affect a running campaign until the configuration is validated and published in a release."],
     impact: [`Changing ${readableLabel(leaf)} changes the configured decision at this stage. The Strategy Engine emits intent from the resulting behavior; Portfolio, safety, and OMS authorities still decide whether that intent may proceed and how it is executed.`],
     caution: ["Review the resulting behavior in Replay or Backtest before publication. Live runs remain subject to mandatory account guardrails, but guardrails do not make an incorrect strategy rule correct."],
     cautionTone: "information",

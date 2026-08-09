@@ -140,14 +140,11 @@ from src.backend.trading_runtime_service import (
 )
 from src.backend.trading_configuration_service import (
     approved_configuration,
-    configuration_draft,
+    configuration_base,
     configuration_revisions,
-    delete_strategy_profile,
     effective_configuration_snapshot,
     publish_configuration,
-    replace_configuration_draft,
     replay_configuration_snapshot,
-    update_configuration_section,
 )
 from src.trading_runtime.strategy_engine import STRATEGY_ID, STRATEGY_REVISION
 from src.backend.ticker_presentation_service import ticker_presentation_payload
@@ -545,15 +542,17 @@ class ReplayRunCreateRequest(ReplayPreflightRequest):
     pass
 
 
-class TradingConfigurationSectionSubmit(BaseModel):
-    payload: Any
-
-
 class TradingConfigurationPublishSubmit(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     canvas_revision: str = Field(min_length=1, max_length=128)
     canvas_profile: dict[str, Any]
+    configuration: dict[str, Any]
     strategy_profile_id: str = Field(default="", max_length=200)
+
+
+class TradingConfigurationEffectiveSubmit(BaseModel):
+    configuration: dict[str, Any]
+    mode: str = Field(default="replay", max_length=32)
 
 
 class ReplayRunCommandRequest(BaseModel):
@@ -4471,38 +4470,9 @@ def trading_strategy_activity(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/api/trading/configuration/draft")
-def trading_configuration_draft() -> dict[str, Any]:
-    return configuration_draft()
-
-
-@app.put("/api/trading/configuration/draft")
-def trading_configuration_draft_replace(
-    payload: TradingConfigurationSectionSubmit,
-) -> dict[str, Any]:
-    try:
-        return replace_configuration_draft(payload.payload)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.put("/api/trading/configuration/draft/{section}")
-def trading_configuration_section_update(
-    section: str,
-    payload: TradingConfigurationSectionSubmit,
-) -> dict[str, Any]:
-    try:
-        return update_configuration_section(section, payload.payload)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.delete("/api/trading/configuration/draft/strategy/profiles/{profile_id}")
-def trading_configuration_strategy_profile_delete(profile_id: str) -> dict[str, Any]:
-    try:
-        return delete_strategy_profile(profile_id)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+@app.get("/api/trading/configuration/base")
+def trading_configuration_base() -> dict[str, Any]:
+    return configuration_base()
 
 
 @app.get("/api/trading/configuration/revisions")
@@ -4528,6 +4498,19 @@ def trading_configuration_effective(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/trading/configuration/effective/session")
+def trading_configuration_session_effective(
+    payload: TradingConfigurationEffectiveSubmit,
+) -> dict[str, Any]:
+    try:
+        return effective_configuration_snapshot(
+            mode=payload.mode,
+            configuration=payload.configuration,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/trading/configuration/publish")
 def trading_configuration_publish(
     payload: TradingConfigurationPublishSubmit,
@@ -4538,6 +4521,7 @@ def trading_configuration_publish(
             canvas_revision=payload.canvas_revision,
             canvas_profile=payload.canvas_profile,
             strategy_profile_id=payload.strategy_profile_id,
+            configuration=payload.configuration,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

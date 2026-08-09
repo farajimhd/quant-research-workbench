@@ -240,7 +240,7 @@ export function ReplayTradingPage() {
               {preflight.assignments.slice(0, 6).map((assignment) => <div key={assignment.assignment_id}><strong>{assignment.ticker}</strong><small>{assignment.account_key} · {assignment.status.replaceAll("_", " ")}</small></div>)}
             </div> : <div className="replay-market-only-note"><CircleStop size={16} /><span><strong>Market-only until assigned</strong><small>You can arm a configured strategy from Canvas after the run opens.</small></span></div>}
             <button className="button primary replay-approve-button" disabled={checking || creating || !replayReady} onClick={createRun} type="button"><Play size={17} /> {creating ? "Creating durable run…" : "Approve and open Canvas"}</button>
-            <small className="replay-approval-disclosure">Approval pins the published application revision and creates a journaled simulated run. Draft changes cannot alter it. No IBKR session or live order route is used.</small>
+            <small className="replay-approval-disclosure">Approval pins the published application revision and creates a journaled simulated run. Session changes cannot alter it. No IBKR session or live order route is used.</small>
           </section>
         </aside>
       </div>

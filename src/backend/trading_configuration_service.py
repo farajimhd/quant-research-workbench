@@ -157,108 +157,12 @@ def capability_catalog() -> list[dict[str, Any]]:
     ]
 
 
-def configuration_draft() -> dict[str, Any]:
-    current = trading_journal().trading_configuration_draft()
-    if current is None:
-        return trading_journal().save_trading_configuration_draft(_default_draft())
-    migrated = _migrate_draft(current)
-    if _without_timestamp(migrated) != _without_timestamp(current):
-        return trading_journal().save_trading_configuration_draft(_without_timestamp(migrated))
-    return migrated
-
-
-def update_configuration_section(section: str, payload: Any) -> dict[str, Any]:
-    if section == "assignments":
-        section = "run_plans"
-        payload = {
-            "universes": deepcopy(dict(payload or {}).get("universes") or []),
-            "plans": deepcopy(
-                dict(payload or {}).get("plans")
-                or dict(payload or {}).get("deployments")
-                or []
-            ),
-        }
-    if section not in CONFIGURATION_SECTIONS:
-        raise ValueError(f"Unknown trading configuration section: {section}")
-    draft = configuration_draft()
-    candidate = _without_timestamp(draft)
-    candidate[section] = deepcopy(payload)
-    _assert_published_profiles_unchanged(draft, candidate)
-    _validate_draft(candidate, require_runtime_ready=False)
-    return trading_journal().save_trading_configuration_draft(candidate)
-
-
-def replace_configuration_draft(payload: Any) -> dict[str, Any]:
-    """Validate and replace one complete mutable draft atomically."""
-    if not isinstance(payload, dict):
-        raise TypeError("Trading configuration draft must be an object")
-    current = configuration_draft()
-    candidate = _without_timestamp(_migrate_draft(deepcopy(payload)))
-    _assert_published_profiles_unchanged(current, candidate)
-    _validate_draft(candidate, require_runtime_ready=False)
-    return trading_journal().save_trading_configuration_draft(candidate)
-
-
-def delete_strategy_profile(profile_id: str) -> dict[str, Any]:
-    """Delete one user profile and atomically move its Run Plans to the default."""
-    candidate = _without_timestamp(configuration_draft())
-    strategy = dict(candidate.get("strategy") or {})
-    profiles = list(strategy.get("profiles") or [])
-    profile = next(
-        (row for row in profiles if str(row.get("profile_id")) == profile_id),
-        None,
-    )
-    if profile is None:
-        raise ValueError(f"Unknown Strategy Profile: {profile_id}")
-    if str(profile.get("publication_status") or "draft") == "published":
-        raise ValueError("Published strategies are immutable and cannot be deleted; clone one to create a new draft")
-    default_profile_id = str(strategy.get("default_profile_id") or "")
-    if profile_id == default_profile_id or bool(profile.get("protected")):
-        raise ValueError("The protected default Strategy Profile cannot be deleted")
-    if not any(str(row.get("profile_id")) == default_profile_id for row in profiles):
-        raise ValueError("The protected default Strategy Profile is unavailable")
-
-    strategy["profiles"] = [
-        row for row in profiles if str(row.get("profile_id")) != profile_id
-    ]
-    candidate["strategy"] = strategy
-    run_plans = dict(candidate.get("run_plans") or {})
-    run_plans["plans"] = [
-        {
-            **row,
-            "profile_id": default_profile_id
-            if str(row.get("profile_id")) == profile_id
-            else row.get("profile_id"),
-        }
-        for row in run_plans.get("plans") or []
-    ]
-    candidate["run_plans"] = run_plans
-    _validate_strategy_profile_references(candidate)
-    return trading_journal().save_trading_configuration_draft(candidate)
-
-
-def _validate_strategy_profile_references(draft: dict[str, Any]) -> None:
-    """Validate the identities changed by an atomic profile deletion."""
-    strategy = dict(draft.get("strategy") or {})
-    profiles = list(strategy.get("profiles") or [])
-    profile_ids = [str(row.get("profile_id") or "") for row in profiles]
-    profile_id_set = set(profile_ids)
-    if not profile_ids or "" in profile_ids or len(profile_ids) != len(profile_id_set):
-        raise ValueError("Strategy Profile IDs must be present and unique")
-    default_profile_id = str(strategy.get("default_profile_id") or "")
-    default_profile = next(
-        (row for row in profiles if str(row.get("profile_id")) == default_profile_id),
-        None,
-    )
-    if default_profile is None or not bool(default_profile.get("protected")):
-        raise ValueError("The default Strategy Profile must exist and remain protected")
-    missing = sorted({
-        str(row.get("profile_id") or "")
-        for row in dict(draft.get("run_plans") or {}).get("plans") or []
-        if str(row.get("profile_id") or "") not in profile_id_set
-    })
-    if missing:
-        raise ValueError(f"Run Plans reference missing Strategy Profiles: {', '.join(missing)}")
+def configuration_base() -> dict[str, Any]:
+    journal = trading_journal()
+    approved = journal.approved_trading_configuration()
+    if approved is not None:
+        return _migrate_draft(deepcopy(dict(approved.get("payload") or {})))
+    return _default_draft()
 
 
 def configuration_revisions() -> list[dict[str, Any]]:
@@ -277,6 +181,7 @@ def publish_configuration(
     label: str,
     canvas_revision: str,
     canvas_profile: dict[str, Any],
+    configuration: dict[str, Any],
     strategy_profile_id: str = "",
 ) -> dict[str, Any]:
     normalized_label = label.strip()
@@ -290,7 +195,11 @@ def publish_configuration(
     )
     if container_count <= 0:
         raise ValueError("Publishing requires at least one open container in the Canvas profile")
-    draft_candidate = _without_timestamp(configuration_draft())
+    if not isinstance(configuration, dict):
+        raise TypeError("Publishing requires the complete session configuration")
+    base_configuration = configuration_base()
+    draft_candidate = _without_timestamp(_migrate_draft(deepcopy(configuration)))
+    _assert_published_profiles_unchanged(base_configuration, draft_candidate)
     profiles = list(dict(draft_candidate["strategy"]).get("profiles") or [])
     active_profile_id = str(dict(draft_candidate["strategy"]).get("active_profile_id") or "")
     first_user_draft_id = next(
@@ -346,7 +255,6 @@ def publish_configuration(
         content_hash=content_hash,
         payload=payload,
     )
-    trading_journal().save_trading_configuration_draft(draft_candidate)
     return published
 
 
@@ -407,6 +315,7 @@ def approved_runtime_configuration_snapshot(mode: str) -> dict[str, Any]:
 def effective_configuration_snapshot(
     *,
     mode: str,
+    configuration: dict[str, Any] | None = None,
     use_approved: bool = False,
 ) -> dict[str, Any]:
     if mode not in SUPPORTED_MODES:
@@ -415,7 +324,8 @@ def effective_configuration_snapshot(
     model = (
         deepcopy(dict(revision.get("payload") or {}))
         if revision
-        else configuration_draft()
+        else deepcopy(configuration) if configuration is not None
+        else configuration_base()
     )
     model = _migrate_draft(model)
     _validate_draft(model, require_runtime_ready=False)

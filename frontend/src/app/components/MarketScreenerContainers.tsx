@@ -314,7 +314,7 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
   const [catalog, setCatalog] = useState<WatchUniverseCatalogResponse | null>(null);
   useEffect(() => {
     const controller = new AbortController();
-    api<WatchUniverseCatalogResponse>("/api/trading/configuration/draft", { signal: controller.signal, timeoutMs: 10000 })
+    api<WatchUniverseCatalogResponse>("/api/trading/configuration/base", { signal: controller.signal, timeoutMs: 10000 })
       .then(setCatalog)
       .catch(() => undefined);
     return () => controller.abort();

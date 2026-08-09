@@ -180,31 +180,6 @@ class TradingJournal:
             for row in rows
         ]
 
-    def save_trading_configuration_draft(self, payload: dict[str, Any]) -> dict[str, Any]:
-        updated_at = datetime.now(timezone.utc).isoformat()
-        with self._lock, self._connection:
-            self._connection.execute(
-                """
-                INSERT INTO trading_configuration_draft(singleton_id, payload_json, updated_at)
-                VALUES (1, ?, ?)
-                ON CONFLICT(singleton_id) DO UPDATE SET
-                    payload_json=excluded.payload_json, updated_at=excluded.updated_at
-                """,
-                (
-                    json.dumps(payload, sort_keys=True, default=_json_default),
-                    updated_at,
-                ),
-            )
-        return {**payload, "updated_at": updated_at}
-
-    def trading_configuration_draft(self) -> dict[str, Any] | None:
-        row = self._connection.execute(
-            "SELECT payload_json, updated_at FROM trading_configuration_draft WHERE singleton_id = 1"
-        ).fetchone()
-        if row is None:
-            return None
-        return {**json.loads(row["payload_json"]), "updated_at": str(row["updated_at"])}
-
     def publish_trading_configuration(
         self,
         *,
@@ -629,10 +604,7 @@ class TradingJournal:
                 );
                 CREATE INDEX IF NOT EXISTS idx_order_management_state_run
                     ON order_management_states(run_id, account_id, updated_at);
-                CREATE TABLE IF NOT EXISTS trading_configuration_draft(
-                    singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
-                    payload_json TEXT NOT NULL, updated_at TEXT NOT NULL
-                );
+                DROP TABLE IF EXISTS trading_configuration_draft;
                 CREATE TABLE IF NOT EXISTS trading_configuration_revisions(
                     revision_id TEXT PRIMARY KEY, revision INTEGER NOT NULL UNIQUE,
                     label TEXT NOT NULL, content_hash TEXT NOT NULL UNIQUE,

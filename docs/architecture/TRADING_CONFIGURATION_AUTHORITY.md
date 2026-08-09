@@ -198,8 +198,9 @@ every operator into the full field inventory:
   strategic exit, registered capabilities, and published advanced parameters.
   Section counts make that coverage visible, while **Keep remaining values**
   lets an operator explicitly approve a section's current defaults. Previous
-  and next navigation preserves the same mutable draft, and each Continue
-  action validates and saves the current canonical section.
+  and next navigation preserves the same session-scoped configuration. Every
+  edit is written to browser `sessionStorage`; Continue only advances the
+  workflow and never creates backend draft authority.
 - **Clone** creates a new draft Strategy identity derived from a template or a
   published Strategy. Published Strategies and their run results remain unchanged.
 - **Parameter Catalog** retains every user-adjustable field and rule set while
@@ -250,9 +251,10 @@ Expert mode is a full-width subject editor, not the legacy field inventory under
 different colors. Its leading contract map names the outcome, authority boundary,
 subjects, and release behavior for the active route. Editors are then organized
 as full-width subject sections with a readable two-column control grid; shared
-lookups and field guidance remain identical to Guided mode. The save action stays
-available in a sticky footer, profile libraries remain supporting navigation,
-and canonical JSON remains an API and release artifact rather than page copy.
+lookups and field guidance remain identical to Guided mode. There is no
+draft-save action or persistent backend draft. Profile libraries remain
+supporting navigation, and canonical JSON remains an API and release artifact
+rather than page copy.
 
 Recommended, inherited, customized, incomplete, invalid, and approved states
 are shown as explicit provenance/status text rather than inferred from color.
@@ -308,7 +310,8 @@ links back to the relevant guided decision before publication.
 
 ## Publication contract
 
-Draft entities are mutable and non-executable. Publication:
+Unpublished configuration is mutable, browser-session scoped, and
+non-executable. Closing the tab or browser session discards it. Publication:
 
 1. validates profiles against registered strategy implementations;
 2. validates capability settings against code-owned schemas;
@@ -323,15 +326,19 @@ Draft entities are mutable and non-executable. Publication:
 8. records a SHA-256 content hash and immutable journal revision; and
 9. makes the newest approved release authoritative for new runs.
 
-Section edits use `PUT /api/trading/configuration/draft/{section}`. Operations
-that intentionally replace several interdependent authorities, such as cloning
-an approved release, use `PUT /api/trading/configuration/draft`; the backend
-migrates, validates, and commits that complete draft atomically so intermediate
-cross-reference states can never become the saved authority.
+`GET /api/trading/configuration/base` supplies only the newest approved model
+or the registered defaults as a session starting point; it does not create a
+stored draft. The UI retains the complete working model in browser
+`sessionStorage`. `POST /api/trading/configuration/effective/session` validates
+a submitted session model for preview without persisting it. Publication sends
+the complete session model to `POST /api/trading/configuration/publish`; the
+backend migrates and validates the whole graph atomically before recording an
+immutable revision. Journal initialization drops the retired singleton draft
+table so old unpublished server drafts cannot reappear.
 
 An active run pins the release identity, hash, approval timestamp, selected
 deployment, full configuration model, and deterministic runtime projection.
-Later draft edits or publications cannot mutate it.
+Later session edits or publications cannot mutate it.
 
 ## Runtime compatibility boundary
 
