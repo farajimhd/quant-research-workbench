@@ -90,13 +90,14 @@ def persist_documents(client: ClickHouseHttpClient, database: str, documents: It
 
 def load_identity_index(client: ClickHouseHttpClient, database: str) -> IssuerIdentityIndex:
     rows = list(client.iter_json_each_row(f"""
-SELECT upperUTF8(sym.ticker_normalized) ticker, sec.issuer_id,sec.security_id,
+SELECT upperUTF8(sym.ticker_normalized) AS ticker,
+sec.issuer_id AS issuer_id,sec.security_id AS security_id,
 coalesce(nullIf(issuer.branding_name,''),nullIf(issuer.issuer_name,''),nullIf(issuer.legal_name,''),sym.display_name) display_name,
 arrayFilter(value -> notEmpty(value),[
   ifNull(issuer.issuer_name,''),ifNull(issuer.legal_name,''),
   ifNull(issuer.branding_name,''),ifNull(sec.security_name,''),ifNull(sym.display_name,'')
 ]) aliases,
-listing.exchange_code,toString(listing.list_date) list_date,toString(listing.delisted_date) delisted_date
+listing.exchange_code AS exchange_code,toString(listing.list_date) AS list_date,toString(listing.delisted_date) AS delisted_date
 FROM `{database}`.`id_symbol_v1` sym FINAL
 INNER JOIN `{database}`.`id_listing_v1` listing FINAL ON listing.listing_id=sym.listing_id
 INNER JOIN `{database}`.`id_security_v1` sec FINAL ON sec.security_id=listing.security_id
