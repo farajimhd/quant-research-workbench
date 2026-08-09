@@ -1165,11 +1165,11 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
 
   return <div className="guided-configuration-shell" data-guided-step={step}>
     <div className="configuration-guided-step-navigation">
-      <button className="button compact configuration-guided-direction" disabled={atFirstQuestion && !previous} onClick={movePrevious} type="button">&lt; Previous</button>
+      <button aria-label="Previous configuration question" className="button compact configuration-guided-direction configuration-guided-direction-previous" disabled={atFirstQuestion && !previous} onClick={movePrevious} type="button"><ArrowLeft aria-hidden="true" size={15} /><span>Previous</span></button>
       <nav aria-label={`${readableLabel(step)} questions`} className="configuration-guided-question-tabs" style={{ gridTemplateColumns: `repeat(${questionCount}, minmax(0, 1fr))` }}>
         {questions.map((question, index) => <button aria-current={index === safeQuestionIndex ? "step" : undefined} key={question.key ?? index} onClick={() => setQuestionIndex(index)} title={question.props.label} type="button"><span>{index + 1}</span><strong>{question.props.label}</strong></button>)}
       </nav>
-      <button className="button compact primary configuration-guided-direction" disabled={atLastQuestion && !next} onClick={moveNext} type="button">Next &gt;</button>
+      <button aria-label="Next configuration question" className="button compact primary configuration-guided-direction configuration-guided-direction-next" disabled={atLastQuestion && !next} onClick={moveNext} type="button"><span>Next</span><ArrowRight aria-hidden="true" size={15} /></button>
     </div>
     <main className="guided-question-surface">
       <div className="guided-question-list">{questions[safeQuestionIndex]}</div>

@@ -4144,6 +4144,59 @@
   }
 }
 
+/* Portfolio, OMS, Accounts, and any other shared guided configuration use the
+   same bounded direction controls as Strategy Studio. */
+.trading-configuration-page .configuration-section-guided .configuration-guided-step-navigation {
+  gap: clamp(8px, 1vw, 16px);
+  grid-template-columns:
+    clamp(92px, 6.25%, 128px)
+    minmax(0, 1fr)
+    clamp(92px, 6.25%, 128px);
+}
+
+.trading-configuration-page .configuration-section-guided .configuration-guided-step-navigation > .configuration-guided-direction {
+  align-items: center;
+  border: 1px solid var(--configuration-rule);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 6%, transparent);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 650;
+  gap: 7px;
+  justify-content: center;
+  min-height: 40px;
+  padding: 8px 12px;
+  width: 100%;
+}
+
+.trading-configuration-page .configuration-section-guided .configuration-guided-direction-previous {
+  background: var(--surface);
+  color: var(--foreground);
+}
+
+.trading-configuration-page .configuration-section-guided .configuration-guided-direction-next {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.trading-configuration-page .configuration-section-guided .configuration-guided-direction:not(:disabled):focus-visible {
+  outline: 2px solid var(--configuration-section-accent);
+  outline-offset: 2px;
+}
+
+@container configuration-studio (max-width: 700px) {
+  .trading-configuration-page .configuration-section-guided .configuration-guided-step-navigation {
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+  }
+
+  .trading-configuration-page .configuration-section-guided .configuration-guided-direction {
+    font-size: 0;
+    gap: 0;
+    padding: 8px;
+  }
+}
+
 .trading-configuration-page .discovery-watchlist-step-navigation > .discovery-watchlist-direction:disabled {
   background: var(--configuration-soft);
   border-color: var(--configuration-rule);
@@ -4163,12 +4216,9 @@
   width: var(--configuration-nested-width);
 }
 
-/* The tab rail uses the same proportional columns as every other nesting
-   boundary. Previous and Next live inside the two 2.5% columns. */
-.trading-configuration-page :is(
-  .strategy-authoring-step-navigation,
-  .configuration-guided-step-navigation
-) {
+/* Discovery's tab rail follows the proportional nesting boundary. Strategy
+   and shared guided action rails use their bounded controls above. */
+.trading-configuration-page .strategy-authoring-step-navigation {
   gap: 0;
   grid-template-columns:
     var(--configuration-nesting-gutter)
@@ -4176,10 +4226,7 @@
     var(--configuration-nesting-gutter);
 }
 
-.trading-configuration-page :is(
-  .strategy-authoring-step-navigation,
-  .configuration-guided-step-navigation
-) > :is(.strategy-step-direction, .configuration-guided-direction) {
+.trading-configuration-page .strategy-authoring-step-navigation > .strategy-step-direction {
   box-sizing: border-box;
   font-size: 10px;
   min-width: 0;
@@ -4377,10 +4424,7 @@
 @container configuration-studio (max-width: 900px) {
   /* A narrow direction column cannot contain a full word at compact widths.
      Preserve the accessible button name while displaying its arrow only. */
-  .trading-configuration-page :is(
-    .strategy-authoring-step-navigation,
-    .configuration-guided-step-navigation
-  ) > :is(.strategy-step-direction, .configuration-guided-direction) {
+  .trading-configuration-page .strategy-authoring-step-navigation > .strategy-step-direction {
     font-size: 0;
   }
 }
