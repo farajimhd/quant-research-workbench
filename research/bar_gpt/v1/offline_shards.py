@@ -939,17 +939,30 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
         self.block_refs = tuple(block_refs)
         self.epoch = 0
 
-    def _ordered_block_refs(self) -> list[OfflineBlockRef]:
-        refs = list(self.block_refs)
-        if self.shuffle_units:
-            generator = torch.Generator().manual_seed(self.seed + self.epoch * 1_000_003)
-            order = torch.randperm(len(refs), generator=generator).tolist()
-            refs = [refs[index] for index in order]
-        return refs
+    def _ordered_block_ref_groups(self) -> list[tuple[OfflineBlockRef, ...]]:
+        """Shuffle explicit panels without destroying ticker-month mmap locality."""
+        by_unit: dict[str, list[OfflineBlockRef]] = {}
+        for ref in self.block_refs:
+            by_unit.setdefault(ref.unit_key, []).append(ref)
+        keys = sorted(by_unit)
+        if not self.shuffle_units:
+            return [tuple(by_unit[key]) for key in keys]
+        generator = torch.Generator().manual_seed(self.seed + self.epoch * 1_000_003)
+        key_order = torch.randperm(len(keys), generator=generator).tolist()
+        groups: list[tuple[OfflineBlockRef, ...]] = []
+        for key_index in key_order:
+            values = by_unit[keys[key_index]]
+            block_order = torch.randperm(len(values), generator=generator).tolist()
+            groups.append(tuple(values[index] for index in block_order))
+        return groups
+
+    def _owned_block_refs(self, worker_id: int, workers: int) -> tuple[OfflineBlockRef, ...]:
+        groups = self._ordered_block_ref_groups()[worker_id::workers]
+        return tuple(ref for group in groups for ref in group)
 
     def _iter_block_refs(self, worker_id: int, workers: int) -> Iterator[CompiledBlock]:
         units = {unit.unit_key: unit for unit in self.units}
-        owned = self._ordered_block_refs()[worker_id::workers]
+        owned = self._owned_block_refs(worker_id, workers)
         resume = self.resume_cursors.get(worker_id)
         resume_reached = resume is None
         loaded_key = ""

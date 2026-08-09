@@ -191,6 +191,49 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         self.assertEqual([item.block_offset for item in blocks], [1, 2])
         self.assertEqual({item.worker_id for item in blocks}, {0})
 
+    def test_explicit_block_workers_own_whole_shards_with_contiguous_locality(self) -> None:
+        refs = tuple(
+            ref(ticker, "2026-01-02", offset)
+            for offset in range(5)
+            for ticker in ("AAA", "BBB", "CCC", "DDD")
+        )
+        units = tuple(
+            OfflineShardUnit(
+                unit_key=f"{ticker}:2026-01",
+                path=Path(f"{ticker}.pt"),
+                sessions=1,
+                blocks=5,
+                origins=500,
+                stable_unit_index=ref(ticker, "2026-01-02", 0).unit_index,
+                condition_positive_counts=(0, 0, 0, 0),
+            )
+            for ticker in ("AAA", "BBB", "CCC", "DDD")
+        )
+        dataset = OfflineShardDataset(
+            units,
+            seed=17,
+            shuffle_units=True,
+            block_refs=refs,
+        )
+        first = tuple(dataset._owned_block_refs(worker, 2) for worker in range(2))
+        repeated = tuple(dataset._owned_block_refs(worker, 2) for worker in range(2))
+        self.assertEqual(first, repeated)
+        self.assertCountEqual((item for owned in first for item in owned), refs)
+        owners: dict[str, set[int]] = {}
+        for worker, owned in enumerate(first):
+            unit_runs: list[str] = []
+            for item in owned:
+                owners.setdefault(item.unit_key, set()).add(worker)
+                if not unit_runs or unit_runs[-1] != item.unit_key:
+                    unit_runs.append(item.unit_key)
+            self.assertEqual(len(unit_runs), len(set(unit_runs)))
+        self.assertTrue(all(len(worker_ids) == 1 for worker_ids in owners.values()))
+
+        dataset.epoch = 1
+        second_epoch = tuple(dataset._owned_block_refs(worker, 2) for worker in range(2))
+        self.assertNotEqual(second_epoch, first)
+        self.assertCountEqual((item for owned in second_epoch for item in owned), refs)
+
     def test_single_cosine_resume_rejects_a_different_schedule_contract(self) -> None:
         parameter = torch.nn.Parameter(torch.tensor(1.0))
         optimizer = torch.optim.AdamW((parameter,), lr=3e-4)

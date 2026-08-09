@@ -386,6 +386,11 @@ between evaluations, while the independent training prefetch iterator remains
 alive across monitor passes. Locked-test evaluation uses the same bounded
 streaming policy for its single pass.
 
+The explicit training panel is shuffled hierarchically: ticker-month groups are
+assigned whole to deterministic workers, and blocks are shuffled only inside
+each owned group. This retains epoch randomness without making one worker batch
+hold tensor slices from dozens of different multi-gigabyte mmap shards.
+
 The canonical launcher now trains from certified v3 offline shards. Its bounded
 training selection is `[2019-01-01, 2022-01-01)` and its fixed validation
 selection is `[2026-01-01, 2026-08-01)`. One coverage epoch is one deterministic
