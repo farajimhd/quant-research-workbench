@@ -3791,3 +3791,207 @@
   .configuration-section-guided .guided-question-prompt > header { align-items: flex-start; flex-direction: column; gap: 10px; }
   .configuration-section-guided .guided-question-prompt > header > em { margin-left: 0; }
 }
+
+/* Proportional configuration geometry
+   -----------------------------------
+   Every non-Canvas configuration surface is inset by the same ratio from its
+   immediate visual parent. The token is the single authority: changing it
+   updates the outer workspace, studios, view surfaces, step rails, reading
+   stages, and their major child sections without shrinking atomic controls. */
+.trading-configuration-page {
+  --configuration-nesting-gutter: 5%;
+  --configuration-nested-width: calc(
+    100% - var(--configuration-nesting-gutter) - var(--configuration-nesting-gutter)
+  );
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.trading-configuration-page > :is(
+  .configuration-page-header,
+  .configuration-message,
+  .configuration-studio-home,
+  .configuration-guided-workspace,
+  .configuration-expert-workspace
+) {
+  box-sizing: border-box;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: none;
+  width: var(--configuration-nested-width);
+}
+
+.trading-configuration-page :is(
+  .strategy-studio-workspace,
+  .configuration-section-studio
+) {
+  box-sizing: border-box;
+  container-name: configuration-studio;
+  container-type: inline-size;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: none;
+  width: var(--configuration-nested-width);
+}
+
+.trading-configuration-page .configuration-expert-editor > .strategy-selection-page {
+  box-sizing: border-box;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: none;
+  padding-left: 0;
+  padding-right: 0;
+  width: var(--configuration-nested-width);
+}
+
+.trading-configuration-page :is(
+  .strategy-studio-workspace,
+  .configuration-section-studio
+) > :is(
+  .strategy-editor-toolbar,
+  .configuration-workbench,
+  .strategy-selection-page,
+  .configuration-section-guided,
+  .configuration-section-structure,
+  .discovery-guided-authoring
+) {
+  box-sizing: border-box;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: none;
+  width: var(--configuration-nested-width);
+}
+
+/* Catalog responsiveness must follow the nested workbench width, not the
+   browser or outer page width. */
+.trading-configuration-page .strategy-studio-workspace > .configuration-workbench {
+  container-name: configuration-workbench;
+  container-type: inline-size;
+}
+
+@container configuration-studio (max-width: 900px) {
+  .strategy-studio-workspace > .configuration-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .strategy-parameter-catalog {
+    max-height: 560px;
+    min-height: 420px;
+    position: static;
+  }
+}
+
+.trading-configuration-page :is(
+  .strategy-editor-guided .strategy-authoring,
+  .discovery-guided-authoring
+) > :is(
+  .strategy-authoring-step-navigation,
+  .strategy-authoring-stage
+) {
+  box-sizing: border-box;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: none;
+  width: var(--configuration-nested-width);
+}
+
+/* The tab rail uses the same proportional columns as every other nesting
+   boundary. Previous and Next live inside the two 5% columns. */
+.trading-configuration-page :is(
+  .strategy-authoring-step-navigation,
+  .configuration-guided-step-navigation
+) {
+  gap: 0;
+  grid-template-columns:
+    var(--configuration-nesting-gutter)
+    var(--configuration-nested-width)
+    var(--configuration-nesting-gutter);
+}
+
+.trading-configuration-page :is(
+  .strategy-authoring-step-navigation,
+  .configuration-guided-step-navigation
+) > :is(.strategy-step-direction, .configuration-guided-direction) {
+  box-sizing: border-box;
+  font-size: 10px;
+  min-width: 0;
+  padding-left: 4px;
+  padding-right: 4px;
+  width: 100%;
+}
+
+.trading-configuration-page .configuration-section-guided .guided-configuration-shell > :is(
+  .configuration-guided-step-navigation,
+  .guided-question-surface
+) {
+  box-sizing: border-box;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: none;
+  width: var(--configuration-nested-width);
+}
+
+.trading-configuration-page .configuration-section-guided > .guided-configuration-shell,
+.trading-configuration-page .configuration-expert-workspace > .configuration-revision-layout {
+  box-sizing: border-box;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: none;
+  width: var(--configuration-nested-width);
+}
+
+.trading-configuration-page .configuration-section-guided .guided-question-surface > :is(
+  header,
+  .guided-question-list,
+  .guided-running-summary,
+  .guided-navigation
+),
+.trading-configuration-page .strategy-authoring-stage > *,
+.trading-configuration-page .strategy-parameter-detail-page > *,
+.trading-configuration-page .strategy-selection-page > *,
+.trading-configuration-page .configuration-section-structure > * {
+  box-sizing: border-box;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: none;
+  width: var(--configuration-nested-width);
+}
+
+.trading-configuration-page .configuration-section-guided .guided-question-list > .guided-question,
+.trading-configuration-page .configuration-section-guided .guided-question > :is(
+  .guided-question-prompt,
+  .guided-answer-surface
+) {
+  box-sizing: border-box;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: none;
+  width: var(--configuration-nested-width);
+}
+
+/* Retire the former page-specific reading widths. They remain responsive
+   because every percentage is resolved against the immediate parent. */
+.trading-configuration-page .discovery-guided-stage,
+.trading-configuration-page .strategy-editor-guided .strategy-authoring-stage,
+.trading-configuration-page .strategy-editor-guided .strategy-authoring-stage-entry,
+.trading-configuration-page .strategy-rule-set-detail > section.strategy-rule-set-authoring,
+.trading-configuration-page .configuration-section-guided .guided-question-surface,
+.trading-configuration-page .configuration-section-guided :is(
+  .guided-question-list,
+  .guided-running-summary,
+  .guided-navigation
+) {
+  max-width: none;
+  width: var(--configuration-nested-width);
+}
+
+@container configuration-studio (max-width: 900px) {
+  /* A 5% direction column cannot contain a full word at compact widths.
+     Preserve the accessible button name while displaying its arrow only. */
+  .trading-configuration-page :is(
+    .strategy-authoring-step-navigation,
+    .configuration-guided-step-navigation
+  ) > :is(.strategy-step-direction, .configuration-guided-direction) {
+    font-size: 0;
+  }
+}
