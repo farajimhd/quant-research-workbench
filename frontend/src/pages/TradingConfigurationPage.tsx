@@ -2459,11 +2459,11 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
 
   return <article className="strategy-authoring" aria-label={`${profile.name} strategy authoring flow`}>
     <div className="strategy-authoring-step-navigation">
-      <button aria-label="Previous configuration question" className="button compact strategy-step-direction strategy-step-direction-previous" disabled={activeIndex <= 0 && activeStage !== "entry" && activeStage !== "position" && activeStage !== "reentry" && activeStage !== "exit"} onClick={previousQuestion} type="button">&lt; Previous</button>
+      <button aria-label="Previous configuration question" className="button compact strategy-step-direction strategy-step-direction-previous" disabled={activeIndex <= 0 && activeStage !== "entry" && activeStage !== "position" && activeStage !== "reentry" && activeStage !== "exit"} onClick={previousQuestion} type="button"><ArrowLeft aria-hidden="true" size={15} /><span>Previous</span></button>
       <nav aria-label="Strategy configuration steps" className="strategy-authoring-steps">
         {stages.map(([stage, number, title, detail]) => <button aria-current={activeStage === stage ? "step" : undefined} key={stage} onClick={() => changeStage(stage)} type="button"><span>{number}</span><strong>{title}</strong><small>{detail}</small></button>)}
       </nav>
-      {isFinalQuestion ? <span /> : <button aria-label="Next configuration question" className="button compact primary strategy-step-direction strategy-step-direction-next" onClick={nextQuestion} type="button">Next &gt;</button>}
+      {isFinalQuestion ? <span /> : <button aria-label="Next configuration question" className="button compact primary strategy-step-direction strategy-step-direction-next" onClick={nextQuestion} type="button"><span>Next</span><ArrowRight aria-hidden="true" size={15} /></button>}
     </div>
 
     <section className={`strategy-authoring-stage${activeStage === "entry" || activeStage === "position" || activeStage === "reentry" || activeStage === "exit" ? " strategy-authoring-stage-entry" : ""}`}>

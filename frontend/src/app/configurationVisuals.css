@@ -3946,6 +3946,59 @@
   }
 }
 
+/* Strategy question navigation is an action rail, not a nested content gutter.
+   Reserve stable hit-target columns while keeping the step rail centered. */
+.trading-configuration-page .strategy-editor-guided .strategy-authoring-step-navigation {
+  gap: clamp(8px, 1vw, 16px);
+  grid-template-columns:
+    clamp(92px, 6.25%, 128px)
+    minmax(0, 1fr)
+    clamp(92px, 6.25%, 128px);
+}
+
+.trading-configuration-page .strategy-editor-guided .strategy-authoring-step-navigation > .strategy-step-direction {
+  align-items: center;
+  border: 1px solid var(--configuration-rule);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 6%, transparent);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 650;
+  gap: 7px;
+  justify-content: center;
+  min-height: 40px;
+  padding: 8px 12px;
+  width: 100%;
+}
+
+.trading-configuration-page .strategy-editor-guided .strategy-authoring-step-navigation > .strategy-step-direction-previous {
+  background: var(--surface);
+  color: var(--foreground);
+}
+
+.trading-configuration-page .strategy-editor-guided .strategy-authoring-step-navigation > .strategy-step-direction-next {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.trading-configuration-page .strategy-editor-guided .strategy-authoring-step-navigation > .strategy-step-direction:not(:disabled):focus-visible {
+  outline: 2px solid var(--canvas-link-blue);
+  outline-offset: 2px;
+}
+
+@container configuration-studio (max-width: 700px) {
+  .trading-configuration-page .strategy-editor-guided .strategy-authoring-step-navigation {
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+  }
+
+  .trading-configuration-page .strategy-editor-guided .strategy-authoring-step-navigation > .strategy-step-direction {
+    font-size: 0;
+    gap: 0;
+    padding: 8px;
+  }
+}
+
 .trading-configuration-page .strategy-editor-guided .strategy-authoring > :is(
   .strategy-authoring-step-navigation,
   .strategy-authoring-stage
