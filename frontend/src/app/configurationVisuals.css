@@ -3794,12 +3794,16 @@
 
 /* Proportional configuration geometry
    -----------------------------------
-   Every non-Canvas configuration surface is inset by the same ratio from its
-   immediate visual parent. The token is the single authority: changing it
-   updates the outer workspace, studios, view surfaces, step rails, reading
-   stages, and their major child sections without shrinking atomic controls. */
+   Every non-Canvas configuration surface uses one outer-page ratio and one
+   downstream nesting ratio. These tokens are the shared authority for page
+   frames, studios, view surfaces, step rails, reading stages, and their major
+   child sections without shrinking atomic controls. */
 .trading-configuration-page {
-  --configuration-nesting-gutter: 5%;
+  --configuration-outer-gutter: 1%;
+  --configuration-outer-width: calc(
+    100% - var(--configuration-outer-gutter) - var(--configuration-outer-gutter)
+  );
+  --configuration-nesting-gutter: 2.5%;
   --configuration-nested-width: calc(
     100% - var(--configuration-nesting-gutter) - var(--configuration-nesting-gutter)
   );
@@ -3812,13 +3816,14 @@
   .configuration-message,
   .configuration-studio-home,
   .configuration-guided-workspace,
-  .configuration-expert-workspace
+  .configuration-expert-workspace,
+  .configuration-section-studio
 ) {
   box-sizing: border-box;
   margin-left: auto;
   margin-right: auto;
   max-width: none;
-  width: var(--configuration-nested-width);
+  width: var(--configuration-outer-width);
 }
 
 .trading-configuration-page :is(
@@ -3832,6 +3837,13 @@
   margin-right: auto;
   max-width: none;
   width: var(--configuration-nested-width);
+}
+
+/* Section studios are the first content frame on their pages. Keep that first
+   boundary on the smaller outer gutter; their children still use the nested
+   gutter below. */
+.trading-configuration-page > .configuration-section-studio {
+  width: var(--configuration-outer-width);
 }
 
 .trading-configuration-page .configuration-expert-editor > .strategy-selection-page {
@@ -3896,7 +3908,7 @@
 }
 
 /* The tab rail uses the same proportional columns as every other nesting
-   boundary. Previous and Next live inside the two 5% columns. */
+   boundary. Previous and Next live inside the two 2.5% columns. */
 .trading-configuration-page :is(
   .strategy-authoring-step-navigation,
   .configuration-guided-step-navigation
@@ -3986,7 +3998,7 @@
 }
 
 @container configuration-studio (max-width: 900px) {
-  /* A 5% direction column cannot contain a full word at compact widths.
+  /* A narrow direction column cannot contain a full word at compact widths.
      Preserve the accessible button name while displaying its arrow only. */
   .trading-configuration-page :is(
     .strategy-authoring-step-navigation,
