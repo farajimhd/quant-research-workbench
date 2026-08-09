@@ -30,7 +30,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { api } from "../api/client";
@@ -1027,7 +1027,6 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   const index = steps.indexOf(step);
   const previous = steps[index - 1];
   const next = steps[index + 1];
-  const context = guidedContextRows(draft, step);
   const [questionIndex, setQuestionIndex] = useState(0);
   useEffect(() => setQuestionIndex(0), [step]);
   useEffect(() => {
@@ -1064,7 +1063,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   if (!profile || !deployment || !mandate || !omsProfile || !executionPolicy || !protectionProfile || !account) return <GuidedEmpty onSwitchToExpert={onSwitchToExpert} />;
   if (step === "strategy") return <GuidedStrategyConfiguration draft={draft} onChange={onChange} onContinue={() => onContinue("assignments")} onProfileChange={selectStrategyProfile} profile={profile} />;
 
-  const questions: ReactNode[] = [];
+  const questions: Array<ReactElement<{ label: string }>> = [];
   if (step === "assignments") questions.push(
     <GuidedQuestion description="The Strategy Profile owns trading behavior and lifecycle decisions. Choosing it does not select symbols, capital, or broker behavior." key="deployment-strategy" label="Which Strategy Profile should this Run Plan execute?" status={deployment.enabled ? "Configured" : "Needs review"}>
       <SelectField help="Select the reusable trading behavior evaluated by this Run Plan. Its entries, adds, reentries, and strategic exits remain unchanged." label="Strategy Profile" onChange={(profile_id) => replaceDeployment({ ...deployment, profile_id })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.profile_id} />
@@ -1108,13 +1107,21 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   );
   const questionCount = questions.length;
   const safeQuestionIndex = Math.min(questionIndex, Math.max(questionCount - 1, 0));
+  const atFirstQuestion = safeQuestionIndex === 0;
+  const atLastQuestion = safeQuestionIndex === questionCount - 1;
+  const movePrevious = () => atFirstQuestion ? previous && navigateGuidedStep(previous, onOmsStageChange) : setQuestionIndex(safeQuestionIndex - 1);
+  const moveNext = () => atLastQuestion ? next && onContinue(next) : setQuestionIndex(safeQuestionIndex + 1);
 
   return <div className="guided-configuration-shell" data-guided-step={step}>
+    <div className="configuration-guided-step-navigation">
+      <button className="button compact configuration-guided-direction" disabled={atFirstQuestion && !previous} onClick={movePrevious} type="button">&lt; Previous</button>
+      <nav aria-label={`${readableLabel(step)} questions`} className="configuration-guided-question-tabs" style={{ gridTemplateColumns: `repeat(${questionCount}, minmax(0, 1fr))` }}>
+        {questions.map((question, index) => <button aria-current={index === safeQuestionIndex ? "step" : undefined} key={question.key ?? index} onClick={() => setQuestionIndex(index)} title={question.props.label} type="button"><span>{index + 1}</span><strong>{question.props.label}</strong></button>)}
+      </nav>
+      <button className="button compact primary configuration-guided-direction" disabled={atLastQuestion && !next} onClick={moveNext} type="button">Next &gt;</button>
+    </div>
     <main className="guided-question-surface">
-      <header><span>{guidedStepTitle(step)} · question {safeQuestionIndex + 1} of {questionCount}</span><h2>{guidedStepDescription(step)}</h2><div className="guided-question-progress"><span style={{ width: `${((safeQuestionIndex + 1) / questionCount) * 100}%` }} /></div></header>
       <div className="guided-question-list">{questions[safeQuestionIndex]}</div>
-      <details className="guided-running-summary"><summary>Your setup so far <ChevronRight size={15} /></summary><div>{context.map((row) => <span key={row.label}><small>{row.label}</small><strong>{row.value}</strong></span>)}</div></details>
-      <GuidedFooter isFirst={safeQuestionIndex === 0} isLast={safeQuestionIndex === questionCount - 1} next={next} onNext={() => safeQuestionIndex < questionCount - 1 ? setQuestionIndex(safeQuestionIndex + 1) : next && onContinue(next)} onPrevious={() => safeQuestionIndex > 0 ? setQuestionIndex(safeQuestionIndex - 1) : previous && navigateGuidedStep(previous, onOmsStageChange)} previous={previous} />
     </main>
   </div>;
 }
@@ -1650,7 +1657,7 @@ function uniqueProfileName(base: string, existing: StrategyProfile[]) {
 }
 
 function GuidedQuestion({ children, description, label, status }: { children: ReactNode; description: string; label: string; status: string }) {
-  return <section className="guided-question"><section className="guided-question-prompt"><header><div><span>{label}</span><p>{description}</p></div><em data-state={status.toLowerCase().replaceAll(" ", "-")}>{status}</em></header><ConfigurationGuidance items={[{ label: "What changes", value: "Only the subject shown below." }, { label: "Using the default", value: "Leave the displayed answer unchanged to approve the current default." }, { label: "Runtime effect", value: "The answer applies only after this draft is validated and published." }]} /></section><section className="guided-answer-surface"><header><strong>Choose or configure one response</strong><small>Complete only the fields needed for this question.</small></header><div className="guided-answer-content">{children}</div></section></section>;
+  return <section className="guided-question"><section className="guided-question-prompt"><header><div><span>{label}</span><p>{description}</p></div><em data-state={status.toLowerCase().replaceAll(" ", "-")}>{status}</em></header></section><section className="guided-answer-surface"><div className="guided-answer-content">{children}</div></section></section>;
 }
 
 function ConfigurationGuidance({ items }: { items: Array<{ label: string; value: string }> }) {
@@ -1664,10 +1671,6 @@ function DecisionOptions({ onChange, options, value }: { onChange: (value: strin
 
 function ModeChoices({ onChange, options, values }: { onChange: (values: string[]) => void; options: string[]; values: string[] }) {
   return <div className="guided-mode-choices">{options.map((option) => <label key={option}><input checked={values.includes(option)} onChange={(event) => onChange(event.target.checked ? [...values, option] : values.filter((value) => value !== option))} type="checkbox" /><span><Check size={13} />{readableLabel(option)}</span></label>)}</div>;
-}
-
-function GuidedFooter({ isFirst, isLast, next, onNext, onPrevious, previous }: { isFirst: boolean; isLast: boolean; next?: GuidedStep; onNext: () => void; onPrevious: () => void; previous?: GuidedStep }) {
-  return <footer className="guided-navigation"><button className="button" disabled={isFirst && !previous} onClick={onPrevious} type="button"><ArrowLeft size={15} /> Previous</button><span>Your changes stay in this draft until you publish a release.</span><button className="button primary" disabled={isLast && !next} onClick={onNext} type="button">{isLast ? "Save and continue" : "Next question"} <ArrowRight size={15} /></button></footer>;
 }
 
 function GuidedReview({ approved, draft, label, onLabelChange, onPublish, onReturn, publishing, revisions }: { approved: Revision | null; draft: Draft; label: string; onLabelChange: (value: string) => void; onPublish: () => void; onReturn: () => void; publishing: boolean; revisions: Revision[] }) {
@@ -3671,7 +3674,7 @@ function SectionParameterField({ draft, item, onChange, section }: { draft: Draf
   const help = item.detail;
   const options = sectionParameterOptions(section, item.path, draft);
   if (Array.isArray(item.value)) {
-    if (item.path.endsWith("allowed_environments") || item.path.endsWith(".modes")) return <div className="configuration-field configuration-list-field" data-editable="true"><span>{item.label}</span><small>{help}</small><ModeSelector modes={item.value as RuntimeMode[]} onChange={onChange} /></div>;
+    if (item.path.endsWith("allowed_environments") || item.path.endsWith(".modes")) return <div className="configuration-field configuration-list-field" data-editable="true"><span>{item.label}</span><ModeSelector modes={item.value as RuntimeMode[]} onChange={onChange} /><small>{help}</small></div>;
     return <TextField help={help} label={item.label} onChange={(value) => onChange(value.split(",").map((part) => part.trim()).filter(Boolean))} value={item.value.join(", ")} />;
   }
   if (options) return <SelectField help={help} label={item.label} onChange={onChange} options={options} value={String(item.value ?? "")} />;
@@ -4598,21 +4601,21 @@ function CapabilityField({ definition, onChange, value }: { definition: Capabili
 }
 
 function TextField({ help, label, nextAction = false, onChange, value }: { help: HelpContent; label: string; nextAction?: boolean; onChange: (value: string) => void; value: string }) {
-  return <label className="configuration-field" data-editable="true"><span>{label}</span><small>{fieldSummary(help)}</small><input data-next-action-control={nextAction ? "true" : undefined} onChange={(event) => onChange(event.target.value)} value={value} /></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}</span><input data-next-action-control={nextAction ? "true" : undefined} onChange={(event) => onChange(event.target.value)} value={value} /><small>{fieldSummary(help)}</small></label>;
 }
 
 function NumberField({ help, label, maximum, minimum, onChange, step, unit, value }: { help: HelpContent; label: string; maximum?: number; minimum?: number; onChange: (value: number) => void; step: number; unit?: string; value: number }) {
   const fraction = unit === "fraction";
-  return <label className="configuration-field" data-editable="true"><span>{label}</span><small>{fieldSummary(help)}</small><div className="configuration-number"><input max={fraction ? 100 : maximum} min={fraction ? 0 : minimum} onChange={(event) => onChange(fraction ? Number(event.target.value) / 100 : Number(event.target.value))} step={fraction ? step * 100 : step} type="number" value={fraction ? round(value * 100) : value} />{unit ? <em>{fraction ? "%" : unit}</em> : null}</div></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}</span><div className="configuration-number"><input max={fraction ? 100 : maximum} min={fraction ? 0 : minimum} onChange={(event) => onChange(fraction ? Number(event.target.value) / 100 : Number(event.target.value))} step={fraction ? step * 100 : step} type="number" value={fraction ? round(value * 100) : value} />{unit ? <em>{fraction ? "%" : unit}</em> : null}</div><small>{fieldSummary(help)}</small></label>;
 }
 
 function OptionalNumberField({ help, label, minimum, onChange, step, unit, value }: { help: HelpContent; label: string; minimum?: number; onChange: (value: number | null) => void; step: number; unit?: string; value: number | null }) {
-  return <label className="configuration-field" data-editable="true"><span>{label}</span><small>{fieldSummary(help)}</small><div className="configuration-number"><input min={minimum} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} placeholder="Automatic" step={step} type="number" value={value ?? ""} />{unit ? <em>{unit}</em> : null}</div></label>;
+  return <label className="configuration-field" data-editable="true"><span>{label}</span><div className="configuration-number"><input min={minimum} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} placeholder="Automatic" step={step} type="number" value={value ?? ""} />{unit ? <em>{unit}</em> : null}</div><small>{fieldSummary(help)}</small></label>;
 }
 
 function SelectField({ disabled = false, help, label, onChange, options, searchable, value }: { disabled?: boolean; help: HelpContent; label: string; onChange: (value: string) => void; options: Array<{ description?: string; label: string; value: string }>; searchable?: boolean; value: string }) {
   const documentedOptions = options.map((option) => ({ ...option, description: option.description ?? choiceExplanation(option.label, option.value, help) }));
-  return <div className="configuration-field configuration-lookup-field" data-editable={disabled ? "false" : "true"}><span>{label}</span><small>{fieldSummary(help)}</small>{disabled ? <strong>{options.find((option) => option.value === value)?.label ?? value}</strong> : <InventoryFilterSelect ariaLabel={label} className="configuration-lookup-button" onChange={onChange} options={documentedOptions} searchable={searchable ?? options.length > 7} searchPlaceholder={`Find ${label.toLowerCase()}…`} value={value} />}</div>;
+  return <div className="configuration-field configuration-lookup-field" data-editable={disabled ? "false" : "true"}><span>{label}</span>{disabled ? <strong>{options.find((option) => option.value === value)?.label ?? value}</strong> : <InventoryFilterSelect ariaLabel={label} className="configuration-lookup-button" onChange={onChange} options={documentedOptions} searchable={searchable ?? options.length > 7} searchPlaceholder={`Find ${label.toLowerCase()}…`} value={value} />}<small>{fieldSummary(help)}</small></div>;
 }
 
 function BooleanField({ disabled = false, help, label, onChange, value }: { disabled?: boolean; help: HelpContent; label: string; onChange: (value: boolean) => void; value: boolean }) {
@@ -4998,70 +5001,6 @@ function navigateGuidedStep(step: GuidedStep, onOmsStageChange: (value: OmsGuide
 function pageForGuidedStep(step: GuidedStep) {
   if (step === "execution" || step === "protection") return "oms-configuration";
   return pageForSection(step);
-}
-
-function guidedStepTitle(step: GuidedStep) {
-  if (step === "strategy") return "Choose the trading behavior";
-  if (step === "assignments") return "Make the strategy deployable";
-  if (step === "portfolio") return "Set capital and risk authority";
-  if (step === "execution") return "Choose order placement behavior";
-  if (step === "protection") return "Define broker-held protection";
-  if (step === "accounts") return "Bind accounts and sessions";
-  return "Review and publish";
-}
-
-function guidedStepDescription(step: GuidedStep) {
-  if (step === "strategy") return "Choose the plan, direction, and entry sessions.";
-  if (step === "assignments") return "Choose what it watches and where it may run.";
-  if (step === "portfolio") return "Set the account, capital limits, and approval level.";
-  if (step === "execution") return "Choose how orders follow prices and handle partial fills.";
-  if (step === "protection") return "Choose the initial stop design and what happens after taking profit.";
-  if (step === "accounts") return "Confirm which account and broker session may be used.";
-  return "Review the complete setup before publishing it for new runs.";
-}
-
-function guidedContextRows(draft: Draft, step: GuidedStep) {
-  const profile = draft.strategy.profiles.find((row) => row.profile_id === draft.strategy.default_profile_id) ?? draft.strategy.profiles[0];
-  const deployment = draft.assignments.deployments.find((row) => row.enabled) ?? draft.assignments.deployments[0];
-  const mandate = draft.portfolio.mandates.find((row) => row.run_plan_id === deployment?.run_plan_id) ?? draft.portfolio.mandates[0];
-  const oms = draft.oms.profiles.find((row) => row.profile_id === deployment?.oms_profile_id) ?? draft.oms.profiles[0];
-  const execution = draft.oms.execution_policies.find((row) => row.policy_id === oms?.settings.entry_execution_policy_id) ?? draft.oms.execution_policies[0];
-  const protection = draft.oms.protection_profiles.find((row) => row.profile_id === oms?.settings.protection_profile_id) ?? draft.oms.protection_profiles[0];
-  const account = draft.accounts.bindings.find((row) => row.account_key === mandate?.account_key) ?? draft.accounts.bindings[0];
-  if (step === "strategy") return [
-    { label: "Profile", value: profile?.name ?? "Missing" },
-    { label: "Direction", value: profile ? readableLabel(profile.lifecycle.trading_behavior.side) : "Missing" },
-    { label: "Sessions", value: profile?.lifecycle.trading_behavior.eligible_sessions.map(readableLabel).join(", ") || "None" },
-  ];
-  if (step === "assignments") return [
-    { label: "Run Plan", value: deployment?.name ?? "Missing" },
-    { label: "Universe", value: draft.assignments.universes.find((row) => row.universe_id === deployment?.universe_id)?.name ?? "Missing" },
-    { label: "Environments", value: deployment?.allowed_environments.map(readableLabel).join(", ") || "None" },
-  ];
-  if (step === "portfolio") return [
-    { label: "Account", value: account?.name ?? mandate?.account_key ?? "Missing" },
-    { label: "Cash ceiling", value: mandate ? percent(mandate.maximum_cash_fraction) : "Missing" },
-    { label: "Risk ceiling", value: mandate ? percent(mandate.maximum_planned_risk_fraction) : "Missing" },
-    { label: "Authority cap", value: mandate ? readableLabel(mandate.maximum_action_authority) : "Missing" },
-  ];
-  if (step === "execution") return [
-    { label: "OMS profile", value: oms?.name ?? "Missing" },
-    { label: "Entry policy", value: execution ? readableLabel(execution.name) : "Missing" },
-    { label: "Quote source", value: execution ? readableLabel(execution.quote_source) : "Missing" },
-    { label: "Partial fill", value: execution ? readableLabel(execution.partial_fill_policy) : "Missing" },
-  ];
-  if (step === "protection") return [
-    { label: "Protection", value: protection?.name ?? "Missing" },
-    { label: "Slices", value: String(protection?.slices.length ?? 0) },
-    { label: "Profit transition", value: protection ? readableLabel(protection.profit_pocket_transition) : "Missing" },
-    { label: "Backstop", value: protection?.mandatory_catastrophic_backstop ? "Required" : "Not required" },
-  ];
-  return [
-    { label: "Account", value: account?.name ?? "Missing" },
-    { label: "Class", value: account ? readableLabel(account.account_class) : "Missing" },
-    { label: "Modes", value: account?.modes.map(readableLabel).join(", ") || "None" },
-    { label: "Policy", value: account?.portfolio_policy_id ?? "Missing" },
-  ];
 }
 
 function reviewRows(draft: Draft, approved: Revision | null) {
