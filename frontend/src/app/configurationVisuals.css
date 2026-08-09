@@ -3799,7 +3799,7 @@
    frames, studios, view surfaces, step rails, reading stages, and their major
    child sections without shrinking atomic controls. */
 .trading-configuration-page {
-  --configuration-outer-gutter: 1%;
+  --configuration-outer-gutter: 0.5%;
   --configuration-outer-width: calc(
     100% - var(--configuration-outer-gutter) - var(--configuration-outer-gutter)
   );
@@ -3893,10 +3893,7 @@
   }
 }
 
-.trading-configuration-page :is(
-  .strategy-editor-guided .strategy-authoring,
-  .discovery-guided-authoring
-) > :is(
+.trading-configuration-page .strategy-editor-guided .strategy-authoring > :is(
   .strategy-authoring-step-navigation,
   .strategy-authoring-stage
 ) {
@@ -3981,9 +3978,57 @@
   width: var(--configuration-nested-width);
 }
 
+/* A gutter belongs inside a visible surface, around its copy. Do not achieve
+   that inset by shrinking the surface itself: doing so leaves borders and row
+   rules floating inside their parent while their text has no internal inset. */
+.trading-configuration-page .strategy-authoring-stage > *,
+.trading-configuration-page .strategy-parameter-detail-page > *,
+.trading-configuration-page .strategy-selection-page > *,
+.trading-configuration-page .configuration-section-structure > *,
+.trading-configuration-page .configuration-section-guided .guided-question-surface > :is(
+  header,
+  .guided-question-list,
+  .guided-running-summary,
+  .guided-navigation
+),
+.trading-configuration-page .configuration-section-guided .guided-question-list > .guided-question,
+.trading-configuration-page .configuration-section-guided .guided-question > :is(
+  .guided-question-prompt,
+  .guided-answer-surface
+) {
+  width: 100%;
+}
+
+.trading-configuration-page .strategy-authoring-stage > :is(header, p),
+.trading-configuration-page .configuration-section-guided .guided-question-prompt,
+.trading-configuration-page .configuration-section-guided .guided-answer-content {
+  box-sizing: border-box;
+  padding-left: var(--configuration-nesting-gutter);
+  padding-right: var(--configuration-nesting-gutter);
+}
+
+/* Market Discovery is itself a visible bordered surface. Its rail and stage
+   therefore reach that boundary; copy and card contents carry the inset. */
+.trading-configuration-page .discovery-guided-authoring {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.trading-configuration-page .discovery-guided-authoring > :is(
+  .strategy-authoring-step-navigation,
+  .strategy-authoring-stage
+) {
+  width: 100%;
+}
+
+.trading-configuration-page .discovery-core-summary > article,
+.trading-configuration-page .discovery-capability-matrix > article {
+  padding-left: var(--configuration-nesting-gutter);
+  padding-right: var(--configuration-nesting-gutter);
+}
+
 /* Retire the former page-specific reading widths. They remain responsive
    because every percentage is resolved against the immediate parent. */
-.trading-configuration-page .discovery-guided-stage,
 .trading-configuration-page .strategy-editor-guided .strategy-authoring-stage,
 .trading-configuration-page .strategy-editor-guided .strategy-authoring-stage-entry,
 .trading-configuration-page .strategy-rule-set-detail > section.strategy-rule-set-authoring,
@@ -3995,6 +4040,15 @@
 ) {
   max-width: none;
   width: var(--configuration-nested-width);
+}
+
+/* This visible bordered authoring surface owns its inner inset. Keep its stage
+   edge flush after retiring the older page-specific reading width above. */
+.trading-configuration-page .discovery-guided-authoring > .discovery-guided-stage {
+  justify-self: stretch;
+  margin-left: 0;
+  margin-right: 0;
+  width: 100%;
 }
 
 @container configuration-studio (max-width: 900px) {
