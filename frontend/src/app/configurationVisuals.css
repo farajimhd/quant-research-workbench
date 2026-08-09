@@ -4312,12 +4312,19 @@
   width: 85%;
 }
 
+.trading-configuration-page .strategy-selection-page > .strategy-selection-list {
+  justify-self: center;
+  max-width: 85%;
+  width: 85%;
+}
+
 @media (max-width: 760px) {
   .trading-configuration-page .discovery-guided-stage > .discovery-capability-matrix,
   .trading-configuration-page .discovery-watchlist-selection > :is(
     .discovery-watchlist-create,
     .discovery-watchlist-available
-  ) {
+  ),
+  .trading-configuration-page .strategy-selection-page > .strategy-selection-list {
     justify-self: stretch;
     max-width: 100%;
     width: 100%;
