@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 import uuid
 import urllib.request
@@ -54,6 +53,7 @@ from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMa
 
 
 EASTERN = ZoneInfo("America/New_York")
+SUCCESSFUL_URL_ENRICHMENT_STATUSES = frozenset({"success", "downloaded", "extracted"})
 
 
 def _post_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
@@ -1137,8 +1137,6 @@ class NewsGateway:
             )
 
     def _background_enrichment_log_context(self, items: list[LiveNewsPayload]) -> dict[str, Any]:
-        titles: list[str] = []
-        urls: list[str] = []
         domains: list[str] = []
         provider_article_ids: list[str] = []
         canonical_news_ids: list[str] = []
@@ -1146,9 +1144,6 @@ class NewsGateway:
         for item in items[:12]:
             result = item.initial_item.result
             row = result.normalized_row or {}
-            title = str(row.get("title") or row.get("headline") or item.payload.get("title") or "")[:180]
-            if title:
-                titles.append(title)
             provider_article_id = str(result.provider_article_id or item.payload.get("id") or item.payload.get("article_id") or "")
             canonical_news_id = str(result.canonical_news_id or "")
             if provider_article_id:
@@ -1158,7 +1153,6 @@ class NewsGateway:
             url_tasks = result.url_resolution.fetch_tasks if result.url_resolution else []
             attachments = result.url_resolution.attachments if result.url_resolution else []
             item_url_sample, item_domain_sample = self._news_url_log_samples(row, url_tasks, attachments, limit=6)
-            urls.extend(item_url_sample[:4])
             domains.extend(item_domain_sample)
             item_rows.append(
                 {
@@ -1166,22 +1160,17 @@ class NewsGateway:
                     "provider_article_id": provider_article_id,
                     "published_at_utc": str(row.get("published_at_utc") or row.get("published_utc") or row.get("published") or ""),
                     "tickers": self._news_ticker_sample(result.ticker_links or []),
-                    "title": title,
-                    "url_sample": item_url_sample,
                     "domain_sample": item_domain_sample,
                     "url_count": len(item_url_sample),
+                    "fetch_task_count": len(url_tasks),
+                    "attachment_count": len(attachments),
                     "requires_enrichment": bool(url_tasks or row.get("requires_enrichment")),
                     "external_fetch_status": str(row.get("external_fetch_status") or row.get("source_text_status") or ""),
                     "has_pdf": self._news_has_pdf(url_tasks, attachments),
-                    "pre_enriched_row": self._news_debug_mapping(row),
-                    "provider_payload": self._news_debug_mapping(item.payload),
-                    "url_resolution": self._news_url_resolution_debug_payload(row, url_tasks, attachments),
                     "text_lengths": self._news_text_lengths(row),
                 }
             )
         return {
-            "enrichment_title_sample": titles[:6],
-            "enrichment_url_sample": urls[:10],
             "enrichment_domain_sample": sorted(set(domains))[:8],
             "enrichment_provider_article_id_sample": provider_article_ids[:8],
             "enrichment_canonical_news_id_sample": canonical_news_ids[:8],
@@ -1191,9 +1180,9 @@ class NewsGateway:
     def _enrich_live_item(self, live_item: LiveNewsPayload) -> list[dict[str, Any]]:
         batch = self.enricher.enrich_tasks(live_item.initial_item.result.url_resolution.fetch_tasks)
         for row in batch.rows:
-            if row.get("status") not in {"downloaded", "extracted"}:
+            if str(row.get("status") or "").strip().lower() not in SUCCESSFUL_URL_ENRICHMENT_STATUSES:
                 self._log_event(
-                    "live_url_download_not_downloaded",
+                    "live_url_enrichment_incomplete",
                     poll_id="",
                     provider_article_id=live_item.initial_item.result.provider_article_id,
                     canonical_news_id=live_item.initial_item.result.canonical_news_id,
@@ -1336,7 +1325,6 @@ class NewsGateway:
             "requires_enrichment_count": sum(1 for item in items if item.get("requires_enrichment")),
             "enriched_count": sum(1 for item in items if str(item.get("external_fetch_status") or "").lower() in {"fetched", "enriched", "external_text"}),
             "pdf_count": sum(1 for item in items if item.get("has_pdf")),
-            "title_sample": str(items[0].get("title") or "") if items else "",
         }
 
     def _publish_item_log_payload(self, item: ProcessedNewsItem, *, item_status: str = "", summary: NewsBatchWriteSummary | None = None) -> dict[str, Any]:
@@ -1358,7 +1346,6 @@ class NewsGateway:
         url_tasks = result.url_resolution.fetch_tasks if result.url_resolution else []
         attachments = result.url_resolution.attachments if result.url_resolution else []
         url_sample, domain_sample = self._news_url_log_samples(row, url_tasks, attachments, limit=6)
-        title = str(row.get("title") or row.get("headline") or "")[:180]
         return {
             "canonical_news_id": canonical_news_id,
             "provider_article_id": result.provider_article_id,
@@ -1367,10 +1354,10 @@ class NewsGateway:
             "skipped_rows": 1 if publish_status in {"input_duplicate", "skipped_existing"} else 0,
             "published_at_utc": str(row.get("published_at_utc") or row.get("published_utc") or row.get("published") or ""),
             "tickers": tickers[:8],
-            "title": title,
-            "url_sample": url_sample,
             "domain_sample": domain_sample,
             "url_count": len(url_sample),
+            "fetch_task_count": len(url_tasks),
+            "attachment_count": len(attachments),
             "requires_enrichment": bool(url_tasks or row.get("requires_enrichment")),
             "external_fetch_status": str(row.get("external_fetch_status") or row.get("source_text_status") or ""),
             "has_pdf": self._news_has_pdf(url_tasks, attachments),
@@ -1406,43 +1393,11 @@ class NewsGateway:
                 domains.append(domain)
         return list(dict.fromkeys(urls))[:limit], sorted(set(domains))[:limit]
 
-    def _news_url_resolution_debug_payload(self, row: dict[str, Any], url_tasks: list[Any], attachments: list[Any]) -> dict[str, Any]:
-        return {
-            "row_urls": [self._redact_debug_string(url) for url in self._news_row_urls(row)[:50]],
-            "fetch_tasks": [self._news_debug_mapping(task) for task in url_tasks[:50] if isinstance(task, dict)],
-            "attachments": [self._news_debug_mapping(attachment) for attachment in attachments[:50] if isinstance(attachment, dict)],
-            "fetch_task_count": len(url_tasks),
-            "attachment_count": len(attachments),
-        }
-
     def _news_text_lengths(self, row: dict[str, Any]) -> dict[str, int]:
         return {
             key: len(str(row.get(key) or ""))
             for key in ("title", "teaser", "body_text", "external_text", "pdf_text", "normalized_full_text")
         }
-
-    def _news_debug_mapping(self, value: Any) -> Any:
-        if isinstance(value, dict):
-            return {
-                str(key): "redacted" if self._news_debug_secret_key(str(key)) else self._news_debug_mapping(item)
-                for key, item in value.items()
-            }
-        if isinstance(value, list):
-            return [self._news_debug_mapping(item) for item in value]
-        if isinstance(value, tuple):
-            return [self._news_debug_mapping(item) for item in value]
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            return self._redact_debug_string(value) if isinstance(value, str) else value
-        return self._redact_debug_string(str(value))
-
-    def _news_debug_secret_key(self, key: str) -> bool:
-        normalized = key.lower()
-        return any(marker in normalized for marker in ("api_key", "apikey", "token", "secret", "password"))
-
-    def _redact_debug_string(self, value: str) -> str:
-        text = str(value)
-        text = re.sub(r"([?&](?:apiKey|apikey|api_key|token|key|password)=)[^&'\"\s)]+", r"\1redacted", text, flags=re.IGNORECASE)
-        return re.sub(r"((?:apiKey|apikey|api_key|token|key|password)['\"]?\s*[:=]\s*['\"]?)[^'\"&\s,)]+", r"\1redacted", text, flags=re.IGNORECASE)
 
     def _news_row_urls(self, row: dict[str, Any]) -> list[str]:
         urls: list[str] = []

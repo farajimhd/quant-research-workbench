@@ -22,6 +22,26 @@ SAFE_TOKEN_KEY_MARKERS = (
     "TOKENS",
 )
 MAX_STRING_LENGTH = 20_000
+CONTENT_KEYS = frozenset(
+    {
+        "body_text",
+        "enrichment_title_sample",
+        "enrichment_url_sample",
+        "external_text",
+        "extracted_text",
+        "headline",
+        "normalized_full_text",
+        "pdf_text",
+        "pre_enriched_row",
+        "provider_payload",
+        "raw_payload",
+        "teaser",
+        "title",
+        "title_sample",
+        "url_sample",
+        "url_resolution",
+    }
+)
 
 
 class AsyncRunLogger:
@@ -110,6 +130,8 @@ def sanitize(value: Any) -> Any:
         output: dict[str, Any] = {}
         for key, item in value.items():
             text_key = str(key)
+            if text_key.lower() in CONTENT_KEYS:
+                continue
             upper_key = text_key.upper()
             is_secret_token = "TOKEN" in upper_key and not any(marker in upper_key for marker in SAFE_TOKEN_KEY_MARKERS)
             if any(marker in upper_key for marker in SECRET_MARKERS) or is_secret_token:
