@@ -45,6 +45,14 @@ MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
     "medium": {"d_model": 512, "n_layers": 12, "n_heads": 8, "n_kv_heads": 4},
     "large": {"d_model": 768, "n_layers": 12, "n_heads": 12, "n_kv_heads": 4},
     "xlarge": {"d_model": 1024, "n_layers": 16, "n_heads": 16, "n_kv_heads": 8},
+    "anchor_384x8": {"d_model": 384, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
+    "width_512x8": {"d_model": 512, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
+    "depth_384x12": {"d_model": 384, "n_layers": 12, "n_heads": 8, "n_kv_heads": 4},
+    "medium_512x12": {"d_model": 512, "n_layers": 12, "n_heads": 8, "n_kv_heads": 4},
+    "depth_512x16": {"d_model": 512, "n_layers": 16, "n_heads": 8, "n_kv_heads": 4},
+    "mid_768x12": {"d_model": 768, "n_layers": 12, "n_heads": 12, "n_kv_heads": 6},
+    "width_1024x12": {"d_model": 1024, "n_layers": 12, "n_heads": 16, "n_kv_heads": 8},
+    "xlarge_1024x16": {"d_model": 1024, "n_layers": 16, "n_heads": 16, "n_kv_heads": 8},
 }
 
 # The joint default deliberately uses one microbatch per optimizer step. This

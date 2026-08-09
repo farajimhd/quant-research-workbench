@@ -112,6 +112,23 @@ class OfflineShardUnit:
     condition_positive_counts: tuple[int, int, int, int]
 
 
+@dataclass(frozen=True, slots=True)
+class OfflineBlockRef:
+    """Stable address of one compiled block inside a certified shard."""
+
+    unit_key: str
+    session_index: int
+    block_index: int
+    origins: int
+    ticker: str
+    local_date: str
+    activity_regime: int
+    session_phase: str
+    has_condition_target: bool
+    unit_index: int
+    block_offset: int
+
+
 def _json_ready(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -910,6 +927,7 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
         resume_cursors: dict[int, Any] | None = None,
         validation_slices: Sequence[tuple[str, str, str]] = (),
         blocks_per_validation_slice: int = 0,
+        block_refs: Sequence[OfflineBlockRef] = (),
     ) -> None:
         super().__init__()
         self.units = tuple(units)
@@ -918,7 +936,67 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
         self.resume_cursors = dict(resume_cursors or {})
         self.validation_slices = tuple(validation_slices)
         self.blocks_per_validation_slice = int(blocks_per_validation_slice)
+        self.block_refs = tuple(block_refs)
         self.epoch = 0
+
+    def _ordered_block_refs(self) -> list[OfflineBlockRef]:
+        refs = list(self.block_refs)
+        if self.shuffle_units:
+            generator = torch.Generator().manual_seed(self.seed + self.epoch * 1_000_003)
+            order = torch.randperm(len(refs), generator=generator).tolist()
+            refs = [refs[index] for index in order]
+        return refs
+
+    def _iter_block_refs(self, worker_id: int, workers: int) -> Iterator[CompiledBlock]:
+        units = {unit.unit_key: unit for unit in self.units}
+        owned = self._ordered_block_refs()[worker_id::workers]
+        resume = self.resume_cursors.get(worker_id)
+        resume_reached = resume is None
+        loaded_key = ""
+        shard: dict[str, Any] | None = None
+        for ref in owned:
+            if not resume_reached:
+                if (
+                    int(ref.unit_index) != int(resume.unit_index)
+                    or int(ref.block_offset) != int(resume.block_offset)
+                ):
+                    continue
+                resume_reached = True
+                continue
+            unit = units.get(ref.unit_key)
+            if unit is None:
+                raise RuntimeError(f"experiment block references unknown shard unit {ref.unit_key}")
+            if loaded_key != ref.unit_key:
+                loaded_key = ref.unit_key
+                shard = load_shard(unit.path)
+            assert shard is not None
+            block = materialize_block(shard, ref.session_index, ref.block_index)
+            observed = (
+                block.ticker,
+                block.local_date,
+                int(block.origin_indices.numel()),
+                int(block.unit_index),
+                int(block.block_offset),
+            )
+            expected = (
+                ref.ticker,
+                ref.local_date,
+                int(ref.origins),
+                int(ref.unit_index),
+                int(ref.block_offset),
+            )
+            if observed != expected:
+                raise RuntimeError(
+                    f"experiment block identity changed for {ref.unit_key}: "
+                    f"expected={expected!r} observed={observed!r}"
+                )
+            block.worker_id = worker_id
+            yield block
+        if resume is not None and not resume_reached:
+            raise RuntimeError(
+                f"experiment resume cursor unit={resume.unit_index} block={resume.block_offset} "
+                f"is not owned by worker {worker_id}"
+            )
 
     def _ordered_units(self) -> list[OfflineShardUnit]:
         units = list(self.units)
@@ -978,6 +1056,9 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
         info = get_worker_info()
         worker_id = int(info.id) if info is not None else 0
         workers = int(info.num_workers) if info is not None else 1
+        if self.block_refs:
+            yield from self._iter_block_refs(worker_id, workers)
+            return
         if self.validation_slices and self.blocks_per_validation_slice > 0:
             yield from self._iter_validation(worker_id, workers)
             return

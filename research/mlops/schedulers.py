@@ -47,14 +47,38 @@ class SampleWarmupCosineScheduler:
             group["lr"] = self._lr(base_lr, self.samples_seen)
 
     def state_dict(self) -> dict[str, Any]:
-        return {"samples_seen": self.samples_seen, "base_lrs": self.base_lrs}
+        return {
+            "scheduler_type": "sample_warmup_single_cosine",
+            "samples_seen": self.samples_seen,
+            "base_lrs": self.base_lrs,
+            "warmup_samples": self.warmup_samples,
+            "total_samples": self.total_samples,
+            "minimum_lr": self.minimum_lr,
+            "warmup_start_ratio": self.warmup_start_ratio,
+        }
 
     def load_state_dict(self, state: dict[str, Any] | None) -> None:
         if not state:
             return
+        if state.get("scheduler_type") != "sample_warmup_single_cosine":
+            raise RuntimeError("scheduler type does not match the resumed run")
         saved_base = [float(value) for value in state.get("base_lrs", self.base_lrs)]
         if saved_base != self.base_lrs:
             raise RuntimeError("scheduler base learning rates do not match the resumed optimizer")
+        saved_contract = {
+            "warmup_samples": int(state.get("warmup_samples", -1)),
+            "total_samples": int(state.get("total_samples", -1)),
+            "minimum_lr": float(state.get("minimum_lr", -1)),
+            "warmup_start_ratio": float(state.get("warmup_start_ratio", -1)),
+        }
+        current_contract = {
+            "warmup_samples": self.warmup_samples,
+            "total_samples": self.total_samples,
+            "minimum_lr": self.minimum_lr,
+            "warmup_start_ratio": self.warmup_start_ratio,
+        }
+        if saved_contract != current_contract:
+            raise RuntimeError("scheduler configuration does not match the resumed run")
         self.step(int(state.get("samples_seen", 0)))
 
 

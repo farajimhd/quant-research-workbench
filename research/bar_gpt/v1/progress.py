@@ -237,10 +237,15 @@ class TrainingReporter:
     def validation(self, metrics: Mapping[str, float]) -> None:
         self.state.validation_metrics = {str(key): float(value) for key, value in metrics.items()}
         loss = self.state.validation_metrics.get("validation_loss/total")
+        monitor_loss = self.state.validation_metrics.get("monitor_loss/total")
         self.state.validation_loss = loss
         self.state.validation_runs_completed += 1
-        detail = f"loss={loss:.6f}" if loss is not None else "metrics recorded"
-        self.message(f"Validation completed: {detail}")
+        if loss is not None:
+            self.message(f"Validation completed: loss={loss:.6f}")
+        elif monitor_loss is not None:
+            self.message(f"Monitor completed: loss={monitor_loss:.6f}")
+        else:
+            self.message("Evaluation completed: metrics recorded")
 
     def schedule_validation(self, next_origins: int) -> None:
         self.state.next_validation_origins = max(0, int(next_origins))

@@ -329,6 +329,47 @@ populations, and W&B project `bar gpt`. Run names use one consistent schema and
 include model size, microbatch, accumulation, and a timestamp. Checkpoint resume
 continues the original W&B run ID rather than creating a same-name replacement.
 
+### Model-size and quality discovery campaign
+
+The controlled discovery campaign is a separate authority from the older
+one-epoch comparison. Preview the complete grid without touching data or CUDA:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_model_discovery
+```
+
+Run the complete campaign sequentially with one command:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_model_discovery --execute
+```
+
+The launcher builds and hash-certifies one reusable block manifest, then runs
+one child process at a time. Before each architecture's long run, a bounded
+fit/runtime profile records forward, backward, optimizer, loader-wait, memory,
+metric-overhead, and SDPA-kernel evidence and fails before training if the
+selected microbatch is not safe. The fixed panels are approximately 200 million
+training origins per epoch, 500 thousand monitor origins every 25 million
+training origins, 5 million validation origins after each epoch, and a separate
+5 million-origin locked test used only for the final two recipes. Held-out
+panels reserve disjoint ticker-dates. Every evaluation consumes its complete
+manifest panel; it is never truncated by model microbatch size.
+
+The architecture stage contains eight width/depth shapes from 384x8 through
+1024x16, with an effective batch of 32 blocks for every run. Each model sees the
+same manifest for two epochs, a 4-million-origin warm-up, and one cosine decay
+over the complete two-epoch sample clock. The best two architectures advance to
+the fixed learning-rate (`1.5e-4`, `3e-4`) by dropout (`0.04`, `0.08`, `0.12`)
+grid. Exact duplicate anchor recipes are reused. The best two refined recipes
+are then evaluated on the locked test.
+
+Campaign state is durable under `model_discovery/campaign_state.json`; rerunning
+the same command verifies the manifest and skips completed runs. Training,
+monitoring, validation, and locked-test metrics are written asynchronously.
+W&B uses the distinct project `bar gpt model discovery` and non-overlapping
+first-level namespaces `monitor_*`, `validation_*`, and `locked_test_*`, so the
+three evaluation populations cannot merge into one chart series.
+
 The canonical launcher now trains from certified v3 offline shards. Its bounded
 training selection is `[2019-01-01, 2022-01-01)` and its fixed validation
 selection is `[2026-01-01, 2026-08-01)`. One coverage epoch is one deterministic

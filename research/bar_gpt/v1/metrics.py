@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import torch
 
 from research.bar_gpt.v1.data import BarGPTBatch
+from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.model import BarGPTOutput
 from research.bar_gpt.v1.objectives import BarGPTLoss
 from research.bar_gpt.v1.targets import CONDITION_TARGET_NAMES, CONTINUOUS_TARGET_COUNT
@@ -72,6 +73,8 @@ class ValidationAccumulator:
     batches: int = 0
     endpoint_abs_error_bps: torch.Tensor | None = None
     endpoint_count: torch.Tensor | None = None
+    zero_endpoint_abs_error_bps: torch.Tensor | None = None
+    persistence_endpoint_abs_error_bps: torch.Tensor | None = None
     direction_confusion: torch.Tensor | None = None
     binary_brier: torch.Tensor | None = None
     binary_count: torch.Tensor | None = None
@@ -120,6 +123,34 @@ class ValidationAccumulator:
             error_sum if self.endpoint_abs_error_bps is None else self.endpoint_abs_error_bps + error_sum
         )
         self.endpoint_count = endpoint_count if self.endpoint_count is None else self.endpoint_count + endpoint_count
+        zero_error_sum = torch.where(
+            endpoint_mask,
+            target_bps.abs(),
+            torch.zeros_like(target_bps),
+        ).sum((0, 1)).cpu()
+        trade_return_index = MODEL_FEATURE_NAMES.index("trade_close_return")
+        batch_indices = torch.arange(batch.origin_indices.shape[0], device=batch.origin_indices.device)[:, None]
+        current_return = batch.views["1s"][
+            batch_indices,
+            batch.origin_indices.long(),
+            trade_return_index,
+        ]
+        persistence_bps = torch.sinh(current_return.double()) * 100.0
+        persistence_error_sum = torch.where(
+            endpoint_mask,
+            (persistence_bps[:, :, None] - target_bps).abs(),
+            torch.zeros_like(target_bps),
+        ).sum((0, 1)).cpu()
+        self.zero_endpoint_abs_error_bps = (
+            zero_error_sum
+            if self.zero_endpoint_abs_error_bps is None
+            else self.zero_endpoint_abs_error_bps + zero_error_sum
+        )
+        self.persistence_endpoint_abs_error_bps = (
+            persistence_error_sum
+            if self.persistence_endpoint_abs_error_bps is None
+            else self.persistence_endpoint_abs_error_bps + persistence_error_sum
+        )
 
         predicted_positive = endpoint_prediction >= 0
         target_positive = endpoint_target >= 0
@@ -199,6 +230,8 @@ class ValidationAccumulator:
             return metrics
 
         mae_bps = self.endpoint_abs_error_bps / self.endpoint_count.clamp_min(1)
+        zero_mae_bps = self.zero_endpoint_abs_error_bps / self.endpoint_count.clamp_min(1)
+        persistence_mae_bps = self.persistence_endpoint_abs_error_bps / self.endpoint_count.clamp_min(1)
         coverage = self.coverage_hits / self.coverage_count.clamp_min(1)
         brier = self.binary_brier / self.binary_count.clamp_min(1)
         balanced_values: list[float] = []
@@ -208,14 +241,26 @@ class ValidationAccumulator:
         calibration_values: list[float] = []
         coverage_macros: list[list[float]] = [[] for _ in self.quantiles]
         rank_values: list[float] = []
+        zero_mae_values: list[float] = []
+        persistence_mae_values: list[float] = []
+        zero_skill_values: list[float] = []
         confidence_values: dict[int, list[float]] = {10: [], 20: []}
         for horizon_index, horizon_us in enumerate(self.horizons_us):
             label = f"{horizon_us // 1_000_000}s"
             mae_value = float(mae_bps[horizon_index])
+            zero_mae_value = float(zero_mae_bps[horizon_index])
+            persistence_mae_value = float(persistence_mae_bps[horizon_index])
+            zero_skill = 1.0 - mae_value / max(zero_mae_value, 1e-12)
             brier_value = float(brier[horizon_index])
             metrics[f"{self.namespace}_return/mae_bps_{label}"] = mae_value
+            metrics[f"{self.namespace}_baseline/zero_return_mae_bps_{label}"] = zero_mae_value
+            metrics[f"{self.namespace}_baseline/persistence_mae_bps_{label}"] = persistence_mae_value
+            metrics[f"{self.namespace}_return/mae_skill_vs_zero_{label}"] = zero_skill
             metrics[f"{self.namespace}_availability/brier_{label}"] = brier_value
             mae_values.append(mae_value)
+            zero_mae_values.append(zero_mae_value)
+            persistence_mae_values.append(persistence_mae_value)
+            zero_skill_values.append(zero_skill)
             brier_values.append(brier_value)
 
             tp, tn, fp, fn = (float(value) for value in self.direction_confusion[horizon_index])
@@ -258,6 +303,9 @@ class ValidationAccumulator:
                     confidence_values[percentage].append(value)
 
         metrics[f"{self.namespace}_return/mae_bps_macro"] = _macro(mae_values)
+        metrics[f"{self.namespace}_baseline/zero_return_mae_bps_macro"] = _macro(zero_mae_values)
+        metrics[f"{self.namespace}_baseline/persistence_mae_bps_macro"] = _macro(persistence_mae_values)
+        metrics[f"{self.namespace}_return/mae_skill_vs_zero_macro"] = _macro(zero_skill_values)
         metrics[f"{self.namespace}_availability/brier_macro"] = _macro(brier_values)
         metrics[f"{self.namespace}_direction/balanced_accuracy_macro"] = _macro(balanced_values)
         metrics[f"{self.namespace}_direction/mcc_macro"] = _macro(mcc_values)

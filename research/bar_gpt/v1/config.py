@@ -286,6 +286,7 @@ class TrainConfig:
     minimum_learning_rate: float = 3e-5
     cosine_cycle_samples: int = 100_000_000
     cosine_restart_decay: float = 0.98
+    scheduler_mode: str = "cosine-restarts"
     # A consistent snapshot is staged once after each validation evaluation;
     # disk serialization remains asynchronous while training resumes.
     checkpoint_validation_evaluations: int = 1
@@ -307,8 +308,8 @@ class TrainConfig:
             raise ValueError("training_metrics_interval_samples must be positive")
         if self.checkpoint_validation_evaluations <= 0:
             raise ValueError("checkpoint_validation_evaluations must be positive")
-        if self.validation_runs_per_epoch != 100 or self.validation_batches <= 0:
-            raise ValueError("BarGPT v1 requires exactly 100 validation evaluations per epoch")
+        if self.validation_runs_per_epoch <= 0 or self.validation_batches < 0:
+            raise ValueError("validation runs per epoch must be positive and validation batches cannot be negative")
         if self.validation_interval_samples < 0 or self.validation_initial_samples <= 0 or self.warmup_samples < 0:
             raise ValueError("validation interval/initial samples must be positive and warmup samples cannot be negative")
         if not 0 <= self.warmup_fraction < 1:
@@ -317,6 +318,8 @@ class TrainConfig:
             raise ValueError("learning rates must satisfy 0 < minimum <= peak")
         if self.cosine_cycle_samples <= 0 or not 0 < self.cosine_restart_decay <= 1:
             raise ValueError("cosine restart settings are invalid")
+        if self.scheduler_mode not in {"cosine-restarts", "single-cosine"}:
+            raise ValueError("scheduler_mode must be cosine-restarts or single-cosine")
         if self.grad_clip_norm <= 0:
             raise ValueError("grad_clip_norm must be positive")
 

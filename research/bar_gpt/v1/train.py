@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -45,6 +46,7 @@ from research.bar_gpt.v1.offline_shards import (
     discover_offline_units,
     make_offline_dataloader,
 )
+from research.bar_gpt.v1.model_discovery import load_discovery_manifest, panel_refs
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
 from research.bar_gpt.v1.sampling import CoverageCursor, coverage_plan_summary
 from research.bar_gpt.v1.model import BarGPTV1, build_model_mermaid
@@ -68,7 +70,7 @@ from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import AsyncJsonlMetricLogger
 from research.mlops.model_artifacts import parameter_summary, write_model_artifacts, write_model_card
 from research.mlops.paths import RunPaths, default_run_root
-from research.mlops.schedulers import SampleCosineRestartScheduler
+from research.mlops.schedulers import SampleCosineRestartScheduler, SampleWarmupCosineScheduler
 from research.mlops.seeds import set_seed
 from research.mlops.wandb_utils import init_wandb
 
@@ -222,6 +224,16 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--offline-train-end-date", default="2021-01-01")
     parser.add_argument("--offline-validation-start-date", default="2026-01-01")
     parser.add_argument("--offline-validation-end-date", default="2026-08-01")
+    parser.add_argument(
+        "--experiment-manifest",
+        default="",
+        help="fixed block manifest for architecture/quality discovery",
+    )
+    parser.add_argument(
+        "--scheduler-mode",
+        choices=("cosine-restarts", "single-cosine"),
+        default="cosine-restarts",
+    )
     parser.add_argument("--dummy-data", action="store_true")
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -317,6 +329,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         minimum_learning_rate=float(args.minimum_learning_rate),
         cosine_cycle_samples=int(args.cosine_cycle_samples),
         cosine_restart_decay=float(args.cosine_restart_decay),
+        scheduler_mode=str(args.scheduler_mode),
         checkpoint_validation_evaluations=int(args.checkpoint_validation_evaluations),
         progress_layout=str(args.progress_layout),
         autoregressive_weight=float(args.autoregressive_weight),
@@ -803,11 +816,22 @@ def _loaders(
     if args.data_source == "offline":
         if not offline_train_units or not offline_validation_units:
             raise ValueError("offline training requires certified train and validation shard units")
+        experiment_manifest = str(getattr(args, "experiment_manifest", ""))
+        manifest = (
+            load_discovery_manifest(
+                Path(experiment_manifest),
+                shard_root=Path(args.offline_shard_root),
+                config=config.data,
+            )
+            if experiment_manifest
+            else None
+        )
         train_dataset = OfflineShardDataset(
             offline_train_units,
             seed=config.train.seed,
             shuffle_units=True,
             resume_cursors=resume_cursors,
+            block_refs=panel_refs(manifest, "train") if manifest is not None else (),
         )
         validation_workers = min(int(config.data.loader_workers), len(config.data.validation_slices))
         validation_data = replace(
@@ -820,8 +844,9 @@ def _loaders(
             offline_validation_units,
             seed=config.train.seed,
             shuffle_units=False,
-            validation_slices=config.data.validation_slices,
-            blocks_per_validation_slice=config.data.validation_blocks_per_slice,
+            validation_slices=() if manifest is not None else config.data.validation_slices,
+            blocks_per_validation_slice=0 if manifest is not None else config.data.validation_blocks_per_slice,
+            block_refs=panel_refs(manifest, "monitor") if manifest is not None else (),
         )
         return (
             make_offline_dataloader(train_dataset, config.data, drop_last=False),
@@ -1155,12 +1180,20 @@ def validate(
     loader: Iterable[BarGPTBatch],
     config: ExperimentConfig,
     device: torch.device,
+    *,
+    namespace: str = "validation",
+    max_batches: int | None = None,
 ) -> dict[str, float]:
     model.eval()
-    accumulator = ValidationAccumulator(config.data.horizons_us, config.model.quantiles)
+    accumulator = ValidationAccumulator(
+        config.data.horizons_us,
+        config.model.quantiles,
+        namespace=namespace,
+    )
     iterator = DeviceBatchPrefetcher(loader, device, enabled=config.train.cuda_prefetch)
     try:
-        for _ in range(max(1, config.train.validation_batches)):
+        completed = 0
+        while max_batches is None or completed < max_batches:
             try:
                 batch = next(iterator)
             except StopIteration:
@@ -1168,6 +1201,7 @@ def validate(
             with torch.autocast(device_type=device.type, dtype=_amp_dtype(config.train.amp_dtype), enabled=config.train.amp and device.type == "cuda"):
                 output, result = _forward(model, batch, config)
             accumulator.update(output, batch, result)
+            completed += 1
     finally:
         iterator.close()
     model.train()
@@ -1384,6 +1418,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     clickhouse_client: ClickHouseHttpClient | None = None
     offline_train_units: tuple[OfflineShardUnit, ...] = ()
     offline_validation_units: tuple[OfflineShardUnit, ...] = ()
+    discovery_manifest: dict[str, Any] | None = None
     if args.dummy_data:
         evidence = {"mode": "dummy"}
     elif args.data_source == "offline":
@@ -1403,6 +1438,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             start_date=str(args.offline_validation_start_date),
             end_date=str(args.offline_validation_end_date),
         )
+        if args.experiment_manifest:
+            discovery_manifest = load_discovery_manifest(
+                Path(args.experiment_manifest),
+                shard_root=root,
+                config=config.data,
+            )
         condition_counts = tuple(
             sum(unit.condition_positive_counts[index] for unit in offline_train_units)
             for index in range(4)
@@ -1455,9 +1496,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     sequential_block_plan: SequentialBlockPlan | None = None
     bounded_validation_plan: SequentialBlockPlan | None = None
     if not args.dummy_data and args.data_source == "offline":
-        sequential_sessions = sum(unit.sessions for unit in offline_train_units)
-        sequential_blocks = sum(unit.blocks for unit in offline_train_units)
-        sequential_origins = sum(unit.origins for unit in offline_train_units)
+        if discovery_manifest is not None:
+            train_refs = panel_refs(discovery_manifest, "train")
+            sequential_sessions = len({(ref.ticker, ref.local_date) for ref in train_refs})
+            sequential_blocks = len(train_refs)
+            sequential_origins = sum(ref.origins for ref in train_refs)
+        else:
+            sequential_sessions = sum(unit.sessions for unit in offline_train_units)
+            sequential_blocks = sum(unit.blocks for unit in offline_train_units)
+            sequential_origins = sum(unit.origins for unit in offline_train_units)
         sequential_unit_plans = {
             unit.unit_key: (unit.blocks, unit.origins)
             for unit in offline_train_units
@@ -1519,6 +1566,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         sequential_blocks_per_epoch=sequential_blocks,
         sequential_origins_per_epoch=sequential_origins,
     )
+    plan_hash = plan.plan_hash
+    if discovery_manifest is not None:
+        plan_hash = hashlib.sha256(
+            f"{plan.plan_hash}|{discovery_manifest['manifest_hash']}".encode("utf-8")
+        ).hexdigest()
     planned_samples = plan.expected_origins
     if args.dummy_data and config.train.max_samples == 0:
         planned_samples = config.data.batch_size * config.data.origin_bars_1s * config.train.gradient_accumulation_steps
@@ -1582,15 +1634,23 @@ def main(argv: Iterable[str] | None = None) -> int:
         model = torch.compile(model, dynamic=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay, foreach=device.type == "cuda")
     resolved_warmup_samples = _resolved_warmup_samples(config.train, schedule_samples)
-    scheduler = SampleCosineRestartScheduler(
-        optimizer,
-        warmup_samples=resolved_warmup_samples,
-        cycle_samples=config.train.cosine_cycle_samples,
-        minimum_lr=config.train.minimum_learning_rate,
-        restart_decay=config.train.cosine_restart_decay,
-    )
+    if config.train.scheduler_mode == "single-cosine":
+        scheduler = SampleWarmupCosineScheduler(
+            optimizer,
+            warmup_samples=resolved_warmup_samples,
+            total_samples=schedule_samples,
+            minimum_lr=config.train.minimum_learning_rate,
+        )
+    else:
+        scheduler = SampleCosineRestartScheduler(
+            optimizer,
+            warmup_samples=resolved_warmup_samples,
+            cycle_samples=config.train.cosine_cycle_samples,
+            minimum_lr=config.train.minimum_learning_rate,
+            restart_decay=config.train.cosine_restart_decay,
+        )
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and config.train.amp_dtype == "fp16" and device.type == "cuda")
-    restored = restore_checkpoint(args.resume_checkpoint, model, optimizer, scaler, scheduler, device, config, plan.plan_hash)
+    restored = restore_checkpoint(args.resume_checkpoint, model, optimizer, scaler, scheduler, device, config, plan_hash)
     resume_cursors = _cursor_map(restored.get("data_cursors"))
     train_loader, validation_loader = _loaders(
         config,
@@ -1602,6 +1662,24 @@ def main(argv: Iterable[str] | None = None) -> int:
         offline_validation_units=offline_validation_units,
     )
     validation_cache = PreparedValidationBatches(validation_loader)
+    full_validation_cache = validation_cache
+    if discovery_manifest is not None:
+        validation_workers = min(int(config.data.loader_workers), len(config.data.validation_slices))
+        validation_data = replace(
+            config.data,
+            loader_workers=validation_workers,
+            persistent_workers=False,
+            balance_activity_regimes=False,
+        )
+        full_validation_dataset = OfflineShardDataset(
+            offline_validation_units,
+            seed=config.train.seed,
+            shuffle_units=False,
+            block_refs=panel_refs(discovery_manifest, "validation"),
+        )
+        full_validation_cache = PreparedValidationBatches(
+            make_offline_dataloader(full_validation_dataset, validation_data, drop_last=False)
+        )
     resumed_wandb_id = restored.get("wandb_run_id")
     if args.resume_checkpoint and config.train.wandb_mode != "disabled" and not resumed_wandb_id:
         raise RuntimeError(
@@ -1736,6 +1814,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         else epoch_start_samples + epoch_validation_milestones[min(validation_runs_in_epoch, len(epoch_validation_milestones) - 1)]
     )
     last_validation_samples = -1
+    last_full_validation_samples = -1
     if not pending_resume_validation:
         validation_runs_in_epoch = min(validation_runs_in_epoch, max(0, len(epoch_validation_milestones) - 1))
     state.validation_runs_completed = resume_epoch * len(epoch_validation_milestones) + validation_runs_in_epoch
@@ -1761,7 +1840,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 epoch_start_samples=epoch_start_samples,
                 blocks_seen=blocks_seen, units_seen=units_seen,
                 condition_blocks_seen=condition_blocks_seen,
-                data_cursors=cursors, plan_hash=plan.plan_hash,
+                data_cursors=cursors, plan_hash=plan_hash,
                 last_checkpoint_samples=samples_seen,
                 validation_evaluations_completed=validation_evaluations_completed,
                 wandb_run_id=wandb_run_id,
@@ -1800,7 +1879,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         with reporter:
             checkpointer.set_message_callback(reporter.message)
             reporter.message(
-                f"Certified source; plan={plan.plan_hash[:12]} units={plan.units:,} "
+                f"Certified source; plan={plan_hash[:12]} units={plan.units:,} "
                 f"blocks={plan.expected_blocks:,}; validation tickers={len(validation_tickers)}; "
                 f"identity holdouts={len(identity_holdouts)}"
             )
@@ -2140,7 +2219,17 @@ def main(argv: Iterable[str] | None = None) -> int:
                             if not validation_cache.ready:
                                 reporter.message("Waiting for initial fixed validation panel preparation")
                             reporter.phase("validating")
-                            last_val = validate(model, validation_cache, config, device)
+                            last_val = validate(
+                                model,
+                                validation_cache,
+                                config,
+                                device,
+                                namespace="monitor" if discovery_manifest is not None else "validation",
+                                max_batches=(
+                                    None if config.train.validation_batches == 0
+                                    else config.train.validation_batches
+                                ),
+                            )
                             if not deferred_losses.merge_last(last_val):
                                 metrics_logger.log(last_val, samples_seen)
                             deferred_losses.flush(metrics_logger)
@@ -2200,16 +2289,32 @@ def main(argv: Iterable[str] | None = None) -> int:
                 current_epoch = epoch + 1
                 epoch_start_samples = samples_seen
                 durable_cursors = {}
-                if last_validation_samples != samples_seen:
-                    if not validation_cache.ready:
-                        reporter.message("Waiting for initial fixed validation panel preparation")
+                needs_epoch_validation = (
+                    last_full_validation_samples != samples_seen
+                    if discovery_manifest is not None
+                    else last_validation_samples != samples_seen
+                )
+                if needs_epoch_validation:
+                    if not full_validation_cache.ready:
+                        reporter.message("Waiting for full fixed validation panel preparation")
                     reporter.phase("validating")
-                    last_val = validate(model, validation_cache, config, device)
+                    last_val = validate(
+                        model,
+                        full_validation_cache,
+                        config,
+                        device,
+                        namespace="validation",
+                        max_batches=(
+                            None if discovery_manifest is not None or config.train.validation_batches == 0
+                            else config.train.validation_batches
+                        ),
+                    )
                     if not deferred_losses.merge_last(last_val):
                         metrics_logger.log(last_val, samples_seen)
                     deferred_losses.flush(metrics_logger)
                     reporter.validation(last_val)
                     last_validation_samples = samples_seen
+                    last_full_validation_samples = samples_seen
                     validation_runs_in_epoch += 1
                     validation_evaluations_completed += 1
                     # The durable cursor and epoch clock already describe the
@@ -2263,6 +2368,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 cleanup_failures.append(exc)
         try:
             validation_cache.close()
+            if full_validation_cache is not validation_cache:
+                full_validation_cache.close()
         except BaseException as exc:
             cleanup_failures.append(exc)
         try:
