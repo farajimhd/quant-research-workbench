@@ -54,7 +54,7 @@ class ForecastGoldReviewTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "quote not found"):
                 validate_reviews([path], inputs)
 
-    def test_disagreement_gets_blind_third_review_and_majority_certification(self) -> None:
+    def test_disagreement_gets_blind_third_review_and_recorded_manual_adjudication(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             input_root = root / "blind_full_source_batches"
@@ -83,18 +83,23 @@ class ForecastGoldReviewTest(unittest.TestCase):
             self.assertEqual(adjudication["articles_requiring_third_review"], 1)
             third = root / "third.jsonl"
             self._write_jsonl(third, [
-                self._review("G2", "BBB", "ineligible", "not_applicable", "BBB issues an update"),
+                self._review("G2", "BBB", "eligible", "mixed", "BBB issues an update"),
             ])
-            manifest = certify_consensus(root, [third])
+            manual = root / "manual.jsonl"
+            manual_row = self._review("G2", "BBB", "ineligible", "not_applicable", "BBB issues an update")
+            manual_row["source_id"] = "source-2"
+            self._write_jsonl(manual, [manual_row])
+            manifest = certify_consensus(root, [third], [manual])
 
             self.assertEqual(manifest["population"]["certified_articles"], 2)
             self.assertEqual(manifest["population"]["policy_uncertain_articles"], 0)
             self.assertEqual(manifest["population"]["certified_issuer_units"], 2)
+            self.assertEqual(manifest["population"]["manual_adjudicated_units"], 1)
             self.assertEqual(manifest["article_eligibility_distribution"], {"eligible": 1, "ineligible": 1})
             self.assertEqual(manifest["eligibility_distribution"], {"eligible": 1, "ineligible": 1})
             source_two = json.loads((root / "certified_labels" / "source-2.json").read_text(encoding="utf-8"))
             self.assertEqual(source_two["issuer_units"][0]["forecast_eligibility"], "ineligible")
-            self.assertEqual(source_two["issuer_units"][0]["review_votes"], 2)
+            self.assertEqual(source_two["issuer_units"][0]["gold_status"], "certified_manual_adjudication")
             validation = validate_certified_authority(root)
             self.assertEqual(validation["status"], "pass")
             self.assertEqual(validation["evidence_spans_verified"], 2)

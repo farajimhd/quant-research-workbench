@@ -182,7 +182,11 @@ def prepare_adjudication(
     return manifest
 
 
-def certify_consensus(review_root: Path, third_pass_files: Iterable[Path]) -> dict[str, Any]:
+def certify_consensus(
+    review_root: Path,
+    third_pass_files: Iterable[Path],
+    manual_adjudication_files: Iterable[Path] = (),
+) -> dict[str, Any]:
     inputs = _load_inputs(review_root / "blind_full_source_batches")
     adjudication_inputs = _load_inputs(review_root / "blind_adjudication_batches")
     third = validate_reviews(third_pass_files, adjudication_inputs) if adjudication_inputs else {}
@@ -190,6 +194,8 @@ def certify_consensus(review_root: Path, third_pass_files: Iterable[Path]) -> di
     second = {row["review_id"]: row for row in _read_jsonl(review_root / "reviews" / "pass_two.jsonl")}
     answer_key = {row["review_id"]: row for row in _read_jsonl(review_root / "review_answer_key.jsonl")}
     _write_jsonl(review_root / "reviews" / "pass_three.jsonl", (third[key] for key in sorted(third)))
+    manual_rows, manual_units = _load_manual_adjudications(manual_adjudication_files, inputs, answer_key)
+    _write_jsonl(review_root / "reviews" / "manual_adjudication.jsonl", manual_rows)
 
     certified_root = review_root / "certified_labels"
     uncertain_root = review_root / "policy_uncertain"
@@ -201,6 +207,7 @@ def certify_consensus(review_root: Path, third_pass_files: Iterable[Path]) -> di
     sentiment_counts: Counter[str] = Counter()
     uncertain_units = 0
     quarantined_issuer_units = 0
+    used_manual_units: set[tuple[str, str]] = set()
     for review_id in sorted(inputs):
         source = inputs[review_id]
         reviews = [first[review_id], second[review_id]]
@@ -214,6 +221,23 @@ def certify_consensus(review_root: Path, third_pass_files: Iterable[Path]) -> di
             decision, votes = decisions.most_common(1)[0]
             needed = 2 if len(reviews) == 3 else len(reviews)
             if votes < needed or "policy_uncertain" in decision:
+                manual_key = (review_id, ticker)
+                if manual_key in manual_units:
+                    manual = manual_units[manual_key]
+                    identity, eligibility, sentiment = _decision_tuple(manual)
+                    resolved_units.append({
+                        "ticker": ticker,
+                        "gold_status": "certified_manual_adjudication",
+                        "identity_status": identity,
+                        "forecast_eligibility": eligibility,
+                        "sentiment": sentiment,
+                        "evidence": manual["evidence"],
+                        "reason_codes": manual["reason_codes"],
+                        "manual_reason": manual["reason"],
+                        "prior_review_decisions": [_decision_record(unit) for unit in units],
+                    })
+                    used_manual_units.add(manual_key)
+                    continue
                 article_uncertain = True
                 uncertain_units += 1
                 resolved_units.append({
@@ -256,7 +280,11 @@ def certify_consensus(review_root: Path, third_pass_files: Iterable[Path]) -> di
             "issuer_units": resolved_units,
             "certification": {
                 "status": "policy_uncertain" if article_uncertain else "certified",
-                "method": "two_independent_full_source_reviews_plus_blind_third_on_disagreement",
+                "method": (
+                    "two_independent_full_source_reviews_plus_blind_third_and_recorded_manual_adjudication"
+                    if any(unit.get("gold_status") == "certified_manual_adjudication" for unit in resolved_units)
+                    else "two_independent_full_source_reviews_plus_blind_third_on_disagreement"
+                ),
                 "prediction_blind": True,
                 "silver_label_blind": True,
                 "certified_at_utc": datetime.now(UTC).isoformat(),
@@ -265,6 +293,10 @@ def certify_consensus(review_root: Path, third_pass_files: Iterable[Path]) -> di
         target_root = uncertain_root if article_uncertain else certified_root
         target = target_root / f"{answer_key[review_id]['source_id']}.json"
         target.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        counterpart_root = certified_root if article_uncertain else uncertain_root
+        counterpart = counterpart_root / target.name
+        if counterpart.exists():
+            counterpart.unlink()
         if not article_uncertain:
             article_eligibility_counts[
                 "eligible" if document["article_forecast_eligible"] else "ineligible"
@@ -276,6 +308,10 @@ def certify_consensus(review_root: Path, third_pass_files: Iterable[Path]) -> di
             "issuer_units": len(resolved_units),
             "label_sha256": _sha256_file(target),
         })
+
+    if used_manual_units != set(manual_units):
+        unused = sorted(set(manual_units) - used_manual_units)
+        raise RuntimeError(f"manual adjudications did not target unresolved units: {unused[:5]}")
 
     _write_jsonl(review_root / "certification_ledger.jsonl", ledger)
     certified = sum(row["status"] == "certified" for row in ledger)
@@ -293,6 +329,7 @@ def certify_consensus(review_root: Path, third_pass_files: Iterable[Path]) -> di
             "certified_issuer_units": reviewed_issuer_units - quarantined_issuer_units,
             "quarantined_issuer_units": quarantined_issuer_units,
             "decision_policy_uncertain_units": uncertain_units,
+            "manual_adjudicated_units": len(used_manual_units),
         },
         "article_eligibility_distribution": dict(sorted(article_eligibility_counts.items())),
         "eligibility_distribution": dict(sorted(eligibility_counts.items())),
@@ -302,6 +339,7 @@ def certify_consensus(review_root: Path, third_pass_files: Iterable[Path]) -> di
             "pass_one_sha256": _sha256_file(review_root / "reviews" / "pass_one.jsonl"),
             "pass_two_sha256": _sha256_file(review_root / "reviews" / "pass_two.jsonl"),
             "pass_three_sha256": _sha256_file(review_root / "reviews" / "pass_three.jsonl"),
+            "manual_adjudication_sha256": _sha256_file(review_root / "reviews" / "manual_adjudication.jsonl"),
             "certified_set_sha256": _sha256_json(ledger),
         },
     }
@@ -349,7 +387,7 @@ def validate_certified_authority(review_root: Path) -> dict[str, Any]:
     eligibility_counts: Counter[str] = Counter()
     sentiment_counts: Counter[str] = Counter()
     status_counts: Counter[str] = Counter()
-    reviewed_units = certified_units = quarantined_units = evidence_spans = 0
+    reviewed_units = certified_units = quarantined_units = evidence_spans = manual_adjudicated_units = 0
     for row in ledger:
         review_id = str(row["review_id"])
         source_id = str(row["source_id"])
@@ -373,6 +411,7 @@ def validate_certified_authority(review_root: Path) -> dict[str, Any]:
         status_counts[status] += 1
         source = inputs[review_id]
         for unit in units:
+            manual_adjudicated_units += unit.get("gold_status") == "certified_manual_adjudication"
             for span in unit.get("evidence", []):
                 if span.get("source_field") not in {"title", "full_rendered_body"} or span.get("quote") not in str(source[span["source_field"]]):
                     raise RuntimeError(f"certified evidence mismatch: {review_id}:{unit.get('ticker')}")
@@ -391,6 +430,7 @@ def validate_certified_authority(review_root: Path) -> dict[str, Any]:
         "pass_one_sha256": review_root / "reviews" / "pass_one.jsonl",
         "pass_two_sha256": review_root / "reviews" / "pass_two.jsonl",
         "pass_three_sha256": review_root / "reviews" / "pass_three.jsonl",
+        "manual_adjudication_sha256": review_root / "reviews" / "manual_adjudication.jsonl",
     }
     for key, path in expected_hashes.items():
         if _sha256_file(path) != manifest["authority"][key]:
@@ -410,6 +450,8 @@ def validate_certified_authority(review_root: Path) -> dict[str, Any]:
         population["quarantined_issuer_units"],
     ):
         raise RuntimeError("issuer-unit population summary mismatch")
+    if manual_adjudicated_units != population["manual_adjudicated_units"]:
+        raise RuntimeError("manual-adjudication population summary mismatch")
 
     report = {
         "version": f"{CONTRACT_VERSION}_validation_v1",
@@ -420,6 +462,7 @@ def validate_certified_authority(review_root: Path) -> dict[str, Any]:
         "issuer_units": reviewed_units,
         "certified_issuer_units": certified_units,
         "quarantined_issuer_units": quarantined_units,
+        "manual_adjudicated_units": manual_adjudicated_units,
         "evidence_spans_verified": evidence_spans,
         "certification_status": dict(sorted(status_counts.items())),
         "article_eligibility_distribution": dict(sorted(article_counts.items())),
@@ -436,6 +479,42 @@ def validate_certified_authority(review_root: Path) -> dict[str, Any]:
     }
     (review_root / "VALIDATION.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return report
+
+
+def _load_manual_adjudications(
+    paths: Iterable[Path],
+    inputs: Mapping[str, Mapping[str, Any]],
+    answer_key: Mapping[str, Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    units: dict[tuple[str, str], dict[str, Any]] = {}
+    seen_reviews: set[str] = set()
+    for path in paths:
+        for row in _read_jsonl(path):
+            review_id = str(row.get("review_id") or "")
+            if review_id not in inputs or review_id in seen_reviews:
+                raise RuntimeError(f"unexpected or duplicate manual review_id: {review_id}")
+            if row.get("source_id") != answer_key[review_id]["source_id"]:
+                raise RuntimeError(f"manual adjudication source mismatch: {review_id}")
+            if not isinstance(row.get("article_reason"), str) or not row["article_reason"].strip():
+                raise RuntimeError(f"manual article_reason required: {review_id}")
+            manual_issuer_units = row.get("issuer_units")
+            if not isinstance(manual_issuer_units, list) or not manual_issuer_units:
+                raise RuntimeError(f"manual issuer_units required: {review_id}")
+            for unit in manual_issuer_units:
+                ticker = str(unit.get("ticker") or "").strip().upper()
+                if ticker not in inputs[review_id]["provider_tickers"]:
+                    raise RuntimeError(f"unexpected manual ticker: {review_id}:{ticker}")
+                _validate_unit(review_id, unit, inputs[review_id])
+                if unit["forecast_eligibility"] == "policy_uncertain":
+                    raise RuntimeError(f"manual adjudication must be final: {review_id}:{ticker}")
+                key = review_id, ticker
+                if key in units:
+                    raise RuntimeError(f"duplicate manual issuer unit: {review_id}:{ticker}")
+                units[key] = dict(unit)
+            seen_reviews.add(review_id)
+            rows.append(dict(row))
+    return sorted(rows, key=lambda row: str(row["review_id"])), units
 
 
 def validate_reviews(
@@ -586,6 +665,7 @@ def _summary(manifest: Mapping[str, Any]) -> str:
 - Certified issuer units: {population['certified_issuer_units']:,}
 - Quarantined issuer units: {population['quarantined_issuer_units']:,}
 - Decision-level policy-uncertain units: {population['decision_policy_uncertain_units']:,}
+- Manually adjudicated units: {population['manual_adjudicated_units']:,}
 - Certified eligible articles: {manifest['article_eligibility_distribution'].get('eligible', 0):,}
 - Certified ineligible articles: {manifest['article_eligibility_distribution'].get('ineligible', 0):,}
 - Method: two independent full-source reviews, with a blind third review on disagreement or uncertainty.

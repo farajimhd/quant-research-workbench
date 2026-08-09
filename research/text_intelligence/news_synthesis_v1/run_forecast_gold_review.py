@@ -25,6 +25,7 @@ def main() -> int:
     certify = subparsers.add_parser("certify")
     certify.add_argument("--review-root", type=Path, required=True)
     certify.add_argument("--pass-three", type=Path, action="append", default=[])
+    certify.add_argument("--manual-adjudication", type=Path, action="append", default=[])
     validate = subparsers.add_parser("validate")
     validate.add_argument("--review-root", type=Path, required=True)
     args = parser.parse_args()
@@ -36,7 +37,11 @@ def main() -> int:
             args.review_root.resolve(), _expand(args.pass_one), _expand(args.pass_two)
         )
     elif args.command == "certify":
-        manifest = certify_consensus(args.review_root.resolve(), _expand(args.pass_three))
+        manifest = certify_consensus(
+            args.review_root.resolve(),
+            _expand(args.pass_three),
+            _expand(args.manual_adjudication),
+        )
     else:
         manifest = validate_certified_authority(args.review_root.resolve())
     print(json.dumps({key: value for key, value in manifest.items() if key != "assignments"}, indent=2))
