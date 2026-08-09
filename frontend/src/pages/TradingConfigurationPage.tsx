@@ -1852,11 +1852,9 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
       </main>
     </div> : <article className="strategy-authoring discovery-guided-authoring">
       <div className="strategy-authoring-step-navigation discovery-step-navigation">
-        <span />
         <nav className="strategy-authoring-steps" aria-label="Market Discovery configuration steps">
           {([['core', '1', 'Core Scan'], ['watchlists', '2', 'Watchlists'], ['history', '3', 'History']] as const).map(([id, number, label]) => <button aria-current={guidedStep === id ? "step" : undefined} key={id} onClick={() => setGuidedStep(id)} type="button"><span>{number}</span><strong>{label}</strong></button>)}
         </nav>
-        <span />
       </div>
       <section className="strategy-authoring-stage discovery-guided-stage">
         {guidedStep === "core" ? <>

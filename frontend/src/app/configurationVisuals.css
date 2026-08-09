@@ -4355,6 +4355,12 @@
   width: 100%;
 }
 
+/* Market Discovery has no Previous/Next controls around its three primary
+   tabs, so its rail must not reserve Strategy's direction-button gutters. */
+.trading-configuration-page .discovery-guided-authoring > .discovery-step-navigation {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .trading-configuration-page .discovery-core-summary > article,
 .trading-configuration-page .discovery-capability-matrix > article {
   padding-left: var(--configuration-nesting-gutter);
