@@ -880,6 +880,165 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(document["envelope"]["information_origin"]["value"], "analyst")
         self.assertEqual(document["envelope"]["communication_purpose"]["value"], "analyze")
 
+    def test_structural_digest_lede_blocks_cross_issuer_forecast_continuity(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-structural-digest", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Daily Biotech Pulse",
+            "text": (
+                "Here is a roundup of the top developments. "
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported positive Phase 3 results. "
+                "Beta Holdings Corp (NYSE:BBB) was also among today's headlines."
+            ),
+            "tickers": ["AAA", "BBB"],
+        })
+        self.assertEqual(document["envelope"]["document_structure"]["value"], "multi_subject_digest")
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "recap")
+        eligibility = {
+            next(entity["ticker"] for entity in document["entities"] if entity["entity_id"] == row["entity_id"]): row["eligible"]
+            for row in document["eligibility"]
+            if row["product"] == "forecast_trigger"
+        }
+        self.assertFalse(eligibility["BBB"])
+
+    def test_operational_analyst_homonyms_do_not_change_document_origin(self) -> None:
+        bodies = (
+            "The company maintains minimum bid compliance after its current filing.",
+            "The company initiates Phase 3 enrollment after regulatory clearance.",
+            "The design upgrade needs additional manufacturing capacity.",
+            "The primary scientific analysis showed a statistically significant benefit.",
+        )
+        for index, body in enumerate(bodies):
+            with self.subTest(body=body):
+                document = self.engine.synthesize({
+                    "source_id": f"news-operational-homonym-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": "Alpha reports current operating update",
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA) announced today. {body}",
+                    "tickers": ["AAA"],
+                })
+                self.assertNotEqual(document["envelope"]["information_origin"]["value"], "analyst")
+                self.assertEqual(document["envelope"]["communication_purpose"]["value"], "report")
+
+    def test_earnings_schedule_list_is_preview_reference_material(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-earnings-list", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Earnings Scheduled For Tuesday",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) is scheduled to report after market close.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["document_structure"]["value"], "reference_list")
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "preview")
+        self.assertFalse(next(
+            row["eligible"] for row in document["eligibility"]
+            if row["product"] == "forecast_trigger"
+        ))
+
+    def test_market_section_grammar_restores_recap_without_generic_macro_scan(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-market-sections", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Afternoon trading update",
+            "text": (
+                "U.S. stocks were trading higher. Leading and Lagging Sectors. "
+                "Equities Trading UP: Alpha Therapeutics Inc (NASDAQ:AAA) reported strong results."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["document_structure"]["value"], "market_overview")
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "recap")
+
+    def test_explicit_research_genres_remain_analysis_and_analyst_origin(self) -> None:
+        for title in (
+            "Updated Research Report on Alpha - Analyst Blog",
+            "Alpha - Bear of the Day",
+        ):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": "news-research-genre", "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": (
+                        "Zacks Equity Research assigns Alpha Therapeutics Inc (NASDAQ:AAA) "
+                        "an Underperform view and a $12 price target."
+                    ),
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["envelope"]["communication_purpose"]["value"], "analyze")
+                self.assertEqual(document["envelope"]["information_origin"]["value"], "analyst")
+
+    def test_stock_tumbles_as_headline_is_explain_move(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-tumbles", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Stock Tumbles As Founders Depart",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) shares fell after its founders departed.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "explain_move")
+
+    def test_operating_sales_up_is_not_a_stock_move(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-sales-up", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha December Sales Up 25.5%",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) reported December sales rose 25.5%.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "report")
+
+    def test_ticker_suffixed_bare_percentage_title_is_stock_move(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-bare-mover", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Therapeutics Up 3% (AAA)",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) shares rose after reporting results "
+                "and updating its annual guidance."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "explain_move")
+
+    def test_ticker_suffixed_operating_percentage_is_not_stock_move(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-bare-operating", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha December Sales Up 25.5% (AAA)",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) reported December sales rose 25.5%.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "report")
+
+    def test_after_market_close_is_not_a_market_overview(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-after-close", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Announces Reverse Split Effective After Market Close",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) announced an approved reverse split.",
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["document_structure"]["value"], "single_subject")
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "report")
+
+    def test_issuer_earnings_call_is_not_analyst_origin_only(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-issuer-call", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Q2 FY2026 Earnings Call Transcript",
+            "text": (
+                "Management reports Alpha Therapeutics Inc (NASDAQ:AAA) revenue increased 20%. "
+                "Analyst: Can you discuss guidance? The company expects further growth."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "report")
+        self.assertEqual(document["envelope"]["information_origin"]["value"], "mixed")
+
+    def test_credit_rating_paragraph_does_not_define_document_as_analyst_origin(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-credit-rating", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Receives Benefits Grace Period Amid Sharp Decline",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) received a contribution grace period. "
+                "Rating service Moody's Investors Service downgraded the company's debt last month."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["envelope"]["communication_purpose"]["value"], "report")
+        self.assertNotEqual(document["envelope"]["information_origin"]["value"], "analyst")
+
     def test_offering_brokerage_boilerplate_does_not_override_issuer_origin(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-secondary-offering", "source_timestamp": "2026-08-03T12:00:00Z",

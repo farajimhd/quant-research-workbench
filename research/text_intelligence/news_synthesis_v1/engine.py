@@ -13,7 +13,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v44"
+ENGINE_VERSION = "news_synthesis_engine_v48"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -877,46 +877,116 @@ def _envelope(
     metadata = " ".join(str(x) for name in ("channels", "provider_tags") for x in source.get(name) or ())
     author = str(source.get("author") or "").strip().casefold()
     article_url = str(source.get("article_url") or source.get("url_domain") or "").casefold()
-    list_title = bool(re.search(r"\b(?:calendar|watch list|stocks to watch|top \d+|\d+ stocks|analyst color|price target changes)\b", title, re.I))
-    market_overview = bool(re.search(
+    list_title = bool(re.search(
+        r"\b(?:calendar|watch list|stocks to watch|top \d+|\d+ stocks|analyst color|price target changes|"
+        r"earnings scheduled (?:for|on)|companies reporting (?:before|after)|\d+ things to know)\b",
+        title,
+        re.I,
+    ))
+    market_title = re.search(
         r"\b(?:market|morning)\s+(?:wrap|overview|recap|update|capsule)\b|\bbig picture\b|"
         r"\b(?:stock|index|treasury|commodity|currency|forex|cattle|sugar|natural gas|crude oil) futures?\b|"
         r"\b(?:dollar index|forex:|wall street|what'?s moving markets|S&P 500 (?:turns|futures?|extends?|falls?|rises?))\b|"
-        r"\b(?:jobless claims|gross domestic product|GDP|consumer prices?|CPI|pending home sales|wholesale inventories|crude oil inventories)\b|"
+        r"\b(?:jobless claims|jobs report|gross domestic product|GDP|inflation|deflation|consumer prices?|CPI|"
+        r"credit card debt|pending home sales|wholesale inventories|crude oil inventories)\b|"
+        r"\b(?:stock market today|market primer|markets (?:gather|gain|lose|rally|fall|rise|close|open))\b|"
         r"\bBitcoin\b.{0,120}\bEthereum\b",
-        combined,
+        title,
         re.I,
-    ))
-    digest = bool(ROUNDUP_RE.search(title) or re.search(r"\b(?:movers|gainers|losers|market roundup|analyst ratings|stocks? to watch|top (?:upgrades|downgrades)|catalysts? to watch|tweets? for)\b", title, re.I))
+    )
+    market_body_structure = re.search(
+        r"\b(?:morning capsule|midday market update|mid-afternoon market update|market close recap|"
+        r"equities trading (?:up|down)|leading and lagging sectors|news of note|major indices)\b|"
+        r"\bU\.S\. stocks (?:traded|were trading|opened|closed)\b",
+        combined[:4000],
+        re.I,
+    )
+    market_overview = bool(market_title or market_body_structure)
+    digest = bool(
+        ROUNDUP_RE.search(title)
+        or re.search(
+            r"\b(?:movers|gainers|losers|market roundup|analyst ratings|stocks? to watch|"
+            r"top (?:upgrades|downgrades)|catalysts? to watch|tweets? for|headlines? roundup|"
+            r"roundup of (?:the )?(?:top|key|latest)?\s*(?:news|headlines|developments)|"
+            r"market-moving news|daily [a-z-]+ pulse|52-week (?:highs?|lows?)|"
+            r"(?:auto sales|M&A|merger|deal|earnings) (?:summary|roundup|chatter)|"
+            r"weekend M&A chatter|market primer)\b",
+            combined[:1200],
+            re.I,
+        )
+    )
     if list_title: structure = "reference_list"
     elif market_overview: structure = "market_overview"
     elif digest: structure = "multi_subject_digest"
     else: structure = "single_subject"
     causal_mover = bool(
         WHY_MOVING_RE.search(title)
+        or re.search(r"\bwhy is\b.{0,100}\b(?:up|down)\b(?:.{0,80}\bsince\b)?", title, re.I)
         or re.search(r"\b(?:why|what(?:'s| is) (?:up|going on) with)\b.{0,100}\b(?:shares?|stock)\b", title, re.I)
-        or re.search(r"\b(?:shares?|stock)\b.{0,80}\b(?:up|down|higher|lower|rall(?:y|ies|ied|ying)|surg(?:e|es|ed|ing)|soar(?:s|ed|ing)?|spik(?:e|es|ed|ing)|jump(?:s|ed|ing)?|fall(?:s|ing)?|fell|rose|gain(?:s|ed)?|drop(?:s|ped|ping)?|slid(?:e|ing)?|sink(?:s|ing)?|sank|crash(?:es|ed|ing)?|hammered|unaffected)\b.{0,80}\b(?:after|following|on|as|amid|because|here'?s why)\b", title, re.I)
+        or re.search(r"\b(?:shares?|stock)\b.{0,80}\b(?:up|down|higher|lower|rall(?:y|ies|ied|ying)|surg(?:e|es|ed|ing)|soar(?:s|ed|ing)?|spik(?:e|es|ed|ing)|jump(?:s|ed|ing)?|fall(?:s|ing)?|fell|rose|gain(?:s|ed)?|drop(?:s|ped|ping)?|slid(?:e|ing)?|sink(?:s|ing)?|sank|crash(?:es|ed|ing)?|tumble[sd]?|hammered|unaffected)\b.{0,80}\b(?:after|following|on|as|amid|because|here'?s why)\b", title, re.I)
         or re.search(r"\b(?:shares?|stock)\s+(?:are\s+)?trading\s+(?:up|down|higher|lower)\b.{0,80}\b(?:after|following|on|as|amid)\b", title, re.I)
+        or (
+            re.search(
+                r"\b(?:up|down)\s+\d+(?:\.\d+)?%\s*\([A-Z][A-Z0-9.]{0,9}\)\s*$",
+                title,
+                re.I,
+            )
+            and not re.search(
+                r"\b(?:sales?|revenue|earnings?|profit|income|orders?|shipments?|deliveries|production|volume|margin|EPS)\b.{0,50}\b(?:up|down)\s+\d+(?:\.\d+)?%",
+                title,
+                re.I,
+            )
+        )
     )
     if causal_mover and not market_overview: purpose = "explain_move"
     elif list_title or re.search(
         r"\b(?:ahead of|preview|what to expect|will report|to watch)\b|"
-        r"\bscheduled to (?:report|announce|release|publish)\b",
+        r"\bscheduled to (?:report|announce|release|publish)\b|"
+        r"\b(?:gearing up to report|before market opens|future earnings|IPO (?:preview|seeks|plans?))\b",
         title,
         re.I,
     ): purpose = "preview"
     elif structure in {"market_overview", "multi_subject_digest"}: purpose = "recap"
-    elif re.search(r"\b(?:analysis|technical analysis|what investors should know|what you need to know|case for|bull case|bear case|valuation|outlook for)\b", combined, re.I): purpose = "analyze"
+    elif re.search(
+        r"\b(?:technical analysis|what investors should know|what you need to know|"
+        r"case for|bull case|bear case|valuation|outlook for|analyst (?:view|take|note|blog)|"
+        r"research report|our take|stock on the radar|earnings trends|full transcript|"
+        r"insights into .{0,60} earnings|ETF news and commentary|"
+        r"bull and bear of the day|bear of the day|traders? share .{0,60} thoughts|"
+        r"gives? color|power inflow alert|stock picks?|how safe is|can .{0,100}\?|opinion)\b|"
+        r"\banalysis\b",
+        title,
+        re.I,
+    ): purpose = "analyze"
+    elif re.search(
+        r"\b(?:read the full .{0,80} research report|initiating coverage|analyst blog|"
+        r"Zacks Rank|our viewpoint|technical charts?|entry points?|investment thesis)\b",
+        combined[:4000],
+        re.I,
+    ): purpose = "analyze"
     else: purpose = "report"
     analyst_match = _first_match(
         (
-            r"\b(?:analysts?(?!\s+(?:est\.?|estimates?|consensus|expectations)\b)|research firm|price target|rating|upgrade[sd]?|"
-            r"downgrade[sd]?|initiates?|maintains?|reiterates?)\b",
+            r"\b(?:analysts?(?!\s+(?:est\.?|estimates?|consensus|expectations)\b)|research firm|"
+            r"price target|(?:buy|sell|hold|overweight|underweight|equal-weight) rating)\b|"
+            r"\b(?:upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?)\b.{0,80}"
+            r"\b(?:rating|coverage|price target|\bPT\b|\bPO\b|buy|sell|hold|overweight|underweight|equal-weight)\b",
             ATTRIBUTED_ASSESSMENT_RE.pattern,
         ),
         title,
         text,
     )
+    if analyst_match is None and (
+        re.search(r"\b(?:Zacks (?:Investment|Equity) Research|Zacks Rank|Analyst Blog|Bear of the Day)\b", combined[:4000], re.I)
+        or re.search(r"\b(?:CFA|equity research|research analyst)\b.{0,160}\b(?:research report|coverage|price target|valuation)\b", combined[:4000], re.I)
+        or re.search(r"\b(?:coverage|price target|\bPT\b|\bPO\b|outperform|underperform|neutral)\b.{0,80}\b(?:upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?|raises?|cuts?)\b", combined[:4000], re.I)
+    ):
+        analyst_match = _first_match((
+            r"\b(?:Zacks (?:Investment|Equity) Research|Zacks Rank|Analyst Blog|Bear of the Day)\b|"
+            r"\b(?:CFA|equity research|research analyst)\b.{0,160}\b(?:research report|coverage|price target|valuation)\b|"
+            r"\b(?:coverage|price target|\bPT\b|\bPO\b|outperform|underperform|neutral)\b.{0,80}"
+            r"\b(?:upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?|raises?|cuts?)\b",
+        ), title, text)
     regulator_match = _first_match((
         r"\b(?:SEC|FDA|FTC|DOJ|regulator|regulatory agency|Federal Reserve|Census Bureau)\s+"
         r"(?:said|reported|announced|approved|rejected|filed|released|issued|notified|ordered)\b|"
@@ -931,9 +1001,12 @@ def _envelope(
         r"provides?|receives?|awarded|wins?|prices?|files?|confirms?|launches?|"
         r"appoints?|acquires?|enters?|rejects?|declares?|posts?|regains?)\b",
     ), title, "")
+    issuer_transcript_match = _first_match((
+        r"^[^\n:]{2,120}\bearnings (?:call|conference call) transcript\b",
+    ), title, "")
     analyst_origin = analyst_match is not None
     regulator_origin = regulator_match is not None
-    issuer_match = issuer_body_match or (
+    issuer_match = issuer_body_match or issuer_transcript_match or (
         issuer_headline_match if analyst_match is None else None
     )
     issuer_origin = issuer_match is not None
