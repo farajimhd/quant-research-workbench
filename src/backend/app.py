@@ -553,6 +553,7 @@ class TradingConfigurationPublishSubmit(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     canvas_revision: str = Field(min_length=1, max_length=128)
     canvas_profile: dict[str, Any]
+    strategy_profile_id: str = Field(default="", max_length=200)
 
 
 class ReplayRunCommandRequest(BaseModel):
@@ -4536,6 +4537,7 @@ def trading_configuration_publish(
             label=payload.label,
             canvas_revision=payload.canvas_revision,
             canvas_profile=payload.canvas_profile,
+            strategy_profile_id=payload.strategy_profile_id,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

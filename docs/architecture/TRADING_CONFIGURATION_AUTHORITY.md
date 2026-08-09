@@ -19,7 +19,7 @@ The product deliberately separates concepts that were previously grouped under
 | Concept | Authority and lifecycle |
 |---|---|
 | Strategy Definition | Code-owned implementation, schema, defaults, compatibility, and factory identity |
-| Strategy Profile | User-configured or system-predefined instance of a Strategy Definition; mutable as a draft and immutable when published |
+| Strategy Profile | User-configured or system-predefined instance of a Strategy Definition; mutable only as a draft and permanently immutable when published. The UI calls this a Strategy. |
 | Strategy Input Definition | Code-owned provider, field, parameter, value type, supported timeframes, and runtime projection |
 | Decision Rule | User-configured comparison between a typed source and a constant or another typed source |
 | Decision Rule Set | Configurable ALL/ANY/required-score relationship between typed conditions; any score threshold is local to that rule set |
@@ -28,10 +28,13 @@ The product deliberately separates concepts that were previously grouped under
 | OMS Profile | Reusable versioned execution and protection behavior |
 | Account | Stable application identity mapped to broker or simulated sessions |
 | Portfolio Policy | Reusable account safety, exposure, capital, and loss envelope |
-| Strategy-account mandate | Rule assigning a Run Plan to an account, with allocation topology, risk limits, and a maximum authority cap for exposure-increasing actions; exits may remain automatic because they reduce exposure |
-| Watch Universe | Versioned source of symbols that Run Plans may evaluate; configured symbols, an approved Scanner view, or a Watchlist |
-| Watch Universe Resolver | Runtime authority that materializes versioned, point-in-time eligible ticker membership from QMD Scanner or another registered source |
-| Strategy Run Plan | Reusable launch contract combining a Strategy Profile, Watch Universe, environment eligibility, per-action authority, OMS profile, and account mandates |
+| Strategy-account mandate | Rule assigning a compiled Run Plan to an account, with allocation topology, risk limits, and a maximum authority cap for exposure-increasing actions; exits may remain automatic because they reduce exposure |
+| Security Universe | The single broad, system-owned instrument population QMD may scan |
+| Core Scan | The published minimum-cost QMD extraction, quality, indicator, signal, and ranking behavior evaluated across the Security Universe. System-required behavior is visible but read-only. |
+| Watchlist | Reusable rules for producing a smaller candidate membership from Core Scan, including inclusion/exclusion evidence, ranking, size, refresh, TTL, manual overrides, and focused calculations |
+| Watchlist membership history | Append-only causal evidence for additions, removals, expiry, and overrides. Current membership is a projection, not the authority. |
+| Watch Universe Resolver | Runtime authority that materializes versioned, point-in-time eligible ticker membership from a published Watchlist |
+| Strategy Run Plan | Backend-compiled launch contract combining one immutable Strategy, Watchlist, environment eligibility, per-action authority, OMS configuration, Portfolio policy, and accounts. It is not a separately authored user object. |
 | Strategy Run | One actual execution of a Run Plan, pinned to an Approved Release |
 | Strategy Campaign | One durable runtime lifecycle that exclusively owns one ticker-side pair in one portfolio book across initial entry, exits, and zero or more reentries |
 | Campaign account leg | Account-specific execution and position state belonging to one Strategy Campaign; several legs may share the same ticker lease |
@@ -39,10 +42,10 @@ The product deliberately separates concepts that were previously grouped under
 | Strategy Activity | Durable journal projection of ticker events, strategy signals, decisions, and campaign changes, filtered by Strategy Profile or Run without becoming their authority |
 | Approved Release | Immutable application snapshot consumed by new runs |
 
-System code may ship one protected default Strategy Profile plus predefined
-profile templates and Capability defaults. The default remains editable and
-cloneable but cannot be removed, renamed out of its stable identity, or
-weakened through generated JSON. Templates create ordinary user profiles.
+System code may ship one protected Strategy template plus Capability defaults.
+Templates are read-only and cloneable. User drafts are editable and deletable.
+Publishing permanently freezes the selected Strategy identity and its complete
+connected configuration; changing it requires cloning to a new draft identity.
 Capability behavior remains implemented in registered code; the UI configures
 only declared parameters and authority levels.
 
@@ -117,9 +120,9 @@ Backtest adapters must populate the same typed observation contract.
 ## Authority flow
 
 ```text
-Watch Universes + Strategy Definition + Capability Definitions
-    -> configured Strategy Profile
-    -> Strategy Run Plan + action authority + Strategy-account mandates + OMS Profile
+Security Universe -> QMD Core Scan -> Watchlist + membership history
+    -> configured Strategy + Portfolio policy/accounts + OMS + action authority
+    -> backend-compiled Strategy Run Plan
     -> approved application release
     -> passive strategy evaluation
     -> Strategy Orchestrator grants one ticker lease
@@ -151,12 +154,19 @@ and required action authority. It does not silently release capital or bypass OM
 | Page | Owns |
 |---|---|
 | Canvas | Canvases, layouts, groups, containers, link contexts, and presentation settings |
-| Strategy Studio | Protected default and user Strategy Profiles, Trading Behavior, Initial Entry, Reentry, ordered Exit routes, typed inputs, and Capability Bindings |
-| Strategy Run Plans | Watch Universes, profile-to-OMS composition, environment eligibility, per-action authority, Safety Supervisor policy, and readiness |
+| Market Discovery | The Security Universe, complete visible Core Scan behavior, reusable Watchlists, focused calculations, and append-only membership history |
+| Strategy Studio | One end-to-end path covering identity, Watchlist, observation context, Initial Entry, Manage, Reentry, Exit, Portfolio/accounts, OMS, environment/action authority, and publication review |
 | Portfolio & Risk | Account policies and Strategy-account mandates |
 | OMS & Protection | Versioned execution-policy and protection-profile catalogs, plus reusable OMS routing profiles |
 | Accounts & Sessions | Stable application accounts and mode-specific session bindings |
 | Approved Releases | Whole-model validation, Canvas capture, immutable publication, and current runtime authority |
+
+The Market Discovery configuration contract is implemented, including Core
+Scan capability visibility, Watchlist rules, focused calculations, and the
+membership-history schema. The causal QMD membership resolver is not yet wired
+into trading runtime. Until it is, publication compiles the explicit manual
+inclusion snapshot only, unresolved dynamic membership remains fail-closed,
+and the UI must not fabricate membership history.
 
 Run pages own scenario and transport inputs only. Replay owns historical date,
 entry clock, playback controls, and simulated funding. Backtest owns its window
@@ -168,8 +178,8 @@ Raw JSON is never the primary configuration interface.
 
 Every non-Canvas configuration route uses the same Configuration Workbench
 shell. The compact workbench header is the single owner of page identity,
-runtime authority, start options, and the Guided/Expert mode switch. A shared
-seven-step workflow rail provides cross-authority orientation without
+runtime authority, start options, and the Guided/Catalog mode switch. A shared
+workflow rail provides cross-authority orientation without
 duplicating page navigation or save state. Canvas remains a distinct visual
 workspace and is not governed by this form-oriented shell.
 
@@ -180,8 +190,9 @@ every operator into the full field inventory:
   system OMS starting points. It previews the affected references and preserves
   account-specific mandates, risk limits, and broker bindings for explicit
   review.
-- **Guided setup** asks one question at a time in authority order: Strategy,
-  Run Plan, Portfolio, Execution, Protection, Accounts, and Review. Strategy
+- **Guided setup** asks one question at a time in authority order inside
+  Strategy Studio: Identity, Discovery, Observe, Enter, Manage, Reentry, Exit,
+  Portfolio, OMS, Authority, and Review. Strategy
   coverage is generated from the complete selected profile: trading behavior,
   initial-entry capital/order/rules, every position add, reentry, every
   strategic exit, registered capabilities, and published advanced parameters.
@@ -189,11 +200,11 @@ every operator into the full field inventory:
   lets an operator explicitly approve a section's current defaults. Previous
   and next navigation preserves the same mutable draft, and each Continue
   action validates and saves the current canonical section.
-- **Clone approved release** previews the immutable source release and replaces
-  the complete mutable draft atomically. The approved release and active runs
-  remain unchanged.
-- **Expert editor** retains every existing field, rule set, catalog, and
-  advanced parameter. Guided and Expert are views over the same schema-v9
+- **Clone** creates a new draft Strategy identity derived from a template or a
+  published Strategy. Published Strategies and their run results remain unchanged.
+- **Parameter Catalog** retains every user-adjustable field and rule set while
+  keeping system-owned identities and required behavior visible but read-only.
+  Guided and Catalog are views over the same schema-v15
   model, not separate configuration systems.
 
 Guided mode is a focused decision document: it presents one question, its
@@ -287,11 +298,11 @@ links back to the relevant guided decision before publication.
   Portfolio + OMS handoff before its decision rules. Capital request and
   execution policy use separate guided cards so relative sizing authority,
   execution trade-offs, and the resulting downstream output remain explicit.
-- The Strategy Profile -> Deployment -> Capital mandate -> Publication journey
-  remains visible across configuration pages.
+- The Strategy -> Watchlist -> Portfolio/accounts -> OMS -> Authority ->
+  Publication journey remains visible in one guided Strategy Studio path.
 - Generated JSON is available on demand through a read-only advanced inspector.
-- The protected default profile explains why deletion is unavailable; user
-  profiles remain removable only when no Deployment references them.
+- The protected template explains why deletion is unavailable. User drafts are
+  removable; published Strategies are immutable and can only be cloned.
 - Strategy Campaign controls distinguish Exit and keep watching from Exit and
   stop, so closing a position never silently changes ticker ownership.
 
@@ -301,8 +312,8 @@ Draft entities are mutable and non-executable. Publication:
 
 1. validates profiles against registered strategy implementations;
 2. validates capability settings against code-owned schemas;
-3. validates Watch Universes, deployment references, deterministic selection
-   priority, and campaign authority;
+3. validates the selected Watchlist, Strategy composition, environments, and
+   campaign authority, then compiles the backend Run Plan;
 4. validates account policies and Strategy-account mandates;
 5. validates execution-policy and protection-profile identities, revisions,
    envelopes, partial-fill behavior, one-to-four protection slices, stop and
@@ -324,7 +335,7 @@ Later draft edits or publications cannot mutate it.
 
 ## Runtime compatibility boundary
 
-The schema-v8 model is authoritative. `resolve_runtime_configurations()` orders
+The schema-v15 model is authoritative. `resolve_runtime_configurations()` orders
 every approved deployment eligible for a runtime mode by configured selection
 priority and projects each profile, Watch Universe, campaign policy, Portfolio,
 OMS, account, and campaign leg through one shared boundary. Individual

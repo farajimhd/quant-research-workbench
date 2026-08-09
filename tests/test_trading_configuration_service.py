@@ -53,7 +53,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             self.assertEqual(_resolved_source_account_id(accounts["paper"]), "DU-PAPER-TEST")
             self.assertEqual(_resolved_source_account_id(accounts["cash"]), "U-CASH-TEST")
 
-    def test_schema_v14_migration_adds_phase_modes_and_removes_manual_adoption(self) -> None:
+    def test_schema_v15_migration_adds_phase_modes_and_market_discovery(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
@@ -78,7 +78,17 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 14)
+        self.assertEqual(migrated["schema_version"], 15)
+        self.assertTrue(migrated["market_discovery"]["core_scan"]["calculations"])
+        self.assertTrue(migrated["market_discovery"]["watchlists"])
+        capabilities = {
+            row["name"]: row
+            for row in migrated["market_discovery"]["core_scan"]["calculations"]
+        }
+        self.assertTrue(capabilities["Last price"]["system_required"])
+        self.assertFalse(capabilities["Last price"]["configurable"])
+        self.assertTrue(capabilities["Company news score"]["configurable"])
+        self.assertFalse(capabilities["Company news score"]["system_required"])
         lifecycle = migrated["strategy"]["profiles"][0]["lifecycle"]
         self.assertEqual(lifecycle["phase_modes"], {
             "initial_entry": "automatic",
@@ -135,20 +145,22 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 14)
+        self.assertEqual(draft["schema_version"], 15)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(
             draft["strategy"]["profile_templates"][0]["name"],
             "Long Momentum · Balanced",
         )
-        self.assertTrue(all(profile["editable"] for profile in draft["strategy"]["profiles"]))
+        self.assertTrue(all(not profile["editable"] for profile in draft["strategy"]["profiles"]))
         default_profile = next(
             row
             for row in draft["strategy"]["profiles"]
             if row["profile_id"] == draft["strategy"]["default_profile_id"]
         )
         self.assertTrue(default_profile["protected"])
+        self.assertEqual(default_profile["publication_status"], "template")
+        self.assertEqual(default_profile["composition"]["watchlist_id"], "core-candidates")
         self.assertEqual(
             {row["capability_id"] for row in draft["strategy"]["capability_catalog"]},
             {row["capability_id"] for row in capability_catalog()},
@@ -232,6 +244,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                     canvas_revision="canvas-1",
                     canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
                 )
+                saved_draft = configuration_draft()
                 oms = draft["oms"]
                 oms["profiles"][0]["settings"]["entry_urgency"] = "patient"
                 update_configuration_section("oms", oms)
@@ -250,6 +263,8 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             pinned["payload"]["strategy"]["profile_id"],
             "long-momentum-balanced",
         )
+        self.assertTrue(published["payload"]["run_plans"]["plans"][0]["compiled"])
+        self.assertEqual(saved_draft["run_plans"], draft["run_plans"])
 
     def test_publish_is_idempotent_for_identical_content(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -270,6 +285,43 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         self.assertEqual(first["revision_id"], second["revision_id"])
         self.assertEqual(second["label"], "First label")
+
+    def test_published_strategy_requires_a_new_draft_identity_for_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            journal.save_trading_configuration_draft(self._draft())
+            with self._service_patches(journal):
+                published = publish_configuration(
+                    label="Immutable strategy",
+                    canvas_revision="canvas-1",
+                    canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
+                )
+                current = configuration_draft()
+                immutable = deepcopy(current)
+                immutable["strategy"]["profiles"][0]["name"] = "Changed in place"
+                with self.assertRaisesRegex(ValueError, "immutable"):
+                    replace_configuration_draft(immutable)
+
+                source = current["strategy"]["profiles"][0]
+                clone = deepcopy(source)
+                clone.update({
+                    "profile_id": "long-momentum-balanced-copy",
+                    "name": "Long Momentum copy",
+                    "origin": "user",
+                    "protected": False,
+                    "editable": True,
+                    "publication_status": "draft",
+                    "derived_from_profile_id": source["profile_id"],
+                })
+                current["strategy"]["profiles"].append(clone)
+                saved = replace_configuration_draft(current)
+            journal.close()
+
+        self.assertEqual(
+            published["payload"]["strategy"]["profiles"][0]["publication_status"],
+            "published",
+        )
+        self.assertEqual(saved["strategy"]["profiles"][-1]["derived_from_profile_id"], source["profile_id"])
 
     def test_complete_draft_replacement_is_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

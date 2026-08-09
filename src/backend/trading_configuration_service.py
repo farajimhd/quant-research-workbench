@@ -36,8 +36,15 @@ from src.trading_runtime.strategy_engine import (
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 
 
-CONFIGURATION_SCHEMA_VERSION = 14
-CONFIGURATION_SECTIONS = {"strategy", "run_plans", "portfolio", "oms", "accounts"}
+CONFIGURATION_SCHEMA_VERSION = 15
+CONFIGURATION_SECTIONS = {
+    "strategy",
+    "market_discovery",
+    "run_plans",
+    "portfolio",
+    "oms",
+    "accounts",
+}
 SUPPORTED_URGENCIES = {
     "passive_limit",
     "aggressive_limit",
@@ -176,6 +183,7 @@ def update_configuration_section(section: str, payload: Any) -> dict[str, Any]:
     draft = configuration_draft()
     candidate = _without_timestamp(draft)
     candidate[section] = deepcopy(payload)
+    _assert_published_profiles_unchanged(draft, candidate)
     _validate_draft(candidate, require_runtime_ready=False)
     return trading_journal().save_trading_configuration_draft(candidate)
 
@@ -184,7 +192,9 @@ def replace_configuration_draft(payload: Any) -> dict[str, Any]:
     """Validate and replace one complete mutable draft atomically."""
     if not isinstance(payload, dict):
         raise TypeError("Trading configuration draft must be an object")
+    current = configuration_draft()
     candidate = _without_timestamp(_migrate_draft(deepcopy(payload)))
+    _assert_published_profiles_unchanged(current, candidate)
     _validate_draft(candidate, require_runtime_ready=False)
     return trading_journal().save_trading_configuration_draft(candidate)
 
@@ -200,6 +210,8 @@ def delete_strategy_profile(profile_id: str) -> dict[str, Any]:
     )
     if profile is None:
         raise ValueError(f"Unknown Strategy Profile: {profile_id}")
+    if str(profile.get("publication_status") or "draft") == "published":
+        raise ValueError("Published strategies are immutable and cannot be deleted; clone one to create a new draft")
     default_profile_id = str(strategy.get("default_profile_id") or "")
     if profile_id == default_profile_id or bool(profile.get("protected")):
         raise ValueError("The protected default Strategy Profile cannot be deleted")
@@ -265,6 +277,7 @@ def publish_configuration(
     label: str,
     canvas_revision: str,
     canvas_profile: dict[str, Any],
+    strategy_profile_id: str = "",
 ) -> dict[str, Any]:
     normalized_label = label.strip()
     if not normalized_label:
@@ -277,10 +290,46 @@ def publish_configuration(
     )
     if container_count <= 0:
         raise ValueError("Publishing requires at least one open container in the Canvas profile")
-    candidate = _without_timestamp(configuration_draft())
-    _validate_draft(candidate)
+    draft_candidate = _without_timestamp(configuration_draft())
+    profiles = list(dict(draft_candidate["strategy"]).get("profiles") or [])
+    active_profile_id = str(dict(draft_candidate["strategy"]).get("active_profile_id") or "")
+    first_user_draft_id = next(
+        (
+            str(row.get("profile_id") or "")
+            for row in profiles
+            if str(row.get("publication_status") or "draft") == "draft"
+            and str(row.get("origin") or "user") == "user"
+        ),
+        "",
+    )
+    selected_profile_id = (
+        strategy_profile_id.strip()
+        or active_profile_id
+        or first_user_draft_id
+        or str(dict(draft_candidate["strategy"]).get("default_profile_id") or "")
+    )
+    selected_profile = next(
+        (row for row in profiles if str(row.get("profile_id")) == selected_profile_id),
+        None,
+    )
+    if selected_profile is None:
+        raise ValueError("Publishing requires a selected Strategy")
+    selected_profile["publication_status"] = "published"
+    selected_profile["editable"] = False
+    draft_candidate["strategy"]["active_profile_id"] = selected_profile_id
+    _validate_draft(draft_candidate, require_runtime_ready=False)
+
+    # Publishing compiles one immutable runtime projection without replacing the
+    # reusable Portfolio, OMS, account, or discovery catalogs in the working draft.
+    runtime_candidate = deepcopy(draft_candidate)
+    runtime_profile = next(
+        row for row in runtime_candidate["strategy"]["profiles"]
+        if str(row.get("profile_id")) == selected_profile_id
+    )
+    _compile_profile_run_plan(runtime_candidate, runtime_profile)
+    _validate_draft(runtime_candidate)
     payload = {
-        **candidate,
+        **runtime_candidate,
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "canvas": {"revision": canvas_revision.strip(), "profile": deepcopy(canvas_profile)},
     }
@@ -290,13 +339,15 @@ def publish_configuration(
     if existing and existing[0]["content_hash"] == content_hash:
         return existing[0]
     revision = int(existing[0]["revision"]) + 1 if existing else 1
-    return trading_journal().publish_trading_configuration(
+    published = trading_journal().publish_trading_configuration(
         revision_id=str(uuid4()),
         revision=revision,
         label=normalized_label,
         content_hash=content_hash,
         payload=payload,
     )
+    trading_journal().save_trading_configuration_draft(draft_candidate)
+    return published
 
 
 def replay_configuration_snapshot() -> dict[str, Any]:
@@ -1286,6 +1337,113 @@ def _default_universe(runtime_assignments: list[dict[str, Any]]) -> dict[str, An
     }
 
 
+def _default_market_discovery(
+    runtime_assignments: list[dict[str, Any]],
+    rule_sets: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """QMD-owned discovery configuration exposed without moving calculations into Strategy."""
+
+    calculation_rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source in strategy_input_catalog():
+        capability_id = str(source.get("source_id") or "")
+        if not capability_id or capability_id in seen:
+            continue
+        seen.add(capability_id)
+        provider = str(source.get("provider") or "").lower()
+        category = str(source.get("category") or "").lower()
+        tier = "watchlist" if provider in {"news", "sec"} or "news" in category or "sec" in category else "core"
+        calculation_rows.append({
+            "capability_id": capability_id,
+            "name": str(source.get("label") or capability_id),
+            "description": str(source.get("summary") or "Published QMD observation."),
+            "category": str(source.get("category") or source.get("provider") or "Market observations"),
+            "provider": str(source.get("provider") or "QMD"),
+            "output_type": str(source.get("value_type") or "number"),
+            "timeframes": list(source.get("timeframes") or []),
+            "enabled": True,
+            "configurable": tier == "watchlist",
+            "system_required": tier == "core",
+            "tier": tier,
+        })
+    operational = [
+        ("instrument-identity", "Instrument eligibility and identity", "Reference-backed identity, listing, venue, and tradability eligibility.", "Reference and eligibility", "core"),
+        ("market-quality", "Market-data freshness and quality", "Freshness, completeness, crossed-market, halt, and stale-data checks.", "Data quality", "core"),
+        ("liquidity-rank", "Liquidity and candidate ranking", "Price, volume, spread, activity, liquidity, and base candidate rank.", "Ranking", "core"),
+        ("news-events", "News observations", "Point-in-time company-news events and scored downstream signals.", "Event intelligence", "watchlist"),
+        ("sec-events", "SEC observations", "Point-in-time filing events and derived issuer signals.", "Event intelligence", "watchlist"),
+        ("membership-history", "Watchlist membership history", "Append-only add, remove, expiry, and override events with causal reasons.", "Audit and history", "watchlist"),
+    ]
+    for capability_id, name, description, category, tier in operational:
+        if capability_id in seen:
+            continue
+        required = capability_id in {"instrument-identity", "market-quality", "liquidity-rank", "membership-history"}
+        calculation_rows.append({
+            "capability_id": capability_id,
+            "name": name,
+            "description": description,
+            "category": category,
+            "provider": "QMD",
+            "output_type": "system",
+            "timeframes": [],
+            "enabled": True,
+            "configurable": not required,
+            "system_required": required,
+            "tier": tier,
+        })
+    symbols = sorted({
+        str(row.get("ticker") or "").upper()
+        for row in runtime_assignments
+        if str(row.get("ticker") or "").strip()
+    })
+    return {
+        "security_universe": {
+            "universe_id": "qmd-security-universe",
+            "name": "QMD Security Universe",
+            "description": "The broad authoritative instrument set eligible for the Core Scan.",
+            "enabled": True,
+            "configurable": False,
+        },
+        "core_scan": {
+            "scan_id": "qmd-core-scan",
+            "name": "Core Scan",
+            "description": "Required low-cost calculations evaluated across the complete QMD Security Universe.",
+            "refresh_interval_ms": 1000,
+            "published": True,
+            "calculations": calculation_rows,
+        },
+        "rule_sets": deepcopy(rule_sets or []),
+        "watchlists": [{
+            "watchlist_id": "core-candidates",
+            "name": "Core candidates",
+            "description": "Candidate instruments produced from the Core Scan for strategy evaluation.",
+            "enabled": True,
+            "source_scan_id": "qmd-core-scan",
+            "inclusion_rule_sets": [],
+            "exclusion_rule_sets": [],
+            "ranking_field": "liquidity-rank",
+            "maximum_size": 250,
+            "refresh_interval_ms": 1000,
+            "membership_ttl_ms": 300000,
+            "manual_inclusions": symbols,
+            "manual_exclusions": [],
+            "calculations": [row["capability_id"] for row in calculation_rows if row["tier"] == "watchlist"],
+            "membership_history": [],
+        }],
+    }
+
+
+def _default_profile_composition() -> dict[str, Any]:
+    return {
+        "watchlist_id": "core-candidates",
+        "portfolio_policy_id": "default",
+        "oms_profile_id": "adaptive-regular",
+        "account_keys": ["replay"],
+        "allowed_environments": ["replay", "backtest", "backtest_debug"],
+        "action_authority": _default_action_authority(),
+    }
+
+
 def _default_draft() -> dict[str, Any]:
     definition = get_strategy_definition(STRATEGY_ID, STRATEGY_REVISION)
     parameters = deepcopy(definition.get("config", {}).get("parameters") or default_long_momentum_parameters())
@@ -1323,6 +1481,10 @@ def _default_draft() -> dict[str, Any]:
         }
         for row in source_assignments
     ]
+    discovery = _default_market_discovery(
+        runtime_assignments,
+        list(system_profiles[0].get("rule_set_catalog") or []),
+    )
     policy = asdict(PortfolioPolicy())
     bindings = [
         {
@@ -1339,6 +1501,14 @@ def _default_draft() -> dict[str, Any]:
         for account_id in account_ids
     ]
     _ensure_environment_account_bindings(bindings, policy["policy_id"])
+    default_account_keys = [
+        str(binding["account_key"])
+        for binding in bindings
+        if bool(binding.get("enabled", True)) and "replay" in set(binding.get("modes") or [])
+    ] or [str(bindings[0]["account_key"])]
+    for profile in [*system_profiles, *profile_templates]:
+        profile["composition"]["portfolio_policy_id"] = policy["policy_id"]
+        profile["composition"]["account_keys"] = default_account_keys
     mandates = [
         {
             "mandate_id": f"balanced-{binding['account_key']}",
@@ -1377,6 +1547,7 @@ def _default_draft() -> dict[str, Any]:
             "profile_templates": profile_templates,
             "profiles": system_profiles,
         },
+        "market_discovery": discovery,
         "run_plans": {
             "universes": [_default_universe(runtime_assignments)],
             "plans": [{
@@ -1406,10 +1577,159 @@ def _default_draft() -> dict[str, Any]:
     }
 
 
+def _assert_published_profiles_unchanged(
+    current: dict[str, Any], candidate: dict[str, Any]
+) -> None:
+    current_profiles = {
+        str(row.get("profile_id")): row
+        for row in dict(current.get("strategy") or {}).get("profiles") or []
+        if str(row.get("publication_status") or "draft") == "published"
+    }
+    candidate_profiles = {
+        str(row.get("profile_id")): row
+        for row in dict(candidate.get("strategy") or {}).get("profiles") or []
+    }
+    for profile_id, published in current_profiles.items():
+        proposed = candidate_profiles.get(profile_id)
+        if proposed is None:
+            raise ValueError(
+                "Published strategies are immutable and cannot be deleted; clone one to create a new draft"
+            )
+        if _canonical_profile_content(proposed) != _canonical_profile_content(published):
+            raise ValueError(
+                f"Published Strategy {published.get('name')} is immutable; clone it to create a modified draft"
+            )
+
+
+def _canonical_profile_content(profile: dict[str, Any]) -> str:
+    return json.dumps(profile, separators=(",", ":"), sort_keys=True)
+
+
+def _validate_market_discovery(section: dict[str, Any]) -> None:
+    universe = dict(section.get("security_universe") or {})
+    if not str(universe.get("universe_id") or ""):
+        raise ValueError("Market Discovery requires one QMD Security Universe")
+    core_scan = dict(section.get("core_scan") or {})
+    if not str(core_scan.get("scan_id") or ""):
+        raise ValueError("Market Discovery requires one Core Scan")
+    calculations = list(core_scan.get("calculations") or [])
+    calculation_ids = _unique_ids(calculations, "capability_id", "QMD capability")
+    rule_set_ids = _unique_ids(
+        list(section.get("rule_sets") or []),
+        "rule_set_id",
+        "Watchlist rule set",
+    )
+    for calculation in calculations:
+        if bool(calculation.get("system_required")) and not bool(calculation.get("enabled")):
+            raise ValueError(
+                f"Required QMD capability {calculation.get('name')} cannot be disabled"
+            )
+    watchlists = list(section.get("watchlists") or [])
+    if not watchlists:
+        raise ValueError("Market Discovery requires at least one Watchlist")
+    _unique_ids(watchlists, "watchlist_id", "Watchlist")
+    for watchlist in watchlists:
+        if str(watchlist.get("source_scan_id") or "") != str(core_scan.get("scan_id")):
+            raise ValueError(f"Watchlist {watchlist.get('name')} references an unknown Core Scan")
+        if int(watchlist.get("maximum_size") or 0) <= 0:
+            raise ValueError(f"Watchlist {watchlist.get('name')} maximum size must be positive")
+        if int(watchlist.get("refresh_interval_ms") or 0) <= 0:
+            raise ValueError(f"Watchlist {watchlist.get('name')} refresh interval must be positive")
+        if int(watchlist.get("membership_ttl_ms") or 0) < 0:
+            raise ValueError(f"Watchlist {watchlist.get('name')} membership TTL cannot be negative")
+        unknown = set(watchlist.get("calculations") or []) - calculation_ids
+        if unknown:
+            raise ValueError(f"Watchlist {watchlist.get('name')} references unknown QMD capabilities")
+        if str(watchlist.get("ranking_field") or "") not in calculation_ids:
+            raise ValueError(f"Watchlist {watchlist.get('name')} references an unknown ranking field")
+        unknown_rules = (
+            set(watchlist.get("inclusion_rule_sets") or [])
+            | set(watchlist.get("exclusion_rule_sets") or [])
+        ) - rule_set_ids
+        if unknown_rules:
+            raise ValueError(f"Watchlist {watchlist.get('name')} references unknown rule sets")
+
+
+def _compile_profile_run_plan(candidate: dict[str, Any], profile: dict[str, Any]) -> None:
+    """Compile one user-authored Strategy into backend-only Run Plan contracts."""
+
+    composition = {**_default_profile_composition(), **dict(profile.get("composition") or {})}
+    discovery = dict(candidate.get("market_discovery") or {})
+    watchlist = next(
+        (
+            row
+            for row in discovery.get("watchlists") or []
+            if str(row.get("watchlist_id")) == str(composition.get("watchlist_id"))
+        ),
+        None,
+    )
+    if watchlist is None:
+        raise ValueError(f"Strategy {profile.get('name')} references an unknown Watchlist")
+    profile_id = str(profile["profile_id"])
+    existing_plans = list(dict(candidate.get("run_plans") or {}).get("plans") or [])
+    existing_for_profile = next(
+        (row for row in existing_plans if str(row.get("profile_id")) == profile_id),
+        None,
+    )
+    run_plan_id = str(
+        dict(existing_for_profile or {}).get("run_plan_id") or f"strategy-{profile_id}"
+    )
+    universe_id = f"watchlist-{watchlist['watchlist_id']}"
+    symbols = sorted(
+        set(str(value).strip().upper() for value in watchlist.get("manual_inclusions") or [] if str(value).strip())
+        - set(str(value).strip().upper() for value in watchlist.get("manual_exclusions") or [] if str(value).strip())
+    )
+    runtime_assignments = [
+        deepcopy(row)
+        for plan in existing_plans
+        for row in plan.get("runtime_assignments") or []
+        if str(row.get("ticker") or "").upper() in set(symbols)
+    ]
+    universe = {
+        "universe_id": universe_id,
+        "name": str(watchlist.get("name") or "Strategy watchlist"),
+        "description": str(watchlist.get("description") or "QMD-resolved Watchlist snapshot."),
+        "source": "configured_symbols",
+        "symbols": symbols,
+        "scanner_view_id": str(watchlist.get("watchlist_id") or ""),
+        "watchlist_snapshot": deepcopy(watchlist),
+        "enabled": bool(watchlist.get("enabled", True)),
+    }
+    account_keys = [str(value) for value in composition.get("account_keys") or []]
+    mandates = list(dict(candidate["portfolio"]).get("mandates") or [])
+    selected_mandates = [row for row in mandates if str(row.get("account_key")) in account_keys]
+    if not selected_mandates:
+        selected_mandates = mandates
+    for mandate in selected_mandates:
+        mandate["run_plan_id"] = run_plan_id
+    candidate["portfolio"]["mandates"] = selected_mandates
+    candidate["run_plans"] = {
+        "universes": [universe],
+        "plans": [{
+            "run_plan_id": run_plan_id,
+            "name": str(profile.get("name") or "Published Strategy"),
+            "description": "Compiled runtime contract for an immutable published Strategy.",
+            "profile_id": profile_id,
+            "oms_profile_id": str(composition.get("oms_profile_id") or ""),
+            "universe_id": universe_id,
+            "book_id": "default",
+            "action_authority": deepcopy(composition.get("action_authority") or _default_action_authority()),
+            "campaign_lifecycle": _default_campaign_policy(),
+            "safety_supervisor": _default_safety_supervisor(),
+            "mandate_ids": [str(row.get("mandate_id")) for row in selected_mandates],
+            "enabled": True,
+            "allowed_environments": list(composition.get("allowed_environments") or []),
+            "runtime_assignments": runtime_assignments,
+            "compiled": True,
+        }],
+    }
+
+
 def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True) -> None:
     missing = CONFIGURATION_SECTIONS - set(draft)
     if missing:
         raise ValueError(f"Trading configuration is missing sections: {', '.join(sorted(missing))}")
+    _validate_market_discovery(dict(draft["market_discovery"]))
     strategy = dict(draft["strategy"])
     catalog = {str(row["capability_id"]): row for row in strategy.get("capability_catalog") or capability_catalog()}
     profiles = list(strategy.get("profiles") or [])
@@ -1496,6 +1816,22 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
                 raise ValueError(f"OMS profile {row.get('name')} references unknown {key}")
         if str(settings.get("protection_profile_id") or "") not in protection_references:
             raise ValueError(f"OMS profile {row.get('name')} references an unknown protection profile")
+    watchlist_ids = {
+        str(row.get("watchlist_id") or "")
+        for row in dict(draft["market_discovery"]).get("watchlists") or []
+    }
+    for profile in profiles:
+        composition = {**_default_profile_composition(), **dict(profile.get("composition") or {})}
+        if str(composition.get("watchlist_id") or "") not in watchlist_ids:
+            raise ValueError(f"Strategy Profile {profile.get('name')} references an unknown Watchlist")
+        if str(composition.get("oms_profile_id") or "") not in oms_ids:
+            raise ValueError(f"Strategy Profile {profile.get('name')} references an unknown OMS profile")
+        unknown_accounts = set(composition.get("account_keys") or []) - account_keys
+        if unknown_accounts:
+            raise ValueError(f"Strategy Profile {profile.get('name')} references unknown accounts")
+        environments = set(composition.get("allowed_environments") or [])
+        if not environments or not environments <= SUPPORTED_MODES:
+            raise ValueError(f"Strategy Profile {profile.get('name')} has unsupported environments")
     for profile in profiles:
         lifecycle = dict(profile.get("lifecycle") or {})
         for intent in _lifecycle_order_intents(lifecycle):
@@ -1732,6 +2068,38 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         result = deepcopy(raw)
         defaults = _default_draft()
         result["schema_version"] = CONFIGURATION_SCHEMA_VERSION
+        result["market_discovery"] = deepcopy(
+            result.get("market_discovery") or defaults["market_discovery"]
+        )
+        result["market_discovery"].setdefault(
+            "rule_sets", deepcopy(defaults["market_discovery"].get("rule_sets") or [])
+        )
+        default_calculations = list(defaults["market_discovery"]["core_scan"]["calculations"])
+        current_calculations = {
+            str(row.get("capability_id") or ""): deepcopy(row)
+            for row in dict(result["market_discovery"].get("core_scan") or {}).get("calculations") or []
+        }
+        merged_calculations: list[dict[str, Any]] = []
+        for default_calculation in default_calculations:
+            capability_id = str(default_calculation.get("capability_id") or "")
+            calculation = {**default_calculation, **current_calculations.pop(capability_id, {})}
+            calculation.update({
+                "configurable": bool(default_calculation.get("configurable")),
+                "system_required": bool(default_calculation.get("system_required")),
+                "tier": str(default_calculation.get("tier") or "core"),
+            })
+            if calculation["system_required"]:
+                calculation["enabled"] = True
+            merged_calculations.append(calculation)
+        merged_calculations.extend(current_calculations.values())
+        result["market_discovery"]["core_scan"]["calculations"] = merged_calculations
+        discovery_calculation_ids = {
+            str(row.get("capability_id") or "")
+            for row in dict(result["market_discovery"].get("core_scan") or {}).get("calculations") or []
+        }
+        for watchlist in result["market_discovery"].get("watchlists") or []:
+            if str(watchlist.get("ranking_field") or "") not in discovery_calculation_ids:
+                watchlist["ranking_field"] = "liquidity-rank"
         legacy_run_plans = dict(
             result.get("run_plans") or result.pop("assignments", {}) or {}
         )
@@ -1809,6 +2177,19 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         )
         result["strategy"]["input_catalog"] = strategy_input_catalog()
         for profile in result["strategy"]["profiles"]:
+            profile.setdefault(
+                "publication_status",
+                "template" if str(profile.get("origin") or "") == "system" else "draft",
+            )
+            profile.setdefault("derived_from_profile_id", "")
+            profile["composition"] = {
+                **_default_profile_composition(),
+                **dict(profile.get("composition") or {}),
+            }
+            if str(profile.get("publication_status")) == "published":
+                profile["editable"] = False
+            elif str(profile.get("origin") or "") == "system":
+                profile["editable"] = False
             profile["definition_revision"] = STRATEGY_REVISION
             parameters = resolve_long_momentum_parameters(
                 dict(profile.get("parameters") or {})
@@ -1920,6 +2301,14 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             if str(row["profile_id"]) == result["strategy"]["default_profile_id"]
             and str(row["profile_id"]) not in existing_profiles
         )
+        for template in result["strategy"]["profile_templates"]:
+            template["publication_status"] = "template"
+            template["editable"] = False
+            template.setdefault("derived_from_profile_id", "")
+            template["composition"] = {
+                **_default_profile_composition(),
+                **dict(template.get("composition") or {}),
+            }
         existing_capabilities = {
             str(row.get("capability_id"))
             for row in dict(result.get("strategy") or {}).get("capability_catalog") or []
@@ -2090,9 +2479,12 @@ def _strategy_profile(
         "definition_id": STRATEGY_ID,
         "definition_revision": STRATEGY_REVISION,
         "origin": origin,
-        "editable": True,
+        "editable": origin == "user",
         "protected": protected,
         "enabled": True,
+        "publication_status": "template" if origin == "system" else "draft",
+        "derived_from_profile_id": "",
+        "composition": _default_profile_composition(),
         "lifecycle": _default_strategy_lifecycle(parameters),
         "parameters": _parameters_without_lifecycle(parameters),
         "capabilities": capabilities,

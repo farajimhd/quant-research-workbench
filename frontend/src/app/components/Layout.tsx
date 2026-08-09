@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, BadgeCheck, BriefcaseBusiness, Check, ChevronLeft, ChevronRight, FlaskConical, GitBranch, History, Network, PanelsTopLeft, Palette, ServerCog, ShieldCheck, UsersRound, Wifi } from "lucide-react";
+import { Activity, BadgeCheck, BriefcaseBusiness, Check, ChevronLeft, ChevronRight, FlaskConical, GitBranch, History, PanelsTopLeft, Palette, ScanSearch, ServerCog, ShieldCheck, UsersRound, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "canvas-configuration" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
+export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "canvas-configuration" | "market-discovery-configuration" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
@@ -31,8 +31,8 @@ const navGroups = [
     label: "Configuration",
     items: [
       { key: "canvas-configuration" as PageKey, label: "Canvas", icon: PanelsTopLeft },
-      { key: "strategy-configuration" as PageKey, label: "Strategies", icon: GitBranch },
-      { key: "assignment-configuration" as PageKey, label: "Run Plans", icon: Network },
+      { key: "market-discovery-configuration" as PageKey, label: "Market Discovery", icon: ScanSearch },
+      { key: "strategy-configuration" as PageKey, label: "Strategy Studio", icon: GitBranch },
       { key: "portfolio-configuration" as PageKey, label: "Portfolio & Risk", icon: BriefcaseBusiness },
       { key: "oms-configuration" as PageKey, label: "OMS & Protection", icon: ShieldCheck },
       { key: "account-configuration" as PageKey, label: "Accounts & Sessions", icon: UsersRound },
@@ -187,6 +187,7 @@ export function Layout({
 
 function configurationToneForPage(page: PageKey) {
   if (page === "canvas-configuration") return "canvas";
+  if (page === "market-discovery-configuration") return "discovery";
   if (page === "strategy-configuration") return "strategy";
   if (page === "assignment-configuration") return "assignments";
   if (page === "portfolio-configuration") return "portfolio";

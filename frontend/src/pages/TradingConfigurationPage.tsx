@@ -19,6 +19,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  ScanSearch,
   Search,
   Send,
   Settings2,
@@ -39,13 +40,14 @@ import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
 
 export type TradingConfigurationSection =
   | "strategy"
+  | "discovery"
   | "assignments"
   | "portfolio"
   | "oms"
   | "accounts"
   | "revisions";
 
-type StrategyAuthoringStage = "identity" | "overview" | "entry" | "position" | "reentry" | "exit" | "handoff";
+type StrategyAuthoringStage = "identity" | "discovery" | "overview" | "entry" | "position" | "reentry" | "exit" | "portfolio" | "oms" | "authority" | "handoff";
 
 type RuntimeMode = "replay" | "backtest" | "backtest_debug" | "paper" | "live";
 type ActionAuthority = "disabled" | "manual" | "confirm" | "automatic" | "inherit";
@@ -101,6 +103,18 @@ type StrategyProfile = {
   parameters: ParameterMap;
   profile_id: string;
   revision: number;
+  publication_status: "draft" | "published" | "template";
+  derived_from_profile_id: string;
+  composition: StrategyComposition;
+};
+
+type StrategyComposition = {
+  watchlist_id: string;
+  portfolio_policy_id: string;
+  oms_profile_id: string;
+  account_keys: string[];
+  allowed_environments: RuntimeMode[];
+  action_authority: StrategyRunPlan["action_authority"];
 };
 
 type StrategyInput = {
@@ -379,6 +393,43 @@ type WatchUniverse = {
 
 type AssignmentSection = { deployments: StrategyRunPlan[]; universes: WatchUniverse[] };
 
+type DiscoveryCapability = {
+  capability_id: string;
+  name: string;
+  description: string;
+  category: string;
+  provider: string;
+  output_type: string;
+  timeframes: string[];
+  enabled: boolean;
+  configurable: boolean;
+  system_required: boolean;
+  tier: "core" | "watchlist";
+};
+type WatchlistConfig = {
+  watchlist_id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  source_scan_id: string;
+  inclusion_rule_sets: string[];
+  exclusion_rule_sets: string[];
+  ranking_field: string;
+  maximum_size: number;
+  refresh_interval_ms: number;
+  membership_ttl_ms: number;
+  manual_inclusions: string[];
+  manual_exclusions: string[];
+  calculations: string[];
+  membership_history: Array<Record<string, unknown>>;
+};
+type MarketDiscoverySection = {
+  security_universe: { universe_id: string; name: string; description: string; enabled: boolean; configurable: boolean };
+  core_scan: { scan_id: string; name: string; description: string; refresh_interval_ms: number; published: boolean; calculations: DiscoveryCapability[] };
+  rule_sets: RuleSetDefinition[];
+  watchlists: WatchlistConfig[];
+};
+
 type PortfolioPolicy = Record<string, Primitive | string[]>;
 type Mandate = {
   account_key: string;
@@ -505,6 +556,7 @@ type AccountSection = { bindings: AccountBinding[] };
 type Draft = {
   accounts: AccountSection;
   assignments: AssignmentSection;
+  market_discovery: MarketDiscoverySection;
   oms: OmsSection;
   portfolio: PortfolioSection;
   schema_version: number;
@@ -525,6 +577,19 @@ function normalizeDraft(payload: any): Draft {
     };
     return {
       ...profile,
+      publication_status: profile.publication_status ?? (profile.origin === "system" ? "template" : "draft"),
+      derived_from_profile_id: profile.derived_from_profile_id ?? "",
+      composition: {
+        watchlist_id: "core-candidates",
+        portfolio_policy_id: payload?.portfolio?.policies?.[0]?.policy_id ?? "default",
+        oms_profile_id: payload?.oms?.profiles?.[0]?.profile_id ?? "adaptive-regular",
+        account_keys: (payload?.accounts?.bindings ?? []).filter((row: any) => row.enabled).map((row: any) => row.account_key),
+        allowed_environments: ["replay", "backtest", "backtest_debug"],
+        action_authority: {
+          default: "confirm", initial_entry: "inherit", add: "inherit", reentry: "inherit", strategic_exit: "automatic", protective_exit: "automatic", emergency_exit: "automatic",
+        },
+        ...(profile.composition ?? {}),
+      },
       lifecycle: {
         ...profile.lifecycle,
         phase_modes: phaseModes,
@@ -538,6 +603,7 @@ function normalizeDraft(payload: any): Draft {
   };
   return {
     ...payload,
+    market_discovery: payload?.market_discovery ?? { security_universe: {}, core_scan: { calculations: [] }, rule_sets: [], watchlists: [] },
     strategy: {
       ...strategy,
       profile_templates: (strategy.profile_templates ?? []).map(normalizeProfile),
@@ -561,6 +627,15 @@ function serializeSection(section: TradingConfigurationSection, value: unknown) 
   return { plans: runPlans.deployments, universes: runPlans.universes };
 }
 
+function draftSectionValue(draft: Draft, section: Exclude<TradingConfigurationSection, "revisions">): unknown {
+  if (section === "discovery") return draft.market_discovery;
+  return draft[section];
+}
+
+function backendSectionName(section: Exclude<TradingConfigurationSection, "revisions">) {
+  return section === "discovery" ? "market_discovery" : section;
+}
+
 type ConfigurationExperience = "guided" | "expert";
 type OmsGuidedStage = "execution" | "protection";
 type GuidedStep = TradingConfigurationSection | OmsGuidedStage;
@@ -575,6 +650,12 @@ type Revision = {
 };
 
 const SECTION_META = {
+  discovery: {
+    eyebrow: "QMD discovery authority",
+    icon: ScanSearch,
+    title: "Market Discovery",
+    description: "Review QMD's complete capability inventory and configure reusable Watchlists.",
+  },
   strategy: {
     eyebrow: "Step 1 · Define behavior",
     icon: GitBranch,
@@ -704,7 +785,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     try {
       const saved = sections.length > 1
         ? await api<Draft>("/api/trading/configuration/draft", { body: JSON.stringify({ payload: serializeDraft(next) }), method: "PUT" })
-        : await api<Draft>(`/api/trading/configuration/draft/${sections[0]}`, { body: JSON.stringify({ payload: serializeSection(sections[0], next[sections[0]]) }), method: "PUT" });
+        : await api<Draft>(`/api/trading/configuration/draft/${backendSectionName(sections[0])}`, { body: JSON.stringify({ payload: serializeSection(sections[0], draftSectionValue(next, sections[0])) }), method: "PUT" });
       const normalized = normalizeDraft(saved);
       setDraft(normalized);
       setDirtySection(null);
@@ -731,8 +812,9 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     setMessage("");
     try {
       const saveWholeBook = section === "strategy";
-      const nextDraft = await api<Draft>(saveWholeBook ? "/api/trading/configuration/draft" : `/api/trading/configuration/draft/${section}`, {
-        body: JSON.stringify({ payload: saveWholeBook ? serializeDraft(draft) : serializeSection(section, draft[section]) }),
+      const editableSection = section as Exclude<TradingConfigurationSection, "revisions">;
+      const nextDraft = await api<Draft>(saveWholeBook ? "/api/trading/configuration/draft" : `/api/trading/configuration/draft/${backendSectionName(editableSection)}`, {
+        body: JSON.stringify({ payload: saveWholeBook ? serializeDraft(draft) : serializeSection(section, draftSectionValue(draft, editableSection)) }),
         method: "PUT",
       });
       setDraft(normalizeDraft(nextDraft));
@@ -759,7 +841,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       setDirtySection(null);
       setStatus("saved");
       setMessageTone("success");
-      setMessage("Strategy deleted permanently. Referencing Run Plans now use the protected template.");
+      setMessage("Strategy deleted permanently.");
       return normalized;
     } catch (reason) {
       setStatus("error");
@@ -769,7 +851,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     }
   }
 
-  async function publish() {
+  async function publish(strategyProfileId = "") {
     if (!draft) return;
     setStatus("saving");
     setMessage("");
@@ -777,10 +859,12 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       const canvas = canvasApprovalSnapshot();
       if (!canvas.ready) throw new Error("Configure at least one Canvas container before publishing.");
       const revision = await api<Revision>("/api/trading/configuration/publish", {
-        body: JSON.stringify({ canvas_profile: canvas.profile, canvas_revision: canvas.revision, label }),
+        body: JSON.stringify({ canvas_profile: canvas.profile, canvas_revision: canvas.revision, label, strategy_profile_id: strategyProfileId }),
         method: "POST",
       });
       setApproved(revision);
+      const savedDraft = await api<Draft>("/api/trading/configuration/draft");
+      setDraft(normalizeDraft(savedDraft));
       setRevisions((current) => [revision, ...current.filter((row) => row.revision_id !== revision.revision_id)]);
       window.dispatchEvent(new CustomEvent("quant-trading-configuration-published"));
       setLabel("");
@@ -826,7 +910,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         </div>
       ) : null}
 
-      {section !== "strategy" && section !== "revisions" && draft ? (
+      {section !== "strategy" && section !== "discovery" && section !== "revisions" && draft ? (
         <ConfigurationSectionStudio
           draft={draft}
           guided={<GuidedConfiguration
@@ -877,6 +961,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         <div className="configuration-expert-workspace">
           <div className="configuration-expert-editor">
             {section === "strategy" ? <StrategyStudio approved={approved} draft={draft} hasUnsavedChanges={dirtySection === "strategy"} label={label} onChange={(value) => updateDraft("strategy", value)} onDeleteProfile={deleteStrategyProfile} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} onSave={saveSection} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
+            {section === "discovery" ? <MarketDiscoveryStudio onChange={(value) => updateDraft("market_discovery", value)} section={draft.market_discovery} /> : null}
             {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
             {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
             {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
@@ -914,6 +999,7 @@ function ConfigurationExperienceBar({ experience, onExperienceChange, onOpenHome
 }
 
 const EXPERT_GUIDANCE: Record<Exclude<TradingConfigurationSection, "revisions">, { authority: string; outcome: string; subjects: string[] }> = {
+  discovery: { authority: "QMD owns the broad universe, observations, candidate ranking, and point-in-time Watchlist membership.", outcome: "One visible Core Scan and reusable Watchlists selected by Strategies.", subjects: ["QMD capabilities", "Core Scan", "Watchlists and membership history"] },
   strategy: { authority: "Strategy owns trading decisions. Portfolio sizes approved intent; OMS executes it.", outcome: "A reusable Strategy Profile with explicit lifecycle rules and optional capabilities.", subjects: ["Behavior and evaluation", "Entry, add, and reentry", "Exit and capabilities"] },
   assignments: { authority: "Run Plan binds reusable objects to environments and authority.", outcome: "A runnable plan with explicit strategy, accounts, OMS, and safety.", subjects: ["Watch universe", "Profile and OMS", "Action authority"] },
   portfolio: { authority: "Portfolio is the sole authority for account allocation, capital approval, and continuous risk.", outcome: "Per-account mandates and risk limits that can approve, reduce, or reject requests.", subjects: ["Capital policy", "Account mandates", "Risk groups"] },
@@ -986,14 +1072,14 @@ function ConfigurationStudioHome({ approved, draft, onApplyRecommended, onCloneA
       <header><div><span>Recommended patch preview</span><strong>Two references change; account-specific limits remain untouched</strong></div><button aria-label="Close preview" onClick={() => setSelectedPath(null)} type="button"><X size={16} /></button></header>
       <div className="configuration-change-preview">
         <span><GitBranch size={15} /><span><small>Default Strategy Profile</small><strong>{systemProfile?.name ?? "No protected profile available"}</strong></span></span>
-        <span><ShieldCheck size={15} /><span><small>{deployment?.name ?? "Run Plan"} OMS</small><strong>{systemOms?.name ?? "No system OMS available"}</strong></span></span>
+        <span><ShieldCheck size={15} /><span><small>{deployment?.name ?? "Compiled runtime"} OMS</small><strong>{systemOms?.name ?? "No system OMS available"}</strong></span></span>
         <span><BriefcaseBusiness size={15} /><span><small>Portfolio and accounts</small><strong>Preserved for review</strong></span></span>
       </div>
       <footer><p>This does not publish or enable Live. You will review all inherited mandate, protection, and broker bindings before approval.</p><button className="button primary" disabled={pending || !systemProfile || !systemOms || !deployment} onClick={() => void onApplyRecommended(recommended).then(() => onStart("guided"))} type="button">{pending ? "Applying…" : "Apply and review"}<ArrowRight size={15} /></button></footer>
     </div> : null}
     {selectedPath === "clone" && approved ? <div className="configuration-path-confirmation">
       <header><div><span>Clone preview</span><strong>Replace the mutable draft with release {approved.revision}</strong></div><button aria-label="Close preview" onClick={() => setSelectedPath(null)} type="button"><X size={16} /></button></header>
-      <div className="configuration-clone-summary"><BadgeCheck size={17} /><p><strong>{approved.label}</strong><span>{approved.payload.strategy.profiles.length} profiles · {approved.payload.assignments.deployments.length} Run Plans · {approved.payload.portfolio.mandates.length} mandates · {approved.payload.accounts.bindings.length} accounts</span></p></div>
+      <div className="configuration-clone-summary"><BadgeCheck size={17} /><p><strong>{approved.label}</strong><span>{approved.payload.strategy.profiles.length} strategies · {approved.payload.assignments.deployments.length} compiled runtimes · {approved.payload.portfolio.mandates.length} mandates · {approved.payload.accounts.bindings.length} accounts</span></p></div>
       <footer><p>The approved release remains immutable. Only the draft is replaced, and it still requires publication to affect new runs.</p><button className="button primary" disabled={pending} onClick={() => void onCloneApproved(cloneApprovedDraft(approved, draft)).then(() => onStart("guided"))} type="button">{pending ? "Cloning…" : "Clone into draft"}<ArrowRight size={15} /></button></footer>
     </div> : null}
   </section>;
@@ -1245,14 +1331,14 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     {
       id: "identity", section: "Behavior", title: "How should this plan be identified?",
       description: "Set the operator-facing name and summarize the trading behavior this profile defines.",
-      guide: "The name and description appear in Run Plans, reviews, journals, and runtime evidence. They do not change strategy logic.",
-      content: <div className="guided-form-grid"><TextField help="Use a concise name that distinguishes this Strategy Profile in Run Plan and runtime views." label="Plan name" onChange={(name) => replaceProfile({ ...profile, name })} value={profile.name} /><TextField help="State the setup, intended market behavior, and purpose." label="Plan description" onChange={(description) => replaceProfile({ ...profile, description })} value={profile.description} /></div>,
+      guide: "The name and description appear in selection, reviews, journals, and runtime evidence. They do not change strategy logic.",
+      content: <div className="guided-form-grid"><TextField help="Use a concise name that distinguishes this Strategy in configuration and runtime views." label="Strategy name" onChange={(name) => replaceProfile({ ...profile, name })} value={profile.name} /><TextField help="State the setup, intended market behavior, and purpose." label="Strategy description" onChange={(description) => replaceProfile({ ...profile, description })} value={profile.description} /></div>,
     },
     {
-      id: "availability", section: "Behavior", title: "Should this profile remain available to Run Plans?",
-      description: "Availability controls whether a Run Plan may select this profile. Turning it off preserves the complete draft and historical references.",
+      id: "availability", section: "Behavior", title: "Should this strategy remain available to new runs?",
+      description: "Availability controls whether the backend may compile this Strategy for a new run. Turning it off preserves the complete draft and historical references.",
       guide: "Disable a profile when it must remain auditable but unavailable to new runtime configurations.",
-      content: <BooleanField help="Allow new or edited Run Plans to select this Strategy Profile." label="Available for use" onChange={(enabled) => replaceProfile({ ...profile, enabled })} value={profile.enabled} />,
+      content: <BooleanField help="Allow new runtime configurations to use this Strategy." label="Available for use" onChange={(enabled) => replaceProfile({ ...profile, enabled })} value={profile.enabled} />,
     },
     {
       id: "side", section: "Behavior", title: "Should this plan trade long or short?",
@@ -1639,13 +1725,15 @@ function blankStrategyProfile(source: StrategyProfile, draft: Draft): StrategyPr
     origin: "user",
     profile_id: profileId,
     protected: false,
+    publication_status: "draft",
+    derived_from_profile_id: "",
     revision: 1,
   };
 }
 
 function cloneStrategyProfile(source: StrategyProfile, existing: StrategyProfile[], requestedName: string): StrategyProfile {
   const profileId = uniqueId(`${source.profile_id}-copy`, existing.map((row) => row.profile_id));
-  return { ...deepClone(source), editable: true, name: requestedName.trim(), origin: "user", profile_id: profileId, protected: false, revision: 1 };
+  return { ...deepClone(source), derived_from_profile_id: source.profile_id, editable: true, name: requestedName.trim(), origin: "user", profile_id: profileId, protected: false, publication_status: "draft", revision: 1 };
 }
 
 function uniqueProfileName(base: string, existing: StrategyProfile[]) {
@@ -1686,6 +1774,105 @@ function GuidedEmpty({ onSwitchToExpert }: { onSwitchToExpert: () => void }) {
   return <div className="guided-empty"><TriangleAlert size={20} /><h2>This step needs a base object</h2><p>Create the missing profile, Run Plan, mandate, OMS profile, policy, protection profile, or account in Expert mode. Guided setup does not create a Live-critical object implicitly.</p><button className="button primary" onClick={onSwitchToExpert} type="button"><Settings2 size={15} /> Open Expert editor</button></div>;
 }
 
+function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: MarketDiscoverySection) => void; section: MarketDiscoverySection }) {
+  const [mode, setMode] = useState<"catalog" | "guided">("guided");
+  const [guidedStep, setGuidedStep] = useState<"core" | "watchlists" | "history">("core");
+  const [selectedCapabilityId, setSelectedCapabilityId] = useState(section.core_scan.calculations[0]?.capability_id ?? "");
+  const [selectedWatchlistId, setSelectedWatchlistId] = useState(section.watchlists[0]?.watchlist_id ?? "");
+  const selectedCapability = section.core_scan.calculations.find((row) => row.capability_id === selectedCapabilityId) ?? section.core_scan.calculations[0];
+  const selectedWatchlist = section.watchlists.find((row) => row.watchlist_id === selectedWatchlistId) ?? section.watchlists[0];
+  const groupedCapabilities = useMemo(() => {
+    const groups = new Map<string, DiscoveryCapability[]>();
+    section.core_scan.calculations.forEach((capability) => {
+      const key = capability.tier === "core" ? "Core Scan" : capability.category || "Watchlist calculations";
+      groups.set(key, [...(groups.get(key) ?? []), capability]);
+    });
+    return [...groups.entries()];
+  }, [section.core_scan.calculations]);
+
+  function replaceWatchlist(next: WatchlistConfig) {
+    onChange({ ...section, watchlists: section.watchlists.map((row) => row.watchlist_id === next.watchlist_id ? next : row) });
+  }
+
+  function addWatchlist() {
+    const watchlistId = uniqueId("watchlist", section.watchlists.map((row) => row.watchlist_id));
+    const next: WatchlistConfig = {
+      watchlist_id: watchlistId, name: "Untitled Watchlist", description: "", enabled: true,
+      source_scan_id: section.core_scan.scan_id, inclusion_rule_sets: [], exclusion_rule_sets: [], ranking_field: "liquidity-rank",
+      maximum_size: 100, refresh_interval_ms: 1000, membership_ttl_ms: 300000, manual_inclusions: [], manual_exclusions: [],
+      calculations: section.core_scan.calculations.filter((row) => row.tier === "watchlist").map((row) => row.capability_id), membership_history: [],
+    };
+    onChange({ ...section, watchlists: [...section.watchlists, next] });
+    setSelectedWatchlistId(watchlistId);
+  }
+
+  return <div className="strategy-studio-workspace market-discovery-studio">
+    <nav className="strategy-editor-toolbar" aria-label="Market Discovery navigation">
+      <span><strong>QMD MARKET DISCOVERY</strong><small>{mode === "catalog" ? "Capability Catalog" : "Guided Configuration"}</small></span>
+      <div className="strategy-editor-modes" role="tablist" aria-label="Market Discovery views">
+        <button aria-selected={mode === "catalog"} onClick={() => setMode("catalog")} role="tab" type="button"><Search size={14} /> Capability Catalog</button>
+        <button aria-selected={mode === "guided"} onClick={() => setMode("guided")} role="tab" type="button"><BookOpenCheck size={14} /> Guided Configuration</button>
+      </div>
+    </nav>
+    {mode === "catalog" ? <div className="configuration-workbench strategy-editor-catalog discovery-capability-workbench">
+      <aside className="strategy-parameter-catalog">
+        <header><div><span>QMD capability catalog</span><strong>{section.core_scan.calculations.length} visible</strong></div><p>Every active extraction, indicator, signal, quality check, and membership service is listed.</p></header>
+        <div className="strategy-parameter-list">{groupedCapabilities.map(([group, capabilities]) => <section key={group}><header><span>{group}</span><small>{capabilities.length}</small></header>{capabilities.map((capability) => <button aria-current={capability.capability_id === selectedCapability?.capability_id ? "true" : undefined} key={capability.capability_id} onClick={() => setSelectedCapabilityId(capability.capability_id)} type="button"><span><strong>{capability.name}</strong><small>{capability.provider} · {capability.configurable ? "Configurable" : capability.system_required ? "Required" : "Read only"}</small></span><ChevronRight size={14} /></button>)}</section>)}</div>
+      </aside>
+      <main className="strategy-parameter-detail-page discovery-capability-detail">
+        {selectedCapability ? <>
+          <header><span>{selectedCapability.category}</span><h2>{selectedCapability.name}</h2><p>{selectedCapability.description}</p></header>
+          <section className="discovery-capability-control">
+            <label className="configuration-field configuration-boolean"><span>Enabled</span><small>{selectedCapability.configurable ? "This calculation may be disabled for this draft." : "This behavior is active but owned by QMD and cannot be changed here."}</small><input checked={selectedCapability.enabled} disabled={!selectedCapability.configurable || selectedCapability.system_required} onChange={(event) => onChange({ ...section, core_scan: { ...section.core_scan, calculations: section.core_scan.calculations.map((row) => row.capability_id === selectedCapability.capability_id ? { ...row, enabled: event.target.checked } : row) } })} type="checkbox" /></label>
+          </section>
+          <ParameterDocumentation documentation={{ role: [`${selectedCapability.provider} owns this ${selectedCapability.output_type} output and publishes it for Scanner, Watchlists, and eligible Strategy rules.`], timing: [selectedCapability.timeframes.length ? `Available calculation clocks: ${selectedCapability.timeframes.join(", ")}.` : "The service owns its publication clock and causal availability."], impact: [selectedCapability.tier === "core" ? "Core Scan evaluates it across the broad Security Universe." : "It is intended for the smaller candidate set after Core Scan nomination."], caution: [selectedCapability.configurable ? "Changing it affects future Watchlist resolution after publication." : "The control is intentionally read-only. Disabled styling means non-editable, not inactive."], cautionTone: "information" }} group={selectedCapability.category} path={selectedCapability.capability_id} value={selectedCapability.enabled} />
+        </> : null}
+      </main>
+    </div> : <article className="strategy-authoring discovery-guided-authoring">
+      <div className="strategy-authoring-step-navigation discovery-step-navigation">
+        <span />
+        <nav className="strategy-authoring-steps" aria-label="Market Discovery configuration steps">
+          {([['core', '1', 'Core Scan'], ['watchlists', '2', 'Watchlists'], ['history', '3', 'History']] as const).map(([id, number, label]) => <button aria-current={guidedStep === id ? "step" : undefined} key={id} onClick={() => setGuidedStep(id)} type="button"><span>{number}</span><strong>{label}</strong></button>)}
+        </nav>
+        <span />
+      </div>
+      <section className="strategy-authoring-stage discovery-guided-stage">
+        {guidedStep === "core" ? <><header className="strategy-identity-intro"><h2>Review what QMD evaluates across the market</h2></header><div className="discovery-core-summary"><article><span>Security universe</span><strong>{section.security_universe.name}</strong><p>{section.security_universe.description}</p><em>System managed</em></article><article><span>Published default</span><strong>{section.core_scan.name}</strong><p>{section.core_scan.description}</p><em>{section.core_scan.calculations.filter((row) => row.enabled).length} active capabilities</em></article></div><div className="discovery-capability-matrix">{section.core_scan.calculations.map((capability) => <article key={capability.capability_id}><span><strong>{capability.name}</strong><small>{capability.description}</small></span><em>{capability.configurable ? "Configurable" : capability.system_required ? "Required" : "Read only"}</em></article>)}</div></> : null}
+        {guidedStep === "watchlists" && selectedWatchlist ? <>
+          <header className="strategy-identity-intro discovery-watchlist-heading"><h2>Configure reusable Watchlists</h2><button className="button compact" onClick={addWatchlist} type="button"><Plus size={14} /> New Watchlist</button></header>
+          <p className="configuration-safety-note discovery-runtime-notice"><TriangleAlert size={15} /> QMD rule membership is stored and published, but automatic causal membership resolution is not yet connected to trading runtime. Until that resolver exists, publication compiles only the explicit manual inclusion snapshot and remains fail-closed for unresolved symbols.</p>
+          <div className="discovery-watchlist-layout">
+            <nav>{section.watchlists.map((watchlist) => <button aria-current={watchlist.watchlist_id === selectedWatchlist.watchlist_id ? "true" : undefined} key={watchlist.watchlist_id} onClick={() => setSelectedWatchlistId(watchlist.watchlist_id)} type="button"><strong>{watchlist.name}</strong><small>{watchlist.maximum_size} members · {watchlist.refresh_interval_ms} ms</small></button>)}</nav>
+            <div className="strategy-identity-fields">
+              <label className="strategy-identity-field"><span>Watchlist name</span><input onChange={(event) => replaceWatchlist({ ...selectedWatchlist, name: event.target.value })} value={selectedWatchlist.name} /><small>Used when a Strategy selects its discovery source.</small></label>
+              <label className="strategy-identity-field"><span>Description</span><textarea onChange={(event) => replaceWatchlist({ ...selectedWatchlist, description: event.target.value })} rows={3} value={selectedWatchlist.description} /><small>Explain which candidates this Watchlist is intended to retain.</small></label>
+              <div className="configuration-field-grid">
+                <SelectField help="QMD sorts passing candidates by this published observation before applying maximum membership." label="Ranking field" onChange={(ranking_field) => replaceWatchlist({ ...selectedWatchlist, ranking_field })} options={section.core_scan.calculations.map((row) => ({ label: row.name, value: row.capability_id }))} value={selectedWatchlist.ranking_field} />
+                <NumberField help="Maximum current membership after ranking and exclusions." label="Maximum members" minimum={1} onChange={(maximum_size) => replaceWatchlist({ ...selectedWatchlist, maximum_size })} step={1} unit="symbols" value={selectedWatchlist.maximum_size} />
+                <NumberField help="How often QMD resolves the Watchlist from its source scan." label="Refresh interval" minimum={1} onChange={(refresh_interval_ms) => replaceWatchlist({ ...selectedWatchlist, refresh_interval_ms })} step={100} unit="ms" value={selectedWatchlist.refresh_interval_ms} />
+                <NumberField help="How long membership remains valid without a confirming refresh. Zero means no automatic expiry." label="Membership TTL" minimum={0} onChange={(membership_ttl_ms) => replaceWatchlist({ ...selectedWatchlist, membership_ttl_ms })} step={1000} unit="ms" value={selectedWatchlist.membership_ttl_ms} />
+                <TextField help="Comma-separated symbols forced into membership. Every override is recorded in membership history." label="Manual inclusions" onChange={(value) => replaceWatchlist({ ...selectedWatchlist, manual_inclusions: value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean) })} value={selectedWatchlist.manual_inclusions.join(", ")} />
+                <TextField help="Comma-separated symbols excluded after rules pass. Every override is recorded in membership history." label="Manual exclusions" onChange={(value) => replaceWatchlist({ ...selectedWatchlist, manual_exclusions: value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean) })} value={selectedWatchlist.manual_exclusions.join(", ")} />
+              </div>
+              <WatchlistRuleChoices onChange={replaceWatchlist} ruleSets={section.rule_sets} watchlist={selectedWatchlist} />
+              <fieldset className="configuration-choice-set discovery-calculation-choices"><legend>Focused calculations</legend><p>These higher-cost calculations are designated for current Watchlist members when causal QMD membership resolution is available.</p><div>{section.core_scan.calculations.filter((row) => row.tier === "watchlist").map((capability) => <label key={capability.capability_id}><input checked={selectedWatchlist.calculations.includes(capability.capability_id)} onChange={(event) => replaceWatchlist({ ...selectedWatchlist, calculations: event.target.checked ? [...selectedWatchlist.calculations, capability.capability_id] : selectedWatchlist.calculations.filter((id) => id !== capability.capability_id) })} type="checkbox" /><span><strong>{capability.name}</strong><small>{capability.description}</small></span></label>)}</div></fieldset>
+            </div>
+          </div>
+        </> : null}
+        {guidedStep === "history" ? <><header className="strategy-identity-intro"><h2>Trace every Watchlist membership change</h2></header><div className="discovery-history-intro"><BadgeCheck size={20} /><div><strong>Append-only membership evidence contract</strong><p>Add, remove, expiry, and manual-override events retain the Watchlist identity, configuration snapshot, event and availability clocks, causal rule, rank, scores, and reason. Current membership will be a projection of this history once the causal resolver is connected.</p></div></div><div className="discovery-history-list">{section.watchlists.flatMap((watchlist) => watchlist.membership_history.map((event, index) => <article key={`${watchlist.watchlist_id}-${index}`}><strong>{String(event.ticker ?? "Unknown symbol")}</strong><span>{watchlist.name}</span><small>{String(event.reason ?? "Membership event")}</small></article>))}{section.watchlists.every((watchlist) => !watchlist.membership_history.length) ? <EmptyState title="No recorded membership events" detail="The runtime resolver is not connected, and draft configuration does not fabricate history." /> : null}</div></> : null}
+      </section>
+    </article>}
+  </div>;
+}
+
+function WatchlistRuleChoices({ onChange, ruleSets, watchlist }: { onChange: (value: WatchlistConfig) => void; ruleSets: RuleSetDefinition[]; watchlist: WatchlistConfig }) {
+  const groups: Array<{ key: "inclusion_rule_sets" | "exclusion_rule_sets"; label: string; detail: string }> = [
+    { key: "inclusion_rule_sets", label: "Inclusion rules", detail: "A candidate must pass the selected reusable evidence before ranking." },
+    { key: "exclusion_rule_sets", label: "Exclusion rules", detail: "A passing exclusion removes the candidate even when inclusion rules pass." },
+  ];
+  return <div className="discovery-rule-choices">{groups.map((group) => <fieldset className="configuration-choice-set" key={group.key}><legend>{group.label}</legend><p>{group.detail}</p><div>{ruleSets.map((ruleSet) => <label key={ruleSet.rule_set_id}><input checked={watchlist[group.key].includes(ruleSet.rule_set_id)} onChange={(event) => onChange({ ...watchlist, [group.key]: event.target.checked ? [...watchlist[group.key], ruleSet.rule_set_id] : watchlist[group.key].filter((id) => id !== ruleSet.rule_set_id) })} type="checkbox" /><span><strong>{ruleSet.name}</strong><small>{ruleSet.description || `${ruleSet.conditions.length} configured conditions`}</small></span></label>)}</div></fieldset>)}</div>;
+}
+
 function StrategyStudio({ approved, draft, hasUnsavedChanges, label, onChange, onDeleteProfile, onDraftChange, onLabelChange, onPublish, onSave, publishing, revisions, section }: {
   approved: Revision | null;
   draft: Draft;
@@ -1695,7 +1882,7 @@ function StrategyStudio({ approved, draft, hasUnsavedChanges, label, onChange, o
   onDeleteProfile: (profileId: string) => Promise<Draft>;
   onDraftChange: (value: Draft) => void;
   onLabelChange: (value: string) => void;
-  onPublish: () => void;
+  onPublish: (profileId: string) => void;
   onSave: () => Promise<boolean>;
   publishing: boolean;
   revisions: Revision[];
@@ -1747,18 +1934,18 @@ function StrategyStudio({ approved, draft, hasUnsavedChanges, label, onChange, o
     setCreationName("");
   }
 
+  async function publishSelected() {
+    if (hasUnsavedChanges && !(await onSave())) return;
+    onPublish(selected.profile_id);
+  }
+
   async function removeProfile(profileId = selected.profile_id) {
     const target = section.profiles.find((row) => row.profile_id === profileId);
     const targetFallback = section.profiles.find((row) => row.profile_id === section.default_profile_id && row.profile_id !== profileId)
       ?? section.profiles.find((row) => row.protected && row.profile_id !== profileId)
       ?? section.profiles.find((row) => row.profile_id !== profileId);
-    const targetPlans = draft.assignments.deployments.filter((row) => row.profile_id === profileId);
     if (!target || target.protected || target.profile_id === section.default_profile_id || !targetFallback) return;
-    const confirmed = window.confirm(
-      targetPlans.length
-        ? `Delete “${target.name}” and move ${targetPlans.length} referencing Run Plan${targetPlans.length === 1 ? "" : "s"} to “${targetFallback.name}”?`
-        : `Delete “${target.name}”?`,
-    );
+    const confirmed = window.confirm(`Delete “${target.name}” permanently?`);
     if (!confirmed) return;
     try {
       const saved = await onDeleteProfile(profileId);
@@ -1810,14 +1997,20 @@ function StrategyStudio({ approved, draft, hasUnsavedChanges, label, onChange, o
         <StrategyAuthoringFlow
           activeStage={activeStage}
           advanced={advanced}
+          approved={approved}
           draft={draft}
           entryRules={entryRules}
           hasUnsavedChanges={hasUnsavedChanges}
+          label={label}
+          onLabelChange={onLabelChange}
           onProfileChange={replaceProfile}
+          onPublish={() => void publishSelected()}
           onRuleSetEdit={(ruleSetId, created) => { const ruleSet = created ?? selected.rule_set_catalog.find((row) => row.rule_set_id === ruleSetId); if (ruleSet) { setCatalogItem(strategyRuleSetCatalogItem(ruleSet, section.input_catalog)); setEditorMode("catalog"); } }}
           onStageChange={setActiveStage}
           onSave={onSave}
           profile={selected}
+          publishing={publishing}
+          revisions={revisions}
           saving={publishing}
           section={section}
         />
@@ -1931,7 +2124,7 @@ function StrategyStudio({ approved, draft, hasUnsavedChanges, label, onChange, o
               <p>The draft has no runtime authority. Publication validates all references and freezes Strategy, Run Plan, Portfolio, OMS, account, safety, and Canvas configuration into one release. Each new run pins one release; later draft changes cannot alter an active run.</p>
             </div>
             <BookConfigurationSurface label="Review and publish the release">
-              <RevisionPublisher approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} />
+              <RevisionPublisher approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={() => onPublish(selected.profile_id)} publishing={publishing} revisions={revisions} />
             </BookConfigurationSurface>
           </StoryChapter>
 
@@ -1983,13 +2176,13 @@ function StrategySelectionPage({ creationMode, name, nameConflict, onCancel, onC
       {profiles.map((profile) => <article key={profile.profile_id}>
         <span className="strategy-selection-icon"><GitBranch size={18} /></span>
         <span className="strategy-selection-copy">
-          <span className="strategy-selection-identity"><strong>{profile.name}</strong><span className="strategy-selection-meta">{profile.protected ? "Template" : "User"}<small>V{profile.revision}</small></span></span>
+          <span className="strategy-selection-identity"><strong>{profile.name}</strong><span className="strategy-selection-meta">{profile.publication_status === "published" ? "Published" : profile.publication_status === "template" ? "Template" : "Draft"}</span></span>
           <small>{profile.description || "No description"}</small>
         </span>
         <span className="strategy-selection-actions">
-          {profile.origin === "user" && profile.editable ? <button onClick={() => onModify(profile.profile_id)} type="button"><PencilLine size={14} /> Modify</button> : null}
+          {profile.publication_status === "draft" && profile.origin === "user" && profile.editable ? <button onClick={() => onModify(profile.profile_id)} type="button"><PencilLine size={14} /> Modify</button> : null}
           <button onClick={() => onClone(profile.profile_id)} type="button"><Clipboard size={14} /> Clone</button>
-          {profile.origin === "user" && !profile.protected ? <button aria-label={`Delete ${profile.name}`} className="danger" onClick={() => onDelete(profile.profile_id)} title="Delete permanently" type="button"><Trash2 size={14} /> Delete</button> : null}
+          {profile.publication_status === "draft" && profile.origin === "user" && !profile.protected ? <button aria-label={`Delete ${profile.name}`} className="danger" onClick={() => onDelete(profile.profile_id)} title="Delete permanently" type="button"><Trash2 size={14} /> Delete</button> : null}
         </span>
       </article>)}
     </section>
@@ -2076,17 +2269,23 @@ function ParameterDocumentation({ documentation: suppliedDocumentation, group, p
   </section>;
 }
 
-function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUnsavedChanges, onProfileChange, onRuleSetEdit, onSave, onStageChange, profile, saving, section }: {
+function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRules, hasUnsavedChanges, label, onLabelChange, onProfileChange, onPublish, onRuleSetEdit, onSave, onStageChange, profile, publishing, revisions, saving, section }: {
   activeStage: StrategyAuthoringStage;
   advanced: Array<{ path: string; value: Primitive }>;
+  approved: Revision | null;
   draft: Draft;
   entryRules: EntryRules & { add_steps: AddStep[]; capital_request: CapitalRequestConfig; order_intent: OrderIntentConfig };
   hasUnsavedChanges: boolean;
+  label: string;
+  onLabelChange: (value: string) => void;
   onProfileChange: (value: StrategyProfile) => void;
+  onPublish: () => void;
   onRuleSetEdit: (ruleSetId: string, created?: RuleSetDefinition) => void;
   onSave: () => Promise<boolean>;
   onStageChange: (value: StrategyAuthoringStage) => void;
   profile: StrategyProfile;
+  publishing: boolean;
+  revisions: Revision[];
   saving: boolean;
   section: StrategySection;
 }) {
@@ -2107,12 +2306,16 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
   const remainingParameters = advanced.filter((item) => !assignedParameterPaths.has(item.path));
   const stages: Array<[StrategyAuthoringStage, string, string, string]> = [
     ["identity", "1", "Identity", "Name and description"],
-    ["overview", "2", "Observe", "Market context"],
-    ["entry", "3", "Enter", "Evidence and request"],
-    ["position", "4", "Manage", "Adds and capabilities"],
-    ["reentry", "5", "Reentry", "Flat-to-open rules"],
-    ["exit", "6", "Exit", "Reduction conditions"],
-    ["handoff", "7", "Run", "External authorities"],
+    ["discovery", "2", "Discovery", "Watchlist"],
+    ["overview", "3", "Observe", "Market context"],
+    ["entry", "4", "Enter", "Evidence and request"],
+    ["position", "5", "Manage", "Adds and capabilities"],
+    ["reentry", "6", "Reentry", "Flat-to-open rules"],
+    ["exit", "7", "Exit", "Reduction conditions"],
+    ["portfolio", "8", "Portfolio", "Capital and accounts"],
+    ["oms", "9", "OMS", "Execution and protection"],
+    ["authority", "10", "Authority", "Modes and confirmation"],
+    ["handoff", "11", "Review", "Publish readiness"],
   ];
   const activeIndex = stages.findIndex(([stage]) => stage === activeStage);
   const activeEntryIndex = ENTRY_AUTHORING_PAGES.findIndex((page) => page.id === activeEntryPage);
@@ -2260,13 +2463,20 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
           <label className="strategy-identity-field">
             <span>Strategy name</span>
             <input autoComplete="off" className="strategy-identity-name" onChange={(event) => onProfileChange({ ...profile, name: event.target.value })} value={profile.name} />
-            <small>This name identifies the profile in Run Plans and runtime views.</small>
+            <small>This name identifies the strategy in selection, publication, and runtime views.</small>
           </label>
           <label className="strategy-identity-field">
             <span>Strategy description</span>
             <textarea className="strategy-identity-description" onChange={(event) => onProfileChange({ ...profile, description: event.target.value })} rows={4} value={profile.description} />
             <small>Summarize the setup, intended market behavior, and purpose.</small>
           </label>
+        </div>
+      </> : null}
+      {activeStage === "discovery" ? <>
+        <header className="strategy-identity-intro"><h2>Which Watchlist should this strategy evaluate?</h2></header>
+        <div className="strategy-connection-surface">
+          <SelectField help={{ role: "Selects the QMD-owned candidate membership evaluated for new entries.", values: Object.fromEntries(draft.market_discovery.watchlists.map((watchlist) => [watchlist.name, watchlist.description || "QMD resolves this Watchlist from the Core Scan."])), note: "Leaving a Watchlist blocks new entries but never abandons an open position; management, protection, and exits continue until safe close." }} label="Watchlist" onChange={(watchlist_id) => onProfileChange({ ...profile, composition: { ...profile.composition, watchlist_id } })} options={draft.market_discovery.watchlists.map((watchlist) => ({ label: watchlist.name, value: watchlist.watchlist_id }))} value={profile.composition.watchlist_id} />
+          {draft.market_discovery.watchlists.filter((watchlist) => watchlist.watchlist_id === profile.composition.watchlist_id).map((watchlist) => <article className="strategy-connection-summary" key={watchlist.watchlist_id}><ScanSearch size={20} /><div><strong>{watchlist.name}</strong><p>{watchlist.description}</p><span>{watchlist.maximum_size} maximum members · resolves every {watchlist.refresh_interval_ms} ms · {watchlist.calculations.length} focused calculations</span></div></article>)}
         </div>
       </> : null}
       {activeStage === "overview" ? <>
@@ -2308,10 +2518,43 @@ function StrategyAuthoringFlow({ activeStage, advanced, draft, entryRules, hasUn
         <ExitAuthoringSurface activePage={activeExitPage} activeRoute={activeExitRoute} catalog={section.input_catalog} draft={draft} luldTargetParameters={luldTargetParameters} mode={phaseModes.exit} onAddRoute={addExitRoute} onModeChange={(mode) => replacePhaseMode("exit", mode)} onPageChange={setActiveExitPage} onProfileChange={onProfileChange} onReplaceRoute={replaceExitRoute} onRuleSetEdit={onRuleSetEdit} onSelectedRouteChange={setSelectedExitRouteId} profile={profile} profitPocketParameters={profitPocketParameters} />
       </> : null}
 
+      {activeStage === "portfolio" ? <>
+        <header className="strategy-identity-intro"><h2>Which Portfolio policy and accounts may fund this strategy?</h2></header>
+        <div className="strategy-connection-surface">
+          <SelectField help="Portfolio remains the sole authority for sizing, shared-capital arbitration, reservations, exposure, loss, and drawdown limits." label="Portfolio policy" onChange={(portfolio_policy_id) => onProfileChange({ ...profile, composition: { ...profile.composition, portfolio_policy_id } })} options={draft.portfolio.policies.map((policy) => ({ label: String(policy.name || policy.policy_id), value: String(policy.policy_id) }))} value={profile.composition.portfolio_policy_id} />
+          <fieldset className="configuration-choice-set strategy-account-choices"><legend>Eligible accounts</legend><div>{draft.accounts.bindings.map((account) => <label key={account.account_key}><input checked={profile.composition.account_keys.includes(account.account_key)} onChange={(event) => onProfileChange({ ...profile, composition: { ...profile.composition, account_keys: event.target.checked ? [...profile.composition.account_keys, account.account_key] : profile.composition.account_keys.filter((key) => key !== account.account_key) } })} type="checkbox" /><span><strong>{account.name}</strong><small>{readableLabel(account.account_class)} · {account.modes.map(readableLabel).join(", ")}</small></span></label>)}</div></fieldset>
+        </div>
+      </> : null}
+
+      {activeStage === "oms" ? <>
+        <header className="strategy-identity-intro"><h2>Which OMS configuration should execute approved intent?</h2></header>
+        <div className="strategy-connection-surface">
+          <SelectField help={{ role: "Selects the reusable execution, routing, partial-fill, and protection defaults used after Portfolio approves quantity.", values: Object.fromEntries(draft.oms.profiles.map((oms) => [oms.name, oms.description])), note: "OMS cannot create intent or increase Portfolio's approved quantity." }} label="OMS and protection" onChange={(oms_profile_id) => onProfileChange({ ...profile, composition: { ...profile.composition, oms_profile_id } })} options={draft.oms.profiles.map((oms) => ({ label: oms.name, value: oms.profile_id }))} value={profile.composition.oms_profile_id} />
+          {draft.oms.profiles.filter((oms) => oms.profile_id === profile.composition.oms_profile_id).map((oms) => <article className="strategy-connection-summary" key={oms.profile_id}><ShieldCheck size={20} /><div><strong>{oms.name}</strong><p>{oms.description}</p><span>{readableLabel(oms.settings.entry_urgency)} entry · {readableLabel(oms.settings.exit_urgency)} exit · {readableLabel(oms.settings.session_routing)} routing</span></div></article>)}
+        </div>
+      </> : null}
+
+      {activeStage === "authority" ? <>
+        <header className="strategy-identity-intro"><h2>Where may this strategy run and who confirms its actions?</h2></header>
+        <div className="strategy-connection-surface">
+          <fieldset className="configuration-choice-set"><legend>Permitted environments</legend><ModeChoices onChange={(values) => onProfileChange({ ...profile, composition: { ...profile.composition, allowed_environments: values as RuntimeMode[] } })} options={["replay", "backtest", "backtest_debug", "paper", "live"]} values={profile.composition.allowed_environments} /></fieldset>
+          <SelectField help="This is the default exposure-increasing action authority. Phase-specific automatic/manual modes still determine whether Strategy evaluates that phase. Portfolio and mandatory safety may always reduce or reject exposure." label="Default action authority" onChange={(value) => onProfileChange({ ...profile, composition: { ...profile.composition, action_authority: { ...profile.composition.action_authority, default: value as StrategyRunPlan["action_authority"]["default"] } } })} options={[{ label: "Manual", value: "manual" }, { label: "Confirm", value: "confirm" }, { label: "Automatic", value: "automatic" }]} value={profile.composition.action_authority.default} />
+          <div className="strategy-safety-lock"><LockKeyhole size={19} /><div><strong>Live guardrails cannot be disabled</strong><p>Portfolio limits, broker and data health, protective exits, and emergency authority remain mandatory in Live. Replay and Backtest may explicitly disable selected non-production checks.</p></div></div>
+        </div>
+      </> : null}
+
       {activeStage === "handoff" ? <>
-        <StrategyStageIntro title="Which authorities are required after strategy logic passes?">The Strategy Profile ends by emitting intent. The following configuration decides whether it may proceed, how much may trade, where it trades, and how broker orders are protected.</StrategyStageIntro>
-        <BooleanField help="Controls whether a Run Plan may select this profile. It does not start a run." label="Available to Run Plans" onChange={(enabled) => onProfileChange({ ...profile, enabled })} value={profile.enabled} />
-        <StrategyHandoffLinks draft={draft} profile={profile} />
+        <StrategyStageIntro title="Review the complete strategy before publication">Publication freezes this Strategy and every connected configuration. It cannot be modified afterward; use Clone to create a new draft derived from it.</StrategyStageIntro>
+        <div className="strategy-publication-review">
+          <article><span>Watchlist</span><strong>{draft.market_discovery.watchlists.find((row) => row.watchlist_id === profile.composition.watchlist_id)?.name ?? "Not selected"}</strong></article>
+          <article><span>Portfolio</span><strong>{String(draft.portfolio.policies.find((row) => String(row.policy_id) === profile.composition.portfolio_policy_id)?.name ?? profile.composition.portfolio_policy_id)}</strong></article>
+          <article><span>OMS</span><strong>{draft.oms.profiles.find((row) => row.profile_id === profile.composition.oms_profile_id)?.name ?? "Not selected"}</strong></article>
+          <article><span>Accounts</span><strong>{profile.composition.account_keys.length} selected</strong></article>
+          <article><span>Environments</span><strong>{profile.composition.allowed_environments.map(readableLabel).join(", ")}</strong></article>
+          <article><span>Default authority</span><strong>{readableLabel(profile.composition.action_authority.default)}</strong></article>
+        </div>
+        <div className="strategy-safety-lock"><BadgeCheck size={19} /><div><strong>{profile.publication_status === "published" ? "Published and immutable" : "Draft strategy"}</strong><p>{profile.publication_status === "published" ? "Runtime results remain permanently associated with this identity. Clone it to make changes." : "Next saves the draft. Publish from the final review to activate it for new runs."}</p></div></div>
+        {profile.publication_status !== "published" ? <RevisionPublisher approved={approved} draft={draft} guided label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} /> : null}
         <StrategyEngineParameterGroup items={remainingParameters} onChange={(path, value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, path, value) })} summary="Definition-specific values not assigned to another lifecycle step" title="Other engine parameters" />
       </> : null}
     </section>
@@ -2397,7 +2640,7 @@ function StrategyPhaseModeEditor({ mode, onChange, phase }: {
         </button>;
       })}
     </div>
-    <div className="strategy-phase-mode-guidance"><ShieldCheck aria-hidden="true" size={18} /><p>{phase === "Strategic exit" ? "Broker-held protection, emergency exits, and account safety remain active in both modes." : "Run Plan authority still decides whether emitted intent executes automatically or requires confirmation."}</p></div>
+    <div className="strategy-phase-mode-guidance"><ShieldCheck aria-hidden="true" size={18} /><p>{phase === "Strategic exit" ? "Broker-held protection, emergency exits, and account safety remain active in both modes." : "The configured action authority still decides whether emitted intent executes automatically or requires confirmation."}</p></div>
   </div>;
 }
 
@@ -3588,7 +3831,7 @@ function AddStepsEditor({ catalog, eligibleSessions, executionPolicies, onChange
   );
 }
 
-type ConfigurableSection = Exclude<TradingConfigurationSection, "strategy" | "revisions">;
+type ConfigurableSection = Exclude<TradingConfigurationSection, "strategy" | "discovery" | "revisions">;
 type SectionStudioView = "guided" | "catalog" | "structure";
 
 const SECTION_STUDIO_COPY: Record<ConfigurableSection, { managed: string; title: string }> = {
@@ -4310,9 +4553,9 @@ function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: A
   return (
     <div className="configuration-stack">
       <GuideCallout icon={<Boxes size={17} />} title="One stable key, mode-specific session binding">
-        Run Plans and Portfolio mandates reference the stable account key. Replay and Backtest bind simulated accounts; Paper and Live require the exact externally discovered IBKR account ID.
+        Published Strategies and Portfolio mandates reference the stable account key. Replay and Backtest bind simulated accounts; Paper and Live require the exact externally discovered IBKR account ID.
       </GuideCallout>
-      <ConfigGroup action={<button className="button compact" onClick={addAccount} type="button"><Plus size={14} /> Add account</button>} summary="Account settings are reusable across Run Plans." title="Configured accounts">
+      <ConfigGroup action={<button className="button compact" onClick={addAccount} type="button"><Plus size={14} /> Add account</button>} summary="Account settings are reusable across published Strategies." title="Configured accounts">
         <div className="account-config-grid">
           {section.bindings.map((account, index) => (
             <article className="account-config-card" key={account.account_key}>
@@ -4327,7 +4570,7 @@ function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: A
                 <TextField help="Currency used for Portfolio limits and account summaries." label="Base currency" onChange={(value) => replace(index, { ...account, base_currency: value.toUpperCase() })} value={account.base_currency} />
               </div>
               <ModeSelector modes={account.modes} onChange={(modes) => replace(index, { ...account, modes })} />
-              {account.modes.some((mode) => mode === "paper" || mode === "live") ? <p className="configuration-safety-note"><ShieldCheck size={15} /> Publication and broker preflight require this exact account ID, a matching external IBKR discovery binding, and an enabled Run Plan for every selected live mode.</p> : null}
+              {account.modes.some((mode) => mode === "paper" || mode === "live") ? <p className="configuration-safety-note"><ShieldCheck size={15} /> Publication and broker preflight require this exact account ID, a matching external IBKR discovery binding, and compiled runtime coverage for every selected live mode.</p> : null}
             </article>
           ))}
         </div>
@@ -4354,12 +4597,12 @@ function RevisionPublisher({ approved, draft, guided = false, label, onLabelChan
   const canvas = useMemo(canvasApprovalSnapshot, [approved, draft]);
   const checks = draft ? releaseReadiness(draft) : [];
   const configurationReady = checks.every((check) => check.ready);
-  const visibleChecks = guided ? checks.filter((check) => ["Run Plans", "Mode coverage", "Paper and Live bindings"].includes(check.label)) : checks;
+  const visibleChecks = guided ? checks.filter((check) => ["Runtime compilation", "Mode coverage", "Paper and Live bindings"].includes(check.label)) : checks;
   return (
     <div className="configuration-revision-layout">
       <section className="configuration-publish-card">
         <header><div><span>{guided ? "Ready for use" : "Completion gate"}</span><strong>{guided ? "Publish this setup" : "Publish the application release"}</strong></div><Send size={18} /></header>
-        <p>{guided ? "Publishing makes this complete setup available to new runs. Existing runs keep the release they started with." : "A release freezes every referenced Strategy Profile, capability setting, Run Plan, mandate, policy, OMS profile, account binding, and Canvas. Active runs keep the release they started with."}</p>
+        <p>{guided ? "Publishing makes this complete setup available to new runs. Existing runs keep the release they started with." : "A release freezes every referenced Strategy, capability setting, compiled runtime contract, mandate, policy, OMS configuration, account binding, and Canvas. Active runs keep the release they started with."}</p>
         <div className="configuration-publish-proof">
           {visibleChecks.map((check) => <span data-ready={check.ready ? "true" : "false"} key={check.label}>{check.ready ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />} {guided ? publishCheckLabel(check.label) : check.label} · {check.detail}</span>)}
           <span data-ready={canvas.ready ? "true" : "false"}><CheckCircle2 size={14} /> {guided ? "Workspace layout" : "Canvas"} · {canvas.containerCount} containers</span>
@@ -4399,18 +4642,18 @@ function releaseReadiness(draft: Draft) {
   const liveBindingsReady = draft.accounts.bindings.every((account) => !account.enabled || !account.modes.some((mode) => mode === "paper" || mode === "live") || Boolean((account.source_account_env || account.source_account_id.trim()) && account.session_key.trim()));
   return [
     { detail: String(draft.strategy.profiles.length), label: "Strategy Profiles", ready: draft.strategy.profiles.length > 0 },
-    { detail: deploymentsReady ? `${deployments.length} ready` : "needs mandate or profile", label: "Run Plans", ready: deploymentsReady },
+    { detail: deploymentsReady ? `${deployments.length} ready` : "needs mandate or strategy", label: "Runtime compilation", ready: deploymentsReady },
     { detail: String(draft.portfolio.mandates.length), label: "Account mandates", ready: mandatesReady },
     { detail: String(draft.oms.profiles.length), label: "OMS profiles", ready: draft.oms.profiles.length > 0 },
     { detail: String(draft.accounts.bindings.length), label: "Accounts", ready: draft.accounts.bindings.length > 0 },
-    { detail: modeCoverageReady ? [...configuredModes].map(readableLabel).join(", ") : "Run Plan coverage missing", label: "Mode coverage", ready: modeCoverageReady },
+    { detail: modeCoverageReady ? [...configuredModes].map(readableLabel).join(", ") : "runtime coverage missing", label: "Mode coverage", ready: modeCoverageReady },
     { detail: liveBindingsReady ? "exact bindings" : "broker id or session missing", label: "Paper and Live bindings", ready: liveBindingsReady },
     { detail: `${draft.oms.execution_policies.length} execution · ${draft.oms.protection_profiles.length} protection`, label: "Policy catalogs", ready: draft.oms.execution_policies.length > 0 && draft.oms.protection_profiles.length > 0 },
   ];
 }
 
 function publishCheckLabel(label: string) {
-  if (label === "Run Plans") return "Trading setup";
+  if (label === "Runtime compilation") return "Trading setup";
   if (label === "Mode coverage") return "Selected modes";
   if (label === "Paper and Live bindings") return "Broker connection";
   return label;
@@ -4428,10 +4671,10 @@ function EffectiveConfigurationPreview({ updatedAt }: { updatedAt: string }) {
       .catch((reason) => { if (!cancelled) { setPayload(null); setError(reason instanceof Error ? reason.message : String(reason)); } });
     return () => { cancelled = true; };
   }, [mode, updatedAt]);
-  return <ConfigGroup summary="Backend-resolved saved-draft evidence. This is the exact account, policy, Run Plan, and mode projection that a new runtime will consume after publication." title="Effective configuration preview">
+  return <ConfigGroup summary="Backend-resolved saved-draft evidence. This is the exact account, policy, compiled contract, and mode projection that a new runtime will consume after publication." title="Effective configuration preview">
     <div className="configuration-toolbar"><SelectField help="Resolve the saved draft for one runtime mode." label="Runtime mode" onChange={(value) => setMode(value as RuntimeMode)} options={["replay", "backtest", "backtest_debug", "paper", "live"].map((value) => ({ label: readableLabel(value), value }))} value={mode} /></div>
     {error ? <p className="configuration-safety-note"><TriangleAlert size={15} /> {error}</p> : null}
-    {payload ? <><p className="configuration-section-guide">{payload.runtime_count} eligible Run Plan{payload.runtime_count === 1 ? "" : "s"} · {payload.accounts.length} bound account{payload.accounts.length === 1 ? "" : "s"} · {readableLabel(payload.source)}</p><div className="mandate-grid">{payload.accounts.map((account) => <article className="mandate-card" key={String(account.account_key)}><header><div><strong>{String(account.name || account.account_key)}</strong><span>{String(account.account_key)} · {String(account.account_class)}</span></div></header><div className="configuration-fixed-value"><span>Broker/session binding</span><strong>{String(account.source_account_env || account.source_account_id || "Simulated")}</strong><small>{String(account.session_key)} · {String(account.policy_identity)}</small></div><div className="configuration-fixed-value"><span>Eligible Run Plans</span><strong>{Array.isArray(account.run_plan_ids) ? account.run_plan_ids.length : 0}</strong><small>{Array.isArray(account.run_plan_ids) ? account.run_plan_ids.join(", ") || "None for this mode" : "None for this mode"}</small></div></article>)}</div></> : null}
+    {payload ? <><p className="configuration-section-guide">{payload.runtime_count} eligible compiled runtime{payload.runtime_count === 1 ? "" : "s"} · {payload.accounts.length} bound account{payload.accounts.length === 1 ? "" : "s"} · {readableLabel(payload.source)}</p><div className="mandate-grid">{payload.accounts.map((account) => <article className="mandate-card" key={String(account.account_key)}><header><div><strong>{String(account.name || account.account_key)}</strong><span>{String(account.account_key)} · {String(account.account_class)}</span></div></header><div className="configuration-fixed-value"><span>Broker/session binding</span><strong>{String(account.source_account_env || account.source_account_id || "Simulated")}</strong><small>{String(account.session_key)} · {String(account.policy_identity)}</small></div><div className="configuration-fixed-value"><span>Eligible compiled runtimes</span><strong>{Array.isArray(account.run_plan_ids) ? account.run_plan_ids.length : 0}</strong><small>{Array.isArray(account.run_plan_ids) ? account.run_plan_ids.join(", ") || "None for this mode" : "None for this mode"}</small></div></article>)}</div></> : null}
   </ConfigGroup>;
 }
 
@@ -4982,6 +5225,7 @@ function cloneApprovedDraft(approved: Revision, current: Draft): Draft {
   return {
     accounts: deepClone(approved.payload.accounts),
     assignments: deepClone(approved.payload.assignments),
+    market_discovery: deepClone(approved.payload.market_discovery),
     oms: deepClone(approved.payload.oms),
     portfolio: deepClone(approved.payload.portfolio),
     schema_version: approved.payload.schema_version,
