@@ -16,6 +16,7 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use futures_util::SinkExt;
 use qmd_core::bars::is_supported_timeframe;
+use qmd_core::capability_catalog::{computation_capability_catalog, ComputationCapability};
 use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::event::MarketEvent;
 use qmd_core::market_products::{
@@ -144,6 +145,7 @@ pub fn app(state: AppState) -> Router {
         .route("/config", get(config))
         .route("/coverage", get(coverage))
         .route("/coverage/latest", get(latest_coverage))
+        .route("/capability-catalog", get(capability_catalog_snapshot))
         .route("/snapshot/cache", get(cache_snapshot))
         .route("/snapshot/events", get(event_page_snapshot))
         .route(
@@ -170,6 +172,10 @@ pub fn app(state: AppState) -> Router {
         .route("/stream/derived/{ticker}", get(derived_stream))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
+}
+
+async fn capability_catalog_snapshot() -> Json<Vec<ComputationCapability<'static>>> {
+    Json(computation_capability_catalog())
 }
 
 async fn scanner_derived_snapshot(

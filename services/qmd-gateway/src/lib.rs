@@ -9,6 +9,7 @@
 
 pub mod api;
 pub mod bars;
+pub mod capability_catalog;
 pub mod clickhouse;
 pub mod compact_event;
 pub mod config;

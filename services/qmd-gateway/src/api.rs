@@ -1,5 +1,6 @@
 use crate::bars::TradeAggregationRules;
 use crate::bars::{BarSnapshot, SharedBarStore};
+use crate::capability_catalog::{computation_capability_catalog, ComputationCapability};
 use crate::compact_event::{CompactEventDecoder, LiveCompactEvent, SharedCompactEventStore};
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
@@ -118,6 +119,7 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/status", get(status_snapshot))
         .route("/snapshot/maintenance", get(maintenance_snapshot))
         .route("/snapshot/coverage", get(coverage_snapshot))
+        .route("/capability-catalog", get(capability_catalog_snapshot))
         .route("/indicator-catalog", get(indicator_catalog_snapshot))
         .route("/signal-catalog", get(signal_catalog_snapshot))
         .route("/snapshot/signals", get(market_signal_snapshot))
@@ -618,6 +620,10 @@ async fn coverage_query_rows(config: &GatewayConfig, sql: &str) -> Result<Vec<Va
 
 async fn indicator_catalog_snapshot() -> Json<Vec<IndicatorTaxonomyEntry<'static>>> {
     Json(indicator_taxonomy_catalog())
+}
+
+async fn capability_catalog_snapshot() -> Json<Vec<ComputationCapability<'static>>> {
+    Json(computation_capability_catalog())
 }
 
 async fn signal_catalog_snapshot() -> Json<Vec<SignalTaxonomyEntry<'static>>> {
