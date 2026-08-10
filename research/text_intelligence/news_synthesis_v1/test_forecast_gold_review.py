@@ -7,14 +7,54 @@ from tempfile import TemporaryDirectory
 
 from .forecast_gold_review import (
     _bounded_batches,
+    _sha256_json,
     certify_consensus,
+    evaluate_article_forecast_eligibility,
     prepare_adjudication,
+    prepare_full_source_review,
     validate_certified_authority,
     validate_reviews,
 )
 
 
 class ForecastGoldReviewTest(unittest.TestCase):
+    def test_prepare_can_preserve_unresolved_high_recall_candidates(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sampling = root / "sampling"
+            sampling.mkdir()
+            self._write_jsonl(sampling / "silver_screening_labels.jsonl", [
+                {"source_id": "eligible-source", "screening_label": "eligible"},
+                {"source_id": "unresolved-source", "screening_label": "unresolved"},
+                {"source_id": "ineligible-source", "screening_label": "ineligible"},
+            ])
+            articles = []
+            for source_id in ("eligible-source", "unresolved-source", "ineligible-source"):
+                articles.append({
+                    "source_id": source_id,
+                    "source_timestamp": "2026-01-01T12:00:00+00:00",
+                    "tickers": ["AAA"],
+                    "title": source_id,
+                    "text": f"{source_id} body",
+                })
+            self._write_jsonl(sampling / "sampled_articles.jsonl", articles)
+            (sampling / "completion_manifest.json").write_text("{}\n", encoding="utf-8")
+
+            output = root / "gold"
+            manifest = prepare_full_source_review(
+                sampling,
+                output,
+                screening_labels=("eligible", "unresolved"),
+            )
+
+            self.assertEqual(manifest["population"]["articles"], 2)
+            self.assertEqual(
+                manifest["review"]["selected_screening_labels"],
+                ["eligible", "unresolved"],
+            )
+            rows = [json.loads(line) for line in (output / "review_answer_key.jsonl").read_text().splitlines()]
+            self.assertEqual(len(rows), 2)
+
     def test_batches_bound_articles_and_body_chars(self) -> None:
         rows = [
             {"review_id": f"G{index}", "provider_tickers": ["T"], "full_rendered_body": "x" * size}
@@ -104,6 +144,42 @@ class ForecastGoldReviewTest(unittest.TestCase):
             self.assertEqual(validation["status"], "pass")
             self.assertEqual(validation["evidence_spans_verified"], 2)
             self.assertEqual(validation["independent_review_agreement"]["exact_issuer_unit_rate"], 0.5)
+
+            predictions = root / "predictions.jsonl"
+            self._write_jsonl(predictions, [
+                {
+                    "source_id": "source-1",
+                    "engine_version": "test-engine",
+                    "forecast_eligible_predicted": True,
+                    "eligible_entity_ids": ["security:aaa"],
+                },
+                {
+                    "source_id": "source-2",
+                    "engine_version": "test-engine",
+                    "forecast_eligible_predicted": True,
+                    "eligible_entity_ids": ["security:bbb"],
+                },
+            ])
+            evaluation = evaluate_article_forecast_eligibility(root, predictions)
+            self.assertEqual(evaluation["confusion_matrix"], {"tp": 1, "fn": 0, "fp": 1, "tn": 0})
+            self.assertEqual(evaluation["population"]["scorable_articles"], 2)
+            self.assertEqual(evaluation["metrics"]["recall"], 1.0)
+            self.assertEqual(evaluation["metrics"]["precision"], 0.5)
+            self.assertEqual(evaluation["status"], "pass")
+
+            self._write_jsonl(predictions, [{
+                "source_id": "source-1",
+                "engine_version": "test-engine",
+                "forecast_eligible_predicted": True,
+                "eligible_entity_ids": ["security:aaa"],
+            }])
+            incomplete = evaluate_article_forecast_eligibility(root, predictions)
+            self.assertEqual(incomplete["status"], "incomplete")
+            self.assertEqual(incomplete["population"]["missing_predictions"], 1)
+            self.assertEqual(
+                incomplete["authority"]["scored_source_ids_sha256"],
+                _sha256_json(["source-1"]),
+            )
 
     @staticmethod
     def _input(review_id: str, ticker: str, title: str) -> dict[str, object]:

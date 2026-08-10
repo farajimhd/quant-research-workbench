@@ -36,13 +36,20 @@ def prepare_full_source_review(
     max_articles_per_batch: int = 40,
     max_body_chars_per_batch: int = 60_000,
     seed: str = "forecast-gold-full-source-v1",
+    screening_labels: Iterable[str] = ("eligible",),
 ) -> dict[str, Any]:
     if max_articles_per_batch < 1 or max_body_chars_per_batch < 1:
         raise ValueError("batch limits must be positive")
+    selected_screening_labels = frozenset(str(value).strip() for value in screening_labels)
+    allowed_screening_labels = frozenset(("eligible", "unresolved"))
+    if not selected_screening_labels or not selected_screening_labels <= allowed_screening_labels:
+        raise ValueError(
+            "screening_labels must be a non-empty subset of eligible and unresolved"
+        )
     labels = {
         row["source_id"]: row
         for row in _read_jsonl(sampling_root / "silver_screening_labels.jsonl")
-        if row.get("screening_label") == "eligible"
+        if row.get("screening_label") in selected_screening_labels
     }
     articles = {
         row["source_id"]: row
@@ -120,6 +127,7 @@ def prepare_full_source_review(
             "max_articles_per_batch": max_articles_per_batch,
             "max_body_chars_per_batch": max_body_chars_per_batch,
             "batches": len(batches),
+            "selected_screening_labels": sorted(selected_screening_labels),
         },
         "assignments": assignments,
     }
@@ -479,6 +487,112 @@ def validate_certified_authority(review_root: Path) -> dict[str, Any]:
     }
     (review_root / "VALIDATION.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return report
+
+
+def evaluate_article_forecast_eligibility(
+    review_root: Path,
+    predictions_path: Path,
+) -> dict[str, Any]:
+    """Evaluate hidden article-level engine eligibility on the certified cohort."""
+    validation = validate_certified_authority(review_root)
+    if validation["status"] != "pass":
+        raise RuntimeError("certified authority validation did not pass")
+
+    ledger = _read_jsonl(review_root / "certification_ledger.jsonl")
+    predictions: dict[str, dict[str, Any]] = {}
+    for row in _read_jsonl(predictions_path):
+        source_id = str(row.get("source_id") or "")
+        if not source_id or source_id in predictions:
+            raise RuntimeError(f"missing or duplicate prediction source_id: {source_id}")
+        predictions[source_id] = row
+
+    counts: Counter[str] = Counter()
+    engine_versions: Counter[str] = Counter()
+    rows = []
+    certified_source_ids = []
+    scored_source_ids = []
+    for ledger_row in ledger:
+        source_id = str(ledger_row["source_id"])
+        if ledger_row["status"] != "certified":
+            counts["policy_uncertain_articles"] += 1
+            continue
+        certified_source_ids.append(source_id)
+        document = json.loads(
+            (review_root / "certified_labels" / f"{source_id}.json").read_text(encoding="utf-8")
+        )
+        gold = bool(document["article_forecast_eligible"])
+        prediction = predictions.get(source_id)
+        predicted = None if prediction is None else prediction.get("forecast_eligible_predicted")
+        if prediction is None:
+            outcome = "missing_prediction"
+            counts[outcome] += 1
+        elif not isinstance(predicted, bool):
+            outcome = "engine_failure"
+            counts[outcome] += 1
+        else:
+            scored_source_ids.append(source_id)
+            outcome = (
+                "tp" if gold and predicted else
+                "fn" if gold else
+                "fp" if predicted else
+                "tn"
+            )
+            counts[outcome] += 1
+        if prediction and prediction.get("engine_version"):
+            engine_versions[str(prediction["engine_version"])] += 1
+        rows.append({
+            "source_id": source_id,
+            "gold_forecast_eligible": gold,
+            "forecast_eligible_predicted": predicted if isinstance(predicted, bool) else None,
+            "outcome": outcome,
+            "engine_version": prediction.get("engine_version") if prediction else None,
+            "eligible_entity_ids": prediction.get("eligible_entity_ids", []) if prediction else [],
+        })
+
+    tp, fn, fp, tn = (counts[key] for key in ("tp", "fn", "fp", "tn"))
+    precision = _safe_ratio(tp, tp + fp)
+    recall = _safe_ratio(tp, tp + fn)
+    specificity = _safe_ratio(tn, tn + fp)
+    evaluation_complete = not counts["engine_failure"] and not counts["missing_prediction"]
+    report = {
+        "version": f"{CONTRACT_VERSION}_article_eligibility_evaluation_v1",
+        "evaluated_at_utc": datetime.now(UTC).isoformat(),
+        "status": "pass" if evaluation_complete else "incomplete",
+        "scope": "certified full-source candidate cohort; not the full sampled population",
+        "prediction_blind_until_after_certification": True,
+        "engine_versions": dict(sorted(engine_versions.items())),
+        "population": {
+            "certified_articles": len(certified_source_ids),
+            "scorable_articles": tp + fn + fp + tn,
+            "policy_uncertain_articles": counts["policy_uncertain_articles"],
+            "engine_failures": counts["engine_failure"],
+            "missing_predictions": counts["missing_prediction"],
+        },
+        "confusion_matrix": {"tp": tp, "fn": fn, "fp": fp, "tn": tn},
+        "metrics": {
+            "precision": precision,
+            "recall": recall,
+            "specificity": specificity,
+            "f1": _safe_ratio(2 * precision * recall, precision + recall),
+            "balanced_accuracy": (recall + specificity) / 2,
+            "raw_accuracy": _safe_ratio(tp + tn, tp + fn + fp + tn),
+        },
+        "authority": {
+            "gold_manifest_sha256": _sha256_file(review_root / "gold_manifest.json"),
+            "certification_ledger_sha256": _sha256_file(review_root / "certification_ledger.jsonl"),
+            "predictions_sha256": _sha256_file(predictions_path),
+            "scored_source_ids_sha256": _sha256_json(sorted(scored_source_ids)),
+        },
+    }
+    _write_jsonl(review_root / "article_forecast_eligibility_evaluation_rows.jsonl", rows)
+    (review_root / "ARTICLE_FORECAST_ELIGIBILITY_EVALUATION.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8"
+    )
+    return report
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    return numerator / denominator if denominator else 0.0
 
 
 def _load_manual_adjudications(

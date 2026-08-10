@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .forecast_gold_review import (
     certify_consensus,
+    evaluate_article_forecast_eligibility,
     prepare_adjudication,
     prepare_full_source_review,
     validate_certified_authority,
@@ -18,6 +19,13 @@ def main() -> int:
     prepare = subparsers.add_parser("prepare")
     prepare.add_argument("--sampling-root", type=Path, required=True)
     prepare.add_argument("--output-root", type=Path, required=True)
+    prepare.add_argument(
+        "--screening-label",
+        action="append",
+        choices=("eligible", "unresolved"),
+        default=None,
+        help="Silver screening label to retain; repeat to preserve unresolved high-recall candidates.",
+    )
     adjudicate = subparsers.add_parser("adjudicate")
     adjudicate.add_argument("--review-root", type=Path, required=True)
     adjudicate.add_argument("--pass-one", type=Path, action="append", required=True)
@@ -28,10 +36,17 @@ def main() -> int:
     certify.add_argument("--manual-adjudication", type=Path, action="append", default=[])
     validate = subparsers.add_parser("validate")
     validate.add_argument("--review-root", type=Path, required=True)
+    evaluate = subparsers.add_parser("evaluate")
+    evaluate.add_argument("--review-root", type=Path, required=True)
+    evaluate.add_argument("--predictions", type=Path, required=True)
     args = parser.parse_args()
 
     if args.command == "prepare":
-        manifest = prepare_full_source_review(args.sampling_root.resolve(), args.output_root.resolve())
+        manifest = prepare_full_source_review(
+            args.sampling_root.resolve(),
+            args.output_root.resolve(),
+            screening_labels=args.screening_label or ("eligible",),
+        )
     elif args.command == "adjudicate":
         manifest = prepare_adjudication(
             args.review_root.resolve(), _expand(args.pass_one), _expand(args.pass_two)
@@ -42,8 +57,12 @@ def main() -> int:
             _expand(args.pass_three),
             _expand(args.manual_adjudication),
         )
-    else:
+    elif args.command == "validate":
         manifest = validate_certified_authority(args.review_root.resolve())
+    else:
+        manifest = evaluate_article_forecast_eligibility(
+            args.review_root.resolve(), args.predictions.resolve()
+        )
     print(json.dumps({key: value for key, value in manifest.items() if key != "assignments"}, indent=2))
     return 0
 
