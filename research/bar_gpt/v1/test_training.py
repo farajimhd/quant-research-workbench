@@ -69,6 +69,7 @@ from research.bar_gpt.v1.offline_shards import (
     DEFAULT_OUTPUT_ROOT,
     ShardBuildReporter,
     assert_shard_catalog_writable,
+    _storage_contract_config,
     _partition_tickers,
     _process_exit_detail,
     _resolve_cpu_threads_per_worker,
@@ -81,6 +82,7 @@ from research.bar_gpt.v1.offline_shards import (
     config_hash,
     discover_offline_units,
     load_shard,
+    load_shard_storage_config,
     main as offline_shards_main,
     make_offline_dataloader,
     materialize_block,
@@ -1187,6 +1189,25 @@ class LoaderTrainerContractTest(unittest.TestCase):
             shard_path(DEFAULT_OUTPUT_ROOT, "AAA:2026-01"),
             DEFAULT_OUTPUT_ROOT / "tickers" / "AAA" / "2026" / "2026-01.pt",
         )
+
+    def test_shard_storage_config_is_reconstructed_from_certified_build_manifest(self) -> None:
+        certified = dataclasses.replace(DataConfig(), origin_bars_1s=4096)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest" / "build_plan.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({
+                "config_hash": shard_compatibility_hash(certified),
+                "storage_config": _storage_contract_config(certified),
+            }), encoding="utf-8")
+            loaded = load_shard_storage_config(root)
+            self.assertEqual(loaded.origin_bars_1s, 4096)
+            self.assertEqual(shard_compatibility_hash(loaded), shard_compatibility_hash(certified))
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+            value["config_hash"] = "0" * 64
+            manifest.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "storage hash mismatch"):
+                load_shard_storage_config(root)
 
     def test_offline_discovery_reports_missing_condition_count_metadata(self) -> None:
         builder_config = self.data_config()

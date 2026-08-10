@@ -458,6 +458,42 @@ def shard_compatibility_hash(config: DataConfig) -> str:
     return config_hash(storage_config)
 
 
+def load_shard_storage_config(root: Path) -> DataConfig:
+    """Reconstruct and verify the exact storage contract persisted by a builder."""
+    manifest_path = Path(root) / "manifest" / "build_plan.json"
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"offline shard build manifest is unavailable: {manifest_path}") from exc
+    raw = payload.get("storage_config")
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"offline shard build manifest lacks storage_config: {manifest_path}")
+    allowed = {field.name for field in dataclasses.fields(DataConfig)}
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise RuntimeError(f"offline shard build manifest contains unknown DataConfig fields: {unknown}")
+    values = dict(raw)
+    for name in (
+        "intraday_timeframes_us", "calendar_timeframes", "horizons_us",
+        "condition_target_active",
+    ):
+        if name in values:
+            values[name] = tuple(values[name])
+    for name in ("intraday_context_bars", "calendar_context_bars"):
+        if name in values:
+            values[name] = tuple(tuple(item) for item in values[name])
+    config = DataConfig(**values)
+    config.validate()
+    expected_hash = str(payload.get("config_hash", ""))
+    observed_hash = shard_compatibility_hash(config)
+    if not expected_hash or observed_hash != expected_hash:
+        raise RuntimeError(
+            "offline shard build manifest storage hash mismatch: "
+            f"expected={expected_hash or 'missing'} observed={observed_hash} path={manifest_path}"
+        )
+    return config
+
+
 def completed_units(root: Path, expected_hash: str) -> dict[str, dict[str, Any]]:
     completed: dict[str, dict[str, Any]] = {}
     if not root.exists():

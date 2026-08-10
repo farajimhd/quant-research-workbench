@@ -10,12 +10,13 @@ from typing import Sequence
 import torch
 
 from research.bar_gpt.v1.audit_offline_shards import DEFAULT_PILOT_ROOT
-from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig
+from research.bar_gpt.v1.config import BarGPTConfig, ExperimentConfig, TrainConfig
 from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.offline_shards import (
     collate_compiled_blocks,
     discover_offline_units,
+    load_shard_storage_config,
     load_shard,
     materialize_block,
 )
@@ -74,9 +75,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     tickers = tuple(item.strip().upper() for item in str(args.tickers).split(",") if item.strip())
     if len(tickers) < 2:
         raise ValueError("pilot overfit requires at least two tickers")
+    storage_data = load_shard_storage_config(args.shard_root)
     data = replace(
-        DataConfig(),
+        storage_data,
         tickers=tickers,
+        start_date=str(args.start_date),
+        end_date=str(args.end_date),
+        validation_start_date=str(args.end_date),
         validation_slices=(),
         batch_size=min(int(args.max_blocks), 2),
         loader_workers=0,
