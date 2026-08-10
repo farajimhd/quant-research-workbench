@@ -13,6 +13,7 @@ from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfi
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.model_discovery import (
     DISCOVERY_WANDB_PROJECT,
+    discovery_storage_config,
     load_discovery_manifest,
     panel_refs,
 )
@@ -67,6 +68,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     train_values.update(wandb_project=str(args.wandb_project), wandb_mode=str(args.wandb_mode))
     train_config = TrainConfig(**train_values)
     config = ExperimentConfig(model=model_config, data=data_config, train=train_config)
+    storage_data_config = discovery_storage_config(data_config)
     shard_root = Path(args.offline_shard_root)
     manifest = load_discovery_manifest(
         Path(args.experiment_manifest),
@@ -77,7 +79,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     validation_tickers = tuple(sorted({ref.ticker for ref in selected_refs}))
     units = discover_offline_units(
         shard_root,
-        data_config,
+        storage_data_config,
         tickers=validation_tickers,
         start_date=manifest["ranges"]["held_out"][0],
         end_date=manifest["ranges"]["held_out"][1],

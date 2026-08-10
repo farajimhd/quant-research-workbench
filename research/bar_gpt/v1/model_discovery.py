@@ -60,8 +60,8 @@ def discovery_data_config() -> DataConfig:
     return replace(DataConfig(), origin_bars_1s=DISCOVERY_ORIGIN_BARS_1S)
 
 
-def discovery_shard_compatibility_hash(config: DataConfig) -> str:
-    """Hash only the immutable shard contract used by discovery manifests.
+def discovery_storage_config(config: DataConfig) -> DataConfig:
+    """Return the immutable build-time config used to certify discovery shards.
 
     Training preflight updates ``condition_target_active`` from positive-count
     evidence after the shards and manifest have already been certified.  That
@@ -69,11 +69,15 @@ def discovery_shard_compatibility_hash(config: DataConfig) -> str:
     Normalize it to the build-time value so the manifest remains valid across
     that runtime transition.
     """
-    storage_config = replace(
+    return replace(
         config,
         condition_target_active=(True, True, True, True),
     )
-    return shard_compatibility_hash(storage_config)
+
+
+def discovery_shard_compatibility_hash(config: DataConfig) -> str:
+    """Hash only the immutable shard contract used by discovery manifests."""
+    return shard_compatibility_hash(discovery_storage_config(config))
 
 
 def _hash(seed: int, label: str, *values: object) -> bytes:

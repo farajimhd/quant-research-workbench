@@ -21,6 +21,7 @@ from research.bar_gpt.v1.model_discovery import (
     _ranking_key,
     _resume_if_available,
     discovery_data_config,
+    discovery_storage_config,
     discovery_shard_compatibility_hash,
 )
 from research.bar_gpt.v1.model_discovery_final_validation import (
@@ -155,6 +156,10 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         config = discovery_data_config()
         certified_hash = discovery_shard_compatibility_hash(config)
         config.condition_target_active = (False, True, False, True)
+        storage_config = discovery_storage_config(config)
+        self.assertEqual(storage_config.condition_target_active, (True, True, True, True))
+        self.assertEqual(config.condition_target_active, (False, True, False, True))
+        self.assertEqual(shard_compatibility_hash(storage_config), certified_hash)
         self.assertEqual(discovery_shard_compatibility_hash(config), certified_hash)
         self.assertNotEqual(shard_compatibility_hash(config), certified_hash)
 
