@@ -112,14 +112,26 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(capabilities["Company news score"]["capability_type"], "signal")
         self.assertEqual(capabilities["News observations"]["capability_type"], "event")
         self.assertEqual(capabilities["News labeled"]["capability_type"], "signal")
-        self.assertEqual(capabilities["News labeled"]["tier"], "core")
+        self.assertEqual(capabilities["News labeled"]["tier"], "watchlist")
         self.assertEqual(capabilities["News labeled"]["availability"], "integration_pending")
         self.assertFalse(capabilities["News labeled"]["enabled"])
         self.assertFalse(capabilities["News labeled"]["configurable"])
         self.assertEqual(capabilities["SEC labeled"]["capability_type"], "signal")
-        self.assertEqual(capabilities["SEC labeled"]["tier"], "core")
+        self.assertEqual(capabilities["SEC labeled"]["tier"], "watchlist")
         self.assertEqual(capabilities["SEC labeled"]["availability"], "integration_pending")
         self.assertFalse(capabilities["SEC labeled"]["enabled"])
+        universal = [
+            row
+            for row in migrated["market_discovery"]["core_scan"]["calculations"]
+            if row["execution_scope"] == "universal_ingest"
+        ]
+        self.assertEqual(len(universal), 6)
+        self.assertTrue(all(row["system_required"] for row in universal))
+        self.assertTrue(all(row["configuration_policy"] == "locked" for row in universal))
+        self.assertTrue(all(row["allowed_scopes"] == ["universal_ingest"] for row in universal))
+        self.assertEqual(capabilities["Core Momentum Oscillators"]["tier"], "watchlist")
+        self.assertEqual(capabilities["Core Momentum Oscillators"]["execution_scope"], "watchlist")
+        self.assertEqual(capabilities["Statistical Features"]["execution_scope"], "offline")
         self.assertEqual(
             migrated["market_discovery"]["watchlists"][0]["membership_expiry"],
             "end_of_trading_day",

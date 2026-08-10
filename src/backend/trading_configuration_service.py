@@ -56,6 +56,15 @@ SUPPORTED_URGENCIES = {
 }
 SUPPORTED_MODES = {"replay", "backtest", "backtest_debug", "paper", "live"}
 ACTION_AUTHORITIES = {"disabled", "manual", "confirm", "automatic", "inherit"}
+DISCOVERY_EXECUTION_SCOPES = {
+    "universal_ingest",
+    "core_scan",
+    "watchlist",
+    "strategy_run",
+    "request",
+    "offline",
+}
+DISCOVERY_CONFIGURATION_POLICIES = {"locked", "configurable", "generated", "retired"}
 
 
 def _load_configuration_env() -> None:
@@ -1290,10 +1299,28 @@ def _qmd_family_capabilities() -> list[dict[str, Any]]:
         "reference": ["session", "1d"],
         "system": [],
     }
+    core_keys = {
+        "core_bars",
+        "quote_mid_spread_bars",
+        "tape_rates",
+        "nbbo_liquidity",
+        "reference_context",
+    }
+    offline_keys = {"statistics", "cycles", "candlestick_patterns", "performance"}
+    strategy_keys = {"momentum_extended", "volatility_extended", "cross_timeframe_confirmation"}
     result: list[dict[str, Any]] = []
     for key, name, capability_type, priority, availability, inputs, fields, calculation in rows:
-        implemented = availability in {"implemented", "reference_only"}
-        required = implemented and priority == "p0"
+        runnable = availability not in {"planned_realtime", "integration_pending"}
+        tier = (
+            "core"
+            if key in core_keys
+            else "offline"
+            if key in offline_keys
+            else "strategy"
+            if key in strategy_keys
+            else "watchlist"
+        )
+        required = runnable and tier == "core" and priority == "p0"
         result.append({
             "capability_id": f"qmd.family.{key}",
             "name": name,
@@ -1309,12 +1336,149 @@ def _qmd_family_capabilities() -> list[dict[str, Any]]:
             "fields": [value.strip() for value in fields.split(",")],
             "timeframes": timeframe_map[capability_type],
             "selected_timeframes": list(timeframe_map[capability_type]),
-            "enabled": implemented,
-            "configurable": implemented and not required,
+            "enabled": runnable and tier in {"core", "watchlist"},
+            "configurable": runnable and not required and tier not in {"offline"},
             "system_required": required,
-            "tier": "core",
+            "tier": tier,
         })
     return result
+
+
+def _universal_ingest_capabilities() -> list[dict[str, Any]]:
+    """Locked primitives applied to every accepted market event.
+
+    These are integrity and distribution responsibilities, not optional
+    Scanner indicators. Keeping them explicit prevents expensive analytical
+    families from being justified as part of universal ingestion.
+    """
+
+    rows = [
+        (
+            "event-validation-encoding",
+            "Canonical event validation and encoding",
+            "Validate source fields and encode the canonical compact event without changing source evidence.",
+            ["Massive quote/trade event", "condition and exchange references"],
+            ["canonical compact event", "rejection reason"],
+        ),
+        (
+            "point-in-time-source-identity",
+            "Point-in-time source identity",
+            "Preserve the event's source ticker and identity interval needed for causal downstream resolution.",
+            ["source ticker", "event timestamp", "identity intervals"],
+            ["stable source identity", "identity validity evidence"],
+        ),
+        (
+            "event-order-sequence",
+            "Event ordering and sequencing",
+            "Assign deterministic arrival/order evidence and retain bounded reordering state.",
+            ["source sequence", "SIP timestamp", "arrival timestamp"],
+            ["ordered event", "sequence gap state", "continuation cursor"],
+        ),
+        (
+            "nbbo-trade-state",
+            "Current NBBO and eligible-trade state",
+            "Maintain only the current quote/trade state required by Core Scan, bars, and live consumers.",
+            ["canonical quotes", "canonical trades", "aggregation rules"],
+            ["current NBBO", "last eligible trade", "market state revision"],
+        ),
+        (
+            "freshness-quality",
+            "Freshness and market-data quality",
+            "Track stale, crossed, locked, gap, halt, and source-quality state without inventing replacement values.",
+            ["ordered canonical events", "market clock"],
+            ["freshness", "quality flags", "degradation reason"],
+        ),
+        (
+            "compact-persistence-fanout",
+            "Compact persistence and bounded fanout",
+            "Persist accepted compact events and publish bounded downstream notifications with explicit durability lag.",
+            ["accepted compact event", "coverage checkpoint"],
+            ["q_live event row", "coverage update", "live event notification"],
+        ),
+    ]
+    return [
+        {
+            "capability_id": f"qmd.primitive.{key}",
+            "name": name,
+            "description": description,
+            "calculation": description,
+            "category": "Universal ingest primitives",
+            "provider": "QMD",
+            "output_type": "system",
+            "capability_type": "system",
+            "priority": "p0",
+            "availability": "implemented",
+            "inputs": inputs,
+            "fields": fields,
+            "timeframes": [],
+            "selected_timeframes": [],
+            "enabled": True,
+            "configurable": False,
+            "system_required": True,
+            "tier": "universal",
+            "execution_scope": "universal_ingest",
+            "allowed_scopes": ["universal_ingest"],
+            "configuration_policy": "locked",
+            "cost_class": "minimal",
+            "stateful": key in {"event-order-sequence", "nbbo-trade-state", "freshness-quality"},
+        }
+        for key, name, description, inputs, fields in rows
+    ]
+
+
+def _normalize_discovery_capability_contract(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(row)
+    tier = str(normalized.get("tier") or "core")
+    scope_by_tier = {
+        "universal": "universal_ingest",
+        "core": "core_scan",
+        "watchlist": "watchlist",
+        "strategy": "strategy_run",
+        "request": "request",
+        "offline": "offline",
+    }
+    execution_scope = str(normalized.get("execution_scope") or scope_by_tier.get(tier, "request"))
+    allowed_by_scope = {
+        "universal_ingest": ["universal_ingest"],
+        "core_scan": ["core_scan", "watchlist", "strategy_run", "request", "offline"],
+        "watchlist": ["watchlist", "strategy_run", "request", "offline"],
+        "strategy_run": ["strategy_run", "request", "offline"],
+        "request": ["request", "offline"],
+        "offline": ["offline"],
+    }
+    availability = str(normalized.get("availability") or "implemented")
+    normalized.update({
+        "tier": tier,
+        "execution_scope": execution_scope,
+        "allowed_scopes": list(normalized.get("allowed_scopes") or allowed_by_scope[execution_scope]),
+        "configuration_policy": str(
+            normalized.get("configuration_policy")
+            or (
+                "locked"
+                if bool(normalized.get("system_required"))
+                else "configurable"
+                if bool(normalized.get("configurable"))
+                else "generated"
+            )
+        ),
+        "implementation_status": availability,
+        "operational_status": (
+            "integration_pending"
+            if availability == "integration_pending"
+            else "planned"
+            if availability == "planned_realtime"
+            else "ready"
+        ),
+        "coverage_status": str(normalized.get("coverage_status") or "unknown"),
+        "cost_class": str(
+            normalized.get("cost_class")
+            or {"p0": "low", "p1": "medium", "p2": "high", "p3": "offline"}.get(
+                str(normalized.get("priority") or "p2"), "high"
+            )
+        ),
+        "stateful": bool(normalized.get("stateful", execution_scope != "offline")),
+    })
+    return normalized
 
 
 def _strategy_input_capability_type(source_id: str) -> str:
@@ -1362,7 +1526,7 @@ def _pending_text_intelligence_label_capabilities() -> list[dict[str, Any]]:
             "enabled": False,
             "configurable": False,
             "system_required": False,
-            "tier": "core",
+            "tier": "watchlist",
         }
         for source_id, name, runtime_field, inputs, description in [
             (
@@ -1400,15 +1564,22 @@ def _discovery_reference_capabilities() -> list[dict[str, Any]]:
         ("event.ipo.days_to_event", "IPO event distance", "event", "days", "event.ipo.days_to_event", "Signed calendar days from evaluation to a point-in-time IPO event; negative values are recent IPOs and positive values are upcoming IPOs.", "DB-managed corporate-event calendar", ["event"]),
         ("event.split.days_to_event", "Split event distance", "event", "days", "event.split.days_to_event", "Signed calendar days from evaluation to the latest published stock-split execution date.", "DB-managed stock-split history", ["event"]),
     ]
+    core_ids = {
+        "market.change_pct",
+        "market.volume",
+        "reference.market_cap",
+        "reference.float_shares",
+    }
+    required_ids = {"market.change_pct", "market.volume"}
     return [{
         "capability_id": capability_id,
         "name": name,
         "description": calculation,
-        "category": "Watchlist fields",
+        "category": "Scanner enrichment" if capability_id in core_ids else "Watchlist fields",
         "provider": provider,
         "output_type": output_type,
         "capability_type": capability_type,
-        "priority": "p1",
+        "priority": "p0" if capability_id in required_ids else "p1",
         "availability": "implemented" if capability_id != "event.ipo.days_to_event" else "integration_pending",
         "inputs": [provider],
         "fields": [field],
@@ -1416,9 +1587,9 @@ def _discovery_reference_capabilities() -> list[dict[str, Any]]:
         "timeframes": timeframes,
         "selected_timeframes": timeframes,
         "enabled": capability_id != "event.ipo.days_to_event",
-        "configurable": False,
-        "system_required": capability_id != "event.ipo.days_to_event",
-        "tier": "core",
+        "configurable": capability_id not in required_ids and capability_id != "event.ipo.days_to_event",
+        "system_required": capability_id in required_ids,
+        "tier": "core" if capability_id in core_ids else "watchlist",
     } for capability_id, name, capability_type, output_type, field, calculation, provider, timeframes in rows]
 
 
@@ -1550,6 +1721,7 @@ def _default_market_discovery(
     """QMD-owned discovery configuration exposed without moving calculations into Strategy."""
 
     calculation_rows: list[dict[str, Any]] = [
+        *_universal_ingest_capabilities(),
         *_qmd_family_capabilities(),
         *_pending_text_intelligence_label_capabilities(),
         *_discovery_reference_capabilities(),
@@ -1562,7 +1734,17 @@ def _default_market_discovery(
         seen.add(capability_id)
         provider = str(source.get("provider") or "").lower()
         category = str(source.get("category") or "").lower()
-        tier = "watchlist" if provider in {"news", "sec"} or "news" in category or "sec" in category else "core"
+        tier = (
+            "core"
+            if capability_id
+            in {
+                "market.last_price",
+                "market.previous_close",
+                "market.change_pct",
+                "market.volume",
+            }
+            else "watchlist"
+        )
         calculation_rows.append({
             "capability_id": capability_id,
             "name": str(source.get("label") or capability_id),
@@ -1615,6 +1797,9 @@ def _default_market_discovery(
             "system_required": required,
             "tier": tier,
         })
+    calculation_rows = [
+        _normalize_discovery_capability_contract(row) for row in calculation_rows
+    ]
     symbols = sorted({
         str(row.get("ticker") or "").upper()
         for row in runtime_assignments
@@ -1852,6 +2037,35 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
     for rule_set in rule_sets:
         _validate_rule_set_definition(rule_set, f"Watchlist rule set {rule_set.get('name')}")
     for calculation in calculations:
+        execution_scope = str(calculation.get("execution_scope") or "")
+        if execution_scope not in DISCOVERY_EXECUTION_SCOPES:
+            raise ValueError(
+                f"QMD capability {calculation.get('name')} has unknown execution scope {execution_scope}"
+            )
+        allowed_scopes = {
+            str(value) for value in calculation.get("allowed_scopes") or [] if str(value)
+        }
+        if execution_scope not in allowed_scopes:
+            raise ValueError(
+                f"QMD capability {calculation.get('name')} does not allow its default execution scope"
+            )
+        if allowed_scopes - DISCOVERY_EXECUTION_SCOPES:
+            raise ValueError(
+                f"QMD capability {calculation.get('name')} has unknown allowed execution scopes"
+            )
+        configuration_policy = str(calculation.get("configuration_policy") or "")
+        if configuration_policy not in DISCOVERY_CONFIGURATION_POLICIES:
+            raise ValueError(
+                f"QMD capability {calculation.get('name')} has unknown configuration policy"
+            )
+        if execution_scope == "universal_ingest" and (
+            configuration_policy != "locked"
+            or not bool(calculation.get("system_required"))
+            or not bool(calculation.get("enabled"))
+        ):
+            raise ValueError(
+                f"Universal Ingest capability {calculation.get('name')} must remain enabled and locked"
+            )
         if bool(calculation.get("system_required")) and not bool(calculation.get("enabled")):
             raise ValueError(
                 f"Required QMD capability {calculation.get('name')} cannot be disabled"
@@ -2382,6 +2596,14 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 "configurable": bool(default_calculation.get("configurable")),
                 "system_required": bool(default_calculation.get("system_required")),
                 "tier": str(default_calculation.get("tier") or "core"),
+                "execution_scope": str(default_calculation.get("execution_scope") or "core_scan"),
+                "allowed_scopes": list(default_calculation.get("allowed_scopes") or []),
+                "configuration_policy": str(default_calculation.get("configuration_policy") or "generated"),
+                "implementation_status": str(default_calculation.get("implementation_status") or default_calculation.get("availability") or "implemented"),
+                "operational_status": str(default_calculation.get("operational_status") or "unknown"),
+                "coverage_status": str(default_calculation.get("coverage_status") or "unknown"),
+                "cost_class": str(default_calculation.get("cost_class") or "unknown"),
+                "stateful": bool(default_calculation.get("stateful")),
             })
             supported_timeframes = list(calculation["timeframes"])
             selected_timeframes = [

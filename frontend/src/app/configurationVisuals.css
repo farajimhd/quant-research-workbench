@@ -233,7 +233,7 @@
 
 .discovery-guided-authoring { gap: 32px; margin-top: 18px; padding: 24px; }
 .discovery-step-navigation { grid-template-columns: minmax(100px, 230px) minmax(0, 1fr) minmax(100px, 230px); }
-.discovery-step-navigation .strategy-authoring-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.discovery-step-navigation .strategy-authoring-steps { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .discovery-guided-stage { margin-inline: auto; width: min(80%, 1180px); }
 .discovery-guided-stage > .discovery-runtime-notice {
   align-items: flex-start;
@@ -407,8 +407,9 @@
 .discovery-capability-copy dl > div { border-top: 1px solid var(--configuration-rule); display: grid; gap: 3px; padding-top: 7px; }
 .discovery-capability-copy dt { color: var(--muted-foreground); font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
 .discovery-capability-copy dd { font-size: 10.5px; line-height: 1.4; margin: 0; }
-.discovery-capability-actions { align-items: center; display: flex; gap: 10px; justify-content: flex-end; }
+.discovery-capability-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
 .discovery-capability-actions em { color: var(--muted-foreground); font-size: 10px; font-style: normal; font-weight: 650; white-space: nowrap; }
+.discovery-capability-actions > small { flex-basis: 100%; text-align: right; }
 .discovery-capability-matrix > article[data-status="required"] .discovery-capability-index { color: var(--configuration-section-accent); }
 .discovery-capability-matrix > article[data-status="modifiable"] .discovery-capability-actions em { color: var(--configuration-section-accent); }
 .discovery-capability-matrix > article[data-status="unavailable"],
@@ -451,6 +452,7 @@
   .discovery-capability-heading { grid-template-columns: minmax(0, 1fr); }
   .discovery-capability-matrix > article { align-items: start; grid-template-columns: 34px minmax(0, 1fr); }
   .discovery-capability-actions { grid-column: 2; justify-content: flex-start; }
+  .discovery-capability-actions > small { text-align: left; }
   .discovery-capability-dialog-cadences > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
