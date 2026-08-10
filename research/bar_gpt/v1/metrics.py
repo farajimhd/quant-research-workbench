@@ -93,7 +93,6 @@ class ValidationAccumulator:
     batches: int = 0
     endpoint_abs_error_bps: torch.Tensor | None = None
     endpoint_count: torch.Tensor | None = None
-    zero_endpoint_abs_error_bps: torch.Tensor | None = None
     persistence_endpoint_abs_error_bps: torch.Tensor | None = None
     direction_confusion: torch.Tensor | None = None
     direction_neutral_count: torch.Tensor | None = None
@@ -182,11 +181,6 @@ class ValidationAccumulator:
             error_sum if self.endpoint_abs_error_bps is None else self.endpoint_abs_error_bps + error_sum
         )
         self.endpoint_count = endpoint_count if self.endpoint_count is None else self.endpoint_count + endpoint_count
-        zero_error_sum = torch.where(
-            endpoint_mask,
-            target_bps.abs(),
-            torch.zeros_like(target_bps),
-        ).sum((0, 1)).cpu()
         return_indices = [
             MODEL_FEATURE_NAMES.index(f"{family}_close_return")
             for family in PRICE_FAMILIES
@@ -200,11 +194,6 @@ class ValidationAccumulator:
             (persistence_bps[:, :, None, :] - target_bps).abs(),
             torch.zeros_like(target_bps),
         ).sum((0, 1)).cpu()
-        self.zero_endpoint_abs_error_bps = (
-            zero_error_sum
-            if self.zero_endpoint_abs_error_bps is None
-            else self.zero_endpoint_abs_error_bps + zero_error_sum
-        )
         self.persistence_endpoint_abs_error_bps = (
             persistence_error_sum
             if self.persistence_endpoint_abs_error_bps is None
@@ -333,7 +322,6 @@ class ValidationAccumulator:
             return metrics
 
         mae_bps = self.endpoint_abs_error_bps / self.endpoint_count.clamp_min(1)
-        zero_mae_bps = self.zero_endpoint_abs_error_bps / self.endpoint_count.clamp_min(1)
         persistence_mae_bps = self.persistence_endpoint_abs_error_bps / self.endpoint_count.clamp_min(1)
         coverage = self.coverage_hits / self.coverage_count.clamp_min(1)
         brier = self.binary_brier / self.binary_count.clamp_min(1)
@@ -341,7 +329,7 @@ class ValidationAccumulator:
         family_names = PRICE_FAMILIES
         family_summary = {
             family: {key: [] for key in (
-                "mae", "zero_mae", "persistence_mae", "skill", "accuracy",
+                "mae", "persistence_mae", "accuracy",
                 "balanced", "mcc", "neutral", "calibration", "rank", "top10", "top20",
             )}
             for family in family_names
@@ -358,18 +346,12 @@ class ValidationAccumulator:
                 family, field, _ = target_name.split("_", 2)
                 summary = family_summary[family]
                 mae_value = float(mae_bps[horizon_index, target_index])
-                zero_mae_value = float(zero_mae_bps[horizon_index, target_index])
                 persistence_mae_value = float(persistence_mae_bps[horizon_index, target_index])
-                zero_skill = 1.0 - mae_value / max(zero_mae_value, 1e-12)
                 target_prefix = f"{self.namespace}_{family}_{field}"
                 metrics[f"{target_prefix}_return_error/mae_bps_{label}"] = mae_value
                 metrics[f"{target_prefix}_return_error/persistence_mae_bps_{label}"] = persistence_mae_value
-                metrics[f"{target_prefix}_return_skill/zero_mae_bps_{label}"] = zero_mae_value
-                metrics[f"{target_prefix}_return_skill/skill_vs_zero_{label}"] = zero_skill
                 summary["mae"].append(mae_value)
-                summary["zero_mae"].append(zero_mae_value)
                 summary["persistence_mae"].append(persistence_mae_value)
-                summary["skill"].append(zero_skill)
 
                 accuracy, balanced, mcc = _direction_scores(self.direction_confusion[horizon_index, target_index])
                 direction_total = float(self.direction_total_count[horizon_index, target_index])

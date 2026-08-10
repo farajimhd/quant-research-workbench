@@ -22,7 +22,7 @@ from research.bar_gpt.v1.model_discovery import (
 )
 
 
-FINAL_VALIDATION_CONTRACT_VERSION = 3
+FINAL_VALIDATION_CONTRACT_VERSION = 4
 FINAL_VALIDATION_WANDB_PROJECT = "bar gpt model discovery final validation"
 
 
@@ -180,7 +180,6 @@ def _write_consolidated_summary(output_root: Path, summaries: list[dict[str, Any
         "model_parameters",
         "final_validation_loss/total",
         "final_validation_trade_summary/mae_macro",
-        "final_validation_trade_summary/skill_macro",
         "final_validation_trade_summary/balanced_macro",
         "final_validation_trade_summary/mcc_macro",
         "final_validation_ar_direction_balanced/balanced_accuracy_macro",

@@ -98,6 +98,7 @@ from research.bar_gpt.v1.lock_offline_shard_catalog import lock_catalog
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter, _format_value, _ratio_markup
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import (
+    AUTOREGRESSIVE_TARGET_NAMES,
     DIRECTION_TARGET_COUNT,
     DIRECTION_TARGET_NAMES,
     TARGET_NAMES,
@@ -198,6 +199,24 @@ def build_session_examples(*args, **kwargs):
 
 
 class LoaderTrainerContractTest(unittest.TestCase):
+    def test_sparse_event_contract_enumerates_every_model_input_and_target(self) -> None:
+        text = Path(__file__).with_name("SPARSE_EVENT_CONTRACT.md").read_text(encoding="utf-8")
+        input_section = text.split("## Model input tensor contract", 1)[1].split(
+            "## Physical-horizon targets", 1
+        )[0]
+        physical_section = text.split("### Physical target table", 1)[1].split(
+            "## Autoregressive targets", 1
+        )[0]
+        autoregressive_section = text.split("### Autoregressive target table", 1)[1].split(
+            "## Direction learning and metrics", 1
+        )[0]
+        for name in MODEL_FEATURE_NAMES:
+            self.assertIn(f"`{name}`", input_section, name)
+        for name in TARGET_NAMES:
+            self.assertIn(f"`{name}`", physical_section, name)
+        for name in AUTOREGRESSIVE_TARGET_NAMES:
+            self.assertIn(f"`{name}`", autoregressive_section, name)
+
     def test_condition_certification_composes_disjoint_complete_ticker_artifacts(self) -> None:
         rows = "\n".join((
             "intraday_condition_bars_by_time_ticker:tickers=AAPL,MSFT\t731\t731",
@@ -1108,6 +1127,17 @@ class LoaderTrainerContractTest(unittest.TestCase):
         failed, _records, violations = _score_direction_gate(metrics, **kwargs)
         self.assertFalse(failed)
         self.assertTrue(violations)
+
+        metrics["after_trade_open_direction/balanced_accuracy_5s"] = float("nan")
+        metrics["after_trade_open_direction_quality/mcc_5s"] = float("nan")
+        kwargs["physical_support"] = {
+            "trade_open_return/5s": {"total": 7, "up": 7, "down": 0},
+        }
+        skipped, records, violations = _score_direction_gate(metrics, **kwargs)
+        self.assertTrue(skipped)
+        self.assertFalse(records[0]["eligible"])
+        self.assertTrue(records[0]["passed"])
+        self.assertFalse(violations)
 
     def test_strict_2026_audit_rejects_masked_calendar_context(self) -> None:
         config = self.data_config()
@@ -2026,6 +2056,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         accumulator.update(output, batch, loss)
         metrics = accumulator.finalize()
         self.assertAlmostEqual(metrics["validation_trade_open_return_error/mae_bps_1s"], 1.0, places=5)
+        self.assertNotIn("validation_trade_open_return_skill/skill_vs_zero_1s", metrics)
 
     def test_deferred_update_losses_preserve_each_update_and_async_logging(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

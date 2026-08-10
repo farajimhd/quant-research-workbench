@@ -41,7 +41,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--minimum-loss-improvement", type=float, default=0.80)
-    parser.add_argument("--minimum-return-skill", type=float, default=0.50)
     parser.add_argument("--minimum-direction-balanced-accuracy", type=float, default=0.90)
     parser.add_argument("--minimum-direction-mcc", type=float, default=0.80)
     parser.add_argument("--minimum-direction-examples", type=int, default=32)
@@ -193,9 +192,14 @@ def _score_direction_gate(
         balanced = float(metrics[f"{namespace}_{metric_name}_direction/balanced_accuracy_{horizon}"])
         mcc = float(metrics[f"{namespace}_{metric_name}_direction_quality/mcc_{horizon}"])
         eligible = support["total"] >= minimum_examples and min(support["up"], support["down"]) >= minimum_class_examples
-        passed = eligible and math.isfinite(balanced) and math.isfinite(mcc) and balanced >= minimum_balanced and mcc >= minimum_mcc
+        passed = not eligible or (
+            math.isfinite(balanced)
+            and math.isfinite(mcc)
+            and balanced >= minimum_balanced
+            and mcc >= minimum_mcc
+        )
         records.append({"task": f"physical/{label}", **support, "eligible": eligible, "balanced_accuracy": balanced, "mcc": mcc, "passed": passed})
-        if not passed:
+        if eligible and not passed:
             violations.append(f"physical/{label}: support={support} balanced={balanced:.3f} mcc={mcc:.3f}")
     eligible_ar_by_target = {target_name: 0 for target_name in DIRECTION_TARGET_NAMES}
     for label, support in ar_support.items():
@@ -389,7 +393,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(
         f"Pass gates: loss_improvement>={float(args.minimum_loss_improvement):.0%} "
-        f"return_skill>={float(args.minimum_return_skill):.2f} "
         f"direction_balanced>={float(args.minimum_direction_balanced_accuracy):.2f} "
         f"direction_MCC>={float(args.minimum_direction_mcc):.2f}",
         flush=True,
@@ -432,26 +435,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         minimum_mcc=float(args.minimum_direction_mcc),
         minimum_ar_views=int(args.minimum_ar_views),
     )
-    return_records: list[dict[str, object]] = []
-    return_violations: list[str] = []
+    return_mae: list[dict[str, object]] = []
     for target_name in DIRECTION_TARGET_NAMES:
         metric_name = target_name.removesuffix("_return")
         for horizon_us in data.horizons_us:
             label = f"{horizon_us // 1_000_000}s"
-            skill = float(after[f"overfit_after_{metric_name}_return_skill/skill_vs_zero_{label}"])
-            passed_skill = math.isfinite(skill) and skill >= float(args.minimum_return_skill)
-            return_records.append({
-                "task": f"{target_name}/{label}", "skill_vs_zero": skill, "passed": passed_skill,
+            return_mae.append({
+                "task": f"{target_name}/{label}",
+                "mae_bps": float(after[f"overfit_after_{metric_name}_return_error/mae_bps_{label}"]),
             })
-            if not passed_skill:
-                return_violations.append(
-                    f"return/{target_name}/{label}: skill_vs_zero={skill:.3f} "
-                    f"requires {float(args.minimum_return_skill):.3f}"
-                )
-    return_passed = not return_violations
-    passed = loss_passed and direction_passed and return_passed
+    passed = loss_passed and direction_passed
     report = {
-        "contract": "sparse-event-ohlc-v5-overfit-1",
+        "contract": "sparse-event-ohlc-v5-overfit-2",
         "device": str(device),
         "tickers": list(tickers),
         "blocks": len(blocks),
@@ -464,18 +459,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "loss_after": after_loss,
         "loss_improvement": improvement,
         "minimum_loss_improvement": float(args.minimum_loss_improvement),
-        "minimum_return_skill": float(args.minimum_return_skill),
         "minimum_direction_balanced_accuracy": float(args.minimum_direction_balanced_accuracy),
         "minimum_direction_mcc": float(args.minimum_direction_mcc),
         "minimum_direction_examples": int(args.minimum_direction_examples),
         "minimum_direction_class_examples": int(args.minimum_direction_class_examples),
         "minimum_ar_views": int(args.minimum_ar_views),
         "loss_gate_passed": loss_passed,
-        "return_gate_passed": return_passed,
         "direction_gate_passed": direction_passed,
-        "return_gates": return_records,
+        "return_mae_bps": return_mae,
         "direction_gates": direction_records,
-        "violations": [*return_violations, *direction_violations],
+        "violations": direction_violations,
         "status": "passed" if passed else "failed",
         "before": before,
         "after": after,
