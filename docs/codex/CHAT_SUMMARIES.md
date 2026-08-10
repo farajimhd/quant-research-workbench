@@ -2,6 +2,12 @@
 
 ## 2026
 
+### [2026-08-08 (UNKNOWN time) - Expand, consolidate, and operationalize the News Synthesis certified gold authority](docs/codex/chat-summaries/2026/CHAT-20260808-UNKNOWN-consolidated-news-gold-evaluator.md)
+- Chat/task ID: `019fe37e-4165-7d82-acbd-54a08fccf81e`
+- Related tasks: `TASK-0182`, `TASK-0187`
+- Summary written: 2026-08-10 16:19 PDT
+- Scope: complete the four-chunk 20,000-article blind gold expansion, consolidate eight certified authorities into 18,144 articles and 28,037 issuer units, freeze audit/development/final partitions, and implement a lineage-bound evaluator for systematic non-hardcoded News Synthesis repair.
+
 ### [2026-08-07 (UNKNOWN time) - Complete the 945-news review and repair News Synthesis identity and polarity gaps](docs/codex/chat-summaries/2026/CHAT-20260807-UNKNOWN-news-synthesis-945-review-repair.md)
 - Chat/task ID: `019fd8c9-0491-7d52-addb-34dbd167adee`
 - Related task: `TASK-0182`
