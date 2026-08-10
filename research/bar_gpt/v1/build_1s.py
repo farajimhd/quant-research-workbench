@@ -42,12 +42,14 @@ from research.mlops.clickhouse import (  # noqa: E402
 from research.mlops.env import load_env_files, secret_status  # noqa: E402
 
 
-BUILD_VERSION = "bar_gpt_1s_clickhouse_v1"
+BUILD_VERSION = "bar_gpt_1s_condition_eligibility_v2"
 DEFAULT_DATABASE = "market_sip_compact"
 DEFAULT_EVENTS_TABLE_BASE = "events"
 DEFAULT_INDEX_TABLE = "events_ticker_day_index"
-DEFAULT_TARGET_TABLE = "bar_gpt_1s_bars_v1"
-DEFAULT_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v1"
+DEFAULT_CONDITION_REFERENCE_TABLE = "event_condition_token_reference"
+DEFAULT_TARGET_TABLE = "bar_gpt_1s_bars_v2"
+DEFAULT_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v2"
+DEFAULT_MAX_QUOTE_SPREAD_BPS = 1_000.0
 DEFAULT_RUNTIME_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\build_1s")
 
 
@@ -227,6 +229,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database", default=DEFAULT_DATABASE)
     parser.add_argument("--events-table-base", default=DEFAULT_EVENTS_TABLE_BASE)
     parser.add_argument("--index-table", default=DEFAULT_INDEX_TABLE)
+    parser.add_argument("--condition-reference-table", default=DEFAULT_CONDITION_REFERENCE_TABLE)
     parser.add_argument("--target-table", default=DEFAULT_TARGET_TABLE)
     parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE)
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url())
@@ -236,6 +239,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-empty-storage-policy", action="store_true")
     parser.add_argument("--ticker-batch-max-events", type=int, default=40_000_000)
     parser.add_argument("--ticker-batch-max-tickers", type=int, default=256)
+    parser.add_argument(
+        "--max-quote-spread-bps",
+        type=float,
+        default=DEFAULT_MAX_QUOTE_SPREAD_BPS,
+        help="Reject paired quotes wider than this causal midpoint-relative spread from model bars/origins.",
+    )
     parser.add_argument("--max-threads", type=int, default=8)
     parser.add_argument("--max-memory-usage", default="48G")
     parser.add_argument("--max-bytes-before-external-group-by", default="12G")
@@ -337,6 +346,26 @@ def _family_aggregates(prefix: str, price: str, size: str, condition: str) -> li
     ]
 
 
+def _trade_aggregates() -> list[str]:
+    """Aggregate each trade statistic from its authoritative eligibility stream."""
+    order = "tuple(sip_timestamp_us, ordinal)"
+    return [
+        "toUInt8(countIf(trade_origin_eligible) > 0) AS trade_present",
+        f"toFloat32(argMinIf(trade_price, {order}, trade_origin_eligible)) AS trade_open",
+        "toFloat32(maxIf(trade_price, trade_high_low_eligible)) AS trade_high",
+        "toFloat32(minIf(trade_price, trade_high_low_eligible)) AS trade_low",
+        f"toFloat32(argMaxIf(trade_price, {order}, trade_last_eligible)) AS trade_close",
+        "toFloat64(sumIf(trade_size, trade_volume_eligible)) AS trade_size_sum",
+        f"toFloat64(argMinIf(trade_size, {order}, trade_volume_eligible)) AS trade_size_open",
+        "toFloat64(maxIf(trade_size, trade_volume_eligible)) AS trade_size_high",
+        "toFloat64(minIf(trade_size, trade_volume_eligible)) AS trade_size_low",
+        f"toFloat64(argMaxIf(trade_size, {order}, trade_volume_eligible)) AS trade_size_close",
+        "toFloat64(sumIf(trade_size * trade_size, trade_volume_eligible)) AS trade_size_squared_sum",
+        "toFloat64(sumIf(trade_price * trade_size, trade_volume_eligible AND trade_origin_eligible)) AS trade_price_size_sum",
+        "toUInt64(countIf(trade_volume_eligible)) AS trade_event_count",
+    ]
+
+
 def _relation_aggregates(prefix: str, value: str, condition: str) -> list[str]:
     return [
         *_ohlc(prefix, value, condition),
@@ -351,14 +380,11 @@ def insert_one_second_sql(args: argparse.Namespace, day: dt.date, tickers: tuple
     ticker_filter = ""
     if tickers:
         ticker_filter = "\n      AND ticker IN (" + ", ".join(sql_string(ticker) for ticker in tickers) + ")"
-    trade_valid = "event_type = 1 AND trade_price > 0 AND trade_size > 0"
-    bid_valid = "event_type = 0 AND bid_price > 0 AND bid_size > 0"
-    ask_valid = "event_type = 0 AND ask_price > 0 AND ask_size > 0"
-    pair_valid = "event_type = 0 AND bid_price > 0 AND ask_price > 0 AND bid_size > 0 AND ask_size > 0 AND bid_price <= ask_price"
+    pair_valid = "quote_origin_eligible"
     aggregates = [
-        *_family_aggregates("trade", "trade_price", "trade_size", trade_valid),
-        *_family_aggregates("bid", "bid_price", "bid_size", bid_valid),
-        *_family_aggregates("ask", "ask_price", "ask_size", ask_valid),
+        *_trade_aggregates(),
+        *_family_aggregates("bid", "bid_price", "bid_size", pair_valid),
+        *_family_aggregates("ask", "ask_price", "ask_size", pair_valid),
         f"toUInt8(countIf({pair_valid}) > 0) AS quote_pair_present",
         f"toUInt64(countIf({pair_valid})) AS quote_pair_count",
         *_relation_aggregates("spread", "spread", pair_valid),
@@ -367,19 +393,26 @@ def insert_one_second_sql(args: argparse.Namespace, day: dt.date, tickers: tuple
         *_relation_aggregates("queue_imbalance", "queue_imbalance", pair_valid),
         "toUInt64(countIf(event_type = 0 AND bid_price = ask_price AND bid_price > 0)) AS locked_quote_count",
         "toUInt64(countIf(event_type = 0 AND bid_price > ask_price AND ask_price > 0)) AS crossed_quote_count",
-        "toUInt64(sum(toUInt8(condition_token_1 > 0) + toUInt8(condition_token_2 > 0) + toUInt8(condition_token_3 > 0) + toUInt8(condition_token_4 > 0) + toUInt8(condition_token_5 > 0))) AS condition_nonzero_count",
-        "toUInt64(count()) AS source_event_count",
+        "toUInt64(sumIf(toUInt8(condition_token_1 > 0) + toUInt8(condition_token_2 > 0) + toUInt8(condition_token_3 > 0) + toUInt8(condition_token_4 > 0) + toUInt8(condition_token_5 > 0), event_retained)) AS condition_nonzero_count",
+        "toUInt64(countIf(origin_event_eligible)) AS source_event_count",
+        "toFloat64(sumIf(trade_size, trade_volume_eligible AND trade_origin_eligible)) AS trade_price_eligible_size_sum",
     ]
     aggregate_sql = ",\n    ".join(aggregates)
     insert_columns = ",\n    ".join(quote_ident(name) for name, _ in table_columns())
     first_event_date = day.isoformat()
     last_event_date = (day + dt.timedelta(days=1)).isoformat()
+    condition_reference_table = str(getattr(args, "condition_reference_table", DEFAULT_CONDITION_REFERENCE_TABLE))
+    max_quote_spread_bps = float(getattr(args, "max_quote_spread_bps", DEFAULT_MAX_QUOTE_SPREAD_BPS))
     return f"""
 INSERT INTO {target}
 (
     {insert_columns}
 )
 WITH
+    (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_last = 1) AS update_last_tokens,
+    (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_high_low = 1) AS update_high_low_tokens,
+    (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_volume = 1) AS update_volume_tokens,
+    (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(condition_reference_table)} WHERE source_family = 'quote_conditions' AND is_join_canonical = 1 AND modifier_int IN (-1, 15, 19, 20, 80, 83, 84)) AS quote_origin_ineligible_tokens,
     toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
     toDate(ts_local) AS local_date_value,
     dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
@@ -397,6 +430,18 @@ WITH
     (ask_price + bid_price) / 2.0 AS midpoint,
     if(ask_size + bid_size > 0, (ask_price * bid_size + bid_price * ask_size) / (ask_size + bid_size), 0.0) AS microprice,
     if(ask_size + bid_size > 0, (bid_size - ask_size) / (bid_size + ask_size), 0.0) AS queue_imbalance,
+    arrayFilter(token -> token != 0, [condition_token_1, condition_token_2, condition_token_3, condition_token_4, condition_token_5]) AS condition_tokens,
+    arrayFilter(token -> token != 0, [condition_token_1, condition_token_2, condition_token_3, condition_token_4]) AS quote_condition_tokens,
+    event_type = 1 AND trade_price > 0 AND trade_size > 0 AS trade_structurally_valid,
+    trade_structurally_valid AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_last_tokens, token), condition_tokens) AS trade_last_eligible,
+    trade_structurally_valid AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_high_low_tokens, token), condition_tokens) AS trade_high_low_eligible,
+    trade_structurally_valid AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_volume_tokens, token), condition_tokens) AS trade_volume_eligible,
+    trade_last_eligible OR trade_high_low_eligible AS trade_origin_eligible,
+    event_type = 0 AND bid_price > 0 AND ask_price > 0 AND bid_size > 0 AND ask_size > 0 AND bid_price <= ask_price AS quote_structurally_valid,
+    if(quote_structurally_valid, (ask_price - bid_price) / ((ask_price + bid_price) / 2.0) * 10000.0, 1e100) AS quote_spread_bps,
+    quote_structurally_valid AND notEmpty(quote_condition_tokens) AND quote_spread_bps <= {max_quote_spread_bps:.12g} AND arrayAll(token -> NOT has(quote_origin_ineligible_tokens, token), quote_condition_tokens) AS quote_origin_eligible,
+    trade_origin_eligible OR quote_origin_eligible AS origin_event_eligible,
+    trade_origin_eligible OR trade_volume_eligible OR quote_origin_eligible AS event_retained,
     intDiv(toUInt64(local_session_us), toUInt64({ONE_SECOND_US})) AS second_bucket_index,
     intDiv(toUInt64(sip_timestamp_us), toUInt64({ONE_SECOND_US})) * toUInt64({ONE_SECOND_US}) AS second_start_us
 SELECT
@@ -408,10 +453,10 @@ SELECT
     second_start_us AS bar_start_us,
     second_start_us + toUInt64({ONE_SECOND_US}) AS bar_end_us,
     second_start_us + toUInt64({ONE_SECOND_US}) AS available_at_us,
-    min(toUInt64(ordinal)) AS source_first_ordinal,
-    max(toUInt64(ordinal)) AS source_last_ordinal,
-    min(toUInt64(sip_timestamp_us)) AS source_first_timestamp_us,
-    max(toUInt64(sip_timestamp_us)) AS source_last_timestamp_us,
+    minIf(toUInt64(ordinal), event_retained) AS source_first_ordinal,
+    maxIf(toUInt64(ordinal), event_retained) AS source_last_ordinal,
+    minIf(toUInt64(sip_timestamp_us), event_retained) AS source_first_timestamp_us,
+    maxIf(toUInt64(sip_timestamp_us), event_retained) AS source_last_timestamp_us,
     {aggregate_sql},
     now64(3, 'UTC') AS built_at
 FROM {source}
@@ -426,6 +471,7 @@ GROUP BY
     ticker,
     second_bucket_index,
     second_start_us
+HAVING source_event_count > 0
 {query_settings(args)}
 """
 

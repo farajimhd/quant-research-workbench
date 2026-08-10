@@ -43,11 +43,11 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 
 
-OFFLINE_SHARD_CONTRACT_VERSION = 5
-# Stream contract 7 stores nonempty event bars plus signed family OHLC targets
-# and one direction task per OHLC return while retaining physical horizons.
-OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 7
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5")
+OFFLINE_SHARD_CONTRACT_VERSION = 6
+# Stream contract 8 adds field-specific condition eligibility to the sparse
+# event/OHLC contract while retaining physical horizons and direction heads.
+OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 8
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v6")
 SHARD_CATALOG_LOCK_FILENAME = "SHARD_CATALOG_IMMUTABLE.json"
 
 
@@ -791,6 +791,13 @@ def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig
             "calendar_context_bars": dict(config.calendar_context_bars),
             "attention_windows": config.attention_window_by_name,
             "intraday_warmup_bars_1s": int(config.intraday_warmup_bars_1s),
+            "source_authority": {
+                "database": config.database,
+                "one_second_table": config.one_second_table,
+                "daily_table": config.daily_table,
+                "condition_table": config.condition_table,
+                "condition_status_table": config.condition_status_table,
+            },
         },
         "horizons_us": tuple(config.horizons_us),
         "base_timeframe_us": int(config.base_timeframe_us),

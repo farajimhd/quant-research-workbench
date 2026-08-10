@@ -9,11 +9,26 @@ from pathlib import Path
 from typing import Sequence
 
 from research.bar_gpt.v1.audit_offline_shards import DEFAULT_PILOT_ROOT
+from research.bar_gpt.v1.cohort import (
+    BAR_GPT_EVENTS_CONTINUITY_TABLE,
+    BAR_GPT_EVENTS_MANIFEST_TABLE,
+    BAR_GPT_EVENTS_TABLE,
+    BAR_GPT_EVENTS_TRAIN_INDEX_TABLE,
+    BAR_GPT_EVENTS_VALIDATION_INDEX_TABLE,
+    BAR_GPT_SOURCE_ALIAS_TICKERS,
+)
+
+
+PILOT_ONE_SECOND_TABLE = "bar_gpt_1s_bars_v2_pilot"
+PILOT_ONE_SECOND_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v2_pilot"
+PILOT_DAILY_TABLE = "bar_gpt_daily_session_bars_v2_pilot"
+PILOT_DAILY_MANIFEST_TABLE = "bar_gpt_daily_session_bars_manifest_v2_pilot"
+PILOT_SOURCE_ALIAS_MANIFEST_TABLE = "bar_gpt_1s_source_alias_manifest_v2_pilot"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build two sparse-event OHLC v5 pilot shards plus one bounded 2026 context-check shard."
+        description="Build bounded condition-eligible v6 pilot, 2026-context, and split-boundary shards."
     )
     parser.add_argument("--execute", action="store_true", help="Required to build; omit for a read-only plan.")
     parser.add_argument(
@@ -28,6 +43,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--context-check-ticker", default="AAPL")
     parser.add_argument("--context-check-start-date", default="2026-01-02")
     parser.add_argument("--context-check-end-date", default="2026-01-03")
+    parser.add_argument("--split-check-start-date", default="2020-08-28")
+    parser.add_argument("--split-check-end-date", default="2020-09-03")
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
     parser.add_argument("--clickhouse-max-concurrent-pages", type=int, default=0)
@@ -55,7 +72,57 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def commands(args: argparse.Namespace) -> tuple[list[str], ...]:
+def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
+    requested_tickers = ",".join(args.tickers)
+    source_tickers = ",".join(dict.fromkeys((*args.tickers, *BAR_GPT_SOURCE_ALIAS_TICKERS)))
+    unified = [
+        sys.executable, "-B", "-m", "pipelines.market_sip.events.run_build_unified_events",
+        "--events-table", BAR_GPT_EVENTS_TABLE,
+        "--manifest-table", BAR_GPT_EVENTS_MANIFEST_TABLE,
+        "--continuity-table", BAR_GPT_EVENTS_CONTINUITY_TABLE,
+        "--train-index-table", BAR_GPT_EVENTS_TRAIN_INDEX_TABLE,
+        "--validation-index-table", BAR_GPT_EVENTS_VALIDATION_INDEX_TABLE,
+        "--source-start-date", "2019-01-01",
+        "--source-end-date", "2026-08-01",
+        "--tickers", source_tickers,
+    ]
+    if not args.execute:
+        unified.append("--dry-run")
+
+    def one_second(start_date: str, end_date: str, tickers: tuple[str, ...]) -> list[str]:
+        command = [
+            sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_1s",
+            "--start-date", start_date, "--end-date", end_date,
+            "--tickers", ",".join(tickers),
+            "--events-table-base", BAR_GPT_EVENTS_TABLE,
+            "--target-table", PILOT_ONE_SECOND_TABLE,
+            "--manifest-table", PILOT_ONE_SECOND_MANIFEST_TABLE,
+        ]
+        if args.execute:
+            command.append("--execute")
+        return command
+
+    daily = [
+        sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_daily",
+        "--start-date", "2019-01-01", "--end-date", "2026-08-01",
+        "--tickers", source_tickers,
+        "--events-table-base", BAR_GPT_EVENTS_TABLE,
+        "--target-table", PILOT_DAILY_TABLE,
+        "--manifest-table", PILOT_DAILY_MANIFEST_TABLE,
+    ]
+    if args.execute:
+        daily.append("--execute")
+
+    aliases = [
+        sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_1s_aliases",
+        "--start-date", "2019-01-01", "--end-date", "2026-08-01",
+        "--events-table-base", BAR_GPT_EVENTS_TABLE,
+        "--target-table", PILOT_ONE_SECOND_TABLE,
+        "--manifest-table", PILOT_SOURCE_ALIAS_MANIFEST_TABLE,
+    ]
+    if args.execute:
+        aliases.append("--execute")
+
     def condition(start_date: str, end_date: str, tickers: tuple[str, ...]) -> list[str]:
         return [
             sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_conditions_1s",
@@ -89,6 +156,8 @@ def commands(args: argparse.Namespace) -> tuple[list[str], ...]:
         str(args.clickhouse_max_concurrent_pages),
         "--max-shards",
         "2",
+        "--one-second-table", PILOT_ONE_SECOND_TABLE,
+        "--daily-table", PILOT_DAILY_TABLE,
     ]
     if args.execute:
         build.append("--execute")
@@ -134,6 +203,8 @@ def commands(args: argparse.Namespace) -> tuple[list[str], ...]:
         str(args.clickhouse_max_concurrent_pages),
         "--max-shards",
         "1",
+        "--one-second-table", PILOT_ONE_SECOND_TABLE,
+        "--daily-table", PILOT_DAILY_TABLE,
     ]
     if args.execute:
         context_build.append("--execute")
@@ -165,25 +236,46 @@ def commands(args: argparse.Namespace) -> tuple[list[str], ...]:
         str(args.context_check_end_date),
         (str(args.context_check_ticker),),
     )
-    return pilot_condition, build, audit, context_condition, context_build, context_audit
+    split_build = [
+        sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_offline_shards",
+        "--output-root", str(args.output_root), "--selection", "all", "--tickers", "AAPL",
+        "--start-date", str(args.split_check_start_date), "--end-date", str(args.split_check_end_date),
+        "--workers", "1", "--max-shards", "1",
+        "--one-second-table", PILOT_ONE_SECOND_TABLE, "--daily-table", PILOT_DAILY_TABLE,
+    ]
+    if args.execute:
+        split_build.append("--execute")
+    if args.force_rebuild:
+        split_build.append("--force-rebuild")
+    split_audit = [
+        sys.executable, "-B", "-m", "research.bar_gpt.v1.audit_offline_shards",
+        "--root", str(args.output_root), "--tickers", "AAPL",
+        "--start-date", "2020-08-01", "--end-date", "2020-10-01", "--max-shards", "1", "--verify-sha256",
+    ]
+    return (
+        ("condition-filtered pilot events", unified),
+        ("continuous pilot one-second context authority", one_second("2019-01-01", "2026-08-01", args.tickers)),
+        ("point-in-time source alias pilot authority", aliases),
+        ("pilot daily/calendar authority", daily),
+        ("pilot conditions", pilot_condition), ("pilot shards", build), ("pilot audit", audit),
+        ("2026 conditions", context_condition), ("2026 shard", context_build), ("2026 audit", context_audit),
+        ("split-boundary conditions", condition(str(args.split_check_start_date), str(args.split_check_end_date), ("AAPL",))),
+        ("split-boundary shard", split_build), ("split-boundary audit", split_audit),
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    pilot_condition, build, audit, context_condition, context_build, context_audit = commands(args)
-    print("Pilot condition command:", subprocess.list2cmdline(pilot_condition), flush=True)
-    print("Pilot build command:", subprocess.list2cmdline(build), flush=True)
-    print("Pilot audit command:", subprocess.list2cmdline(audit), flush=True)
-    print("2026 context condition command:", subprocess.list2cmdline(context_condition), flush=True)
-    print("2026 context build command:", subprocess.list2cmdline(context_build), flush=True)
-    print("2026 context audit command:", subprocess.list2cmdline(context_audit), flush=True)
+    stages = commands(args)
+    for index, (label, command) in enumerate(stages, start=1):
+        print(f"Stage {index}/{len(stages)} - {label}: {subprocess.list2cmdline(command)}", flush=True)
     if not args.execute:
-        print("Plan only; add --execute to build and audit all three pilot shards.", flush=True)
+        print("Plan only; add --execute to build and audit the bounded pilot set.", flush=True)
         return 0
     repo_root = next(parent for parent in Path(__file__).resolve().parents if (parent / "research").exists())
     environment = dict(os.environ)
     environment.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-    for command in (pilot_condition, build, audit, context_condition, context_build, context_audit):
+    for _label, command in stages:
         status = subprocess.call(command, cwd=repo_root, env=environment)
         if status:
             return int(status)

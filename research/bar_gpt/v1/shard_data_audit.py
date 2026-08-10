@@ -165,6 +165,7 @@ def load_audit_sample(root: Path, ref: AuditBlockRef) -> LoadedAuditSample:
 def data_config_for_sample(sample: LoadedAuditSample) -> DataConfig:
     """Derive tensor-shaping fields from the selected immutable shard contract."""
     contract = dict(sample.shard.get("context_contract", {}))
+    source = dict(contract.get("source_authority", {}))
     intraday = tuple(
         (name, int(value))
         for name, value in dict(contract.get("intraday_context_bars", {})).items()
@@ -189,6 +190,11 @@ def data_config_for_sample(sample: LoadedAuditSample) -> DataConfig:
         intraday_context_bars=intraday,
         calendar_context_bars=calendar,
         daily_context_bars=int(dict(calendar)["1D"]),
+        database=str(source.get("database", DataConfig().database)),
+        one_second_table=str(source.get("one_second_table", DataConfig().one_second_table)),
+        daily_table=str(source.get("daily_table", DataConfig().daily_table)),
+        condition_table=str(source.get("condition_table", DataConfig().condition_table)),
+        condition_status_table=str(source.get("condition_status_table", DataConfig().condition_status_table)),
     )
     observed = shard_compatibility_hash(config)
     expected = str(sample.shard.get("config_hash", ""))

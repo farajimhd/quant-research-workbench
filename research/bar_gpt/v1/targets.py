@@ -78,16 +78,15 @@ def build_next_bar_targets(
     price_masks: list[torch.Tensor] = []
     for family in PRICE_FAMILIES:
         present = _column(raw, f"{family}_present") > 0
-        close, close_valid = _forward_fill(_column(raw, f"{family}_close"), present)
+        direct_close = _column(raw, f"{family}_close")
+        close_source_valid = (direct_close > 0) if family == "trade" else present
+        close, close_valid = _forward_fill(direct_close, close_source_valid)
         base = close[..., :-1]
-        next_present = present[..., 1:]
         family_values = tuple(_column(raw, f"{family}_{field}")[..., 1:] for field in OHLC_FIELDS)
-        family_mask = close_valid[..., :-1] & next_present & (base > 0)
         for value in family_values:
-            family_mask &= torch.isfinite(value) & (value > 0)
-        for value in family_values:
-            price_returns.append(torch.where(family_mask, torch.log(value / base), 0.0))
-            price_masks.append(family_mask)
+            field_mask = close_valid[..., :-1] & (base > 0) & torch.isfinite(value) & (value > 0)
+            price_returns.append(torch.where(field_mask, torch.log(value / base), 0.0))
+            price_masks.append(field_mask)
     availability = tuple((_column(raw, f"{family}_present")[..., 1:] > 0).float() for family in ("trade", "bid", "ask"))
     values = torch.stack(
         (
@@ -251,7 +250,12 @@ def build_physical_horizon_targets(
     trade_present = _column(raw_one_second, "trade_present") > 0
     quote_present = _column(raw_one_second, "quote_pair_present") > 0
     family_valid = {
-        family: _column(raw_one_second, f"{family}_present") > 0 for family in PRICE_FAMILIES
+        family: (
+            _column(raw_one_second, f"{family}_close") > 0
+            if family == "trade"
+            else _column(raw_one_second, f"{family}_present") > 0
+        )
+        for family in PRICE_FAMILIES
     }
     family_reference = {
         family: _forward_fill(
@@ -265,13 +269,22 @@ def build_physical_horizon_targets(
         for family in PRICE_FAMILIES
         for field in OHLC_FIELDS
     }
-    family_valid_indices = {
-        family: torch.nonzero(valid, as_tuple=False).flatten()
-        for family, valid in family_valid.items()
+    field_valid = {
+        (family, field): (
+            _column(raw_one_second, f"{family}_{field}") > 0
+            if family == "trade"
+            else family_valid[family]
+        )
+        for family in PRICE_FAMILIES
+        for field in OHLC_FIELDS
+    }
+    field_valid_indices = {
+        key: torch.nonzero(valid, as_tuple=False).flatten()
+        for key, valid in field_valid.items()
     }
     family_high = torch.stack(tuple(
         torch.where(
-            family_valid[family],
+            field_valid[(family, "high")],
             canonical_ohlc[(family, "high")],
             torch.full_like(canonical_ohlc[(family, "high")], -torch.inf),
         )
@@ -279,7 +292,7 @@ def build_physical_horizon_targets(
     ), dim=-1)
     family_low = torch.stack(tuple(
         torch.where(
-            family_valid[family],
+            field_valid[(family, "low")],
             canonical_ohlc[(family, "low")],
             torch.full_like(canonical_ohlc[(family, "low")], torch.inf),
         )
@@ -333,37 +346,48 @@ def build_physical_horizon_targets(
         minimum_prices = _range_extreme(family_low, starts, ends, reducer="min")
         ohlc_returns: list[torch.Tensor] = []
         ohlc_masks: list[torch.Tensor] = []
-        family_window_masks: dict[str, torch.Tensor] = {}
+        family_close_window_masks: dict[str, torch.Tensor] = {}
         for family_index, family in enumerate(PRICE_FAMILIES):
             reference, reference_valid = family_reference[family]
             base_price = reference[origin_indices]
-            direct_indices = family_valid_indices[family]
-            first_positions = torch.searchsorted(direct_indices, starts)
-            has_candidate = first_positions < direct_indices.numel()
-            safe_positions = first_positions.clamp(max=max(direct_indices.numel() - 1, 0))
-            first_indices = (
-                direct_indices[safe_positions]
-                if direct_indices.numel()
+            base_valid = reference_valid[origin_indices] & torch.isfinite(base_price) & (base_price > 0)
+            open_indices = field_valid_indices[(family, "open")]
+            open_positions = torch.searchsorted(open_indices, starts)
+            has_open = open_positions < open_indices.numel()
+            safe_open_positions = open_positions.clamp(max=max(open_indices.numel() - 1, 0))
+            first_open_indices = (
+                open_indices[safe_open_positions]
+                if open_indices.numel()
                 else torch.zeros_like(starts)
             )
-            updated = has_candidate & (first_indices < ends)
-            base_valid = reference_valid[origin_indices] & torch.isfinite(base_price) & (base_price > 0)
-            family_window_masks[family] = in_range & updated & base_valid
+            has_open &= first_open_indices < ends
+            close_prefix = torch.cat((
+                torch.zeros(1, dtype=torch.int64, device=raw_one_second.device),
+                field_valid[(family, "close")].to(torch.int64).cumsum(-1),
+            ))
+            has_close = close_prefix[ends] - close_prefix[starts] > 0
+            high_valid = torch.isfinite(maximum_prices[:, family_index]) & (maximum_prices[:, family_index] > 0)
+            low_valid = torch.isfinite(minimum_prices[:, family_index]) & (minimum_prices[:, family_index] > 0)
+            family_close_window_masks[family] = in_range & base_valid & has_close
             field_values = {
-                "open": canonical_ohlc[(family, "open")][first_indices],
+                "open": canonical_ohlc[(family, "open")][first_open_indices],
                 "high": maximum_prices[:, family_index],
                 "low": minimum_prices[:, family_index],
                 "close": reference[safe_endpoint],
             }
-            for value in field_values.values():
-                family_window_masks[family] &= torch.isfinite(value) & (value > 0)
+            field_window_masks = {
+                "open": in_range & base_valid & has_open,
+                "high": in_range & base_valid & high_valid,
+                "low": in_range & base_valid & low_valid,
+                "close": in_range & base_valid & has_close,
+            }
             for field in OHLC_FIELDS:
                 value = field_values[field]
-                mask = family_window_masks[family]
+                mask = field_window_masks[field] & torch.isfinite(value) & (value > 0)
                 ohlc_returns.append(torch.where(mask, torch.log(value / base_price), 0.0))
                 ohlc_masks.append(mask)
         realized = (variance_prefix[ends] - variance_prefix[starts]).clamp_min(0.0).sqrt().to(raw_one_second.dtype)
-        realized = torch.where(family_window_masks["trade"], realized, torch.zeros_like(realized))
+        realized = torch.where(family_close_window_masks["trade"], realized, torch.zeros_like(realized))
         volume = (
             (volume_prefix[ends] - volume_prefix[starts]).clamp_min(0.0)
             * share_factors[origin_indices].double()
@@ -394,7 +418,7 @@ def build_physical_horizon_targets(
         values = torch.where(in_range[..., None], values, torch.zeros_like(values))
         masks = in_range[..., None].expand(*in_range.shape, len(TARGET_NAMES)).clone()
         masks[..., :DIRECTION_TARGET_COUNT] = torch.stack(ohlc_masks, dim=-1)
-        masks[..., DIRECTION_TARGET_COUNT] &= family_window_masks["trade"]
+        masks[..., DIRECTION_TARGET_COUNT] &= family_close_window_masks["trade"]
         masks[..., -4:] &= condition_authoritative
         horizon_values.append(values)
         horizon_masks.append(masks)

@@ -374,7 +374,7 @@ the fixed learning-rate (`1.5e-4`, `3e-4`) by dropout (`0.04`, `0.08`, `0.12`)
 grid. Exact duplicate anchor recipes are reused. The best two refined recipes
 are then evaluated on the locked test.
 
-Campaign state is durable under `model_discovery/campaign_state_v4.json`; rerunning
+Campaign state is durable under `model_discovery/campaign_state_v5.json`; rerunning
 the same command verifies the manifest and skips completed runs. Training,
 monitoring, validation, and locked-test metrics are written asynchronously.
 W&B uses the distinct project `bar gpt model discovery` and non-overlapping
@@ -397,7 +397,7 @@ python -B -m research.bar_gpt.v1.run_model_discovery_final_validation
 ```
 
 The evaluator runs architectures sequentially using their certified training
-microbatches, writes each result under `model_discovery/final_validation_v1`,
+microbatches, writes each result under `model_discovery/final_validation_v2`,
 and logs to the separate W&B project
 `bar gpt model discovery final validation` with `final_validation_*` metric
 groups. Its durable state skips a checkpoint only when path, size, timestamp,
@@ -483,9 +483,9 @@ prepared host batches, then training restarts from consumed durable cursors.
 Unconsumed training blocks replay safely rather than being marked complete.
 
 Training refuses to start unless every requested ticker-month has a compatible
-contract-v5 complete or explicitly covered-empty sidecar and every complete
+contract-v6 complete or explicitly covered-empty sidecar and every complete
 sidecar has its tensor file. ClickHouse is not contacted by the offline training
-path. The v5 shard payload is pinned to sparse OHLC loader-stream contract 7,
+path. The v6 shard payload is pinned to condition-eligible sparse OHLC loader-stream contract 8,
 including nonempty origins/context, timestamped intervals, exact per-origin
 context geometry, signed family OHLC returns, and 12 direction tasks. Defaults are a
 384-wide eight-layer decoder, BF16,
@@ -601,7 +601,7 @@ python -B -m research.bar_gpt.v1.run_build_offline_shards --execute
 The first command is a read-only plan. The execute form balances whole tickers
 by their planned block counts across bounded logical worker slots and writes
 immutable ticker-month shards beneath
-`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5`. Both the requested
+`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v6`. Both the requested
 one-second authority and daily-session authority now begin in 2019. The
 compiler fails preflight until those sources are continuously certified and
 never fabricates unavailable intraday sessions or calendar history.
@@ -640,7 +640,7 @@ This prevents every worker from independently creating a workstation-sized CPU
 thread pool while leaving capacity for ClickHouse and the operating system.
 
 Every executing compiler invocation creates a unique diagnostic directory at
-`offline_shards_v5\manifest\build_runs\<run-id>`. Its parent-owned
+`offline_shards_v6\manifest\build_runs\<run-id>`. Its parent-owned
 `events.jsonl` records the resolved plan, worker PID/ticker launches, stages,
 bounded progress, certifications, complete caught tracebacks, process exit
 codes, last known work, and final catalog. `summary.json` records the final
@@ -649,7 +649,7 @@ to Python `faulthandler` inside that spawned process. An abrupt native exit may
 not produce a Python traceback, but the parent still records its nonzero exit
 code, PID, ticker, last stage and fatal-log path immediately and counts it as a
 failure in both Rich and text output. These operational files do not enter the
-v5 storage hash and do not change shard payloads or ticker/year/month layout.
+v6 storage hash and do not change shard payloads or ticker/year/month layout.
 
 Each month stores every session-level 1s, intraday-rollup, and calendar tensor
 once. Block records retain only slices, exact causal prefix corrections,
@@ -659,14 +659,14 @@ for every origin. Shards use uncompressed PyTorch tensor containers so `torch.lo
 memory-map their storage. The runtime reader performs only mmap slicing,
 padding into reusable pinned batches, and asynchronous CUDA handoff.
 
-The v5 storage identity contains only settings that can alter one ticker-month
+The v6 storage identity contains only settings that can alter one ticker-month
 tensor payload. GPU batch size, loader workers, pinning, prefetch depth,
 requested tickers, requested date range, validation ownership, query tuning,
 and progress/concurrency controls are excluded. A stable ticker-month hash
 replaces range-dependent unit numbering inside each shard. Consequently the
 same certified shard can be collated into any loader-time batch size and two
 disjoint build commands can safely accumulate compatible months in one root.
-Sparse OHLC loader-stream contract 7 is part of the v5 identity, so older shards fail
+Condition-eligible sparse OHLC loader-stream contract 8 is part of the v6 identity, so older shards fail
 discovery instead of being silently interpreted under the corrected context
 contract.
 `origin_bars_1s` remains storage geometry—the number of sequential origins in
@@ -684,9 +684,11 @@ python -B -m research.bar_gpt.v1.run_build_offline_dataset
 python -B -m research.bar_gpt.v1.run_build_offline_dataset --execute
 ```
 
-The first command prints all four exact commands without writing. The execute
-form repairs or certifies the sparse condition ranges first, then resumes the
-2019-2021 training shards and 2026 validation shards. Every tensor file is
+The first command prints all eight exact commands without writing. The execute
+form builds a dedicated correction-filtered unified-event v2 authority, a
+continuous 2019-2026 one-second context authority, point-in-time source aliases,
+daily/calendar and condition authorities, then emits only the requested
+2019-2021 training and 2026 validation shards. Every tensor file is
 SHA-256 certified during its normal atomic write, so this launcher does not add
 a second full-catalog validation pass. Use `--force-rebuild` only to replace
 existing compatible production shards deliberately; normal execution skips
@@ -702,8 +704,9 @@ python -B -m research.bar_gpt.v1.run_pilot_offline_shards --execute --force-rebu
 ```
 
 The first command prints the exact build and audit plan. The execute form builds
-`AAPL:2019-01` and `GOOGL:2019-01`, then a bounded one-session
-`AAPL:2026-01` context-check shard, beneath `offline_shards_v5_pilot`. It
+`AAPL:2019-01` and `GOOGL:2019-01`, a bounded one-session
+`AAPL:2026-01` context-check shard, and an AAPL 2020-08-31 split-boundary
+shard beneath `offline_shards_v6_pilot`. It
 verifies all complete-file SHA-256 digests and fails unless shard/sidecar identities,
 counts, configured context, causal as-of indices, horizon tensors, and condition
 positive-count metadata agree. The audit also scans every stored value in all
@@ -795,7 +798,7 @@ sidecars are skipped. `--max-shards N` provides a bounded smoke. The optional
 substantial I/O to the 2.3 TB catalog; without it, the original certified digest
 is preserved while tensor structure and metadata are still checked.
 
-The completed `offline_shards_v5` authority can be permanently sealed after its
+The completed `offline_shards_v6` authority can be permanently sealed after its
 catalog has been certified:
 
 ```powershell

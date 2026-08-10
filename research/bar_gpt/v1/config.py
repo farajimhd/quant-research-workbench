@@ -81,9 +81,9 @@ class BarGPTConfig:
 
 @dataclass(slots=True)
 class DataConfig:
-    # V7 adds family-specific signed OHLC returns and one direction task per
-    # return while retaining sparse-event context and physical horizons.
-    loader_stream_contract_version: int = 7
+    # V8 makes trade OHLC/volume masks condition-category aware and restricts
+    # both origins and all context views to eligible sparse market events.
+    loader_stream_contract_version: int = 8
     database: str = "market_sip_compact"
     one_second_table: str = BAR_GPT_COHORT_2TB_TABLE
     manifest_table: str = BAR_GPT_COHORT_2TB_MANIFEST_TABLE
@@ -185,8 +185,8 @@ class DataConfig:
         return tuple(ticker for ticker in self.tickers if ticker not in holdout)
 
     def validate(self) -> None:
-        if self.loader_stream_contract_version != 7:
-            raise ValueError("this BarGPT version requires loader_stream_contract_version 7")
+        if self.loader_stream_contract_version != 8:
+            raise ValueError("this BarGPT version requires loader_stream_contract_version 8")
         if "split_adjusted" in self.one_second_table or self.daily_table.endswith("_adjusted"):
             raise ValueError("globally adjusted bar authorities are retired; use raw bars with causal split metadata")
         if not self.tickers:

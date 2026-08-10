@@ -49,7 +49,11 @@ DEFAULT_PARTITION_MODE = "month"
 DEFAULT_EVENTS_PER_CHUNK = 128
 DEFAULT_MAX_PARTITIONS_PER_INSERT_BLOCK = 1024
 DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE = "event_condition_token_reference"
-DEFAULT_DROP_TRADE_CORRECTION_CODES = "7,8,10,11"
+# Correction 12 is the follow-up record that carries the original incorrect
+# values after a code-01 correction.  It is not model-eligible evidence.  Keep
+# the corrected code-01 record and reject every cancel/error/original-invalid
+# record before the compact event authority discards the raw correction field.
+DEFAULT_DROP_TRADE_CORRECTION_CODES = "7,8,10,11,12"
 CONDITION_TOKEN_SLOTS = 5
 CONDITION_TOKEN_COLUMNS = tuple(f"condition_token_{idx}" for idx in range(1, CONDITION_TOKEN_SLOTS + 1))
 

@@ -52,6 +52,14 @@ from research.bar_gpt.v1.targets import (
     build_physical_horizon_targets,
 )
 from pipelines.market_sip.events.clickhouse_build_intraday_base_bars import insert_intraday_condition_bars_sql, parse_args as parse_intraday_args
+from pipelines.market_sip.events.clickhouse_build_daily_session_bars import (
+    insert_session_bars_sql,
+    parse_args as parse_daily_args,
+)
+from pipelines.market_sip.events.clickhouse_build_unified_events import (
+    DEFAULT_DROP_TRADE_CORRECTION_CODES,
+    parse_trade_correction_codes,
+)
 from research.bar_gpt.v1.run_build_1s import main as launcher_main
 from research.bar_gpt.v1.run_build_1s import parse_args as parse_launcher_args
 from research.bar_gpt.v1.run_build_1s_aliases import parse_args as parse_alias_launcher_args
@@ -62,6 +70,8 @@ def builder_args() -> argparse.Namespace:
         database="market_sip_compact",
         target_table="bar_gpt_1s_bars_v1",
         events_table_base="events",
+        condition_reference_table="event_condition_token_reference",
+        max_quote_spread_bps=1000.0,
         storage_policy="ssd_policy",
         max_threads=2,
         max_memory_usage="4G",
@@ -251,6 +261,28 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertIn("microprice", sql)
         self.assertIn("queue_imbalance", sql)
         self.assertIn("ticker IN ('AAPL', 'MSFT')", sql)
+        self.assertIn("arrayAll(token -> has(update_last_tokens, token)", sql)
+        self.assertIn("countIf(origin_event_eligible)", sql)
+        self.assertIn("HAVING source_event_count > 0", sql)
+        self.assertIn("quote_spread_bps <= 1000", sql)
+
+    def test_unified_event_authority_excludes_original_incorrect_correction_12(self) -> None:
+        self.assertEqual(parse_trade_correction_codes(DEFAULT_DROP_TRADE_CORRECTION_CODES), [7, 8, 10, 11, 12])
+
+    def test_daily_context_reuses_same_second_level_condition_eligibility(self) -> None:
+        args = parse_daily_args([
+            "--bar-gpt-condition-eligibility",
+            "--tickers", "AAPL",
+            "--target-table", "bar_gpt_daily_v2_test",
+            "--manifest-table", "bar_gpt_daily_manifest_v2_test",
+            "--schema-version", "2",
+            "--feature-version", "bar_gpt_1s_condition_eligible_sufficient_stats_v2",
+        ])
+        sql = insert_session_bars_sql(args, dt.date(2019, 1, 3), dt.date(2019, 1, 4))
+        self.assertIn("second_has_origin", sql)
+        self.assertIn("FROM eligible_events", sql)
+        self.assertIn("trade_price_eligible_size_sum", sql)
+        self.assertIn("arrayAll(token -> has(update_high_low_tokens, token)", sql)
 
     def test_training_query_is_ordered_incremental_arrow(self) -> None:
         sql = ticker_range_query(
@@ -378,6 +410,7 @@ class TemporalContractTest(unittest.TestCase):
         features[:, FEATURE_INDEX["trade_low"]] = torch.arange(9, 14)
         features[:, FEATURE_INDEX["trade_close"]] = torch.arange(10.5, 15.5)
         features[:, FEATURE_INDEX["trade_size_sum"]] = 2
+        features[:, FEATURE_INDEX["trade_event_count"]] = 1
         starts = torch.arange(5, dtype=torch.long) * 1_000_000
         ends = starts + 1_000_000
         return BarView(features, starts, ends, ends)
@@ -489,6 +522,35 @@ class TemporalContractTest(unittest.TestCase):
         autoregressive = build_next_bar_targets(raw)
         self.assertGreater(float(autoregressive.values[0, high]), 0.0)
         self.assertLess(float(autoregressive.values[0, low]), 0.0)
+
+    def test_trade_target_masks_follow_field_condition_eligibility(self) -> None:
+        raw = self._five_seconds().features.clone()
+        raw[1, FEATURE_INDEX["trade_close"]] = 0.0
+        raw[1, FEATURE_INDEX["trade_open"]] = 0.0
+        physical = build_physical_horizon_targets(
+            raw,
+            torch.tensor([0]),
+            torch.tensor([1_000_000]),
+            available_at_us=torch.arange(1, 6, dtype=torch.long) * 1_000_000,
+            coverage_end_us=5_000_000,
+        )
+        high = TARGET_NAMES.index("trade_high_return")
+        close = TARGET_NAMES.index("trade_close_return")
+        self.assertTrue(bool(physical.mask[0, 0, high]))
+        self.assertFalse(bool(physical.mask[0, 0, close]))
+        autoregressive = build_next_bar_targets(raw)
+        self.assertTrue(bool(autoregressive.mask[0, high]))
+        self.assertFalse(bool(autoregressive.mask[0, close]))
+
+    def test_volume_only_trade_size_does_not_contaminate_vwap_price(self) -> None:
+        raw = self._five_seconds().features[:1].clone()
+        raw[0, FEATURE_INDEX["trade_close"]] = 100.0
+        raw[0, FEATURE_INDEX["trade_size_sum"]] = 110.0
+        raw[0, FEATURE_INDEX["trade_price_size_sum"]] = 1_000.0
+        raw[0, FEATURE_INDEX["trade_price_eligible_size_sum"]] = 10.0
+        projected = project_stationary_features(raw)
+        vwap = MODEL_FEATURE_NAMES.index("trade_vwap_deviation_bps")
+        self.assertAlmostEqual(float(projected[0, vwap]), 0.0, places=6)
 
     def test_sparse_storage_densifies_without_fabricating_families(self) -> None:
         base = self._five_seconds()

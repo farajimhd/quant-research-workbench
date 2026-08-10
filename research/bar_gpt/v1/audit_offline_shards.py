@@ -28,7 +28,8 @@ from research.bar_gpt.v1.targets import (
 )
 
 
-DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5_pilot")
+DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v6_pilot")
+DEFAULT_MAX_ABSOLUTE_RETURN_BPS = 2_000.0
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -41,20 +42,34 @@ def _require_ohlc_geometry(values: torch.Tensor, mask: torch.Tensor, label: str)
         first = family_index * len(OHLC_FIELDS)
         family_values = values[..., first : first + len(OHLC_FIELDS)]
         family_masks = mask[..., first : first + len(OHLC_FIELDS)]
-        _require(
-            bool(torch.all(family_masks == family_masks[..., :1])),
-            f"{label}/{family}: OHLC masks disagree",
-        )
-        family_mask = family_masks.all(dim=-1)
         open_value, high_value, low_value, close_value = family_values.unbind(dim=-1)
+        open_mask, high_mask, low_mask, close_mask = family_masks.unbind(dim=-1)
         tolerance = 1e-6
-        invalid = family_mask & (
-            (high_value + tolerance < open_value)
-            | (high_value + tolerance < close_value)
-            | (low_value - tolerance > open_value)
-            | (low_value - tolerance > close_value)
+        invalid = (
+            (high_mask & open_mask & (high_value + tolerance < open_value))
+            | (high_mask & close_mask & (high_value + tolerance < close_value))
+            | (low_mask & open_mask & (low_value - tolerance > open_value))
+            | (low_mask & close_mask & (low_value - tolerance > close_value))
         )
         _require(not bool(invalid.any()), f"{label}/{family}: invalid OHLC return geometry")
+
+
+def _require_bounded_returns(
+    values: torch.Tensor,
+    mask: torch.Tensor,
+    label: str,
+    max_absolute_return_bps: float,
+) -> None:
+    width = len(PRICE_FAMILIES) * len(OHLC_FIELDS)
+    transformed = values[..., :width]
+    selected = mask[..., :width]
+    return_bps = torch.sinh(transformed.float()) * 100.0
+    invalid = selected & (return_bps.abs() > float(max_absolute_return_bps))
+    _require(
+        not bool(invalid.any()),
+        f"{label}: absolute OHLC return exceeds {max_absolute_return_bps:g} bps; "
+        "possible condition, quote, or split contamination",
+    )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -77,10 +92,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Require every audited origin to have complete 1D, 1W, and 1MO context.",
     )
+    parser.add_argument("--max-absolute-return-bps", type=float, default=DEFAULT_MAX_ABSOLUTE_RETURN_BPS)
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.max_shards <= 0:
         parser.error("--max-shards must be positive")
+    if args.max_absolute_return_bps <= 0:
+        parser.error("--max-absolute-return-bps must be positive")
     if bool(args.start_date) != bool(args.end_date):
         parser.error("--start-date and --end-date must be provided together")
     if args.start_date:
@@ -139,6 +157,7 @@ def audit_shard(
     *,
     verify_sha256: bool = True,
     require_calendar_context: bool = False,
+    max_absolute_return_bps: float = DEFAULT_MAX_ABSOLUTE_RETURN_BPS,
 ) -> dict[str, Any]:
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
     unit_key = str(sidecar.get("unit_key", ""))
@@ -163,6 +182,12 @@ def audit_shard(
     context_contract = shard.get("context_contract")
     _require(isinstance(context_contract, dict), f"{unit_key}: context contract is absent")
     _require(context_contract == sidecar.get("context_contract"), f"{unit_key}: context contract mismatch")
+    source_authority = context_contract.get("source_authority")
+    _require(isinstance(source_authority, dict), f"{unit_key}: source authority is absent")
+    _require(
+        all(str(source_authority.get(name, "")).strip() for name in ("database", "one_second_table", "daily_table", "condition_table")),
+        f"{unit_key}: source authority is incomplete",
+    )
     intraday_context = {
         str(name): int(count)
         for name, count in dict(context_contract.get("intraday_context_bars", {})).items()
@@ -276,6 +301,9 @@ def audit_shard(
                     f"{label}/{name}: masked AR target contains a nonzero value",
                 )
                 _require_ohlc_geometry(ar_targets, ar_mask, f"{label}/{name}/autoregressive")
+                _require_bounded_returns(
+                    ar_targets, ar_mask, f"{label}/{name}/autoregressive", max_absolute_return_bps
+                )
             accumulator = feature_accumulators[name]
             for left in range(0, int(features.shape[0]), 65_536):
                 chunk = features[left : left + 65_536]
@@ -377,6 +405,9 @@ def audit_shard(
                 f"{block_label}: masked horizon target contains a nonzero value",
             )
             _require_ohlc_geometry(horizon_targets, horizon_mask, f"{block_label}/physical")
+            _require_bounded_returns(
+                horizon_targets, horizon_mask, f"{block_label}/physical", max_absolute_return_bps
+            )
             target_valid += horizon_mask.to(torch.long).sum(dim=0)
             target_total += int(origin_timestamps.numel())
             origins += int(origin_timestamps.numel())
@@ -469,6 +500,7 @@ def run_audit(
     limit: int = 2,
     verify_sha256: bool = True,
     require_calendar_context: bool = False,
+    max_absolute_return_bps: float = DEFAULT_MAX_ABSOLUTE_RETURN_BPS,
     output: Path | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -484,6 +516,7 @@ def run_audit(
             path,
             verify_sha256=verify_sha256,
             require_calendar_context=require_calendar_context,
+            max_absolute_return_bps=max_absolute_return_bps,
         )
         for path in sidecars
     ]
@@ -515,6 +548,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         limit=int(args.max_shards),
         verify_sha256=bool(args.verify_sha256),
         require_calendar_context=bool(args.require_calendar_context),
+        max_absolute_return_bps=float(args.max_absolute_return_bps),
         output=args.output.resolve() if args.output is not None else None,
     )
     for shard in report["shards"]:

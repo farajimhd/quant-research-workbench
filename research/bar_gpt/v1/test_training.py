@@ -1071,6 +1071,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 Path(evidence["path"]).with_suffix(".json"),
                 verify_sha256=True,
                 require_calendar_context=True,
+                max_absolute_return_bps=1e9,
             )
             self.assertEqual(audit["status"], "passed")
             self.assertEqual(audit["unit_key"], "AAA:2026-01")
@@ -1156,22 +1157,31 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 certify_hash=True,
             )
             sidecar = Path(evidence["path"]).with_suffix(".json")
-            self.assertEqual(audit_shard(sidecar, verify_sha256=True)["status"], "passed")
+            self.assertEqual(audit_shard(sidecar, verify_sha256=True, max_absolute_return_bps=1e9)["status"], "passed")
             with self.assertRaisesRegex(RuntimeError, "required calendar context is unavailable"):
-                audit_shard(sidecar, verify_sha256=True, require_calendar_context=True)
+                audit_shard(
+                    sidecar, verify_sha256=True, require_calendar_context=True,
+                    max_absolute_return_bps=1e9,
+                )
 
     def test_pilot_launcher_builds_two_2019_shards_and_one_2026_context_shard(self) -> None:
         args = parse_pilot_args([
             "--execute", "--force-rebuild", "--tickers", "AAPL,GOOGL",
             "--start-date", "2019-01-01", "--end-date", "2019-02-01",
         ])
-        pilot_condition, build, audit, context_condition, context_build, context_audit = pilot_commands(args)
+        stages = dict(pilot_commands(args))
+        pilot_condition = stages["pilot conditions"]
+        build = stages["pilot shards"]
+        audit = stages["pilot audit"]
+        context_condition = stages["2026 conditions"]
+        context_build = stages["2026 shard"]
+        context_audit = stages["2026 audit"]
         self.assertIn("research.bar_gpt.v1.run_build_conditions_1s", pilot_condition)
         self.assertIn("research.bar_gpt.v1.run_build_conditions_1s", context_condition)
         self.assertEqual(build[build.index("--max-shards") + 1], "2")
         self.assertIn("--execute", build)
         self.assertIn("--force-rebuild", build)
-        self.assertIn("offline_shards_v5_pilot", " ".join(build))
+        self.assertIn("offline_shards_v6_pilot", " ".join(build))
         self.assertIn("research.bar_gpt.v1.audit_offline_shards", audit)
         self.assertIn("--verify-sha256", audit)
         self.assertEqual(context_build[context_build.index("--tickers") + 1], "AAPL")
@@ -1179,20 +1189,21 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(context_build[context_build.index("--end-date") + 1], "2026-01-03")
         self.assertEqual(context_build[context_build.index("--max-shards") + 1], "1")
         self.assertIn("--require-calendar-context", context_audit)
+        self.assertIn("split-boundary audit", stages)
+        self.assertIn("bar_gpt_events_v2", " ".join(stages["condition-filtered pilot events"]))
 
     def test_complete_offline_dataset_launcher_owns_disjoint_ranges(self) -> None:
         args = parse_offline_dataset_args(["--execute", "--workers", "32"])
         stages = offline_dataset_commands(args)
-        self.assertEqual([label for label, _command in stages], [
-            "2019-2021 condition authority",
-            "2019-2021 training shards",
-            "2026 condition authority",
-            "2026 validation shards",
-        ])
-        train_conditions = stages[0][1]
-        train_shards = stages[1][1]
-        validation_conditions = stages[2][1]
-        validation_shards = stages[3][1]
+        by_label = dict(stages)
+        self.assertEqual(len(stages), 8)
+        self.assertIn("condition-filtered unified event authority", by_label)
+        self.assertIn("point-in-time source alias one-second authority", by_label)
+        self.assertIn("condition-eligible daily/calendar authority", by_label)
+        train_conditions = by_label["2019-2021 condition authority"]
+        train_shards = by_label["2019-2021 training shards"]
+        validation_conditions = by_label["2026 condition authority"]
+        validation_shards = by_label["2026 validation shards"]
         self.assertEqual(train_conditions[train_conditions.index("--start-date") + 1], "2019-01-01")
         self.assertEqual(train_conditions[train_conditions.index("--end-date") + 1], "2022-01-01")
         self.assertEqual(train_shards[train_shards.index("--selection") + 1], "all")
@@ -1258,9 +1269,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(len(production_hash), 64)
         self.assertNotEqual(production_hash, "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619")
         self.assertEqual(shard_compatibility_hash(production), production_hash)
-        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 7)
-        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 5)
-        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5"))
+        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 8)
+        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 6)
+        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v6"))
         self.assertEqual(
             shard_path(DEFAULT_OUTPUT_ROOT, "AAA:2019-01"),
             DEFAULT_OUTPUT_ROOT / "tickers" / "AAA" / "2019" / "2019-01.pt",
@@ -1402,7 +1413,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
     def test_offline_training_preserves_prefetch_across_validation(self) -> None:
         runtime_data = dataclasses.replace(
             self.data_config(),
-            loader_stream_contract_version=7,
+            loader_stream_contract_version=8,
             tickers=("AAA", "BBB", "CCC"),
             start_date="2026-01-01",
             end_date="2026-03-01",
@@ -1758,7 +1769,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
         self.assertEqual(training_launcher_args["--data-source"], "offline")
-        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v5"))
+        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v6"))
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--offline-train-end-date"], "2022-01-01")
@@ -2318,17 +2329,17 @@ class LoaderTrainerContractTest(unittest.TestCase):
                             "market_stock_split_v1\n"
                         )
                     return (
-                        "bar_gpt_1s_bars_v1_cohort_2tb\n"
-                        "bar_gpt_1s_build_manifest_v1_cohort_2tb\n"
-                        "bar_gpt_1s_build_manifest_v1_identity_aliases\n"
-                        "daily_session_bars_by_symbol_time_v1\n"
-                        "daily_session_bars_manifest_v1\n"
+                        "bar_gpt_1s_bars_v2_cohort_2tb\n"
+                        "bar_gpt_1s_build_manifest_v2_cohort_2tb\n"
+                        "bar_gpt_1s_build_manifest_v2_identity_aliases\n"
+                        "bar_gpt_daily_session_bars_v2\n"
+                        "bar_gpt_daily_session_bars_manifest_v2\n"
                         "intraday_condition_bars_by_time_ticker\n"
                         "intraday_base_bars_build_status\n"
                     )
                 if "system.columns" in query:
                     return "local_date\n"
-                if "daily_session_bars_manifest_v1" in query:
+                if "bar_gpt_daily_session_bars_manifest_v2" in query:
                     return "2019-01-01\t2020-03-01\n"
                 if "current_ticker" in query:
                     return ""

@@ -36,6 +36,7 @@ SIZE_COLUMNS = frozenset(
     for family in ("trade", "bid", "ask")
     for field in ("size_sum", "size_open", "size_high", "size_low", "size_close")
 )
+SIZE_COLUMNS = frozenset((*SIZE_COLUMNS, "trade_price_eligible_size_sum"))
 SIZE_SQUARED_COLUMNS = frozenset(f"{family}_size_squared_sum" for family in ("trade", "bid", "ask"))
 
 

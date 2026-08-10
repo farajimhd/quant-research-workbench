@@ -1,4 +1,4 @@
-# BarGPT sparse event and OHLC target contract (v5)
+# BarGPT condition-eligible sparse event and OHLC target contract (v6)
 
 ## Defects this contract replaces
 
@@ -20,13 +20,34 @@ contract still lost material price geometry:
   blended autoregressive return;
 * the model-ready low-from-open input was stored as a positive magnitude.
 
-The old shard roots are immutable. Contract-v5 shards are rebuilt under
-`offline_shards_v5`; old shards, checkpoints, cursors, discovery panels, and
+The v5 pilot exposed a further semantic defect: every structurally positive
+trade and paired quote was accepted without applying the database condition
+category's field-update permissions. AAPL's 2019-01-03 average-price/Form-T
+trade (177.89 versus a market near 142.60) contaminated context and targets,
+and an implausibly wide quote contaminated quote extrema. Historical trade
+correction code 12 (the original incorrect data) was also retained upstream.
+
+The old shard roots are immutable. Contract-v6 shards are rebuilt under
+`offline_shards_v6`; old shards, checkpoints, cursors, discovery panels, and
 validation manifests are not compatible or repairable in place.
 
 ## Bar, context, and condition authority
 
-* A one-second model bar exists only when `source_event_count > 0`.
+* A one-second model bar exists only when `source_event_count > 0`, where that
+  count contains eligible prediction events rather than every raw SIP record.
+* Trade conditions are combined fail-closed. An event may update each stored
+  sufficient statistic only when every condition token authorizes that field.
+  `update_high_low`, `update_last`, and `update_volume` therefore produce
+  independent high/low, close, and volume/count masks. A trade can create an
+  origin only when it may update high/low or last; a volume-only trade can add
+  volume to an already-active second but cannot create a bar or origin.
+* Correction 00 and corrected-data 01 remain eligible upstream. Correction
+  codes 07, 08, 10, 11, and 12 are excluded before compact event encoding;
+  unknown condition/correction metadata fails closed.
+* A quote is eligible only as a complete positive bid/ask pair with bid <= ask,
+  no Invalid/Closed/MarketMakerQuotesClosed/NonFirm/Cancel/Unknown/Crossed
+  modifier, and midpoint-relative spread no wider than 1,000 bps. The bound is
+  configurable and applied once in vectorized ClickHouse SQL.
 * A coarser fixed bucket exists only when its aggregated source-event count is
   positive. Empty buckets are absent rather than zero-valued tokens.
 * Every stored bar has explicit `bar_start_us`, `bar_end_us`, and
@@ -46,6 +67,24 @@ validation manifests are not compatible or repairable in place.
   negative labels when the condition authority is certified; a condition head
   with no certified positive evidence remains inactive under training preflight.
 
+The authoritative trade-condition categories observed in
+`event_condition_token_reference` are:
+
+| Field permission | SIP condition codes |
+|---|---|
+| high/low + last + volume (origin eligible) | 00, 01, 03, 04, 06, 08, 09, 11, 14, 17, 18, 19, 23, 24, 25, 27, 28, 30, 34, 35, 36, 41, 55 |
+| high/low + volume, no last (origin eligible) | 05, 10, 22, 32, 33 |
+| high/low + last, no volume (origin eligible) | 38 |
+| volume only (never creates an origin) | 02, 07, 12, 13, 20, 21, 26, 29, 37, 39-54 |
+| no price/volume contribution | 15, 16, 56, 59 |
+
+These lists are not duplicated as a Python hot-path lookup. The builders load
+the database flags into constant ClickHouse arrays once per query and use
+`arrayAll`, preserving fail-closed multi-condition semantics without row loops.
+Trade condition 12 in this table is a different source field and namespace
+from historical trade correction 12; the former is volume-only, while the
+latter is excluded upstream as original incorrect data.
+
 ## Model input tensor contract
 
 Every view is a `float32` tensor with shape `[batch, tokens, 46]`. Intraday
@@ -61,14 +100,14 @@ can be converted to log-return basis points as `sinh(z) * 100`.
 
 | Ordered input | Model type | Source and preprocessing |
 |---|---|---|
-| `trade_present` | `float32`, 0/1 | One when the bar contains a valid trade-family update; otherwise zero. |
+| `trade_present` | `float32`, 0/1 | One when the bar contains an eligible trade high/low or last update; volume-only events do not set it. |
 | `trade_close_return` | `float32` | `asinh(log(trade_close / prior_valid_trade_close) * 100)`; zero when no causal prior trade close is available. |
 | `trade_open_gap` | `float32` | `asinh(log(trade_open / prior_valid_trade_close) * 100)`. |
 | `trade_high_from_open_return` | `float32` | Signed `asinh(log(trade_high / trade_open) * 100)`; not converted to an absolute magnitude. |
 | `trade_low_from_open_return` | `float32` | Signed `asinh(log(trade_low / trade_open) * 100)`; normally nonpositive and not clamped. |
 | `trade_log_size` | `float32` | `log1p(trade_size_sum)` in the anchor-adjusted share basis. |
 | `trade_log_count` | `float32` | `log1p(trade_event_count)`. |
-| `trade_vwap_deviation_bps` | `float32` | Trade VWAP is `price_size_sum / size_sum`; feature is `asinh(((VWAP / close) - 1) * 1000)`, equivalently `asinh(VWAP_deviation_bps / 10)`. |
+| `trade_vwap_deviation_bps` | `float32` | Trade VWAP is `eligible_price_size_sum / eligible_price_size`; volume-only conditions are excluded from both terms. Feature is `asinh(((VWAP / close) - 1) * 1000)`, equivalently `asinh(VWAP_deviation_bps / 10)`. |
 | `trade_size_cv` | `float32` | `asinh(std(event_size) / mean(event_size))`; zero when fewer than two updates or size support is unavailable. |
 | `bid_present` | `float32`, 0/1 | One when the bar contains a valid bid-family update; otherwise zero. |
 | `bid_close_return` | `float32` | `asinh(log(bid_close / prior_valid_bid_close) * 100)`. |
@@ -142,9 +181,11 @@ ask_open_return,   ask_high_return,   ask_low_return,   ask_close_return
 
 Every return is `log(target_price / baseline_close)` and is transformed for the
 model as `asinh(log_return * 100)`. No midpoint target, sign clamp, or source
-family substitution is permitted. If a family has no direct update, has no
-valid baseline, or has invalid OHLC geometry, all four family targets are
-masked. A horizon beyond authoritative coverage is masked independently.
+family substitution is permitted. Each field has an independent mask. A trade
+open/high/low/close target is valid only when that field has eligible evidence
+in the window and a causal eligible-close baseline exists. Bid/ask fields share
+the paired-quote mask. A horizon beyond authoritative coverage is masked
+independently.
 
 The remaining physical targets are trade realized volatility, log trade
 volume, log trade count, trade/bid/ask/paired-quote availability, and the four
@@ -190,7 +231,7 @@ Each intraday view predicts the next stored nonempty completed bar, including
 across a wall-clock gap. It does not require the next active bar to be exactly
 one timeframe step later. The same 12 family OHLC returns are based on the
 current last-valid family close and the next bar's direct family OHLC values.
-A missing next-bar family masks all four targets for that family.
+A missing or condition-ineligible next-bar field masks that field independently.
 
 Autoregressive auxiliary targets additionally contain next-bar log trade
 volume, log trade count, and four availability flags. There are 14 continuous
@@ -248,7 +289,7 @@ to at most 16 metrics.
 
 ## Builder, shard, and certification contract
 
-Contract-v5 uses shard contract 5 and loader stream contract 7. Shards persist
+Contract-v6 uses shard contract 6 and loader stream contract 8. Shards persist
 view interval metadata, nonempty context, active origins, per-origin causal
 as-of indices, 18-channel autoregressive tensors, 23-channel physical tensors,
 condition provenance, and SHA-256-certified sidecars. Discovery fails closed
@@ -258,6 +299,11 @@ The pilot and full builders invoke the same builder implementation; the pilot
 only bounds ticker/month scope. Automated audit must verify:
 
 * no zero-event origin or intraday context token;
+* no correction-12 or condition-ineligible field contribution in reconstructed
+  ClickHouse samples;
+* no implausible quote/condition/split return outlier above the configured
+  fail-closed audit threshold;
+* a dedicated AAPL 2020-08-31 split-boundary pilot proving causal adjustment;
 * interval ordering, availability, exact configured context, block continuity,
   split basis, and causal as-of relationships;
 * signed input high/low geometry and physical/AR OHLC ordering;
@@ -266,7 +312,7 @@ only bounds ticker/month scope. Automated audit must verify:
   ClickHouse reconstruction;
 * target and direction support by family, OHLC field, horizon, and AR view.
 
-Before the full cohort build, the v5 overfit runner must pass the total-loss
+Before the full cohort build, the v6 overfit runner must pass the total-loss
 improvement gate and direction gates for every physical task with sufficient
 two-class support, and demonstrate each of the 12 autoregressive direction
 tasks on the configured minimum number of eligible views. It reports direct

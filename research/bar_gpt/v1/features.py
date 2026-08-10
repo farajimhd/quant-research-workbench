@@ -119,14 +119,20 @@ def project_stationary_features(
         size_squared = _column(raw, f"{prefix}_size_squared_sum")
         price_size = _column(raw, f"{prefix}_price_size_sum")
         count = _column(raw, f"{prefix}_event_count")
-        previous_close, previous_available = _previous_valid(close, present)
-        valid_previous = present & previous_available
-        close_return = _safe_log_ratio(close, previous_close, valid_previous)
-        open_gap = _safe_log_ratio(open_price, previous_close, valid_previous)
-        high_from_open = _safe_log_ratio(high, open_price, present)
-        low_from_open = _safe_log_ratio(low, open_price, present)
-        vwap = torch.where((size > 0) & (price_size > 0), price_size / size.clamp_min(eps), close)
-        vwap_bps = torch.where(present & (close > 0), (vwap / close.clamp_min(eps) - 1.0) * 10_000.0, 0.0)
+        # Trade condition categories authorize open/extrema/last/volume
+        # independently.  Quote fields share one paired-quote eligibility bit.
+        open_valid = (open_price > 0) if prefix == "trade" else present
+        high_valid = (high > 0) if prefix == "trade" else present
+        low_valid = (low > 0) if prefix == "trade" else present
+        close_valid = (close > 0) if prefix == "trade" else present
+        previous_close, previous_available = _previous_valid(close, close_valid)
+        close_return = _safe_log_ratio(close, previous_close, close_valid & previous_available)
+        open_gap = _safe_log_ratio(open_price, previous_close, open_valid & previous_available)
+        high_from_open = _safe_log_ratio(high, open_price, high_valid & open_valid)
+        low_from_open = _safe_log_ratio(low, open_price, low_valid & open_valid)
+        vwap_size = _column(raw, "trade_price_eligible_size_sum") if prefix == "trade" else size
+        vwap = torch.where((vwap_size > 0) & (price_size > 0), price_size / vwap_size.clamp_min(eps), close)
+        vwap_bps = torch.where((vwap_size > 0) & close_valid, (vwap / close.clamp_min(eps) - 1.0) * 10_000.0, 0.0)
         mean_size = size / count.clamp_min(1.0)
         variance = torch.where(
             size_squared > 0,

@@ -23,12 +23,12 @@ from research.bar_gpt.v1.offline_shards import (
 )
 
 
-DISCOVERY_CONTRACT_VERSION = 4
+DISCOVERY_CONTRACT_VERSION = 5
 DISCOVERY_WANDB_PROJECT = "bar gpt model discovery"
 DISCOVERY_ORIGIN_BARS_1S = 4_096
 DISCOVERY_TRAIN_ORIGINS_PER_EPOCH = 100_000_000
 DISCOVERY_EPOCHS = 2
-DEFAULT_SHARD_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5")
+DEFAULT_SHARD_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v6")
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\model_discovery")
 
 
@@ -569,7 +569,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if unknown:
         raise ValueError(f"unknown architectures: {unknown}")
     output_root = Path(args.output_root)
-    manifest_path = output_root / "fixed_panels_v4.json"
+    manifest_path = output_root / "fixed_panels_v5.json"
     print(f"W&B project: {args.wandb_project}", flush=True)
     print("Metric namespaces: monitor_*, validation_*, locked_test_*", flush=True)
     print(
@@ -603,7 +603,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             config=discovery_data_config(),
         )
         print(f"Reusing verified manifest: {manifest_path}", flush=True)
-    state_path = output_root / "campaign_state_v4.json"
+    state_path = output_root / "campaign_state_v5.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {
         "contract_version": DISCOVERY_CONTRACT_VERSION,
         "campaign_id": time.strftime("%Y%m%d-%H%M%S"),
