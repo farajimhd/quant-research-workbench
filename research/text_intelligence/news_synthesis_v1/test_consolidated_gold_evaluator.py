@@ -118,6 +118,48 @@ class ConsolidatedGoldEvaluatorTests(unittest.TestCase):
         }
         _validate_source_article(source, gold)
 
+    def test_declared_structured_source_hash_is_authoritative(self) -> None:
+        structured_hash = sha256_json({
+            "title": "Title",
+            "teaser": "Teaser",
+            "rendered_text": "Body",
+        })
+        gold = {
+            "source_id": "source-1",
+            "source_timestamp": "2026-01-01T00:00:00Z",
+            "source_hashes": {"source_text_sha256": structured_hash},
+        }
+        source = {
+            "source_id": "source-1",
+            "source_timestamp": "2026-01-01T00:00:00Z",
+            "source_text_sha256": structured_hash,
+            "publication": {"title": "Title", "teaser": "Teaser"},
+            "rendered_product": {"text": "Body"},
+        }
+
+        self.assertNotEqual(
+            structured_hash,
+            hashlib.sha256(b"Body").hexdigest(),
+        )
+        _validate_source_article(source, gold)
+
+    def test_declared_structured_source_hash_mismatch_fails_closed(self) -> None:
+        gold = {
+            "source_id": "source-1",
+            "source_timestamp": "2026-01-01T00:00:00Z",
+            "source_hashes": {"source_text_sha256": "a" * 64},
+        }
+        source = {
+            "source_id": "source-1",
+            "source_timestamp": "2026-01-01T00:00:00Z",
+            "source_text_sha256": "b" * 64,
+            "publication": {"title": "Title"},
+            "rendered_product": {"text": "Body"},
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "Source text hash mismatch"):
+            _validate_source_article(source, gold)
+
     def test_source_catalog_certification_binds_explicit_artifacts(self) -> None:
         with TemporaryDirectory() as directory:
             runtime = Path(directory)
