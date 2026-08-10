@@ -21,8 +21,11 @@ flowchart TD
     CH --> QH["QMD History and source resolver"]
     CH --> TE["Text Embed Gateway"]
     CH --> TI["Text Intelligence"]
+    CH -->|"bounded direct context or bulk read"| MA["Market AI"]
+    Q -->|"live events and snapshots"| MA
+    QH -->|"historical market products"| MA
     TI --> MG["Model Gateway"]
-    TE --> MA["Market AI"]
+    TE --> MA
     MG --> MA
 
     Q --> API["Application backend"]
@@ -55,7 +58,7 @@ service's tables. Each owner writes only its canonical sinks.
 | Reference Gateway | `127.0.0.1:8799` | Identity graph, ticker intervals, conids, tradability, reference publications | High-frequency prices or orders |
 | IBKR Supervisor | `127.0.0.1:8800` | Broker-process lifecycle, authentication, account/session reachability | Portfolio decisions or order ownership |
 | Model Gateway | `127.0.0.1:8802` | Named structured-inference routes, budgets, fallback, idempotency, metadata audit | News or trading policy |
-| Market AI | `127.0.0.1:8803` | Versioned, expiring contextual hypotheses from frozen inputs | Canonical market/text data or orders |
+| Market AI | `127.0.0.1:8803` | Versioned, expiring contextual hypotheses from frozen live or historical inputs | Canonical market/text data, duplicated QMD formulas, or orders |
 | Text Intelligence | `127.0.0.1:8804` | News Synthesis V1, separate SEC semantics, semantic reconciliation | Provider polling or strategy authority |
 | Application backend | `127.0.0.1:8000` | API composition, configuration, run controllers, access boundary | Reimplementation of producer formulas |
 | Frontend | `127.0.0.1:5173` | Presentation, interaction, local workspace overlays | Canonical data or trading decisions |
@@ -87,17 +90,41 @@ The consumer can recover by querying canonical tables and coverage. Examples:
 - Reference rebuilds the SEC-to-market bridge from SEC and identity tables.
 - historical Scanner joins QMD snapshots to point-in-time reference and SEC
   facts.
+- Market AI reads bounded point-in-time context from ClickHouse and may consume
+  historical market products through QMD History.
 
 ### Low-latency notification
 
 A producer may notify a consumer after a durable or causally accepted update:
 
 - QMD streams live events/bars/signals;
+- QMD streams live compact events and snapshots to Market AI;
 - News notifies Text Intelligence;
 - Text Intelligence notifies Market AI;
 - broker streams update trading projections.
 
 The consumer still reconciles durable state after restart or notification loss.
+
+### Market AI market-data access
+
+Market AI has three distinct data paths:
+
+| Need | Preferred path | Rule |
+| --- | --- | --- |
+| Live event/model stream | QMD Gateway WebSocket and bounded live snapshots | QMD owns event normalization, sequence, bars, indicators, and signals |
+| Historical/replay market products | QMD History | QMD History applies the shared `qmd_core` contract and source resolver |
+| Frozen contextual or approved bulk reads | Direct ClickHouse query | Query must be bounded, point-in-time, registered, and must not recreate QMD formulas |
+
+**Confirmed current state:** Market AI already consumes the live QMD compact-event
+stream and ticker snapshots, and its contextual path reads ClickHouse directly.
+Its replay primitives can accept historical events, but Market AI is not yet
+wired to QMD History as one unified historical market-data client.
+
+**Target:** QMD and QMD History expose the stable market-data contracts. Market
+AI may retain direct ClickHouse access for domain context and approved bulk
+research/reconciliation, with source table, query version, coverage, and causal
+cutoff recorded in the frozen context. Direct database access is not permission
+to maintain a third implementation of event merging or QMD calculations.
 
 ### Control dependency
 

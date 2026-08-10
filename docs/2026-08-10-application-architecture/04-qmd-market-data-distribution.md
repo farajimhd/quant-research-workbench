@@ -166,10 +166,35 @@ The same source plan supports:
 - market-signal lifecycles;
 - Strategy warm-up and observations;
 - Replay, Backtest, and Debug event streams;
-- model input/certification reads.
+- live Market AI event/snapshot inputs;
+- historical Market AI replay, model input, and certification reads.
 
 Each response includes the source plan hash, source revisions, product schema,
 calculation versions, coverage, `as_of`, and continuation cursor.
+
+## Market AI delivery contract
+
+```mermaid
+flowchart TD
+    A["QMD Gateway live stream and ticker snapshot"] --> D["Market AI live state"]
+    B["QMD History bounded historical products"] --> E["Market AI replay and historical inference"]
+    C["Registered bounded ClickHouse context query"] --> F["Frozen contextual evidence"]
+    D --> G["Versioned model input context"]
+    E --> G
+    F --> G
+```
+
+QMD work must provide stable live compact-event/snapshot contracts and a
+historical request contract that uses the same `qmd_core` encoding and source
+plan. Market AI chooses the requested product and causal cutoff; it does not
+choose `q_live` versus `market_sip_compact` or reproduce boundary logic.
+
+Direct ClickHouse access remains valid for registered contextual joins and
+approved bulk/offline reads. If a direct read contains canonical market events,
+it must use the QMD-owned schema/decoder and carry the same coverage and source
+plan semantics as QMD History. QMD-derived bars, indicators, structure, and
+signals should normally be requested from QMD History rather than recalculated
+inside Market AI.
 
 ## Cache rules
 

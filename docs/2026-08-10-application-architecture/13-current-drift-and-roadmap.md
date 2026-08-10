@@ -29,7 +29,34 @@ The target in this package preserves strong existing authorities—QMD shared co
 
 ## 3. Implementation sequence
 
+### Current implementation constraint
+
+The permitted implementation scope is **QMD Gateway, QMD History, application
+backend, frontend, Portfolio, and OMS**. News, SEC, Reference, Text Intelligence,
+Text Embed, Model Gateway, Market AI, and other working producer services remain
+unchanged. Permitted components may integrate with their existing contracts;
+tasks requiring changes to a deferred service remain design dependencies unless
+a later request explicitly reopens that service.
+
+Permitted task groups:
+
+| Component | Tasks that may proceed |
+| --- | --- |
+| QMD Gateway | Stable live event/snapshot contracts, recent retention, coverage/watermarks, capability metadata |
+| QMD History | Unified source planning, historical products, macro bars, causal replay, direct-read parity |
+| Backend | Typed QMD clients, source/query planning, capability and field registry APIs, configuration compiler, chart/scanner composition, snapshot/delta recovery |
+| Frontend | Registry-driven Market Discovery status, Universal/Core/Watchlist configuration, progressive charts and indicators, shared Canvas defaults/overlays, mode and readiness presentation |
+| Portfolio | Cross-run/account arbitration, fenced ownership, capital/risk reservations, proposal dispositions, restart reconciliation |
+| OMS | Idempotent order lifecycle, execution/protection policy, broker/simulator adapter parity, recovery and journal projections |
+
+This permission does not authorize broker orders, deployment changes, or
+modifications to deferred services without a separate implementation request.
+
 ### Phase 0 — freeze contracts and registries
+
+In the current scope, implement QMD market-source/product/capability registry
+fragments, backend compilation/API contracts, and generated frontend catalogs.
+Registry population owned by deferred producer services remains deferred.
 
 1. Establish machine-readable schemas for services, market sources, fields/enrichments, capabilities, containers and trading configuration objects.
 2. Assign stable IDs, owners, versions and current implementation status.
@@ -45,10 +72,22 @@ The target in this package preserves strong existing authorities—QMD shared co
 3. Make QMD History use the same normalizer/computation/bar contracts.
 4. Gate retention on archive coverage verification.
 5. Make daily-session bars the historical base for weekly/monthly/yearly aggregation; append partial current daily state explicitly.
+6. Stabilize the QMD live compact-event/ticker-snapshot consumer contracts used
+   by Market AI without changing Market AI.
+7. Add a bounded QMD History market-product/replay contract suitable for future
+   Market AI consumption, including source-plan hash, coverage, continuation,
+   product/calculation versions, and causal cutoff.
+8. Define parity tests showing that an approved direct ClickHouse event read
+   using QMD-owned decoding matches the equivalent QMD History result.
 
 **Gate:** boundary-spanning queries are duplicate-free, gap-explicit and parity-tested across restarts and market days.
 
 ### Phase 2 — centralize enrichment
+
+Backend field-registry, query-planner, caching, provenance, and frontend status
+work may proceed against existing producer contracts. Changes to Reference,
+News, SEC, Text Intelligence, Text Embed, Model Gateway, or Market AI remain
+deferred.
 
 1. Populate the complete field registry from Reference table groups, publications, SEC, News, market statistics and approved models.
 2. Move SQL/table knowledge into versioned query plans.
@@ -58,6 +97,9 @@ The target in this package preserves strong existing authorities—QMD shared co
 **Gate:** scanner/watchlist/chart/strategy request the same field ID and receive the same as-of value/version.
 
 ### Phase 3 — enforce the computation funnel
+
+QMD, backend, and frontend work is permitted. Deferred producer services remain
+read-only dependencies.
 
 1. Register universal/core/watchlist/strategy/request/offline capabilities.
 2. Add dependency DAG, warm-up, state, cost and scope validation.
@@ -69,6 +111,9 @@ The target in this package preserves strong existing authorities—QMD shared co
 
 ### Phase 4 — unify Canvas and charts
 
+QMD/QMD History, backend, and frontend implementation is permitted. Existing
+intelligence/reference contracts must be consumed without producer changes.
+
 1. Publish versioned container schemas/defaults from Canvas Configuration.
 2. Make Live, Replay, Backtest and research workspaces instantiate those defaults plus user overlays.
 3. Implement progressive chart base-series/indicator loading through unified QMD routing.
@@ -78,6 +123,9 @@ The target in this package preserves strong existing authorities—QMD shared co
 **Gate:** the same saved workspace operates in each compatible mode, with explicit mode/account isolation and smooth boundary-spanning charts.
 
 ### Phase 5 — converge trading runtimes
+
+Backend, frontend, Portfolio, and OMS implementation is permitted. Broker,
+intelligence, reference, and model-service authority boundaries remain intact.
 
 1. Complete the configuration compiler and immutable Run Plan.
 2. Make Replay the parity benchmark; migrate Live and implement Backtest using shared state machines.
@@ -89,6 +137,8 @@ The target in this package preserves strong existing authorities—QMD shared co
 
 ### Phase 6 — standardize intelligence and model integration
 
+**Deferred until the undergoing intelligence work stabilizes.**
+
 1. Emit validated domain events/FeatureUpdates from Reference, News, SEC, Text Intelligence and model services.
 2. Enforce causal `available_at`, identity and revision lineage in Replay/Backtest.
 3. Create application-wide artifact/promotion records and capability bindings.
@@ -97,6 +147,10 @@ The target in this package preserves strong existing authorities—QMD shared co
 **Gate:** no model or intelligence feature enters a strategy without a registered version, causal input contract, expiry and failure policy.
 
 ### Phase 7 — operations, migration, and retirement
+
+QMD/QMD History, backend/frontend, Portfolio, and OMS validation and operations
+work are in scope. Migrations or retirements requiring changes to deferred
+producer services remain deferred.
 
 1. Standardize readiness/coverage endpoints and central operations view.
 2. Add representative load, boundary, restart, race and browser validation suites.
