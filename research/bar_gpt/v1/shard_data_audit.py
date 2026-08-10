@@ -36,6 +36,22 @@ from research.bar_gpt.v1.targets import TARGET_NAMES
 from research.bar_gpt.v1.train import _forward
 
 
+DEFAULT_FLOAT_ATOL = 1e-6
+DEFAULT_FLOAT_RTOL = 1e-6
+# Float32 price ratios can differ by one or two source ULPs when ClickHouse
+# recomputes aggregate rows. The physical target transform multiplies log
+# returns by 100, so bound the resulting comparison in transformed space to
+# approximately 0.005 bp near zero while retaining the stricter default for
+# every other target.
+PHYSICAL_HORIZON_FLOAT_ATOL_BY_TARGET: tuple[float, ...] = (
+    5e-5,
+    5e-5,
+    5e-5,
+    5e-5,
+    *(DEFAULT_FLOAT_ATOL for _ in TARGET_NAMES[4:]),
+)
+
+
 @dataclass(frozen=True, slots=True)
 class AuditBlockRef:
     unit_key: str
@@ -258,7 +274,30 @@ def reconstruct_clickhouse_example(
     return dataset[0]
 
 
-def _tensor_comparison(left: torch.Tensor, right: torch.Tensor) -> dict[str, Any]:
+def _float_outside_tolerance(
+    left: torch.Tensor,
+    right: torch.Tensor,
+    *,
+    atol: float | torch.Tensor,
+    rtol: float,
+) -> torch.Tensor:
+    absolute = torch.as_tensor(atol, dtype=left.dtype, device=left.device)
+    while absolute.ndim < left.ndim:
+        absolute = absolute.unsqueeze(0)
+    equal = left == right
+    equal |= torch.isnan(left) & torch.isnan(right)
+    finite = torch.isfinite(left) & torch.isfinite(right)
+    equal |= finite & ((left - right).abs() <= absolute + float(rtol) * right.abs())
+    return ~equal
+
+
+def _tensor_comparison(
+    left: torch.Tensor,
+    right: torch.Tensor,
+    *,
+    atol: float | torch.Tensor = DEFAULT_FLOAT_ATOL,
+    rtol: float = DEFAULT_FLOAT_RTOL,
+) -> dict[str, Any]:
     shape_match = tuple(left.shape) == tuple(right.shape)
     dtype_match = left.dtype == right.dtype
     if not shape_match:
@@ -278,7 +317,7 @@ def _tensor_comparison(left: torch.Tensor, right: torch.Tensor) -> dict[str, Any
     else:
         finite = torch.isfinite(left) & torch.isfinite(right)
         exact_difference = (left != right) | (torch.isfinite(left) != torch.isfinite(right))
-        outside_tolerance = ~torch.isclose(left, right, rtol=1e-6, atol=1e-6, equal_nan=True)
+        outside_tolerance = _float_outside_tolerance(left, right, atol=atol, rtol=rtol)
         maximum = float((left[finite] - right[finite]).abs().max()) if torch.any(finite) else 0.0
     exact_mismatched = int(exact_difference.sum())
     mismatched = int(outside_tolerance.sum())
@@ -290,8 +329,10 @@ def _tensor_comparison(left: torch.Tensor, right: torch.Tensor) -> dict[str, Any
         "clickhouse_shape": list(right.shape),
         "mismatched": mismatched,
         "exact_mismatched": exact_mismatched,
-        "float_atol": 1e-6 if left.dtype.is_floating_point else None,
-        "float_rtol": 1e-6 if left.dtype.is_floating_point else None,
+        "float_atol": (
+            float(torch.as_tensor(atol).max()) if left.dtype.is_floating_point else None
+        ),
+        "float_rtol": float(rtol) if left.dtype.is_floating_point else None,
         "max_abs_difference": maximum,
     }
 
@@ -300,14 +341,28 @@ def _labeled_tensor_comparison(
     left: torch.Tensor,
     right: torch.Tensor,
     labels: Sequence[str],
+    *,
+    atol_by_field: Sequence[float] | None = None,
 ) -> dict[str, Any]:
-    result = _tensor_comparison(left, right)
+    if atol_by_field is not None and len(atol_by_field) != len(labels):
+        raise ValueError("field tolerances must align with labels")
+    atol: float | torch.Tensor = (
+        torch.tensor(tuple(atol_by_field), dtype=left.dtype, device=left.device)
+        if atol_by_field is not None
+        else DEFAULT_FLOAT_ATOL
+    )
+    result = _tensor_comparison(left, right, atol=atol)
     if tuple(left.shape) != tuple(right.shape) or not left.ndim or left.shape[-1] != len(labels):
         return result
     if left.dtype == torch.bool or not left.dtype.is_floating_point:
         difference = left != right
     else:
-        difference = ~torch.isclose(left, right, rtol=1e-6, atol=1e-6, equal_nan=True)
+        difference = _float_outside_tolerance(
+            left,
+            right,
+            atol=atol,
+            rtol=DEFAULT_FLOAT_RTOL,
+        )
     reduce_dims = tuple(range(difference.ndim - 1))
     counts = difference.sum(dim=reduce_dims) if reduce_dims else difference.to(torch.long)
     result["outside_tolerance_by_field"] = {
@@ -315,6 +370,11 @@ def _labeled_tensor_comparison(
         for label, count in zip(labels, counts.tolist(), strict=True)
         if int(count)
     }
+    if atol_by_field is not None and left.dtype.is_floating_point:
+        result["float_atol_by_field"] = {
+            label: float(value)
+            for label, value in zip(labels, atol_by_field, strict=True)
+        }
     return result
 
 
@@ -369,7 +429,12 @@ def compare_loaded_to_clickhouse(
         )
     assert stored.horizon_targets is not None and rebuilt.horizon_targets is not None
     assert stored.horizon_mask is not None and rebuilt.horizon_mask is not None
-    add("horizon_targets", stored.horizon_targets, rebuilt.horizon_targets, TARGET_NAMES)
+    comparisons["horizon_targets"] = _labeled_tensor_comparison(
+        stored.horizon_targets.cpu(),
+        rebuilt.horizon_targets.cpu(),
+        TARGET_NAMES,
+        atol_by_field=PHYSICAL_HORIZON_FLOAT_ATOL_BY_TARGET,
+    )
     add("horizon_mask", stored.horizon_mask, rebuilt.horizon_mask)
     failed = sorted(name for name, value in comparisons.items() if not value["match"])
     return {

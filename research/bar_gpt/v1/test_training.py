@@ -48,6 +48,8 @@ from research.bar_gpt.v1.sampling import CoverageCursor, SESSION_PHASES, coverag
 from research.bar_gpt.v1.shard_data_audit import (
     AuditBlockRef,
     LoadedAuditSample,
+    PHYSICAL_HORIZON_FLOAT_ATOL_BY_TARGET,
+    _labeled_tensor_comparison,
     compare_loaded_to_clickhouse,
     selected_autoregressive_targets,
     selected_targets,
@@ -940,6 +942,29 @@ class LoaderTrainerContractTest(unittest.TestCase):
             inside_result = model.encode(inside, 1_000_000, 0, attention_window=5)[:, -1]
         self.assertTrue(torch.allclose(expected, outside_result, atol=1e-6, rtol=1e-6))
         self.assertFalse(torch.allclose(expected, inside_result, atol=1e-5, rtol=1e-5))
+
+    def test_physical_target_audit_tolerance_is_bounded_by_target_semantics(self) -> None:
+        stored = torch.zeros((1, 1, len(TARGET_NAMES)), dtype=torch.float32)
+        rebuilt = stored.clone()
+        rebuilt[..., 0] = 2e-5  # Approximately 0.002 bp near zero after inverse scaling.
+        rebuilt[..., 4] = 2e-5  # Volume retains the strict default tolerance.
+        result = _labeled_tensor_comparison(
+            stored,
+            rebuilt,
+            TARGET_NAMES,
+            atol_by_field=PHYSICAL_HORIZON_FLOAT_ATOL_BY_TARGET,
+        )
+        self.assertEqual(result["mismatched"], 1)
+        self.assertEqual(result["outside_tolerance_by_field"], {"log_trade_volume": 1})
+
+        rebuilt[..., 0] = 6e-5
+        result = _labeled_tensor_comparison(
+            stored,
+            rebuilt,
+            TARGET_NAMES,
+            atol_by_field=PHYSICAL_HORIZON_FLOAT_ATOL_BY_TARGET,
+        )
+        self.assertEqual(result["outside_tolerance_by_field"]["endpoint_return"], 1)
 
     def test_session_rollup_and_targets_are_causal_and_nonredundant(self) -> None:
         examples = list(build_session_examples(

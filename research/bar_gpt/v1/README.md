@@ -731,10 +731,13 @@ python -B -m research.bar_gpt.v1.run_audit_shard_data
 
 The reconstruction compares every model-ready view, origin/as-of index,
 autoregressive target and mask, and physical-horizon target and mask. Integer
-and Boolean tensors must match exactly; recomputed floating tensors use a
-documented `1e-6` absolute/relative tolerance while retaining exact-difference
-counts and maximum error in the report. Any out-of-tolerance difference fails
-the run. The report also records neutral and directional
+and Boolean tensors must match exactly. Inputs, autoregressive targets, and
+non-price physical targets use `1e-6` absolute/relative tolerance. The four
+float32 price-derived physical statistics use `5e-5` absolute tolerance in
+transformed target space (approximately `0.005 bp` near zero) because their
+`log-ratio * 100` transform amplifies bounded source-ULP differences. Exact-difference counts and
+maximum error remain in the report, and any difference beyond its documented
+tolerance fails the run. The report also records neutral and directional
 class balance, extreme endpoint returns, and midpoint/trade reference-source
 switch rates as explicit heuristic warnings. Reports are written beneath
 `D:\TradingML\runtimes\bar_gpt\v1\shard_data_audits`; neither ClickHouse nor
