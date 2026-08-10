@@ -1383,6 +1383,166 @@ def _pending_text_intelligence_label_capabilities() -> list[dict[str, Any]]:
     ]
 
 
+def _discovery_reference_capabilities() -> list[dict[str, Any]]:
+    """Point-in-time scanner fields used by reusable Watchlist templates."""
+
+    rows = [
+        ("market.change_pct", "Session change", "market_data", "percent", "market.change_pct", "Last price divided by the completed previous-session close, minus one, expressed as a percentage.", "QMD bars + previous-session reference", ["1s", "10s", "30s", "1m"]),
+        ("market.volume", "Session volume", "market_data", "shares", "market.volume", "Cumulative eligible trade size for the current session.", "QMD eligible trades", ["1s", "10s", "30s", "1m"]),
+        ("market.relative_volume", "Relative volume", "indicator", "multiple", "market.relative_volume", "Current cumulative session volume divided by the point-in-time 20-session baseline for the same elapsed session interval.", "QMD volume + 20-session baseline", ["10s", "30s", "1m"]),
+        ("reference.market_cap", "Market capitalization", "reference", "currency", "reference.market_cap", "Latest point-in-time provider market capitalization available before evaluation.", "DB-managed market snapshot", ["1d"]),
+        ("reference.float_shares", "Public float", "reference", "shares", "reference.float_shares", "Tradable share supply from DB-managed reference data, with the SEC public-float estimate available as a provenance-preserving fallback.", "DB reference + SEC facts", ["1d"]),
+        ("reference.short_interest", "Short interest", "reference", "shares", "reference.short_interest", "Open short positions from the latest exchange settlement report published before evaluation.", "DB-managed short-interest history", ["settlement"]),
+        ("reference.short_interest_pct", "Short interest of float", "reference", "percent", "reference.short_interest_pct", "Reported short interest divided by the point-in-time public float; unavailable denominators remain unavailable.", "Short interest + public float", ["settlement"]),
+        ("reference.days_to_cover", "Days to cover", "reference", "days", "reference.days_to_cover", "Reported short interest divided by the reporting source's average daily volume.", "DB-managed short-interest history", ["settlement"]),
+        ("fundamental.trajectory_score", "Fundamental trajectory", "reference", "score", "fundamental.trajectory_score", "Composite 0-100 trajectory score derived from causally available SEC profitability, cash generation, balance-sheet, growth, and share-base evidence.", "SEC XBRL fact service", ["filing"]),
+        ("fundamental.quality_score", "Fundamental data quality", "reference", "score", "fundamental.quality_score", "0-100 coverage and comparability score for the SEC facts supporting the fundamental trajectory.", "SEC XBRL fact service", ["filing"]),
+        ("event.ipo.days_to_event", "IPO event distance", "event", "days", "event.ipo.days_to_event", "Signed calendar days from evaluation to a point-in-time IPO event; negative values are recent IPOs and positive values are upcoming IPOs.", "DB-managed corporate-event calendar", ["event"]),
+        ("event.split.days_to_event", "Split event distance", "event", "days", "event.split.days_to_event", "Signed calendar days from evaluation to the latest published stock-split execution date.", "DB-managed stock-split history", ["event"]),
+    ]
+    return [{
+        "capability_id": capability_id,
+        "name": name,
+        "description": calculation,
+        "category": "Watchlist fields",
+        "provider": provider,
+        "output_type": output_type,
+        "capability_type": capability_type,
+        "priority": "p1",
+        "availability": "implemented" if capability_id != "event.ipo.days_to_event" else "integration_pending",
+        "inputs": [provider],
+        "fields": [field],
+        "calculation": calculation,
+        "timeframes": timeframes,
+        "selected_timeframes": timeframes,
+        "enabled": capability_id != "event.ipo.days_to_event",
+        "configurable": False,
+        "system_required": capability_id != "event.ipo.days_to_event",
+        "tier": "core",
+    } for capability_id, name, capability_type, output_type, field, calculation, provider, timeframes in rows]
+
+
+def _market_discovery_classifications() -> list[dict[str, Any]]:
+    """Reusable, non-overlapping classification definitions for Watchlist rules."""
+
+    return [
+        {"classification_id": "price.penny", "group": "Price", "name": "Penny Stocks", "description": "Last price is positive and below $1. This category is independent of market capitalization.", "minimum": 0, "maximum": 1, "unit": "usd", "source_id": "market.last_price"},
+        {"classification_id": "market_cap.small", "group": "Market capitalization", "name": "Small Caps", "description": "Market capitalization is positive and below $2 billion. This consolidated bucket intentionally includes micro- and nano-cap issuers.", "minimum": 0, "maximum": 2_000_000_000, "unit": "usd", "source_id": "reference.market_cap"},
+        {"classification_id": "market_cap.mid", "group": "Market capitalization", "name": "Mid Caps", "description": "Market capitalization is at least $2 billion and below $10 billion.", "minimum": 2_000_000_000, "maximum": 10_000_000_000, "unit": "usd", "source_id": "reference.market_cap"},
+        {"classification_id": "market_cap.large", "group": "Market capitalization", "name": "Large Caps", "description": "Market capitalization is at least $10 billion.", "minimum": 10_000_000_000, "maximum": None, "unit": "usd", "source_id": "reference.market_cap"},
+        *[
+            {"classification_id": identifier, "group": "Public float", "name": name, "description": description, "minimum": minimum, "maximum": maximum, "unit": "shares", "source_id": "reference.float_shares"}
+            for identifier, name, description, minimum, maximum in [
+                ("float.tiny", "Tiny", "Public float below 0.5 million shares.", 0, 500_000),
+                ("float.extra_small", "Extra Small", "Public float from 0.5 million up to 2 million shares.", 500_000, 2_000_000),
+                ("float.small", "Small", "Public float from 2 million up to 5 million shares.", 2_000_000, 5_000_000),
+                ("float.medium", "Medium", "Public float from 5 million up to 10 million shares.", 5_000_000, 10_000_000),
+                ("float.medium_plus", "Medium+", "Public float from 10 million up to 20 million shares.", 10_000_000, 20_000_000),
+                ("float.large", "Large", "Public float from 20 million up to 50 million shares.", 20_000_000, 50_000_000),
+                ("float.extra_large", "Extra Large", "Public float from 50 million up to 100 million shares.", 50_000_000, 100_000_000),
+                ("float.broad", "Broad Float", "Public float of at least 100 million shares.", 100_000_000, None),
+            ]
+        ],
+    ]
+
+
+def _watchlist_condition(condition_id: str, source_id: str, comparator: str, value: float | bool, timeframe: str = "") -> dict[str, Any]:
+    return {"condition_id": condition_id, "left_source_id": source_id, "left_timeframe": timeframe, "comparator": comparator, "right_source_id": "", "right_timeframe": "", "value": value, "enabled": True}
+
+
+def _watchlist_rule(rule_set_id: str, name: str, description: str, conditions: list[dict[str, Any]], *, operator: str = "all") -> dict[str, Any]:
+    return {"rule_set_id": rule_set_id, "name": name, "description": description, "enabled": True, "operator": operator, "required_score": 1.0, "conditions": conditions, "scope": "watchlist"}
+
+
+def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
+    categories = [
+        _watchlist_rule("watchlist-penny-stocks", "Penny Stocks", "Retains positive-priced instruments trading below $1.", [_watchlist_condition("penny-positive", "market.last_price", "greater_than", 0, "1s"), _watchlist_condition("penny-under-one", "market.last_price", "less_than", 1, "1s")]),
+        _watchlist_rule("watchlist-small-caps", "Small Caps", "Retains issuers with positive market capitalization below $2 billion.", [_watchlist_condition("small-cap-positive", "reference.market_cap", "greater_than", 0, "1d"), _watchlist_condition("small-cap-maximum", "reference.market_cap", "less_than", 2_000_000_000, "1d")]),
+        _watchlist_rule("watchlist-mid-caps", "Mid Caps", "Retains issuers from $2 billion up to $10 billion in market capitalization.", [_watchlist_condition("mid-cap-minimum", "reference.market_cap", "greater_or_equal", 2_000_000_000, "1d"), _watchlist_condition("mid-cap-maximum", "reference.market_cap", "less_than", 10_000_000_000, "1d")]),
+        _watchlist_rule("watchlist-large-caps", "Large Caps", "Retains issuers with at least $10 billion in market capitalization.", [_watchlist_condition("large-cap-minimum", "reference.market_cap", "greater_or_equal", 10_000_000_000, "1d")]),
+    ]
+    float_rules = []
+    for row in _market_discovery_classifications():
+        if row["group"] != "Public float":
+            continue
+        conditions = [_watchlist_condition(f"{row['classification_id']}-minimum", "reference.float_shares", "greater_or_equal", row["minimum"], "1d")]
+        if row["maximum"] is not None:
+            conditions.append(_watchlist_condition(f"{row['classification_id']}-maximum", "reference.float_shares", "less_than", row["maximum"], "1d"))
+        float_name = str(row["name"])
+        if not float_name.endswith("Float"):
+            float_name = f"{float_name} Float"
+        float_rules.append(_watchlist_rule(f"watchlist-{row['classification_id'].replace('.', '-')}", float_name, row["description"], conditions))
+    return [
+        *categories,
+        *float_rules,
+        _watchlist_rule("watchlist-positive-gainer", "Positive session gainer", "Requires a positive percentage change from the completed previous-session close.", [_watchlist_condition("positive-session-change", "market.change_pct", "greater_than", 0, "1s")]),
+        _watchlist_rule("watchlist-relative-volume-gainer", "Elevated relative volume", "Requires current volume to exceed the aligned 20-session baseline.", [_watchlist_condition("relative-volume-over-baseline", "market.relative_volume", "greater_than", 1, "10s")]),
+        _watchlist_rule("watchlist-price-or-volume-squeeze", "Price or Volume Squeeze", "Passes when price expands at least 5% or aligned relative volume reaches 3x.", [_watchlist_condition("squeeze-price", "market.change_pct", "greater_or_equal", 5, "1s"), _watchlist_condition("squeeze-volume", "market.relative_volume", "greater_or_equal", 3, "10s")], operator="any"),
+        _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5, "1s"), "right_source_id": "indicator.vwap.value", "right_timeframe": "1s"}]),
+        _watchlist_rule("watchlist-news-bullish", "Bullish news sentiment", "Requires a validated news label and a positive sentiment score of at least 0.35.", [_watchlist_condition("news-labeled-positive", "signal.news_labeled", "is_true", True, "event"), _watchlist_condition("news-positive-score", "signal.company_news.score", "greater_or_equal", 0.35, "event")]),
+        _watchlist_rule("watchlist-news-bearish", "Bearish news sentiment", "Requires a validated news label and a negative sentiment score of -0.35 or lower.", [_watchlist_condition("news-labeled-negative", "signal.news_labeled", "is_true", True, "event"), _watchlist_condition("news-negative-score", "signal.company_news.score", "less_or_equal", -0.35, "event")]),
+        _watchlist_rule("watchlist-sec-bullish", "Bullish SEC sentiment", "Requires a validated SEC label and a positive filing score of at least 0.35.", [_watchlist_condition("sec-labeled-positive", "signal.sec_labeled", "is_true", True, "event"), _watchlist_condition("sec-positive-score", "signal.sec_filing.score", "greater_or_equal", 0.35, "event")]),
+        _watchlist_rule("watchlist-sec-bearish", "Bearish SEC sentiment", "Requires a validated SEC label and a negative filing score of -0.35 or lower.", [_watchlist_condition("sec-labeled-negative", "signal.sec_labeled", "is_true", True, "event"), _watchlist_condition("sec-negative-score", "signal.sec_filing.score", "less_or_equal", -0.35, "event")]),
+        _watchlist_rule("watchlist-fundamental-bullish", "Fundamental Bullish", "Requires reliable SEC evidence and a trajectory score of at least 65.", [_watchlist_condition("fundamental-bull-quality", "fundamental.quality_score", "greater_or_equal", 60, "filing"), _watchlist_condition("fundamental-bull-score", "fundamental.trajectory_score", "greater_or_equal", 65, "filing")]),
+        _watchlist_rule("watchlist-fundamental-bearish", "Fundamental Bearish", "Requires reliable SEC evidence and a trajectory score of 35 or lower.", [_watchlist_condition("fundamental-bear-quality", "fundamental.quality_score", "greater_or_equal", 60, "filing"), _watchlist_condition("fundamental-bear-score", "fundamental.trajectory_score", "less_or_equal", 35, "filing")]),
+        _watchlist_rule("watchlist-ipo-window", "Past or Upcoming IPO", "Retains IPOs from 30 days before through 90 days after their event date.", [_watchlist_condition("ipo-window-start", "event.ipo.days_to_event", "greater_or_equal", -90, "event"), _watchlist_condition("ipo-window-end", "event.ipo.days_to_event", "less_or_equal", 30, "event")]),
+        _watchlist_rule("watchlist-split-window", "Stock split window", "Retains symbols from 10 days before through 5 days after a published split execution date.", [_watchlist_condition("split-window-start", "event.split.days_to_event", "greater_or_equal", -5, "event"), _watchlist_condition("split-window-end", "event.split.days_to_event", "less_or_equal", 10, "event")]),
+    ]
+
+
+def _watchlist_column_catalog() -> list[dict[str, Any]]:
+    return [
+        {"column_id": column_id, "name": name, "description": description, "source": source, "value_type": value_type, "default_visible": default_visible}
+        for column_id, name, description, source, value_type, default_visible in [
+            ("symbol", "Symbol", "Point-in-time ticker identity for the eligible listing.", "Reference DB", "text", True),
+            ("company_name", "Company", "Issuer or security name available for the listing at evaluation time.", "Reference DB", "text", True),
+            ("last_price", "Last price", "Most recent causally available eligible trade price.", "QMD", "price", True),
+            ("change_pct", "Change %", "Percentage change from the completed previous-session close.", "QMD + reference", "percent", True),
+            ("volume", "Volume", "Cumulative eligible share volume for the current session.", "QMD", "shares", True),
+            ("relative_volume", "Relative volume", "Cumulative volume versus the aligned 20-session baseline.", "QMD", "multiple", True),
+            ("vwap", "VWAP", "Causal session volume-weighted average trade price.", "QMD", "price", True),
+            ("market_cap", "Market cap", "Latest point-in-time market capitalization.", "Reference DB", "currency", True),
+            ("market_cap_category", "Cap category", "Small, Mid, or Large classification from this configuration.", "Derived classification", "text", True),
+            ("float_shares", "Public float", "Tradable share supply with SEC-derived fallback provenance.", "Reference DB + SEC", "shares", True),
+            ("float_category", "Float category", "Tiny through Broad Float classification from this configuration.", "Derived classification", "text", True),
+            ("short_interest", "Short interest", "Latest reported short shares available before evaluation.", "Reference DB", "shares", False),
+            ("short_interest_pct", "Short % float", "Short interest divided by point-in-time public float.", "Derived reference", "percent", True),
+            ("days_to_cover", "Days to cover", "Reported short interest divided by average daily volume.", "Reference DB", "days", False),
+            ("fundamental_trajectory", "Fundamental trajectory", "SEC-derived 0-100 financial trajectory score.", "SEC facts", "score", False),
+            ("fundamental_quality", "Fundamental quality", "Coverage and comparability of the supporting SEC facts.", "SEC facts", "score", False),
+            ("news_sentiment", "News sentiment", "Latest validated point-in-time company-news score and label.", "Text Intelligence", "score", False),
+            ("sec_sentiment", "SEC sentiment", "Latest validated point-in-time filing score and label.", "Text Intelligence", "score", False),
+            ("ipo_event", "IPO date", "Point-in-time past or upcoming IPO event date.", "Corporate-event DB", "date", False),
+            ("split_event", "Split date", "Latest published stock-split execution date and ratio.", "Corporate-event DB", "date", False),
+        ]
+    ]
+
+
+def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    focused = [row["capability_id"] for row in calculation_rows if row["tier"] == "watchlist" and row["enabled"]]
+    common_columns = ["symbol", "company_name", "last_price", "change_pct", "volume", "relative_volume", "market_cap", "market_cap_category", "float_shares", "float_category", "short_interest_pct"]
+    def template(identifier: str, name: str, description: str, rules: list[str], ranking: str, *, direction: str = "descending", refresh: int = 1000, enabled: bool = True, columns: list[str] | None = None, availability: str = "available", availability_detail: str = "") -> dict[str, Any]:
+        return {"watchlist_id": identifier, "name": name, "description": description, "enabled": enabled, "origin": "system", "template": True, "availability": availability, "availability_detail": availability_detail, "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": rules, "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": ranking, "ranking_direction": direction, "maximum_size": 10, "refresh_interval_ms": refresh, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": [], "manual_exclusions": [], "columns": columns or common_columns, "calculations": focused, "membership_history": []}
+    gainers = []
+    for slug, label, category_rule in [("penny", "Penny Stock", "watchlist-penny-stocks"), ("small-cap", "Small Cap", "watchlist-small-caps"), ("mid-cap", "Mid Cap", "watchlist-mid-caps"), ("large-cap", "Large Cap", "watchlist-large-caps")]:
+        gainers.append(template(f"top-{slug}-gainers", f"Top {label} Gainers", f"Top positive session performers in the {label.lower()} category, ranked by percentage change.", [category_rule, "watchlist-positive-gainer"], "market.change_pct"))
+        gainers.append(template(f"top-{slug}-volume-gainers", f"Top {label} Volume Gainers", f"Most unusually active {label.lower()} instruments, ranked by aligned relative volume.", [category_rule, "watchlist-relative-volume-gainer"], "market.relative_volume"))
+    return [
+        {"watchlist_id": "core-candidates", "name": "Core candidates", "description": "Candidate instruments produced from the Core Scan for strategy evaluation.", "enabled": True, "origin": "system", "template": False, "availability": "available", "availability_detail": "", "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": [], "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": "liquidity-rank", "ranking_direction": "descending", "maximum_size": 250, "refresh_interval_ms": 1000, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": symbols, "manual_exclusions": [], "columns": common_columns, "calculations": focused, "membership_history": []},
+        *gainers,
+        template("price-or-volume-squeeze", "Price or Volume Squeeze", "Symbols with at least 5% price expansion or 3x aligned relative volume.", ["watchlist-price-or-volume-squeeze"], "market.relative_volume"),
+        template("vwap-breakout", "VWAP Breakout", "Symbols trading at least 5 basis points above causal session VWAP.", ["watchlist-vwap-breakout"], "market.change_pct"),
+        template("news-bullish-sentiment", "News Bullish Sentiment", "New company-news events with a validated positive Text Intelligence label.", ["watchlist-news-bullish"], "signal.company_news.score", refresh=5000, enabled=False, columns=[*common_columns, "news_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence news-label events."),
+        template("news-bearish-sentiment", "News Bearish Sentiment", "New company-news events with a validated negative Text Intelligence label.", ["watchlist-news-bearish"], "signal.company_news.score", direction="ascending", refresh=5000, enabled=False, columns=[*common_columns, "news_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence news-label events."),
+        template("sec-bullish-sentiment", "SEC Bullish Sentiment", "New SEC filing events with a validated positive Text Intelligence label.", ["watchlist-sec-bullish"], "signal.sec_filing.score", refresh=5000, enabled=False, columns=[*common_columns, "sec_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence SEC-label events."),
+        template("sec-bearish-sentiment", "SEC Bearish Sentiment", "New SEC filing events with a validated negative Text Intelligence label.", ["watchlist-sec-bearish"], "signal.sec_filing.score", direction="ascending", refresh=5000, enabled=False, columns=[*common_columns, "sec_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence SEC-label events."),
+        template("fundamental-bullish", "Fundamental Bullish", "Issuers with reliable SEC evidence and a financial trajectory score of at least 65.", ["watchlist-fundamental-bullish"], "fundamental.trajectory_score", refresh=60_000, columns=[*common_columns, "fundamental_trajectory", "fundamental_quality"]),
+        template("fundamental-bearish", "Fundamental Bearish", "Issuers with reliable SEC evidence and a financial trajectory score of 35 or lower.", ["watchlist-fundamental-bearish"], "fundamental.trajectory_score", direction="ascending", refresh=60_000, columns=[*common_columns, "fundamental_trajectory", "fundamental_quality"]),
+        template("past-upcoming-ipos", "Past and Upcoming IPOs", "IPOs from 30 days before through 90 days after the event date.", ["watchlist-ipo-window"], "event.ipo.days_to_event", refresh=60_000, enabled=False, columns=[*common_columns, "ipo_event"], availability="integration_pending", availability_detail="Requires a point-in-time IPO corporate-event feed."),
+        template("stock-splits", "Stock Splits", "Published stock splits from 10 days before through 5 days after execution.", ["watchlist-split-window"], "event.split.days_to_event", refresh=60_000, columns=[*common_columns, "split_event"]),
+    ]
+
+
 def _default_market_discovery(
     runtime_assignments: list[dict[str, Any]],
     rule_sets: list[dict[str, Any]] | None = None,
@@ -1392,6 +1552,7 @@ def _default_market_discovery(
     calculation_rows: list[dict[str, Any]] = [
         *_qmd_family_capabilities(),
         *_pending_text_intelligence_label_capabilities(),
+        *_discovery_reference_capabilities(),
     ]
     seen: set[str] = {str(row["capability_id"]) for row in calculation_rows}
     for source in strategy_input_catalog():
@@ -1459,6 +1620,14 @@ def _default_market_discovery(
         for row in runtime_assignments
         if str(row.get("ticker") or "").strip()
     })
+    merged_rule_sets: list[dict[str, Any]] = []
+    rule_set_ids: set[str] = set()
+    for rule_set in [*(rule_sets or []), *_default_watchlist_rule_sets()]:
+        rule_set_id = str(rule_set.get("rule_set_id") or "")
+        if not rule_set_id or rule_set_id in rule_set_ids:
+            continue
+        rule_set_ids.add(rule_set_id)
+        merged_rule_sets.append(deepcopy(rule_set))
     return {
         "security_universe": {
             "universe_id": "qmd-security-universe",
@@ -1475,25 +1644,10 @@ def _default_market_discovery(
             "published": True,
             "calculations": calculation_rows,
         },
-        "rule_sets": deepcopy(rule_sets or []),
-        "watchlists": [{
-            "watchlist_id": "core-candidates",
-            "name": "Core candidates",
-            "description": "Candidate instruments produced from the Core Scan for strategy evaluation.",
-            "enabled": True,
-            "source_scan_id": "qmd-core-scan",
-            "inclusion_rule_sets": [],
-            "exclusion_rule_sets": [],
-            "ranking_field": "liquidity-rank",
-            "maximum_size": 250,
-            "refresh_interval_ms": 1000,
-            "membership_expiry": "end_of_trading_day",
-            "membership_ttl_ms": 300000,
-            "manual_inclusions": symbols,
-            "manual_exclusions": [],
-            "calculations": [row["capability_id"] for row in calculation_rows if row["tier"] == "watchlist"],
-            "membership_history": [],
-        }],
+        "classifications": _market_discovery_classifications(),
+        "column_catalog": _watchlist_column_catalog(),
+        "rule_sets": merged_rule_sets,
+        "watchlists": _default_watchlist_templates(symbols, calculation_rows),
     }
 
 
@@ -1689,11 +1843,14 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
             "Market Discovery is missing required QMD capabilities: "
             + ", ".join(sorted(missing_required))
         )
+    rule_sets = list(section.get("rule_sets") or [])
     rule_set_ids = _unique_ids(
-        list(section.get("rule_sets") or []),
+        rule_sets,
         "rule_set_id",
         "Watchlist rule set",
     )
+    for rule_set in rule_sets:
+        _validate_rule_set_definition(rule_set, f"Watchlist rule set {rule_set.get('name')}")
     for calculation in calculations:
         if bool(calculation.get("system_required")) and not bool(calculation.get("enabled")):
             raise ValueError(
@@ -1721,7 +1878,17 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
     if not watchlists:
         raise ValueError("Market Discovery requires at least one Watchlist")
     _unique_ids(watchlists, "watchlist_id", "Watchlist")
+    column_catalog = list(section.get("column_catalog") or [])
+    column_ids = _unique_ids(column_catalog, "column_id", "Watchlist column")
+    if not column_ids:
+        raise ValueError("Market Discovery requires a Watchlist column catalog")
+    _unique_ids(list(section.get("classifications") or []), "classification_id", "Market classification")
     for watchlist in watchlists:
+        availability = str(watchlist.get("availability") or "available")
+        if availability not in {"available", "integration_pending"}:
+            raise ValueError(f"Watchlist {watchlist.get('name')} has an unknown availability state")
+        if availability == "integration_pending" and bool(watchlist.get("enabled")):
+            raise ValueError(f"Watchlist {watchlist.get('name')} cannot be enabled until its upstream integration is available")
         if str(watchlist.get("source_scan_id") or "") != str(core_scan.get("scan_id")):
             raise ValueError(f"Watchlist {watchlist.get('name')} references an unknown Core Scan")
         if int(watchlist.get("maximum_size") or 0) <= 0:
@@ -1740,6 +1907,13 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
             raise ValueError(f"Watchlist {watchlist.get('name')} references unknown QMD capabilities")
         if str(watchlist.get("ranking_field") or "") not in calculation_ids:
             raise ValueError(f"Watchlist {watchlist.get('name')} references an unknown ranking field")
+        if str(watchlist.get("ranking_direction") or "descending") not in {"ascending", "descending"}:
+            raise ValueError(f"Watchlist {watchlist.get('name')} has an unknown ranking direction")
+        if str(watchlist.get("inclusion_operator") or "all") not in {"all", "any"}:
+            raise ValueError(f"Watchlist {watchlist.get('name')} has unsupported inclusion logic")
+        unknown_columns = set(watchlist.get("columns") or []) - column_ids
+        if unknown_columns:
+            raise ValueError(f"Watchlist {watchlist.get('name')} references unknown display columns")
         unknown_rules = (
             set(watchlist.get("inclusion_rule_sets") or [])
             | set(watchlist.get("exclusion_rule_sets") or [])
@@ -2169,9 +2343,20 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         result["market_discovery"] = deepcopy(
             result.get("market_discovery") or defaults["market_discovery"]
         )
-        result["market_discovery"].setdefault(
-            "rule_sets", deepcopy(defaults["market_discovery"].get("rule_sets") or [])
+        result["market_discovery"]["classifications"] = deepcopy(
+            defaults["market_discovery"].get("classifications") or []
         )
+        result["market_discovery"]["column_catalog"] = deepcopy(
+            defaults["market_discovery"].get("column_catalog") or []
+        )
+        current_rule_sets = {
+            str(row.get("rule_set_id") or ""): deepcopy(row)
+            for row in result["market_discovery"].get("rule_sets") or []
+        }
+        result["market_discovery"]["rule_sets"] = [
+            {**default_rule_set, **current_rule_sets.pop(str(default_rule_set.get("rule_set_id") or ""), {})}
+            for default_rule_set in defaults["market_discovery"].get("rule_sets") or []
+        ] + list(current_rule_sets.values())
         default_calculations = list(defaults["market_discovery"]["core_scan"]["calculations"])
         current_calculations = {
             str(row.get("capability_id") or ""): deepcopy(row)
@@ -2224,8 +2409,38 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             str(row.get("capability_id") or "")
             for row in dict(result["market_discovery"].get("core_scan") or {}).get("calculations") or []
         }
+        default_watchlists = list(defaults["market_discovery"].get("watchlists") or [])
+        current_watchlists = {
+            str(row.get("watchlist_id") or ""): deepcopy(row)
+            for row in result["market_discovery"].get("watchlists") or []
+        }
+        merged_watchlists: list[dict[str, Any]] = []
+        for default_watchlist in default_watchlists:
+            watchlist_id = str(default_watchlist.get("watchlist_id") or "")
+            merged_watchlists.append({**default_watchlist, **current_watchlists.pop(watchlist_id, {})})
+        merged_watchlists.extend(current_watchlists.values())
+        result["market_discovery"]["watchlists"] = merged_watchlists
+        column_ids = {
+            str(row.get("column_id") or "")
+            for row in result["market_discovery"].get("column_catalog") or []
+        }
         for watchlist in result["market_discovery"].get("watchlists") or []:
             watchlist.setdefault("membership_expiry", "end_of_trading_day")
+            watchlist.setdefault("inclusion_operator", "all")
+            watchlist.setdefault("ranking_direction", "descending")
+            watchlist.setdefault("origin", "user")
+            watchlist.setdefault("template", False)
+            watchlist.setdefault("availability", "available")
+            watchlist.setdefault("availability_detail", "")
+            watchlist["columns"] = [
+                str(column_id)
+                for column_id in watchlist.get("columns") or []
+                if str(column_id) in column_ids
+            ] or [
+                str(row.get("column_id") or "")
+                for row in result["market_discovery"].get("column_catalog") or []
+                if bool(row.get("default_visible"))
+            ]
             if str(watchlist.get("ranking_field") or "") not in discovery_calculation_ids:
                 watchlist["ranking_field"] = "liquidity-rank"
         legacy_run_plans = dict(
