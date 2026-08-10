@@ -8,6 +8,7 @@ Start here before changing historical ingestion, live services, or trading UI co
 
 ## Architecture
 
+- [Full Application Architecture — 2026-08-10](2026-08-10-application-architecture/README.md): end-to-end target design for QMD distribution, enrichment, computation funnel, Market Discovery, Canvas/charts, trading modes, intelligence/models, backend, research, and operations, with current drift and implementation roadmap.
 - [Repository Organization Plan](architecture/repository_organization.md): target folder layout and safe migration rules.
 - [Service Gateway Standard](architecture/service_gateway_standard.md): shared lifecycle, storage, queue, coverage, backfill, logging, terminal, API, and audit policy for QMD, News, SEC, and future gateways.
 - [Event-Based Market Engine](architecture/event_based_market_engine.md): quotes/trades based market engine design.

@@ -1,0 +1,143 @@
+# Canvas, charts, and operator interaction
+
+[Top](README.md) · [Previous](06-market-discovery-and-computation.md) · [Next](08-trading-control-plane.md)
+
+## 1. Canvas has two related responsibilities
+
+The **Canvas Configuration** page is the design lab for each container and the publisher of application defaults. It is not a separate runtime product. Live, Replay, Backtest, and research workspaces instantiate the same published container definitions.
+
+At runtime, users may change layout, links, symbol, timeframe, columns, and display-only overlays. Those changes are persisted as a user-and-workspace overlay, without mutating the published default.
+
+```mermaid
+flowchart TD
+    A["Container catalog and schemas"]
+    B["Canvas Configuration draft"]
+    C["Validated published default"]
+    D["Live workspace"]
+    E["Replay workspace"]
+    F["Backtest workspace"]
+    G["Research workspace"]
+    H["Per-user workspace overlay"]
+    A --> B
+    B --> C
+    C --> D
+    C --> E
+    C --> F
+    C --> G
+    H --> D
+    H --> E
+    H --> F
+    H --> G
+```
+
+Required lifecycle operations are draft, validate, preview, publish, reset to published, rebase an overlay onto a newer published version, and save an overlay as a new named workspace.
+
+## 2. Shared container catalog
+
+Every container has a stable `container_type`, versioned configuration schema, input and output link contracts, capability requirements, and mode compatibility. The baseline catalog is:
+
+- market: chart, scanner/results, watchlist, tape, quotes/order book, market breadth, sector/industry map;
+- intelligence: news, SEC filings, issuer/reference facts, XBRL/fundamentals, event timeline, model hypotheses;
+- strategy: strategy activity, signals/proposals, observations, diagnostics and parameter inspector;
+- trading: order ticket, positions, orders, executions, account/risk, portfolio allocations and protection status;
+- analysis: performance, journal, comparison, attribution and data-quality/provenance;
+- operations: service readiness, feed coverage, alerts and run controls.
+
+Containers declare what they consume, such as `SymbolSelection`, `TimeRange`, `WatchlistSelection`, `RunSelection`, or `OrderProposal`, and what they publish. Linking is typed rather than based on container names.
+
+## 3. Smooth chart-loading path
+
+Charts are an interactive single/few-symbol workload, not a reason to expand the all-market scanner row.
+
+```mermaid
+flowchart TD
+    A["Chart request: symbol, range, resolution, session, fields"]
+    B["Request planner and single-flight cache"]
+    C["QMD unified source plan"]
+    D["Archive bars or events"]
+    E["Recent q_live bars or events"]
+    F["Live QMD snapshot and tail"]
+    G["Watermark merge and bar normalization"]
+    H["Return base series immediately"]
+    I["Requested indicator DAG"]
+    J["Progressive overlay update"]
+    K["Sequenced live deltas"]
+    L["Chart container"]
+    A --> B
+    B --> C
+    C --> D
+    C --> E
+    C --> F
+    D --> G
+    E --> G
+    F --> G
+    G --> H
+    H --> L
+    G --> I
+    I --> J
+    J --> L
+    F --> K
+    K --> L
+```
+
+The interaction contract is:
+
+1. return cached/base bars first;
+2. calculate only requested indicators and overlays;
+3. merge live updates by `(symbol, family, resolution, event_time, sequence)`;
+4. cancel superseded pan/zoom requests;
+5. deduplicate identical requests with single-flight execution;
+6. prefetch one adjacent window in the user’s navigation direction;
+7. keep bounded memory and disk caches keyed by source versions and adjustment policy;
+8. expose partial-data, stale, and source-transition states rather than drawing false continuity.
+
+Historical base bars and indicator results may be cached, but QMD/ClickHouse remain authority. The cache must not silently outlive a corrected source partition, corporate-action version, or computation version.
+
+## 4. Indicator computation
+
+The chart planner uses the same capability registry as Watchlists and Strategy Runs, but executes a request-scoped DAG over one or a few symbols. Nodes include bar transforms, session context, opening range/ORB state, moving averages, RSI, MACD, ATR, Bollinger values, structure, relative volume, microstructure, and strategy-specific overlays.
+
+Each returned series carries:
+
+- `capability_id` and implementation version;
+- effective parameters and warm-up interval;
+- market-source coverage and last sequence;
+- adjustment/session/calendar versions;
+- `observed_at`, `available_at`, and computation time;
+- completeness and stale reason.
+
+## 5. Manual, semi-automatic, and automatic trading
+
+All three modes use the same Portfolio and OMS authority. The difference is who originates and approves an order proposal.
+
+| Mode | Proposal origin | Required approval | Execution path |
+|---|---|---|---|
+| Manual | Operator order ticket or chart action | Operator submit | Portfolio check, then OMS |
+| Semi-automatic | Strategy/model/operator-assisted proposal | Operator accept or edit | Portfolio check, then OMS |
+| Automatic | Approved Strategy Run | Configured policy authority | Portfolio check, then OMS |
+
+A chart-originated proposal includes a `chart_snapshot_id`, symbol identity, displayed price/sequence, data freshness, requested side/quantity/order type, and optional stop/target geometry. Submit must revalidate market freshness, account authority, position, buying power, and risk; the displayed chart is context, never execution authority.
+
+## 6. Workspace state and mode isolation
+
+Persist separately:
+
+- published Canvas version;
+- user layout overlay;
+- link groups and selected instruments;
+- display settings and requested indicator specs;
+- mode/run/account bindings;
+- temporary interaction state such as cursor and open menus.
+
+Live, Paper, Replay, and Backtest workspaces must be visually explicit and cannot share an executable account binding by accident. Copying a layout between modes copies presentation, not authority.
+
+## 7. Current drift
+
+- The configuration surfaces already draft many containers, but they are not yet backed by one complete, versioned container registry.
+- Existing trading pages do not all instantiate one published Canvas plus user overlay.
+- Chart loading is not yet one unified archive/recent/live request path with progressive indicators.
+- Manual and semi-automatic chart actions are not yet normalized into the same proposal → Portfolio → OMS path used by strategies.
+
+---
+
+[Top](README.md) · [Previous](06-market-discovery-and-computation.md) · [Next](08-trading-control-plane.md)
