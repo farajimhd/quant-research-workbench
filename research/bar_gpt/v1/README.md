@@ -386,6 +386,24 @@ between evaluations, while the independent training prefetch iterator remains
 alive across monitor passes. Locked-test evaluation uses the same bounded
 streaming policy for its single pass.
 
+Re-evaluate the latest checkpoint from every architecture on the complete fixed
+validation panel with one restart-safe command:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_model_discovery_final_validation
+```
+
+The evaluator runs architectures sequentially using their certified training
+microbatches, writes each result under `model_discovery/final_validation_v1`,
+and logs to the separate W&B project
+`bar gpt model discovery final validation` with `final_validation_*` metric
+groups. Its durable state skips a checkpoint only when path, size, timestamp,
+panel, and metric namespace still match. The consolidated JSON and CSV record
+the source training-origin count and an explicit completion flag, so an
+interrupted architecture checkpoint remains visible but cannot be mistaken for
+a 200-million-origin model. Use `--dry-run` to verify all eight checkpoint paths
+without loading a model or CUDA.
+
 The explicit training panel is shuffled hierarchically: ticker-month groups are
 assigned whole to deterministic workers, and blocks are shuffled only inside
 each owned group. This retains epoch randomness without making one worker batch

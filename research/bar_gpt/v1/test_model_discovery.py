@@ -23,6 +23,12 @@ from research.bar_gpt.v1.model_discovery import (
     discovery_data_config,
     discovery_shard_compatibility_hash,
 )
+from research.bar_gpt.v1.model_discovery_final_validation import (
+    FINAL_VALIDATION_WANDB_PROJECT,
+    ArchitectureCheckpoint,
+    evaluation_command,
+    resolve_architecture_checkpoints,
+)
 from research.bar_gpt.v1.offline_shards import OfflineBlockRef, OfflineShardDataset, OfflineShardUnit
 from research.bar_gpt.v1.offline_shards import shard_compatibility_hash
 from research.bar_gpt.v1.train import _wandb_metric_key, parse_args
@@ -267,6 +273,47 @@ class ModelDiscoveryContractTest(unittest.TestCase):
             checkpoint.touch()
             command = _resume_if_available(["python", "train"], run_root)
             self.assertEqual(command[-2:], ["--resume-checkpoint", str(checkpoint)])
+
+    def test_final_validation_resolves_completed_and_interrupted_architecture_checkpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            campaign_id = "20260809-145210"
+            completed_run = "discovery-architecture-anchor_384x8-complete"
+            expected_xlarge = f"discovery-architecture-xlarge_1024x16-{campaign_id}"
+            for run_name in (completed_run, expected_xlarge):
+                checkpoint = root / "runs" / run_name / "checkpoints" / "checkpoint_latest.pt"
+                checkpoint.parent.mkdir(parents=True)
+                checkpoint.touch()
+            resolved = resolve_architecture_checkpoints(
+                discovery_root=root,
+                campaign_state={
+                    "campaign_id": campaign_id,
+                    "runs": {"architecture/anchor_384x8": completed_run},
+                },
+                architecture_names=("anchor_384x8", "xlarge_1024x16"),
+            )
+        self.assertEqual([item.run_name for item in resolved], [completed_run, expected_xlarge])
+        self.assertEqual([item.batch_size for item in resolved], [32, 8])
+
+    def test_final_validation_command_uses_separate_panel_namespace_and_project(self) -> None:
+        item = ArchitectureCheckpoint("width_512x8", "source", Path("checkpoint.pt"), 16)
+        command = evaluation_command(
+            item,
+            manifest_path=Path("manifest.json"),
+            shard_root=Path("shards"),
+            output_root=Path("output"),
+            run_name="evaluation",
+            target_training_origins=200_000_000,
+            workers=16,
+            wandb_project=FINAL_VALIDATION_WANDB_PROJECT,
+            wandb_entity="entity",
+            wandb_mode="online",
+        )
+        self.assertEqual(command[command.index("--panel") + 1], "validation")
+        self.assertEqual(command[command.index("--namespace") + 1], "final_validation")
+        self.assertEqual(command[command.index("--target-training-origins") + 1], "200000000")
+        self.assertEqual(command[command.index("--batch-size") + 1], "16")
+        self.assertEqual(command[command.index("--wandb-project") + 1], FINAL_VALIDATION_WANDB_PROJECT)
 
 
 if __name__ == "__main__":

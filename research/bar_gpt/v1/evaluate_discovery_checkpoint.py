@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
@@ -17,17 +18,23 @@ from research.bar_gpt.v1.model_discovery import (
 )
 from research.bar_gpt.v1.offline_shards import OfflineShardDataset, discover_offline_units, make_offline_dataloader
 from research.bar_gpt.v1.train import DISCOVERY_VALIDATION_WORKERS, _wandb_metric_key, validate
+from research.mlops.clickhouse import discover_clickhouse_env_files
+from research.mlops.env import load_env_files
 from research.mlops.metrics import AsyncJsonlMetricLogger
 from research.mlops.wandb_utils import init_wandb
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate a BarGPT discovery finalist on the locked test panel.")
+    parser = argparse.ArgumentParser(description="Evaluate a BarGPT discovery checkpoint on one certified panel.")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--experiment-manifest", required=True)
     parser.add_argument("--offline-shard-root", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--run-name", required=True)
+    parser.add_argument("--panel", choices=("validation", "locked_test"), default="locked_test")
+    parser.add_argument("--namespace", default="", help="metric namespace; defaults to the panel name")
+    parser.add_argument("--architecture", default="")
+    parser.add_argument("--target-training-origins", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--loader-workers", type=int, default=16)
     parser.add_argument("--wandb-project", default=DISCOVERY_WANDB_PROJECT)
@@ -40,7 +47,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     if args.batch_size <= 0 or args.loader_workers < 0:
         raise ValueError("batch size must be positive and loader workers cannot be negative")
-    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    if args.target_training_origins < 0:
+        raise ValueError("target training origins cannot be negative")
+    load_env_files(discover_clickhouse_env_files(), verbose=True)
+    checkpoint_path = Path(args.checkpoint)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     raw_config = checkpoint["config"]
     model_config = BarGPTConfig(**raw_config["model"])
     data_values = dict(raw_config["data"])
@@ -62,7 +73,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         shard_root=shard_root,
         config=data_config,
     )
-    validation_tickers = tuple(sorted({ref.ticker for ref in panel_refs(manifest, "locked_test")}))
+    selected_refs = panel_refs(manifest, str(args.panel))
+    validation_tickers = tuple(sorted({ref.ticker for ref in selected_refs}))
     units = discover_offline_units(
         shard_root,
         data_config,
@@ -78,37 +90,71 @@ def main(argv: Iterable[str] | None = None) -> int:
         units,
         seed=train_config.seed,
         shuffle_units=False,
-        block_refs=panel_refs(manifest, "locked_test"),
+        block_refs=selected_refs,
     )
     loader = make_offline_dataloader(dataset, evaluation_data, drop_last=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = BarGPTV1(model_config).to(device)
     model.load_state_dict(checkpoint["model"], strict=True)
+    source_samples = int(checkpoint.get("samples_seen", 0))
+    target_samples = int(args.target_training_origins)
+    source_complete = target_samples == 0 or source_samples >= target_samples
+    parameter_count = sum(parameter.numel() for parameter in model.parameters())
+    namespace = str(args.namespace).strip() or str(args.panel)
     run_root = Path(args.output_root) / args.run_name
     run_root.mkdir(parents=True, exist_ok=True)
     wandb_run = init_wandb(
         entity=str(args.wandb_entity),
         project=str(args.wandb_project),
         run_name=str(args.run_name),
-        config={**to_dict(config), "evaluation_panel": "locked_test", "manifest_hash": manifest["manifest_hash"]},
+        config={
+            **to_dict(config),
+            "evaluation_panel": str(args.panel),
+            "metric_namespace": namespace,
+            "manifest_hash": manifest["manifest_hash"],
+            "source_architecture": str(args.architecture),
+            "source_checkpoint": str(checkpoint_path),
+            "source_training_origins": source_samples,
+            "target_training_origins": target_samples,
+            "source_training_complete": source_complete,
+            "model_parameters": parameter_count,
+        },
         run_dir=run_root / "wandb",
         mode=str(args.wandb_mode),
         timeout_seconds=train_config.wandb_init_timeout,
     )
     logger = AsyncJsonlMetricLogger(run_root / "metrics.jsonl", wandb_run, wandb_key_mapper=_wandb_metric_key)
     try:
-        metrics = validate(model, loader, config, device, namespace="locked_test", max_batches=None)
-        step = int(checkpoint.get("samples_seen", 0))
-        logger.log(metrics, step)
-        (run_root / "summary.json").write_text(
-            json.dumps({"checkpoint": str(args.checkpoint), "step": step, **metrics}, indent=2),
-            encoding="utf-8",
-        )
+        metrics = validate(model, loader, config, device, namespace=namespace, max_batches=None)
+        metrics.update({
+            f"{namespace}_meta/training_origins": float(source_samples),
+            f"{namespace}_meta/training_complete": float(source_complete),
+            f"{namespace}_meta/model_parameters": float(parameter_count),
+        })
+        logger.log(metrics, source_samples)
+        summary = {
+            "architecture": str(args.architecture),
+            "checkpoint": str(checkpoint_path),
+            "checkpoint_size": checkpoint_path.stat().st_size,
+            "checkpoint_mtime_ns": checkpoint_path.stat().st_mtime_ns,
+            "step": source_samples,
+            "target_training_origins": target_samples,
+            "training_complete": source_complete,
+            "model_parameters": parameter_count,
+            "panel": str(args.panel),
+            "namespace": namespace,
+            "manifest_hash": manifest["manifest_hash"],
+            **metrics,
+        }
+        summary_path = run_root / "summary.json"
+        temporary = summary_path.with_suffix(summary_path.suffix + f".tmp.{os.getpid()}")
+        temporary.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        os.replace(temporary, summary_path)
     finally:
         logger.close(timeout=300)
         if wandb_run is not None:
             wandb_run.finish()
-    print(f"Locked-test evaluation complete: {run_root}", flush=True)
+    print(f"{args.panel} evaluation complete: {run_root}", flush=True)
     return 0
 
 
