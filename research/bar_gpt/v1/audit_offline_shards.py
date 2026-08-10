@@ -20,14 +20,41 @@ from research.bar_gpt.v1.offline_shards import (
     condition_positive_counts,
     load_shard,
 )
-from research.bar_gpt.v1.targets import TARGET_NAMES
+from research.bar_gpt.v1.targets import (
+    AUTOREGRESSIVE_TARGET_NAMES,
+    OHLC_FIELDS,
+    PRICE_FAMILIES,
+    TARGET_NAMES,
+)
 
 
-DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4_pilot")
+DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5_pilot")
 
 
 def _csv(value: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item.strip().upper() for item in value.split(",") if item.strip()))
+
+
+def _require_ohlc_geometry(values: torch.Tensor, mask: torch.Tensor, label: str) -> None:
+    """OHLC returns share one family base, so transformed ordering is invariant."""
+    for family_index, family in enumerate(PRICE_FAMILIES):
+        first = family_index * len(OHLC_FIELDS)
+        family_values = values[..., first : first + len(OHLC_FIELDS)]
+        family_masks = mask[..., first : first + len(OHLC_FIELDS)]
+        _require(
+            bool(torch.all(family_masks == family_masks[..., :1])),
+            f"{label}/{family}: OHLC masks disagree",
+        )
+        family_mask = family_masks.all(dim=-1)
+        open_value, high_value, low_value, close_value = family_values.unbind(dim=-1)
+        tolerance = 1e-6
+        invalid = family_mask & (
+            (high_value + tolerance < open_value)
+            | (high_value + tolerance < close_value)
+            | (low_value - tolerance > open_value)
+            | (low_value - tolerance > close_value)
+        )
+        _require(not bool(invalid.any()), f"{label}/{family}: invalid OHLC return geometry")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -214,6 +241,19 @@ def audit_shard(
                 f"{label}/{name}: non-positive bar interval",
             )
             _require(bool(torch.all(available >= ends)), f"{label}/{name}: availability precedes bar end")
+            for family in PRICE_FAMILIES:
+                present_index = MODEL_FEATURE_NAMES.index(f"{family}_present")
+                high_index = MODEL_FEATURE_NAMES.index(f"{family}_high_from_open_return")
+                low_index = MODEL_FEATURE_NAMES.index(f"{family}_low_from_open_return")
+                present = features[:, present_index] > 0
+                _require(
+                    not bool((present & (features[:, high_index] < -1e-6)).any()),
+                    f"{label}/{name}/{family}: high return is below open",
+                )
+                _require(
+                    not bool((present & (features[:, low_index] > 1e-6)).any()),
+                    f"{label}/{name}/{family}: low return is above open",
+                )
             if name in intraday_context:
                 expected_duration = int(TIMEFRAME_US_BY_NAME[name])
                 _require(bool(torch.all(ends - starts == expected_duration)), f"{label}/{name}: bar duration mismatch")
@@ -222,6 +262,20 @@ def audit_shard(
                     bool(torch.all(features[:, source_index] > 0)),
                     f"{label}/{name}: empty-event bar was stored as intraday context",
                 )
+                ar_targets = view.get("autoregressive_targets")
+                ar_mask = view.get("autoregressive_base_mask")
+                expected_ar_shape = (max(0, features.shape[0] - 1), len(AUTOREGRESSIVE_TARGET_NAMES))
+                _require(
+                    isinstance(ar_targets, torch.Tensor) and isinstance(ar_mask, torch.Tensor)
+                    and tuple(ar_targets.shape) == expected_ar_shape and ar_mask.shape == ar_targets.shape,
+                    f"{label}/{name}: autoregressive target shape mismatch",
+                )
+                _require(bool(torch.isfinite(ar_targets).all()), f"{label}/{name}: non-finite AR target")
+                _require(
+                    bool(torch.all(ar_targets[~ar_mask] == 0)),
+                    f"{label}/{name}: masked AR target contains a nonzero value",
+                )
+                _require_ohlc_geometry(ar_targets, ar_mask, f"{label}/{name}/autoregressive")
             accumulator = feature_accumulators[name]
             for left in range(0, int(features.shape[0]), 65_536):
                 chunk = features[left : left + 65_536]
@@ -322,6 +376,7 @@ def audit_shard(
                 bool(torch.all(horizon_targets[~horizon_mask] == 0)),
                 f"{block_label}: masked horizon target contains a nonzero value",
             )
+            _require_ohlc_geometry(horizon_targets, horizon_mask, f"{block_label}/physical")
             target_valid += horizon_mask.to(torch.long).sum(dim=0)
             target_total += int(origin_timestamps.numel())
             origins += int(origin_timestamps.numel())

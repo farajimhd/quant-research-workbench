@@ -27,6 +27,13 @@ from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.objectives import compute_loss
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
 from research.bar_gpt.v1.train import preflight
+from research.bar_gpt.v1.targets import (
+    AUTOREGRESSIVE_AVAILABILITY_TARGET_COUNT,
+    AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT,
+    AVAILABILITY_TARGET_COUNT,
+    CONTINUOUS_TARGET_COUNT,
+    DIRECTION_TARGET_COUNT,
+)
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
     default_clickhouse_password,
@@ -293,7 +300,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
     parser.add_argument("--sdpa-audit", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="offline")
-    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -306,7 +313,7 @@ def _device(value: str) -> torch.device:
 def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
     tickers = tuple(item.strip().upper() for item in str(args.tickers).split(",") if item.strip())
     return DataConfig(
-        loader_stream_contract_version=6,
+        loader_stream_contract_version=7,
         tickers=tickers,
         start_date=str(args.start_date),
         end_date=str(args.end_date),
@@ -408,6 +415,12 @@ class ProfileReporter:
             run.add_row("Calendar context", calendar_context)
             run.add_row("Prediction horizons", horizons)
             run.add_row(
+                "Target contract",
+                f"physical {CONTINUOUS_TARGET_COUNT}+{AVAILABILITY_TARGET_COUNT}={model_defaults.target_dim} | "
+                f"AR {AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT}+{AUTOREGRESSIVE_AVAILABILITY_TARGET_COUNT}="
+                f"{model_defaults.autoregressive_target_dim} | direction logits {DIRECTION_TARGET_COUNT}",
+            )
+            run.add_row(
                 "Shared model settings",
                 f"dropout {model_defaults.dropout:g} | FF multiplier {model_defaults.ff_multiplier:.4g} | "
                 f"horizon rank {model_defaults.horizon_rank} | quantiles {', '.join(map(str, model_defaults.quantiles))}",
@@ -471,6 +484,13 @@ class ProfileReporter:
         print(f"  Intraday context    {intraday_context}", flush=True)
         print(f"  Calendar context    {calendar_context}", flush=True)
         print(f"  Horizons            {horizons}", flush=True)
+        print(
+            f"  Target contract     physical {CONTINUOUS_TARGET_COUNT}+{AVAILABILITY_TARGET_COUNT}="
+            f"{model_defaults.target_dim}, AR {AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT}+"
+            f"{AUTOREGRESSIVE_AVAILABILITY_TARGET_COUNT}={model_defaults.autoregressive_target_dim}, "
+            f"direction logits {DIRECTION_TARGET_COUNT}",
+            flush=True,
+        )
         print(
             f"  Model settings      dropout {model_defaults.dropout:g}, FF multiplier {model_defaults.ff_multiplier:.4g}, "
             f"horizon rank {model_defaults.horizon_rank}, quantiles {', '.join(map(str, model_defaults.quantiles))}",

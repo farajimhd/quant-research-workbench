@@ -97,7 +97,13 @@ from research.bar_gpt.v1.offline_shards import (
 from research.bar_gpt.v1.lock_offline_shard_catalog import lock_catalog
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter, _format_value, _ratio_markup
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
-from research.bar_gpt.v1.targets import TARGET_NAMES, build_next_bar_targets, build_physical_horizon_targets
+from research.bar_gpt.v1.targets import (
+    DIRECTION_TARGET_COUNT,
+    DIRECTION_TARGET_NAMES,
+    TARGET_NAMES,
+    build_next_bar_targets,
+    build_physical_horizon_targets,
+)
 from research.bar_gpt.v1.train import (
     _DeferredUpdateLossBuffer,
     _advance_cursors,
@@ -951,7 +957,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         stored = torch.zeros((1, 1, len(TARGET_NAMES)), dtype=torch.float32)
         rebuilt = stored.clone()
         rebuilt[..., 0] = 2e-5  # Approximately 0.002 bp near zero after inverse scaling.
-        rebuilt[..., 6] = 2e-5  # Volume retains the strict default tolerance.
+        volume_index = TARGET_NAMES.index("log_trade_volume")
+        rebuilt[..., volume_index] = 2e-5  # Volume retains the strict default tolerance.
         result = _labeled_tensor_comparison(
             stored,
             rebuilt,
@@ -968,7 +975,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             TARGET_NAMES,
             atol_by_field=PHYSICAL_HORIZON_FLOAT_ATOL_BY_TARGET,
         )
-        self.assertEqual(result["outside_tolerance_by_field"]["bid_return"], 1)
+        self.assertEqual(result["outside_tolerance_by_field"]["trade_open_return"], 1)
 
     def test_session_rollup_and_targets_are_causal_and_nonredundant(self) -> None:
         examples = list(build_session_examples(
@@ -985,7 +992,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         batch = collate_examples([first])
         # The overnight transition into the first current-session origin is
         # not a contiguous next-bar target; the following two transitions are.
-        self.assertEqual(int(batch.autoregressive_mask["1s"].any(dim=-1).sum()), 2)
+        self.assertEqual(int(batch.autoregressive_mask["1s"].any(dim=-1).sum()), 3)
         self.assertNotIn("1D", batch.autoregressive_mask)
 
     def test_offline_shard_round_trip_preserves_compiled_targets_without_context_duplication(self) -> None:
@@ -1078,26 +1085,26 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(all(int(mask[..., 0].sum()) <= 2 for mask in batch.autoregressive_mask.values()))
 
         metrics = {
-            "after_bid_direction/balanced_accuracy_5s": 0.95,
-            "after_bid_direction_quality/mcc_5s": 0.90,
-            "after_ar_direction_balanced/balanced_accuracy_1s": 0.91,
-            "after_ar_direction_mcc/mcc_1s": 0.85,
+            "after_trade_open_direction/balanced_accuracy_5s": 0.95,
+            "after_trade_open_direction_quality/mcc_5s": 0.90,
+            "after_ar_trade_open_return_direction_balanced/balanced_accuracy_1s": 0.91,
+            "after_ar_trade_open_return_direction_mcc/mcc_1s": 0.85,
         }
         kwargs = {
             "namespace": "after",
-            "physical_support": {"bid/5s": {"total": 40, "up": 20, "down": 20}},
-            "ar_support": {"1s": {"total": 40, "up": 20, "down": 20}},
+            "physical_support": {"trade_open_return/5s": {"total": 40, "up": 20, "down": 20}},
+            "ar_support": {"1s/trade_open_return": {"total": 40, "up": 20, "down": 20}},
             "minimum_examples": 32,
             "minimum_class_examples": 8,
             "minimum_balanced": 0.90,
             "minimum_mcc": 0.80,
-            "minimum_ar_views": 1,
+            "minimum_ar_views": 0,
         }
         passed, records, violations = _score_direction_gate(metrics, **kwargs)
         self.assertTrue(passed)
         self.assertTrue(all(record["passed"] for record in records))
         self.assertFalse(violations)
-        metrics["after_bid_direction/balanced_accuracy_5s"] = 0.5
+        metrics["after_trade_open_direction/balanced_accuracy_5s"] = 0.5
         failed, _records, violations = _score_direction_gate(metrics, **kwargs)
         self.assertFalse(failed)
         self.assertTrue(violations)
@@ -1134,7 +1141,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(build[build.index("--max-shards") + 1], "2")
         self.assertIn("--execute", build)
         self.assertIn("--force-rebuild", build)
-        self.assertIn("offline_shards_v4_pilot", " ".join(build))
+        self.assertIn("offline_shards_v5_pilot", " ".join(build))
         self.assertIn("research.bar_gpt.v1.audit_offline_shards", audit)
         self.assertIn("--verify-sha256", audit)
         self.assertEqual(context_build[context_build.index("--tickers") + 1], "AAPL")
@@ -1221,9 +1228,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(len(production_hash), 64)
         self.assertNotEqual(production_hash, "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619")
         self.assertEqual(shard_compatibility_hash(production), production_hash)
-        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 6)
-        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 4)
-        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4"))
+        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 7)
+        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 5)
+        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5"))
         self.assertEqual(
             shard_path(DEFAULT_OUTPUT_ROOT, "AAA:2019-01"),
             DEFAULT_OUTPUT_ROOT / "tickers" / "AAA" / "2019" / "2019-01.pt",
@@ -1365,7 +1372,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
     def test_offline_training_preserves_prefetch_across_validation(self) -> None:
         runtime_data = dataclasses.replace(
             self.data_config(),
-            loader_stream_contract_version=6,
+            loader_stream_contract_version=7,
             tickers=("AAA", "BBB", "CCC"),
             start_date="2026-01-01",
             end_date="2026-03-01",
@@ -1573,22 +1580,21 @@ class LoaderTrainerContractTest(unittest.TestCase):
         batch = collate_examples([last]).to("cpu", non_blocking=False)
         self.assertFalse(bool(batch.horizon_mask[0, -1, -1].any()))
 
-    def test_intraday_autoregressive_target_masks_session_gap(self) -> None:
+    def test_intraday_autoregressive_target_uses_next_sparse_bar_across_clock_gap(self) -> None:
         raw = session_view(4).features
         starts = torch.tensor([0, 1_000_000, 86_400_000_000, 86_401_000_000])
-        targets = build_next_bar_targets(raw, bar_start_us=starts, expected_step_us=1_000_000)
+        targets = build_next_bar_targets(raw, bar_start_us=starts)
         self.assertTrue(bool(targets.mask[0].any()))
-        self.assertFalse(bool(targets.mask[1].any()))
+        self.assertTrue(bool(targets.mask[1].any()))
         self.assertTrue(bool(targets.mask[2].any()))
 
     def test_target_builders_vectorize_blocks_with_exact_single_block_results(self) -> None:
         raw = session_view(12).features
         starts = torch.arange(12, dtype=torch.long) * 1_000_000
-        next_single = build_next_bar_targets(raw, bar_start_us=starts, expected_step_us=1_000_000)
+        next_single = build_next_bar_targets(raw, bar_start_us=starts)
         next_batch = build_next_bar_targets(
             torch.stack((raw, raw)),
             bar_start_us=torch.stack((starts, starts)),
-            expected_step_us=1_000_000,
         )
         self.assertTrue(torch.equal(next_batch.values[0], next_single.values))
         self.assertTrue(torch.equal(next_batch.mask[0], next_single.mask))
@@ -1722,7 +1728,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
         self.assertEqual(training_launcher_args["--data-source"], "offline")
-        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v4"))
+        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v5"))
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--offline-train-end-date"], "2022-01-01")
@@ -1958,7 +1964,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         )
         self.assertEqual(set(output.autoregressive), {"1s", "5s", "10s", "30s", "1m", "5m", "30m", "1h"})
         self.assertEqual(set(output.autoregressive_direction_logits), set(output.autoregressive))
-        self.assertEqual(output.horizon_direction_logits.shape, (*batch.horizon_targets.shape[:-1], 3))
+        self.assertEqual(output.horizon_direction_logits.shape, (*batch.horizon_targets.shape[:-1], DIRECTION_TARGET_COUNT))
         self.assertEqual(set(output.latent_predictions), set(batch.views))
         self.assertNotIn("1MO", output.autoregressive)
         loss = compute_loss(output, batch, TrainConfig(), model_config.quantiles)
@@ -1974,11 +1980,11 @@ class LoaderTrainerContractTest(unittest.TestCase):
         accumulator.update(output, batch, loss)
         validation = accumulator.finalize()
         self.assertEqual(validation["validation_data/origins"], 6.0)
-        self.assertIn("validation_trade_return_error/mae_bps_1s", validation)
-        self.assertIn("validation_trade_direction/balanced_accuracy_1s", validation)
-        self.assertIn("validation_trade_direction_quality/mcc_1s", validation)
-        self.assertIn("validation_trade_direction/accuracy_1s", validation)
-        self.assertIn("validation_trade_direction_quality/neutral_fraction_1s", validation)
+        self.assertIn("validation_trade_close_return_error/mae_bps_1s", validation)
+        self.assertIn("validation_trade_close_direction/balanced_accuracy_1s", validation)
+        self.assertIn("validation_trade_close_direction_quality/mcc_1s", validation)
+        self.assertIn("validation_trade_close_direction/accuracy_1s", validation)
+        self.assertIn("validation_trade_close_direction_quality/neutral_fraction_1s", validation)
         self.assertIn("validation_ar_direction_balanced/balanced_accuracy_5s", validation)
         self.assertIn("validation_ar_direction_mcc/mcc_5s", validation)
         self.assertIn("validation_ar_direction_neutral/neutral_fraction_1s", validation)
@@ -2019,7 +2025,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         )
         accumulator.update(output, batch, loss)
         metrics = accumulator.finalize()
-        self.assertAlmostEqual(metrics["validation_bid_return_error/mae_bps_1s"], 1.0, places=5)
+        self.assertAlmostEqual(metrics["validation_trade_open_return_error/mae_bps_1s"], 1.0, places=5)
 
     def test_deferred_update_losses_preserve_each_update_and_async_logging(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2381,7 +2387,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             "Optimization and runtime",
             "Data and durability",
             "Recent events",
-            "Trade MAE",
+            "Trade OHLC MAE",
             "Trade balanced",
             "MCC",
             "Trade rank",

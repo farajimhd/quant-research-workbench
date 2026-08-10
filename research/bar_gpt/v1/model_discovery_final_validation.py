@@ -22,7 +22,7 @@ from research.bar_gpt.v1.model_discovery import (
 )
 
 
-FINAL_VALIDATION_CONTRACT_VERSION = 2
+FINAL_VALIDATION_CONTRACT_VERSION = 3
 FINAL_VALIDATION_WANDB_PROJECT = "bar gpt model discovery final validation"
 
 
@@ -220,8 +220,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise ValueError("workers and batch size cannot be negative")
     discovery_root = Path(args.discovery_root)
     shard_root = Path(args.shard_root)
-    manifest_path = Path(args.manifest) if args.manifest else discovery_root / "fixed_panels_v3.json"
-    campaign_state_path = discovery_root / "campaign_state_v3.json"
+    manifest_path = Path(args.manifest) if args.manifest else discovery_root / "fixed_panels_v4.json"
+    campaign_state_path = discovery_root / "campaign_state_v4.json"
     if not campaign_state_path.is_file():
         raise RuntimeError(f"discovery campaign state is missing: {campaign_state_path}")
     campaign_state = json.loads(campaign_state_path.read_text(encoding="utf-8"))

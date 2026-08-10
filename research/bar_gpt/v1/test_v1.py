@@ -48,6 +48,7 @@ from research.bar_gpt.v1.targets import (
     AVAILABILITY_TARGET_COUNT,
     CONTINUOUS_TARGET_COUNT,
     TARGET_NAMES,
+    build_next_bar_targets,
     build_physical_horizon_targets,
 )
 from pipelines.market_sip.events.clickhouse_build_intraday_base_bars import insert_intraday_condition_bars_sql, parse_args as parse_intraday_args
@@ -449,6 +450,9 @@ class TemporalContractTest(unittest.TestCase):
         raw = self._five_seconds().features.clone()
         for family, offset in (("bid", 0.0), ("ask", 0.1)):
             raw[:, FEATURE_INDEX[f"{family}_present"]] = 1
+            raw[:, FEATURE_INDEX[f"{family}_open"]] = torch.arange(9.8 + offset, 14.8 + offset)
+            raw[:, FEATURE_INDEX[f"{family}_high"]] = torch.arange(10.2 + offset, 15.2 + offset)
+            raw[:, FEATURE_INDEX[f"{family}_low"]] = torch.arange(9.7 + offset, 14.7 + offset)
             raw[:, FEATURE_INDEX[f"{family}_close"]] = torch.arange(10.0 + offset, 15.0 + offset)
         raw[1:3, FEATURE_INDEX["ask_present"]] = 0
         raw[1:3, FEATURE_INDEX["ask_close"]] = 0
@@ -459,10 +463,32 @@ class TemporalContractTest(unittest.TestCase):
             available_at_us=torch.arange(1, 6, dtype=torch.long) * 1_000_000,
             coverage_end_us=5_000_000,
         )
-        self.assertTrue(bool(targets.mask[0, 0, 0]))  # bid update
-        self.assertFalse(bool(targets.mask[0, 0, 1]))  # no ask update
-        self.assertTrue(bool(targets.mask[0, 0, 2]))  # trade update
-        self.assertEqual(float(targets.values[0, 0, 1]), 0.0)
+        bid_close = TARGET_NAMES.index("bid_close_return")
+        ask_close = TARGET_NAMES.index("ask_close_return")
+        trade_close = TARGET_NAMES.index("trade_close_return")
+        self.assertTrue(bool(targets.mask[0, 0, bid_close]))  # bid update
+        self.assertFalse(bool(targets.mask[0, 0, ask_close]))  # no ask update
+        self.assertTrue(bool(targets.mask[0, 0, trade_close]))  # trade update
+        self.assertEqual(float(targets.values[0, 0, ask_close]), 0.0)
+
+    def test_ohlc_targets_preserve_signed_high_and_low_returns(self) -> None:
+        raw = self._five_seconds().features
+        physical = build_physical_horizon_targets(
+            raw,
+            torch.tensor([0]),
+            torch.tensor([2_000_000]),
+            available_at_us=torch.arange(1, 6, dtype=torch.long) * 1_000_000,
+            coverage_end_us=5_000_000,
+        )
+        high = TARGET_NAMES.index("trade_high_return")
+        low = TARGET_NAMES.index("trade_low_return")
+        self.assertTrue(bool(physical.mask[0, 0, high]))
+        self.assertGreater(float(physical.values[0, 0, high]), 0.0)
+        self.assertLess(float(physical.values[0, 0, low]), 0.0)
+
+        autoregressive = build_next_bar_targets(raw)
+        self.assertGreater(float(autoregressive.values[0, high]), 0.0)
+        self.assertLess(float(autoregressive.values[0, low]), 0.0)
 
     def test_sparse_storage_densifies_without_fabricating_families(self) -> None:
         base = self._five_seconds()
@@ -548,6 +574,21 @@ class ModelContractTest(unittest.TestCase):
                 scaled[:, FEATURE_INDEX[f"{prefix}_{field}"]] *= 5
             scaled[:, FEATURE_INDEX[f"{prefix}_price_size_sum"]] *= 5
         torch.testing.assert_close(projected, project_stationary_features(scaled))
+
+    def test_stationary_projection_preserves_signed_low_return(self) -> None:
+        raw = torch.zeros((1, len(FEATURE_NAMES)))
+        raw[:, FEATURE_INDEX["trade_present"]] = 1
+        raw[:, FEATURE_INDEX["trade_open"]] = 100.0
+        raw[:, FEATURE_INDEX["trade_high"]] = 103.0
+        raw[:, FEATURE_INDEX["trade_low"]] = 97.0
+        raw[:, FEATURE_INDEX["trade_close"]] = 101.0
+        projected = project_stationary_features(raw)
+        self.assertGreater(
+            float(projected[0, MODEL_FEATURE_NAMES.index("trade_high_from_open_return")]), 0.0
+        )
+        self.assertLess(
+            float(projected[0, MODEL_FEATURE_NAMES.index("trade_low_from_open_return")]), 0.0
+        )
 
     def test_daily_rows_without_intraday_moments_remain_neutral(self) -> None:
         raw = torch.zeros((2, len(FEATURE_NAMES)))

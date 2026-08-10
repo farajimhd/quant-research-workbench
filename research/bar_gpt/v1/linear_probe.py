@@ -18,6 +18,7 @@ from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfi
 from research.bar_gpt.v1.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarGPTBatch
 from research.bar_gpt.v1.loader import BarGPTIterableDataset, ClickHouseBarStreamConfig, make_dataloader
 from research.bar_gpt.v1.model import BarGPTV1
+from research.bar_gpt.v1.targets import TARGET_NAMES
 from research.bar_gpt.v1.train import preflight
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
@@ -113,8 +114,9 @@ def collect_embeddings(
             raise RuntimeError("probe batch did not materialize physical targets")
         valid_origins = batch.origin_mask
         x = fused[valid_origins]
-        y = batch.horizon_targets[..., 2][valid_origins]
-        m = batch.horizon_mask[..., 0][valid_origins]
+        trade_close_index = TARGET_NAMES.index("trade_close_return")
+        y = batch.horizon_targets[..., trade_close_index][valid_origins]
+        m = batch.horizon_mask[..., trade_close_index][valid_origins]
         take = min(x.shape[0], limit - collected)
         embeddings.append(x[:take].float().cpu())
         targets.append(y[:take].float().cpu())

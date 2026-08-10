@@ -9,6 +9,7 @@ from typing import Sequence
 
 from research.bar_gpt.v1.audit_offline_shards import audit_shard
 from research.bar_gpt.v1.shard_data_audit import (
+    autoregressive_target_diagnostics,
     compare_loaded_to_clickhouse,
     data_config_for_sample,
     diagnostic_findings,
@@ -23,7 +24,7 @@ from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.mlops.env import load_env_files
 
 
-DEFAULT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4")
+DEFAULT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5")
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\shard_data_audits")
 
 
@@ -91,6 +92,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             "structural_audit": structural,
             "target_diagnostics": target_diagnostics(sample, data_config),
+            "autoregressive_target_diagnostics": autoregressive_target_diagnostics(sample),
             "clickhouse_reconstruction": None,
         }
         if index < clickhouse_limit:
@@ -106,9 +108,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"{ref.unit_key} session={ref.session_index} block={ref.block_index}: "
                     f"{comparison['failed']}"
                 )
-        row["findings"] = diagnostic_findings(
-            row["target_diagnostics"], row["clickhouse_reconstruction"]
-        )
+        row["findings"] = [
+            *diagnostic_findings(row["target_diagnostics"], row["clickhouse_reconstruction"]),
+            *diagnostic_findings(row["autoregressive_target_diagnostics"], None),
+        ]
         error_findings = [item for item in row["findings"] if item.get("severity") == "error"]
         if error_findings:
             failures.append(
@@ -123,7 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(f"[{index + 1}/{len(refs)}] {ref.unit_key} {ref.local_date} block={ref.block_index}: {status}", flush=True)
     report = {
-        "contract_version": 2,
+        "contract_version": 3,
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "root": str(args.root),
         "seed": int(args.seed),

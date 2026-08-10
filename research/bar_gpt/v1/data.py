@@ -343,7 +343,6 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
             item = build_next_bar_targets(
                 value,
                 bar_start_us=example.raw_view_start_us[name] if name in AUTOREGRESSIVE_VIEW_NAMES else None,
-                expected_step_us=TIMEFRAME_US_BY_NAME[name] if name in AUTOREGRESSIVE_VIEW_NAMES else None,
             )
             available = example.raw_view_available_at_us[name]
             if available.shape != (value.shape[0],):

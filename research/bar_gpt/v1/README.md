@@ -374,7 +374,7 @@ the fixed learning-rate (`1.5e-4`, `3e-4`) by dropout (`0.04`, `0.08`, `0.12`)
 grid. Exact duplicate anchor recipes are reused. The best two refined recipes
 are then evaluated on the locked test.
 
-Campaign state is durable under `model_discovery/campaign_state_v3.json`; rerunning
+Campaign state is durable under `model_discovery/campaign_state_v4.json`; rerunning
 the same command verifies the manifest and skips completed runs. Training,
 monitoring, validation, and locked-test metrics are written asynchronously.
 W&B uses the distinct project `bar gpt model discovery` and non-overlapping
@@ -483,11 +483,11 @@ prepared host batches, then training restarts from consumed durable cursors.
 Unconsumed training blocks replay safely rather than being marked complete.
 
 Training refuses to start unless every requested ticker-month has a compatible
-contract-v4 complete or explicitly covered-empty sidecar and every complete
+contract-v5 complete or explicitly covered-empty sidecar and every complete
 sidecar has its tensor file. ClickHouse is not contacted by the offline training
-path. The v4 shard payload is pinned to sparse loader-stream contract 6,
-including nonempty origins/context, timestamped intervals, and exact per-origin
-context geometry. Defaults are a
+path. The v5 shard payload is pinned to sparse OHLC loader-stream contract 7,
+including nonempty origins/context, timestamped intervals, exact per-origin
+context geometry, signed family OHLC returns, and 12 direction tasks. Defaults are a
 384-wide eight-layer decoder, BF16,
 and six horizons from 5 seconds through 1 hour. `--max-samples 0` means the
 complete coverage epoch; a positive value is an operator safety or diagnostic
@@ -567,8 +567,9 @@ Direction supervision uses dedicated autoregressive and physical-horizon logits,
 so classification gradients do not distort the calibrated return quantiles.
 Targets within the configurable one-basis-point neutral band are excluded from
 binary up/down loss and accuracy, while their fraction is reported separately.
-Accuracy, balanced accuracy, and MCC are reported per physical horizon and per
-autoregressive intraday view, together with macro averages.
+Accuracy, balanced accuracy, and MCC are reported for every trade/bid/ask OHLC
+return per physical horizon and per autoregressive intraday view, together with
+bounded family/view macro summaries.
 
 The joint candidate sweep measures loader wait, GPU time, origins/second,
 encoded tokens/second, parameter count, effective blocks per update, the
@@ -600,7 +601,7 @@ python -B -m research.bar_gpt.v1.run_build_offline_shards --execute
 The first command is a read-only plan. The execute form balances whole tickers
 by their planned block counts across bounded logical worker slots and writes
 immutable ticker-month shards beneath
-`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4`. Both the requested
+`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5`. Both the requested
 one-second authority and daily-session authority now begin in 2019. The
 compiler fails preflight until those sources are continuously certified and
 never fabricates unavailable intraday sessions or calendar history.
@@ -639,7 +640,7 @@ This prevents every worker from independently creating a workstation-sized CPU
 thread pool while leaving capacity for ClickHouse and the operating system.
 
 Every executing compiler invocation creates a unique diagnostic directory at
-`offline_shards_v4\manifest\build_runs\<run-id>`. Its parent-owned
+`offline_shards_v5\manifest\build_runs\<run-id>`. Its parent-owned
 `events.jsonl` records the resolved plan, worker PID/ticker launches, stages,
 bounded progress, certifications, complete caught tracebacks, process exit
 codes, last known work, and final catalog. `summary.json` records the final
@@ -648,7 +649,7 @@ to Python `faulthandler` inside that spawned process. An abrupt native exit may
 not produce a Python traceback, but the parent still records its nonzero exit
 code, PID, ticker, last stage and fatal-log path immediately and counts it as a
 failure in both Rich and text output. These operational files do not enter the
-v3 storage hash and do not change shard payloads or ticker/year/month layout.
+v5 storage hash and do not change shard payloads or ticker/year/month layout.
 
 Each month stores every session-level 1s, intraday-rollup, and calendar tensor
 once. Block records retain only slices, exact causal prefix corrections,
@@ -658,14 +659,14 @@ for every origin. Shards use uncompressed PyTorch tensor containers so `torch.lo
 memory-map their storage. The runtime reader performs only mmap slicing,
 padding into reusable pinned batches, and asynchronous CUDA handoff.
 
-The v4 storage identity contains only settings that can alter one ticker-month
+The v5 storage identity contains only settings that can alter one ticker-month
 tensor payload. GPU batch size, loader workers, pinning, prefetch depth,
 requested tickers, requested date range, validation ownership, query tuning,
 and progress/concurrency controls are excluded. A stable ticker-month hash
 replaces range-dependent unit numbering inside each shard. Consequently the
 same certified shard can be collated into any loader-time batch size and two
 disjoint build commands can safely accumulate compatible months in one root.
-Sparse loader-stream contract 6 is part of the v4 identity, so older shards fail
+Sparse OHLC loader-stream contract 7 is part of the v5 identity, so older shards fail
 discovery instead of being silently interpreted under the corrected context
 contract.
 `origin_bars_1s` remains storage geometry—the number of sequential origins in
@@ -702,12 +703,14 @@ python -B -m research.bar_gpt.v1.run_pilot_offline_shards --execute --force-rebu
 
 The first command prints the exact build and audit plan. The execute form builds
 `AAPL:2019-01` and `GOOGL:2019-01`, then a bounded one-session
-`AAPL:2026-01` context-check shard, beneath `offline_shards_v4_pilot`. It
+`AAPL:2026-01` context-check shard, beneath `offline_shards_v5_pilot`. It
 verifies all complete-file SHA-256 digests and fails unless shard/sidecar identities,
 counts, configured context, causal as-of indices, horizon tensors, and condition
 positive-count metadata agree. The audit also scans every stored value in all
 46 feature columns of every view for finiteness and records per-feature
-nonzero fractions, standard deviations, minima, and maxima. Its JSON report is
+nonzero fractions, standard deviations, minima, and maxima. It also validates
+signed input high/low geometry and every physical/autoregressive OHLC ordering.
+Its JSON report is
 written beneath the pilot root's `manifest/audits` directory. The pilot root is
 never used by the default training or production-build launchers.
 Use `--force-rebuild` only when replacing pilot shards after a contract change,
@@ -736,14 +739,15 @@ python -B -m research.bar_gpt.v1.run_audit_shard_data
 The reconstruction compares every model-ready view, origin/as-of index,
 autoregressive target and mask, and physical-horizon target and mask. Integer
 and Boolean tensors must match exactly. Inputs, autoregressive targets, and
-non-price physical targets use `1e-6` absolute/relative tolerance. The four
-float32 price-derived physical statistics use `5e-5` absolute tolerance in
+non-price physical targets use `1e-6` absolute/relative tolerance. The twelve
+float32 price-derived OHLC returns use `5e-5` absolute tolerance in
 transformed target space (approximately `0.005 bp` near zero) because their
 `log-ratio * 100` transform amplifies bounded source-ULP differences. Exact-difference counts and
 maximum error remain in the report, and any difference beyond its documented
 tolerance fails the run. The report also records neutral and directional
-class balance, extreme family returns, and any valid target lacking a future
-same-family update. Reports are written beneath
+class balance for every physical OHLC task and every autoregressive view/OHLC
+task, extreme family returns, and any valid target lacking a future same-family
+update. Reports are written beneath
 `D:\TradingML\runtimes\bar_gpt\v1\shard_data_audits`; neither ClickHouse nor
 the immutable shard catalog is modified. Use `--tickers AAPL,GOOGL` to constrain
 identity, `--seed` to choose another reproducible sample, and
@@ -756,8 +760,9 @@ For manual review, open `audit_shard_sample.ipynb` on the workstation. It loads
 one deterministic random real shard block and one random origin, then displays
 the complete context geometry, the last visible rows and all named input
 features for every view, physical-horizon targets and masks, and autoregressive
-targets. Set its optional `CHECKPOINT` path to place q10/q50/q90 bid/ask/trade
-predictions and direction probabilities beside the stored targets. The notebook
+targets. Set its optional `CHECKPOINT` path to place q10/q50/q90 predictions
+and direction probabilities for all 12 family OHLC returns beside the stored
+targets. The notebook
 is read-only and does not contact ClickHouse; use the automatic report for the
 independent raw-authority comparison.
 
@@ -790,7 +795,7 @@ sidecars are skipped. `--max-shards N` provides a bounded smoke. The optional
 substantial I/O to the 2.3 TB catalog; without it, the original certified digest
 is preserved while tensor structure and metadata are still checked.
 
-The completed `offline_shards_v4` authority can be permanently sealed after its
+The completed `offline_shards_v5` authority can be permanently sealed after its
 catalog has been certified:
 
 ```powershell

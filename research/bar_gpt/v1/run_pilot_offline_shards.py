@@ -13,7 +13,7 @@ from research.bar_gpt.v1.audit_offline_shards import DEFAULT_PILOT_ROOT
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build two sparse-event v4 pilot shards plus one bounded 2026 context-check shard."
+        description="Build two sparse-event OHLC v5 pilot shards plus one bounded 2026 context-check shard."
     )
     parser.add_argument("--execute", action="store_true", help="Required to build; omit for a read-only plan.")
     parser.add_argument(

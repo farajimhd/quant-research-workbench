@@ -14,7 +14,7 @@ TRAIN_START_DATE = "2019-01-01"
 TRAIN_END_DATE = "2022-01-01"
 VALIDATION_START_DATE = "2026-01-01"
 VALIDATION_END_DATE = "2026-08-01"
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4")
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

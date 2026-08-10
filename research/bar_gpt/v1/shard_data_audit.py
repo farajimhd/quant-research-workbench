@@ -27,7 +27,14 @@ from research.bar_gpt.v1.offline_shards import (
     shard_path,
 )
 from research.bar_gpt.v1.schema import FEATURE_INDEX
-from research.bar_gpt.v1.targets import AUTOREGRESSIVE_TARGET_NAMES, TARGET_NAMES
+from research.bar_gpt.v1.targets import (
+    AUTOREGRESSIVE_TARGET_NAMES,
+    DIRECTION_TARGET_COUNT,
+    DIRECTION_TARGET_NAMES,
+    OHLC_FIELDS,
+    PRICE_FAMILIES,
+    TARGET_NAMES,
+)
 from research.bar_gpt.v1.train import _forward
 
 
@@ -39,12 +46,8 @@ DEFAULT_FLOAT_RTOL = 1e-6
 # approximately 0.005 bp near zero while retaining the stricter default for
 # every other target.
 PHYSICAL_HORIZON_FLOAT_ATOL_BY_TARGET: tuple[float, ...] = (
-    5e-5,
-    5e-5,
-    5e-5,
-    5e-5,
-    5e-5,
-    *(DEFAULT_FLOAT_ATOL for _ in TARGET_NAMES[5:]),
+    *(5e-5 for _ in range(DIRECTION_TARGET_COUNT)),
+    *(DEFAULT_FLOAT_ATOL for _ in TARGET_NAMES[DIRECTION_TARGET_COUNT:]),
 )
 
 
@@ -425,11 +428,14 @@ def family_update_diagnostics(batch, data_config: DataConfig) -> dict[str, Any]:
         origin_times = available[origins]
         endpoints = torch.searchsorted(available, origin_times + int(horizon_us), right=True)
         family_values: dict[str, Any] = {}
-        for family_index, family in enumerate(("bid", "ask", "trade")):
+        for family_index, family in enumerate(PRICE_FAMILIES):
             present = support[:, FEATURE_INDEX[f"{family}_present"]] > 0
             prefix = torch.cat((torch.zeros(1, dtype=torch.long), present.long().cumsum(0)))
             future_update = prefix[endpoints] - prefix[origins + 1] > 0
-            valid = batch.horizon_mask[0, : origins.numel(), index, family_index]
+            first = family_index * len(OHLC_FIELDS)
+            valid = batch.horizon_mask[
+                0, : origins.numel(), index, first : first + len(OHLC_FIELDS)
+            ].any(dim=-1)
             violations = valid & ~future_update
             family_values[family] = {
                 "valid": int(valid.sum()),
@@ -444,14 +450,14 @@ def target_diagnostics(sample: LoadedAuditSample, data_config: DataConfig) -> di
     result: dict[str, Any] = {}
     for index, horizon_us in enumerate(data_config.horizons_us):
         families: dict[str, Any] = {}
-        for family_index, family in enumerate(("bid", "ask", "trade")):
-            valid = sample.block.horizon_mask[:, index, family_index]
-            selected = sample.block.horizon_targets[:, index, family_index][valid]
+        for target_index, target_name in enumerate(DIRECTION_TARGET_NAMES):
+            valid = sample.block.horizon_mask[:, index, target_index]
+            selected = sample.block.horizon_targets[:, index, target_index][valid]
             bps = torch.sinh(selected.double()) * 100.0
             directional = selected.abs() > threshold
             directional_count = int(directional.sum())
             positive = int((selected > threshold).sum())
-            families[family] = {
+            families[target_name] = {
                 "valid": int(valid.sum()),
                 "masked": int((~valid).sum()),
                 "neutral": int((~directional).sum()),
@@ -465,6 +471,38 @@ def target_diagnostics(sample: LoadedAuditSample, data_config: DataConfig) -> di
                 "over_1000_bps": int((bps.abs() > 1_000).sum()),
             }
         result[f"{int(horizon_us) // 1_000_000}s"] = families
+    return result
+
+
+def autoregressive_target_diagnostics(sample: LoadedAuditSample) -> dict[str, Any]:
+    """Report class balance and scale for every AR OHLC task in every view."""
+    threshold = math.asinh(1.0 / 100.0)
+    result: dict[str, Any] = {}
+    for view in AUTOREGRESSIVE_VIEW_NAMES:
+        targets = sample.block.autoregressive_targets[view]
+        masks = sample.block.autoregressive_mask[view]
+        values: dict[str, Any] = {}
+        for target_index, target_name in enumerate(DIRECTION_TARGET_NAMES):
+            valid = masks[..., target_index]
+            selected = targets[..., target_index][valid]
+            bps = torch.sinh(selected.double()) * 100.0
+            directional = selected.abs() > threshold
+            directional_count = int(directional.sum())
+            positive = int((selected > threshold).sum())
+            values[target_name] = {
+                "valid": int(valid.sum()),
+                "masked": int((~valid).sum()),
+                "neutral": int((~directional).sum()),
+                "neutral_fraction": float((~directional).float().mean()) if selected.numel() else None,
+                "up": positive,
+                "down": int((selected < -threshold).sum()),
+                "up_fraction_directional": positive / directional_count if directional_count else None,
+                "mean_bps": float(bps.mean()) if bps.numel() else None,
+                "mean_abs_bps": float(bps.abs().mean()) if bps.numel() else None,
+                "maximum_abs_bps": float(bps.abs().max()) if bps.numel() else None,
+                "over_1000_bps": int((bps.abs() > 1_000).sum()),
+            }
+        result[view] = values
     return result
 
 
@@ -575,10 +613,10 @@ def selected_targets(sample: LoadedAuditSample, origin_offset: int, data_config:
         row: dict[str, Any] = {
             "horizon": f"{int(horizon_us) // 1_000_000}s",
         }
-        for family_index, family in enumerate(("bid", "ask", "trade")):
-            row[f"{family}_return_bps"] = float(torch.sinh(values[family_index].double()) * 100.0)
-            row[f"{family}_direction"] = (
-                "up" if values[family_index] > 0 else ("down" if values[family_index] < 0 else "flat")
+        for target_index, target_name in enumerate(DIRECTION_TARGET_NAMES):
+            row[f"{target_name}_bps"] = float(torch.sinh(values[target_index].double()) * 100.0)
+            row[f"{target_name}_direction"] = (
+                "up" if values[target_index] > 0 else ("down" if values[target_index] < 0 else "flat")
             )
         for target_index, name in enumerate(TARGET_NAMES):
             row[f"target_{name}"] = float(values[target_index])
@@ -606,9 +644,12 @@ def selected_autoregressive_targets(sample: LoadedAuditSample, origin_offset: in
             "view": name,
             "target_index": target_index,
             "available": bool(mask.any()),
-            "endpoint_return_bps": float(torch.sinh(values[0].double()) * 100.0),
-            "direction": "up" if values[0] > 0 else ("down" if values[0] < 0 else "flat"),
         }
+        for index, target_name in enumerate(DIRECTION_TARGET_NAMES):
+            row[f"{target_name}_bps"] = float(torch.sinh(values[index].double()) * 100.0)
+            row[f"{target_name}_direction"] = (
+                "up" if values[index] > 0 else ("down" if values[index] < 0 else "flat")
+            )
         for index, target_name in enumerate(AUTOREGRESSIVE_TARGET_NAMES):
             row[f"target_{target_name}"] = float(values[index])
             row[f"mask_{target_name}"] = bool(mask[index])
@@ -647,16 +688,16 @@ def selected_predictions(
     rows: list[dict[str, Any]] = []
     for horizon_index, horizon_us in enumerate(data_config.horizons_us):
         row: dict[str, Any] = {"horizon": f"{int(horizon_us) // 1_000_000}s"}
-        for family_index, family in enumerate(("bid", "ask", "trade")):
-            quantiles = output.horizon_quantiles[0, origin_offset, horizon_index, family_index].double().cpu()
-            logit = output.horizon_direction_logits[0, origin_offset, horizon_index, family_index].double().cpu()
+        for target_index, target_name in enumerate(DIRECTION_TARGET_NAMES):
+            quantiles = output.horizon_quantiles[0, origin_offset, horizon_index, target_index].double().cpu()
+            logit = output.horizon_direction_logits[0, origin_offset, horizon_index, target_index].double().cpu()
             row.update({
-                f"{family}_bps_q10": float(torch.sinh(quantiles[0]) * 100.0),
-                f"{family}_bps_q50": float(torch.sinh(quantiles[median_index]) * 100.0),
-                f"{family}_bps_q90": float(torch.sinh(quantiles[-1]) * 100.0),
-                f"{family}_direction_logit": float(logit),
-                f"{family}_probability_up": float(torch.sigmoid(logit)),
-                f"{family}_predicted_direction": "up" if logit > 0 else "down",
+                f"{target_name}_bps_q10": float(torch.sinh(quantiles[0]) * 100.0),
+                f"{target_name}_bps_q50": float(torch.sinh(quantiles[median_index]) * 100.0),
+                f"{target_name}_bps_q90": float(torch.sinh(quantiles[-1]) * 100.0),
+                f"{target_name}_direction_logit": float(logit),
+                f"{target_name}_probability_up": float(torch.sigmoid(logit)),
+                f"{target_name}_predicted_direction": "up" if logit > 0 else "down",
             })
         rows.append(row)
     return rows

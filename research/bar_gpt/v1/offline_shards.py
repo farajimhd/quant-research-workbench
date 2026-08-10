@@ -43,11 +43,11 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 
 
-OFFLINE_SHARD_CONTRACT_VERSION = 4
-# Stream contract 6 stores only nonempty event bars as intraday context and
-# origins while retaining physical-time horizon cutoffs.
-OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 6
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4")
+OFFLINE_SHARD_CONTRACT_VERSION = 5
+# Stream contract 7 stores nonempty event bars plus signed family OHLC targets
+# and one direction task per OHLC return while retaining physical horizons.
+OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 7
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5")
 SHARD_CATALOG_LOCK_FILENAME = "SHARD_CATALOG_IMMUTABLE.json"
 
 
@@ -571,7 +571,6 @@ def _merge_view(
         targets = build_next_bar_targets(
             unique_raw,
             bar_start_us=unique_starts,
-            expected_step_us=TIMEFRAME_US_BY_NAME[name],
         )
         result["autoregressive_targets"] = targets.values.contiguous()
         result["autoregressive_base_mask"] = targets.mask.contiguous()
@@ -628,7 +627,6 @@ def compile_session(examples: Sequence[BarGPTExample]) -> dict[str, Any]:
             batch = build_next_bar_targets(
                 raw_batch,
                 bar_start_us=start_batch,
-                expected_step_us=TIMEFRAME_US_BY_NAME[name],
             )
             for batch_row, example_index in enumerate(indices):
                 exact_items[example_index] = HorizonTargets(

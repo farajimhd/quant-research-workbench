@@ -55,7 +55,12 @@ from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.objectives import BarGPTLoss, compute_loss
 from research.bar_gpt.v1.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
-from research.bar_gpt.v1.targets import TARGET_NAMES
+from research.bar_gpt.v1.targets import (
+    AVAILABILITY_TARGET_COUNT,
+    CONTINUOUS_TARGET_COUNT,
+    DIRECTION_TARGET_COUNT,
+    TARGET_NAMES,
+)
 from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
@@ -223,7 +228,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume-checkpoint", default="")
     parser.add_argument("--seed", type=int, default=train.seed)
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="clickhouse")
-    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v5")
     parser.add_argument("--offline-train-start-date", default="2019-01-01")
     parser.add_argument("--offline-train-end-date", default="2021-01-01")
     parser.add_argument("--offline-validation-start-date", default="2026-01-01")
@@ -245,7 +250,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
     horizons = _int_csv(args.horizons_us)
     data = DataConfig(
-        loader_stream_contract_version=6,
+        loader_stream_contract_version=7,
         database=str(args.database),
         one_second_table=str(args.one_second_table),
         manifest_table=str(args.manifest_table),
@@ -1507,7 +1512,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             for index in range(4)
         )
         evidence = {
-            "mode": "offline_shards_v4",
+            "mode": "offline_shards_v5",
             "offline_shard_root": str(root),
             "offline_training_units": str(len(offline_train_units)),
             "offline_training_blocks": str(sum(unit.blocks for unit in offline_train_units)),
@@ -1680,10 +1685,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                 name: ["B", "T_view-1", config.model.autoregressive_target_dim]
                 for name in AUTOREGRESSIVE_VIEW_NAMES
             },
-            "autoregressive_direction_logits": {name: ["B", "T_view-1"] for name in AUTOREGRESSIVE_VIEW_NAMES},
-            "physical_horizon_quantiles": ["B", "N_origins", len(config.data.horizons_us), config.model.target_dim - 8, len(config.model.quantiles)],
-            "physical_horizon_availability_logits": ["B", "N_origins", len(config.data.horizons_us), 8],
-            "physical_horizon_direction_logits": ["B", "N_origins", len(config.data.horizons_us), 3],
+            "autoregressive_direction_logits": {
+                name: ["B", "T_view-1", DIRECTION_TARGET_COUNT]
+                for name in AUTOREGRESSIVE_VIEW_NAMES
+            },
+            "physical_horizon_quantiles": ["B", "N_origins", len(config.data.horizons_us), CONTINUOUS_TARGET_COUNT, len(config.model.quantiles)],
+            "physical_horizon_availability_logits": ["B", "N_origins", len(config.data.horizons_us), AVAILABILITY_TARGET_COUNT],
+            "physical_horizon_direction_logits": ["B", "N_origins", len(config.data.horizons_us), DIRECTION_TARGET_COUNT],
         },
         architecture_mermaid=build_model_mermaid(),
         summary_notes=(

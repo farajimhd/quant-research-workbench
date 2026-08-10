@@ -9,7 +9,14 @@ from research.bar_gpt.v1.data import AUTOREGRESSIVE_VIEW_NAMES, BarGPTBatch
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.model import BarGPTOutput
 from research.bar_gpt.v1.objectives import BarGPTLoss
-from research.bar_gpt.v1.targets import CONDITION_TARGET_NAMES, CONTINUOUS_TARGET_COUNT
+from research.bar_gpt.v1.targets import (
+    CONDITION_TARGET_NAMES,
+    CONTINUOUS_TARGET_COUNT,
+    DIRECTION_TARGET_COUNT,
+    DIRECTION_TARGET_NAMES,
+    OHLC_FIELDS,
+    PRICE_FAMILIES,
+)
 
 
 def _average_precision(scores: torch.Tensor, targets: torch.Tensor) -> float:
@@ -92,8 +99,8 @@ class ValidationAccumulator:
     direction_neutral_count: torch.Tensor | None = None
     direction_total_count: torch.Tensor | None = None
     autoregressive_direction_confusion: dict[str, torch.Tensor] = field(default_factory=dict)
-    autoregressive_direction_neutral_count: dict[str, float] = field(default_factory=dict)
-    autoregressive_direction_total_count: dict[str, float] = field(default_factory=dict)
+    autoregressive_direction_neutral_count: dict[str, torch.Tensor] = field(default_factory=dict)
+    autoregressive_direction_total_count: dict[str, torch.Tensor] = field(default_factory=dict)
     binary_brier: torch.Tensor | None = None
     binary_count: torch.Tensor | None = None
     coverage_hits: torch.Tensor | None = None
@@ -125,25 +132,30 @@ class ValidationAccumulator:
                 self.weighted_metrics[name] = self.weighted_metrics.get(name, 0.0) + float(value) * weight
         transformed_threshold = math.asinh(float(self.direction_neutral_bps) / 100.0)
         for name, logits in output.autoregressive_direction_logits.items():
-            target = batch.autoregressive_targets[name][:, : logits.shape[1], 0]
-            valid = batch.autoregressive_mask[name][:, : logits.shape[1], 0]
+            target = batch.autoregressive_targets[name][:, : logits.shape[1], :DIRECTION_TARGET_COUNT]
+            valid = batch.autoregressive_mask[name][:, : logits.shape[1], :DIRECTION_TARGET_COUNT]
             directional = valid & (target.abs() > transformed_threshold)
             predicted_positive = logits.detach() > 0
             target_positive = target > transformed_threshold
             confusion = torch.stack(
                 (
-                    (predicted_positive & target_positive & directional).sum(),
-                    ((~predicted_positive) & (~target_positive) & directional).sum(),
-                    (predicted_positive & (~target_positive) & directional).sum(),
-                    ((~predicted_positive) & target_positive & directional).sum(),
-                )
+                    (predicted_positive & target_positive & directional).sum((0, 1)),
+                    ((~predicted_positive) & (~target_positive) & directional).sum((0, 1)),
+                    (predicted_positive & (~target_positive) & directional).sum((0, 1)),
+                    ((~predicted_positive) & target_positive & directional).sum((0, 1)),
+                ),
+                dim=-1,
             ).double().cpu()
             previous = self.autoregressive_direction_confusion.get(name)
             self.autoregressive_direction_confusion[name] = confusion if previous is None else previous + confusion
-            total = float(valid.sum())
-            neutral = float((valid & ~directional).sum())
-            self.autoregressive_direction_total_count[name] = self.autoregressive_direction_total_count.get(name, 0.0) + total
-            self.autoregressive_direction_neutral_count[name] = self.autoregressive_direction_neutral_count.get(name, 0.0) + neutral
+            total = valid.sum((0, 1)).double().cpu()
+            neutral = (valid & ~directional).sum((0, 1)).double().cpu()
+            self.autoregressive_direction_total_count[name] = (
+                self.autoregressive_direction_total_count.get(name, 0.0) + total
+            )
+            self.autoregressive_direction_neutral_count[name] = (
+                self.autoregressive_direction_neutral_count.get(name, 0.0) + neutral
+            )
         if output.horizon_quantiles is None or output.horizon_availability_logits is None:
             return
         if output.horizon_direction_logits is None:
@@ -153,9 +165,9 @@ class ValidationAccumulator:
         continuous_mask = batch.horizon_mask[..., :CONTINUOUS_TARGET_COUNT] & batch.origin_mask[:, :, None, None]
         median_index = min(range(len(self.quantiles)), key=lambda index: abs(self.quantiles[index] - 0.5))
         median = output.horizon_quantiles[..., median_index]
-        endpoint_mask = continuous_mask[..., :3]
-        endpoint_target = continuous_target[..., :3]
-        endpoint_prediction = median[..., :3].detach()
+        endpoint_mask = continuous_mask[..., :DIRECTION_TARGET_COUNT]
+        endpoint_target = continuous_target[..., :DIRECTION_TARGET_COUNT]
+        endpoint_prediction = median[..., :DIRECTION_TARGET_COUNT].detach()
         # Endpoint targets are asinh(log_return * 100). Inverting and multiplying
         # by 10,000 yields log-return basis points exactly: sinh(value) * 100.
         predicted_bps = torch.sinh(endpoint_prediction.double()) * 100.0
@@ -175,7 +187,11 @@ class ValidationAccumulator:
             target_bps.abs(),
             torch.zeros_like(target_bps),
         ).sum((0, 1)).cpu()
-        return_indices = [MODEL_FEATURE_NAMES.index(f"{family}_close_return") for family in ("bid", "ask", "trade")]
+        return_indices = [
+            MODEL_FEATURE_NAMES.index(f"{family}_close_return")
+            for family in PRICE_FAMILIES
+            for _ in OHLC_FIELDS
+        ]
         batch_indices = torch.arange(batch.origin_indices.shape[0], device=batch.origin_indices.device)[:, None]
         current_return = batch.views["1s"][batch_indices, batch.origin_indices.long()][..., return_indices]
         persistence_bps = torch.sinh(current_return.double()) * 100.0
@@ -213,9 +229,9 @@ class ValidationAccumulator:
         self.direction_neutral_count = neutral_count if self.direction_neutral_count is None else self.direction_neutral_count + neutral_count
         self.direction_total_count = total_count if self.direction_total_count is None else self.direction_total_count + total_count
 
-        endpoint_quantiles = output.horizon_quantiles[..., :3, :].detach()
+        endpoint_quantiles = output.horizon_quantiles[..., :DIRECTION_TARGET_COUNT, :].detach()
         coverage_hits = ((endpoint_target[..., None] <= endpoint_quantiles) & endpoint_mask[..., None]).sum((0, 1)).double().cpu()
-        coverage_count = endpoint_count[:, None].expand_as(coverage_hits)
+        coverage_count = endpoint_count[..., None].expand_as(coverage_hits)
         self.coverage_hits = coverage_hits if self.coverage_hits is None else self.coverage_hits + coverage_hits
         self.coverage_count = coverage_count if self.coverage_count is None else self.coverage_count + coverage_count
 
@@ -233,25 +249,25 @@ class ValidationAccumulator:
 
         if self.include_ranking_metrics or self.include_confidence_metrics:
             for horizon_index in range(len(self.horizons_us)):
-                for family_index in range(3):
-                    key = (family_index, horizon_index)
+                for target_index in range(DIRECTION_TARGET_COUNT):
+                    key = (target_index, horizon_index)
                     if self.include_ranking_metrics:
-                        selected = endpoint_mask[:, :, horizon_index, family_index]
+                        selected = endpoint_mask[:, :, horizon_index, target_index]
                         if torch.any(selected):
                             self.endpoint_scores.setdefault(key, []).append(
-                                predicted_bps[:, :, horizon_index, family_index][selected].detach().float().cpu()
+                                predicted_bps[:, :, horizon_index, target_index][selected].detach().float().cpu()
                             )
                             self.endpoint_targets.setdefault(key, []).append(
-                                target_bps[:, :, horizon_index, family_index][selected].detach().float().cpu()
+                                target_bps[:, :, horizon_index, target_index][selected].detach().float().cpu()
                             )
-                    directional = directional_mask[:, :, horizon_index, family_index]
+                    directional = directional_mask[:, :, horizon_index, target_index]
                     if self.include_confidence_metrics and torch.any(directional):
                         self.direction_confidence.setdefault(key, []).append(
-                            output.horizon_direction_logits[:, :, horizon_index, family_index][directional].abs().detach().float().cpu()
+                            output.horizon_direction_logits[:, :, horizon_index, target_index][directional].abs().detach().float().cpu()
                         )
                         self.direction_correct.setdefault(key, []).append(
-                            (predicted_positive[:, :, horizon_index, family_index][directional]
-                             == target_positive[:, :, horizon_index, family_index][directional]).detach().cpu()
+                            (predicted_positive[:, :, horizon_index, target_index][directional]
+                             == target_positive[:, :, horizon_index, target_index][directional]).detach().cpu()
                         )
 
         if self.include_condition_metrics:
@@ -279,9 +295,12 @@ class ValidationAccumulator:
         ar_mcc_values: list[float] = []
         ar_neutral_values: list[float] = []
         for name in sorted(self.autoregressive_direction_confusion):
-            accuracy, balanced, mcc = _direction_scores(self.autoregressive_direction_confusion[name])
-            total = self.autoregressive_direction_total_count[name]
-            neutral_fraction = self.autoregressive_direction_neutral_count[name] / total if total else float("nan")
+            confusion_by_target = self.autoregressive_direction_confusion[name]
+            total_by_target = self.autoregressive_direction_total_count[name]
+            neutral_by_target = self.autoregressive_direction_neutral_count[name]
+            accuracy, balanced, mcc = _direction_scores(confusion_by_target.sum(dim=0))
+            total = float(total_by_target.sum())
+            neutral_fraction = float(neutral_by_target.sum()) / total if total else float("nan")
             metrics[f"{self.namespace}_ar_direction_accuracy/accuracy_{name}"] = accuracy
             metrics[f"{self.namespace}_ar_direction_balanced/balanced_accuracy_{name}"] = balanced
             metrics[f"{self.namespace}_ar_direction_mcc/mcc_{name}"] = mcc
@@ -290,6 +309,21 @@ class ValidationAccumulator:
             ar_balanced_values.append(balanced)
             ar_mcc_values.append(mcc)
             ar_neutral_values.append(neutral_fraction)
+            for target_index, target_name in enumerate(DIRECTION_TARGET_NAMES):
+                target_accuracy, target_balanced, target_mcc = _direction_scores(
+                    confusion_by_target[target_index]
+                )
+                target_total = float(total_by_target[target_index])
+                target_neutral = (
+                    float(neutral_by_target[target_index]) / target_total
+                    if target_total
+                    else float("nan")
+                )
+                prefix = f"{self.namespace}_ar_{target_name}_direction"
+                metrics[f"{prefix}_accuracy/accuracy_{name}"] = target_accuracy
+                metrics[f"{prefix}_balanced/balanced_accuracy_{name}"] = target_balanced
+                metrics[f"{prefix}_mcc/mcc_{name}"] = target_mcc
+                metrics[f"{prefix}_neutral/neutral_fraction_{name}"] = target_neutral
         if ar_accuracy_values:
             metrics[f"{self.namespace}_ar_direction_accuracy/accuracy_macro"] = _macro(ar_accuracy_values)
             metrics[f"{self.namespace}_ar_direction_balanced/balanced_accuracy_macro"] = _macro(ar_balanced_values)
@@ -304,7 +338,7 @@ class ValidationAccumulator:
         coverage = self.coverage_hits / self.coverage_count.clamp_min(1)
         brier = self.binary_brier / self.binary_count.clamp_min(1)
         brier_values: list[float] = []
-        family_names = ("bid", "ask", "trade")
+        family_names = PRICE_FAMILIES
         family_summary = {
             family: {key: [] for key in (
                 "mae", "zero_mae", "persistence_mae", "skill", "accuracy",
@@ -320,29 +354,31 @@ class ValidationAccumulator:
             brier_value = float(brier[horizon_index])
             metrics[f"{self.namespace}_availability/brier_{label}"] = brier_value
             brier_values.append(brier_value)
-            for family_index, family in enumerate(family_names):
+            for target_index, target_name in enumerate(DIRECTION_TARGET_NAMES):
+                family, field, _ = target_name.split("_", 2)
                 summary = family_summary[family]
-                mae_value = float(mae_bps[horizon_index, family_index])
-                zero_mae_value = float(zero_mae_bps[horizon_index, family_index])
-                persistence_mae_value = float(persistence_mae_bps[horizon_index, family_index])
+                mae_value = float(mae_bps[horizon_index, target_index])
+                zero_mae_value = float(zero_mae_bps[horizon_index, target_index])
+                persistence_mae_value = float(persistence_mae_bps[horizon_index, target_index])
                 zero_skill = 1.0 - mae_value / max(zero_mae_value, 1e-12)
-                metrics[f"{self.namespace}_{family}_return_error/mae_bps_{label}"] = mae_value
-                metrics[f"{self.namespace}_{family}_return_error/persistence_mae_bps_{label}"] = persistence_mae_value
-                metrics[f"{self.namespace}_{family}_return_skill/zero_mae_bps_{label}"] = zero_mae_value
-                metrics[f"{self.namespace}_{family}_return_skill/skill_vs_zero_{label}"] = zero_skill
+                target_prefix = f"{self.namespace}_{family}_{field}"
+                metrics[f"{target_prefix}_return_error/mae_bps_{label}"] = mae_value
+                metrics[f"{target_prefix}_return_error/persistence_mae_bps_{label}"] = persistence_mae_value
+                metrics[f"{target_prefix}_return_skill/zero_mae_bps_{label}"] = zero_mae_value
+                metrics[f"{target_prefix}_return_skill/skill_vs_zero_{label}"] = zero_skill
                 summary["mae"].append(mae_value)
                 summary["zero_mae"].append(zero_mae_value)
                 summary["persistence_mae"].append(persistence_mae_value)
                 summary["skill"].append(zero_skill)
 
-                accuracy, balanced, mcc = _direction_scores(self.direction_confusion[horizon_index, family_index])
-                direction_total = float(self.direction_total_count[horizon_index, family_index])
-                neutral_fraction = float(self.direction_neutral_count[horizon_index, family_index]) / direction_total if direction_total else float("nan")
-                direction_group = f"{self.namespace}_{family}_direction"
+                accuracy, balanced, mcc = _direction_scores(self.direction_confusion[horizon_index, target_index])
+                direction_total = float(self.direction_total_count[horizon_index, target_index])
+                neutral_fraction = float(self.direction_neutral_count[horizon_index, target_index]) / direction_total if direction_total else float("nan")
+                direction_group = f"{target_prefix}_direction"
                 metrics[f"{direction_group}/accuracy_{label}"] = accuracy
                 metrics[f"{direction_group}/balanced_accuracy_{label}"] = balanced
-                metrics[f"{self.namespace}_{family}_direction_quality/mcc_{label}"] = mcc
-                metrics[f"{self.namespace}_{family}_direction_quality/neutral_fraction_{label}"] = neutral_fraction
+                metrics[f"{target_prefix}_direction_quality/mcc_{label}"] = mcc
+                metrics[f"{target_prefix}_direction_quality/neutral_fraction_{label}"] = neutral_fraction
                 summary["accuracy"].append(accuracy)
                 summary["balanced"].append(balanced)
                 summary["mcc"].append(mcc)
@@ -350,19 +386,19 @@ class ValidationAccumulator:
 
                 errors = []
                 for quantile_index, quantile in enumerate(self.quantiles):
-                    value = float(coverage[horizon_index, family_index, quantile_index])
+                    value = float(coverage[horizon_index, target_index, quantile_index])
                     quantile_label = f"q{int(round(quantile * 100)):02d}"
-                    metrics[f"{self.namespace}_{family}_coverage_{quantile_label}/{label}"] = value
+                    metrics[f"{target_prefix}_coverage_{quantile_label}/{label}"] = value
                     coverage_macros[family][quantile_index].append(value)
                     errors.append(abs(value - quantile))
                 calibration = _macro(errors)
-                metrics[f"{self.namespace}_{family}_calibration/error_{label}"] = calibration
+                metrics[f"{target_prefix}_calibration/error_{label}"] = calibration
                 summary["calibration"].append(calibration)
 
-                key = (family_index, horizon_index)
+                key = (target_index, horizon_index)
                 if key in self.endpoint_scores:
                     rank = _spearman(torch.cat(self.endpoint_scores[key]), torch.cat(self.endpoint_targets[key]))
-                    metrics[f"{self.namespace}_{family}_ranking/spearman_{label}"] = rank
+                    metrics[f"{target_prefix}_ranking/spearman_{label}"] = rank
                     summary["rank"].append(rank)
                 if key in self.direction_confidence:
                     confidence = torch.cat(self.direction_confidence[key])
@@ -371,7 +407,7 @@ class ValidationAccumulator:
                     for percentage in (10, 20):
                         count = max(1, math.ceil(order.numel() * percentage / 100.0))
                         value = float(correct[order[:count]].mean())
-                        metrics[f"{self.namespace}_{family}_confidence/top_{percentage}pct_{label}"] = value
+                        metrics[f"{target_prefix}_confidence/top_{percentage}pct_{label}"] = value
                         summary[f"top{percentage}"].append(value)
 
         metrics[f"{self.namespace}_availability/brier_macro"] = _macro(brier_values)

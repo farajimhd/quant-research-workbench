@@ -81,9 +81,9 @@ class BarGPTConfig:
 
 @dataclass(slots=True)
 class DataConfig:
-    # V6 is the sparse-event contract: only nonempty completed bars are
-    # context/origins, while prediction horizons remain physical time.
-    loader_stream_contract_version: int = 6
+    # V7 adds family-specific signed OHLC returns and one direction task per
+    # return while retaining sparse-event context and physical horizons.
+    loader_stream_contract_version: int = 7
     database: str = "market_sip_compact"
     one_second_table: str = BAR_GPT_COHORT_2TB_TABLE
     manifest_table: str = BAR_GPT_COHORT_2TB_MANIFEST_TABLE
@@ -185,8 +185,8 @@ class DataConfig:
         return tuple(ticker for ticker in self.tickers if ticker not in holdout)
 
     def validate(self) -> None:
-        if self.loader_stream_contract_version != 6:
-            raise ValueError("this BarGPT version requires loader_stream_contract_version 6")
+        if self.loader_stream_contract_version != 7:
+            raise ValueError("this BarGPT version requires loader_stream_contract_version 7")
         if "split_adjusted" in self.one_second_table or self.daily_table.endswith("_adjusted"):
             raise ValueError("globally adjusted bar authorities are retired; use raw bars with causal split metadata")
         if not self.tickers:

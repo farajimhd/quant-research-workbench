@@ -18,8 +18,8 @@ def _family_names(prefix: str) -> tuple[str, ...]:
         f"{prefix}_present",
         f"{prefix}_close_return",
         f"{prefix}_open_gap",
-        f"{prefix}_upper_excursion",
-        f"{prefix}_lower_excursion",
+        f"{prefix}_high_from_open_return",
+        f"{prefix}_low_from_open_return",
         f"{prefix}_log_size",
         f"{prefix}_vwap_deviation_bps",
         f"{prefix}_size_cv",
@@ -123,8 +123,8 @@ def project_stationary_features(
         valid_previous = present & previous_available
         close_return = _safe_log_ratio(close, previous_close, valid_previous)
         open_gap = _safe_log_ratio(open_price, previous_close, valid_previous)
-        upper = torch.where(present & (open_price > 0) & (high >= open_price), torch.log(high.clamp_min(eps) / open_price.clamp_min(eps)), 0.0)
-        lower = torch.where(present & (open_price > 0) & (low > 0) & (low <= open_price), torch.log(open_price.clamp_min(eps) / low.clamp_min(eps)), 0.0)
+        high_from_open = _safe_log_ratio(high, open_price, present)
+        low_from_open = _safe_log_ratio(low, open_price, present)
         vwap = torch.where((size > 0) & (price_size > 0), price_size / size.clamp_min(eps), close)
         vwap_bps = torch.where(present & (close > 0), (vwap / close.clamp_min(eps) - 1.0) * 10_000.0, 0.0)
         mean_size = size / count.clamp_min(1.0)
@@ -138,8 +138,8 @@ def project_stationary_features(
             present.float(),
             torch.asinh(close_return * 100.0),
             torch.asinh(open_gap * 100.0),
-            torch.asinh(upper * 100.0),
-            torch.asinh(lower * 100.0),
+            torch.asinh(high_from_open * 100.0),
+            torch.asinh(low_from_open * 100.0),
             torch.log1p(size),
         ]
         if prefix == "trade":

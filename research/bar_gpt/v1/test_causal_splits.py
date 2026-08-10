@@ -13,7 +13,7 @@ from research.bar_gpt.v1.corporate_actions import (
     normalize_features_to_anchor,
 )
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
-from research.bar_gpt.v1.targets import build_physical_horizon_targets
+from research.bar_gpt.v1.targets import TARGET_NAMES, build_physical_horizon_targets
 from research.bar_gpt.v1.loader import (
     ArrowStreamClient,
     ClickHouseBarStreamConfig,
@@ -70,8 +70,8 @@ class CausalSplitContractTest(unittest.TestCase):
             torch.tensor([1_000_000]),
             share_factors=factors,
         )
-        endpoint = float(targets.values[0, 0, 2])
-        volume = float(targets.values[0, 0, 6])
+        endpoint = float(targets.values[0, 0, TARGET_NAMES.index("trade_close_return")])
+        volume = float(targets.values[0, 0, TARGET_NAMES.index("log_trade_volume")])
         self.assertAlmostEqual(endpoint, 0.0, places=6)
         self.assertAlmostEqual(volume, math.log1p(10.0), places=6)
 
