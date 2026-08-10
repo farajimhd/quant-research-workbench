@@ -133,6 +133,7 @@ from research.bar_gpt.v1.run_build_offline_dataset import (
 )
 from research.bar_gpt.v1.run_profile_train import DEFAULT_ARGS as profile_launcher_args
 from research.bar_gpt.v1.run_pilot_offline_shards import commands as pilot_commands, parse_args as parse_pilot_args
+from research.bar_gpt.v1.overfit_pilot import _limit_ar_transitions, _limit_block_origins, _score_direction_gate
 from research.bar_gpt.v1.run_train import DEFAULT_ARGS as training_launcher_args
 from research.bar_gpt.v1.run_train_model_comparison import (
     COMPARISON_RUNS,
@@ -1058,6 +1059,48 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertTrue(torch.equal(cached_batch.autoregressive_mask[name], live_batch.autoregressive_mask[name]), name)
         self.assertTrue(torch.equal(cached_batch.horizon_targets, live_batch.horizon_targets))
         self.assertTrue(torch.equal(cached_batch.horizon_mask, live_batch.horizon_mask))
+
+    def test_overfit_population_is_bounded_and_direction_gate_is_independent(self) -> None:
+        config = self.data_config()
+        examples = list(build_session_examples(
+            ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
+            split_actions=(), config=config,
+        ))
+        compiled = materialize_block(compile_unit(examples, config, "AAA:2026-01"), 0, 0)
+        limited = _limit_block_origins(compiled, 2)
+        self.assertEqual(limited.origin_indices.numel(), 2)
+        self.assertEqual(limited.horizon_targets.shape[0], 2)
+        self.assertLessEqual(limited.views["1s"].shape[0], compiled.views["1s"].shape[0])
+        batch = collate_compiled_blocks(
+            [limited], horizons_us=config.horizons_us, base_timeframe_us=config.base_timeframe_us,
+        )
+        _limit_ar_transitions(batch, 2, 0.0)
+        self.assertTrue(all(int(mask[..., 0].sum()) <= 2 for mask in batch.autoregressive_mask.values()))
+
+        metrics = {
+            "after_bid_direction/balanced_accuracy_5s": 0.95,
+            "after_bid_direction_quality/mcc_5s": 0.90,
+            "after_ar_direction_balanced/balanced_accuracy_1s": 0.91,
+            "after_ar_direction_mcc/mcc_1s": 0.85,
+        }
+        kwargs = {
+            "namespace": "after",
+            "physical_support": {"bid/5s": {"total": 40, "up": 20, "down": 20}},
+            "ar_support": {"1s": {"total": 40, "up": 20, "down": 20}},
+            "minimum_examples": 32,
+            "minimum_class_examples": 8,
+            "minimum_balanced": 0.90,
+            "minimum_mcc": 0.80,
+            "minimum_ar_views": 1,
+        }
+        passed, records, violations = _score_direction_gate(metrics, **kwargs)
+        self.assertTrue(passed)
+        self.assertTrue(all(record["passed"] for record in records))
+        self.assertFalse(violations)
+        metrics["after_bid_direction/balanced_accuracy_5s"] = 0.5
+        failed, _records, violations = _score_direction_gate(metrics, **kwargs)
+        self.assertFalse(failed)
+        self.assertTrue(violations)
 
     def test_strict_2026_audit_rejects_masked_calendar_context(self) -> None:
         config = self.data_config()

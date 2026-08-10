@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -11,10 +12,12 @@ import torch
 
 from research.bar_gpt.v1.audit_offline_shards import DEFAULT_PILOT_ROOT
 from research.bar_gpt.v1.config import BarGPTConfig, ExperimentConfig, TrainConfig
+from research.bar_gpt.v1.data import AUTOREGRESSIVE_VIEW_NAMES, BarGPTBatch
 from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.offline_shards import (
     collate_compiled_blocks,
+    CompiledBlock,
     discover_offline_units,
     load_shard_storage_config,
     load_shard,
@@ -32,18 +35,217 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="2019-02-01")
     parser.add_argument("--max-blocks", type=int, default=2)
-    parser.add_argument("--steps", type=int, default=500)
+    parser.add_argument("--origins-per-block", type=int, default=256)
+    parser.add_argument("--ar-transitions-per-view", type=int, default=256)
+    parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--minimum-loss-improvement", type=float, default=0.25)
+    parser.add_argument("--minimum-loss-improvement", type=float, default=0.80)
+    parser.add_argument("--minimum-return-skill", type=float, default=0.50)
+    parser.add_argument("--minimum-direction-balanced-accuracy", type=float, default=0.90)
+    parser.add_argument("--minimum-direction-mcc", type=float, default=0.80)
+    parser.add_argument("--minimum-direction-examples", type=int, default=32)
+    parser.add_argument("--minimum-direction-class-examples", type=int, default=8)
+    parser.add_argument("--minimum-ar-views", type=int, default=4)
     parser.add_argument("--d-model", type=int, default=384)
     parser.add_argument("--n-layers", type=int, default=8)
     parser.add_argument("--n-heads", type=int, default=8)
     parser.add_argument("--n-kv-heads", type=int, default=4)
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args(list(argv) if argv is not None else None)
-    if args.max_blocks <= 0 or args.steps <= 0 or args.learning_rate <= 0:
-        parser.error("max blocks, steps, and learning rate must be positive")
+    if any(int(value) <= 0 for value in (
+        args.max_blocks, args.origins_per_block, args.ar_transitions_per_view,
+        args.steps, args.minimum_direction_examples, args.minimum_direction_class_examples,
+        args.minimum_ar_views,
+    )) or args.learning_rate <= 0:
+        parser.error("population limits, steps, gate counts, and learning rate must be positive")
     return args
+
+
+def _limit_block_origins(block: CompiledBlock, maximum: int) -> CompiledBlock:
+    """Crop a compiled block to a genuinely small, causally complete population."""
+    count = min(int(maximum), int(block.origin_indices.numel()))
+    if count <= 0:
+        raise ValueError("overfit block contains no origins")
+    selected_positions = _evenly_spaced(torch.arange(block.origin_indices.numel()), count)
+    origin_indices = block.origin_indices[selected_positions].clone()
+    asof_indices = {
+        name: value[selected_positions].clone() for name, value in block.asof_indices.items()
+    }
+    view_lengths: dict[str, int] = {}
+    for name, view in block.views.items():
+        if name == "1s":
+            last = int(origin_indices[-1])
+        else:
+            selected = asof_indices[name]
+            valid = selected[selected >= 0]
+            last = int(valid.max()) if valid.numel() else 0
+        view_lengths[name] = min(int(view.shape[0]), max(1, last + 1))
+    return replace(
+        block,
+        views={name: value[: view_lengths[name]].clone() for name, value in block.views.items()},
+        view_start_us={name: value[: view_lengths[name]].clone() for name, value in block.view_start_us.items()},
+        view_end_us={name: value[: view_lengths[name]].clone() for name, value in block.view_end_us.items()},
+        view_available_at_us={
+            name: value[: view_lengths[name]].clone() for name, value in block.view_available_at_us.items()
+        },
+        origin_indices=origin_indices,
+        origin_timestamps_us=block.origin_timestamps_us[selected_positions].clone(),
+        asof_indices=asof_indices,
+        autoregressive_targets={
+            name: value[: max(0, view_lengths[name] - 1)].clone()
+            for name, value in block.autoregressive_targets.items()
+        },
+        autoregressive_mask={
+            name: value[: max(0, view_lengths[name] - 1)].clone()
+            for name, value in block.autoregressive_mask.items()
+        },
+        horizon_targets=block.horizon_targets[selected_positions].clone(),
+        horizon_mask=block.horizon_mask[selected_positions].clone(),
+    )
+
+
+def _evenly_spaced(indices: torch.Tensor, count: int) -> torch.Tensor:
+    row_count = int(indices.shape[0])
+    if count >= row_count:
+        return indices
+    positions = torch.linspace(0, row_count - 1, steps=count).round().long()
+    return indices[positions]
+
+
+def _limit_ar_transitions(batch: BarGPTBatch, maximum: int, neutral_bps: float) -> None:
+    """Keep a bounded, approximately class-balanced subset under the production loss."""
+    threshold = math.asinh(float(neutral_bps) / 100.0)
+    for name in AUTOREGRESSIVE_VIEW_NAMES:
+        target = batch.autoregressive_targets[name][..., 0]
+        valid = batch.autoregressive_mask[name][..., 0] & (target.abs() > threshold)
+        positive = torch.nonzero(valid & (target > threshold), as_tuple=False)
+        negative = torch.nonzero(valid & (target < -threshold), as_tuple=False)
+        positive_count = min(int(positive.shape[0]), int(maximum) // 2)
+        negative_count = min(int(negative.shape[0]), int(maximum) // 2)
+        remaining = int(maximum) - positive_count - negative_count
+        if remaining > 0:
+            positive_count += min(remaining, int(positive.shape[0]) - positive_count)
+            remaining = int(maximum) - positive_count - negative_count
+            negative_count += min(remaining, int(negative.shape[0]) - negative_count)
+        keep = torch.zeros_like(valid)
+        for selected in (
+            _evenly_spaced(positive, positive_count),
+            _evenly_spaced(negative, negative_count),
+        ):
+            if selected.numel():
+                keep[selected[:, 0], selected[:, 1]] = True
+        batch.autoregressive_mask[name] &= keep.unsqueeze(-1)
+
+
+def _direction_support(batch: BarGPTBatch, neutral_bps: float) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+    threshold = math.asinh(float(neutral_bps) / 100.0)
+    physical: dict[str, dict[str, int]] = {}
+    assert batch.horizon_targets is not None and batch.horizon_mask is not None
+    for family_index, family in enumerate(("bid", "ask", "trade")):
+        for horizon_index, horizon_us in enumerate(batch.horizons_us):
+            target = batch.horizon_targets[:, :, horizon_index, family_index]
+            valid = batch.horizon_mask[:, :, horizon_index, family_index] & batch.origin_mask
+            directional = valid & (target.abs() > threshold)
+            physical[f"{family}/{horizon_us // 1_000_000}s"] = {
+                "total": int(directional.sum()),
+                "up": int((directional & (target > threshold)).sum()),
+                "down": int((directional & (target < -threshold)).sum()),
+            }
+    autoregressive: dict[str, dict[str, int]] = {}
+    for name in AUTOREGRESSIVE_VIEW_NAMES:
+        target = batch.autoregressive_targets[name][..., 0]
+        valid = batch.autoregressive_mask[name][..., 0]
+        directional = valid & (target.abs() > threshold)
+        autoregressive[name] = {
+            "total": int(directional.sum()),
+            "up": int((directional & (target > threshold)).sum()),
+            "down": int((directional & (target < -threshold)).sum()),
+        }
+    return physical, autoregressive
+
+
+def _score_direction_gate(
+    metrics: dict[str, float],
+    *,
+    namespace: str,
+    physical_support: dict[str, dict[str, int]],
+    ar_support: dict[str, dict[str, int]],
+    minimum_examples: int,
+    minimum_class_examples: int,
+    minimum_balanced: float,
+    minimum_mcc: float,
+    minimum_ar_views: int,
+) -> tuple[bool, list[dict[str, object]], list[str]]:
+    records: list[dict[str, object]] = []
+    violations: list[str] = []
+    for label, support in physical_support.items():
+        family, horizon = label.split("/")
+        balanced = float(metrics[f"{namespace}_{family}_direction/balanced_accuracy_{horizon}"])
+        mcc = float(metrics[f"{namespace}_{family}_direction_quality/mcc_{horizon}"])
+        eligible = support["total"] >= minimum_examples and min(support["up"], support["down"]) >= minimum_class_examples
+        passed = eligible and math.isfinite(balanced) and math.isfinite(mcc) and balanced >= minimum_balanced and mcc >= minimum_mcc
+        records.append({"task": f"physical/{label}", **support, "eligible": eligible, "balanced_accuracy": balanced, "mcc": mcc, "passed": passed})
+        if not passed:
+            violations.append(f"physical/{label}: support={support} balanced={balanced:.3f} mcc={mcc:.3f}")
+    eligible_ar = 0
+    for name, support in ar_support.items():
+        balanced = float(metrics[f"{namespace}_ar_direction_balanced/balanced_accuracy_{name}"])
+        mcc = float(metrics[f"{namespace}_ar_direction_mcc/mcc_{name}"])
+        eligible = support["total"] >= minimum_examples and min(support["up"], support["down"]) >= minimum_class_examples
+        eligible_ar += int(eligible)
+        passed = not eligible or (math.isfinite(balanced) and math.isfinite(mcc) and balanced >= minimum_balanced and mcc >= minimum_mcc)
+        records.append({"task": f"autoregressive/{name}", **support, "eligible": eligible, "balanced_accuracy": balanced, "mcc": mcc, "passed": passed})
+        if eligible and not passed:
+            violations.append(f"autoregressive/{name}: support={support} balanced={balanced:.3f} mcc={mcc:.3f}")
+    if eligible_ar < minimum_ar_views:
+        violations.append(f"autoregressive: only {eligible_ar} eligible views; require {minimum_ar_views}")
+    return not violations, records, violations
+
+
+def _quick_balanced_accuracy(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, threshold: float) -> float:
+    directional = mask & (target.abs() > threshold)
+    positive = target > threshold
+    predicted = logits.detach() > 0
+    positive_count = (directional & positive).sum()
+    negative_count = (directional & ~positive).sum()
+    if not bool(positive_count) or not bool(negative_count):
+        return float("nan")
+    true_positive_rate = (directional & positive & predicted).sum().float() / positive_count
+    true_negative_rate = (directional & ~positive & ~predicted).sum().float() / negative_count
+    return float((true_positive_rate + true_negative_rate) * 0.5)
+
+
+def _quick_direction_scores(output, batch: BarGPTBatch, neutral_bps: float) -> tuple[float, float]:
+    threshold = math.asinh(float(neutral_bps) / 100.0)
+    assert output.horizon_direction_logits is not None
+    assert batch.horizon_targets is not None and batch.horizon_mask is not None
+    physical = _quick_balanced_accuracy(
+        output.horizon_direction_logits,
+        batch.horizon_targets[..., :3],
+        batch.horizon_mask[..., :3] & batch.origin_mask[:, :, None, None],
+        threshold,
+    )
+    ar_logits = []
+    ar_targets = []
+    ar_masks = []
+    for name in AUTOREGRESSIVE_VIEW_NAMES:
+        logits = output.autoregressive_direction_logits[name]
+        ar_logits.append(logits.reshape(-1))
+        ar_targets.append(batch.autoregressive_targets[name][:, : logits.shape[1], 0].reshape(-1))
+        ar_masks.append(batch.autoregressive_mask[name][:, : logits.shape[1], 0].reshape(-1))
+    autoregressive = _quick_balanced_accuracy(
+        torch.cat(ar_logits), torch.cat(ar_targets), torch.cat(ar_masks), threshold
+    )
+    return physical, autoregressive
+
+
+def _merge_support(
+    destination: dict[str, dict[str, int]], source: dict[str, dict[str, int]],
+) -> None:
+    for name, counts in source.items():
+        current = destination.setdefault(name, {"total": 0, "up": 0, "down": 0})
+        for key in current:
+            current[key] += int(counts[key])
 
 
 def _evaluate(
@@ -99,7 +301,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         shard = load_shard(unit.path)
         for session_index, session in enumerate(shard["sessions"]):
             for block_index in range(len(session["blocks"])):
-                blocks.append(materialize_block(shard, session_index, block_index))
+                blocks.append(_limit_block_origins(
+                    materialize_block(shard, session_index, block_index),
+                    int(args.origins_per_block),
+                ))
                 if len(blocks) >= int(args.max_blocks):
                     break
             if len(blocks) >= int(args.max_blocks):
@@ -133,6 +338,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for left in range(0, len(blocks), data.batch_size)
     ]
+    physical_support: dict[str, dict[str, int]] = {}
+    ar_support: dict[str, dict[str, int]] = {}
+    for batch in host_batches:
+        _limit_ar_transitions(batch, int(args.ar_transitions_per_view), train_config.direction_neutral_bps)
+        batch_physical, batch_ar = _direction_support(batch, train_config.direction_neutral_bps)
+        _merge_support(physical_support, batch_physical)
+        _merge_support(ar_support, batch_ar)
+    eligible_ar_views = sum(
+        counts["total"] >= int(args.minimum_direction_examples)
+        and min(counts["up"], counts["down"]) >= int(args.minimum_direction_class_examples)
+        for counts in ar_support.values()
+    )
+    print(
+        f"Overfit population: blocks={len(blocks)} origins={sum(block.origin_indices.numel() for block in blocks):,} "
+        f"AR transitions/view<={int(args.ar_transitions_per_view):,} eligible_AR_views={eligible_ar_views} "
+        f"steps={int(args.steps):,}",
+        flush=True,
+    )
+    print(
+        f"Pass gates: loss_improvement>={float(args.minimum_loss_improvement):.0%} "
+        f"return_skill>={float(args.minimum_return_skill):.2f} "
+        f"direction_balanced>={float(args.minimum_direction_balanced_accuracy):.2f} "
+        f"direction_MCC>={float(args.minimum_direction_mcc):.2f}",
+        flush=True,
+    )
     batches = [batch.to(device) for batch in host_batches]
     before = _evaluate(model, batches, config, device, "overfit_before")
     started = time.perf_counter()
@@ -140,29 +370,80 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.train()
         batch = batches[(step - 1) % len(batches)]
         optimizer.zero_grad(set_to_none=True)
-        _output, result = _forward(model, batch, config)
+        output, result = _forward(model, batch, config)
         result.loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), train_config.grad_clip_norm)
         optimizer.step()
         if step == 1 or step % max(1, int(args.steps) // 10) == 0:
-            print(f"step {step:>5}/{args.steps} loss={float(result.loss):.6f}", flush=True)
+            physical_balanced, ar_balanced = _quick_direction_scores(
+                output, batch, train_config.direction_neutral_bps
+            )
+            print(
+                f"step {step:>5}/{args.steps} loss={float(result.loss.detach()):.6f} "
+                f"horizon_direction_loss={float(result.metrics['train/loss_horizon_direction'].detach()):.6f} "
+                f"ar_direction_loss={float(result.metrics['train/loss_ar_direction'].detach()):.6f} "
+                f"direction_balanced={physical_balanced:.3f} ar_balanced={ar_balanced:.3f}",
+                flush=True,
+            )
     after = _evaluate(model, batches, config, device, "overfit_after")
     before_loss = float(before["overfit_before_loss/total"])
     after_loss = float(after["overfit_after_loss/total"])
     improvement = 1.0 - after_loss / max(before_loss, 1e-12)
-    passed = improvement >= float(args.minimum_loss_improvement)
+    loss_passed = improvement >= float(args.minimum_loss_improvement)
+    direction_passed, direction_records, direction_violations = _score_direction_gate(
+        after,
+        namespace="overfit_after",
+        physical_support=physical_support,
+        ar_support=ar_support,
+        minimum_examples=int(args.minimum_direction_examples),
+        minimum_class_examples=int(args.minimum_direction_class_examples),
+        minimum_balanced=float(args.minimum_direction_balanced_accuracy),
+        minimum_mcc=float(args.minimum_direction_mcc),
+        minimum_ar_views=int(args.minimum_ar_views),
+    )
+    return_records: list[dict[str, object]] = []
+    return_violations: list[str] = []
+    for family in ("bid", "ask", "trade"):
+        for horizon_us in data.horizons_us:
+            label = f"{horizon_us // 1_000_000}s"
+            skill = float(after[f"overfit_after_{family}_return_skill/skill_vs_zero_{label}"])
+            passed_skill = math.isfinite(skill) and skill >= float(args.minimum_return_skill)
+            return_records.append({
+                "task": f"{family}/{label}", "skill_vs_zero": skill, "passed": passed_skill,
+            })
+            if not passed_skill:
+                return_violations.append(
+                    f"return/{family}/{label}: skill_vs_zero={skill:.3f} "
+                    f"requires {float(args.minimum_return_skill):.3f}"
+                )
+    return_passed = not return_violations
+    passed = loss_passed and direction_passed and return_passed
     report = {
-        "contract": "sparse-event-v4-overfit-1",
+        "contract": "sparse-event-v4-overfit-2",
         "device": str(device),
         "tickers": list(tickers),
         "blocks": len(blocks),
         "origins": sum(block.origin_indices.numel() for block in blocks),
+        "origins_per_block": int(args.origins_per_block),
+        "ar_transitions_per_view": int(args.ar_transitions_per_view),
         "steps": int(args.steps),
         "elapsed_seconds": time.perf_counter() - started,
         "loss_before": before_loss,
         "loss_after": after_loss,
         "loss_improvement": improvement,
         "minimum_loss_improvement": float(args.minimum_loss_improvement),
+        "minimum_return_skill": float(args.minimum_return_skill),
+        "minimum_direction_balanced_accuracy": float(args.minimum_direction_balanced_accuracy),
+        "minimum_direction_mcc": float(args.minimum_direction_mcc),
+        "minimum_direction_examples": int(args.minimum_direction_examples),
+        "minimum_direction_class_examples": int(args.minimum_direction_class_examples),
+        "minimum_ar_views": int(args.minimum_ar_views),
+        "loss_gate_passed": loss_passed,
+        "return_gate_passed": return_passed,
+        "direction_gate_passed": direction_passed,
+        "return_gates": return_records,
+        "direction_gates": direction_records,
+        "violations": [*return_violations, *direction_violations],
         "status": "passed" if passed else "failed",
         "before": before,
         "after": after,
@@ -178,6 +459,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"({improvement:.1%} improvement); report={destination}",
         flush=True,
     )
+    if not passed:
+        for violation in report["violations"]:
+            print(f"  FAIL {violation}", flush=True)
     return 0 if passed else 2
 
 
