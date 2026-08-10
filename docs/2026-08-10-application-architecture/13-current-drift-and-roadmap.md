@@ -29,7 +29,19 @@ The target in this package preserves strong existing authorities—QMD shared co
 
 ## 3. Implementation sequence
 
+### Current implementation constraint
+
+The immediate implementation scope is **QMD Gateway and QMD History only**.
+News, SEC, Reference, Text Intelligence, Text Embed, Model Gateway, Market AI,
+backend, frontend, Portfolio, OMS, and other working services remain unchanged.
+Their tasks below are deferred design dependencies unless a later request
+explicitly reopens them.
+
 ### Phase 0 — freeze contracts and registries
+
+In the current scope, implement only the QMD market-source/product/capability
+registry fragments and their documentation. Cross-service registry population
+and frontend generation remain deferred.
 
 1. Establish machine-readable schemas for services, market sources, fields/enrichments, capabilities, containers and trading configuration objects.
 2. Assign stable IDs, owners, versions and current implementation status.
@@ -45,10 +57,19 @@ The target in this package preserves strong existing authorities—QMD shared co
 3. Make QMD History use the same normalizer/computation/bar contracts.
 4. Gate retention on archive coverage verification.
 5. Make daily-session bars the historical base for weekly/monthly/yearly aggregation; append partial current daily state explicitly.
+6. Stabilize the QMD live compact-event/ticker-snapshot consumer contracts used
+   by Market AI without changing Market AI.
+7. Add a bounded QMD History market-product/replay contract suitable for future
+   Market AI consumption, including source-plan hash, coverage, continuation,
+   product/calculation versions, and causal cutoff.
+8. Define parity tests showing that an approved direct ClickHouse event read
+   using QMD-owned decoding matches the equivalent QMD History result.
 
 **Gate:** boundary-spanning queries are duplicate-free, gap-explicit and parity-tested across restarts and market days.
 
 ### Phase 2 — centralize enrichment
+
+**Deferred while intelligence and other service work is underway.**
 
 1. Populate the complete field registry from Reference table groups, publications, SEC, News, market statistics and approved models.
 2. Move SQL/table knowledge into versioned query plans.
@@ -58,6 +79,8 @@ The target in this package preserves strong existing authorities—QMD shared co
 **Gate:** scanner/watchlist/chart/strategy request the same field ID and receive the same as-of value/version.
 
 ### Phase 3 — enforce the computation funnel
+
+**Deferred except for QMD-owned capability metadata needed by Phase 1.**
 
 1. Register universal/core/watchlist/strategy/request/offline capabilities.
 2. Add dependency DAG, warm-up, state, cost and scope validation.
@@ -69,6 +92,8 @@ The target in this package preserves strong existing authorities—QMD shared co
 
 ### Phase 4 — unify Canvas and charts
 
+**Deferred; no frontend or backend changes in the current scope.**
+
 1. Publish versioned container schemas/defaults from Canvas Configuration.
 2. Make Live, Replay, Backtest and research workspaces instantiate those defaults plus user overlays.
 3. Implement progressive chart base-series/indicator loading through unified QMD routing.
@@ -78,6 +103,8 @@ The target in this package preserves strong existing authorities—QMD shared co
 **Gate:** the same saved workspace operates in each compatible mode, with explicit mode/account isolation and smooth boundary-spanning charts.
 
 ### Phase 5 — converge trading runtimes
+
+**Deferred; no trading-service changes in the current scope.**
 
 1. Complete the configuration compiler and immutable Run Plan.
 2. Make Replay the parity benchmark; migrate Live and implement Backtest using shared state machines.
@@ -89,6 +116,8 @@ The target in this package preserves strong existing authorities—QMD shared co
 
 ### Phase 6 — standardize intelligence and model integration
 
+**Deferred until the undergoing intelligence work stabilizes.**
+
 1. Emit validated domain events/FeatureUpdates from Reference, News, SEC, Text Intelligence and model services.
 2. Enforce causal `available_at`, identity and revision lineage in Replay/Backtest.
 3. Create application-wide artifact/promotion records and capability bindings.
@@ -97,6 +126,9 @@ The target in this package preserves strong existing authorities—QMD shared co
 **Gate:** no model or intelligence feature enters a strategy without a registered version, causal input contract, expiry and failure policy.
 
 ### Phase 7 — operations, migration, and retirement
+
+Only QMD/QMD History validation and operational documentation are in the
+current scope. Cross-service migrations and retirements are deferred.
 
 1. Standardize readiness/coverage endpoints and central operations view.
 2. Add representative load, boundary, restart, race and browser validation suites.

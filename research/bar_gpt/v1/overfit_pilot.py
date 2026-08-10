@@ -29,7 +29,7 @@ from research.bar_gpt.v1.targets import DIRECTION_TARGET_COUNT, DIRECTION_TARGET
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Deliberately overfit a tiny certified v5 pilot panel before the full shard build."
+        description="Deliberately overfit a tiny certified v6 pilot panel before the full shard build."
     )
     parser.add_argument("--shard-root", type=Path, default=DEFAULT_PILOT_ROOT)
     parser.add_argument("--tickers", default="AAPL,GOOGL")

@@ -72,6 +72,20 @@ Model outputs require:
 
 Market AI may synthesize market, news, filing, reference, portfolio and model evidence into a hypothesis. A hypothesis is structured, time-bounded and evidence-linked. It is never a broker command and never bypasses deterministic risk.
 
+```mermaid
+flowchart TD
+    A["Live QMD compact events and snapshots"] --> D["Market AI frozen market context"]
+    B["QMD History causal historical products"] --> D
+    C["Bounded direct ClickHouse contextual reads"] --> D
+    D --> E["Model Gateway inference"]
+    E --> F["Versioned expiring hypothesis"]
+```
+
+QMD Gateway is the live market-data path. QMD History is the preferred
+historical/replay market-product path. Direct ClickHouse access is permitted for
+bounded, registered point-in-time context and approved bulk reads; it must not
+fork event normalization or QMD calculations.
+
 If a strategy is explicitly approved to consume an AI feature, that feature enters through the observation contract with declared freshness, expiry, required/optional status and fallback. Conversational text is not a strategy input.
 
 ## 7. Causal correctness across modes
@@ -86,6 +100,17 @@ Identity resolution follows the same rule. A current ticker or current issuer ma
 - Scanner code contains direct per-domain query knowledge that belongs in the registered enrichment query plans.
 - Some older service documentation understates active Text Intelligence and newer AI surfaces.
 - Model/AI drafts need explicit artifact promotion, expiry, evidence and strategy-observation contracts before they can participate in trading.
+- Market AI already has live QMD and direct ClickHouse seams, but its historical
+  replay path is not yet integrated with QMD History's unified source plan.
+
+## 9. Scheduling constraint
+
+Intelligence work is currently undergoing separate changes. Therefore the
+immediate architecture implementation changes only QMD Gateway and QMD History
+contracts. Market AI, News, SEC, Text Intelligence, Text Embed, Model Gateway,
+Reference, backend, and frontend integration work is deferred until those
+authorities stabilize. Existing working services must not be refactored merely
+to satisfy the target diagram.
 
 ---
 
