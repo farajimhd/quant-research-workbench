@@ -719,6 +719,41 @@ but the model-facing as-of index remains `-1` until the complete 90/52/24
 daily/weekly/monthly context exists. The audit rejects any partially populated
 calendar view that is accidentally exposed as available.
 
+Two complementary read-only data audits cover the stored training contract.
+The automatic audit selects two deterministic pseudo-random certified shards,
+scans their complete stored tensor payloads, inspects random block target
+distributions, and reconstructs two exact blocks through the production
+bounded ClickHouse loader:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_audit_shard_data
+```
+
+The reconstruction compares every model-ready view, origin/as-of index,
+autoregressive target and mask, and physical-horizon target and mask. Integer
+and Boolean tensors must match exactly; recomputed floating tensors use a
+documented `1e-6` absolute/relative tolerance while retaining exact-difference
+counts and maximum error in the report. Any out-of-tolerance difference fails
+the run. The report also records neutral and directional
+class balance, extreme endpoint returns, and midpoint/trade reference-source
+switch rates as explicit heuristic warnings. Reports are written beneath
+`D:\TradingML\runtimes\bar_gpt\v1\shard_data_audits`; neither ClickHouse nor
+the immutable shard catalog is modified. Use `--tickers AAPL,GOOGL` to constrain
+identity, `--seed` to choose another reproducible sample, and
+`--clickhouse-samples 0` for a shard-only audit when ClickHouse is unavailable.
+Full SHA-256 verification is enabled by default and intentionally rereads every
+byte of the selected shard files; `--no-verify-sha256` is only a faster bounded
+diagnostic.
+
+For manual review, open `audit_shard_sample.ipynb` on the workstation. It loads
+one deterministic random real shard block and one random origin, then displays
+the complete context geometry, the last visible rows and all named input
+features for every view, physical-horizon targets and masks, and autoregressive
+targets. Set its optional `CHECKPOINT` path to place q10/q50/q90 endpoint-return
+predictions and direction probabilities beside the stored targets. The notebook
+is read-only and does not contact ClickHouse; use the automatic report for the
+independent raw-authority comparison.
+
 To add only the repaired GOOGL Class A identity to an existing compatible
 catalog, use `--selection all`; the named `train` and `validation` selections
 intentionally expand to their complete predefined universes:

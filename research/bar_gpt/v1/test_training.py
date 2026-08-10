@@ -45,6 +45,14 @@ from research.bar_gpt.v1.loader import (
     worker_ticker_shards,
 )
 from research.bar_gpt.v1.sampling import CoverageCursor, SESSION_PHASES, coverage_plan_summary, select_stratified_examples
+from research.bar_gpt.v1.shard_data_audit import (
+    AuditBlockRef,
+    LoadedAuditSample,
+    compare_loaded_to_clickhouse,
+    selected_autoregressive_targets,
+    selected_targets,
+    target_diagnostics,
+)
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
 from research.bar_gpt.v1.integration import PackedBarEmbeddingAdapter
 from research.bar_gpt.v1.metrics import ValidationAccumulator
@@ -981,6 +989,26 @@ class LoaderTrainerContractTest(unittest.TestCase):
             evidence = write_unit(Path(directory), payload, certify_hash=True)
             shard = load_shard(Path(evidence["path"]), verify_sha256=evidence["sha256"])
             compiled = [materialize_block(shard, 0, index) for index in range(len(examples))]
+            first_ref = AuditBlockRef(
+                unit_key="AAA:2026-01",
+                session_index=0,
+                block_index=0,
+                ticker="AAA",
+                local_date="2026-01-02",
+                block_offset=0,
+            )
+            sample = LoadedAuditSample(
+                ref=first_ref,
+                shard=shard,
+                session=shard["sessions"][0],
+                stored_block=shard["sessions"][0]["blocks"][0],
+                block=compiled[0],
+            )
+            comparison = compare_loaded_to_clickhouse(sample, examples[0], data_config=config)
+            self.assertTrue(comparison["match"], comparison["failed"])
+            self.assertEqual(len(selected_targets(sample, 0, config)), len(config.horizons_us))
+            self.assertEqual(len(selected_autoregressive_targets(sample, 0)), len(TIMEFRAME_US_BY_NAME) - 3)
+            self.assertEqual(set(target_diagnostics(sample, config)), {f"{value // 1_000_000}s" for value in config.horizons_us})
             cached_batch = collate_compiled_blocks(
                 compiled, horizons_us=config.horizons_us, base_timeframe_us=config.base_timeframe_us,
             ).to("cpu", non_blocking=False)
