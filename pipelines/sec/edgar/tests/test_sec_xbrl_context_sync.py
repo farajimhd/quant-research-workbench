@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from services.gateway_core.dashboard import configured_tables
 from services.gateway_core.rich_renderer import metric_label
 from services.sec_gateway import gateway as sec_gateway_module
 from services.sec_gateway.gateway import SecGateway
+from services.sec_gateway.config import WORKSTATION_ARCHIVE_FALLBACK_ROOT_WIN
 
 
 class SecXbrlContextSyncTests(unittest.TestCase):
@@ -389,6 +391,28 @@ class SecXbrlContextSyncTests(unittest.TestCase):
             Path("D:/TradingML/runtimes/sec_gateway/manual_gap_fill/run-1/run.ps1"),
         )
         self.assertNotIn("codes", str(share_root).lower())
+        self.assertEqual(
+            WORKSTATION_ARCHIVE_FALLBACK_ROOT_WIN,
+            Path("G:/market-data/sec_core/daily_archives"),
+        )
+
+    def test_gateway_historical_script_includes_permanent_archive_fallback(self) -> None:
+        with mock.patch.dict("os.environ", {}, clear=False):
+            args = sec_gateway_module.workstation_archive_fallback_args()
+
+        self.assertEqual(
+            args,
+            ["--archive-fallback-root-win", "G:\\market-data\\sec_core\\daily_archives"],
+        )
+
+    def test_gateway_historical_archive_fallback_can_be_overridden(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {"SEC_GATEWAY_WORKSTATION_ARCHIVE_FALLBACK_ROOT_WIN": "H:/sec/archive"},
+        ):
+            args = sec_gateway_module.workstation_archive_fallback_args()
+
+        self.assertEqual(args, ["--archive-fallback-root-win", "H:/sec/archive"])
 
     def test_packed_model_defaults_to_v3_xbrl_context(self) -> None:
         self.assertEqual(PackedContextConfig().sec_xbrl_context_table, "sec_xbrl_context_v3")

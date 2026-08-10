@@ -72,12 +72,14 @@ If a required stage fails after earlier stages completed, resume from that
 explicit lifecycle boundary rather than repeating successful work:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --finalize-only --start-stage archive-identity-repair --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --finalize-only --start-stage archive-identity-repair --archive-fallback-root-win G:/market-data/sec_core/daily_archives --execute
 ```
 
 `--start-stage` retains the selected lifecycle order and runs the named stage
 plus every downstream stage. It fails before execution when the requested stage
 does not belong to the full or `--finalize-only` lifecycle.
+`--archive-fallback-root-win` is used only when the recorded archive file is
+absent; valid recent paths remain on their recorded root.
 
 Finalization scans both daily gzip archives and retained live-accession
 `.txt`/`.nc` submissions through the same source-reader contract. Tagged and

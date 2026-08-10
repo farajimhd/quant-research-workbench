@@ -84,12 +84,17 @@ A stopped lifecycle can resume at a verified stage boundary with
 can be resumed with:
 
 ```powershell
-python sec_historical_gap_fill.py --finalize-only --start-stage archive-identity-repair --execute
+python sec_historical_gap_fill.py --finalize-only --start-stage archive-identity-repair --archive-fallback-root-win G:/market-data/sec_core/daily_archives --execute
 ```
 
 The named stage and all downstream stages run in their original order; earlier
 successful stages are not repeated. An unknown stage or a stage excluded by
 `--finalize-only` fails before any subprocess starts.
+Identity repair and audit first use each recorded `source_archive_path`. If that
+file has moved, `--archive-fallback-root-win` preserves the suffix below
+`daily_archives` and resolves it under the permanent archive root. This supports
+an SSD root containing recent archives alongside an HDD root containing older
+archives without redirecting valid recent paths.
 
 ## Finalizer Lifecycle
 

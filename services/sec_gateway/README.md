@@ -187,6 +187,13 @@ through the workstation share:
 
 The terminal still reports the workstation-local `D:/TradingML/...` path, so
 the command can be copied into a workstation PowerShell session without editing.
+Generated commands keep recent archive acquisition on `D:/market-data`, while
+passing `G:/market-data/sec_core/daily_archives` as the permanent archive
+fallback for identity repair and audit. A recorded archive path is used when it
+still exists; the `G:` fallback is consulted only after that path is missing.
+Override the generated fallback with
+`SEC_GATEWAY_WORKSTATION_ARCHIVE_FALLBACK_ROOT_WIN` when the permanent archive
+store moves.
 
 Before writing the script, the gateway syncs the historical-fill runtime
 dependencies from the current repo into the workstation code root:

@@ -167,6 +167,20 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(args.bulk_ingest_batch_size, 43210)
         self.assertEqual(command[command.index("--batch-size") + 1], "43210")
 
+    def test_historical_identity_stages_receive_archive_fallback_root(self) -> None:
+        fallback = "G:/market-data/sec_core/daily_archives"
+        with mock.patch.object(
+            sys,
+            "argv",
+            ["sec_historical_gap_fill.py", "--archive-fallback-root-win", fallback],
+        ):
+            args = historical.parse_args()
+
+        commands = {command.stage: command.command for command in historical.build_commands(args, Path("logs"))}
+        for stage in ("archive-identity-repair", "archive-identity-audit"):
+            index = commands[stage].index("--archive-fallback-root-win") + 1
+            self.assertEqual(commands[stage][index], fallback)
+
     def test_acceptance_repair_executes_only_in_execute_mode(self) -> None:
         command = ["python", "sec_acceptance_raw_metadata_repair.py"]
 
@@ -448,6 +462,28 @@ ISSUER:
         self.assertEqual(result["mismatched"], 1)
         self.assertEqual(result["mismatches"][0]["sgml_cik"], "0000320335")
         self.assertEqual(result["mismatches"][0]["source_version_key"], "live-version")
+
+    def test_archive_identity_audit_falls_back_only_when_recorded_daily_archive_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fallback_root = root / "permanent" / "daily_archives"
+            fallback_archive = fallback_root / "2020" / "QTR1" / "20200218.nc.tar.gz"
+            fallback_archive.parent.mkdir(parents=True)
+            fallback_archive.write_bytes(b"archive")
+            stored_missing = "D:/market-data/sec_core/daily_archives/2020/QTR1/20200218.nc.tar.gz"
+
+            self.assertEqual(
+                archive_identity.resolve_archive_path(stored_missing, str(fallback_root)),
+                str(fallback_archive),
+            )
+
+            recorded_archive = root / "recorded" / "daily_archives" / "2026" / "QTR3" / "20260807.nc.tar.gz"
+            recorded_archive.parent.mkdir(parents=True)
+            recorded_archive.write_bytes(b"archive")
+            self.assertEqual(
+                archive_identity.resolve_archive_path(str(recorded_archive), str(fallback_root)),
+                str(recorded_archive),
+            )
 
     def test_identity_repair_deletes_document_key_last(self) -> None:
         self.assertEqual(identity_repair.DOCUMENT_TABLES_CHILD_FIRST[-1], "sec_filing_document_v3")

@@ -45,6 +45,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--submissions-table", default="sec_bulk_mirror_filing_v3")
     parser.add_argument("--submissions-overlay-table", default="sec_submissions_filing_overlay_v3")
     parser.add_argument("--output-root-win", default="D:/market-data/prepared/sec_archive_identity_audit")
+    parser.add_argument(
+        "--archive-fallback-root-win",
+        default=os.environ.get("SEC_ARCHIVE_FALLBACK_ROOT_WIN", ""),
+        help=(
+            "Optional daily_archives root used only when a stored source_archive_path no longer exists. "
+            "The suffix below daily_archives is preserved."
+        ),
+    )
     parser.add_argument("--workers", type=int, default=32)
     return parser.parse_args()
 
@@ -69,7 +77,10 @@ def main() -> int:
     print(f"archives={len(grouped):,} relationships={len(rows):,} workers={args.workers}", flush=True)
     with results_path.open("w", encoding="utf-8") as output:
         with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
-            futures = [executor.submit(audit_archive, archive_path, wanted) for archive_path, wanted in sorted(grouped.items())]
+            futures = [
+                executor.submit(audit_archive, archive_path, wanted, args.archive_fallback_root_win)
+                for archive_path, wanted in sorted(grouped.items())
+            ]
             for completed, future in enumerate(concurrent.futures.as_completed(futures), start=1):
                 result = future.result()
                 output.write(json.dumps(result, separators=(",", ":"), sort_keys=True) + "\n")
@@ -139,9 +150,15 @@ def group_unconfirmed_identities(rows: list[dict[str, str]]) -> dict[str, dict[s
     return {archive_path: dict(members) for archive_path, members in grouped.items()}
 
 
-def audit_archive(archive_path: str, wanted: dict[str, list[dict[str, str]] | dict[str, str]]) -> dict[str, Any]:
+def audit_archive(
+    archive_path: str,
+    wanted: dict[str, list[dict[str, str]] | dict[str, str]],
+    archive_fallback_root_win: str = "",
+) -> dict[str, Any]:
+    resolved_archive_path = resolve_archive_path(archive_path, archive_fallback_root_win)
     result: dict[str, Any] = {
-        "archive_path": archive_path,
+        "archive_path": resolved_archive_path,
+        "source_archive_path": archive_path,
         "wanted": len(wanted),
         "matched": 0,
         "mismatched": 0,
@@ -152,7 +169,7 @@ def audit_archive(archive_path: str, wanted: dict[str, list[dict[str, str]] | di
     }
     found: set[str] = set()
     try:
-        with open_sec_source(Path(archive_path)) as archive:
+        with open_sec_source(Path(resolved_archive_path)) as archive:
             for member in archive:
                 key = member.name.lstrip("./")
                 expected_values = wanted.get(key)
@@ -195,6 +212,22 @@ def audit_archive(archive_path: str, wanted: dict[str, list[dict[str, str]] | di
         result["missing"] = sum(len(values) if isinstance(values, list) else 1 for values in wanted.values())
         result["error"] = repr(exc)
     return result
+
+
+def resolve_archive_path(archive_path: str, fallback_root_win: str) -> str:
+    """Resolve a relocated daily archive without changing valid stored paths."""
+    source = Path(archive_path)
+    if source.is_file() or not fallback_root_win.strip():
+        return archive_path
+    normalized = archive_path.replace("\\", "/")
+    marker = "/daily_archives/"
+    marker_index = normalized.lower().rfind(marker)
+    if marker_index < 0:
+        return archive_path
+    relative = normalized[marker_index + len(marker) :]
+    if not relative:
+        return archive_path
+    return str(Path(fallback_root_win).joinpath(*relative.split("/")))
 
 
 def table_exists(client: ClickHouseHttpClient, database: str, name: str) -> bool:

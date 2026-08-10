@@ -16,6 +16,7 @@ WORKSTATION_CODE_ROOT_WIN = Path("D:/TradingML/codes/quant_research_workbench_pi
 WORKSTATION_SHARE_CODE_ROOT_WIN = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines")
 WORKSTATION_RUNTIME_ROOT_WIN = Path("D:/TradingML/runtimes")
 WORKSTATION_SHARE_RUNTIME_ROOT_WIN = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes")
+WORKSTATION_ARCHIVE_FALLBACK_ROOT_WIN = Path("G:/market-data/sec_core/daily_archives")
 
 
 @dataclass(frozen=True, slots=True)

@@ -62,6 +62,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--submissions-overlay-table", default="sec_submissions_filing_overlay_v3")
     parser.add_argument("--model-database", default="market_sip_compact")
     parser.add_argument("--output-root-win", default="D:/market-data/prepared/sec_archive_identity_repair")
+    parser.add_argument(
+        "--archive-fallback-root-win",
+        default=os.environ.get("SEC_ARCHIVE_FALLBACK_ROOT_WIN", ""),
+        help=(
+            "Optional daily_archives root used only when a stored source_archive_path no longer exists. "
+            "The suffix below daily_archives is preserved."
+        ),
+    )
     parser.add_argument("--parts-root-win", default=os.environ.get("SEC_TEXT_PARTS_ROOT_WIN", "D:/market-data"))
     parser.add_argument("--parts-root-ch", default=os.environ.get("SEC_TEXT_PARTS_ROOT_CH", "/mnt/d/market-data"))
     parser.add_argument("--workers", type=int, default=32)
@@ -88,6 +96,10 @@ def main() -> int:
     ensure_sec_write_database(client, read_database=args.database, write_database=args.database)
     extraction_candidates, discovery = discover_mismatches(client, args)
     recovery_candidates = discover_interrupted_cleanup_candidates(client, args)
+    for row in recovery_candidates:
+        row["archive_path"] = identity_audit.resolve_archive_path(
+            str(row["archive_path"]), args.archive_fallback_root_win
+        )
     extraction_keys = {
         (str(row["stored_cik"]), str(row["stored_accession"]), str(row["source_version_key"]))
         for row in extraction_candidates
@@ -180,7 +192,12 @@ def discover_mismatches(client: ClickHouseHttpClient, args: argparse.Namespace) 
     totals = {"archives": len(grouped), "relationships": len(rows), "matched": 0, "mismatched": 0, "missing": 0, "archive_errors": 0}
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:
         futures = {
-            pool.submit(identity_audit.audit_archive, archive_path, wanted): archive_path
+            pool.submit(
+                identity_audit.audit_archive,
+                archive_path,
+                wanted,
+                args.archive_fallback_root_win,
+            ): archive_path
             for archive_path, wanted in sorted(grouped.items())
         }
         for future in concurrent.futures.as_completed(futures):

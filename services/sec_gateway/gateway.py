@@ -39,6 +39,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.run_logger import AsyncRunLogger
 from services.sec_gateway.config import (
     SecGatewayConfig,
+    WORKSTATION_ARCHIVE_FALLBACK_ROOT_WIN,
     WORKSTATION_RUNTIME_ROOT_WIN,
     WORKSTATION_SHARE_CODE_ROOT_WIN,
     WORKSTATION_SHARE_RUNTIME_ROOT_WIN,
@@ -558,6 +559,7 @@ class SecGateway:
                     os.environ.get("SEC_BULK_MIRROR_DATABASE", "sec_core"),
                     "--artifact-root-win",
                     str(artifact_root),
+                    *workstation_archive_fallback_args(),
                     "--core-output-root-win",
                     str(prepared_root / "sec_core"),
                     "--output-root-win",
@@ -1134,6 +1136,16 @@ def workstation_script_data_root(config: SecGatewayConfig) -> Path:
     if config.is_workstation:
         return config.pipeline.data_root_win
     return Path("D:/market-data")
+
+
+def workstation_archive_fallback_args() -> list[str]:
+    root = os.environ.get(
+        "SEC_GATEWAY_WORKSTATION_ARCHIVE_FALLBACK_ROOT_WIN",
+        str(WORKSTATION_ARCHIVE_FALLBACK_ROOT_WIN),
+    ).strip()
+    if not root:
+        raise RuntimeError("SEC gateway historical scripts require a workstation archive fallback root.")
+    return ["--archive-fallback-root-win", root]
 
 
 def live_pending_source_reasons(rows: Any, *, expected_facts: int) -> list[str]:

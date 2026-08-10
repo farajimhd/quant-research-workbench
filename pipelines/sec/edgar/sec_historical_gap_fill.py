@@ -321,6 +321,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coverage-table", default=env_string("SEC_COVERAGE_TABLE", "sec_coverage_manifest_v3"))
     parser.add_argument("--bulk-mirror-database", default=env_string("SEC_BULK_MIRROR_DATABASE", "sec_core"))
     parser.add_argument("--artifact-root-win", default=env_string("SEC_CORE_ARTIFACT_ROOT_WIN", "D:/market-data/sec_core"))
+    parser.add_argument(
+        "--archive-fallback-root-win",
+        default=env_string("SEC_ARCHIVE_FALLBACK_ROOT_WIN", ""),
+        help=(
+            "Optional permanent daily_archives root used by identity repair and audit when a stored "
+            "source_archive_path is no longer present at its recorded location."
+        ),
+    )
     parser.add_argument("--core-output-root-win", default=env_string("SEC_CORE_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_core"))
     parser.add_argument("--output-root-win", default=env_string("SEC_HISTORICAL_GAP_FILL_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument("--daily-archive-output-root-win", default=env_string("SEC_DAILY_FEED_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_daily_feed_archives"))
@@ -933,6 +941,8 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     args.bulk_mirror_database,
                     "--output-root-win",
                     str(Path(args.core_output_root_win) / "sec_archive_identity_repair"),
+                    "--archive-fallback-root-win",
+                    args.archive_fallback_root_win,
                     "--parts-root-win",
                     args.parts_root_win,
                     "--parts-root-ch",
@@ -957,6 +967,8 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                 args.bulk_mirror_database,
                 "--output-root-win",
                 str(Path(args.core_output_root_win) / "sec_archive_identity_audit"),
+                "--archive-fallback-root-win",
+                args.archive_fallback_root_win,
                 "--workers",
                 str(max(1, args.text_extract_workers)),
             ],
