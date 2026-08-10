@@ -1,6 +1,7 @@
 param([string]$Bind = "127.0.0.1:8803", [switch]$CheckOnly)
 
 $ErrorActionPreference = "Stop"
+$env:PYTHONDONTWRITEBYTECODE = "1"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 $env:MARKET_AI_BIND = $Bind

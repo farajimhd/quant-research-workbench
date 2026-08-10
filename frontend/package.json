@@ -4,10 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "guard:external-runtime": "node scripts/assert_external_runtime.mjs",
+    "preinstall": "npm run guard:external-runtime",
+    "predev": "npm run guard:external-runtime",
     "dev": "vite",
+    "prebuild": "npm run guard:external-runtime",
     "build": "tsc --noEmit && vite build",
+    "prepreview": "npm run guard:external-runtime",
     "preview": "vite preview",
+    "preui:review": "npm run guard:external-runtime",
     "ui:review": "python scripts/ui_review.py",
+    "preui:review:full": "npm run guard:external-runtime",
     "ui:review:full": "python scripts/ui_review.py --mode full"
   },
   "dependencies": {

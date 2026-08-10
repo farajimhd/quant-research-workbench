@@ -16,6 +16,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$env:PYTHONDONTWRITEBYTECODE = "1"
 
 $invokedRepoRoot = Split-Path -Parent $PSScriptRoot
 $authorityHelper = Join-Path $PSScriptRoot "repository_code_authority.ps1"

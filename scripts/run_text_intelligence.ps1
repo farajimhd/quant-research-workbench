@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$env:PYTHONDONTWRITEBYTECODE = "1"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $serviceDir = Join-Path $repoRoot "services\text-intelligence"
 $env:PYTHONPATH = if ($env:PYTHONPATH) { "$repoRoot;$env:PYTHONPATH" } else { $repoRoot }

@@ -20,6 +20,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$env:PYTHONDONTWRITEBYTECODE = "1"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $qmdLauncher = Join-Path $PSScriptRoot "run_qmd_history_gateway.ps1"

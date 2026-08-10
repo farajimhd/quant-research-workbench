@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$env:PYTHONDONTWRITEBYTECODE = "1"
 $repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $manifest = Join-Path $repoRoot "services\qmd-gateway\Cargo.toml"
 $serviceDir = Split-Path -Parent $manifest

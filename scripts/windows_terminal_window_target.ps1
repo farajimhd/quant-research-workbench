@@ -1,3 +1,5 @@
+$env:PYTHONDONTWRITEBYTECODE = "1"
+
 function Get-WindowsTerminalCallerWindow {
     param([string]$PythonExecutable)
 

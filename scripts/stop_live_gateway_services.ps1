@@ -18,6 +18,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$env:PYTHONDONTWRITEBYTECODE = "1"
 
 Import-Module CimCmdlets -ErrorAction Stop
 

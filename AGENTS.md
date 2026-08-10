@@ -15,6 +15,7 @@
 - Workstation secrets: `\\DESKTOP-SAAI85T\Workstation-D\TradingML\secrets`; never copy secrets into code, artifacts, logs, manifests, or prompts.
 - Make and validate code changes in the laptop repository first. Synchronize workstation code only after commit and push.
 - Never store logs, screenshots, plots, caches, checkpoints, metrics, manifests, prepared data, downloaded dependencies, or other generated output in the repository.
+- Set `PYTHONDONTWRITEBYTECODE=1` for every repository Python invocation; Python launchers must set it themselves so `__pycache__` never appears in source.
 - If the required runtime root is unavailable, stop and request access; do not write to an alternate location.
 
 ## Change discipline
