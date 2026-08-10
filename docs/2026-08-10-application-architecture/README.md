@@ -36,6 +36,7 @@ Every detailed document uses these labels:
 11. [Research, training, and model promotion](11-research-and-model-lifecycle.md)
 12. [Operations, reliability, security, and validation](12-operations-reliability-and-security.md)
 13. [Current drift and implementation roadmap](13-current-drift-and-roadmap.md)
+14. [Complete implementation backlog](14-implementation-backlog.md)
 
 ## Complete application at a glance
 

@@ -1,6 +1,6 @@
 # Current drift and implementation roadmap
 
-[Top](README.md) · [Previous](12-operations-reliability-and-security.md) · [First](01-product-and-principles.md)
+[Top](README.md) · [Previous](12-operations-reliability-and-security.md) · [Next](14-implementation-backlog.md)
 
 ## 1. Verdict
 
@@ -198,4 +198,4 @@ These choices affect implementation, but they do not change the authority bounda
 
 ---
 
-[Top](README.md) · [Previous](12-operations-reliability-and-security.md) · [First](01-product-and-principles.md)
+[Top](README.md) · [Previous](12-operations-reliability-and-security.md) · [Next](14-implementation-backlog.md)
