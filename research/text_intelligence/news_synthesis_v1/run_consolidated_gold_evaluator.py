@@ -47,7 +47,10 @@ def main() -> int:
         type=Path,
         action="append",
         required=True,
-        help="Repeat for every authoritative runtime source artifact used.",
+        help=(
+            "Repeat for each explicitly designated runtime JSON/JSONL artifact or "
+            "narrow source directory; directories are expanded recursively."
+        ),
     )
     certify_sources.add_argument("--output-manifest", type=Path, required=True)
 

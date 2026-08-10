@@ -296,9 +296,25 @@ def certify_source_catalog(
     artifact_rows = []
     artifact_record_hashes: dict[str, set[str]] = {}
     seen_artifacts: set[Path] = set()
-    for raw_path in source_artifacts:
-        path = raw_path.resolve()
-        _require_within(path, runtime_root)
+    declared_paths = [path.resolve() for path in source_artifacts]
+    for declared in declared_paths:
+        _require_within(declared, runtime_root)
+        if not declared.exists():
+            raise RuntimeError(f"Declared source artifact does not exist: {declared}")
+    expanded_paths = sorted({
+        path
+        for declared in declared_paths
+        for path in (
+            (
+                candidate.resolve()
+                for candidate in declared.rglob("*")
+                if candidate.is_file() and candidate.suffix.lower() in {".json", ".jsonl"}
+            )
+            if declared.is_dir()
+            else (declared,)
+        )
+    })
+    for path in expanded_paths:
         if path in seen_artifacts:
             continue
         seen_artifacts.add(path)
