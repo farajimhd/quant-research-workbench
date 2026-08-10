@@ -3547,6 +3547,58 @@
 .configuration-section-guided .guided-question-list,
 .configuration-section-guided .guided-running-summary,
 .configuration-section-guided .guided-navigation { margin-left: auto; margin-right: auto; width: min(100%, var(--configuration-reading-max)); }
+.configuration-section-guided .configuration-guided-drilldown .guided-question-surface {
+  width: min(100%, var(--configuration-reading-max));
+}
+.configuration-guided-flow-title {
+  align-content: center;
+  border-bottom: 1px solid var(--configuration-rule);
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 5px 12px 8px;
+  text-align: center;
+}
+.configuration-guided-flow-title > span {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: .075em;
+  text-transform: uppercase;
+}
+.configuration-guided-flow-title > strong {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.configuration-guided-drilldown-layout {
+  gap: clamp(24px, 3vw, 42px);
+  grid-template-columns: minmax(0, 1fr) clamp(170px, 18%, 220px);
+  width: 100%;
+}
+.configuration-section-guided .configuration-guided-drilldown-layout > .guided-question-list {
+  margin: 0;
+  min-width: 0;
+  width: 100%;
+}
+.configuration-section-guided .configuration-guided-drilldown-layout .guided-question {
+  padding-left: 0;
+  padding-right: 0;
+}
+.configuration-guided-drilldown-navigation {
+  max-height: min(64vh, 620px);
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+.configuration-guided-drilldown-navigation button > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .configuration-section-catalog { margin-top: 2px; }
 .configuration-section-catalog .strategy-parameter-catalog > header p { color: var(--muted-foreground); font-size: 10px; line-height: 1.45; margin: 0; }
 .configuration-section-catalog .strategy-parameter-detail-page > header > span { color: var(--muted-foreground); font-family: var(--font-mono); font-size: 9px; font-weight: 720; letter-spacing: .08em; text-transform: uppercase; }
@@ -3578,6 +3630,16 @@
   .strategy-editor-mode-tabs button { flex: 1; justify-content: center; }
   .configuration-section-toolbar-actions > .button { flex: 1; justify-content: center; }
   .configuration-list-field .configuration-mode-selector { grid-template-columns: 1fr; }
+  .configuration-guided-drilldown-layout { grid-template-columns: 1fr; }
+  .configuration-guided-drilldown-navigation {
+    display: grid;
+    grid-auto-columns: minmax(118px, 1fr);
+    grid-auto-flow: column;
+    max-height: none;
+    order: -1;
+    overflow-x: auto;
+  }
+  .configuration-guided-drilldown-navigation::before { display: none; }
 }
 
 /* Reading-first typography trial. Deliberately scoped to the application sidebar
