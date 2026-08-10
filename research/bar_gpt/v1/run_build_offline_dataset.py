@@ -7,14 +7,14 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS
+from research.bar_gpt.v1.cohort import BAR_GPT_COHORT_2TB
 
 
 TRAIN_START_DATE = "2019-01-01"
 TRAIN_END_DATE = "2022-01-01"
 VALIDATION_START_DATE = "2026-01-01"
 VALIDATION_END_DATE = "2026-08-01"
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -45,7 +45,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
-    tickers = ",".join(BAR_GPT_TRAINING_TICKERS)
+    # Build the complete selected 100-symbol data authority. Training/holdout
+    # selection remains a downstream experiment concern and must not mutate it.
+    tickers = ",".join(BAR_GPT_COHORT_2TB)
 
     def condition_command(start_date: str, end_date: str) -> list[str]:
         return [
@@ -74,7 +76,9 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
             "--output-root",
             str(args.output_root),
             "--selection",
-            selection,
+            "all",
+            "--tickers",
+            tickers,
             "--start-date",
             start_date,
             "--end-date",

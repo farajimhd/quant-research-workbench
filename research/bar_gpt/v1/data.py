@@ -112,14 +112,20 @@ class BarGPTExample:
     local_date: str
     raw_views: dict[str, torch.Tensor]
     raw_view_start_us: dict[str, torch.Tensor]
+    raw_view_end_us: dict[str, torch.Tensor]
     raw_view_available_at_us: dict[str, torch.Tensor]
     origin_indices: torch.Tensor
     origin_timestamps_us: torch.Tensor
     asof_indices: dict[str, torch.Tensor]
     target_support: torch.Tensor
+    target_support_available_at_us: torch.Tensor
+    target_coverage_end_us: int
     target_share_factors: torch.Tensor
+    target_condition_available_at_us: torch.Tensor
     target_condition_flags: torch.Tensor
     support_origin_indices: torch.Tensor
+    horizon_targets: torch.Tensor | None
+    horizon_mask: torch.Tensor | None
     horizons_us: tuple[int, ...]
     base_timeframe_us: int
     activity_regime: int
@@ -142,7 +148,11 @@ class BarGPTBatch:
     autoregressive_mask: dict[str, torch.Tensor]
     target_support: torch.Tensor
     target_support_lengths: torch.Tensor
+    target_support_available_at_us: torch.Tensor
+    target_coverage_end_us: torch.Tensor
     target_share_factors: torch.Tensor
+    target_condition_available_at_us: torch.Tensor
+    target_condition_lengths: torch.Tensor
     target_condition_flags: torch.Tensor
     support_origin_indices: torch.Tensor
     horizons_us: tuple[int, ...]
@@ -181,7 +191,11 @@ class BarGPTBatch:
             self.origin_mask,
             self.target_support,
             self.target_support_lengths,
+            self.target_support_available_at_us,
+            self.target_coverage_end_us,
             self.target_share_factors,
+            self.target_condition_available_at_us,
+            self.target_condition_lengths,
             self.target_condition_flags,
             self.support_origin_indices,
             self.horizon_targets,
@@ -206,7 +220,11 @@ class BarGPTBatch:
             autoregressive_mask=pin_map(self.autoregressive_mask),
             target_support=self.target_support.pin_memory(),
             target_support_lengths=self.target_support_lengths.pin_memory(),
+            target_support_available_at_us=self.target_support_available_at_us.pin_memory(),
+            target_coverage_end_us=self.target_coverage_end_us.pin_memory(),
             target_share_factors=self.target_share_factors.pin_memory(),
+            target_condition_available_at_us=self.target_condition_available_at_us.pin_memory(),
+            target_condition_lengths=self.target_condition_lengths.pin_memory(),
             target_condition_flags=self.target_condition_flags.pin_memory(),
             support_origin_indices=self.support_origin_indices.pin_memory(),
             horizons_us=self.horizons_us,
@@ -230,6 +248,10 @@ class BarGPTBatch:
         share_factors = self.target_share_factors.to(device, non_blocking=non_blocking)
         condition_flags = self.target_condition_flags.to(device, non_blocking=non_blocking)
         support_lengths = self.target_support_lengths.to(device, non_blocking=non_blocking)
+        support_available = self.target_support_available_at_us.to(device, non_blocking=non_blocking)
+        coverage_ends = self.target_coverage_end_us.to(device, non_blocking=non_blocking)
+        condition_available = self.target_condition_available_at_us.to(device, non_blocking=non_blocking)
+        condition_lengths = self.target_condition_lengths.to(device, non_blocking=non_blocking)
         support_origins = self.support_origin_indices.to(device, non_blocking=non_blocking)
         if self.horizon_targets is None or self.horizon_mask is None:
             support_length_values = self.target_support_lengths.tolist()
@@ -240,8 +262,11 @@ class BarGPTBatch:
                     support_origins[row, : int(origin_count_values[row])],
                     torch.as_tensor(self.horizons_us, dtype=torch.long, device=support.device),
                     base_timeframe_us=self.base_timeframe_us,
+                    available_at_us=support_available[row, : int(support_length_values[row])],
+                    coverage_end_us=coverage_ends[row],
                     share_factors=share_factors[row, : int(support_length_values[row])],
-                    condition_flags=condition_flags[row, : int(support_length_values[row])],
+                    condition_available_at_us=condition_available[row, : int(condition_lengths[row])],
+                    condition_flags=condition_flags[row, : int(condition_lengths[row])],
                 )
                 for row in range(support.shape[0])
             ]
@@ -260,7 +285,11 @@ class BarGPTBatch:
             autoregressive_mask=move_map(self.autoregressive_mask),
             target_support=support,
             target_support_lengths=support_lengths,
+            target_support_available_at_us=support_available,
+            target_coverage_end_us=coverage_ends,
             target_share_factors=share_factors,
+            target_condition_available_at_us=condition_available,
+            target_condition_lengths=condition_lengths,
             target_condition_flags=condition_flags,
             support_origin_indices=support_origins,
             horizons_us=self.horizons_us,
@@ -361,13 +390,27 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
         autoregressive_mask=ar_masks,
         target_support=_pad_first_dimension([example.target_support for example in examples]),
         target_support_lengths=torch.as_tensor([example.target_support.shape[0] for example in examples], dtype=torch.long),
+        target_support_available_at_us=_pad_first_dimension([example.target_support_available_at_us for example in examples]),
+        target_coverage_end_us=torch.as_tensor([example.target_coverage_end_us for example in examples], dtype=torch.long),
         target_share_factors=_pad_first_dimension([example.target_share_factors for example in examples], fill=1.0),
+        target_condition_available_at_us=_pad_first_dimension([example.target_condition_available_at_us for example in examples]),
+        target_condition_lengths=torch.as_tensor([example.target_condition_flags.shape[0] for example in examples], dtype=torch.long),
         target_condition_flags=_pad_first_dimension([example.target_condition_flags for example in examples]),
         support_origin_indices=_pad_first_dimension([example.support_origin_indices for example in examples], fill=0),
         horizons_us=examples[0].horizons_us,
         base_timeframe_us=examples[0].base_timeframe_us,
-        horizon_targets=None,
-        horizon_mask=None,
+        horizon_targets=(
+            _pad_first_dimension([example.horizon_targets for example in examples if example.horizon_targets is not None])
+            if all(example.horizon_targets is not None for example in examples)
+            else None
+        ),
+        horizon_mask=(
+            _pad_first_dimension(
+                [example.horizon_mask for example in examples if example.horizon_mask is not None], fill=False
+            )
+            if all(example.horizon_mask is not None for example in examples)
+            else None
+        ),
         sample_weights=weights,
         tickers=tuple(example.ticker for example in examples),
         local_dates=tuple(example.local_date for example in examples),

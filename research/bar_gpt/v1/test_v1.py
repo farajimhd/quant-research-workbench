@@ -445,6 +445,25 @@ class TemporalContractTest(unittest.TestCase):
         self.assertEqual(targets.values[0, 2 - 1, -4:].tolist(), [1.0, 0.0, 1.0, 0.0])
         self.assertFalse(bool(targets.mask[2, 1].any()))
 
+    def test_physical_returns_require_new_same_family_updates(self) -> None:
+        raw = self._five_seconds().features.clone()
+        for family, offset in (("bid", 0.0), ("ask", 0.1)):
+            raw[:, FEATURE_INDEX[f"{family}_present"]] = 1
+            raw[:, FEATURE_INDEX[f"{family}_close"]] = torch.arange(10.0 + offset, 15.0 + offset)
+        raw[1:3, FEATURE_INDEX["ask_present"]] = 0
+        raw[1:3, FEATURE_INDEX["ask_close"]] = 0
+        targets = build_physical_horizon_targets(
+            raw,
+            torch.tensor([0]),
+            torch.tensor([2_000_000]),
+            available_at_us=torch.arange(1, 6, dtype=torch.long) * 1_000_000,
+            coverage_end_us=5_000_000,
+        )
+        self.assertTrue(bool(targets.mask[0, 0, 0]))  # bid update
+        self.assertFalse(bool(targets.mask[0, 0, 1]))  # no ask update
+        self.assertTrue(bool(targets.mask[0, 0, 2]))  # trade update
+        self.assertEqual(float(targets.values[0, 0, 1]), 0.0)
+
     def test_sparse_storage_densifies_without_fabricating_families(self) -> None:
         base = self._five_seconds()
         sparse = BarView(

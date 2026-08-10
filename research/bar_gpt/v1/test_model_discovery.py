@@ -149,7 +149,7 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         self.assertEqual(config.origin_bars_1s, DISCOVERY_ORIGIN_BARS_1S)
         self.assertEqual(
             shard_compatibility_hash(config),
-            "69764c7c56e67856b8f8fc2a202fb1a61b2366b01387faa5e1a179d4461ce92e",
+            "48f4e2e0e54232e8d3f5f35f8ba03367dd3cb15cfd233b016052aceb56fbcc08",
         )
 
     def test_manifest_hash_survives_runtime_condition_target_masking(self) -> None:
@@ -164,8 +164,8 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         self.assertNotEqual(shard_compatibility_hash(config), certified_hash)
 
     def test_ranking_is_quality_first(self) -> None:
-        better_loss = {"validation_loss/total": 0.2, "validation_direction/mcc_macro": 0.0}
-        better_mcc = {"validation_loss/total": 0.3, "validation_direction/mcc_macro": 0.8}
+        better_loss = {"validation_loss/total": 0.2, "validation_trade_summary/mcc_macro": 0.0}
+        better_mcc = {"validation_loss/total": 0.3, "validation_trade_summary/mcc_macro": 0.8}
         self.assertLess(_ranking_key(better_loss), _ranking_key(better_mcc))
 
     def test_explicit_block_stream_is_identity_checked_and_resumable(self) -> None:

@@ -15,7 +15,7 @@ from research.bar_gpt.v1.cohort import (
     BAR_GPT_VALIDATION_SLICES_2026,
 )
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
-from research.bar_gpt.v1.targets import TARGET_NAMES
+from research.bar_gpt.v1.targets import AUTOREGRESSIVE_TARGET_NAMES, TARGET_NAMES
 
 
 BAR_GPT_WANDB_PROJECT = "bar gpt"
@@ -49,6 +49,7 @@ DEFAULT_HORIZONS_US: tuple[int, ...] = (
 class BarGPTConfig:
     feature_dim: int = len(MODEL_FEATURE_NAMES)
     target_dim: int = len(TARGET_NAMES)
+    autoregressive_target_dim: int = len(AUTOREGRESSIVE_TARGET_NAMES)
     d_model: int = 384
     n_layers: int = 8
     n_heads: int = 8
@@ -80,10 +81,9 @@ class BarGPTConfig:
 
 @dataclass(slots=True)
 class DataConfig:
-    # Versioned because worker-owned iterable cursors are not compatible with
-    # the former map-style global cursor. V5 additionally binds derived
-    # multiscale warmup and complete context at every intraday origin.
-    loader_stream_contract_version: int = 5
+    # V6 is the sparse-event contract: only nonempty completed bars are
+    # context/origins, while prediction horizons remain physical time.
+    loader_stream_contract_version: int = 6
     database: str = "market_sip_compact"
     one_second_table: str = BAR_GPT_COHORT_2TB_TABLE
     manifest_table: str = BAR_GPT_COHORT_2TB_MANIFEST_TABLE
@@ -185,8 +185,8 @@ class DataConfig:
         return tuple(ticker for ticker in self.tickers if ticker not in holdout)
 
     def validate(self) -> None:
-        if self.loader_stream_contract_version != 5:
-            raise ValueError("this BarGPT version requires loader_stream_contract_version 5")
+        if self.loader_stream_contract_version != 6:
+            raise ValueError("this BarGPT version requires loader_stream_contract_version 6")
         if "split_adjusted" in self.one_second_table or self.daily_table.endswith("_adjusted"):
             raise ValueError("globally adjusted bar authorities are retired; use raw bars with causal split metadata")
         if not self.tickers:

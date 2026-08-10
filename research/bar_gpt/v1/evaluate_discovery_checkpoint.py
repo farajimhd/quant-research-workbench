@@ -17,7 +17,11 @@ from research.bar_gpt.v1.model_discovery import (
     load_discovery_manifest,
     panel_refs,
 )
-from research.bar_gpt.v1.offline_shards import OfflineShardDataset, discover_offline_units, make_offline_dataloader
+from research.bar_gpt.v1.offline_shards import (
+    OfflineShardDataset,
+    make_offline_dataloader,
+    resolve_offline_units_for_refs,
+)
 from research.bar_gpt.v1.train import DISCOVERY_VALIDATION_WORKERS, _wandb_metric_key, validate
 from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.mlops.env import load_env_files
@@ -76,13 +80,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         config=data_config,
     )
     selected_refs = panel_refs(manifest, str(args.panel))
-    validation_tickers = tuple(sorted({ref.ticker for ref in selected_refs}))
-    units = discover_offline_units(
+    units = resolve_offline_units_for_refs(
         shard_root,
         storage_data_config,
-        tickers=validation_tickers,
-        start_date=manifest["ranges"]["held_out"][0],
-        end_date=manifest["ranges"]["held_out"][1],
+        selected_refs,
     )
     evaluation_data = replace(
         data_config,

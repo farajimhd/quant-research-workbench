@@ -1,5 +1,8 @@
 # BarGPT v1
 
+The authoritative sparse-event builder, target, model, and audit contract is
+documented in [SPARSE_EVENT_CONTRACT.md](SPARSE_EVENT_CONTRACT.md).
+
 BarGPT v1 is a causal multiscale bar representation model. It uses a shared
 GPT-style decoder over continuous bar features, not discrete vocabulary tokens.
 It exposes contextual embeddings, dense next-bar predictions, and direct
@@ -19,8 +22,8 @@ not complete at the origin is masked, never backfilled from the future.
 The model returns the origin embedding, autoregressive next-bar heads for the
 intraday views only, and direct probabilistic physical-horizon heads. The direct heads
 currently cover `5s`, `30s`, `1m`, `5m`, `15m`, and `1h`. Each direct horizon
-contains the target contract in `targets.py`: endpoint return, upper/lower
-excursion, realized volatility, log trade volume/count, trade/bid/ask/paired
+contains the target contract in `targets.py`: independent bid/ask/trade returns,
+trade upper/lower excursion, realized volatility, log trade volume/count, trade/bid/ask/paired
 quote availability, and halt/resume/news/LULD risk flags. Future support is
 constructed on the loader/device side and masked when unavailable, preserving
 point-in-time causality.
@@ -270,7 +273,7 @@ following period proves it closed.
 - causal as-of fusion of coarse contextual states into fine origins;
 - dense next-bar supervision at every scale;
 - low-rank horizon-conditioned monotone quantiles;
-- horizon quantiles for endpoint return, upper/lower excursion, realized
+- horizon quantiles for bid/ask/trade returns, trade upper/lower excursion, realized
   volatility, trade volume, and trade count;
 - separate trade, bid, ask, paired-quote, halt/pause, resume, news-risk, and
   LULD-state probability logits.
@@ -371,7 +374,7 @@ the fixed learning-rate (`1.5e-4`, `3e-4`) by dropout (`0.04`, `0.08`, `0.12`)
 grid. Exact duplicate anchor recipes are reused. The best two refined recipes
 are then evaluated on the locked test.
 
-Campaign state is durable under `model_discovery/campaign_state_v2.json`; rerunning
+Campaign state is durable under `model_discovery/campaign_state_v3.json`; rerunning
 the same command verifies the manifest and skips completed runs. Training,
 monitoring, validation, and locked-test metrics are written asynchronously.
 W&B uses the distinct project `bar gpt model discovery` and non-overlapping
@@ -480,10 +483,11 @@ prepared host batches, then training restarts from consumed durable cursors.
 Unconsumed training blocks replay safely rather than being marked complete.
 
 Training refuses to start unless every requested ticker-month has a compatible
-contract-v3 complete or explicitly covered-empty sidecar and every complete
+contract-v4 complete or explicitly covered-empty sidecar and every complete
 sidecar has its tensor file. ClickHouse is not contacted by the offline training
-path. The v3 shard payload is pinned to loader-stream contract 5, including the
-derived warmup and exact per-origin context geometry. Defaults are a
+path. The v4 shard payload is pinned to sparse loader-stream contract 6,
+including nonempty origins/context, timestamped intervals, and exact per-origin
+context geometry. Defaults are a
 384-wide eight-layer decoder, BF16,
 and six horizons from 5 seconds through 1 hour. `--max-samples 0` means the
 complete coverage epoch; a positive value is an operator safety or diagnostic
@@ -596,7 +600,7 @@ python -B -m research.bar_gpt.v1.run_build_offline_shards --execute
 The first command is a read-only plan. The execute form balances whole tickers
 by their planned block counts across bounded logical worker slots and writes
 immutable ticker-month shards beneath
-`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3`. Both the requested
+`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4`. Both the requested
 one-second authority and daily-session authority now begin in 2019. The
 compiler fails preflight until those sources are continuously certified and
 never fabricates unavailable intraday sessions or calendar history.
@@ -635,7 +639,7 @@ This prevents every worker from independently creating a workstation-sized CPU
 thread pool while leaving capacity for ClickHouse and the operating system.
 
 Every executing compiler invocation creates a unique diagnostic directory at
-`offline_shards_v3\manifest\build_runs\<run-id>`. Its parent-owned
+`offline_shards_v4\manifest\build_runs\<run-id>`. Its parent-owned
 `events.jsonl` records the resolved plan, worker PID/ticker launches, stages,
 bounded progress, certifications, complete caught tracebacks, process exit
 codes, last known work, and final catalog. `summary.json` records the final
@@ -654,14 +658,14 @@ for every origin. Shards use uncompressed PyTorch tensor containers so `torch.lo
 memory-map their storage. The runtime reader performs only mmap slicing,
 padding into reusable pinned batches, and asynchronous CUDA handoff.
 
-The v3 storage identity contains only settings that can alter one ticker-month
+The v4 storage identity contains only settings that can alter one ticker-month
 tensor payload. GPU batch size, loader workers, pinning, prefetch depth,
 requested tickers, requested date range, validation ownership, query tuning,
 and progress/concurrency controls are excluded. A stable ticker-month hash
 replaces range-dependent unit numbering inside each shard. Consequently the
 same certified shard can be collated into any loader-time batch size and two
 disjoint build commands can safely accumulate compatible months in one root.
-Loader-stream contract 5 is part of the v3 identity, so older shards fail
+Sparse loader-stream contract 6 is part of the v4 identity, so older shards fail
 discovery instead of being silently interpreted under the corrected context
 contract.
 `origin_bars_1s` remains storage geometry—the number of sequential origins in
@@ -698,7 +702,7 @@ python -B -m research.bar_gpt.v1.run_pilot_offline_shards --execute --force-rebu
 
 The first command prints the exact build and audit plan. The execute form builds
 `AAPL:2019-01` and `GOOGL:2019-01`, then a bounded one-session
-`AAPL:2026-01` context-check shard, beneath `offline_shards_v3_pilot`. It
+`AAPL:2026-01` context-check shard, beneath `offline_shards_v4_pilot`. It
 verifies all complete-file SHA-256 digests and fails unless shard/sidecar identities,
 counts, configured context, causal as-of indices, horizon tensors, and condition
 positive-count metadata agree. The audit also scans every stored value in all
@@ -738,8 +742,8 @@ transformed target space (approximately `0.005 bp` near zero) because their
 `log-ratio * 100` transform amplifies bounded source-ULP differences. Exact-difference counts and
 maximum error remain in the report, and any difference beyond its documented
 tolerance fails the run. The report also records neutral and directional
-class balance, extreme endpoint returns, and midpoint/trade reference-source
-switch rates as explicit heuristic warnings. Reports are written beneath
+class balance, extreme family returns, and any valid target lacking a future
+same-family update. Reports are written beneath
 `D:\TradingML\runtimes\bar_gpt\v1\shard_data_audits`; neither ClickHouse nor
 the immutable shard catalog is modified. Use `--tickers AAPL,GOOGL` to constrain
 identity, `--seed` to choose another reproducible sample, and
@@ -752,7 +756,7 @@ For manual review, open `audit_shard_sample.ipynb` on the workstation. It loads
 one deterministic random real shard block and one random origin, then displays
 the complete context geometry, the last visible rows and all named input
 features for every view, physical-horizon targets and masks, and autoregressive
-targets. Set its optional `CHECKPOINT` path to place q10/q50/q90 endpoint-return
+targets. Set its optional `CHECKPOINT` path to place q10/q50/q90 bid/ask/trade
 predictions and direction probabilities beside the stored targets. The notebook
 is read-only and does not contact ClickHouse; use the automatic report for the
 independent raw-authority comparison.
@@ -786,7 +790,7 @@ sidecars are skipped. `--max-shards N` provides a bounded smoke. The optional
 substantial I/O to the 2.3 TB catalog; without it, the original certified digest
 is preserved while tensor structure and metadata are still checked.
 
-The completed `offline_shards_v3` authority can be permanently sealed after its
+The completed `offline_shards_v4` authority can be permanently sealed after its
 catalog has been certified:
 
 ```powershell

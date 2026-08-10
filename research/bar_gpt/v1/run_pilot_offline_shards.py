@@ -13,7 +13,7 @@ from research.bar_gpt.v1.audit_offline_shards import DEFAULT_PILOT_ROOT
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build two 2019 pilot shards plus one bounded 2026 context-check shard."
+        description="Build two sparse-event v4 pilot shards plus one bounded 2026 context-check shard."
     )
     parser.add_argument("--execute", action="store_true", help="Required to build; omit for a read-only plan.")
     parser.add_argument(
@@ -31,6 +31,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
     parser.add_argument("--clickhouse-max-concurrent-pages", type=int, default=0)
+    parser.add_argument("--condition-max-threads", type=int, default=8)
     args = parser.parse_args(list(argv) if argv is not None else None)
     tickers = tuple(item.strip().upper() for item in str(args.tickers).split(",") if item.strip())
     if len(tickers) != 2:
@@ -39,6 +40,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("the pilot tickers must be distinct")
     if args.workers <= 0:
         parser.error("--workers must be positive")
+    if args.condition_max_threads <= 0:
+        parser.error("--condition-max-threads must be positive")
     args.context_check_ticker = str(args.context_check_ticker).strip().upper()
     if args.context_check_ticker not in tickers:
         parser.error("--context-check-ticker must be one of the two pilot tickers")
@@ -52,7 +55,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def commands(args: argparse.Namespace) -> tuple[list[str], list[str], list[str], list[str]]:
+def commands(args: argparse.Namespace) -> tuple[list[str], ...]:
+    def condition(start_date: str, end_date: str, tickers: tuple[str, ...]) -> list[str]:
+        return [
+            sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_conditions_1s",
+            "--tickers", ",".join(tickers),
+            "--start-date", start_date,
+            "--end-date", end_date,
+            "--max-threads", str(args.condition_max_threads),
+        ]
+
+    pilot_condition = condition(str(args.start_date), str(args.end_date), args.tickers)
     build = [
         sys.executable,
         "-B",
@@ -147,14 +160,21 @@ def commands(args: argparse.Namespace) -> tuple[list[str], list[str], list[str],
         "--verify-sha256",
         "--require-calendar-context",
     ]
-    return build, audit, context_build, context_audit
+    context_condition = condition(
+        str(args.context_check_start_date),
+        str(args.context_check_end_date),
+        (str(args.context_check_ticker),),
+    )
+    return pilot_condition, build, audit, context_condition, context_build, context_audit
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    build, audit, context_build, context_audit = commands(args)
+    pilot_condition, build, audit, context_condition, context_build, context_audit = commands(args)
+    print("Pilot condition command:", subprocess.list2cmdline(pilot_condition), flush=True)
     print("Pilot build command:", subprocess.list2cmdline(build), flush=True)
     print("Pilot audit command:", subprocess.list2cmdline(audit), flush=True)
+    print("2026 context condition command:", subprocess.list2cmdline(context_condition), flush=True)
     print("2026 context build command:", subprocess.list2cmdline(context_build), flush=True)
     print("2026 context audit command:", subprocess.list2cmdline(context_audit), flush=True)
     if not args.execute:
@@ -163,7 +183,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     repo_root = next(parent for parent in Path(__file__).resolve().parents if (parent / "research").exists())
     environment = dict(os.environ)
     environment.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-    for command in (build, audit, context_build, context_audit):
+    for command in (pilot_condition, build, audit, context_condition, context_build, context_audit):
         status = subprocess.call(command, cwd=repo_root, env=environment)
         if status:
             return int(status)

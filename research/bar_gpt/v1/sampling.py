@@ -140,12 +140,15 @@ def session_phase(example: BarGPTExample) -> str:
 def has_condition_target(example: BarGPTExample) -> bool:
     if not bool(torch.any(example.target_condition_flags > 0)):
         return False
-    maximum_steps = max(example.horizons_us) // int(example.base_timeframe_us)
     flags = example.target_condition_flags.gt(0).any(dim=-1).to(torch.int64)
     prefix = torch.cat((flags.new_zeros(1), flags.cumsum(0)))
-    origins = example.support_origin_indices
-    ends = (origins + int(maximum_steps) + 1).clamp(max=flags.shape[0])
-    starts = (origins + 1).clamp(max=flags.shape[0])
+    origins = example.origin_timestamps_us
+    starts = torch.searchsorted(example.target_condition_available_at_us, origins, right=True)
+    ends = torch.searchsorted(
+        example.target_condition_available_at_us,
+        origins + int(max(example.horizons_us)),
+        right=True,
+    )
     return bool(torch.any(prefix[ends] - prefix[starts] > 0))
 
 
@@ -172,14 +175,20 @@ def _materialize(example: BarGPTExample) -> BarGPTExample:
         local_date=example.local_date,
         raw_views={name: value.clone() for name, value in example.raw_views.items()},
         raw_view_start_us={name: value.clone() for name, value in example.raw_view_start_us.items()},
+        raw_view_end_us={name: value.clone() for name, value in example.raw_view_end_us.items()},
         raw_view_available_at_us={name: value.clone() for name, value in example.raw_view_available_at_us.items()},
         origin_indices=example.origin_indices.clone(),
         origin_timestamps_us=example.origin_timestamps_us.clone(),
         asof_indices={name: value.clone() for name, value in example.asof_indices.items()},
         target_support=example.target_support.clone(),
+        target_support_available_at_us=example.target_support_available_at_us.clone(),
+        target_coverage_end_us=example.target_coverage_end_us,
         target_share_factors=example.target_share_factors.clone(),
+        target_condition_available_at_us=example.target_condition_available_at_us.clone(),
         target_condition_flags=example.target_condition_flags.clone(),
         support_origin_indices=example.support_origin_indices.clone(),
+        horizon_targets=example.horizon_targets.clone() if example.horizon_targets is not None else None,
+        horizon_mask=example.horizon_mask.clone() if example.horizon_mask is not None else None,
         horizons_us=example.horizons_us,
         base_timeframe_us=example.base_timeframe_us,
         activity_regime=example.activity_regime,

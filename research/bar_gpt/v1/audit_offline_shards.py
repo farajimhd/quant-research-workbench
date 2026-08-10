@@ -23,7 +23,7 @@ from research.bar_gpt.v1.offline_shards import (
 from research.bar_gpt.v1.targets import TARGET_NAMES
 
 
-DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3_pilot")
+DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4_pilot")
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -183,9 +183,13 @@ def audit_shard(
         session_blocks = session.get("blocks")
         _require(isinstance(views, dict) and set(views) == expected_views, f"{label}: view set mismatch")
         _require(isinstance(session_blocks, list) and session_blocks, f"{label}: blocks are absent")
+        session_origin_timestamps: list[torch.Tensor] = []
+        session_origin_positions: list[torch.Tensor] = []
+        observed_block_offsets: list[int] = []
         for name, view in views.items():
             features = view.get("features")
             starts = view.get("start_us")
+            ends = view.get("end_us")
             available = view.get("available_at_us")
             _require(isinstance(features, torch.Tensor), f"{label}/{name}: features are absent")
             _require(
@@ -193,13 +197,31 @@ def audit_shard(
                 f"{label}/{name}: invalid feature shape {tuple(features.shape)}",
             )
             _require(
-                isinstance(starts, torch.Tensor) and isinstance(available, torch.Tensor)
-                and starts.shape == available.shape == (features.shape[0],),
+                isinstance(starts, torch.Tensor) and isinstance(ends, torch.Tensor)
+                and isinstance(available, torch.Tensor)
+                and starts.shape == ends.shape == available.shape == (features.shape[0],),
                 f"{label}/{name}: timestamp shape mismatch",
             )
             _require(_strictly_increasing(starts), f"{label}/{name}: starts are not strictly increasing")
             _require(_strictly_increasing(available), f"{label}/{name}: availability is not strictly increasing")
-            _require(bool(torch.all(available >= starts)), f"{label}/{name}: availability precedes bar start")
+            unavailable_calendar_sentinel = (
+                name in calendar_context
+                and features.shape[0] == 1
+                and int(starts[0]) == int(ends[0]) == int(available[0]) == 0
+            )
+            _require(
+                unavailable_calendar_sentinel or bool(torch.all(starts < ends)),
+                f"{label}/{name}: non-positive bar interval",
+            )
+            _require(bool(torch.all(available >= ends)), f"{label}/{name}: availability precedes bar end")
+            if name in intraday_context:
+                expected_duration = int(TIMEFRAME_US_BY_NAME[name])
+                _require(bool(torch.all(ends - starts == expected_duration)), f"{label}/{name}: bar duration mismatch")
+                source_index = MODEL_FEATURE_NAMES.index("log_source_event_count")
+                _require(
+                    bool(torch.all(features[:, source_index] > 0)),
+                    f"{label}/{name}: empty-event bar was stored as intraday context",
+                )
             accumulator = feature_accumulators[name]
             for left in range(0, int(features.shape[0]), 65_536):
                 chunk = features[left : left + 65_536]
@@ -223,6 +245,8 @@ def audit_shard(
                 f"{block_label}: origins are absent",
             )
             _require(_strictly_increasing(origin_timestamps), f"{block_label}: origins are not strictly increasing")
+            session_origin_timestamps.append(origin_timestamps)
+            observed_block_offsets.append(int(block.get("block_offset", -1)))
             _require(
                 isinstance(origin_indices, torch.Tensor) and origin_indices.shape == origin_timestamps.shape,
                 f"{block_label}: origin-index shape mismatch",
@@ -237,13 +261,33 @@ def audit_shard(
                 _require(start >= 0 and length > 0 and start + length <= available.shape[0], f"{block_label}/{name}: slice out of range")
                 if name == "1s":
                     _require(int(origin_indices.min()) >= intraday_context["1s"], f"{block_label}/1s: context underflow")
+                    _require(
+                        int(origin_indices[0]) == intraday_context["1s"],
+                        f"{block_label}/1s: block does not begin with the exact configured context",
+                    )
                     _require(int(origin_indices.max()) < length, f"{block_label}/1s: origin outside slice")
+                    source_index = MODEL_FEATURE_NAMES.index("log_source_event_count")
+                    local_features = views[name]["features"][start : start + length]
+                    _require(
+                        bool(torch.all(local_features[origin_indices.long(), source_index] > 0)),
+                        f"{block_label}/1s: zero-event origin detected",
+                    )
+                    local_available = available[start : start + length]
+                    session_origin_positions.append(origin_indices.long() + start)
+                    _require(
+                        torch.equal(local_available[origin_indices.long()], origin_timestamps),
+                        f"{block_label}/1s: origin timestamps do not match bar availability",
+                    )
                     continue
                 indices = asof[name]
                 _require(isinstance(indices, torch.Tensor) and indices.shape == origin_timestamps.shape, f"{block_label}/{name}: as-of shape mismatch")
                 if name in intraday_context:
                     required = int(intraday_context[name])
                     _require(int(indices.min()) >= required - 1, f"{block_label}/{name}: configured context underflow")
+                    _require(
+                        int(indices[0]) == required - 1,
+                        f"{block_label}/{name}: block does not begin with the exact configured context",
+                    )
                 elif name in calendar_context:
                     required = int(calendar_context[name])
                     partial = (indices >= 0) & (indices < required - 1)
@@ -273,10 +317,29 @@ def audit_shard(
                 and horizon_mask.shape == horizon_targets.shape,
                 f"{block_label}: horizon target shape mismatch",
             )
+            _require(bool(torch.isfinite(horizon_targets).all()), f"{block_label}: non-finite horizon target")
+            _require(
+                bool(torch.all(horizon_targets[~horizon_mask] == 0)),
+                f"{block_label}: masked horizon target contains a nonzero value",
+            )
             target_valid += horizon_mask.to(torch.long).sum(dim=0)
             target_total += int(origin_timestamps.numel())
             origins += int(origin_timestamps.numel())
             blocks += 1
+        combined_origins = torch.cat(session_origin_timestamps)
+        combined_positions = torch.cat(session_origin_positions)
+        _require(
+            _strictly_increasing(combined_origins),
+            f"{label}: block origins overlap or are out of order",
+        )
+        _require(
+            combined_positions.numel() <= 1 or bool(torch.all(combined_positions[1:] == combined_positions[:-1] + 1)),
+            f"{label}: active one-second origins are skipped between blocks",
+        )
+        _require(
+            observed_block_offsets == list(range(observed_block_offsets[0], observed_block_offsets[0] + len(observed_block_offsets))),
+            f"{label}: block offsets are not contiguous",
+        )
     counts = shard.get("counts", {})
     recomputed_conditions = condition_positive_counts(sessions)
     _require(int(counts.get("sessions", -1)) == len(sessions), f"{unit_key}: session count mismatch")

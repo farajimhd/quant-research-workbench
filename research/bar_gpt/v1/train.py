@@ -223,7 +223,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume-checkpoint", default="")
     parser.add_argument("--seed", type=int, default=train.seed)
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="clickhouse")
-    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4")
     parser.add_argument("--offline-train-start-date", default="2019-01-01")
     parser.add_argument("--offline-train-end-date", default="2021-01-01")
     parser.add_argument("--offline-validation-start-date", default="2026-01-01")
@@ -245,7 +245,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
     horizons = _int_csv(args.horizons_us)
     data = DataConfig(
-        loader_stream_contract_version=5,
+        loader_stream_contract_version=6,
         database=str(args.database),
         one_second_table=str(args.one_second_table),
         manifest_table=str(args.manifest_table),
@@ -1507,7 +1507,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             for index in range(4)
         )
         evidence = {
-            "mode": "offline_shards_v3",
+            "mode": "offline_shards_v4",
             "offline_shard_root": str(root),
             "offline_training_units": str(len(offline_train_units)),
             "offline_training_blocks": str(sum(unit.blocks for unit in offline_train_units)),
@@ -1672,15 +1672,18 @@ def main(argv: Iterable[str] | None = None) -> int:
             "views": {name: ["B", "T_view", len(FEATURE_NAMES)] for name in all_view_names},
             "asof_indices": ["B", "N_views"],
             "origin_indices": ["B", "N_origins"],
-            "time_semantics": "available_at_us and explicit session/calendar masks",
+            "time_semantics": "explicit bar_start_us, bar_end_us, available_at_us, and session/calendar masks",
         },
         output_contract={
             "embedding": ["B", "N_origins", config.model.d_model],
-            "autoregressive": {name: ["B", "T_view-1", config.model.target_dim] for name in AUTOREGRESSIVE_VIEW_NAMES},
+            "autoregressive": {
+                name: ["B", "T_view-1", config.model.autoregressive_target_dim]
+                for name in AUTOREGRESSIVE_VIEW_NAMES
+            },
             "autoregressive_direction_logits": {name: ["B", "T_view-1"] for name in AUTOREGRESSIVE_VIEW_NAMES},
             "physical_horizon_quantiles": ["B", "N_origins", len(config.data.horizons_us), config.model.target_dim - 8, len(config.model.quantiles)],
             "physical_horizon_availability_logits": ["B", "N_origins", len(config.data.horizons_us), 8],
-            "physical_horizon_direction_logits": ["B", "N_origins", len(config.data.horizons_us)],
+            "physical_horizon_direction_logits": ["B", "N_origins", len(config.data.horizons_us), 3],
         },
         architecture_mermaid=build_model_mermaid(),
         summary_notes=(

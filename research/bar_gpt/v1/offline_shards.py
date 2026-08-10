@@ -43,11 +43,11 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 
 
-OFFLINE_SHARD_CONTRACT_VERSION = 3
-# Stream contract 5 requires derived ticker-month warmup, complete configured
-# context at every origin, and origin-independent packed-block boundaries.
-OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 5
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
+OFFLINE_SHARD_CONTRACT_VERSION = 4
+# Stream contract 6 stores only nonempty event bars as intraday context and
+# origins while retaining physical-time horizon cutoffs.
+OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 6
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4")
 SHARD_CATALOG_LOCK_FILENAME = "SHARD_CATALOG_IMMUTABLE.json"
 
 
@@ -86,6 +86,9 @@ class CompiledBlock:
     ticker: str
     local_date: str
     views: dict[str, torch.Tensor]
+    view_start_us: dict[str, torch.Tensor]
+    view_end_us: dict[str, torch.Tensor]
+    view_available_at_us: dict[str, torch.Tensor]
     origin_indices: torch.Tensor
     origin_timestamps_us: torch.Tensor
     asof_indices: dict[str, torch.Tensor]
@@ -494,16 +497,19 @@ def _merge_view(
     examples: Sequence[BarGPTExample], name: str,
 ) -> tuple[dict[str, torch.Tensor], list[tuple[int, int]], list[dict[str, torch.Tensor]]]:
     starts = torch.cat([example.raw_view_start_us[name].cpu() for example in examples])
+    ends = torch.cat([example.raw_view_end_us[name].cpu() for example in examples])
     available = torch.cat([example.raw_view_available_at_us[name].cpu() for example in examples])
     raw = torch.cat([example.raw_views[name].cpu() for example in examples])
     order = torch.argsort(starts, stable=True)
     starts = starts[order]
+    ends = ends[order]
     available = available[order]
     raw = raw[order]
     keep = torch.ones(starts.shape[0], dtype=torch.bool)
     if starts.numel() > 1:
         keep[1:] = starts[1:] != starts[:-1]
     unique_starts = starts[keep].contiguous()
+    unique_ends = ends[keep].contiguous()
     unique_available = available[keep].contiguous()
     unique_raw = raw[keep].contiguous()
     slices: list[tuple[int, int]] = []
@@ -522,6 +528,7 @@ def _merge_view(
     result: dict[str, torch.Tensor] = {
         "features": projected,
         "start_us": unique_starts,
+        "end_us": unique_ends,
         "available_at_us": unique_available,
     }
     if name in AUTOREGRESSIVE_VIEW_NAMES:
@@ -593,24 +600,25 @@ def compile_session(examples: Sequence[BarGPTExample]) -> dict[str, Any]:
                 )
         exact_ar_by_view[name] = exact_items
     horizon_ids = torch.as_tensor(examples[0].horizons_us, dtype=torch.long)
-    exact_horizons: list[HorizonTargets | None] = [None] * len(examples)
-    horizon_shape_groups: dict[tuple[tuple[int, ...], tuple[int, ...]], list[int]] = {}
-    for index, example in enumerate(examples):
-        signature = (tuple(example.target_support.shape), tuple(example.support_origin_indices.shape))
-        horizon_shape_groups.setdefault(signature, []).append(index)
-    for indices in horizon_shape_groups.values():
-        batch = build_physical_horizon_targets(
-            torch.stack([examples[index].target_support.cpu() for index in indices]),
-            torch.stack([examples[index].support_origin_indices.cpu() for index in indices]),
-            horizon_ids,
-            base_timeframe_us=examples[indices[0]].base_timeframe_us,
-            share_factors=torch.stack([examples[index].target_share_factors.cpu() for index in indices]),
-            condition_flags=torch.stack([examples[index].target_condition_flags.cpu() for index in indices]),
-        )
-        for batch_row, example_index in enumerate(indices):
-            exact_horizons[example_index] = HorizonTargets(
-                batch.values[batch_row].contiguous(), batch.mask[batch_row].contiguous()
-            )
+    exact_horizons: list[HorizonTargets | None] = []
+    for example in examples:
+        if example.horizon_targets is not None and example.horizon_mask is not None:
+            exact_horizons.append(HorizonTargets(
+                example.horizon_targets.cpu().contiguous(),
+                example.horizon_mask.cpu().contiguous(),
+            ))
+        else:
+            exact_horizons.append(build_physical_horizon_targets(
+                example.target_support.cpu(),
+                example.support_origin_indices.cpu(),
+                horizon_ids,
+                base_timeframe_us=example.base_timeframe_us,
+                available_at_us=example.target_support_available_at_us.cpu(),
+                coverage_end_us=example.target_coverage_end_us,
+                share_factors=example.target_share_factors.cpu(),
+                condition_available_at_us=example.target_condition_available_at_us.cpu(),
+                condition_flags=example.target_condition_flags.cpu(),
+            ))
     blocks: list[dict[str, Any]] = []
     for row, example in enumerate(examples):
         horizon = exact_horizons[row]
@@ -697,7 +705,9 @@ def validate_origin_context(example: BarGPTExample, config: DataConfig) -> None:
 
 def compile_unit(examples: Sequence[BarGPTExample], config: DataConfig, key: str) -> dict[str, Any]:
     by_date: dict[str, list[BarGPTExample]] = {}
-    for example in examples:
+    for fallback_offset, example in enumerate(examples):
+        if int(example.block_offset) < 0:
+            example.block_offset = fallback_offset
         by_date.setdefault(example.local_date, []).append(example)
     sessions = [compile_session(by_date[day]) for day in sorted(by_date)]
     return compile_prepared_unit(sessions, config, key)
@@ -802,6 +812,9 @@ def materialize_block(shard: dict[str, Any], session_index: int, block_index: in
     session = shard["sessions"][int(session_index)]
     block = session["blocks"][int(block_index)]
     views: dict[str, torch.Tensor] = {}
+    view_start_us: dict[str, torch.Tensor] = {}
+    view_end_us: dict[str, torch.Tensor] = {}
+    view_available_at_us: dict[str, torch.Tensor] = {}
     ar_targets: dict[str, torch.Tensor] = {}
     for name, (start, length) in block["view_slices"].items():
         shared = session["views"][name]
@@ -813,6 +826,9 @@ def materialize_block(shard: dict[str, Any], session_index: int, block_index: in
             value = value.clone()
             value[patch["indices"].long()] = patch["values"]
         views[name] = value
+        view_start_us[name] = shared["start_us"][start : start + length]
+        view_end_us[name] = shared["end_us"][start : start + length]
+        view_available_at_us[name] = shared["available_at_us"][start : start + length]
         if name in AUTOREGRESSIVE_VIEW_NAMES:
             target = shared["autoregressive_targets"][start : start + max(0, length - 1)]
             patch = block["autoregressive_patches"][name]
@@ -824,6 +840,9 @@ def materialize_block(shard: dict[str, Any], session_index: int, block_index: in
         ticker=str(session["ticker"]),
         local_date=str(session["local_date"]),
         views=views,
+        view_start_us=view_start_us,
+        view_end_us=view_end_us,
+        view_available_at_us=view_available_at_us,
         origin_indices=block["origin_indices"],
         origin_timestamps_us=block["origin_timestamps_us"],
         asof_indices=block["asof_indices"],
@@ -847,7 +866,7 @@ def discover_offline_units(
     start_date: str,
     end_date: str,
 ) -> tuple[OfflineShardUnit, ...]:
-    """Fail closed unless every requested ticker-month has a certified v3 sidecar."""
+    """Fail closed unless every requested ticker-month has a certified v4 sidecar."""
     start = dt.date.fromisoformat(start_date)
     end = dt.date.fromisoformat(end_date)
     if start.day != 1 or end.day != 1 or start >= end:
@@ -912,6 +931,45 @@ def discover_offline_units(
         raise RuntimeError("offline shard coverage is incomplete: " + "; ".join(detail))
     if not units:
         raise RuntimeError("offline shard selection contains no completed trainable units")
+    return tuple(units)
+
+
+def resolve_offline_units_for_refs(
+    root: Path,
+    config: DataConfig,
+    refs: Sequence[OfflineBlockRef],
+) -> tuple[OfflineShardUnit, ...]:
+    """Resolve only manifest-addressed units without requiring unrelated coverage."""
+    expected_hash = shard_compatibility_hash(config)
+    units: list[OfflineShardUnit] = []
+    for key in sorted({ref.unit_key for ref in refs}):
+        path = shard_path(root, key)
+        sidecar = sidecar_path(path)
+        try:
+            value = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"referenced offline shard sidecar is unavailable: {key}") from exc
+        if (
+            int(value.get("contract_version", -1)) != OFFLINE_SHARD_CONTRACT_VERSION
+            or value.get("config_hash") != expected_hash
+            or value.get("status") != "complete"
+            or not path.is_file()
+        ):
+            raise RuntimeError(f"referenced offline shard is not certified for the active contract: {key}")
+        counts = value.get("condition_positive_counts")
+        if not isinstance(counts, list) or len(counts) != 4:
+            raise RuntimeError(f"referenced offline shard lacks condition metadata: {key}")
+        units.append(OfflineShardUnit(
+            unit_key=key,
+            path=path,
+            sessions=int(value["sessions"]),
+            blocks=int(value["blocks"]),
+            origins=int(value["origins"]),
+            stable_unit_index=stable_unit_index(key),
+            condition_positive_counts=tuple(int(item) for item in counts),
+        ))
+    if not units:
+        raise RuntimeError("experiment panel contains no referenced offline units")
     return tuple(units)
 
 
@@ -1181,7 +1239,11 @@ def collate_compiled_blocks(
         },
         target_support=torch.empty((len(blocks), 0, feature_dim), dtype=torch.float32),
         target_support_lengths=torch.zeros(len(blocks), dtype=torch.long),
+        target_support_available_at_us=torch.empty((len(blocks), 0), dtype=torch.long),
+        target_coverage_end_us=torch.zeros(len(blocks), dtype=torch.long),
         target_share_factors=torch.empty((len(blocks), 0), dtype=torch.float32),
+        target_condition_available_at_us=torch.empty((len(blocks), 0), dtype=torch.long),
+        target_condition_lengths=torch.zeros(len(blocks), dtype=torch.long),
         target_condition_flags=torch.empty((len(blocks), 0, 4), dtype=torch.float32),
         support_origin_indices=_pad_first_dimension([block.origin_indices for block in blocks]),
         horizons_us=tuple(horizons_us),

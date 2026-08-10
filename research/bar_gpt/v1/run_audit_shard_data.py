@@ -23,7 +23,7 @@ from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.mlops.env import load_env_files
 
 
-DEFAULT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
+DEFAULT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4")
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\shard_data_audits")
 
 
@@ -109,6 +109,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         row["findings"] = diagnostic_findings(
             row["target_diagnostics"], row["clickhouse_reconstruction"]
         )
+        error_findings = [item for item in row["findings"] if item.get("severity") == "error"]
+        if error_findings:
+            failures.append(
+                f"{ref.unit_key} session={ref.session_index} block={ref.block_index}: "
+                + "; ".join(str(item.get("message", "audit error")) for item in error_findings)
+            )
         samples.append(row)
         status = (
             "ClickHouse match within certified float tolerance"
@@ -117,7 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(f"[{index + 1}/{len(refs)}] {ref.unit_key} {ref.local_date} block={ref.block_index}: {status}", flush=True)
     report = {
-        "contract_version": 1,
+        "contract_version": 2,
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "root": str(args.root),
         "seed": int(args.seed),

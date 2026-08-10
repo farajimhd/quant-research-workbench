@@ -70,8 +70,8 @@ class CausalSplitContractTest(unittest.TestCase):
             torch.tensor([1_000_000]),
             share_factors=factors,
         )
-        endpoint = float(targets.values[0, 0, 0])
-        volume = float(targets.values[0, 0, 4])
+        endpoint = float(targets.values[0, 0, 2])
+        volume = float(targets.values[0, 0, 6])
         self.assertAlmostEqual(endpoint, 0.0, places=6)
         self.assertAlmostEqual(volume, math.log1p(10.0), places=6)
 

@@ -47,6 +47,7 @@ from research.bar_gpt.v1.data import (
 from research.bar_gpt.v1.features import project_stationary_features
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES, SESSION_END_SECOND, SESSION_START_SECOND, SESSION_TIMEZONE
 from research.bar_gpt.v1.sampling import CoverageCursor, has_condition_target, select_stratified_examples, session_phase
+from research.bar_gpt.v1.targets import build_physical_horizon_targets
 from research.mlops.clickhouse import quote_ident, sql_string
 
 
@@ -161,11 +162,14 @@ class PreparedSessionContext:
     """One causally bounded session representation shared by its origin blocks."""
 
     combined: BarView
-    combined_conditions: torch.Tensor
+    condition_available_at_us: torch.Tensor
+    condition_flags: torch.Tensor
     normalized_session: BarView
     calendar_views: dict[str, BarView]
     full_views: dict[str, BarView]
     halo_count: int
+    horizon_targets: torch.Tensor
+    horizon_mask: torch.Tensor
 
 
 def month_units(start_date: str, end_date: str, tickers: tuple[str, ...], *, seed: int) -> list[TickerDateUnit]:
@@ -872,12 +876,12 @@ class ArrowStreamClient:
                     for part in frame.partition_by("local_date", maintain_order=True):
                         date_value = str(part["local_date"][0])
                         if current_date and date_value != current_date:
-                            result.append((current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)))
+                            result.append((current_date, frame_to_sparse_view(pl.concat(current_frames, how="vertical"), device=device)))
                             current_frames = []
                         current_date = date_value
                         current_frames.append(part)
             if current_frames:
-                result.append((current_date, frame_to_dense_view(pl.concat(current_frames, how="vertical"), device=device)))
+                result.append((current_date, frame_to_sparse_view(pl.concat(current_frames, how="vertical"), device=device)))
             self._add_timing("intraday_page_seconds", time.perf_counter() - started)
             return result
 
@@ -1219,11 +1223,12 @@ class ArrowStreamClient:
         return {ticker: tuple(values) for ticker, values in result.items()}
 
 
-def frame_to_dense_view(frame: pl.DataFrame, *, device: torch.device | str = "cpu") -> BarView:
+def frame_to_sparse_view(frame: pl.DataFrame, *, device: torch.device | str = "cpu") -> BarView:
+    """Convert the authoritative nonempty 1s rows without manufacturing clock bars."""
     if frame.is_empty():
         raise ValueError("cannot convert an empty bar frame")
     if frame["ticker"].n_unique() != 1 or frame["local_date"].n_unique() != 1:
-        raise ValueError("frame_to_dense_view requires one ticker/session")
+        raise ValueError("frame_to_sparse_view requires one ticker/session")
     frame = frame.sort("bar_start_us")
     feature_array = np.array(frame.select(list(FEATURE_NAMES)).to_numpy(), dtype=np.float32, copy=True)
     sparse = BarView(
@@ -1232,6 +1237,19 @@ def frame_to_dense_view(frame: pl.DataFrame, *, device: torch.device | str = "cp
         bar_end_us=torch.as_tensor(np.array(frame["bar_end_us"].to_numpy(), copy=True), dtype=torch.long, device=device),
         available_at_us=torch.as_tensor(np.array(frame["available_at_us"].to_numpy(), copy=True), dtype=torch.long, device=device),
     )
+    source_counts = sparse.features[:, FEATURE_INDEX["source_event_count"]]
+    if bool((source_counts <= 0).any()):
+        raise RuntimeError("authoritative 1s input contains a zero-event row")
+    if bool((sparse.bar_start_us[1:] <= sparse.bar_start_us[:-1]).any()):
+        raise RuntimeError("authoritative 1s input timestamps are not strictly increasing")
+    if bool((sparse.bar_end_us <= sparse.bar_start_us).any()) or bool((sparse.available_at_us < sparse.bar_end_us).any()):
+        raise RuntimeError("authoritative 1s input has invalid start/end/availability timing")
+    return sparse
+
+
+def frame_to_dense_view(frame: pl.DataFrame, *, device: torch.device | str = "cpu") -> BarView:
+    """Legacy clock-dense conversion retained only for explicit legacy callers."""
+    sparse = frame_to_sparse_view(frame, device=device)
     local_date = dt.date.fromisoformat(str(frame["local_date"][0]))
     midnight = dt.datetime.combine(local_date, dt.time(), tzinfo=ZoneInfo(SESSION_TIMEZONE))
     clock_start_us = int((midnight + dt.timedelta(seconds=SESSION_START_SECOND)).timestamp() * 1_000_000)
@@ -1470,16 +1488,22 @@ def prepare_session_context(
         session,
         left_rows=warmup_rows,
     )
+    condition_rows = SESSION_END_SECOND - SESSION_START_SECOND
     if session_conditions is None:
-        session_conditions = torch.zeros((session.features.shape[0], 4), dtype=torch.float32)
-    if session_conditions.shape != (session.features.shape[0], 4):
-        raise ValueError("session conditions must align to the dense one-second session")
-    if halo_count:
-        if prior_conditions is None:
-            prior_conditions = torch.zeros((prior_session.features.shape[0], 4), dtype=torch.float32)
-        combined_conditions = torch.cat((prior_conditions[-halo_count:], session_conditions), dim=0)
+        session_conditions = torch.zeros((condition_rows, 4), dtype=torch.float32)
+    if session_conditions.shape == (condition_rows, 4):
+        day = dt.date.fromisoformat(local_date)
+        midnight = dt.datetime.combine(day, dt.time(), tzinfo=ZoneInfo(SESSION_TIMEZONE))
+        condition_start_us = int((midnight + dt.timedelta(seconds=SESSION_START_SECOND)).timestamp() * 1_000_000)
+        condition_available_at_us = (
+            torch.arange(condition_rows, dtype=torch.long, device=session_conditions.device) + 1
+        ) * int(config.base_timeframe_us) + condition_start_us
+    elif session_conditions.shape == (session.features.shape[0], 4):
+        # Bounded synthetic/legacy callers may provide event-aligned condition
+        # rows. Production builders always pass the complete clock authority.
+        condition_available_at_us = session.available_at_us.to(session_conditions.device)
     else:
-        combined_conditions = session_conditions
+        raise ValueError("session conditions must cover the exchange clock or align to event rows")
     session_anchor = int(session.available_at_us[-1])
     normalized_session = BarView(
         features=normalize_features_to_anchor(
@@ -1507,13 +1531,28 @@ def prepare_session_context(
     for timeframe_us in config.intraday_timeframes_us:
         if int(timeframe_us) > int(config.base_timeframe_us):
             full_views[scale_names[int(timeframe_us)]] = rollup_intraday_view(normalized_session, int(timeframe_us))
+    all_origin_indices = torch.arange(session.features.shape[0], dtype=torch.long) + halo_count
+    physical_targets = build_physical_horizon_targets(
+        combined.features,
+        all_origin_indices,
+        torch.as_tensor(config.horizons_us, dtype=torch.long),
+        base_timeframe_us=config.base_timeframe_us,
+        available_at_us=combined.available_at_us,
+        coverage_end_us=int(condition_available_at_us[-1]),
+        share_factors=cumulative_share_factors(combined.bar_start_us, split_actions).to(combined.features.dtype),
+        condition_available_at_us=condition_available_at_us,
+        condition_flags=session_conditions,
+    )
     return PreparedSessionContext(
         combined=combined,
-        combined_conditions=combined_conditions,
+        condition_available_at_us=condition_available_at_us,
+        condition_flags=session_conditions,
         normalized_session=normalized_session,
         calendar_views=calendar_views,
         full_views=full_views,
         halo_count=halo_count,
+        horizon_targets=physical_targets.values,
+        horizon_mask=physical_targets.mask,
     )
 
 
@@ -1535,8 +1574,7 @@ def build_session_examples(
 ) -> Iterator[BarGPTExample]:
     """Yield non-overlapping origins while sharing one exact session rollup and target support."""
     context = int(config.context_bars_1s)
-    right = int(config.right_support_bars_1s)
-    maximum_origin = session.features.shape[0] if include_incomplete_horizons else session.features.shape[0] - right
+    maximum_origin = session.features.shape[0]
     prepared = prepared_context or prepare_session_context(
         local_date=local_date,
         session=session,
@@ -1549,9 +1587,20 @@ def build_session_examples(
     )
     combined = prepared.combined
     halo_count = prepared.halo_count
-    combined_conditions = prepared.combined_conditions
-    required_warmup = max(int(config.context_bars_1s), int(config.intraday_warmup_bars_1s))
-    first_origin = max(0, required_warmup - halo_count) if origin_start_index is None else int(origin_start_index)
+    candidate_anchors = session.available_at_us
+    eligible = torch.arange(session.features.shape[0], dtype=torch.long) + halo_count >= context
+    for name in ("5s", "10s", "30s", "1m", "5m", "30m", "1h"):
+        completed = torch.searchsorted(
+            prepared.full_views[name].available_at_us,
+            candidate_anchors,
+            right=True,
+        )
+        eligible &= completed >= int(config.intraday_context_by_name[name])
+    eligible_rows = torch.nonzero(eligible, as_tuple=False).flatten()
+    if eligible_rows.numel() == 0:
+        return
+    first_eligible = int(eligible_rows[0])
+    first_origin = first_eligible if origin_start_index is None else max(first_eligible, int(origin_start_index))
     if first_origin < 0 or first_origin >= session.features.shape[0]:
         raise ValueError("origin_start_index must identify a row in the current session")
     if origin_count_limit is not None:
@@ -1570,9 +1619,9 @@ def build_session_examples(
         combined_origin_start = halo_count + origin_start
         input_start = combined_origin_start - context
         input_end = combined_origin_start + origin_count
-        support_end = min(combined.features.shape[0], input_end + right)
+        support_end = combined.features.shape[0]
         support = combined.features[input_start:support_end]
-        support_conditions = combined_conditions[input_start:support_end]
+        support_available_at_us = combined.available_at_us[input_start:support_end]
         support_share_factors = cumulative_share_factors(
             combined.bar_start_us[input_start:support_end], split_actions
         ).to(combined.features.dtype)
@@ -1582,6 +1631,7 @@ def build_session_examples(
         last_anchor = int(anchors[-1])
         raw_views: dict[str, torch.Tensor] = {"1s": base_raw}
         raw_view_start_us: dict[str, torch.Tensor] = {"1s": normalized_session.bar_start_us[input_start:input_end]}
+        raw_view_end_us: dict[str, torch.Tensor] = {"1s": normalized_session.bar_end_us[input_start:input_end]}
         raw_view_available_at_us: dict[str, torch.Tensor] = {"1s": normalized_session.available_at_us[input_start:input_end]}
         asof: dict[str, torch.Tensor] = {}
         for name in ("5s", "10s", "30s", "1m", "5m", "30m", "1h"):
@@ -1616,6 +1666,7 @@ def build_session_examples(
             )
             raw_views[name] = prefix.features
             raw_view_start_us[name] = prefix.bar_start_us
+            raw_view_end_us[name] = prefix.bar_end_us
             raw_view_available_at_us[name] = prefix.available_at_us
             asof[name] = causal_asof_indices(prefix.available_at_us, anchors)
             if torch.any(asof[name] < context_rows - 1):
@@ -1634,11 +1685,13 @@ def build_session_examples(
             if prefix is None:
                 raw_views[name] = _dummy_raw()
                 raw_view_start_us[name] = torch.zeros(1, dtype=torch.long)
+                raw_view_end_us[name] = torch.zeros(1, dtype=torch.long)
                 raw_view_available_at_us[name] = torch.zeros(1, dtype=torch.long)
                 asof[name] = torch.full((origin_count,), -1, dtype=torch.long)
             else:
                 raw_views[name] = prefix.features
                 raw_view_start_us[name] = prefix.bar_start_us
+                raw_view_end_us[name] = prefix.bar_end_us
                 raw_view_available_at_us[name] = prefix.available_at_us
                 indices = causal_asof_indices(prefix.available_at_us, anchors)
                 selected = indices >= 0
@@ -1661,14 +1714,20 @@ def build_session_examples(
             local_date=local_date,
             raw_views=raw_views,
             raw_view_start_us=raw_view_start_us,
+            raw_view_end_us=raw_view_end_us,
             raw_view_available_at_us=raw_view_available_at_us,
             origin_indices=origins,
             origin_timestamps_us=anchors,
             asof_indices=asof,
             target_support=support,
+            target_support_available_at_us=support_available_at_us,
+            target_coverage_end_us=int(prepared.condition_available_at_us[-1]),
             target_share_factors=support_share_factors,
-            target_condition_flags=support_conditions,
+            target_condition_available_at_us=prepared.condition_available_at_us,
+            target_condition_flags=prepared.condition_flags,
             support_origin_indices=origins,
+            horizon_targets=prepared.horizon_targets[origin_start : origin_start + origin_count],
+            horizon_mask=prepared.horizon_mask[origin_start : origin_start + origin_count],
             horizons_us=config.horizons_us,
             base_timeframe_us=config.base_timeframe_us,
             activity_regime=regime,
@@ -1984,16 +2043,19 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
         session_conditions = (
             dense_conditions
             if dense_conditions is not None
-            else torch.zeros((session_view.features.shape[0], len(CONDITION_COLUMNS)), dtype=torch.float32)
+            else torch.zeros(
+                (SESSION_END_SECOND - SESSION_START_SECOND, len(CONDITION_COLUMNS)), dtype=torch.float32
+            )
         )
         prior_conditions = None
         if prior_view is not None:
-            prior_rows = int(prior_view.features.shape[0])
             prior_dense = conditions.get(first_session.prior_date or "")
             prior_conditions = (
-                prior_dense[-prior_rows:]
+                prior_dense
                 if prior_dense is not None
-                else torch.zeros((prior_rows, len(CONDITION_COLUMNS)), dtype=torch.float32)
+                else torch.zeros(
+                    (SESSION_END_SECOND - SESSION_START_SECOND, len(CONDITION_COLUMNS)), dtype=torch.float32
+                )
             )
         prepared_key = (first_session.ticker, first_session.local_date, int(session_view.available_at_us[-1]))
         prepared = runtime.get("prepared") if runtime.get("prepared_key") == prepared_key else None
@@ -2097,6 +2159,21 @@ def _merge_rolling_daily_view(
         torch.stack([rows[date_value][1] for date_value in dates]),
         torch.stack([rows[date_value][2] for date_value in dates]),
         torch.stack([rows[date_value][3] for date_value in dates]),
+    )
+
+
+def _history_satisfies_intraday_context(view: BarView | None, config: DataConfig) -> bool:
+    """Return whether a sparse history can seed every configured intraday view."""
+    if view is None or view.features.shape[0] < int(config.intraday_context_by_name["1s"]):
+        return False
+    by_duration = {
+        5_000_000: "5s", 10_000_000: "10s", 30_000_000: "30s", 60_000_000: "1m",
+        300_000_000: "5m", 1_800_000_000: "30m", 3_600_000_000: "1h",
+    }
+    return all(
+        rollup_intraday_view(view, duration).features.shape[0]
+        >= int(config.intraday_context_by_name[name])
+        for duration, name in by_duration.items()
     )
 
 
@@ -2239,7 +2316,7 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     # loses the first session of every later month.
                     previous_loaded
                     if previous_loaded is not None
-                    else (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=warmup_days)).isoformat()
+                    else unit.start_date
                 )
                 unit_prepare_started = time.perf_counter()
                 if self.split in {"train", "cache"} and self.data_config.coverage_mode == "sequential":
@@ -2255,6 +2332,38 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                             )
                         ),
                     )
+                    if previous_loaded is None and not _history_satisfies_intraday_context(history_cache.view, self.data_config):
+                        # Expand backward in non-overlapping, derived windows.
+                        # No row-count constant is used: readiness is certified
+                        # against every configured sparse rollup count.
+                        maximum_span_us = max(
+                            int(self.data_config.intraday_context_by_name[name]) * int(TIMEFRAME_US_BY_NAME[name])
+                            for name in self.data_config.intraday_context_by_name
+                        )
+                        chunk_days = max(7, math.ceil(maximum_span_us / 86_400_000_000) * 3)
+                        authority_start = dt.date.fromisoformat(self.data_config.daily_history_start_date)
+                        warmup_right = dt.date.fromisoformat(unit.start_date)
+                        warmup_sessions: list[BarView] = []
+                        while warmup_right > authority_start:
+                            warmup_left = max(authority_start, warmup_right - dt.timedelta(days=chunk_days))
+                            older = [
+                                view for _day, view in client.iter_session_views(
+                                    ticker=ticker,
+                                    start_date=warmup_left.isoformat(),
+                                    end_date=warmup_right.isoformat(),
+                                    source_intervals=intervals_by_ticker[ticker],
+                                    prefetch_pages=self.data_config.clickhouse_prefetch_pages,
+                                )
+                            ]
+                            warmup_sessions = older + warmup_sessions
+                            candidate_cache = FixedBucketHistoryCache(max_rows=history_cache.max_rows)
+                            for value in warmup_sessions:
+                                candidate_cache.append(value, materialize=False)
+                            history_cache = candidate_cache
+                            history_by_ticker[ticker] = history_cache
+                            if _history_satisfies_intraday_context(history_cache.view, self.data_config):
+                                break
+                            warmup_right = warmup_left
                     previous_conditions = prior_conditions_by_ticker.get(ticker)
                     history_rows = history_cache.max_rows
                     # Daily bars are context-only.  The first month warms a
@@ -2305,7 +2414,9 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     ):
                         dense_conditions = conditions_by_date.get(local_date)
                         if dense_conditions is None:
-                            dense_conditions = torch.zeros((session.features.shape[0], 4), dtype=torch.float32)
+                            dense_conditions = torch.zeros(
+                                (SESSION_END_SECOND - SESSION_START_SECOND, 4), dtype=torch.float32
+                            )
                         if local_date < unit.start_date:
                             previous_session = history_cache.append(session)
                             previous_conditions = torch.cat((previous_conditions, dense_conditions), dim=0)[-history_rows:] if previous_conditions is not None else dense_conditions[-history_rows:]

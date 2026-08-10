@@ -22,7 +22,7 @@ from research.bar_gpt.v1.model_discovery import (
 )
 
 
-FINAL_VALIDATION_CONTRACT_VERSION = 1
+FINAL_VALIDATION_CONTRACT_VERSION = 2
 FINAL_VALIDATION_WANDB_PROJECT = "bar gpt model discovery final validation"
 
 
@@ -161,7 +161,7 @@ def _write_consolidated_summary(output_root: Path, summaries: list[dict[str, Any
         summaries,
         key=lambda item: (
             float(item.get("final_validation_loss/total", float("inf"))),
-            -float(item.get("final_validation_direction/mcc_macro", float("-inf"))),
+            -float(item.get("final_validation_trade_summary/mcc_macro", float("-inf"))),
             -float(item.get("final_validation_ar_direction_mcc/mcc_macro", float("-inf"))),
         ),
     )
@@ -179,14 +179,14 @@ def _write_consolidated_summary(output_root: Path, summaries: list[dict[str, Any
         "training_complete",
         "model_parameters",
         "final_validation_loss/total",
-        "final_validation_return/mae_bps_macro",
-        "final_validation_return/mae_skill_vs_zero_macro",
-        "final_validation_direction/balanced_accuracy_macro",
-        "final_validation_direction/mcc_macro",
+        "final_validation_trade_summary/mae_macro",
+        "final_validation_trade_summary/skill_macro",
+        "final_validation_trade_summary/balanced_macro",
+        "final_validation_trade_summary/mcc_macro",
         "final_validation_ar_direction_balanced/balanced_accuracy_macro",
         "final_validation_ar_direction_mcc/mcc_macro",
-        "final_validation_ranking/spearman_macro",
-        "final_validation_calibration/error_macro",
+        "final_validation_trade_summary/rank_macro",
+        "final_validation_trade_summary/calibration_macro",
         "final_validation_availability/brier_macro",
     )
     csv_path = output_root / "summary.csv"
@@ -204,10 +204,10 @@ def _write_consolidated_summary(output_root: Path, summaries: list[dict[str, Any
             f"{int(item['step']) / 1_000_000:>7.1f}M  "
             f"{str(bool(item['training_complete'])):<8}  "
             f"{float(item['final_validation_loss/total']):>8.4f}  "
-            f"{float(item['final_validation_return/mae_bps_macro']):>8.2f}  "
-            f"{float(item['final_validation_direction/mcc_macro']):>8.4f}  "
+            f"{float(item['final_validation_trade_summary/mae_macro']):>8.2f}  "
+            f"{float(item['final_validation_trade_summary/mcc_macro']):>8.4f}  "
             f"{float(item['final_validation_ar_direction_mcc/mcc_macro']):>8.4f}  "
-            f"{float(item['final_validation_ranking/spearman_macro']):>8.4f}",
+            f"{float(item.get('final_validation_trade_summary/rank_macro', float('nan'))):>8.4f}",
             flush=True,
         )
     print(f"Consolidated JSON: {output_root / 'summary.json'}", flush=True)
@@ -220,8 +220,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise ValueError("workers and batch size cannot be negative")
     discovery_root = Path(args.discovery_root)
     shard_root = Path(args.shard_root)
-    manifest_path = Path(args.manifest) if args.manifest else discovery_root / "fixed_panels_v2.json"
-    campaign_state_path = discovery_root / "campaign_state_v2.json"
+    manifest_path = Path(args.manifest) if args.manifest else discovery_root / "fixed_panels_v3.json"
+    campaign_state_path = discovery_root / "campaign_state_v3.json"
     if not campaign_state_path.is_file():
         raise RuntimeError(f"discovery campaign state is missing: {campaign_state_path}")
     campaign_state = json.loads(campaign_state_path.read_text(encoding="utf-8"))

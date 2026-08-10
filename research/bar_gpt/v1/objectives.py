@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from research.bar_gpt.v1.config import TrainConfig
 from research.bar_gpt.v1.data import BarGPTBatch
 from research.bar_gpt.v1.model import BarGPTOutput
-from research.bar_gpt.v1.targets import CONTINUOUS_TARGET_COUNT
+from research.bar_gpt.v1.targets import AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT, CONTINUOUS_TARGET_COUNT
 
 
 def masked_quantile_loss(
@@ -57,22 +57,23 @@ def _mixed_point_loss(
     mask: torch.Tensor,
     sample_weights: torch.Tensor,
     condition_positive_weight: float,
+    continuous_target_count: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     continuous_error = torch.nn.functional.huber_loss(
-        prediction[..., :CONTINUOUS_TARGET_COUNT],
-        target[..., :CONTINUOUS_TARGET_COUNT].to(prediction.dtype),
+        prediction[..., :continuous_target_count],
+        target[..., :continuous_target_count].to(prediction.dtype),
         reduction="none",
     )
-    continuous = _weighted_mean(continuous_error, mask[..., :CONTINUOUS_TARGET_COUNT], sample_weights)
-    positive_weights = prediction.new_ones(prediction.shape[-1] - CONTINUOUS_TARGET_COUNT)
+    continuous = _weighted_mean(continuous_error, mask[..., :continuous_target_count], sample_weights)
+    positive_weights = prediction.new_ones(prediction.shape[-1] - continuous_target_count)
     positive_weights[-4:] = float(condition_positive_weight)
     availability_error = torch.nn.functional.binary_cross_entropy_with_logits(
-        prediction[..., CONTINUOUS_TARGET_COUNT:],
-        target[..., CONTINUOUS_TARGET_COUNT:].to(prediction.dtype),
+        prediction[..., continuous_target_count:],
+        target[..., continuous_target_count:].to(prediction.dtype),
         reduction="none",
         pos_weight=positive_weights,
     )
-    availability = _weighted_mean(availability_error, mask[..., CONTINUOUS_TARGET_COUNT:], sample_weights)
+    availability = _weighted_mean(availability_error, mask[..., continuous_target_count:], sample_weights)
     return continuous, availability
 
 
@@ -109,7 +110,12 @@ def compute_loss(output: BarGPTOutput, batch: BarGPTBatch, config: TrainConfig, 
         target = batch.autoregressive_targets[name][:, : prediction.shape[1]]
         mask = batch.autoregressive_mask[name][:, : prediction.shape[1]]
         continuous, availability = _mixed_point_loss(
-            prediction, target, mask, batch.sample_weights, config.condition_positive_weight
+            prediction,
+            target,
+            mask,
+            batch.sample_weights,
+            config.condition_positive_weight,
+            AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT,
         )
         ar_continuous.append(continuous)
         ar_availability.append(availability)
@@ -162,8 +168,8 @@ def compute_loss(output: BarGPTOutput, batch: BarGPTBatch, config: TrainConfig, 
         )
         horizon_avail = _weighted_mean(bce, mask, batch.sample_weights)
     if output.horizon_direction_logits is not None:
-        endpoint_target = batch.horizon_targets[..., 0]
-        endpoint_mask = batch.horizon_mask[..., 0] & batch.origin_mask[:, :, None]
+        endpoint_target = batch.horizon_targets[..., :3]
+        endpoint_mask = batch.horizon_mask[..., :3] & batch.origin_mask[:, :, None, None]
         horizon_direction = _direction_loss(
             output.horizon_direction_logits,
             endpoint_target,

@@ -23,12 +23,12 @@ from research.bar_gpt.v1.offline_shards import (
 )
 
 
-DISCOVERY_CONTRACT_VERSION = 2
+DISCOVERY_CONTRACT_VERSION = 3
 DISCOVERY_WANDB_PROJECT = "bar gpt model discovery"
 DISCOVERY_ORIGIN_BARS_1S = 4_096
 DISCOVERY_TRAIN_ORIGINS_PER_EPOCH = 100_000_000
 DISCOVERY_EPOCHS = 2
-DEFAULT_SHARD_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
+DEFAULT_SHARD_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4")
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\model_discovery")
 
 
@@ -56,7 +56,7 @@ ARCHITECTURE_GRID: tuple[Architecture, ...] = (
 
 
 def discovery_data_config() -> DataConfig:
-    """Return the exact model-ready block contract used by the v3 shards."""
+    """Return the exact model-ready block contract used by the v4 shards."""
     return replace(DataConfig(), origin_bars_1s=DISCOVERY_ORIGIN_BARS_1S)
 
 
@@ -543,9 +543,9 @@ def _ranking_key(metrics: dict[str, float]) -> tuple[float, float, float, float]
     """Quality-first ranking; both direction paths and return error break close loss ties."""
     return (
         metrics.get("validation_loss/total", float("inf")),
-        -metrics.get("validation_direction/mcc_macro", float("-inf")),
+        -metrics.get("validation_trade_summary/mcc_macro", float("-inf")),
         -metrics.get("validation_ar_direction_mcc/mcc_macro", float("-inf")),
-        metrics.get("validation_return/mae_bps_macro", float("inf")),
+        metrics.get("validation_trade_summary/mae_macro", float("inf")),
     )
 
 
@@ -569,7 +569,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if unknown:
         raise ValueError(f"unknown architectures: {unknown}")
     output_root = Path(args.output_root)
-    manifest_path = output_root / "fixed_panels_v2.json"
+    manifest_path = output_root / "fixed_panels_v3.json"
     print(f"W&B project: {args.wandb_project}", flush=True)
     print("Metric namespaces: monitor_*, validation_*, locked_test_*", flush=True)
     print(
@@ -603,7 +603,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             config=discovery_data_config(),
         )
         print(f"Reusing verified manifest: {manifest_path}", flush=True)
-    state_path = output_root / "campaign_state_v2.json"
+    state_path = output_root / "campaign_state_v3.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {
         "contract_version": DISCOVERY_CONTRACT_VERSION,
         "campaign_id": time.strftime("%Y%m%d-%H%M%S"),

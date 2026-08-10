@@ -9,7 +9,12 @@ from torch import nn
 
 from research.bar_gpt.v1.config import BarGPTConfig
 from research.bar_gpt.v1.data import AUTOREGRESSIVE_VIEW_NAMES
-from research.bar_gpt.v1.targets import AVAILABILITY_TARGET_COUNT
+from research.bar_gpt.v1.targets import (
+    AUTOREGRESSIVE_AVAILABILITY_TARGET_COUNT,
+    AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT,
+    AVAILABILITY_TARGET_COUNT,
+    CONTINUOUS_TARGET_COUNT,
+)
 
 
 def build_model_mermaid() -> str:
@@ -22,7 +27,7 @@ def build_model_mermaid() -> str:
       E["As-of fusion at each 1s origin"]
       F["Origin embedding\\nmodel representation"]
       G["Autoregressive heads\\nnext-bar reconstruction per intraday view"]
-      H["Physical horizon head\\n6 horizons x 14 target channels x quantiles"]
+      H["Physical horizon head\\n6 horizons x 16 target channels x quantiles"]
       I["Availability heads\\nvalidity and event-risk masks"]
       J["Direction heads\\nneutral-aware up/down logits"]
       A --> B --> C --> D --> E --> F
@@ -209,11 +214,19 @@ class BarGPTV1(nn.Module):
             nn.Linear(config.d_model * 2, config.d_model, bias=False),
             nn.Sigmoid(),
         )
-        self.continuous_target_dim = config.target_dim - AVAILABILITY_TARGET_COUNT
+        self.continuous_target_dim = CONTINUOUS_TARGET_COUNT
         if self.continuous_target_dim <= 0:
             raise ValueError("target_dim must leave room for continuous and availability targets")
-        self.autoregressive_continuous_head = nn.Linear(config.d_model, self.continuous_target_dim, bias=False)
-        self.autoregressive_availability_head = nn.Linear(config.d_model, AVAILABILITY_TARGET_COUNT, bias=True)
+        if config.autoregressive_target_dim != (
+            AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT + AUTOREGRESSIVE_AVAILABILITY_TARGET_COUNT
+        ):
+            raise ValueError("autoregressive_target_dim does not match the legacy AR target contract")
+        self.autoregressive_continuous_head = nn.Linear(
+            config.d_model, AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT, bias=False
+        )
+        self.autoregressive_availability_head = nn.Linear(
+            config.d_model, AUTOREGRESSIVE_AVAILABILITY_TARGET_COUNT, bias=True
+        )
         self.autoregressive_direction_head = nn.Linear(config.d_model, 1, bias=True)
         self.latent_prediction_head = nn.Linear(config.d_model, config.d_model, bias=False)
         self.horizon_embedding = nn.Embedding(config.max_horizons, config.horizon_rank)
@@ -225,7 +238,7 @@ class BarGPTV1(nn.Module):
         )
 
         self.horizon_availability_head = nn.Linear(config.horizon_rank, AVAILABILITY_TARGET_COUNT, bias=True)
-        self.horizon_direction_head = nn.Linear(config.horizon_rank, 1, bias=True)
+        self.horizon_direction_head = nn.Linear(config.horizon_rank, 3, bias=True)
 
     def encode(
         self,
@@ -324,7 +337,7 @@ class BarGPTV1(nn.Module):
             else:
                 quantiles = raw_quantiles
             availability_logits = self.horizon_availability_head(conditioned)
-            direction_logits = self.horizon_direction_head(conditioned).squeeze(-1)
+            direction_logits = self.horizon_direction_head(conditioned)
         return BarGPTOutput(
             embeddings=fused,
             scale_embeddings=encoded,

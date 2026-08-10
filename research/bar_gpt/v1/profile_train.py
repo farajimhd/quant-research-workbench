@@ -293,7 +293,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
     parser.add_argument("--sdpa-audit", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="offline")
-    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -306,7 +306,7 @@ def _device(value: str) -> torch.device:
 def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
     tickers = tuple(item.strip().upper() for item in str(args.tickers).split(",") if item.strip())
     return DataConfig(
-        loader_stream_contract_version=5,
+        loader_stream_contract_version=6,
         tickers=tickers,
         start_date=str(args.start_date),
         end_date=str(args.end_date),

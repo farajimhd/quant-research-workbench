@@ -98,10 +98,10 @@ class ValidationAccumulator:
     binary_count: torch.Tensor | None = None
     coverage_hits: torch.Tensor | None = None
     coverage_count: torch.Tensor | None = None
-    endpoint_scores: dict[int, list[torch.Tensor]] = field(default_factory=dict)
-    endpoint_targets: dict[int, list[torch.Tensor]] = field(default_factory=dict)
-    direction_confidence: dict[int, list[torch.Tensor]] = field(default_factory=dict)
-    direction_correct: dict[int, list[torch.Tensor]] = field(default_factory=dict)
+    endpoint_scores: dict[tuple[int, int], list[torch.Tensor]] = field(default_factory=dict)
+    endpoint_targets: dict[tuple[int, int], list[torch.Tensor]] = field(default_factory=dict)
+    direction_confidence: dict[tuple[int, int], list[torch.Tensor]] = field(default_factory=dict)
+    direction_correct: dict[tuple[int, int], list[torch.Tensor]] = field(default_factory=dict)
     condition_scores: dict[tuple[int, int], list[torch.Tensor]] = field(default_factory=dict)
     condition_targets: dict[tuple[int, int], list[torch.Tensor]] = field(default_factory=dict)
 
@@ -153,9 +153,9 @@ class ValidationAccumulator:
         continuous_mask = batch.horizon_mask[..., :CONTINUOUS_TARGET_COUNT] & batch.origin_mask[:, :, None, None]
         median_index = min(range(len(self.quantiles)), key=lambda index: abs(self.quantiles[index] - 0.5))
         median = output.horizon_quantiles[..., median_index]
-        endpoint_mask = continuous_mask[..., 0]
-        endpoint_target = continuous_target[..., 0]
-        endpoint_prediction = median[..., 0].detach()
+        endpoint_mask = continuous_mask[..., :3]
+        endpoint_target = continuous_target[..., :3]
+        endpoint_prediction = median[..., :3].detach()
         # Endpoint targets are asinh(log_return * 100). Inverting and multiplying
         # by 10,000 yields log-return basis points exactly: sinh(value) * 100.
         predicted_bps = torch.sinh(endpoint_prediction.double()) * 100.0
@@ -175,17 +175,13 @@ class ValidationAccumulator:
             target_bps.abs(),
             torch.zeros_like(target_bps),
         ).sum((0, 1)).cpu()
-        trade_return_index = MODEL_FEATURE_NAMES.index("trade_close_return")
+        return_indices = [MODEL_FEATURE_NAMES.index(f"{family}_close_return") for family in ("bid", "ask", "trade")]
         batch_indices = torch.arange(batch.origin_indices.shape[0], device=batch.origin_indices.device)[:, None]
-        current_return = batch.views["1s"][
-            batch_indices,
-            batch.origin_indices.long(),
-            trade_return_index,
-        ]
+        current_return = batch.views["1s"][batch_indices, batch.origin_indices.long()][..., return_indices]
         persistence_bps = torch.sinh(current_return.double()) * 100.0
         persistence_error_sum = torch.where(
             endpoint_mask,
-            (persistence_bps[:, :, None] - target_bps).abs(),
+            (persistence_bps[:, :, None, :] - target_bps).abs(),
             torch.zeros_like(target_bps),
         ).sum((0, 1)).cpu()
         self.zero_endpoint_abs_error_bps = (
@@ -217,10 +213,8 @@ class ValidationAccumulator:
         self.direction_neutral_count = neutral_count if self.direction_neutral_count is None else self.direction_neutral_count + neutral_count
         self.direction_total_count = total_count if self.direction_total_count is None else self.direction_total_count + total_count
 
-        endpoint_quantiles = output.horizon_quantiles[..., 0, :].detach()
-        coverage_hits = (
-            (endpoint_target[..., None] <= endpoint_quantiles) & endpoint_mask[..., None]
-        ).sum((0, 1)).double().cpu()
+        endpoint_quantiles = output.horizon_quantiles[..., :3, :].detach()
+        coverage_hits = ((endpoint_target[..., None] <= endpoint_quantiles) & endpoint_mask[..., None]).sum((0, 1)).double().cpu()
         coverage_count = endpoint_count[:, None].expand_as(coverage_hits)
         self.coverage_hits = coverage_hits if self.coverage_hits is None else self.coverage_hits + coverage_hits
         self.coverage_count = coverage_count if self.coverage_count is None else self.coverage_count + coverage_count
@@ -239,24 +233,26 @@ class ValidationAccumulator:
 
         if self.include_ranking_metrics or self.include_confidence_metrics:
             for horizon_index in range(len(self.horizons_us)):
-                if self.include_ranking_metrics:
-                    selected = endpoint_mask[:, :, horizon_index]
-                    if torch.any(selected):
-                        self.endpoint_scores.setdefault(horizon_index, []).append(
-                            predicted_bps[:, :, horizon_index][selected].detach().float().cpu()
+                for family_index in range(3):
+                    key = (family_index, horizon_index)
+                    if self.include_ranking_metrics:
+                        selected = endpoint_mask[:, :, horizon_index, family_index]
+                        if torch.any(selected):
+                            self.endpoint_scores.setdefault(key, []).append(
+                                predicted_bps[:, :, horizon_index, family_index][selected].detach().float().cpu()
+                            )
+                            self.endpoint_targets.setdefault(key, []).append(
+                                target_bps[:, :, horizon_index, family_index][selected].detach().float().cpu()
+                            )
+                    directional = directional_mask[:, :, horizon_index, family_index]
+                    if self.include_confidence_metrics and torch.any(directional):
+                        self.direction_confidence.setdefault(key, []).append(
+                            output.horizon_direction_logits[:, :, horizon_index, family_index][directional].abs().detach().float().cpu()
                         )
-                        self.endpoint_targets.setdefault(horizon_index, []).append(
-                            target_bps[:, :, horizon_index][selected].detach().float().cpu()
+                        self.direction_correct.setdefault(key, []).append(
+                            (predicted_positive[:, :, horizon_index, family_index][directional]
+                             == target_positive[:, :, horizon_index, family_index][directional]).detach().cpu()
                         )
-                directional = directional_mask[:, :, horizon_index]
-                if self.include_confidence_metrics and torch.any(directional):
-                    self.direction_confidence.setdefault(horizon_index, []).append(
-                        output.horizon_direction_logits[:, :, horizon_index][directional].abs().detach().float().cpu()
-                    )
-                    self.direction_correct.setdefault(horizon_index, []).append(
-                        (predicted_positive[:, :, horizon_index][directional]
-                         == target_positive[:, :, horizon_index][directional]).detach().cpu()
-                    )
 
         if self.include_condition_metrics:
             for condition_index in range(len(CONDITION_TARGET_NAMES)):
@@ -307,95 +303,88 @@ class ValidationAccumulator:
         persistence_mae_bps = self.persistence_endpoint_abs_error_bps / self.endpoint_count.clamp_min(1)
         coverage = self.coverage_hits / self.coverage_count.clamp_min(1)
         brier = self.binary_brier / self.binary_count.clamp_min(1)
-        balanced_values: list[float] = []
-        accuracy_values: list[float] = []
-        mcc_values: list[float] = []
-        neutral_values: list[float] = []
-        mae_values: list[float] = []
         brier_values: list[float] = []
-        calibration_values: list[float] = []
-        coverage_macros: list[list[float]] = [[] for _ in self.quantiles]
-        rank_values: list[float] = []
-        zero_mae_values: list[float] = []
-        persistence_mae_values: list[float] = []
-        zero_skill_values: list[float] = []
-        confidence_values: dict[int, list[float]] = {10: [], 20: []}
+        family_names = ("bid", "ask", "trade")
+        family_summary = {
+            family: {key: [] for key in (
+                "mae", "zero_mae", "persistence_mae", "skill", "accuracy",
+                "balanced", "mcc", "neutral", "calibration", "rank", "top10", "top20",
+            )}
+            for family in family_names
+        }
+        coverage_macros = {
+            family: [[] for _ in self.quantiles] for family in family_names
+        }
         for horizon_index, horizon_us in enumerate(self.horizons_us):
             label = f"{horizon_us // 1_000_000}s"
-            mae_value = float(mae_bps[horizon_index])
-            zero_mae_value = float(zero_mae_bps[horizon_index])
-            persistence_mae_value = float(persistence_mae_bps[horizon_index])
-            zero_skill = 1.0 - mae_value / max(zero_mae_value, 1e-12)
             brier_value = float(brier[horizon_index])
-            metrics[f"{self.namespace}_return/mae_bps_{label}"] = mae_value
-            metrics[f"{self.namespace}_baseline/zero_return_mae_bps_{label}"] = zero_mae_value
-            metrics[f"{self.namespace}_baseline/persistence_mae_bps_{label}"] = persistence_mae_value
-            metrics[f"{self.namespace}_return/mae_skill_vs_zero_{label}"] = zero_skill
             metrics[f"{self.namespace}_availability/brier_{label}"] = brier_value
-            mae_values.append(mae_value)
-            zero_mae_values.append(zero_mae_value)
-            persistence_mae_values.append(persistence_mae_value)
-            zero_skill_values.append(zero_skill)
             brier_values.append(brier_value)
+            for family_index, family in enumerate(family_names):
+                summary = family_summary[family]
+                mae_value = float(mae_bps[horizon_index, family_index])
+                zero_mae_value = float(zero_mae_bps[horizon_index, family_index])
+                persistence_mae_value = float(persistence_mae_bps[horizon_index, family_index])
+                zero_skill = 1.0 - mae_value / max(zero_mae_value, 1e-12)
+                metrics[f"{self.namespace}_{family}_return_error/mae_bps_{label}"] = mae_value
+                metrics[f"{self.namespace}_{family}_return_error/persistence_mae_bps_{label}"] = persistence_mae_value
+                metrics[f"{self.namespace}_{family}_return_skill/zero_mae_bps_{label}"] = zero_mae_value
+                metrics[f"{self.namespace}_{family}_return_skill/skill_vs_zero_{label}"] = zero_skill
+                summary["mae"].append(mae_value)
+                summary["zero_mae"].append(zero_mae_value)
+                summary["persistence_mae"].append(persistence_mae_value)
+                summary["skill"].append(zero_skill)
 
-            accuracy, balanced, mcc = _direction_scores(self.direction_confusion[horizon_index])
-            direction_total = float(self.direction_total_count[horizon_index])
-            neutral_fraction = float(self.direction_neutral_count[horizon_index]) / direction_total if direction_total else float("nan")
-            metrics[f"{self.namespace}_direction_accuracy/accuracy_{label}"] = accuracy
-            metrics[f"{self.namespace}_direction/balanced_accuracy_{label}"] = balanced
-            metrics[f"{self.namespace}_direction/mcc_{label}"] = mcc
-            metrics[f"{self.namespace}_direction_neutral/neutral_fraction_{label}"] = neutral_fraction
-            accuracy_values.append(accuracy)
-            balanced_values.append(balanced)
-            mcc_values.append(mcc)
-            neutral_values.append(neutral_fraction)
+                accuracy, balanced, mcc = _direction_scores(self.direction_confusion[horizon_index, family_index])
+                direction_total = float(self.direction_total_count[horizon_index, family_index])
+                neutral_fraction = float(self.direction_neutral_count[horizon_index, family_index]) / direction_total if direction_total else float("nan")
+                direction_group = f"{self.namespace}_{family}_direction"
+                metrics[f"{direction_group}/accuracy_{label}"] = accuracy
+                metrics[f"{direction_group}/balanced_accuracy_{label}"] = balanced
+                metrics[f"{self.namespace}_{family}_direction_quality/mcc_{label}"] = mcc
+                metrics[f"{self.namespace}_{family}_direction_quality/neutral_fraction_{label}"] = neutral_fraction
+                summary["accuracy"].append(accuracy)
+                summary["balanced"].append(balanced)
+                summary["mcc"].append(mcc)
+                summary["neutral"].append(neutral_fraction)
 
-            errors = []
-            for quantile_index, quantile in enumerate(self.quantiles):
-                value = float(coverage[horizon_index, quantile_index])
-                quantile_label = f"q{int(round(quantile * 100)):02d}"
-                metrics[f"{self.namespace}_coverage_{quantile_label}/{label}"] = value
-                coverage_macros[quantile_index].append(value)
-                errors.append(abs(value - quantile))
-            calibration = _macro(errors)
-            metrics[f"{self.namespace}_calibration/error_{label}"] = calibration
-            calibration_values.append(calibration)
+                errors = []
+                for quantile_index, quantile in enumerate(self.quantiles):
+                    value = float(coverage[horizon_index, family_index, quantile_index])
+                    quantile_label = f"q{int(round(quantile * 100)):02d}"
+                    metrics[f"{self.namespace}_{family}_coverage_{quantile_label}/{label}"] = value
+                    coverage_macros[family][quantile_index].append(value)
+                    errors.append(abs(value - quantile))
+                calibration = _macro(errors)
+                metrics[f"{self.namespace}_{family}_calibration/error_{label}"] = calibration
+                summary["calibration"].append(calibration)
 
-            if horizon_index in self.endpoint_scores:
-                rank = _spearman(
-                    torch.cat(self.endpoint_scores[horizon_index]),
-                    torch.cat(self.endpoint_targets[horizon_index]),
-                )
-                metrics[f"{self.namespace}_ranking/spearman_{label}"] = rank
-                rank_values.append(rank)
-            if horizon_index in self.direction_confidence:
-                confidence = torch.cat(self.direction_confidence[horizon_index])
-                correct = torch.cat(self.direction_correct[horizon_index]).float()
-                order = torch.argsort(confidence, descending=True)
-                for percentage in (10, 20):
-                    count = max(1, math.ceil(order.numel() * percentage / 100.0))
-                    value = float(correct[order[:count]].mean())
-                    metrics[f"{self.namespace}_confidence/top_{percentage}pct_accuracy_{label}"] = value
-                    confidence_values[percentage].append(value)
+                key = (family_index, horizon_index)
+                if key in self.endpoint_scores:
+                    rank = _spearman(torch.cat(self.endpoint_scores[key]), torch.cat(self.endpoint_targets[key]))
+                    metrics[f"{self.namespace}_{family}_ranking/spearman_{label}"] = rank
+                    summary["rank"].append(rank)
+                if key in self.direction_confidence:
+                    confidence = torch.cat(self.direction_confidence[key])
+                    correct = torch.cat(self.direction_correct[key]).float()
+                    order = torch.argsort(confidence, descending=True)
+                    for percentage in (10, 20):
+                        count = max(1, math.ceil(order.numel() * percentage / 100.0))
+                        value = float(correct[order[:count]].mean())
+                        metrics[f"{self.namespace}_{family}_confidence/top_{percentage}pct_{label}"] = value
+                        summary[f"top{percentage}"].append(value)
 
-        metrics[f"{self.namespace}_return/mae_bps_macro"] = _macro(mae_values)
-        metrics[f"{self.namespace}_baseline/zero_return_mae_bps_macro"] = _macro(zero_mae_values)
-        metrics[f"{self.namespace}_baseline/persistence_mae_bps_macro"] = _macro(persistence_mae_values)
-        metrics[f"{self.namespace}_return/mae_skill_vs_zero_macro"] = _macro(zero_skill_values)
         metrics[f"{self.namespace}_availability/brier_macro"] = _macro(brier_values)
-        metrics[f"{self.namespace}_direction_accuracy/accuracy_macro"] = _macro(accuracy_values)
-        metrics[f"{self.namespace}_direction/balanced_accuracy_macro"] = _macro(balanced_values)
-        metrics[f"{self.namespace}_direction/mcc_macro"] = _macro(mcc_values)
-        metrics[f"{self.namespace}_direction_neutral/neutral_fraction_macro"] = _macro(neutral_values)
-        metrics[f"{self.namespace}_calibration/error_macro"] = _macro(calibration_values)
-        for quantile_index, quantile in enumerate(self.quantiles):
-            quantile_label = f"q{int(round(quantile * 100)):02d}"
-            metrics[f"{self.namespace}_coverage_{quantile_label}/macro"] = _macro(coverage_macros[quantile_index])
-        if rank_values:
-            metrics[f"{self.namespace}_ranking/spearman_macro"] = _macro(rank_values)
-        for percentage, values in confidence_values.items():
-            if values:
-                metrics[f"{self.namespace}_confidence/top_{percentage}pct_accuracy_macro"] = _macro(values)
+        for family in family_names:
+            summary = family_summary[family]
+            for name, values in summary.items():
+                if values:
+                    metrics[f"{self.namespace}_{family}_summary/{name}_macro"] = _macro(values)
+            for quantile_index, quantile in enumerate(self.quantiles):
+                quantile_label = f"q{int(round(quantile * 100)):02d}"
+                metrics[f"{self.namespace}_{family}_coverage_{quantile_label}/macro"] = _macro(
+                    coverage_macros[family][quantile_index]
+                )
 
         if self.include_condition_metrics:
             for condition_index, name in enumerate(CONDITION_TARGET_NAMES):

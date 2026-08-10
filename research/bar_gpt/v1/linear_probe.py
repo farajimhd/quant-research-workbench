@@ -35,7 +35,7 @@ JOB_TYPE = "linear_probe"
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Fit frozen BarGPT endpoint-return probes on held-out tickers.")
+    parser = argparse.ArgumentParser(description="Fit frozen BarGPT trade-return probes on held-out tickers.")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\linear_probe")
     parser.add_argument("--run-name", default="")
@@ -113,7 +113,7 @@ def collect_embeddings(
             raise RuntimeError("probe batch did not materialize physical targets")
         valid_origins = batch.origin_mask
         x = fused[valid_origins]
-        y = batch.horizon_targets[..., 0][valid_origins]
+        y = batch.horizon_targets[..., 2][valid_origins]
         m = batch.horizon_mask[..., 0][valid_origins]
         take = min(x.shape[0], limit - collected)
         embeddings.append(x[:take].float().cpu())
@@ -228,7 +228,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     probe, metrics = fit_ridge_probes(*calibration_data, *validation_data, ridge=float(args.ridge))
     probe["horizons_us"] = torch.as_tensor(config.data.horizons_us, dtype=torch.long)
-    torch.save(probe, paths.artifacts_dir / "frozen_endpoint_return_probe.pt")
+    torch.save(probe, paths.artifacts_dir / "frozen_trade_return_probe.pt")
     metrics_rows = [
         {**row, "horizon_us": int(config.data.horizons_us[int(row["horizon_index"])])}
         for row in metrics

@@ -843,6 +843,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 daily=None,
                 split_actions=(),
                 config=config,
+                origin_count_limit=config.origin_bars_1s,
             )
         )
         self.assertEqual(len(examples), 1)
@@ -947,7 +948,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         stored = torch.zeros((1, 1, len(TARGET_NAMES)), dtype=torch.float32)
         rebuilt = stored.clone()
         rebuilt[..., 0] = 2e-5  # Approximately 0.002 bp near zero after inverse scaling.
-        rebuilt[..., 4] = 2e-5  # Volume retains the strict default tolerance.
+        rebuilt[..., 6] = 2e-5  # Volume retains the strict default tolerance.
         result = _labeled_tensor_comparison(
             stored,
             rebuilt,
@@ -964,7 +965,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             TARGET_NAMES,
             atol_by_field=PHYSICAL_HORIZON_FLOAT_ATOL_BY_TARGET,
         )
-        self.assertEqual(result["outside_tolerance_by_field"]["endpoint_return"], 1)
+        self.assertEqual(result["outside_tolerance_by_field"]["bid_return"], 1)
 
     def test_session_rollup_and_targets_are_causal_and_nonredundant(self) -> None:
         examples = list(build_session_examples(
@@ -975,7 +976,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         first = examples[0]
         self.assertEqual(first.raw_views["1s"].shape[0], 7)  # context plus origins, future halo is target-only
         self.assertEqual(first.origin_indices.tolist(), [4, 5, 6])
-        self.assertEqual(first.target_support.shape[0], 9)
+        self.assertEqual(first.target_support.shape[0], 28)
         self.assertTrue(torch.all(first.asof_indices["5s"] >= 0))
         self.assertTrue(torch.all(first.asof_indices["1h"] >= 0))
         batch = collate_examples([first])
@@ -1082,11 +1083,13 @@ class LoaderTrainerContractTest(unittest.TestCase):
             "--execute", "--force-rebuild", "--tickers", "AAPL,GOOGL",
             "--start-date", "2019-01-01", "--end-date", "2019-02-01",
         ])
-        build, audit, context_build, context_audit = pilot_commands(args)
+        pilot_condition, build, audit, context_condition, context_build, context_audit = pilot_commands(args)
+        self.assertIn("research.bar_gpt.v1.run_build_conditions_1s", pilot_condition)
+        self.assertIn("research.bar_gpt.v1.run_build_conditions_1s", context_condition)
         self.assertEqual(build[build.index("--max-shards") + 1], "2")
         self.assertIn("--execute", build)
         self.assertIn("--force-rebuild", build)
-        self.assertIn("offline_shards_v3_pilot", " ".join(build))
+        self.assertIn("offline_shards_v4_pilot", " ".join(build))
         self.assertIn("research.bar_gpt.v1.audit_offline_shards", audit)
         self.assertIn("--verify-sha256", audit)
         self.assertEqual(context_build[context_build.index("--tickers") + 1], "AAPL")
@@ -1110,12 +1113,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
         validation_shards = stages[3][1]
         self.assertEqual(train_conditions[train_conditions.index("--start-date") + 1], "2019-01-01")
         self.assertEqual(train_conditions[train_conditions.index("--end-date") + 1], "2022-01-01")
-        self.assertEqual(train_shards[train_shards.index("--selection") + 1], "train")
+        self.assertEqual(train_shards[train_shards.index("--selection") + 1], "all")
         self.assertEqual(train_shards[train_shards.index("--workers") + 1], "32")
         self.assertIn("--execute", train_shards)
         self.assertEqual(validation_conditions[validation_conditions.index("--start-date") + 1], "2026-01-01")
         self.assertEqual(validation_conditions[validation_conditions.index("--end-date") + 1], "2026-08-01")
-        self.assertEqual(validation_shards[validation_shards.index("--selection") + 1], "validation")
+        self.assertEqual(validation_shards[validation_shards.index("--selection") + 1], "all")
         self.assertIn("--execute", validation_shards)
         self.assertNotIn("run_pilot_offline_shards", " ".join(item for _label, command in stages for item in command))
 
@@ -1162,7 +1165,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             validation_start_date="2026-01-01",
         )
         geometry_variant = dataclasses.replace(base, origin_bars_1s=base.origin_bars_1s + 1)
-        stream_variant = dataclasses.replace(base, loader_stream_contract_version=6)
+        stream_variant = dataclasses.replace(base, loader_stream_contract_version=5)
         fetch_variant = dataclasses.replace(base, clickhouse_query_days=3, clickhouse_prefetch_pages=2)
         self.assertEqual(config_hash(base), config_hash(loader_variant))
         self.assertNotEqual(config_hash(base), config_hash(stream_variant))
@@ -1173,9 +1176,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(len(production_hash), 64)
         self.assertNotEqual(production_hash, "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619")
         self.assertEqual(shard_compatibility_hash(production), production_hash)
-        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 5)
-        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 3)
-        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v3"))
+        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 6)
+        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 4)
+        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v4"))
         self.assertEqual(
             shard_path(DEFAULT_OUTPUT_ROOT, "AAA:2019-01"),
             DEFAULT_OUTPUT_ROOT / "tickers" / "AAA" / "2019" / "2019-01.pt",
@@ -1298,7 +1301,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
     def test_offline_training_preserves_prefetch_across_validation(self) -> None:
         runtime_data = dataclasses.replace(
             self.data_config(),
-            loader_stream_contract_version=5,
+            loader_stream_contract_version=6,
             tickers=("AAA", "BBB", "CCC"),
             start_date="2026-01-01",
             end_date="2026-03-01",
@@ -1499,6 +1502,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         examples = list(build_session_examples(
             ticker="AAA", local_date="2026-01-02", session=session_view(11), daily=None,
             split_actions=(), config=config, include_incomplete_horizons=True,
+            session_conditions=torch.zeros((11, 4)),
         ))
         self.assertEqual(sum(item.origin_indices.numel() for item in examples), 11)
         last = examples[-1]
@@ -1594,7 +1598,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
             item.origin_timestamps_us[:] = timestamp
             item.activity_regime = index % 3
             examples.append(item)
-        examples[-1].target_condition_flags[6, 0] = 1
+        condition_index = int(torch.searchsorted(
+            examples[-1].target_condition_available_at_us,
+            examples[-1].origin_timestamps_us[0],
+            right=True,
+        ))
+        examples[-1].target_condition_flags[condition_index, 0] = 1
         first = select_stratified_examples(examples, limit=5, seed=7, balance_activity_regimes=True)
         second = select_stratified_examples(examples, limit=5, seed=7, balance_activity_regimes=True)
         self.assertEqual([item.local_date + item.session_phase for item in first], [item.local_date + item.session_phase for item in second])
@@ -1649,7 +1658,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
         self.assertEqual(training_launcher_args["--data-source"], "offline")
-        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v3"))
+        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v4"))
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--offline-train-end-date"], "2022-01-01")
@@ -1885,7 +1894,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         )
         self.assertEqual(set(output.autoregressive), {"1s", "5s", "10s", "30s", "1m", "5m", "30m", "1h"})
         self.assertEqual(set(output.autoregressive_direction_logits), set(output.autoregressive))
-        self.assertEqual(output.horizon_direction_logits.shape, batch.horizon_targets.shape[:-1])
+        self.assertEqual(output.horizon_direction_logits.shape, (*batch.horizon_targets.shape[:-1], 3))
         self.assertEqual(set(output.latent_predictions), set(batch.views))
         self.assertNotIn("1MO", output.autoregressive)
         loss = compute_loss(output, batch, TrainConfig(), model_config.quantiles)
@@ -1896,15 +1905,16 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertGreater(float(sum(parameter.grad.abs().sum() for parameter in model.parameters() if parameter.grad is not None)), 0.0)
         self.assertGreater(float(model.autoregressive_direction_head.weight.grad.abs().sum()), 0.0)
         self.assertGreater(float(model.horizon_direction_head.weight.grad.abs().sum()), 0.0)
+        self.assertTrue(bool(torch.all(model.horizon_direction_head.weight.grad.abs().sum(dim=1) > 0)))
         accumulator = ValidationAccumulator(self.data_config().horizons_us, model_config.quantiles)
         accumulator.update(output, batch, loss)
         validation = accumulator.finalize()
         self.assertEqual(validation["validation_data/origins"], 6.0)
-        self.assertIn("validation_return/mae_bps_1s", validation)
-        self.assertIn("validation_direction/balanced_accuracy_1s", validation)
-        self.assertIn("validation_direction/mcc_1s", validation)
-        self.assertIn("validation_direction_accuracy/accuracy_1s", validation)
-        self.assertIn("validation_direction_neutral/neutral_fraction_1s", validation)
+        self.assertIn("validation_trade_return_error/mae_bps_1s", validation)
+        self.assertIn("validation_trade_direction/balanced_accuracy_1s", validation)
+        self.assertIn("validation_trade_direction_quality/mcc_1s", validation)
+        self.assertIn("validation_trade_direction/accuracy_1s", validation)
+        self.assertIn("validation_trade_direction_quality/neutral_fraction_1s", validation)
         self.assertIn("validation_ar_direction_balanced/balanced_accuracy_5s", validation)
         self.assertIn("validation_ar_direction_mcc/mcc_5s", validation)
         self.assertIn("validation_ar_direction_neutral/neutral_fraction_1s", validation)
@@ -1945,7 +1955,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         )
         accumulator.update(output, batch, loss)
         metrics = accumulator.finalize()
-        self.assertAlmostEqual(metrics["validation_return/mae_bps_1s"], 1.0, places=5)
+        self.assertAlmostEqual(metrics["validation_bid_return_error/mae_bps_1s"], 1.0, places=5)
 
     def test_deferred_update_losses_preserve_each_update_and_async_logging(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2307,10 +2317,10 @@ class LoaderTrainerContractTest(unittest.TestCase):
             "Optimization and runtime",
             "Data and durability",
             "Recent events",
-            "Return MAE",
-            "Balanced accuracy",
+            "Trade MAE",
+            "Trade balanced",
             "MCC",
-            "q90 coverage",
+            "Trade rank",
             "Overall speed",
             "Training loss and metrics",
         ):
@@ -2329,7 +2339,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertIn("Training loss and metrics", empty_output.getvalue())
         self.assertIn("Validation scorecard", empty_output.getvalue())
         self.assertIn("Latent prediction", empty_output.getvalue())
-        self.assertIn("Top 20% accuracy", empty_output.getvalue())
+        self.assertIn("Trade rank", empty_output.getvalue())
 
         text_output = io.StringIO()
         with redirect_stdout(text_output):

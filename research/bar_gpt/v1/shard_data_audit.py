@@ -7,7 +7,6 @@ import math
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
-from zoneinfo import ZoneInfo
 
 import torch
 
@@ -15,12 +14,8 @@ from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfi
 from research.bar_gpt.v1.data import AUTOREGRESSIVE_VIEW_NAMES, collate_examples
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.loader import (
-    SESSION_START_SECOND,
-    SESSION_TIMEZONE,
-    BarGPTSequentialDataset,
+    BarGPTIterableDataset,
     ClickHouseBarStreamConfig,
-    SequentialBlockPlan,
-    SequentialSessionPlan,
 )
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.offline_shards import (
@@ -32,7 +27,7 @@ from research.bar_gpt.v1.offline_shards import (
     shard_path,
 )
 from research.bar_gpt.v1.schema import FEATURE_INDEX
-from research.bar_gpt.v1.targets import TARGET_NAMES
+from research.bar_gpt.v1.targets import AUTOREGRESSIVE_TARGET_NAMES, TARGET_NAMES
 from research.bar_gpt.v1.train import _forward
 
 
@@ -48,7 +43,8 @@ PHYSICAL_HORIZON_FLOAT_ATOL_BY_TARGET: tuple[float, ...] = (
     5e-5,
     5e-5,
     5e-5,
-    *(DEFAULT_FLOAT_ATOL for _ in TARGET_NAMES[4:]),
+    5e-5,
+    *(DEFAULT_FLOAT_ATOL for _ in TARGET_NAMES[5:]),
 )
 
 
@@ -201,20 +197,6 @@ def data_config_for_sample(sample: LoadedAuditSample) -> DataConfig:
     return config
 
 
-def _origin_clock_second(sample: LoadedAuditSample) -> int:
-    start, _length = sample.stored_block["view_slices"]["1s"]
-    origin = int(sample.stored_block["origin_indices"][0])
-    start_us = int(sample.session["views"]["1s"]["start_us"][int(start) + origin])
-    local = dt.datetime.fromtimestamp(start_us / 1_000_000, tz=dt.timezone.utc).astimezone(
-        ZoneInfo(SESSION_TIMEZONE)
-    )
-    if local.date().isoformat() != sample.ref.local_date:
-        raise RuntimeError(
-            f"stored origin date mismatch: expected {sample.ref.local_date}, observed {local.date()}"
-        )
-    return local.hour * 3600 + local.minute * 60 + local.second
-
-
 def reconstruct_clickhouse_example(
     sample: LoadedAuditSample,
     *,
@@ -230,34 +212,9 @@ def reconstruct_clickhouse_example(
             "audit DataConfig is incompatible with the stored shard: "
             f"expected {sample.shard.get('config_hash')}, observed {expected_hash}"
         )
-    clock_second = _origin_clock_second(sample)
-    first_origin = clock_second - int(SESSION_START_SECOND)
-    if first_origin < 0:
-        raise RuntimeError(f"origin precedes the configured session: {clock_second}")
     month = sample.ref.unit_key.split(":", 1)[1]
     month_start = f"{month}-01"
     month_end = _next_month(month)
-    prior_date = str(sample.shard["sessions"][sample.ref.session_index - 1]["local_date"])
-    session = SequentialSessionPlan(
-        unit_index=0,
-        ticker=sample.ref.ticker,
-        unit_start_date=month_start,
-        unit_end_date=month_end,
-        local_date=sample.ref.local_date,
-        prior_date=prior_date,
-        first_origin=first_origin,
-        block_count=1,
-        unit_block_start=int(sample.ref.block_offset),
-        global_block_start=0,
-    )
-    plan = SequentialBlockPlan(
-        sessions=(session,),
-        session_block_starts=(0,),
-        unit_global_starts=(0,),
-        unit_block_counts=(int(sample.ref.block_offset) + 1,),
-        total_blocks=1,
-        total_origins=int(sample.block.origin_indices.numel()),
-    )
     resolved = replace(
         data_config,
         tickers=(sample.ref.ticker,),
@@ -265,13 +222,26 @@ def reconstruct_clickhouse_example(
         end_date=month_end,
         validation_start_date=month_start,
         validation_slices=((sample.ref.ticker, month_start, month_end),),
-        origin_fetch_candidate_blocks=1,
-        origin_emit_blocks_per_chunk=1,
         loader_workers=0,
         persistent_workers=False,
     )
-    dataset = BarGPTSequentialDataset(data_config=resolved, stream_config=stream_config, plan=plan)
-    return dataset[0]
+    dataset = BarGPTIterableDataset(
+        data_config=resolved,
+        stream_config=stream_config,
+        split="cache",
+        seed=17,
+        unit_tickers=(sample.ref.ticker,),
+    )
+    for example in dataset:
+        if (
+            example.local_date == sample.ref.local_date
+            and int(example.block_offset) == int(sample.ref.block_offset)
+        ):
+            return example
+    raise RuntimeError(
+        f"ClickHouse reconstruction did not reproduce {sample.ref.unit_key} "
+        f"{sample.ref.local_date} block {sample.ref.block_offset}"
+    )
 
 
 def _float_outside_tolerance(
@@ -420,7 +390,7 @@ def compare_loaded_to_clickhouse(
             f"autoregressive_target/{name}",
             stored.autoregressive_targets[name],
             rebuilt.autoregressive_targets[name],
-            TARGET_NAMES,
+            AUTOREGRESSIVE_TARGET_NAMES,
         )
         add(
             f"autoregressive_mask/{name}",
@@ -441,62 +411,60 @@ def compare_loaded_to_clickhouse(
         "match": not failed,
         "failed": failed,
         "comparisons": comparisons,
-        "source_switch_diagnostics": source_switch_diagnostics(rebuilt, data_config),
+        "family_update_diagnostics": family_update_diagnostics(rebuilt, data_config),
     }
 
 
-def source_switch_diagnostics(batch, data_config: DataConfig) -> dict[str, Any]:
-    """Measure midpoint/trade reference transitions in reconstructed raw support."""
+def family_update_diagnostics(batch, data_config: DataConfig) -> dict[str, Any]:
+    """Verify every valid price target has a same-family future update."""
     support = batch.target_support[0, : int(batch.target_support_lengths[0])]
+    available = batch.target_support_available_at_us[0, : int(batch.target_support_lengths[0])]
     origins = batch.support_origin_indices[0, : int(batch.origin_mask[0].sum())].long()
-    quote = support[:, FEATURE_INDEX["quote_pair_present"]] > 0
-    trade = support[:, FEATURE_INDEX["trade_present"]] > 0
-    direct_source = torch.where(quote, torch.ones_like(quote, dtype=torch.long), torch.where(
-        trade, torch.full_like(quote, 2, dtype=torch.long), torch.zeros_like(quote, dtype=torch.long)
-    ))
-    rows = torch.arange(direct_source.numel(), dtype=torch.long)
-    last = torch.where(direct_source > 0, rows, torch.full_like(rows, -1)).cummax(0).values
-    source = torch.where(last >= 0, direct_source[last.clamp_min(0)], torch.zeros_like(last))
     values: dict[str, Any] = {}
     for index, horizon_us in enumerate(data_config.horizons_us):
-        steps = int(horizon_us) // int(data_config.base_timeframe_us)
-        endpoint = (origins + steps).clamp(max=max(source.numel() - 1, 0))
-        valid = batch.horizon_mask[0, : origins.numel(), index, 0]
-        changed = valid & (source[origins] != source[endpoint])
-        count = int(valid.sum())
-        values[f"{int(horizon_us) // 1_000_000}s"] = {
-            "valid": count,
-            "reference_source_switches": int(changed.sum()),
-            "reference_source_switch_rate": float(changed.sum() / count) if count else None,
-        }
+        origin_times = available[origins]
+        endpoints = torch.searchsorted(available, origin_times + int(horizon_us), right=True)
+        family_values: dict[str, Any] = {}
+        for family_index, family in enumerate(("bid", "ask", "trade")):
+            present = support[:, FEATURE_INDEX[f"{family}_present"]] > 0
+            prefix = torch.cat((torch.zeros(1, dtype=torch.long), present.long().cumsum(0)))
+            future_update = prefix[endpoints] - prefix[origins + 1] > 0
+            valid = batch.horizon_mask[0, : origins.numel(), index, family_index]
+            violations = valid & ~future_update
+            family_values[family] = {
+                "valid": int(valid.sum()),
+                "valid_without_future_family_update": int(violations.sum()),
+            }
+        values[f"{int(horizon_us) // 1_000_000}s"] = family_values
     return values
 
 
 def target_diagnostics(sample: LoadedAuditSample, data_config: DataConfig) -> dict[str, Any]:
-    target = sample.block.horizon_targets[..., 0]
-    mask = sample.block.horizon_mask[..., 0]
     threshold = math.asinh(1.0 / 100.0)
     result: dict[str, Any] = {}
     for index, horizon_us in enumerate(data_config.horizons_us):
-        valid = mask[:, index]
-        selected = target[:, index][valid]
-        bps = torch.sinh(selected.double()) * 100.0
-        directional = selected.abs() > threshold
-        directional_count = int(directional.sum())
-        positive = int((selected > threshold).sum())
-        result[f"{int(horizon_us) // 1_000_000}s"] = {
-            "valid": int(valid.sum()),
-            "masked": int((~valid).sum()),
-            "neutral": int((~directional).sum()),
-            "neutral_fraction": float((~directional).float().mean()) if selected.numel() else None,
-            "up": positive,
-            "down": int((selected < -threshold).sum()),
-            "up_fraction_directional": positive / directional_count if directional_count else None,
-            "mean_bps": float(bps.mean()) if bps.numel() else None,
-            "mean_abs_bps": float(bps.abs().mean()) if bps.numel() else None,
-            "maximum_abs_bps": float(bps.abs().max()) if bps.numel() else None,
-            "over_1000_bps": int((bps.abs() > 1_000).sum()),
-        }
+        families: dict[str, Any] = {}
+        for family_index, family in enumerate(("bid", "ask", "trade")):
+            valid = sample.block.horizon_mask[:, index, family_index]
+            selected = sample.block.horizon_targets[:, index, family_index][valid]
+            bps = torch.sinh(selected.double()) * 100.0
+            directional = selected.abs() > threshold
+            directional_count = int(directional.sum())
+            positive = int((selected > threshold).sum())
+            families[family] = {
+                "valid": int(valid.sum()),
+                "masked": int((~valid).sum()),
+                "neutral": int((~directional).sum()),
+                "neutral_fraction": float((~directional).float().mean()) if selected.numel() else None,
+                "up": positive,
+                "down": int((selected < -threshold).sum()),
+                "up_fraction_directional": positive / directional_count if directional_count else None,
+                "mean_bps": float(bps.mean()) if bps.numel() else None,
+                "mean_abs_bps": float(bps.abs().mean()) if bps.numel() else None,
+                "maximum_abs_bps": float(bps.abs().max()) if bps.numel() else None,
+                "over_1000_bps": int((bps.abs() > 1_000).sum()),
+            }
+        result[f"{int(horizon_us) // 1_000_000}s"] = families
     return result
 
 
@@ -506,37 +474,35 @@ def diagnostic_findings(
 ) -> list[dict[str, str]]:
     """Return explicit heuristic warnings without weakening exact contract failures."""
     findings: list[dict[str, str]] = []
-    for horizon, values in target_values.items():
-        neutral = values.get("neutral_fraction")
-        up = values.get("up_fraction_directional")
-        if neutral is not None and float(neutral) > 0.95:
-            findings.append({
-                "severity": "warning",
-                "code": "near_all_neutral_direction",
-                "message": f"{horizon}: {float(neutral):.2%} of valid endpoint returns are inside the neutral band",
-            })
-        if up is not None and not 0.35 <= float(up) <= 0.65:
-            findings.append({
-                "severity": "warning",
-                "code": "direction_class_imbalance",
-                "message": f"{horizon}: directional up share is {float(up):.2%}",
-            })
-        extreme = int(values.get("over_1000_bps", 0))
-        if extreme:
-            findings.append({
-                "severity": "warning",
-                "code": "extreme_endpoint_return",
-                "message": f"{horizon}: {extreme} valid endpoint returns exceed 1,000 bps in absolute value",
-            })
-    if clickhouse_comparison is not None:
-        for horizon, values in clickhouse_comparison["source_switch_diagnostics"].items():
-            rate = values.get("reference_source_switch_rate")
-            if rate is not None and float(rate) > 0.01:
+    for horizon, families in target_values.items():
+        for family, values in families.items():
+            neutral = values.get("neutral_fraction")
+            up = values.get("up_fraction_directional")
+            if neutral is not None and float(neutral) > 0.95:
                 findings.append({
-                    "severity": "warning",
-                    "code": "reference_source_switching",
-                    "message": f"{horizon}: midpoint/trade reference source changes for {float(rate):.2%} of valid targets",
+                    "severity": "warning", "code": "near_all_neutral_direction",
+                    "message": f"{horizon}/{family}: {float(neutral):.2%} of valid returns are neutral",
                 })
+            if up is not None and not 0.35 <= float(up) <= 0.65:
+                findings.append({
+                    "severity": "warning", "code": "direction_class_imbalance",
+                    "message": f"{horizon}/{family}: directional up share is {float(up):.2%}",
+                })
+            extreme = int(values.get("over_1000_bps", 0))
+            if extreme:
+                findings.append({
+                    "severity": "warning", "code": "extreme_endpoint_return",
+                    "message": f"{horizon}/{family}: {extreme} valid returns exceed 1,000 bps",
+                })
+    if clickhouse_comparison is not None:
+        for horizon, families in clickhouse_comparison["family_update_diagnostics"].items():
+            for family, values in families.items():
+                violations = int(values["valid_without_future_family_update"])
+                if violations:
+                    findings.append({
+                        "severity": "error", "code": "missing_future_family_update",
+                        "message": f"{horizon}/{family}: {violations} valid targets lack a future same-family update",
+                    })
     if not findings:
         findings.append({
             "severity": "info",
@@ -591,6 +557,7 @@ def selected_input_rows(
             row = {
                 "row_index": index,
                 "bar_start_us": int(shared["start_us"][shared_index]),
+                "bar_end_us": int(shared["end_us"][shared_index]),
                 "available_at_us": int(shared["available_at_us"][shared_index]),
                 "is_asof": index == asof,
             }
@@ -607,9 +574,12 @@ def selected_targets(sample: LoadedAuditSample, origin_offset: int, data_config:
         mask = sample.block.horizon_mask[origin_offset, horizon_index]
         row: dict[str, Any] = {
             "horizon": f"{int(horizon_us) // 1_000_000}s",
-            "endpoint_return_bps": float(torch.sinh(values[0].double()) * 100.0),
-            "direction": "up" if values[0] > 0 else ("down" if values[0] < 0 else "flat"),
         }
+        for family_index, family in enumerate(("bid", "ask", "trade")):
+            row[f"{family}_return_bps"] = float(torch.sinh(values[family_index].double()) * 100.0)
+            row[f"{family}_direction"] = (
+                "up" if values[family_index] > 0 else ("down" if values[family_index] < 0 else "flat")
+            )
         for target_index, name in enumerate(TARGET_NAMES):
             row[f"target_{name}"] = float(values[target_index])
             row[f"mask_{name}"] = bool(mask[target_index])
@@ -639,7 +609,7 @@ def selected_autoregressive_targets(sample: LoadedAuditSample, origin_offset: in
             "endpoint_return_bps": float(torch.sinh(values[0].double()) * 100.0),
             "direction": "up" if values[0] > 0 else ("down" if values[0] < 0 else "flat"),
         }
-        for index, target_name in enumerate(TARGET_NAMES):
+        for index, target_name in enumerate(AUTOREGRESSIVE_TARGET_NAMES):
             row[f"target_{target_name}"] = float(values[index])
             row[f"mask_{target_name}"] = bool(mask[index])
         rows.append(row)
@@ -676,17 +646,18 @@ def selected_predictions(
     median_index = min(range(len(model_config.quantiles)), key=lambda index: abs(model_config.quantiles[index] - 0.5))
     rows: list[dict[str, Any]] = []
     for horizon_index, horizon_us in enumerate(data_config.horizons_us):
-        quantiles = output.horizon_quantiles[0, origin_offset, horizon_index, 0].double().cpu()
-        logit = output.horizon_direction_logits[0, origin_offset, horizon_index].double().cpu()
-        row = {
-            "horizon": f"{int(horizon_us) // 1_000_000}s",
-            "predicted_endpoint_bps_q10": float(torch.sinh(quantiles[0]) * 100.0),
-            "predicted_endpoint_bps_q50": float(torch.sinh(quantiles[median_index]) * 100.0),
-            "predicted_endpoint_bps_q90": float(torch.sinh(quantiles[-1]) * 100.0),
-            "direction_logit": float(logit),
-            "direction_probability_up": float(torch.sigmoid(logit)),
-            "predicted_direction": "up" if logit > 0 else "down",
-        }
+        row: dict[str, Any] = {"horizon": f"{int(horizon_us) // 1_000_000}s"}
+        for family_index, family in enumerate(("bid", "ask", "trade")):
+            quantiles = output.horizon_quantiles[0, origin_offset, horizon_index, family_index].double().cpu()
+            logit = output.horizon_direction_logits[0, origin_offset, horizon_index, family_index].double().cpu()
+            row.update({
+                f"{family}_bps_q10": float(torch.sinh(quantiles[0]) * 100.0),
+                f"{family}_bps_q50": float(torch.sinh(quantiles[median_index]) * 100.0),
+                f"{family}_bps_q90": float(torch.sinh(quantiles[-1]) * 100.0),
+                f"{family}_direction_logit": float(logit),
+                f"{family}_probability_up": float(torch.sigmoid(logit)),
+                f"{family}_predicted_direction": "up" if logit > 0 else "down",
+            })
         rows.append(row)
     return rows
 
