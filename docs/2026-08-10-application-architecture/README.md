@@ -45,8 +45,6 @@ flowchart TD
     B --> C["Canonical durable data and coverage"]
     C --> D["Point-in-time identity, reference, text, fundamentals, and embeddings"]
     C --> E["QMD event, bar, indicator, signal, and scanner products"]
-    C --> O["Market AI bounded ClickHouse context"]
-    E --> O["Live QMD and QMD History market products"]
     D --> F["Backend composition and typed observation boundary"]
     E --> F
     F --> G["Canvas, charts, Scanner, Watchlists, News, SEC, facts, and service views"]
@@ -59,8 +57,7 @@ flowchart TD
     C --> M["Offline datasets, certification, research, and training"]
     D --> M
     M --> N["Versioned promoted models and inference contracts"]
-    N --> O
-    O --> F
+    N --> F
 ```
 
 ## Authority summary
