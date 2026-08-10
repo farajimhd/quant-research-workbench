@@ -1,5 +1,6 @@
 # Frontend instructions
 
+- Run, install, and build the frontend only through `python scripts/run_frontend.py <command>`; use `scripts/start_workspace_services.ps1` and `scripts/stop_workspace_services.ps1` for the managed workspace lifecycle, or Ctrl+C to stop a standalone launcher. Never run npm from `frontend/`; dependencies, caches, and build output must remain in the external runtime workspace.
 - For browser UI design, implementation, review, or modification, use the `design-frontend-ui` skill. If unavailable, follow `docs/codex/skills/design-frontend-ui/SKILL.md`.
 - Trace the authoritative data source and contract before designing. Account for field meaning, update rate, latency, freshness, lifecycle, failure modes, and the UI's responsibility in the larger workflow.
 - Treat the existing interface as evidence, not an immutable authority. Preserve strong patterns and improve weak ones when evidence supports it. When no interface exists, establish routine visual choices from the users, workflow, risk, density, platform, and product objective.
