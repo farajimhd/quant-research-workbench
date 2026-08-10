@@ -1183,10 +1183,16 @@ class ArrowStreamClient:
                         for item in source_map.get(source, [])
                         if item.valid_from <= execution_date < item.valid_to_exclusive
                     ]
+                    # A provider ticker can be reused by a different current
+                    # identity after this canonical ticker's bounded interval.
+                    # Such a row is outside this request, not an ambiguous
+                    # action for the requested canonical ticker.
+                    if not matches:
+                        continue
                     canonical = sorted({item.canonical_ticker for item in matches})
                     if len(canonical) != 1:
                         raise RuntimeError(
-                            f"split identity is not unique for {source} on {execution_date}: {canonical or 'unmapped'}"
+                            f"split identity is not unique for {source} on {execution_date}: {canonical}"
                         )
                     factor = float(row["split_to"]) / float(row["split_from"])
                     records.setdefault((canonical[0], execution_date), set()).add((factor, source))

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import math
 import unittest
+from contextlib import contextmanager
 
+import polars as pl
 import torch
 
 from research.bar_gpt.v1.corporate_actions import (
@@ -12,7 +14,12 @@ from research.bar_gpt.v1.corporate_actions import (
 )
 from research.bar_gpt.v1.schema import FEATURE_INDEX, FEATURE_NAMES
 from research.bar_gpt.v1.targets import build_physical_horizon_targets
-from research.bar_gpt.v1.loader import provider_timeline_intervals
+from research.bar_gpt.v1.loader import (
+    ArrowStreamClient,
+    ClickHouseBarStreamConfig,
+    TickerInterval,
+    provider_timeline_intervals,
+)
 
 
 def raw_rows(prices: tuple[float, ...], sizes: tuple[float, ...]) -> torch.Tensor:
@@ -107,6 +114,35 @@ class CausalSplitContractTest(unittest.TestCase):
                 [("figi:alphabet", "2014-04-03", "GOOG")],
                 coverage_start="2019-01-01",
             )
+
+    def test_split_reader_ignores_reused_source_ticker_outside_identity_interval(self) -> None:
+        class FakeClient(ArrowStreamClient):
+            @contextmanager
+            def record_batches(self, _query):
+                frame = pl.DataFrame({
+                    "source_ticker": ["GOOG", "GOOGL"],
+                    "execution_date": ["2022-07-18", "2022-07-18"],
+                    "split_from": [1.0, 1.0],
+                    "split_to": [20.0, 20.0],
+                })
+                yield iter(frame.to_arrow().to_batches())
+
+        client = FakeClient(ClickHouseBarStreamConfig("http://localhost:8123", "", ""))
+        intervals = (
+            TickerInterval("GOOGL", "GOOG", "2004-08-19", "2014-04-03"),
+            TickerInterval("GOOGL", "GOOGL", "2014-04-03", "9999-12-31"),
+        )
+        actions = client.read_split_actions(
+            {"GOOGL": intervals},
+            start_date="2019-01-01",
+            end_date="2026-08-01",
+            split_database="q_live",
+            split_table="market_stock_split_v1",
+        )["GOOGL"]
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].source_ticker, "GOOGL")
+        self.assertEqual(actions[0].execution_date, "2022-07-18")
+        self.assertEqual(actions[0].share_factor, 20.0)
 
 
 if __name__ == "__main__":
