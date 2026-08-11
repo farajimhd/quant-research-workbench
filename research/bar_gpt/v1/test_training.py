@@ -1181,7 +1181,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(build[build.index("--source-mode") + 1], "direct_events")
         self.assertIn("--execute", build)
         self.assertIn("--force-rebuild", build)
-        self.assertIn("offline_shards_v11_pilot", " ".join(build))
+        self.assertIn("offline_shards_v12_pilot", " ".join(build))
         self.assertIn("research.bar_gpt.v1.audit_offline_shards", audit)
         self.assertIn("--verify-sha256", audit)
         self.assertNotIn("--require-calendar-context", audit)
@@ -1276,9 +1276,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(len(production_hash), 64)
         self.assertNotEqual(production_hash, "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619")
         self.assertEqual(shard_compatibility_hash(production), production_hash)
-        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 12)
-        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 11)
-        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v11"))
+        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 13)
+        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 12)
+        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12"))
         self.assertEqual(
             shard_path(DEFAULT_OUTPUT_ROOT, "AAA:2019-01"),
             DEFAULT_OUTPUT_ROOT / "tickers" / "AAA" / "2019" / "2019-01.pt",
@@ -1420,7 +1420,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
     def test_offline_training_preserves_prefetch_across_validation(self) -> None:
         runtime_data = dataclasses.replace(
             self.data_config(),
-            loader_stream_contract_version=12,
+            loader_stream_contract_version=13,
             tickers=("AAA", "BBB", "CCC"),
             start_date="2026-01-01",
             end_date="2026-03-01",
@@ -1778,7 +1778,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
         self.assertEqual(training_launcher_args["--data-source"], "offline")
-        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v11"))
+        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v12"))
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--offline-train-end-date"], "2022-01-01")

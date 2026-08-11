@@ -15,7 +15,6 @@ _SESSION_ZONE = ZoneInfo(SESSION_TIMEZONE)
 
 def _family_names(prefix: str) -> tuple[str, ...]:
     names = (
-        f"{prefix}_present",
         f"{prefix}_close_return",
         f"{prefix}_open_gap",
         f"{prefix}_high_from_open_return",
@@ -25,7 +24,7 @@ def _family_names(prefix: str) -> tuple[str, ...]:
         f"{prefix}_size_cv",
     )
     if prefix == "trade":
-        return (*names[:6], "trade_log_count", *names[6:])
+        return (*names[:5], "trade_log_count", *names[5:])
     return names
 
 
@@ -47,7 +46,6 @@ MODEL_FEATURE_NAMES: tuple[str, ...] = (
     "queue_imbalance_mean",
     "queue_imbalance_std",
     "locked_quote_fraction",
-    "crossed_quote_fraction",
     "log_condition_count",
     "halt_pause_present",
     "log_halt_pause_count",
@@ -149,7 +147,6 @@ def project_stationary_features(
         )
         size_cv = torch.where(count > 1, variance.sqrt() / mean_size.clamp_min(eps), 0.0)
         family_output = [
-            present.float(),
             torch.asinh(close_return * 100.0),
             torch.asinh(open_gap * 100.0),
             torch.asinh(high_from_open * 100.0),
@@ -191,7 +188,6 @@ def project_stationary_features(
             qi_mean.clamp(-1.0, 1.0),
             qi_variance.sqrt().clamp(0.0, 1.0),
             (_column(raw, "locked_quote_count") / quote_count.clamp_min(1.0)).clamp(0.0, 1.0),
-            (_column(raw, "crossed_quote_count") / quote_count.clamp_min(1.0)).clamp(0.0, 1.0),
             torch.log1p(_column(raw, "condition_nonzero_count")),
             (_column(raw, "condition_halt_pause_count") > 0).float(),
             torch.log1p(_column(raw, "condition_halt_pause_count")),

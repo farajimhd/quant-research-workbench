@@ -36,7 +36,7 @@ from research.bar_gpt.v1.targets import (
 )
 
 
-DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v11_pilot")
+DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12_pilot")
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -272,29 +272,27 @@ def audit_shard(
             )
             _require(bool(torch.all(valid_available >= valid_ends)), f"{label}/{name}: availability precedes bar end")
             for family in PRICE_FAMILIES:
-                present_index = MODEL_FEATURE_NAMES.index(f"{family}_present")
                 high_index = MODEL_FEATURE_NAMES.index(f"{family}_high_from_open_return")
                 low_index = MODEL_FEATURE_NAMES.index(f"{family}_low_from_open_return")
-                present = (features[:, present_index] > 0) & validity
                 _require(
-                    not bool((present & (features[:, high_index] < -1e-6)).any()),
+                    not bool((validity & (features[:, high_index] < -1e-6)).any()),
                     f"{label}/{name}/{family}: high return is below open",
                 )
                 _require(
-                    not bool((present & (features[:, low_index] > 1e-6)).any()),
+                    not bool((validity & (features[:, low_index] > 1e-6)).any()),
                     f"{label}/{name}/{family}: low return is above open",
                 )
             if name in intraday_context:
                 expected_duration = int(TIMEFRAME_US_BY_NAME[name])
                 _require(bool(torch.all(valid_ends - valid_starts == expected_duration)), f"{label}/{name}: bar duration mismatch")
                 source_index = MODEL_FEATURE_NAMES.index("log_source_event_count")
-                trade_present_index = MODEL_FEATURE_NAMES.index("trade_present")
+                trade_count_index = MODEL_FEATURE_NAMES.index("trade_log_count")
                 _require(
                     bool(torch.all(features[validity, source_index] > 0)),
                     f"{label}/{name}: empty-event bar was stored as intraday context",
                 )
                 _require(
-                    bool(torch.all(features[validity, trade_present_index] > 0)),
+                    bool(torch.all(features[validity, trade_count_index] > 0)),
                     f"{label}/{name}: context bar without an eligible trade",
                 )
                 for condition_name in ("halt_pause", "resume", "news_risk", "luld_limit_state"):
@@ -364,7 +362,7 @@ def audit_shard(
                     )
                     _require(int(origin_indices.max()) < length, f"{block_label}/1s: origin outside slice")
                     source_index = MODEL_FEATURE_NAMES.index("log_source_event_count")
-                    trade_present_index = MODEL_FEATURE_NAMES.index("trade_present")
+                    trade_count_index = MODEL_FEATURE_NAMES.index("trade_log_count")
                     local_features = views[name]["features"][start : start + length]
                     _require(
                         bool(torch.all(local_validity[origin_indices.long()])),
@@ -375,7 +373,7 @@ def audit_shard(
                         f"{block_label}/1s: zero-event origin detected",
                     )
                     _require(
-                        bool(torch.all(local_features[origin_indices.long(), trade_present_index] > 0)),
+                        bool(torch.all(local_features[origin_indices.long(), trade_count_index] > 0)),
                         f"{block_label}/1s: origin without an eligible trade",
                     )
                     local_available = available[start : start + length]

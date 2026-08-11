@@ -22,7 +22,7 @@ def build_model_mermaid() -> str:
     """Stable architecture diagram written into every training artifact."""
     return """flowchart TD
       A["As-of multiscale bars\\n1s 5s 10s 30s 1m 5m 30m 1h 1D 1W 1MO"]
-      B["Stationary feature projection\\n54 input channels"]
+      B["Stationary feature projection\\n50 input channels"]
       C["Continuous timeframe + pathway embeddings"]
       D["Causal decoder\\n8 RMSNorm + GQA RoPE blocks\\nd_model=384, heads=8, KV heads=4"]
       E["As-of fusion at each 1s origin"]

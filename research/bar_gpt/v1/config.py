@@ -81,10 +81,10 @@ class BarGPTConfig:
 
 @dataclass(slots=True)
 class DataConfig:
-    # Stream v11 compiles directly from compact events.  An eligible trade is
+    # Stream v13 compiles directly from compact events. An eligible trade is
     # mandatory for every stored 1s token, origin, and intraday context row;
     # quotes may enrich a trade-bearing second but cannot create one.
-    loader_stream_contract_version: int = 12
+    loader_stream_contract_version: int = 13
     source_mode: str = "direct_events"
     events_table_base: str = "events"
     condition_reference_table: str = "event_condition_token_reference"
@@ -194,8 +194,8 @@ class DataConfig:
         return tuple(ticker for ticker in self.tickers if ticker not in holdout)
 
     def validate(self) -> None:
-        if self.loader_stream_contract_version != 12:
-            raise ValueError("this BarGPT version requires loader_stream_contract_version 12")
+        if self.loader_stream_contract_version != 13:
+            raise ValueError("this BarGPT version requires loader_stream_contract_version 13")
         if self.source_mode not in {"direct_events", "materialized_bars"}:
             raise ValueError("source_mode must be direct_events or materialized_bars")
         if not self.events_table_base or not self.condition_reference_table:

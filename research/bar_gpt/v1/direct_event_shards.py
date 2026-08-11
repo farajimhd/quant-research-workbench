@@ -6,6 +6,7 @@ import re
 import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from typing import Callable, Iterator, TypeVar
 from zoneinfo import ZoneInfo
 
@@ -28,6 +29,7 @@ from research.bar_gpt.v1.data import (
 from research.bar_gpt.v1.loader import (
     ArrowStreamClient,
     BarGPTIterableDataset,
+    CONDITION_COUNT_COLUMNS,
     TickerInterval,
     _history_satisfies_intraday_context,
     build_session_examples,
@@ -36,6 +38,7 @@ from research.bar_gpt.v1.loader import (
 )
 from research.bar_gpt.v1.sampling import has_condition_target, session_phase
 from research.bar_gpt.v1.schema import (
+    FEATURE_INDEX,
     FEATURE_SPECS,
     FEATURE_NAMES,
     ONE_SECOND_US,
@@ -46,9 +49,139 @@ from research.bar_gpt.v1.schema import (
 from research.mlops.clickhouse import quote_ident, sql_string
 
 
-DIRECT_EVENT_SOURCE_VERSION = "bar_gpt_direct_events_trade_sparse_v2"
+DIRECT_EVENT_SOURCE_VERSION = "bar_gpt_direct_events_trade_sparse_v3"
 
 PageValue = TypeVar("PageValue")
+
+
+@dataclass(frozen=True, slots=True)
+class DirectEventSession:
+    """One price-sparse session plus its independent wall-clock conditions."""
+
+    local_date: str
+    view: BarView | None
+    condition_flags: torch.Tensor
+    trailing_condition_counts: torch.Tensor
+
+
+_CONDITION_STORAGE_COLUMNS = (
+    *CONDITION_COUNT_COLUMNS,
+    "condition_nonzero_count",
+    "condition_event_count",
+    "source_event_count",
+)
+
+
+def _session_from_direct_rows(
+    part: pl.DataFrame,
+    *,
+    device: torch.device | str,
+) -> DirectEventSession:
+    """Separate price eligibility from condition availability without row loops.
+
+    Every condition second remains at its original timestamp for physical
+    targets. For price-view input features, conditions are folded into the
+    first subsequent trade-bearing token because there is no model origin
+    between the condition and that token. Conditions after the final trade are
+    returned as a carry for the next session.
+    """
+    part = part.sort("bar_start_us")
+    local_date = str(part["local_date"][0])
+    day = dt.date.fromisoformat(local_date)
+    midnight = dt.datetime.combine(day, dt.time(), tzinfo=ZoneInfo(SESSION_TIMEZONE))
+    session_start_us = int(
+        (midnight + dt.timedelta(seconds=SESSION_START_SECOND)).timestamp() * 1_000_000
+    )
+    condition_rows = torch.as_tensor(
+        part.select(CONDITION_COUNT_COLUMNS).to_numpy(), dtype=torch.float32
+    )
+    condition_indices = torch.as_tensor(
+        ((part["bar_start_us"].to_numpy().copy() - session_start_us) // ONE_SECOND_US),
+        dtype=torch.long,
+    )
+    condition_flags = torch.zeros(
+        (SESSION_END_SECOND - SESSION_START_SECOND, len(CONDITION_COUNT_COLUMNS)),
+        dtype=torch.float32,
+    )
+    valid_clock = (
+        (condition_indices >= 0)
+        & (condition_indices < condition_flags.shape[0])
+        & (condition_rows.sum(dim=-1) > 0)
+    )
+    if bool(valid_clock.any()):
+        condition_flags.index_add_(
+            0,
+            condition_indices[valid_clock],
+            (condition_rows[valid_clock] > 0).to(condition_flags.dtype),
+        )
+        condition_flags.clamp_(max=1)
+
+    price_part = part.filter(pl.col("origin_eligible") > 0)
+    trailing = torch.zeros(len(_CONDITION_STORAGE_COLUMNS), dtype=torch.float64)
+    if price_part.height == 0:
+        trailing = torch.as_tensor(
+            part.select(_CONDITION_STORAGE_COLUMNS).sum().row(0), dtype=torch.float64
+        )
+        return DirectEventSession(local_date, None, condition_flags.to(device), trailing)
+
+    view = frame_to_sparse_view(price_part, device=device)
+    condition_available = torch.as_tensor(part["available_at_us"].to_numpy().copy(), dtype=torch.long)
+    positions = torch.searchsorted(view.available_at_us.cpu(), condition_available, right=False)
+    storage_values = torch.as_tensor(
+        part.select(_CONDITION_STORAGE_COLUMNS).to_numpy().copy(), dtype=torch.float64
+    )
+    mapped = torch.zeros(
+        (view.features.shape[0], len(_CONDITION_STORAGE_COLUMNS)), dtype=torch.float64
+    )
+    has_next_price = positions < view.features.shape[0]
+    if bool(has_next_price.any()):
+        mapped.index_add_(0, positions[has_next_price], storage_values[has_next_price])
+    if bool((~has_next_price).any()):
+        trailing = storage_values[~has_next_price].sum(dim=0)
+    for column_index, name in enumerate(_CONDITION_STORAGE_COLUMNS):
+        view.features[:, FEATURE_INDEX[name]] = mapped[:, column_index].to(
+            device=view.features.device, dtype=view.features.dtype
+        )
+    return DirectEventSession(local_date, view, condition_flags.to(device), trailing)
+
+
+def _apply_condition_carry(session: DirectEventSession, carry: torch.Tensor) -> BarView | None:
+    if session.view is None:
+        return None
+    if not bool((carry > 0).any()):
+        return session.view
+    features = session.view.features.clone()
+    for column_index, name in enumerate(_CONDITION_STORAGE_COLUMNS):
+        features[0, FEATURE_INDEX[name]] += carry[column_index].to(
+            device=features.device, dtype=features.dtype
+        )
+    return BarView(
+        features=features,
+        bar_start_us=session.view.bar_start_us,
+        bar_end_us=session.view.bar_end_us,
+        available_at_us=session.view.available_at_us,
+    )
+
+
+def _chain_condition_sessions(
+    sessions: list[DirectEventSession],
+    *,
+    initial_carry: torch.Tensor | None = None,
+) -> tuple[list[tuple[DirectEventSession, BarView]], torch.Tensor]:
+    carry = (
+        torch.zeros(len(_CONDITION_STORAGE_COLUMNS), dtype=torch.float64)
+        if initial_carry is None
+        else initial_carry.clone().to(dtype=torch.float64, device="cpu")
+    )
+    resolved: list[tuple[DirectEventSession, BarView]] = []
+    for session in sessions:
+        view = _apply_condition_carry(session, carry)
+        if view is None:
+            carry += session.trailing_condition_counts.cpu()
+            continue
+        resolved.append((session, view))
+        carry = session.trailing_condition_counts.clone().cpu()
+    return resolved, carry
 
 
 def _iter_prefetched_pages_in_order(
@@ -296,7 +429,7 @@ SELECT
     max(s.bar_end_us) AS bar_end_us,
     max(s.available_at_us) AS available_at_us,
     {selected_rollup},
-    toUInt64(count()) AS eligible_trade_second_count
+    toUInt64(sum(s.origin_eligible)) AS eligible_trade_second_count
 FROM
 (
 {inner}
@@ -337,8 +470,8 @@ FORMAT ArrowStream
         *_relation_aggregates("queue_imbalance", "queue_imbalance", pair_valid),
         "toUInt64(countIf(quote_origin_eligible AND bid_price = ask_price)) AS locked_quote_count",
         "toUInt64(countIf(quote_origin_eligible AND bid_price > ask_price)) AS crossed_quote_count",
-        "toUInt64(sumIf(toUInt8(condition_token_1 > 0) + toUInt8(condition_token_2 > 0) + toUInt8(condition_token_3 > 0) + toUInt8(condition_token_4 > 0) + toUInt8(condition_token_5 > 0), event_retained)) AS condition_nonzero_count",
-        "toUInt64(countIf(event_retained)) AS source_event_count",
+        "toUInt64(sumIf(toUInt8(condition_token_1 > 0) + toUInt8(condition_token_2 > 0) + toUInt8(condition_token_3 > 0) + toUInt8(condition_token_4 > 0) + toUInt8(condition_token_5 > 0), event_retained OR condition_halt_pause_flag_event > 0 OR condition_resume_flag_event > 0 OR condition_news_risk_flag_event > 0 OR condition_luld_limit_state_flag_event > 0)) AS condition_nonzero_count",
+        "toUInt64(countIf(event_retained OR condition_halt_pause_flag_event > 0 OR condition_resume_flag_event > 0 OR condition_news_risk_flag_event > 0 OR condition_luld_limit_state_flag_event > 0)) AS source_event_count",
         "toFloat64(sumIf(trade_size, trade_volume_eligible AND trade_origin_eligible)) AS trade_price_eligible_size_sum",
         "toUInt8(countIf(trade_origin_eligible) > 0) AS context_eligible",
         "toUInt8(countIf(trade_origin_eligible) > 0) AS origin_eligible",
@@ -348,11 +481,14 @@ FORMAT ArrowStream
         "toUInt64(countIf(event_type = 1 AND NOT event_retained)) AS rejected_trade_event_count",
         "toUInt64(countIf(event_type = 0 AND NOT quote_origin_eligible)) AS rejected_quote_event_count",
         "toUInt64(countIf(trade_condition_unknown OR quote_condition_unknown)) AS unknown_condition_event_count",
-        "toUInt64(countIf(event_retained AND condition_halt_pause_flag_event > 0)) AS condition_halt_pause_count",
-        "toUInt64(countIf(event_retained AND condition_resume_flag_event > 0)) AS condition_resume_count",
-        "toUInt64(countIf(event_retained AND condition_news_risk_flag_event > 0)) AS condition_news_risk_count",
-        "toUInt64(countIf(event_retained AND condition_luld_limit_state_flag_event > 0)) AS condition_luld_limit_state_count",
-        "toUInt64(countIf(event_retained AND (condition_halt_pause_flag_event > 0 OR condition_resume_flag_event > 0 OR condition_news_risk_flag_event > 0 OR condition_luld_limit_state_flag_event > 0))) AS condition_event_count",
+        # Status conditions are a separate causal authority. A halt/LULD row
+        # may deliberately have no usable trade or quote; price eligibility
+        # must never erase the status event.
+        "toUInt64(countIf(condition_halt_pause_flag_event > 0)) AS condition_halt_pause_count",
+        "toUInt64(countIf(condition_resume_flag_event > 0)) AS condition_resume_count",
+        "toUInt64(countIf(condition_news_risk_flag_event > 0)) AS condition_news_risk_count",
+        "toUInt64(countIf(condition_luld_limit_state_flag_event > 0)) AS condition_luld_limit_state_count",
+        "toUInt64(countIf(condition_halt_pause_flag_event > 0 OR condition_resume_flag_event > 0 OR condition_news_risk_flag_event > 0 OR condition_luld_limit_state_flag_event > 0)) AS condition_event_count",
     ]
     source = _event_source(config.database, config.events_table_base, start_date, end_date)
     selected = ",\n    ".join((
@@ -419,7 +555,7 @@ FROM {source} AS e
 PREWHERE {' OR '.join(predicates)}
 WHERE local_second>={SESSION_START_SECOND} AND local_second<{SESSION_END_SECOND}
 GROUP BY local_date_value, second_start_us
-HAVING eligible_trade_event_count>0
+HAVING eligible_trade_event_count>0 OR condition_event_count>0
 {final_clause}
 """
 
@@ -468,12 +604,12 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
         super().__init__(stream_config, query_gate=query_gate)
         self.data_config = data_config
 
-    def iter_session_views(self, *, ticker: str, start_date: str, end_date: str,
-                           source_intervals: tuple[TickerInterval, ...] = (), device: torch.device | str = "cpu",
-                           prefetch_pages: int = 1,
-                           page_callback: Callable[[str, str, int, float, int, int, float], None] | None = None,
-                           ) -> Iterator[tuple[str, BarView]]:
-        def read_page(left: dt.date, right: dt.date) -> list[tuple[str, BarView]]:
+    def iter_session_bundles(self, *, ticker: str, start_date: str, end_date: str,
+                             source_intervals: tuple[TickerInterval, ...] = (), device: torch.device | str = "cpu",
+                             prefetch_pages: int = 1,
+                             page_callback: Callable[[str, str, int, float, int, int, float], None] | None = None,
+                             ) -> Iterator[DirectEventSession]:
+        def read_page(left: dt.date, right: dt.date) -> list[DirectEventSession]:
             started = time.perf_counter()
             query = direct_trade_bar_query(
                 self.data_config, self.config, ticker=ticker,
@@ -483,12 +619,11 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
             frames: list[pl.DataFrame] = []
             with self.record_batches(query) as batches:
                 frames.extend(pl.from_arrow(batch) for batch in batches if batch.num_rows)
-            result: list[tuple[str, BarView]] = []
+            result: list[DirectEventSession] = []
             if frames:
                 frame = pl.concat(frames, how="vertical")
                 for part in frame.partition_by("local_date", maintain_order=True):
-                    day = str(part["local_date"][0])
-                    result.append((day, frame_to_sparse_view(part, device=device)))
+                    result.append(_session_from_direct_rows(part, device=device))
             self._add_timing("direct_event_page_seconds", time.perf_counter() - started)
             return result
 
@@ -512,6 +647,25 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
             thread_name_prefix="bar-gpt-direct-page",
         ):
             yield from page
+
+    def iter_session_views(self, *, ticker: str, start_date: str, end_date: str,
+                           source_intervals: tuple[TickerInterval, ...] = (), device: torch.device | str = "cpu",
+                           prefetch_pages: int = 1,
+                           page_callback: Callable[[str, str, int, float, int, int, float], None] | None = None,
+                           ) -> Iterator[tuple[str, BarView]]:
+        """Compatibility projection for read-only source audits."""
+        bundles = list(self.iter_session_bundles(
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            source_intervals=source_intervals,
+            device=device,
+            prefetch_pages=prefetch_pages,
+            page_callback=page_callback,
+        ))
+        resolved, _carry = _chain_condition_sessions(bundles)
+        for session, view in resolved:
+            yield session.local_date, view
 
     def iter_daily_views(
         self,
@@ -570,6 +724,7 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
             page_end = min(end, next_month)
             pages.append((page_start, page_end))
             page_start = page_end
+        carry = torch.zeros(len(_CONDITION_STORAGE_COLUMNS), dtype=torch.float64)
         for page in _iter_prefetched_pages_in_order(
             pages,
             depth=prefetch_pages,
@@ -577,7 +732,27 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
             page_callback=page_callback,
             thread_name_prefix="bar-gpt-direct-daily",
         ):
-            yield from page
+            for day, view, eligible_seconds in page:
+                if eligible_seconds <= 0:
+                    carry += torch.stack(tuple(
+                        view.features[0, FEATURE_INDEX[name]].double().cpu()
+                        for name in _CONDITION_STORAGE_COLUMNS
+                    ))
+                    continue
+                if bool((carry > 0).any()):
+                    features = view.features.clone()
+                    for column_index, name in enumerate(_CONDITION_STORAGE_COLUMNS):
+                        features[0, FEATURE_INDEX[name]] += carry[column_index].to(
+                            device=features.device, dtype=features.dtype
+                        )
+                    view = BarView(
+                        features=features,
+                        bar_start_us=view.bar_start_us,
+                        bar_end_us=view.bar_end_us,
+                        available_at_us=view.available_at_us,
+                    )
+                    carry.zero_()
+                yield day, view, eligible_seconds
 
 
 class DirectEventShardDataset(BarGPTIterableDataset):
@@ -661,6 +836,7 @@ class DirectEventShardDataset(BarGPTIterableDataset):
         history: FixedBucketHistoryCache | None = None
         daily: tuple[list[str], BarView] | None = None
         loaded_through = ""
+        condition_carry = torch.zeros(len(_CONDITION_STORAGE_COLUMNS), dtype=torch.float64)
         emitted_by_unit: dict[str, int] = {}
 
         for unit_index, unit in units:
@@ -671,6 +847,7 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                 ))
                 daily = None
                 loaded_through = ""
+                condition_carry.zero_()
             assert history is not None
             split_actions = actions.get(unit.ticker, ())
             excluded_daily = split_execution_dates(split_actions)
@@ -718,9 +895,15 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                     selected_day_index = index
                     if accumulated >= required_one_second:
                         break
-                warmup_sessions: list[BarView] = []
+                # Include one preceding trade-bearing session so a status event
+                # after its final trade can be carried into the first retained
+                # price token without inventing a condition-only token.
+                if eligible_seconds_by_day and selected_day_index > 0:
+                    intraday_warmup_start = eligible_seconds_by_day[selected_day_index - 1][0]
+                    selected_day_index -= 1
+                warmup_sessions: list[DirectEventSession] = []
                 self._stage_progress("intraday warmup", f"{unit.ticker} planning source partitions")
-                for day, session in client.iter_session_views(
+                for session in client.iter_session_bundles(
                     ticker=unit.ticker, start_date=intraday_warmup_start, end_date=unit.start_date,
                     source_intervals=intervals[unit.ticker], prefetch_pages=self.data_config.clickhouse_prefetch_pages,
                     page_callback=lambda left, right, sessions, seconds, completed, total, elapsed: self._page_progress(
@@ -730,13 +913,14 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                     warmup_sessions.append(session)
 
                 def rebuild_intraday_history() -> None:
-                    nonlocal history
+                    nonlocal history, condition_carry
                     history = FixedBucketHistoryCache(max_rows=max(
                         int(self.data_config.intraday_warmup_bars_1s),
                         int(self.data_config.context_bars_1s),
                     ))
-                    for warmup_session in warmup_sessions:
-                        history.append(warmup_session, materialize=False)
+                    resolved, condition_carry = _chain_condition_sessions(warmup_sessions)
+                    for _bundle, warmup_view in resolved:
+                        history.append(warmup_view, materialize=False)
 
                 rebuild_intraday_history()
                 # Daily counts select a small initial range efficiently. If an
@@ -752,7 +936,7 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                     extension_start = eligible_seconds_by_day[selected_day_index][0]
                     extension_end = eligible_seconds_by_day[previous_index][0]
                     older_sessions = [
-                        session for _day, session in client.iter_session_views(
+                        session for session in client.iter_session_bundles(
                             ticker=unit.ticker,
                             start_date=extension_start,
                             end_date=extension_end,
@@ -785,13 +969,19 @@ class DirectEventShardDataset(BarGPTIterableDataset):
             fetch_start = loaded_through
             emitted = emitted_by_unit.get(f"{unit.ticker}:{unit.start_date[:7]}", 0)
             self._stage_progress("build source", f"{unit.ticker}:{unit.start_date[:7]}")
-            for day, session in client.iter_session_views(
+            for bundle in client.iter_session_bundles(
                 ticker=unit.ticker, start_date=fetch_start, end_date=unit.end_date,
                 source_intervals=intervals[unit.ticker], prefetch_pages=self.data_config.clickhouse_prefetch_pages,
                 page_callback=lambda left, right, sessions, seconds, completed, total, elapsed: self._page_progress(
                     "build", left, right, sessions, seconds, completed, total, elapsed
                 ),
             ):
+                day = bundle.local_date
+                session = _apply_condition_carry(bundle, condition_carry)
+                if session is None:
+                    condition_carry += bundle.trailing_condition_counts.cpu()
+                    continue
+                condition_carry = bundle.trailing_condition_counts.clone().cpu()
                 if day < unit.start_date:
                     history.append(session, materialize=False)
                     if day not in excluded_daily:
@@ -801,6 +991,7 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                     ticker=unit.ticker, local_date=day, session=session,
                     prior_session=history.view, daily=daily, split_actions=split_actions,
                     config=self.data_config, include_incomplete_horizons=True,
+                    session_conditions=bundle.condition_flags,
                 ):
                     example.loader_stage_seconds = client.take_timings()
                     example.worker_id = worker_id

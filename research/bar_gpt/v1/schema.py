@@ -6,8 +6,8 @@ from pipelines.market_sip.events.session_bar_contract import (
 )
 
 
-SCHEMA_VERSION = 4
-FEATURE_VERSION = "bar_gpt_direct_events_trade_sparse_v4"
+SCHEMA_VERSION = 5
+FEATURE_VERSION = "bar_gpt_direct_events_trade_sparse_v5"
 ONE_SECOND_US = 1_000_000
 SESSION_TIMEZONE = "America/New_York"
 SESSION_START_SECOND = 4 * 60 * 60

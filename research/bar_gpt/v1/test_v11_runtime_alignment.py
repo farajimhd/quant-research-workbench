@@ -27,21 +27,21 @@ def _write_manifest(root: Path, config: DataConfig) -> None:
     manifest = root / "manifest"
     manifest.mkdir(parents=True)
     (manifest / "build_plan.json").write_text(json.dumps({
-        "contract_version": 11,
+        "contract_version": 12,
         "config_hash": config_hash(config),
         "storage_config": _storage_contract_config(config),
     }), encoding="utf-8")
 
 
-class V11RuntimeAlignmentTest(unittest.TestCase):
-    def test_production_launcher_hydrates_v11_storage_contract(self) -> None:
+class V12RuntimeAlignmentTest(unittest.TestCase):
+    def test_production_launcher_hydrates_v12_storage_contract(self) -> None:
         storage = dataclasses.replace(DataConfig(), origin_bars_1s=4096)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _write_manifest(root, storage)
             args = train_args([*default_argv(), "--offline-shard-root", str(root), "--wandb-mode", "disabled"])
             config = build_config(args)
-        self.assertEqual(config.data.loader_stream_contract_version, 12)
+        self.assertEqual(config.data.loader_stream_contract_version, 13)
         self.assertEqual(config.data.origin_bars_1s, 4096)
         self.assertEqual(config.data.batch_size, 32)
         self.assertEqual(config.data.worker_prefetch_batches, 2)
@@ -54,7 +54,7 @@ class V11RuntimeAlignmentTest(unittest.TestCase):
             _write_manifest(root, storage)
             args = profile_args(["--offline-shard-root", str(root)])
             data = profile_data(args, candidate)
-        self.assertEqual(data.loader_stream_contract_version, 12)
+        self.assertEqual(data.loader_stream_contract_version, 13)
         self.assertEqual(data.origin_bars_1s, 4096)
 
     def test_encoder_propagates_only_required_view_masks(self) -> None:

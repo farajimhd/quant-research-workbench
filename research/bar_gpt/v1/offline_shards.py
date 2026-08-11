@@ -49,15 +49,16 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 
 
-# Contract 11 stores unavailable-history padding independently from real,
+# Contract 12 stores unavailable-history padding independently from real,
 # timestamp-keyed sparse bars so changing prefix availability across blocks
-# cannot distort context identity or shared slices.
-OFFLINE_SHARD_CONTRACT_VERSION = 11
-# Stream contract 12 derives trade-bearing sparse tokens and gradually exposes
-# real intraday/calendar history behind fixed zero-filled masked slots.
-# directly from compact events and persists only certified tensor shards.
-OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 12
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v11")
+# cannot distort context identity or shared slices. Conditions retain their
+# exact wall-clock authority while their input counts are folded causally into
+# the next trade-bearing token; redundant projected channels are omitted.
+OFFLINE_SHARD_CONTRACT_VERSION = 12
+# Stream contract 13 derives the version-12 sparse storage contract directly
+# from compact events and persists only certified tensor shards.
+OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 13
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12")
 SHARD_CATALOG_LOCK_FILENAME = "SHARD_CATALOG_IMMUTABLE.json"
 
 

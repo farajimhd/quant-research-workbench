@@ -46,7 +46,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Benchmark the complete v11 mmap, worker, collation, pinning, and CUDA handoff path."
     )
-    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v11")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12")
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="2020-01-01")
     parser.add_argument("--tickers", default="")

@@ -1,4 +1,4 @@
-# BarGPT direct-event trade-sparse and OHLC target contract (v10)
+# BarGPT direct-event trade-sparse and OHLC target contract (v12)
 
 ## Defects this contract replaces
 
@@ -29,8 +29,16 @@ authority's historical correction-pair limitation is accepted: its five
 condition-token slots do not preserve the separate NYSE correction field or
 pairing identity. The direct builder does not claim to reconstruct it.
 
-The old shard roots are immutable. Contract-v10 shards are rebuilt under
-`offline_shards_v11`; old shards, checkpoints, cursors, discovery panels, and
+The v11 audit exposed a separate condition defect. Condition counts were
+guarded by price-event retention, so status events with deliberately absent or
+ineligible prices disappeared from both inputs and targets. It also confirmed
+four redundant projected inputs: `trade_present` is always one on trade-sparse
+tokens, `bid_present` and `ask_present` duplicate `quote_pair_present`, and
+`crossed_quote_fraction` is always zero because crossed quotes are rejected
+before aggregation.
+
+The old shard roots are immutable. Contract-v12 shards are rebuilt under
+`offline_shards_v12`; old shards, checkpoints, cursors, discovery panels, and
 validation manifests are not compatible or repairable in place.
 
 ## Bar, context, and condition authority
@@ -80,12 +88,15 @@ validation manifests are not compatible or repairable in place.
   durations and context counts, traverses prior sessions, performs vectorized
   fixed-bucket aggregation, and slices the latest configured count for each
   origin block. It does not advance through the month one second at a time.
-* Halt/pause, resume, news-risk, and LULD state are classified from the retained
-  events in the same vectorized SQL scan and stored as per-second counts. They
-  never manufacture a row or an origin. Coarser rollups sum these counts, and
-  training reads both inputs and condition targets from the certified 1s
-  authority; neither the 1s build nor shard build reads a second condition-bar
-  table.
+* Halt/pause, resume, news-risk, and LULD state are classified independently of
+  price eligibility in the same vectorized SQL scan. Their exact one-second
+  availability timeline is retained for targets, including seconds with no
+  eligible price. Such a second never manufactures a price token or origin.
+  For model inputs, its counts are folded into the first subsequent
+  trade-bearing token; counts after the final trade carry to the next session.
+  Coarser and calendar rollups sum the folded counts. Training therefore reads
+  exact condition targets and causal condition inputs from one certified shard
+  authority without a second condition-bar table.
 
 The authoritative trade-condition categories observed in
 `event_condition_token_reference` are:
@@ -109,7 +120,7 @@ explicitly accepted source limitation.
 
 ## Model input tensor contract
 
-Every view is a `float32` tensor with shape `[batch, tokens, 54]`. Intraday
+Every view is a `float32` tensor with shape `[batch, tokens, 50]`. Intraday
 views are `1s`, `5s`, `10s`, `30s`, `1m`, `5m`, `30m`, and `1h`; calendar
 views are `1D`, `1W`, and `1MO`. The same feature order and preprocessing are
 used in every view. Raw price and size aggregates are first expressed in the
@@ -122,7 +133,6 @@ can be converted to log-return basis points as `sinh(z) * 100`.
 
 | Ordered input | Model type | Source and preprocessing |
 |---|---|---|
-| `trade_present` | `float32`, 0/1 | One when the bar contains an eligible trade high/low or last update; volume-only events do not set it. |
 | `trade_close_return` | `float32` | `asinh(log(trade_close / prior_valid_trade_close) * 100)`; zero when no causal prior trade close is available. |
 | `trade_open_gap` | `float32` | `asinh(log(trade_open / prior_valid_trade_close) * 100)`. |
 | `trade_high_from_open_return` | `float32` | Signed `asinh(log(trade_high / trade_open) * 100)`; not converted to an absolute magnitude. |
@@ -131,7 +141,6 @@ can be converted to log-return basis points as `sinh(z) * 100`.
 | `trade_log_count` | `float32` | `log1p(trade_event_count)`. |
 | `trade_vwap_deviation_bps` | `float32` | Trade VWAP is `eligible_price_size_sum / eligible_price_size`; volume-only conditions are excluded from both terms. Feature is `asinh(((VWAP / close) - 1) * 1000)`, equivalently `asinh(VWAP_deviation_bps / 10)`. |
 | `trade_size_cv` | `float32` | `asinh(std(event_size) / mean(event_size))`; zero when fewer than two updates or size support is unavailable. |
-| `bid_present` | `float32`, 0/1 | One when the bar contains a valid bid-family update; otherwise zero. |
 | `bid_close_return` | `float32` | `asinh(log(bid_close / prior_valid_bid_close) * 100)`. |
 | `bid_open_gap` | `float32` | `asinh(log(bid_open / prior_valid_bid_close) * 100)`. |
 | `bid_high_from_open_return` | `float32` | Signed `asinh(log(bid_high / bid_open) * 100)`. |
@@ -139,7 +148,6 @@ can be converted to log-return basis points as `sinh(z) * 100`.
 | `bid_log_size` | `float32` | `log1p(bid_size_sum)` in the anchor-adjusted share basis. |
 | `bid_vwap_deviation_bps` | `float32` | `asinh((((bid_price_size_sum / bid_size_sum) / bid_close) - 1) * 1000)`. |
 | `bid_size_cv` | `float32` | `asinh(std(bid_size) / mean(bid_size))`; zero without sufficient support. |
-| `ask_present` | `float32`, 0/1 | One when the bar contains a valid ask-family update; otherwise zero. |
 | `ask_close_return` | `float32` | `asinh(log(ask_close / prior_valid_ask_close) * 100)`. |
 | `ask_open_gap` | `float32` | `asinh(log(ask_open / prior_valid_ask_close) * 100)`. |
 | `ask_high_from_open_return` | `float32` | Signed `asinh(log(ask_high / ask_open) * 100)`. |
@@ -161,15 +169,14 @@ can be converted to log-return basis points as `sinh(z) * 100`.
 | `queue_imbalance_mean` | `float32`, `[-1,1]` | Mean queue imbalance from additive sums, clipped to `[-1,1]`. |
 | `queue_imbalance_std` | `float32`, `[0,1]` | Standard deviation from first and second moments, clipped to `[0,1]`. |
 | `locked_quote_fraction` | `float32`, `[0,1]` | `locked_quote_count / max(quote_pair_count, 1)`. |
-| `crossed_quote_fraction` | `float32`, `[0,1]` | `crossed_quote_count / max(quote_pair_count, 1)`. |
-| `log_condition_count` | `float32` | `log1p(condition_nonzero_count)` from source-event condition codes represented in the bar. This is distinct from the four future condition targets. |
-| `halt_pause_present` | `float32`, 0/1 | One when `condition_halt_pause_count > 0` in the completed bar. |
+| `log_condition_count` | `float32` | `log1p(condition_nonzero_count)` for codes known by this token, including condition-only seconds since the preceding trade token. This is distinct from the future condition targets. |
+| `halt_pause_present` | `float32`, 0/1 | One when one or more halt/pause events are included causally in this token. |
 | `log_halt_pause_count` | `float32` | `log1p(condition_halt_pause_count)`; coarser bars sum active one-second counts. |
-| `resume_present` | `float32`, 0/1 | One when `condition_resume_count > 0`. |
+| `resume_present` | `float32`, 0/1 | One when one or more resume events are included causally in this token. |
 | `log_resume_count` | `float32` | `log1p(condition_resume_count)`. |
-| `news_risk_present` | `float32`, 0/1 | One when `condition_news_risk_count > 0`. |
+| `news_risk_present` | `float32`, 0/1 | One when one or more news-risk events are included causally in this token. |
 | `log_news_risk_count` | `float32` | `log1p(condition_news_risk_count)`. |
-| `luld_limit_state_present` | `float32`, 0/1 | One when `condition_luld_limit_state_count > 0`. |
+| `luld_limit_state_present` | `float32`, 0/1 | One when one or more LULD-limit-state events are included causally in this token. |
 | `log_luld_limit_state_count` | `float32` | `log1p(condition_luld_limit_state_count)`. |
 | `log_source_event_count` | `float32` | `log1p(source_event_count)`; every stored intraday token has a strictly positive raw count. |
 | `log_elapsed_wall_ratio` | `float32` | `log1p((bar_start - prior_bar_start) / configured_timeframe_duration)`; preserves physical gaps in sparse token sequences. |
@@ -228,7 +235,9 @@ certified condition channels. This yields 15 continuous and 8 binary targets,
 Physical values have shape `[B, N_origins, 6_horizons, 23]` and dtype
 `float32`; their authoritative validity tensor has the same shape and dtype
 `bool`. Masked values are stored as zero but never contribute to loss or
-metrics.
+metrics. The four condition targets use the exact independent condition clock;
+they do not require a trade or quote on the condition second and are not
+delayed to the later price token used for condition inputs.
 
 | Ordered target | Type | Definition and preprocessing |
 |---|---|---|
@@ -320,8 +329,8 @@ to at most 16 metrics.
 
 ## Builder, shard, and certification contract
 
-The current sparse-event authority uses shard contract 11 and loader stream
-contract 12. Contract 11 stores one canonical masked-prefix region per compiled
+The current sparse-event authority uses shard contract 12 and loader stream
+contract 13. Contract 12 stores one canonical masked-prefix region per compiled
 view and deduplicates only real bars by timestamp. A block consumes a suffix of
 that prefix while history is unavailable, so changing availability cannot
 create a synthetic bar or disturb real-bar identity. Shards persist

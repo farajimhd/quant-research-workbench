@@ -29,7 +29,7 @@ from research.bar_gpt.v1.targets import (
 )
 
 
-DEFAULT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v11")
+DEFAULT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12")
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\dataset_reports")
 QUANTILES = (0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99)
 

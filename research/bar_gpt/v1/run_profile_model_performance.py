@@ -47,7 +47,7 @@ def profiler_argv(args: argparse.Namespace) -> list[str]:
         "--data-source",
         "offline",
         "--offline-shard-root",
-        r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v11",
+        r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12",
         "--start-date",
         str(args.start_date),
         "--end-date",
