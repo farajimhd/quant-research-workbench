@@ -50,10 +50,12 @@ QMD History exposes a bounded, read-only checkpoint-advancement product for
 inactive focused state. It accepts one versioned checkpoint and one explicit
 ticker/as-of cutoff, replays through the shared `qmd_core` engine, and returns
 the proposed checkpoint with the exact source plan and pre/post revisions. The
-product accepts only Recent and Current source segments: those retain the live
-arrival identity. If the window reaches Archive ordinal identity or a coverage
-gap, advancement fails closed. QMD Gateway remains responsible for verifying
-and persisting the returned checkpoint; QMD History never mutates live state.
+product accepts Recent and Current source segments because those retain the
+live arrival identity, plus explicitly covered-empty scheduled market closure
+segments because they contain no events or cursor mutation. If the window
+reaches Archive ordinal identity or a possible in-session coverage gap,
+advancement fails closed. QMD Gateway remains responsible for verifying and
+persisting the returned checkpoint; QMD History never mutates live state.
 
 ### Focused Generic Structure activation
 
@@ -108,6 +110,7 @@ flowchart TD
 | Current | after the newest durable QMD watermark through now | `qmd-gateway` memory plus canonical Massive tail | Partial bars, newest events, lowest-latency live state |
 | Recent | current session plus configured three prior market sessions | `q_live.events` and `q_live.intraday_family_bars_v2` | Restart, warm-up, recent charts, recent repair |
 | Historical | normally complete through the archive publication watermark, often day-before-yesterday or earlier | `market_sip_compact.events_YYYY` and completed bar tables | Long-range charts, Replay, Backtest, research |
+| Scheduled closed | known weekend and 20:00-04:00 New York extended-session closure | QMD market-calendar rule | Covered-empty continuity without a database or live query |
 
 Dates are operational expectations, not the routing authority. Coverage
 manifests and source watermarks decide the actual boundary. If archive coverage
@@ -141,6 +144,10 @@ Rules:
 6. Return explicit partial/gap evidence instead of silently shortening a range.
 7. Current memory appends only events newer than the durable continuation
    watermark. Warm-up rows update state but are not emitted as new live events.
+8. Split known weekend and 20:00-04:00 New York closures as covered-empty,
+   including request tails and daylight-saving transitions. Do not apply this
+   rule to holidays, early closes, or any weekday 04:00-20:00 interval without
+   authoritative calendar/coverage evidence; those remain fail-closed gaps.
 
 ## Physical process interaction
 

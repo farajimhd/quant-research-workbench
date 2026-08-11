@@ -1969,6 +1969,36 @@ it does not imply all application work is complete.
      String alias to a Date; the next real startup maintenance completed
      `up_to_date` with zero errors. All 112 QMD and 43 QMD History tests passed.
 
+175. Corrected the QMD History market-calendar boundary classification found
+     by the final real acceptance pass. The planner now emits a distinct
+     `closed_market` tier for known weekends and 20:00-04:00 New York closure,
+     both between durable segments and at the request tail. These intervals are
+     covered-empty and execute no ClickHouse or QMD Live query. Wall-clock
+     boundary construction remains correct across DST. Weekday 04:00-20:00
+     intervals, holidays, and early closes still require actual coverage and
+     fail closed rather than borrowing the scheduled-closure rule.
+
+     Exact Generic Structure checkpoint advancement accepts this tier because
+     it contains no events and cannot move the cursor. The read-only acceptance
+     runner validates its evidence tuple and skips it during direct ClickHouse
+     parity. Archive source revisions are also bounded to the Archive segments
+     rather than accidentally including calendar dates represented by a later
+     tier. All 47 QMD History tests and all 10 acceptance-runner tests passed.
+     The release service on 8801 returned a complete Archive plus
+     scheduled-closed plan and the real AAPL report
+     `qmd_authority_validation_20260811T223430Z.json` passed. The next Recent
+     transition still exposes honest 37 ms, 386 ms, and 105 ms active-session
+     coverage holes, so the complete three-tier active-session gate remains
+     open.
+
+176. Completed the final permitted-scope audit. Remaining code/runtime work is
+     separated into six explicit gates: approved immutable-revision storage,
+     certified archive-to-Recent session coverage, active-session soak/load,
+     an approved archive physical projection or QMD cache, deferred-consumer
+     compatibility retirement, and separately authorized broker deployment.
+     No deferred producer service, Market SIP pipeline, broker gateway, or
+     unrelated dirty worktree file was changed.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

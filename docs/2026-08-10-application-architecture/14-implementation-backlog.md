@@ -1018,9 +1018,19 @@ broker command outside OMS.
         boundary windows and attach passing runtime evidence. The harness alone
         does not satisfy the production parity gate. Archive authority passed
         in the report below and the repaired recent-to-live continuation passed
-        in `qmd_authority_validation_20260811T182103Z.json`; a contiguous
-        archive-to-recent transition remains blocked by the current declared
-        q_live coverage gap while startup repair is incomplete.
+        in `qmd_authority_validation_20260811T182103Z.json`. The archive-to-known
+        weekend closure passed in
+        `qmd_authority_validation_20260811T223430Z.json`. A contiguous
+        archive-to-recent active-session transition remains open because the
+        real plan honestly exposes 37 ms at the 2026-08-10 open, 386 ms at its
+        close, and 105 ms at the 2026-08-11 open without durable coverage.
+        Scheduled closure is no longer mislabeled as either a gap or a live
+        continuation, but possible session gaps are not fabricated away.
+  - [x] Classify known weekend and 20:00-04:00 New York closure as
+        covered-empty source-plan segments on both intermediate and tail
+        paths, using wall-clock boundaries across DST. Keep holidays, early
+        closes, and weekday session time fail closed without authoritative
+        calendar or coverage proof.
   - [x] Run the durable archive portion against real services/data. Report
         `qmd_authority_validation_20260811T143323Z.json` passed for plan
         `fnv1a64:24bdd17a110cb65f`.
@@ -1111,6 +1121,34 @@ broker command outside OMS.
 - [x] Document release, rollback, and recovery for every active migration
       domain in the linked operational runbook; execution evidence remains a
       per-release requirement.
+
+### Final permitted-scope audit
+
+The implementation pass has no additional safely executable code migration
+inside the currently approved service boundary. These release gates remain:
+
+- [ ] Add storage-level immutable old-revision reads. This requires an approved
+      QMD snapshot/cache storage authority and retention budget; silently
+      copying the archive into a second ungoverned store is not acceptable.
+- [ ] Prove a contiguous archive-to-recent active-session handoff after the
+      recorded millisecond coverage holes are repaired or certified by an
+      authoritative coverage producer.
+- [ ] Repeat the QMD and whole-application load/latency/freshness soak during a
+      representative active session; the post-close and catch-up evidence does
+      not substitute for this clock-dependent release gate.
+- [ ] Approve a QMD-owned archive projection/cache or a Market SIP physical
+      projection before imposing a full-market archive latency SLO. The current
+      archive order is ticker/ordinal and a broad event-time scan cannot meet
+      that SLO through query tuning alone; changing Market SIP is outside the
+      approved services.
+- [ ] Retire compatibility endpoints only after the remaining Market AI and
+      Text Intelligence callers migrate. Those callers are in explicitly
+      deferred producer services, so their adapters remain measured rather
+      than being removed underneath them.
+- [ ] Enable executable Live/Paper broker deployment only after separate IBKR
+      Gateway/Supervisor and deployment authorization. Backend, Portfolio, OMS,
+      Replay, Backtest, and non-executing control-plane work are implemented;
+      this goal did not broaden authority to broker execution.
 
 Acceptance gate: every concern has one declared authority and retired paths
 have no production callers.

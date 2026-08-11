@@ -171,7 +171,9 @@ fn validate_request(
 fn validate_exact_cursor_plan(plan: &MarketSourcePlan) -> Result<(), String> {
     for segment in &plan.segments {
         match segment.tier {
-            MarketSourceTier::Recent | MarketSourceTier::CurrentLive => {}
+            MarketSourceTier::Recent
+            | MarketSourceTier::CurrentLive
+            | MarketSourceTier::ClosedMarket => {}
             MarketSourceTier::Archive => return Err(
                 "Generic Structure exact live cursor is incompatible with archive ordinal identity"
                     .to_string(),
@@ -234,6 +236,7 @@ mod tests {
     fn exact_cursor_advancement_accepts_only_live_identity_tiers() {
         assert!(validate_exact_cursor_plan(&plan(MarketSourceTier::Recent)).is_ok());
         assert!(validate_exact_cursor_plan(&plan(MarketSourceTier::CurrentLive)).is_ok());
+        assert!(validate_exact_cursor_plan(&plan(MarketSourceTier::ClosedMarket)).is_ok());
         assert!(validate_exact_cursor_plan(&plan(MarketSourceTier::Archive)).is_err());
         assert!(validate_exact_cursor_plan(&plan(MarketSourceTier::Gap)).is_err());
     }

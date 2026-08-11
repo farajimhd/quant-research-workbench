@@ -1,5 +1,5 @@
 use crate::config::HistoricalGatewayConfig;
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone, Utc, Weekday};
 use chrono_tz::America::New_York;
 use qmd_core::bars::TradeAggregationRules;
 use qmd_core::compact_event::{
@@ -46,6 +46,7 @@ pub enum MarketSourceTier {
     Archive,
     Recent,
     CurrentLive,
+    ClosedMarket,
     Gap,
 }
 
@@ -187,7 +188,7 @@ struct LatestEventCoverageRow {
     ticker_count: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct SourceRevisionRow {
     event_count: u64,
     max_build_step: u64,
@@ -449,36 +450,48 @@ impl HistoricalEventSource {
                 .join(",");
             format!(" AND ticker IN ({tickers})")
         };
-        let last_inclusive = window.end - chrono::Duration::microseconds(1);
         let continuity_table = format!(
             "{}.events_ordinal_continuity",
             self.config.clickhouse_database
         );
-        let sql = format!(
-            r#"SELECT
-                sum(event_count) AS event_count,
-                max(latest_build_step) AS max_build_step,
-                toString(max(latest_updated_at)) AS max_updated_at
-            FROM (
-                SELECT
-                    ticker,
-                    source_date,
-                    argMax(event_count, tuple(build_step, updated_at)) AS event_count,
-                    argMax(build_step, tuple(build_step, updated_at)) AS latest_build_step,
-                    max(updated_at) AS latest_updated_at
-                FROM {continuity_table}
-                WHERE source_date >= toDate('{}')
-                  AND source_date <= toDate('{}')
-                  {ticker_filter}
-                GROUP BY ticker, source_date
-            )
-            FORMAT JSONEachRow"#,
-            window.start.date_naive(),
-            last_inclusive.date_naive(),
-        );
-        let text = self.query(&sql).await?;
-        let archive_row = serde_json::from_str::<SourceRevisionRow>(text.trim())
-            .map_err(|error| format!("invalid historical source revision response: {error}"))?;
+        let archive_bounds = plan
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.tier, MarketSourceTier::Archive))
+            .fold(None, |bounds, segment| match bounds {
+                None => Some((segment.start, segment.end)),
+                Some((start, end)) => Some((start.min(segment.start), end.max(segment.end))),
+            });
+        let archive_row = if let Some((archive_start, archive_end)) = archive_bounds {
+            let last_inclusive = archive_end - chrono::Duration::microseconds(1);
+            let sql = format!(
+                r#"SELECT
+                    sum(event_count) AS event_count,
+                    max(latest_build_step) AS max_build_step,
+                    toString(max(latest_updated_at)) AS max_updated_at
+                FROM (
+                    SELECT
+                        ticker,
+                        source_date,
+                        argMax(event_count, tuple(build_step, updated_at)) AS event_count,
+                        argMax(build_step, tuple(build_step, updated_at)) AS latest_build_step,
+                        max(updated_at) AS latest_updated_at
+                    FROM {continuity_table}
+                    WHERE source_date >= toDate('{}')
+                      AND source_date <= toDate('{}')
+                      {ticker_filter}
+                    GROUP BY ticker, source_date
+                )
+                FORMAT JSONEachRow"#,
+                archive_start.date_naive(),
+                last_inclusive.date_naive(),
+            );
+            let text = self.query(&sql).await?;
+            serde_json::from_str::<SourceRevisionRow>(text.trim())
+                .map_err(|error| format!("invalid historical source revision response: {error}"))?
+        } else {
+            SourceRevisionRow::default()
+        };
         let mut event_count = archive_row.event_count;
         let mut max_build_step = archive_row.max_build_step;
         let mut max_updated_at = archive_row.max_updated_at;
@@ -677,7 +690,9 @@ impl HistoricalEventSource {
                     &ticker_filter,
                     None,
                 )),
-                MarketSourceTier::CurrentLive | MarketSourceTier::Gap => {}
+                MarketSourceTier::CurrentLive
+                | MarketSourceTier::ClosedMarket
+                | MarketSourceTier::Gap => {}
             }
         }
         if !selects.is_empty() {
@@ -838,7 +853,9 @@ impl HistoricalEventSource {
                     &ticker_filter,
                     cursor,
                 )),
-                MarketSourceTier::CurrentLive | MarketSourceTier::Gap => {}
+                MarketSourceTier::CurrentLive
+                | MarketSourceTier::ClosedMarket
+                | MarketSourceTier::Gap => {}
             }
         }
         let mut events = if selects.is_empty() {
@@ -1081,7 +1098,9 @@ impl HistoricalEventSource {
                         None,
                     ));
                 }
-                MarketSourceTier::CurrentLive | MarketSourceTier::Gap => {}
+                MarketSourceTier::CurrentLive
+                | MarketSourceTier::ClosedMarket
+                | MarketSourceTier::Gap => {}
             }
         }
         source_tables.sort();
@@ -1630,14 +1649,7 @@ fn build_source_plan(
             continue;
         }
         if start > cursor {
-            segments.push(MarketSourceSegment {
-                coverage_state: "uncovered",
-                end: start,
-                queryable_by_history: false,
-                source: "coverage_gap".to_string(),
-                start: cursor,
-                tier: MarketSourceTier::Gap,
-            });
+            append_scheduled_gap_segments(&mut segments, cursor, start);
         }
         segments.push(MarketSourceSegment {
             coverage_state: "covered",
@@ -1650,14 +1662,7 @@ fn build_source_plan(
         cursor = end;
     }
     if cursor < window.end {
-        segments.push(MarketSourceSegment {
-            coverage_state: "requires_live_continuation",
-            end: window.end,
-            queryable_by_history: false,
-            source: config.live_gateway_url.clone(),
-            start: cursor,
-            tier: MarketSourceTier::CurrentLive,
-        });
+        append_live_tail_segments(&mut segments, cursor, window.end, &config.live_gateway_url);
     }
     let recent_watermark = segments
         .iter()
@@ -1678,6 +1683,117 @@ fn build_source_plan(
         start: window.start,
         tickers,
     }
+}
+
+fn append_scheduled_gap_segments(
+    segments: &mut Vec<MarketSourceSegment>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) {
+    let mut cursor = start;
+    while cursor < end {
+        let (closed, boundary) = market_calendar_segment_boundary(cursor);
+        let tier = if closed {
+            MarketSourceTier::ClosedMarket
+        } else {
+            MarketSourceTier::Gap
+        };
+        let segment_end = boundary.min(end);
+        let (coverage_state, queryable_by_history, source) = match tier {
+            MarketSourceTier::ClosedMarket => (
+                "covered_empty",
+                true,
+                "market_calendar:scheduled_closed".to_string(),
+            ),
+            MarketSourceTier::Gap => ("uncovered", false, "coverage_gap".to_string()),
+            _ => unreachable!("scheduled gap splitter emits only closed or gap tiers"),
+        };
+        if let Some(previous) = segments.last_mut() {
+            if previous.tier == tier && previous.end == cursor && previous.source == source {
+                previous.end = segment_end;
+                cursor = segment_end;
+                continue;
+            }
+        }
+        segments.push(MarketSourceSegment {
+            coverage_state,
+            end: segment_end,
+            queryable_by_history,
+            source,
+            start: cursor,
+            tier,
+        });
+        cursor = segment_end;
+    }
+}
+
+fn append_live_tail_segments(
+    segments: &mut Vec<MarketSourceSegment>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    live_gateway_url: &str,
+) {
+    let mut cursor = start;
+    while cursor < end {
+        let (closed, boundary) = market_calendar_segment_boundary(cursor);
+        let segment_end = boundary.min(end);
+        let (coverage_state, queryable_by_history, source, tier) = if closed {
+            (
+                "covered_empty",
+                true,
+                "market_calendar:scheduled_closed".to_string(),
+                MarketSourceTier::ClosedMarket,
+            )
+        } else {
+            (
+                "requires_live_continuation",
+                false,
+                live_gateway_url.to_string(),
+                MarketSourceTier::CurrentLive,
+            )
+        };
+        if let Some(previous) = segments.last_mut() {
+            if previous.tier == tier && previous.end == cursor && previous.source == source {
+                previous.end = segment_end;
+                cursor = segment_end;
+                continue;
+            }
+        }
+        segments.push(MarketSourceSegment {
+            coverage_state,
+            end: segment_end,
+            queryable_by_history,
+            source,
+            start: cursor,
+            tier,
+        });
+        cursor = segment_end;
+    }
+}
+
+fn market_calendar_segment_boundary(cursor: DateTime<Utc>) -> (bool, DateTime<Utc>) {
+    let local = cursor.with_timezone(&New_York);
+    let date = local.date_naive();
+    let local_boundary = |date: NaiveDate, hour| {
+        New_York
+            .with_ymd_and_hms(date.year(), date.month(), date.day(), hour, 0, 0)
+            .single()
+            .expect("New York market boundary must be unique")
+    };
+    let next_date = date.succ_opt().expect("market calendar date must advance");
+    let next_midnight = local_boundary(next_date, 0);
+    let session_start = local_boundary(date, 4);
+    let session_end = local_boundary(date, 20);
+    let (closed, boundary) = if matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
+        (true, next_midnight)
+    } else if local < session_start {
+        (true, session_start)
+    } else if local >= session_end {
+        (true, next_midnight)
+    } else {
+        (false, session_end)
+    };
+    (closed, boundary.with_timezone(&Utc))
 }
 
 fn source_plan_hash(
@@ -1870,10 +1986,10 @@ fn recent_coverage_sql(table: &str, window: &EventWindow) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        archive_session_end_utc, build_source_plan, event_select, macro_bar_is_closed,
-        materialize_confirmed_recent_coverage, merge_coverage_intervals, normalize_ticker,
-        parse_historical_tsv_row, recent_coverage_sql, row_to_event, CoverageInterval, EventWindow,
-        HistoricalRow, MarketSourceTier, RecentCoverageRow,
+        append_scheduled_gap_segments, archive_session_end_utc, build_source_plan, event_select,
+        macro_bar_is_closed, materialize_confirmed_recent_coverage, merge_coverage_intervals,
+        normalize_ticker, parse_historical_tsv_row, recent_coverage_sql, row_to_event,
+        CoverageInterval, EventWindow, HistoricalRow, MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{TimeZone, Utc};
@@ -2028,11 +2144,15 @@ mod tests {
             }],
             &HistoricalGatewayConfig::from_env(),
         );
-        assert_eq!(plan.segments.len(), 3);
+        assert_eq!(plan.segments.len(), 4);
         assert!(matches!(plan.segments[0].tier, MarketSourceTier::Archive));
         assert!(matches!(plan.segments[1].tier, MarketSourceTier::Recent));
         assert!(matches!(
             plan.segments[2].tier,
+            MarketSourceTier::ClosedMarket
+        ));
+        assert!(matches!(
+            plan.segments[3].tier,
             MarketSourceTier::CurrentLive
         ));
         assert!(plan.plan_hash.starts_with("fnv1a64:"));
@@ -2040,6 +2160,85 @@ mod tests {
         for pair in plan.segments.windows(2) {
             assert_eq!(pair[0].end, pair[1].start);
         }
+    }
+
+    #[test]
+    fn source_plan_treats_a_scheduled_closed_tail_as_durable_empty_coverage() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 7, 23, 59, 50).unwrap();
+        let archive_end = Utc.with_ymd_and_hms(2026, 8, 8, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 8, 10, 8, 0, 0).unwrap();
+        let window = EventWindow {
+            end,
+            start,
+            tickers: vec!["AAPL".to_string()],
+        };
+
+        let plan = build_source_plan(
+            &window,
+            window.tickers.clone(),
+            Some("2026-08-07".to_string()),
+            Some(archive_end),
+            Vec::new(),
+            &HistoricalGatewayConfig::from_env(),
+        );
+
+        assert_eq!(plan.segments.len(), 2);
+        assert!(matches!(plan.segments[0].tier, MarketSourceTier::Archive));
+        assert!(matches!(
+            plan.segments[1].tier,
+            MarketSourceTier::ClosedMarket
+        ));
+        assert_eq!(plan.segments[1].start, archive_end);
+        assert_eq!(plan.segments[1].end, end);
+        assert!(plan.complete_for_history);
+    }
+
+    #[test]
+    fn scheduled_weekend_between_extended_sessions_is_covered_empty() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 8, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 8, 10, 8, 0, 0).unwrap();
+        let mut segments = Vec::new();
+
+        append_scheduled_gap_segments(&mut segments, start, end);
+
+        assert!(!segments.is_empty());
+        assert_eq!(segments.first().unwrap().start, start);
+        assert_eq!(segments.last().unwrap().end, end);
+        assert!(segments
+            .iter()
+            .all(|segment| matches!(segment.tier, MarketSourceTier::ClosedMarket)));
+        assert!(segments.iter().all(|segment| {
+            segment.coverage_state == "covered_empty" && segment.queryable_by_history
+        }));
+    }
+
+    #[test]
+    fn missing_weekday_session_time_remains_a_fail_closed_gap() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 11, 17, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 8, 11, 17, 5, 0).unwrap();
+        let mut segments = Vec::new();
+
+        append_scheduled_gap_segments(&mut segments, start, end);
+
+        assert_eq!(segments.len(), 1);
+        assert!(matches!(segments[0].tier, MarketSourceTier::Gap));
+        assert_eq!(segments[0].coverage_state, "uncovered");
+        assert!(!segments[0].queryable_by_history);
+    }
+
+    #[test]
+    fn scheduled_closed_boundaries_follow_wall_clock_across_dst() {
+        let start = Utc.with_ymd_and_hms(2026, 10, 31, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 11, 2, 9, 0, 0).unwrap();
+        let mut segments = Vec::new();
+
+        append_scheduled_gap_segments(&mut segments, start, end);
+
+        assert_eq!(segments.first().unwrap().start, start);
+        assert_eq!(segments.last().unwrap().end, end);
+        assert!(segments
+            .iter()
+            .all(|segment| matches!(segment.tier, MarketSourceTier::ClosedMarket)));
     }
 
     #[test]

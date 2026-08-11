@@ -79,8 +79,16 @@ def validate_source_plan(plan: dict[str, Any], *, start: str, end: str) -> list[
         if segment_end <= segment_start:
             failures.append(f"segment {index} is empty or reversed")
         tier = str(segment.get("tier", ""))
-        if tier not in {"archive", "recent", "current_live", "gap"}:
+        if tier not in {"archive", "recent", "current_live", "closed_market", "gap"}:
             failures.append(f"segment {index} has unknown tier {tier!r}")
+        if tier == "closed_market" and (
+            segment.get("coverage_state") != "covered_empty"
+            or not bool(segment.get("queryable_by_history"))
+            or segment.get("source") != "market_calendar:scheduled_closed"
+        ):
+            failures.append(
+                f"segment {index} has invalid scheduled closed-market evidence"
+            )
         expected_start = segment_end
     if expected_start != requested_end:
         failures.append(
@@ -206,6 +214,15 @@ def direct_scanner_rows(
             raise ValidationFailure(
                 f"direct parity requires a fully durable history window; segment {index} is {tier!r}"
             )
+        if tier == "closed_market":
+            if (
+                segment.get("coverage_state") != "covered_empty"
+                or source != "market_calendar:scheduled_closed"
+            ):
+                raise ValidationFailure(
+                    f"direct parity refused invalid closed-market segment {index}"
+                )
+            continue
         if not APPROVED_EVENT_SOURCE.fullmatch(source):
             raise ValidationFailure(f"direct parity refused unapproved source {source!r}")
         segment_start = _timestamp(str(segment.get("start") or ""))

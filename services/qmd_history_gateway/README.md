@@ -141,8 +141,10 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
   plan, its hash and completeness, and combined event/ticker/time bounds.
 - `GET /coverage/latest` (latest market day with canonical event coverage)
 - `GET /source-plan?start=...&end=...&tickers=AAPL,MSFT` (ordered archive,
-  recent, gap, and current-live continuation segments; clients never choose a
-  physical database)
+  recent, scheduled-closed, gap, and current-live continuation segments;
+  clients never choose a physical database). Known weekend and 20:00-04:00
+  New York closures are covered-empty; possible in-session gaps remain
+  uncovered and fail closed.
 - `GET /capability-catalog` (shared QMD Live/History computation vocabulary)
 - `GET /snapshot/cache` (cache hits, misses, builds, entries, and evictions)
 - `GET /snapshot/scanner-derived?start=...&end=...&as_of=...` (causal
@@ -151,11 +153,12 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
   shared live engines)
 - `POST /materialize/generic-structure-checkpoint` advances one versioned
   Generic Structure checkpoint through one explicit ticker/as-of window. It
-  accepts only Recent and Current-Live source tiers because those preserve the
-  live arrival identity; Archive ordinal or a source gap returns a typed
-  conflict instead of fabricating an exact continuation. The response includes
-  the advanced checkpoint, event counts, source plan, and source revisions
-  before and after replay.
+  accepts Recent and Current-Live source tiers because those preserve the live
+  arrival identity, and scheduled-closed covered-empty segments because they
+  cannot mutate the cursor. Archive ordinal or a possible in-session source gap
+  returns a typed conflict instead of fabricating an exact continuation. The
+  response includes the advanced checkpoint, event counts, source plan, and
+  source revisions before and after replay.
 - `GET /snapshot/family-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/condition-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d`

@@ -68,6 +68,42 @@ class QmdAuthorityValidationTests(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIn("trade_count", failures[0])
 
+    @patch("scripts.validate_qmd_authority._clickhouse_json_rows")
+    def test_direct_parity_skips_proven_scheduled_closed_segments(self, query) -> None:
+        query.return_value = [{"ticker": "AAPL", "trade_count": 1}]
+        plan = {
+            "end": "2026-08-10T08:00:00Z",
+            "segments": [
+                {
+                    "start": "2026-08-07T23:59:00Z",
+                    "end": "2026-08-08T00:00:00Z",
+                    "queryable_by_history": True,
+                    "source": "market_sip_compact.events_YYYY",
+                    "tier": "archive",
+                },
+                {
+                    "start": "2026-08-08T00:00:00Z",
+                    "end": "2026-08-10T08:00:00Z",
+                    "coverage_state": "covered_empty",
+                    "queryable_by_history": True,
+                    "source": "market_calendar:scheduled_closed",
+                    "tier": "closed_market",
+                },
+            ],
+        }
+
+        direct_scanner_rows(
+            plan=plan,
+            tickers="AAPL",
+            clickhouse_url="http://clickhouse",
+            clickhouse_user="default",
+            clickhouse_password="secret",
+        )
+
+        sql = query.call_args.kwargs["sql"]
+        self.assertIn("market_sip_compact.events_2026", sql)
+        self.assertNotIn("market_calendar", sql)
+
     def test_direct_parity_rejects_live_or_unapproved_sources(self) -> None:
         for source, tier, queryable in (
             ("http://127.0.0.1:8795", "current_live", False),
@@ -110,6 +146,34 @@ class QmdAuthorityValidationTests(unittest.TestCase):
         )
         plan["segments"][1]["start"] = "2026-08-01T23:59:00Z"
         self.assertRegex(validate_source_plan(plan, start="2026-08-01T00:00:00Z", end="2026-08-03T00:00:00Z")[0], "expected")
+
+    def test_source_plan_requires_exact_closed_market_evidence(self) -> None:
+        segment = {
+            "start": "2026-08-08T00:00:00Z",
+            "end": "2026-08-10T08:00:00Z",
+            "coverage_state": "covered_empty",
+            "queryable_by_history": True,
+            "source": "market_calendar:scheduled_closed",
+            "tier": "closed_market",
+        }
+        plan = {"plan_hash": "plan-1", "event_schema_version": 4, "segments": [segment]}
+        self.assertEqual(
+            validate_source_plan(
+                plan,
+                start="2026-08-08T00:00:00Z",
+                end="2026-08-10T08:00:00Z",
+            ),
+            [],
+        )
+        segment["queryable_by_history"] = False
+        self.assertIn(
+            "invalid scheduled closed-market evidence",
+            validate_source_plan(
+                plan,
+                start="2026-08-08T00:00:00Z",
+                end="2026-08-10T08:00:00Z",
+            )[0],
+        )
 
     def test_event_validation_rejects_order_regression_and_missing_lineage(self) -> None:
         failures, _, lineage = validate_event_page(
