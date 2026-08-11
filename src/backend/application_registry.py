@@ -609,6 +609,19 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "service://news-gateway/coverage",
         ),
         QueryPlanDefinition(
+            "news.operations_intraday.v1",
+            "backend",
+            "src.backend.query_plans.news_operations_v1:intraday_histogram,today_summary,today_rows",
+            (
+                "q_live.benzinga_news_event_v2",
+                "q_live.benzinga_news_rendered_v2",
+            ),
+            "canonical news ID and exact provider source revision",
+            "bounded New York market-day published_at_utc window",
+            "News Gateway updated_at_utc",
+            "service://news-gateway/coverage",
+        ),
+        QueryPlanDefinition(
             "sec.filing_asof.v1",
             "backend",
             "src.backend.query_plans.canvas_context_v1:sec_filings",

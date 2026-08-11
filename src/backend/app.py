@@ -149,6 +149,11 @@ from src.backend.query_plans.news_detail_asof_v1 import (
     trading_article as trading_news_article_query,
     trading_tickers as trading_news_tickers_query,
 )
+from src.backend.query_plans.news_operations_v1 import (
+    intraday_histogram as news_intraday_histogram_query,
+    today_rows as news_today_rows_query,
+    today_summary as news_today_summary_query,
+)
 from src.backend.real_live_trading_service import (
     apply_tradable_filter_to_scanner_payload,
     configured_real_live_accounts,
@@ -1475,44 +1480,11 @@ def service_news_histogram() -> dict[str, Any]:
     if cached_payload:
         return cached_payload
 
-    bin_count = int(((window_end_utc - window_start_utc).total_seconds() + safe_bin_seconds - 1) // safe_bin_seconds)
-    window_start_sql = f"toDateTime64({sql_string(window_start_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
-    window_end_sql = f"toDateTime64({sql_string(window_end_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
-    query = f"""
-        WITH
-            {window_start_sql} AS window_start,
-            {window_end_sql} AS window_end,
-            news_counts AS
-            (
-                SELECT
-                    toUInt64(intDiv(dateDiff('second', window_start, n.published_at_utc) + {safe_bin_seconds // 2}, {safe_bin_seconds})) AS bucket_index,
-                    toUInt64(countIf(length(n.tickers) = 1)) AS single_ticker_rows,
-                    toUInt64(countIf(length(n.tickers) != 1)) AS broad_or_none_rows,
-                    toUInt64(count()) AS total_rows
-                FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-                WHERE n.published_at_utc >= window_start
-                  AND n.published_at_utc < window_end
-                GROUP BY bucket_index
-            )
-        SELECT
-            formatDateTime(
-                window_start + toIntervalSecond(toInt64(b.bucket_index) * {safe_bin_seconds}),
-                '%Y-%m-%dT%H:%i:%S.000Z',
-                'UTC'
-            ) AS bucket_utc,
-            toUInt64(ifNull(c.single_ticker_rows, 0)) AS single_ticker_rows,
-            toUInt64(ifNull(c.broad_or_none_rows, 0)) AS broad_or_none_rows,
-            toUInt64(ifNull(c.total_rows, 0)) AS total_rows
-        FROM
-        (
-            SELECT toUInt64(number) AS bucket_index
-            FROM numbers({bin_count + 1})
-        ) AS b
-        LEFT JOIN news_counts AS c
-            ON c.bucket_index = b.bucket_index
-        ORDER BY b.bucket_index
-        FORMAT JSONEachRow
-    """
+    query = news_intraday_histogram_query(
+        window_start_utc,
+        window_end_utc,
+        bin_seconds=safe_bin_seconds,
+    )
     rows: list[dict[str, Any]] = []
     for line in clickhouse_status_query(query).splitlines():
         if not line.strip():
@@ -1548,77 +1520,21 @@ def service_news_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, A
     sort_direction = "ASC" if sort.strip().lower() == "asc" else "DESC"
     database = "q_live"
     normalized_table = "benzinga_news_event_v2"
-    rendered_table = "benzinga_news_rendered_v2"
     ticker_table = "benzinga_news_ticker_v2"
     market_now = datetime.now(UTC).astimezone(ZoneInfo(EXCHANGE_TIME_ZONE))
     window_start_et = market_now.replace(hour=0, minute=0, second=0, microsecond=0)
     window_end_et = window_start_et + timedelta(days=1)
     window_start_utc = window_start_et.astimezone(UTC)
     window_end_utc = window_end_et.astimezone(UTC)
-    window_start_sql = f"toDateTime64({sql_string(window_start_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
-    window_end_sql = f"toDateTime64({sql_string(window_end_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
-    summary_query = f"""
-        WITH
-            {window_start_sql} AS window_start,
-            {window_end_sql} AS window_end
-        SELECT
-            toUInt64(count()) AS total_rows,
-            toUInt64(countIf(length(n.tickers) = 1)) AS one_ticker_rows,
-            toUInt64(countIf(length(n.tickers) > 1)) AS multi_ticker_rows,
-            toUInt64(countIf(length(n.tickers) = 0)) AS no_ticker_rows,
-            toUInt64(countIf(length(n.tickers) > 0)) AS with_ticker_rows,
-            toUInt64(countIf(has(n.content_quality_flags, 'external_text'))) AS external_text_rows,
-            toUInt64(countIf(has(n.content_quality_flags, 'pdf_text'))) AS pdf_rows,
-            formatDateTime(max(n.published_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_published_at_utc
-        FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-        WHERE n.published_at_utc >= window_start
-          AND n.published_at_utc < window_end
-        FORMAT JSONEachRow
-    """
+    summary_query = news_today_summary_query(window_start_utc, window_end_utc)
     summary_rows = [json.loads(line) for line in clickhouse_status_query(summary_query).splitlines() if line.strip()]
     summary = summary_rows[0] if summary_rows else {}
-    query = f"""
-        WITH
-            {window_start_sql} AS window_start,
-            {window_end_sql} AS window_end
-        SELECT
-            n.canonical_news_id,
-            n.provider_article_id,
-            formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
-            formatDateTime(n.downloaded_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS downloaded_at_utc,
-            n.title,
-            n.normalized_title,
-            n.article_url,
-            n.url_domain,
-            n.author,
-            n.tickers,
-            n.channels,
-            n.provider_tags,
-            length(n.tickers) AS ticker_link_count,
-            arraySort(n.tickers) AS ticker_link_sample,
-            ifNull(r.source_count, 0) > 0 AS has_body,
-            notEmpty(r.canonical_news_id) AND ifNull(r.source_count, 0) = 0 AS is_title_only,
-            has(n.content_quality_flags, 'external_text') AS has_external_text,
-            has(n.content_quality_flags, 'pdf_text') AS has_pdf,
-            '' AS external_fetch_status,
-            '' AS pdf_extract_status,
-            n.content_quality_flags,
-            0 AS body_chars,
-            0 AS external_chars,
-            0 AS pdf_chars,
-            lengthUTF8(ifNull(r.rendered_text, '')) AS full_text_chars,
-            substring(ifNull(r.rendered_text, ''), 1, 240) AS text_preview
-        FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-        LEFT JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
-            ON r.published_date=n.published_date
-            AND r.provider_article_id=n.provider_article_id
-            AND r.source_revision_key=n.source_revision_key
-        WHERE n.published_at_utc >= window_start
-          AND n.published_at_utc < window_end
-        ORDER BY n.published_at_utc {sort_direction}, n.provider_article_id {sort_direction}
-        LIMIT {safe_limit}
-        FORMAT JSONEachRow
-    """
+    query = news_today_rows_query(
+        window_start_utc,
+        window_end_utc,
+        limit=safe_limit,
+        ascending=sort_direction == "ASC",
+    )
     rows = [json.loads(line) for line in clickhouse_status_query(query).splitlines() if line.strip()]
     return {
         "database": database,
@@ -1653,7 +1569,6 @@ def news_detail_source(canonical_news_id: str) -> tuple[str, str, str, str, dict
         raise HTTPException(status_code=400, detail="canonical_news_id is required")
     database = "q_live"
     normalized_table = "benzinga_news_event_v2"
-    rendered_table = "benzinga_news_rendered_v2"
     ticker_table = "benzinga_news_ticker_v2"
     row_query = service_news_article_query(news_id)
     rows = [json.loads(line) for line in clickhouse_status_query(row_query).splitlines() if line.strip()]

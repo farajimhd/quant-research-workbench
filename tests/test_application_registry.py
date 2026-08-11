@@ -98,6 +98,7 @@ class ApplicationRegistryTests(unittest.TestCase):
                 "news.company_asof.v1",
                 "news.scanner_company_asof.v1",
                 "news.detail_asof.v1",
+                "news.operations_intraday.v1",
                 "sec.filing_asof.v1",
                 "sec.scanner_filing_asof.v1",
                 "sec.ticker_identity_batch.v1",

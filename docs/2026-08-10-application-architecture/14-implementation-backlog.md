@@ -281,6 +281,8 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Move canonical News detail, exact rendered-revision, and ticker-link
         reads into `news.detail_asof.v1`; retain validation and presentation in
         the route without changing News Gateway tables or publication.
+  - [x] Move Services News market-day summary, row, and histogram SQL into the
+        bounded `news.operations_intraday.v1` plan.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -308,6 +310,8 @@ budgets and invalid scope broadening fails configuration validation.
         the consumers.
   - [x] Remove five identity-scoped News detail queries from `app.py`; the
         route now composes registered builders and user-facing fields only.
+  - [x] Remove Services News market-day operational SQL from `app.py`; retain
+        caching, row decoding, and operational presentation in the backend.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [x] Consume deferred producer services through unchanged bounded contracts.

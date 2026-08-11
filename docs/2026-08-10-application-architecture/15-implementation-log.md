@@ -1360,6 +1360,18 @@ bounded direct ClickHouse paths remain documented in
      migrate. Thirty-one focused query-plan, route, application-registry, News
      presentation, and scoped-label tests passed, and all changed Python
      modules compiled with bytecode writes disabled.
+142. Moved the Services News operational reads into the registered
+     `news.operations_intraday.v1` plan. The plan owns the bounded New York
+     market-day summary, exact event/rendered-revision rows, and complete
+     fixed-width histogram bucket query. It enforces the half-open UTC window,
+     deterministic ordering, and a defensive 1,000-row ceiling independently
+     of the stricter route limit. `app.py` retains market-calendar window
+     selection, bounded caching, JSON decoding, and the operational response
+     projection; News Gateway schemas and publication behavior were unchanged.
+
+     Twenty-nine focused operational-plan, News detail, trading-News route,
+     and application-registry tests passed. All changed Python modules compiled
+     with bytecode writes disabled.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
