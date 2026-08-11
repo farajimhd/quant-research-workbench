@@ -52,9 +52,11 @@ SUPPORTED_HISTORICAL_TIMEFRAMES = {
     "5m",
     "1h",
     "1d",
+    "1w",
     "1mo",
+    "1y",
 }
-MACRO_CHART_TIMEFRAMES = {"1d", "1mo"}
+MACRO_CHART_TIMEFRAMES = {"1d", "1w", "1mo", "1y"}
 HISTORICAL_CHUNK_MINUTES = 15
 MARKET_REFERENCE_DIR = REPO_ROOT / "research" / "market_references" / "massive"
 BUILTIN_STRATEGY_LOCK = threading.Lock()
@@ -990,6 +992,20 @@ def historical_macro_bar_history(
         start = resolved_as_of.replace(
             year=month_index // 12,
             month=month_index % 12 + 1,
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+    elif timeframe == "1w":
+        start = (resolved_as_of - timedelta(days=7 * 155)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    elif timeframe == "1y":
+        start = resolved_as_of.replace(
+            year=max(1, resolved_as_of.year - 19),
+            month=1,
             day=1,
             hour=0,
             minute=0,

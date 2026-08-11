@@ -36,6 +36,45 @@ pub struct EventCoverage {
     pub ticker_count: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketSourceTier {
+    Archive,
+    Recent,
+    CurrentLive,
+    Gap,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MarketSourceSegment {
+    pub coverage_state: &'static str,
+    pub end: DateTime<Utc>,
+    pub queryable_by_history: bool,
+    pub source: String,
+    pub start: DateTime<Utc>,
+    pub tier: MarketSourceTier,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MarketSourcePlan {
+    pub archive_watermark: Option<String>,
+    pub complete_for_history: bool,
+    pub end: DateTime<Utc>,
+    pub event_schema_version: u16,
+    pub ordering: &'static str,
+    pub plan_hash: String,
+    pub recent_watermark: Option<DateTime<Utc>>,
+    pub segments: Vec<MarketSourceSegment>,
+    pub start: DateTime<Utc>,
+    pub tickers: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct CoverageInterval {
+    end: DateTime<Utc>,
+    start: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct LatestEventCoverage {
     pub coverage_table: String,
@@ -111,6 +150,7 @@ struct HistoricalRow {
     sip_timestamp_us: u64,
     size_primary: f32,
     size_secondary: f32,
+    source_sequence: u64,
     ticker: String,
 }
 
@@ -134,6 +174,12 @@ struct SourceRevisionRow {
     event_count: u64,
     max_build_step: u64,
     max_updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoverageIntervalRow {
+    coverage_end_utc: String,
+    coverage_start_utc: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,6 +246,81 @@ impl HistoricalEventSource {
         self.query("SELECT 1 FORMAT TSV").await.map(|_| ())
     }
 
+    pub async fn source_plan(&self, window: &EventWindow) -> Result<MarketSourcePlan, String> {
+        validate_window(window)?;
+        let tickers = window
+            .tickers
+            .iter()
+            .map(|ticker| normalize_ticker(ticker))
+            .collect::<Result<Vec<_>, _>>()?;
+        let archive = self.latest_coverage_before(None).await?;
+        let archive_end = archive
+            .session_date
+            .as_deref()
+            .map(|value| {
+                NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                    .map_err(|error| format!("invalid archive coverage date {value:?}: {error}"))?
+                    .succ_opt()
+                    .ok_or_else(|| "archive coverage date overflow".to_string())?
+                    .and_hms_opt(0, 0, 0)
+                    .map(|value| value.and_utc())
+                    .ok_or_else(|| "invalid archive coverage boundary".to_string())
+            })
+            .transpose()?;
+        let recent = if archive_end.is_some_and(|end| end >= window.end) {
+            Vec::new()
+        } else {
+            self.recent_coverage_intervals(window).await?
+        };
+        Ok(build_source_plan(
+            window,
+            tickers,
+            archive.session_date,
+            archive_end,
+            recent,
+            &self.config,
+        ))
+    }
+
+    async fn recent_coverage_intervals(
+        &self,
+        window: &EventWindow,
+    ) -> Result<Vec<CoverageInterval>, String> {
+        let table = format!(
+            "{}.{}",
+            self.config.recent_database, self.config.recent_event_coverage_table
+        );
+        let sql = format!(
+            r#"SELECT
+                formatDateTime(coverage_start_utc, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS coverage_start_utc,
+                formatDateTime(coverage_end_utc, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS coverage_end_utc
+            FROM {table} FINAL
+            WHERE coverage_kind = 'q_live_events'
+              AND status IN ('repair_completed', 'coverage_bootstrap', 'compact_persisted', 'intraday_bars_persisted')
+              AND coverage_end_utc > parseDateTime64BestEffort({start})
+              AND coverage_start_utc < parseDateTime64BestEffort({end})
+            ORDER BY coverage_start_utc, coverage_end_utc
+            FORMAT JSONEachRow"#,
+            start = sql_literal(&window.start.to_rfc3339()),
+            end = sql_literal(&window.end.to_rfc3339()),
+        );
+        let text = self.query(&sql).await?;
+        let mut intervals = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let row = serde_json::from_str::<CoverageIntervalRow>(line)
+                    .map_err(|error| format!("invalid recent coverage row: {error}"))?;
+                Ok(CoverageInterval {
+                    end: parse_clickhouse_datetime(&row.coverage_end_utc)?,
+                    start: parse_clickhouse_datetime(&row.coverage_start_utc)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        intervals.sort_by_key(|value| value.start);
+        Ok(merge_coverage_intervals(intervals))
+    }
+
     pub fn market_event(&self, event: &LiveCompactEvent) -> MarketEvent {
         self.decoder.decode(event)
     }
@@ -210,6 +331,7 @@ impl HistoricalEventSource {
 
     pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
         validate_window(window)?;
+        let plan = self.source_plan(window).await?;
         let ticker_filter = if window.tickers.is_empty() {
             String::new()
         } else {
@@ -252,15 +374,59 @@ impl HistoricalEventSource {
             last_inclusive.date_naive(),
         );
         let text = self.query(&sql).await?;
-        let row = serde_json::from_str::<SourceRevisionRow>(text.trim())
+        let archive_row = serde_json::from_str::<SourceRevisionRow>(text.trim())
             .map_err(|error| format!("invalid historical source revision response: {error}"))?;
+        let mut event_count = archive_row.event_count;
+        let mut max_build_step = archive_row.max_build_step;
+        let mut max_updated_at = archive_row.max_updated_at;
+        for segment in plan
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.tier, MarketSourceTier::Recent))
+        {
+            let recent_sql = format!(
+                r#"SELECT
+                    count() AS event_count,
+                    max(arrival_sequence) AS max_build_step,
+                    toString(max(ingest_ts)) AS max_updated_at
+                FROM {}.{} FINAL
+                WHERE sip_timestamp_us >= {}
+                  AND sip_timestamp_us < {}
+                  {}
+                FORMAT JSONEachRow"#,
+                self.config.recent_database,
+                self.config.recent_event_table,
+                segment.start.timestamp_micros(),
+                segment.end.timestamp_micros(),
+                ticker_filter,
+            );
+            let text = self.query(&recent_sql).await?;
+            let row = serde_json::from_str::<SourceRevisionRow>(text.trim())
+                .map_err(|error| format!("invalid recent source revision response: {error}"))?;
+            event_count = event_count.saturating_add(row.event_count);
+            max_build_step = max_build_step.max(row.max_build_step);
+            max_updated_at = max_updated_at.max(row.max_updated_at);
+        }
+        let plan_token = plan
+            .segments
+            .iter()
+            .map(|segment| {
+                format!(
+                    "{:?}:{}:{}",
+                    segment.tier,
+                    segment.start.timestamp_micros(),
+                    segment.end.timestamp_micros()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
         Ok(SourceRevision {
-            event_count: row.event_count,
-            max_build_step: row.max_build_step,
-            max_updated_at: row.max_updated_at.clone(),
+            event_count,
+            max_build_step,
+            max_updated_at: max_updated_at.clone(),
             token: format!(
-                "{}:{}:{}",
-                row.max_build_step, row.event_count, row.max_updated_at
+                "{}:{}:{}:{}",
+                max_build_step, event_count, max_updated_at, plan_token
             ),
         })
     }
@@ -310,10 +476,7 @@ impl HistoricalEventSource {
         batch_size: usize,
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
-        let last_inclusive = window.end - chrono::Duration::microseconds(1);
-        if window.start.year() != last_inclusive.year() {
-            return Err("historical Scanner replay cannot cross a source-table year".to_string());
-        }
+        let plan = self.source_plan(&window).await?;
         let ticker_filter = if window.tickers.is_empty() {
             String::new()
         } else {
@@ -328,30 +491,49 @@ impl HistoricalEventSource {
                 .join(",");
             format!(" AND ticker IN ({tickers})")
         };
+        let mut selects = Vec::new();
+        for segment in plan
+            .segments
+            .iter()
+            .filter(|segment| segment.queryable_by_history)
+        {
+            match segment.tier {
+                MarketSourceTier::Archive => {
+                    let last_inclusive = segment.end - chrono::Duration::microseconds(1);
+                    for year in segment.start.year()..=last_inclusive.year() {
+                        selects.push(event_select(
+                            &format!(
+                                "{}.{}{}",
+                                self.config.clickhouse_database, self.config.table_prefix, year
+                            ),
+                            false,
+                            segment.start,
+                            segment.end,
+                            &ticker_filter,
+                            None,
+                        ));
+                    }
+                }
+                MarketSourceTier::Recent => selects.push(event_select(
+                    &format!(
+                        "{}.{}",
+                        self.config.recent_database, self.config.recent_event_table
+                    ),
+                    true,
+                    segment.start,
+                    segment.end,
+                    &ticker_filter,
+                    None,
+                )),
+                MarketSourceTier::CurrentLive | MarketSourceTier::Gap => {}
+            }
+        }
+        if selects.is_empty() {
+            return Ok(());
+        }
         let sql = format!(
-            r#"SELECT
-                upper(source.ticker) AS ticker, ordinal, event_meta, sip_timestamp_us, price_primary_int,
-                price_secondary_int, size_primary, size_secondary, exchange_primary,
-                exchange_secondary, condition_token_1, condition_token_2,
-                condition_token_3, condition_token_4, condition_token_5,
-                toString(source.event_date) AS event_date
-            FROM {}.{}{} AS source
-            PREWHERE source.event_date >= toDate('{}')
-              AND source.event_date <= toDate('{}')
-              AND source.sip_timestamp_us >= {}
-              AND source.sip_timestamp_us < {}
-            WHERE 1
-              {}
-            ORDER BY upper(source.ticker), source.sip_timestamp_us, source.ordinal
-            FORMAT JSONEachRow"#,
-            self.config.clickhouse_database,
-            self.config.table_prefix,
-            window.start.year(),
-            window.start.date_naive(),
-            last_inclusive.date_naive(),
-            window.start.timestamp_micros(),
-            window.end.timestamp_micros(),
-            ticker_filter,
+            "SELECT * FROM ({}) ORDER BY ticker, sip_timestamp_us, ordinal FORMAT JSONEachRow",
+            selects.join(" UNION ALL ")
         );
         self.stream_query_rows(sql, batch_size, sender).await
     }
@@ -430,6 +612,7 @@ impl HistoricalEventSource {
         descending: bool,
     ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
         validate_window(window)?;
+        let plan = self.source_plan(window).await?;
         let limit = limit.clamp(1, 100_000);
         let ticker_filter = if window.tickers.is_empty() {
             String::new()
@@ -445,48 +628,46 @@ impl HistoricalEventSource {
                 .join(",");
             format!(" AND ticker IN ({tickers})")
         };
-        let cursor_filter = cursor
-            .filter(|cursor| cursor.sip_timestamp_us > 0)
-            .map(|cursor| {
-                format!(
-                    " AND tuple(sip_timestamp_us, ticker, ordinal) > tuple({}, {}, {})",
-                    cursor.sip_timestamp_us,
-                    sql_literal(&cursor.ticker),
-                    cursor.ordinal
-                )
-            })
-            .unwrap_or_default();
-        let start_us = window.start.timestamp_micros();
-        let end_us = window.end.timestamp_micros();
-        let last_inclusive = window.end - chrono::Duration::microseconds(1);
-        let start_date = window.start.date_naive();
-        let end_date = last_inclusive.date_naive();
-        let selects = (window.start.year()..=last_inclusive.year())
-            .map(|year| {
-                format!(
-                    r#"SELECT
-                        ticker, ordinal, event_meta, sip_timestamp_us, price_primary_int,
-                        price_secondary_int, size_primary, size_secondary, exchange_primary,
-                        exchange_secondary, condition_token_1, condition_token_2,
-                        condition_token_3, condition_token_4, condition_token_5,
-                        toString(source.event_date) AS event_date
-                    FROM {}.{}{} AS source
-                    PREWHERE source.event_date >= toDate('{}')
-                      AND source.event_date <= toDate('{}')
-                      AND source.sip_timestamp_us >= {} AND source.sip_timestamp_us < {}
-                    WHERE 1{}{}"#,
-                    self.config.clickhouse_database,
-                    self.config.table_prefix,
-                    year,
-                    start_date,
-                    end_date,
-                    start_us,
-                    end_us,
-                    ticker_filter,
-                    cursor_filter
-                )
-            })
-            .collect::<Vec<_>>();
+        let mut selects = Vec::new();
+        for segment in plan
+            .segments
+            .iter()
+            .filter(|segment| segment.queryable_by_history)
+        {
+            match segment.tier {
+                MarketSourceTier::Archive => {
+                    let last_inclusive = segment.end - chrono::Duration::microseconds(1);
+                    for year in segment.start.year()..=last_inclusive.year() {
+                        selects.push(event_select(
+                            &format!(
+                                "{}.{}{}",
+                                self.config.clickhouse_database, self.config.table_prefix, year
+                            ),
+                            false,
+                            segment.start,
+                            segment.end,
+                            &ticker_filter,
+                            cursor,
+                        ));
+                    }
+                }
+                MarketSourceTier::Recent => selects.push(event_select(
+                    &format!(
+                        "{}.{}",
+                        self.config.recent_database, self.config.recent_event_table
+                    ),
+                    true,
+                    segment.start,
+                    segment.end,
+                    &ticker_filter,
+                    cursor,
+                )),
+                MarketSourceTier::CurrentLive | MarketSourceTier::Gap => {}
+            }
+        }
+        if selects.is_empty() {
+            return Ok((Vec::new(), None));
+        }
         let direction = if descending { "DESC" } else { "ASC" };
         let sql = format!(
             "SELECT * FROM ({}) ORDER BY sip_timestamp_us {direction}, ticker {direction}, ordinal {direction} LIMIT {} FORMAT JSONEachRow",
@@ -571,8 +752,8 @@ impl HistoricalEventSource {
     ) -> Result<HistoricalMacroChartSnapshot, String> {
         validate_window(window)?;
         let ticker = normalize_ticker(ticker)?;
-        if !matches!(timeframe, "1d" | "1mo") {
-            return Err("chart macro timeframe must be 1d or 1mo".to_string());
+        if !matches!(timeframe, "1d" | "1w" | "1mo" | "1y") {
+            return Err("chart macro timeframe must be 1d, 1w, 1mo, or 1y".to_string());
         }
         let table = format!(
             "{}.{}",
@@ -586,10 +767,17 @@ impl HistoricalEventSource {
             window.end.date_naive(),
             as_of,
         )?;
-        let projection = if timeframe == "1mo" {
-            r#"SELECT
-                toString(month_start) AS session_date,
-                '1mo' AS timeframe,
+        let projection = if timeframe != "1d" {
+            let period_expression = match timeframe {
+                "1w" => "toMonday(session_date)",
+                "1mo" => "toStartOfMonth(session_date)",
+                "1y" => "toStartOfYear(session_date)",
+                _ => unreachable!(),
+            };
+            format!(
+                r#"SELECT
+                toString(period_start) AS session_date,
+                '{timeframe}' AS timeframe,
                 sym AS ticker,
                 bar_family,
                 toString(min(source_bar_start)) AS bar_start,
@@ -601,14 +789,16 @@ impl HistoricalEventSource {
                 sum(size_sum) AS size_sum,
                 sum(event_count) AS event_count
             FROM (
-                SELECT toStartOfMonth(session_date) AS month_start, sym, 'trade' AS bar_family, bar_start AS source_bar_start, bar_end AS source_bar_end, open, close, high, low, size_sum, event_count
+                SELECT {period_expression} AS period_start, sym, 'trade' AS bar_family, bar_start AS source_bar_start, bar_end AS source_bar_end, open, close, high, low, size_sum, event_count
                 FROM ({daily_bars})
             )
-            GROUP BY month_start, sym, bar_family
+            GROUP BY period_start, sym, bar_family
             ORDER BY bar_start, bar_family
             FORMAT JSONEachRow"#
+            )
         } else {
-            r#"SELECT
+            format!(
+                r#"SELECT
                 toString(session_date) AS session_date,
                 '1d' AS timeframe,
                 sym AS ticker,
@@ -627,8 +817,9 @@ impl HistoricalEventSource {
             )
             ORDER BY bar_start, bar_family
             FORMAT JSONEachRow"#
+            )
         };
-        let sql = projection.replace("{daily_bars}", &daily_bars);
+        let sql = projection;
         let text = self.query(&sql).await?;
         let bars = text
             .lines()
@@ -876,18 +1067,217 @@ fn parse_clickhouse_datetime(value: &str) -> Result<DateTime<Utc>, String> {
         .map_err(|error| format!("invalid ClickHouse timestamp {value:?}: {error}"))
 }
 
+fn event_select(
+    table: &str,
+    recent: bool,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    ticker_filter: &str,
+    cursor: Option<&HistoricalCursor>,
+) -> String {
+    let ordinal = if recent {
+        "source.arrival_sequence"
+    } else {
+        "source.ordinal"
+    };
+    let source_sequence = if recent {
+        "source.source_sequence"
+    } else {
+        "source.ordinal"
+    };
+    let final_clause = if recent { " FINAL" } else { "" };
+    let cursor_filter = cursor
+        .filter(|value| value.sip_timestamp_us > 0)
+        .map(|value| {
+            format!(
+                " AND tuple(source.sip_timestamp_us, upper(source.ticker), {ordinal}) > tuple({}, {}, {})",
+                value.sip_timestamp_us,
+                sql_literal(&value.ticker),
+                value.ordinal,
+            )
+        })
+        .unwrap_or_default();
+    let last_inclusive = end - chrono::Duration::microseconds(1);
+    format!(
+        r#"SELECT
+            upper(source.ticker) AS ticker,
+            {ordinal} AS ordinal,
+            {source_sequence} AS source_sequence,
+            source.event_meta,
+            source.sip_timestamp_us,
+            source.price_primary_int,
+            source.price_secondary_int,
+            source.size_primary,
+            source.size_secondary,
+            source.exchange_primary,
+            source.exchange_secondary,
+            source.condition_token_1,
+            source.condition_token_2,
+            source.condition_token_3,
+            source.condition_token_4,
+            source.condition_token_5,
+            toString(source.event_date) AS event_date
+        FROM {table} AS source{final_clause}
+        PREWHERE source.event_date >= toDate('{start_date}')
+          AND source.event_date <= toDate('{end_date}')
+          AND source.sip_timestamp_us >= {start_us}
+          AND source.sip_timestamp_us < {end_us}
+        WHERE 1{ticker_filter}{cursor_filter}"#,
+        start_date = start.date_naive(),
+        end_date = last_inclusive.date_naive(),
+        start_us = start.timestamp_micros(),
+        end_us = end.timestamp_micros(),
+    )
+}
+
+fn merge_coverage_intervals(intervals: Vec<CoverageInterval>) -> Vec<CoverageInterval> {
+    let mut merged: Vec<CoverageInterval> = Vec::new();
+    for interval in intervals {
+        if interval.end <= interval.start {
+            continue;
+        }
+        if let Some(previous) = merged.last_mut() {
+            if interval.start <= previous.end {
+                previous.end = previous.end.max(interval.end);
+                continue;
+            }
+        }
+        merged.push(interval);
+    }
+    merged
+}
+
+fn build_source_plan(
+    window: &EventWindow,
+    tickers: Vec<String>,
+    archive_watermark: Option<String>,
+    archive_end: Option<DateTime<Utc>>,
+    recent: Vec<CoverageInterval>,
+    config: &HistoricalGatewayConfig,
+) -> MarketSourcePlan {
+    let mut segments = Vec::new();
+    let mut cursor = window.start;
+    if let Some(end) = archive_end.map(|value| value.min(window.end)) {
+        if end > cursor {
+            segments.push(MarketSourceSegment {
+                coverage_state: "covered",
+                end,
+                queryable_by_history: true,
+                source: format!("{}.{}YYYY", config.clickhouse_database, config.table_prefix),
+                start: cursor,
+                tier: MarketSourceTier::Archive,
+            });
+            cursor = end;
+        }
+    }
+    for interval in recent {
+        let start = interval.start.max(cursor).max(window.start);
+        let end = interval.end.min(window.end);
+        if end <= start {
+            continue;
+        }
+        if start > cursor {
+            segments.push(MarketSourceSegment {
+                coverage_state: "uncovered",
+                end: start,
+                queryable_by_history: false,
+                source: "coverage_gap".to_string(),
+                start: cursor,
+                tier: MarketSourceTier::Gap,
+            });
+        }
+        segments.push(MarketSourceSegment {
+            coverage_state: "covered",
+            end,
+            queryable_by_history: true,
+            source: format!("{}.{}", config.recent_database, config.recent_event_table),
+            start,
+            tier: MarketSourceTier::Recent,
+        });
+        cursor = end;
+    }
+    if cursor < window.end {
+        segments.push(MarketSourceSegment {
+            coverage_state: "requires_live_continuation",
+            end: window.end,
+            queryable_by_history: false,
+            source: config.live_gateway_url.clone(),
+            start: cursor,
+            tier: MarketSourceTier::CurrentLive,
+        });
+    }
+    let recent_watermark = segments
+        .iter()
+        .filter(|segment| matches!(segment.tier, MarketSourceTier::Recent))
+        .map(|segment| segment.end)
+        .max();
+    let complete_for_history = segments.iter().all(|segment| segment.queryable_by_history);
+    let plan_hash = source_plan_hash(window.start, window.end, &tickers, &segments);
+    MarketSourcePlan {
+        archive_watermark,
+        complete_for_history,
+        end: window.end,
+        event_schema_version: LIVE_COMPACT_EVENT_SCHEMA_VERSION,
+        ordering: "sip_timestamp_us,ticker,arrival_sequence",
+        plan_hash,
+        recent_watermark,
+        segments,
+        start: window.start,
+        tickers,
+    }
+}
+
+fn source_plan_hash(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    tickers: &[String],
+    segments: &[MarketSourceSegment],
+) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    let mut update = |value: &str| {
+        for byte in value.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x100000001b3);
+    };
+    update(&start.to_rfc3339());
+    update(&end.to_rfc3339());
+    for ticker in tickers {
+        update(ticker);
+    }
+    for segment in segments {
+        update(&format!("{:?}", segment.tier));
+        update(&segment.start.to_rfc3339());
+        update(&segment.end.to_rfc3339());
+        update(segment.coverage_state);
+        update(&segment.source);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
 fn macro_bar_is_closed(
     session_date: &str,
     timeframe: &str,
     as_of: DateTime<Utc>,
 ) -> Result<bool, String> {
-    if timeframe != "1mo" {
+    if timeframe == "1d" {
         return Ok(true);
     }
     let period = NaiveDate::parse_from_str(session_date, "%Y-%m-%d")
         .map_err(|error| format!("invalid macro session date {session_date:?}: {error}"))?;
     let current = as_of.with_timezone(&New_York).date_naive();
-    Ok((period.year(), period.month()) < (current.year(), current.month()))
+    match timeframe {
+        "1w" => {
+            let current_week_start =
+                current - chrono::Duration::days(current.weekday().num_days_from_monday() as i64);
+            Ok(period < current_week_start)
+        }
+        "1mo" => Ok((period.year(), period.month()) < (current.year(), current.month())),
+        "1y" => Ok(period.year() < current.year()),
+        _ => Err(format!("unsupported macro timeframe {timeframe}")),
+    }
 }
 
 fn row_to_event(row: HistoricalRow) -> LiveCompactEvent {
@@ -914,7 +1304,7 @@ fn row_to_event(row: HistoricalRow) -> LiveCompactEvent {
         sip_timestamp_us: row.sip_timestamp_us,
         size_primary: row.size_primary,
         size_secondary: row.size_secondary,
-        source_sequence: row.ordinal,
+        source_sequence: row.source_sequence,
         ticker: row.ticker,
     }
 }
@@ -944,7 +1334,12 @@ fn sql_literal(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{macro_bar_is_closed, normalize_ticker, row_to_event, HistoricalRow};
+    use super::{
+        build_source_plan, event_select, macro_bar_is_closed, merge_coverage_intervals,
+        normalize_ticker, row_to_event, CoverageInterval, EventWindow, HistoricalRow,
+        MarketSourceTier,
+    };
+    use crate::config::HistoricalGatewayConfig;
     use chrono::{TimeZone, Utc};
     use qmd_core::compact_event::{CompactEventDecoder, LIVE_COMPACT_EVENT_SCHEMA_VERSION};
     use qmd_core::event::MarketEvent;
@@ -967,6 +1362,7 @@ mod tests {
             sip_timestamp_us: 1_752_415_200_000_000,
             size_primary: 20.0,
             size_secondary: 25.0,
+            source_sequence: 42,
             ticker: "AAPL".to_string(),
         });
         assert_eq!(compact.schema_version, LIVE_COMPACT_EVENT_SCHEMA_VERSION);
@@ -1012,5 +1408,102 @@ mod tests {
             Utc.with_ymd_and_hms(2026, 8, 1, 14, 0, 0).unwrap(),
         )
         .unwrap());
+        assert!(!macro_bar_is_closed(
+            "2026-08-10",
+            "1w",
+            Utc.with_ymd_and_hms(2026, 8, 12, 14, 0, 0).unwrap(),
+        )
+        .unwrap());
+        assert!(macro_bar_is_closed(
+            "2026-08-03",
+            "1w",
+            Utc.with_ymd_and_hms(2026, 8, 12, 14, 0, 0).unwrap(),
+        )
+        .unwrap());
+        assert!(!macro_bar_is_closed(
+            "2026-01-01",
+            "1y",
+            Utc.with_ymd_and_hms(2026, 8, 12, 14, 0, 0).unwrap(),
+        )
+        .unwrap());
+        assert!(macro_bar_is_closed(
+            "2025-01-01",
+            "1y",
+            Utc.with_ymd_and_hms(2026, 8, 12, 14, 0, 0).unwrap(),
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn source_plan_is_ordered_non_overlapping_and_exposes_live_tail() {
+        let start = Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap();
+        let archive_end = Utc.with_ymd_and_hms(2026, 7, 2, 0, 0, 0).unwrap();
+        let recent_end = Utc.with_ymd_and_hms(2026, 7, 3, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 7, 4, 0, 0, 0).unwrap();
+        let window = EventWindow {
+            end,
+            start,
+            tickers: vec!["AAPL".to_string()],
+        };
+        let plan = build_source_plan(
+            &window,
+            window.tickers.clone(),
+            Some("2026-07-01".to_string()),
+            Some(archive_end),
+            vec![CoverageInterval {
+                start: archive_end,
+                end: recent_end,
+            }],
+            &HistoricalGatewayConfig::from_env(),
+        );
+        assert_eq!(plan.segments.len(), 3);
+        assert!(matches!(plan.segments[0].tier, MarketSourceTier::Archive));
+        assert!(matches!(plan.segments[1].tier, MarketSourceTier::Recent));
+        assert!(matches!(
+            plan.segments[2].tier,
+            MarketSourceTier::CurrentLive
+        ));
+        assert!(plan.plan_hash.starts_with("fnv1a64:"));
+        assert!(!plan.complete_for_history);
+        for pair in plan.segments.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start);
+        }
+    }
+
+    #[test]
+    fn recent_coverage_intervals_merge_before_planning() {
+        let first = Utc.with_ymd_and_hms(2026, 7, 2, 0, 0, 0).unwrap();
+        let second = Utc.with_ymd_and_hms(2026, 7, 2, 12, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 7, 3, 0, 0, 0).unwrap();
+        let merged = merge_coverage_intervals(vec![
+            CoverageInterval {
+                start: first,
+                end: second,
+            },
+            CoverageInterval { start: second, end },
+        ]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].start, first);
+        assert_eq!(merged[0].end, end);
+    }
+
+    #[test]
+    fn recent_and_archive_selects_share_one_wire_row_contract() {
+        let start = Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 7, 2, 0, 0, 0).unwrap();
+        let archive = event_select(
+            "market_sip_compact.events_2026",
+            false,
+            start,
+            end,
+            "",
+            None,
+        );
+        let recent = event_select("q_live.events", true, start, end, "", None);
+        assert!(archive.contains("source.ordinal AS ordinal"));
+        assert!(archive.contains("source.ordinal AS source_sequence"));
+        assert!(recent.contains("source.arrival_sequence AS ordinal"));
+        assert!(recent.contains("source.source_sequence AS source_sequence"));
+        assert!(recent.contains("FROM q_live.events AS source FINAL"));
     }
 }

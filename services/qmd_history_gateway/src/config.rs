@@ -19,7 +19,11 @@ pub struct HistoricalGatewayConfig {
     pub clickhouse_password_present: bool,
     pub clickhouse_url: String,
     pub clickhouse_user: String,
+    pub live_gateway_url: String,
     pub max_events_per_request: usize,
+    pub recent_database: String,
+    pub recent_event_table: String,
+    pub recent_event_coverage_table: String,
     pub daily_session_bars_table: String,
     pub fetch_chunk_hours: usize,
     pub product_timeframes: Vec<String>,
@@ -59,8 +63,15 @@ impl HistoricalGatewayConfig {
             clickhouse_password: source.password,
             clickhouse_url: source.url,
             clickhouse_user: source.user,
+            live_gateway_url: env_string("QMD_HISTORY_LIVE_GATEWAY_URL", "http://127.0.0.1:8800"),
             max_events_per_request: env_usize("QMD_HISTORY_MAX_EVENTS_PER_REQUEST", 10_000_000)
                 .max(1),
+            recent_database: env_string("QMD_HISTORY_RECENT_DATABASE", "q_live"),
+            recent_event_table: env_string("QMD_HISTORY_RECENT_EVENT_TABLE", "events"),
+            recent_event_coverage_table: env_string(
+                "QMD_HISTORY_RECENT_EVENT_COVERAGE_TABLE",
+                "qmd_live_event_coverage_v1",
+            ),
             daily_session_bars_table: env_string(
                 "QMD_HISTORY_DAILY_SESSION_BARS_TABLE",
                 "daily_session_bars_by_symbol_time_v1",
@@ -104,6 +115,25 @@ impl HistoricalGatewayConfig {
         }
         if !valid_identifier(&self.table_prefix) {
             return Err("QMD_HISTORY_TABLE_PREFIX must be an identifier prefix".to_string());
+        }
+        if !valid_identifier(&self.recent_database) {
+            return Err("QMD_HISTORY_RECENT_DATABASE must be a ClickHouse identifier".to_string());
+        }
+        if !valid_identifier(&self.recent_event_table) {
+            return Err(
+                "QMD_HISTORY_RECENT_EVENT_TABLE must be a ClickHouse identifier".to_string(),
+            );
+        }
+        if !valid_identifier(&self.recent_event_coverage_table) {
+            return Err(
+                "QMD_HISTORY_RECENT_EVENT_COVERAGE_TABLE must be a ClickHouse identifier"
+                    .to_string(),
+            );
+        }
+        if !(self.live_gateway_url.starts_with("http://")
+            || self.live_gateway_url.starts_with("https://"))
+        {
+            return Err("QMD_HISTORY_LIVE_GATEWAY_URL must be an HTTP(S) URL".to_string());
         }
         if !valid_identifier(&self.daily_session_bars_table) {
             return Err(

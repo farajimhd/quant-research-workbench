@@ -3339,7 +3339,9 @@ function buildTimelineDataSignature(timeline: CandleSeriesDatum[]) {
 
 function chartTimeframeSeconds(timeframe: string) {
   const normalized = timeframe.trim().toLowerCase();
+  if (normalized === "1w") return 7 * 24 * 60 * 60;
   if (normalized === "1mo") return 30 * 24 * 60 * 60;
+  if (normalized === "1y") return 365 * 24 * 60 * 60;
   const match = normalized.match(/^(\d+)(ms|s|m|h|d)$/);
   if (!match) return null;
   const value = Number(match[1]);
@@ -3826,7 +3828,7 @@ function chartOptions(
 ) {
   const timeframeSeconds = chartTimeframeSeconds(timeframe);
   const showSeconds = timeframeSeconds !== null && timeframeSeconds < 60;
-  const macroTimeframe = timeframe === "1d" || timeframe === "1mo";
+  const macroTimeframe = isMacroTimeframe(timeframe);
   return {
     width: Math.max(320, width),
     // The chart must render at the height allocated by the pane stack. A larger
@@ -3976,7 +3978,9 @@ const marketSubsecondDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
 
 type ChartRangeTarget = IChartApi | null | IChartApi[];
 const DAILY_MACRO_WINDOW_BARS = 180;
+const WEEKLY_MACRO_WINDOW_BARS = 156;
 const MONTHLY_MACRO_WINDOW_BARS = 24;
+const YEARLY_MACRO_WINDOW_BARS = 20;
 
 function fitLatestSession(target: ChartRangeTarget, candles: Candle[], timeframe = "") {
   const charts = chartRangeTargets(target);
@@ -4029,7 +4033,7 @@ function latestRangeActionLabel(timeframe: string) {
 }
 
 function isMacroTimeframe(timeframe: string) {
-  return timeframe === "1d" || timeframe === "1mo";
+  return timeframe === "1d" || timeframe === "1w" || timeframe === "1mo" || timeframe === "1y";
 }
 
 function fitCandles(payload: ChartPayload | null | undefined) {
@@ -4096,7 +4100,13 @@ function centerLatest(target: ChartRangeTarget, candles: Candle[], timeframe = "
   const lastCandle = candles[candles.length - 1];
   const last = nearestTimelineIndex(timeline, lastCandle.time);
   if (isMacroTimeframe(timeframe)) {
-    const requestedBars = timeframe === "1mo" ? MONTHLY_MACRO_WINDOW_BARS : DAILY_MACRO_WINDOW_BARS;
+    const requestedBars = timeframe === "1y"
+      ? YEARLY_MACRO_WINDOW_BARS
+      : timeframe === "1mo"
+        ? MONTHLY_MACRO_WINDOW_BARS
+        : timeframe === "1w"
+          ? WEEKLY_MACRO_WINDOW_BARS
+          : DAILY_MACRO_WINDOW_BARS;
     const span = Math.max(1, Math.min(requestedBars, timeline.length));
     const leftPadding = Math.max(0.5, Math.min(2, span * 0.025));
     const growthSpace = Math.max(0.75, Math.min(3, span * 0.06));
@@ -5780,8 +5790,8 @@ function timestampFromChartTime(timeValue: Time) {
 
 function formatMarketAxisTime(timeValue: Time, timeframe = "1m") {
   const timestamp = new Date(timestampFromChartTime(timeValue) * 1000);
-  if (timeframe === "1mo") return marketMonthlyAxisFormatter.format(timestamp);
-  if (timeframe === "1d") return marketDailyAxisFormatter.format(timestamp);
+  if (timeframe === "1mo" || timeframe === "1y") return marketMonthlyAxisFormatter.format(timestamp);
+  if (timeframe === "1d" || timeframe === "1w") return marketDailyAxisFormatter.format(timestamp);
   const seconds = chartTimeframeSeconds(timeframe);
   if (seconds !== null && seconds < 1) return marketSubsecondAxisFormatter.format(timestamp);
   if (seconds !== null && seconds < 60) return marketSecondAxisFormatter.format(timestamp);
@@ -5790,7 +5800,7 @@ function formatMarketAxisTime(timeValue: Time, timeframe = "1m") {
 
 function formatMarketDateTime(timeValue: Time, timeframe = "1m") {
   const timestamp = new Date(timestampFromChartTime(timeValue) * 1000);
-  if (timeframe === "1mo" || timeframe === "1d") return marketMacroDateTimeFormatter.format(timestamp);
+  if (isMacroTimeframe(timeframe)) return marketMacroDateTimeFormatter.format(timestamp);
   const seconds = chartTimeframeSeconds(timeframe);
   if (seconds !== null && seconds < 1) return marketSubsecondDateTimeFormatter.format(timestamp);
   if (seconds !== null && seconds < 60) return marketSecondDateTimeFormatter.format(timestamp);
@@ -5799,7 +5809,9 @@ function formatMarketDateTime(timeValue: Time, timeframe = "1m") {
 
 function formatTimeframeLabel(timeframe: string) {
   if (timeframe === "1d") return "1D";
+  if (timeframe === "1w") return "1W";
   if (timeframe === "1mo") return "1M";
+  if (timeframe === "1y") return "1Y";
   return timeframe;
 }
 

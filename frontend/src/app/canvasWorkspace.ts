@@ -15,7 +15,7 @@ export type CanvasLinkContext = {
   symbol: string;
 };
 
-export type CanvasChartTimeframe = "100ms" | "1s" | "5s" | "10s" | "30s" | "1m" | "5m" | "1h" | "1d" | "1mo";
+export type CanvasChartTimeframe = "100ms" | "1s" | "5s" | "10s" | "30s" | "1m" | "5m" | "1h" | "1d" | "1w" | "1mo" | "1y";
 
 export type CanvasWorkspaceState = {
   groups: Record<string, WorkspaceGroup>;

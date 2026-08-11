@@ -6,6 +6,7 @@ use crate::config::HistoricalGatewayConfig;
 use crate::scanner::{HistoricalScannerDerivedCache, HistoricalScannerDerivedSnapshot};
 use crate::source::{
     EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource, LatestEventCoverage,
+    MarketSourcePlan,
 };
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -47,6 +48,13 @@ struct HistoryQuery {
 #[derive(Debug, Deserialize)]
 struct LatestCoverageQuery {
     before: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourcePlanQuery {
+    end: String,
+    start: String,
+    tickers: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +153,7 @@ pub fn app(state: AppState) -> Router {
         .route("/config", get(config))
         .route("/coverage", get(coverage))
         .route("/coverage/latest", get(latest_coverage))
+        .route("/source-plan", get(source_plan))
         .route("/capability-catalog", get(capability_catalog_snapshot))
         .route("/snapshot/cache", get(cache_snapshot))
         .route("/snapshot/events", get(event_page_snapshot))
@@ -209,7 +218,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload
         host_role: "historical",
         running: true,
         service: "qmd_history_gateway",
-        source: "market_sip_compact.events_YYYY",
+        source: "market_source_plan:archive+recent+live_continuation",
         status: "ready",
     }))
 }
@@ -250,6 +259,27 @@ async fn latest_coverage(
     state
         .source
         .latest_coverage_before(before)
+        .await
+        .map(Json)
+        .map_err(service_error)
+}
+
+async fn source_plan(
+    Query(query): Query<SourcePlanQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<MarketSourcePlan>, ApiError> {
+    let tickers = query
+        .tickers
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    let window = window(&query.start, &query.end, tickers)?;
+    state
+        .source
+        .source_plan(&window)
         .await
         .map(Json)
         .map_err(service_error)
@@ -540,8 +570,10 @@ async fn chart_macro_bar_snapshot(
     let ticker = normalize_ticker(&ticker)?;
     let (window, as_of) = causal_product_window(&query, &ticker)?;
     let timeframe = query.timeframe.unwrap_or_else(|| "1d".to_string());
-    if !matches!(timeframe.as_str(), "1d" | "1mo") {
-        return Err(bad_request("chart macro timeframe must be 1d or 1mo"));
+    if !matches!(timeframe.as_str(), "1d" | "1w" | "1mo" | "1y") {
+        return Err(bad_request(
+            "chart macro timeframe must be 1d, 1w, 1mo, or 1y",
+        ));
     }
     state
         .source

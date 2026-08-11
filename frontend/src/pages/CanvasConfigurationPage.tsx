@@ -403,9 +403,9 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   xbrl: { metricLimit: 8, showRawTags: true },
 };
 
-const HISTORICAL_TIMEFRAMES: CanvasChartTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h", "1d", "1mo"];
+const HISTORICAL_TIMEFRAMES: CanvasChartTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h", "1d", "1w", "1mo", "1y"];
 const ENRICHED_QMD_TIMEFRAMES = new Set<CanvasChartTimeframe>(["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"]);
-const MACRO_TIMEFRAMES = new Set<CanvasChartTimeframe>(["1d", "1mo"]);
+const MACRO_TIMEFRAMES = new Set<CanvasChartTimeframe>(["1d", "1w", "1mo", "1y"]);
 const INDICATOR_GUIDES: Record<string, ChartCatalogKnowledge> = {
   "strategy.presentation": indicatorGuide("Read saved strategy decisions and their active invalidation levels on the price chart.", "The strategy runtime persists each causal evaluation with its exact effective time, action, score, confidence, reference price, and invalidation. Canvas renders only records at or before the shared clock.", "Enter and add markers show confirmed long exposure decisions.", "Reduce, take-profit, and exit markers show exposure leaving the strategy campaign.", "The presentation follows the strategy event timestamp and is independent of the chart timeframe.", ["No historical marker is reconstructed from price alone.", "An armed strategy displays future decisions only after the runtime saves them."]),
   "indicator.vwap": indicatorGuide("Compare price with the extended session's volume-weighted typical price. VWAP is the purple price overlay, starts at 04:00 ET, and continues through 09:30 without resetting.", "From the 04:00 ET anchor, cumulatively divide Σ(HLC3 × eligible volume) by Σ(eligible volume), where HLC3 = (high + low + close) / 3 for each chart bar. This matches TradingView's default HLC3 source with a Session anchor when extended hours are shown.", "Price holding above a rising VWAP suggests buyers are accepting progressively higher prices; a reclaim that persists is stronger than a brief cross.", "Price holding below a falling VWAP suggests sellers control the session auction; repeated rejection at VWAP reinforces that evidence.", "VWAP is recomputed from the selected timeframe's HLC3 bars. Its anchor remains 04:00 ET on every intraday timeframe, but values can differ slightly between timeframes because each bar has different high, low, and close inputs.", ["VWAP is a benchmark, not automatic support or resistance.", "Opening and closing auctions or a few very large prints can materially shift it.", "A TradingView comparison must use the same extended-hours visibility, Session anchor, HLC3 source, and eligible market-data feed."]),
@@ -931,11 +931,11 @@ function closedRowsAtCutoff<T extends { bar_start: string }>(rows: T[], timefram
   const durationMs = timeframeDurationMs(timeframe);
   return rows.filter((row) => {
     const closeMetadata = row as T & { bar_end?: string; is_closed?: boolean };
-    // QMD History builds the current calendar month causally from completed
+    // QMD History builds the current macro period causally from completed
     // daily bars through the requested as-of clock. It remains an explicitly
-    // partial monthly row, but it is still the correct last candle to present.
+    // partial macro row, but it is still the correct last candle to present.
     // Other open bars stay excluded from historical Canvas charts.
-    if (closeMetadata.is_closed === false && timeframe !== "1mo") return false;
+    if (closeMetadata.is_closed === false && !["1w", "1mo", "1y"].includes(timeframe)) return false;
     const startMs = Date.parse(row.bar_start);
     const endMs = closeMetadata.bar_end ? Date.parse(closeMetadata.bar_end) : startMs + durationMs;
     return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs <= cutoffMs;
@@ -944,7 +944,9 @@ function closedRowsAtCutoff<T extends { bar_start: string }>(rows: T[], timefram
 
 function timeframeDurationMs(timeframe: string): number {
   if (timeframe === "1d") return 24 * 60 * 60 * 1_000;
+  if (timeframe === "1w") return 7 * 24 * 60 * 60 * 1_000;
   if (timeframe === "1mo") return 30 * 24 * 60 * 60 * 1_000;
+  if (timeframe === "1y") return 365 * 24 * 60 * 60 * 1_000;
   const match = /^(\d+)(ms|s|m|h)$/.exec(timeframe.trim().toLowerCase());
   if (!match) return 60_000;
   const value = Number(match[1]);
@@ -4206,7 +4208,9 @@ function labelFor(value: string) { return value.replace(/_/g, " ").replace(/([a-
 function formatChartTimeframe(value: string) {
   if (value === "100ms") return "100 milliseconds";
   if (value === "1d") return "Daily";
+  if (value === "1w") return "Weekly";
   if (value === "1mo") return "Monthly";
+  if (value === "1y") return "Yearly";
   const match = value.match(/^(\d+)([smh])$/);
   if (!match) return value;
   const count = Number(match[1]);
@@ -4272,7 +4276,7 @@ function containerInstanceTitle(kind: WorkspaceContainerId, instanceId: string, 
     const matchingTimeframeIds = matchingIds.filter((candidateId) => instanceSettings(registry, candidateId).chart.timeframe === timeframe);
     const duplicateIndex = matchingTimeframeIds.indexOf(instanceId);
     const readableTimeframe = formatChartTimeframe(timeframe).replace(/\b\w/g, (letter) => letter.toUpperCase());
-    const base = timeframe === "1d" ? "Daily Chart" : timeframe === "1mo" ? "Monthly Chart" : `${readableTimeframe} Chart`;
+    const base = timeframe === "1d" ? "Daily Chart" : timeframe === "1w" ? "Weekly Chart" : timeframe === "1mo" ? "Monthly Chart" : timeframe === "1y" ? "Yearly Chart" : `${readableTimeframe} Chart`;
     return matchingTimeframeIds.length > 1 && duplicateIndex >= 0 ? `${base} ${duplicateIndex + 1}` : base;
   }
   const index = matchingIds.indexOf(instanceId);

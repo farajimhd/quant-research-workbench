@@ -405,6 +405,29 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertEqual(params["timeframe"], "1d")
         self.assertEqual(params["start"], "2026-01-12T00:00:00+00:00")
 
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_weekly_and_yearly_chart_history_use_daily_macro_authority(self, gateway_get) -> None:
+        gateway_get.return_value = {"bars": [], "source": "market_sip_compact.daily_session_bars_by_symbol_time_v1"}
+
+        for timeframe, expected_start in (
+            ("1w", "2023-07-21T00:00:00+00:00"),
+            ("1y", "2007-01-01T00:00:00+00:00"),
+        ):
+            with self.subTest(timeframe=timeframe):
+                historical_bar_history_before(
+                    before=date(2026, 7, 11),
+                    session_date=date(2026, 7, 10),
+                    as_of="2026-07-10T13:45:00+00:00",
+                    before_bar=None,
+                    ticker="AAPL",
+                    timeframe=timeframe,
+                    row_limit=5_000,
+                )
+                path, params = gateway_get.call_args.args[:2]
+                self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
+                self.assertEqual(params["timeframe"], timeframe)
+                self.assertEqual(params["start"], expected_start)
+
     def test_live_family_bars_use_the_chart_bar_contract(self) -> None:
         payload = normalize_qmd_family_bar_snapshot(
             {

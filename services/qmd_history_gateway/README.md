@@ -1,8 +1,11 @@
 # QMD Historical Gateway
 
-This Rust service is the historical market-data source for Replay, Backtest,
-and Backtest Debug. It reads `market_sip_compact.events_YYYY` in deterministic
-`(sip_timestamp_us, ticker, ordinal)` order and mirrors QMD's compact-event,
+This Rust service is the bounded market-history source for charts, Replay,
+Backtest, and Backtest Debug. It plans non-overlapping reads across completed
+`market_sip_compact.events_YYYY` archive coverage and recent `q_live.events`,
+then exposes the remaining current-memory tail as an explicit QMD Gateway
+continuation. Queryable rows retain deterministic event-time/source ordering
+and mirror QMD's compact-event,
 canonical-event, and enriched-bar resource schemas. Bars are calculated from
 events by the exact `qmd_core::bars` implementation used by live QMD; no
 historical bar table is used.
@@ -47,6 +50,8 @@ Configuration uses `QMD_HISTORY_CLICKHOUSE_URL`, `QMD_HISTORY_DATABASE`,
 `QMD_HISTORY_TABLE_PREFIX`, `QMD_HISTORY_DAILY_SESSION_BARS_TABLE`, `QMD_HISTORY_CLICKHOUSE_USER`,
 `QMD_HISTORY_CLICKHOUSE_PASSWORD`, `QMD_HISTORY_BIND`,
 `QMD_HISTORY_STRUCTURE_DATABASE`, `QMD_HISTORY_STRUCTURE_EVENTS_TABLE`,
+`QMD_HISTORY_RECENT_DATABASE`, `QMD_HISTORY_RECENT_EVENT_TABLE`,
+`QMD_HISTORY_RECENT_EVENT_COVERAGE_TABLE`, `QMD_HISTORY_LIVE_GATEWAY_URL`,
 `QMD_HISTORY_BATCH_SIZE`, `QMD_HISTORY_MAX_EVENTS_PER_REQUEST`,
 `QMD_HISTORY_CACHE_MAX_ENTRIES`, `QMD_HISTORY_CACHE_MAX_BARS_PER_ENTRY`, and
 `QMD_HISTORY_CACHE_UPDATE_CAPACITY`. Memory/concurrency controls are
@@ -63,10 +68,13 @@ Defaults:
 - bind: `127.0.0.1:8801`
 - database: `market_sip_compact`
 - yearly-table prefix: `events_`
+- recent source: `q_live.events`, gated by
+  `q_live.qmd_live_event_coverage_v1`
+- current continuation: `http://127.0.0.1:8800`
 - durable daily-session table: `daily_session_bars_by_symbol_time_v1`
   (`QMD_HISTORY_DAILY_SESSION_BARS_TABLE`); QMD derives closed 1-day and
-  1-month trade bars only after all premarket, regular, and after-hours rows
-  are available.
+  weekly, monthly, and yearly trade bars only from causally available completed
+  daily rows. The current macro period is marked partial.
 - generic-structure database/table: `q_live.qmd_structure_events_v2`
 - batch size: `25000`
 - maximum events in one derived calculation: `10000000`
@@ -101,6 +109,10 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
 - `GET /config`
 - `GET /coverage?start=...&end=...`
 - `GET /coverage/latest` (latest market day with canonical event coverage)
+- `GET /source-plan?start=...&end=...&tickers=AAPL,MSFT` (ordered archive,
+  recent, gap, and current-live continuation segments; clients never choose a
+  physical database)
+- `GET /capability-catalog` (shared QMD Live/History computation vocabulary)
 - `GET /snapshot/cache` (cache hits, misses, builds, entries, and evictions)
 - `GET /snapshot/scanner-derived?start=...&end=...&as_of=...` (causal
   full-market 100 ms QMD indicator projection, active scored signals on their
@@ -109,7 +121,7 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
 - `GET /snapshot/family-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/condition-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d`
-- `GET /snapshot/chart-macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d|1mo` (bounded chart history; monthly rows aggregate durable daily macro families)
+- `GET /snapshot/chart-macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d|1w|1mo|1y` (bounded chart history; macro rows aggregate the durable completed daily authority)
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
 - `GET /snapshot/events?start=...&end=...&tickers=AAPL,MSFT&limit=...`
   returns decoded market events with an explicit continuation cursor. Replay
