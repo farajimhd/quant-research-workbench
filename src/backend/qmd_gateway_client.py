@@ -1102,6 +1102,19 @@ def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) 
         raise ValueError("symbol is required for QMD indicators.")
     ticker = symbol.strip().upper()
     target_id = f"chart:{ticker}:{timeframe}"
+    capabilities = [
+        "flow_structure_composite",
+        "momentum_core",
+        "trend_moving_averages",
+        "volatility_core",
+    ]
+    parameter_hash = hashlib.sha256(
+        json.dumps(
+            {"capabilities": capabilities, "timeframes": [timeframe]},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
     lineage = causal_identity(
         correlation_seed=target_id,
         causation_seed=f"chart-request:{ticker}:{timeframe}",
@@ -1113,13 +1126,11 @@ def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) 
             "owner": "backend.chart",
             "scope": "request",
             "tickers": [ticker],
-            "capabilities": [
-                "flow_structure_composite",
-                "momentum_core",
-                "trend_moving_averages",
-                "volatility_core",
-            ],
+            "capabilities": capabilities,
             "timeframes": [timeframe],
+            "parameter_hash": parameter_hash,
+            "anchor": "new_york_session",
+            "source_revision": "advancing_live",
             "ttl_seconds": 300,
             **lineage,
         },

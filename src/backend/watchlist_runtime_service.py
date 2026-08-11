@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import threading
 from collections import deque
@@ -535,6 +537,16 @@ def publish_computation_target(
         correlation_seed=target_id,
         causation_seed=causation_seed or target_id,
     )
+    parameter_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "capabilities": sorted(set(capabilities)),
+                "timeframes": sorted({value.lower() for value in timeframes}),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
     qmd_put_json(
         "/computation-targets",
         {
@@ -544,6 +556,9 @@ def publish_computation_target(
             "tickers": tickers,
             "capabilities": capabilities,
             "timeframes": timeframes,
+            "parameter_hash": parameter_hash,
+            "anchor": "new_york_session",
+            "source_revision": "advancing_live",
             "ttl_seconds": max(1, int(ttl_ms) // 1000),
             **lineage,
         },

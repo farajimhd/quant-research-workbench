@@ -452,6 +452,16 @@ bounded direct ClickHouse paths remain documented in
     the environment remained at the broker/market Session Gate, so this phase
     does not claim browser exercise of the chart panels or completion of their
     migration to the shared Canvas/QMD resolver.
+68. Completed the live focused-demand semantic identity. QMD demand schema v4
+    now keys effective requirements by ticker, capability, timeframe,
+    implementation version, parameter hash, anchor, and source revision;
+    ambiguous delimiter/control input is rejected and semantically different
+    requests cannot be deduplicated. Current Watchlist, Strategy Run, and chart
+    publishers send deterministic parameter hashes, the New York session
+    anchor, and the advancing-live revision class. All 92 QMD Gateway tests, 44
+    focused backend QMD/Watchlist tests, Python compile, Rust formatting, and
+    diff validation passed. Offline QMD History demand remains a separate open
+    planner-integration item.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

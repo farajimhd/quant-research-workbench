@@ -198,15 +198,18 @@ offline calculation is available in its proper scope.
   A one-minute chart or Watchlist lease no longer runs unrelated five-minute,
   hourly, or other finalized timeframe rows for that ticker. Legacy leases
   with no timeframe declaration retain all-timeframe behavior.
-- QMD computation-demand schema v3 expands every lease into effective
-  `(ticker, capability, timeframe, implementation version)` requirements,
+- QMD computation-demand schema v4 expands every lease into effective
+  `(ticker, capability, timeframe, implementation version, parameter hash,
+  anchor, source revision)` requirements,
   reference-counts the shared identities, and reports requested versus
   deduplicated weighted cost. Overlapping chart, Watchlist, and Strategy leases
-  no longer inflate the effective-demand metric. A bar-only lease also no
+  only share work when all of those semantic fields agree; different parameter,
+  anchor, or revision classes cannot be merged accidentally. Current backend
+  publishers send deterministic hashes for the exact capability/timeframe set,
+  the New York session anchor, and the advancing-live revision class. A bar-only lease also no
   longer enables the per-tick indicator path; only capabilities whose catalog
-  cadence is `on_event_or_state_change` do so. Parameter hashes, anchors, source
-  revisions, offline QMD History demand, and post-lease state reclamation remain
-  open parts of the complete planner identity.
+  cadence is `on_event_or_state_change` do so. Offline QMD History demand and
+  post-lease state reclamation remain open parts of the complete planner.
 - Live/Paper scheduling resolves configured Watchlists, journals membership,
   and publishes bounded focused QMD leases. Replay resolves the same rules
   against its point-in-time Scanner and enrichment clock.

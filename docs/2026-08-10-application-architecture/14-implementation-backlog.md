@@ -179,7 +179,9 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
   - [x] Deduplicate live demand by ticker, capability, timeframe, and capability
         implementation version; expose exact requirement reference counts and
         requested-versus-effective weighted cost.
-  - [ ] Add parameter hash, anchor, and source revision to the effective identity.
+  - [x] Add parameter hash, anchor, and source revision to the effective identity.
+        QMD demand schema v4 includes all three in reference-count keys; current
+        Watchlist, Strategy, and chart publishers provide deterministic values.
 - [ ] Reference-count subscriptions and release unused state.
       Overlapping leases are reference-counted for routing, but retained warm
       indicator/structure state is not reclaimed after the final lease ends.

@@ -13,6 +13,12 @@ pub struct ComputationTargetRequest {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub timeframes: Vec<String>,
+    #[serde(default)]
+    pub parameter_hash: String,
+    #[serde(default)]
+    pub anchor: String,
+    #[serde(default)]
+    pub source_revision: String,
     pub ttl_seconds: Option<u64>,
     #[serde(default)]
     pub correlation_id: String,
@@ -28,6 +34,9 @@ pub struct ComputationTargetLease {
     pub tickers: Vec<String>,
     pub capabilities: Vec<String>,
     pub timeframes: Vec<String>,
+    pub parameter_hash: String,
+    pub anchor: String,
+    pub source_revision: String,
     pub expires_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
     pub correlation_id: String,
@@ -104,6 +113,17 @@ impl SharedComputationTargets {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        let parameter_hash = normalize_requirement_component(
+            &request.parameter_hash,
+            "implementation_default",
+            "parameter_hash",
+        )?;
+        let anchor = normalize_requirement_component(&request.anchor, "event_time", "anchor")?;
+        let source_revision = normalize_requirement_component(
+            &request.source_revision,
+            "advancing_live",
+            "source_revision",
+        )?;
         let expires_at = match request.ttl_seconds {
             Some(0) => return Err("ttl_seconds must be positive when provided".to_string()),
             Some(seconds) => Some(
@@ -121,6 +141,9 @@ impl SharedComputationTargets {
             tickers,
             capabilities,
             timeframes,
+            parameter_hash,
+            anchor,
+            source_revision,
             expires_at,
             updated_at: now,
             correlation_id: lineage_identity(&request.correlation_id, "lease", &target_id),
@@ -239,8 +262,11 @@ impl SharedComputationTargets {
                     let weight = cost_weight(definition.cost_class);
                     for timeframe in &timeframes {
                         let requirement = format!(
-                            "{ticker}|{capability}|{timeframe}|v{}",
-                            definition.implementation_version
+                            "{ticker}|{capability}|{timeframe}|v{}|p:{}|a:{}|r:{}",
+                            definition.implementation_version,
+                            target.parameter_hash,
+                            target.anchor,
+                            target.source_revision,
                         );
                         target_requirements.insert(requirement.clone(), weight);
                         *requirement_ref_counts
@@ -286,7 +312,7 @@ impl SharedComputationTargets {
             .copied()
             .fold(0_u64, u64::saturating_add);
         ComputationTargetSnapshot {
-            schema_version: 3,
+            schema_version: 4,
             as_of: now,
             active_target_count: targets.len(),
             active_symbol_count: symbol_ref_counts.len(),
@@ -344,6 +370,28 @@ fn normalize_values(values: Vec<String>, uppercase: bool) -> Vec<String> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+fn normalize_requirement_component(
+    value: &str,
+    fallback: &str,
+    field: &str,
+) -> Result<String, String> {
+    let normalized = value.trim();
+    let normalized = if normalized.is_empty() {
+        fallback
+    } else {
+        normalized
+    };
+    if normalized.len() > 256
+        || normalized.contains('|')
+        || normalized.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "{field} must be at most 256 characters and cannot contain control characters or |"
+        ));
+    }
+    Ok(normalized.to_string())
 }
 
 fn lineage_identity(requested: &str, fallback_prefix: &str, target_id: &str) -> String {
@@ -413,6 +461,9 @@ mod tests {
             tickers: vec!["aapl".to_string(), "MSFT".to_string(), "AAPL".to_string()],
             capabilities: vec!["opening_range".to_string()],
             timeframes: vec!["1m".to_string()],
+            parameter_hash: "params-v1".to_string(),
+            anchor: "new_york_session".to_string(),
+            source_revision: "advancing_live".to_string(),
             ttl_seconds: None,
             correlation_id: String::new(),
             causation_id: String::new(),
@@ -430,7 +481,7 @@ mod tests {
         targets.replace(second).unwrap();
 
         let snapshot = targets.snapshot();
-        assert_eq!(snapshot.schema_version, 3);
+        assert_eq!(snapshot.schema_version, 4);
         assert_eq!(snapshot.active_target_count, 2);
         assert_eq!(snapshot.active_symbol_count, 2);
         assert_eq!(snapshot.symbol_ref_counts.get("AAPL"), Some(&2));
@@ -449,12 +500,45 @@ mod tests {
         assert_eq!(
             snapshot
                 .requirement_ref_counts
-                .get("AAPL|opening_range|100ms|v1"),
+                .get("AAPL|opening_range|100ms|v1|p:params-v1|a:new_york_session|r:advancing_live"),
             Some(&2)
         );
         assert!(targets.requires_focused_computation("aapl"));
         assert!(targets.remove("request:chart"));
         assert_eq!(targets.snapshot().symbol_ref_counts.get("AAPL"), Some(&1));
+    }
+
+    #[test]
+    fn does_not_deduplicate_distinct_parameters_anchors_or_revisions() {
+        let targets = SharedComputationTargets::default();
+        targets
+            .replace(request("watchlist:one", ExecutionScope::Watchlist))
+            .unwrap();
+        let mut different = request("watchlist:two", ExecutionScope::Watchlist);
+        different.tickers = vec!["AAPL".to_string()];
+        different.parameter_hash = "params-v2".to_string();
+        different.anchor = "utc_day".to_string();
+        different.source_revision = "pinned-revision-17".to_string();
+        targets.replace(different).unwrap();
+
+        let snapshot = targets.snapshot();
+        assert_eq!(snapshot.active_requirement_count, 6);
+        assert_eq!(snapshot.deduplicated_demand_units_saved, 0);
+        assert!(snapshot
+            .requirement_ref_counts
+            .keys()
+            .any(|key| { key.contains("p:params-v2|a:utc_day|r:pinned-revision-17") }));
+    }
+
+    #[test]
+    fn rejects_ambiguous_requirement_components() {
+        let targets = SharedComputationTargets::default();
+        let mut invalid = request("watchlist:invalid", ExecutionScope::Watchlist);
+        invalid.parameter_hash = "left|right".to_string();
+        assert!(targets
+            .replace(invalid)
+            .unwrap_err()
+            .contains("parameter_hash"));
     }
 
     #[test]
