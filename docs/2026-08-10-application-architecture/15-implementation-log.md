@@ -103,6 +103,10 @@ bounded direct ClickHouse paths remain documented in
 21. Enforced timeframe-aware focused QMD routing. A lease computes its declared
     finalized timeframes plus the canonical 100 ms dependency stream, while
     unrelated timeframe rows are rejected before entering indicator shards.
+22. Added a fail-closed backend runtime-capability registry. The endpoint
+    exposes QMD's hashed capability, indicator, and signal catalogs and returns
+    a typed retryable 503 instead of presenting the Python review fallback as
+    live runtime authority.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

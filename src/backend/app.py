@@ -27,7 +27,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.backend.json_utils import json_safe, parse_csv_list
-from src.backend.application_registry import application_registry_payload
+from src.backend.application_registry import (
+    application_registry_payload,
+    runtime_capability_registry_payload,
+)
 from src.backend.canvas_preview_service import canvas_preview_payload, scanner_snapshot_payload
 from src.backend.canonical_trading_service import canonical_trading_state
 from src.backend.portfolio_management_service import (
@@ -4728,6 +4731,21 @@ def trading_strategy_activity(
 @app.get("/api/registries/application")
 def application_registry() -> dict[str, object]:
     return application_registry_payload()
+
+
+@app.get("/api/registries/capabilities")
+def runtime_capability_registry() -> dict[str, object]:
+    try:
+        return runtime_capability_registry_payload(qmd_catalogs())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "qmd_runtime_catalog_unavailable",
+                "message": str(exc),
+                "retryable": True,
+            },
+        ) from exc
 
 
 @app.get("/api/registries/fields")

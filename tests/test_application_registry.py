@@ -12,6 +12,7 @@ from src.backend.application_registry import (
     PRODUCT_DEFINITIONS,
     QUERY_PLANS,
     application_registry_payload,
+    runtime_capability_registry_payload,
     validate_application_registry,
 )
 
@@ -83,6 +84,25 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertTrue(all(set(container.product_ids).issubset(products) for container in CONTAINER_DEFINITIONS))
         self.assertTrue(all((set(container.input_links) | set(container.output_links)).issubset(links) for container in CONTAINER_DEFINITIONS))
         self.assertIn("strategy_intent", {schema.schema_id for schema in CONFIGURATION_SCHEMAS})
+
+    def test_runtime_capability_registry_requires_qmd_authority_and_hash(self) -> None:
+        payload = runtime_capability_registry_payload({
+            "authority": "qmd_runtime_catalog",
+            "provider": "qmd-gateway",
+            "content_hash": "abc123",
+            "capability_catalog": [{"key": "opening_range"}],
+            "indicator_catalog": [{"key": "opening_range"}],
+            "signal_catalog": [],
+        })
+        self.assertEqual(payload["authority"], "qmd_runtime_catalog")
+        self.assertEqual(payload["counts"]["capabilities"], 1)
+        with self.assertRaisesRegex(ValueError, "authority"):
+            runtime_capability_registry_payload({"authority": "backend_fallback_snapshot"})
+        with self.assertRaisesRegex(ValueError, "content hash"):
+            runtime_capability_registry_payload({
+                "authority": "qmd_runtime_catalog",
+                "capability_catalog": [{"key": "opening_range"}],
+            })
 
 
 if __name__ == "__main__":

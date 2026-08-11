@@ -141,7 +141,7 @@ budgets and invalid scope broadening fails configuration validation.
 - [x] Build one typed QMD client for live and historical products.
 - [x] Remove physical QMD source selection from route handlers.
 - [x] Implement shared QMD source and query planner boundaries.
-- [ ] Expose capability, field, container, and configuration catalogs.
+- [x] Expose capability, field, container, and configuration catalogs.
 - [ ] Move approved SQL into versioned query plans.
 - [ ] Remove duplicated route-level SQL as callers migrate.
 - [ ] Consume deferred producer services through unchanged bounded contracts.

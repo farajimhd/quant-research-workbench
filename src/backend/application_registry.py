@@ -807,3 +807,29 @@ def application_registry_payload() -> dict[str, object]:
             "reference_tables": sum(len(group.tables) for group in REFERENCE_TABLE_GROUPS),
         },
     }
+
+
+def runtime_capability_registry_payload(qmd_catalog: dict[str, object]) -> dict[str, object]:
+    if str(qmd_catalog.get("authority") or "") != "qmd_runtime_catalog":
+        raise ValueError("QMD runtime capability authority is unavailable")
+    content_hash = str(qmd_catalog.get("content_hash") or "").strip()
+    if not content_hash:
+        raise ValueError("QMD runtime capability catalog has no content hash")
+    families = {
+        key: list(qmd_catalog.get(key) or [])
+        for key in ("capability_catalog", "indicator_catalog", "signal_catalog")
+    }
+    if not families["capability_catalog"]:
+        raise ValueError("QMD runtime capability catalog is empty")
+    return {
+        "schema_version": 1,
+        "authority": "qmd_runtime_catalog",
+        "provider": str(qmd_catalog.get("provider") or "qmd-gateway"),
+        "content_hash": content_hash,
+        **families,
+        "counts": {
+            "capabilities": len(families["capability_catalog"]),
+            "indicators": len(families["indicator_catalog"]),
+            "signals": len(families["signal_catalog"]),
+        },
+    }
