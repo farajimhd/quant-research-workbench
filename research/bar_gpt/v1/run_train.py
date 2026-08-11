@@ -12,7 +12,9 @@ DEFAULT_ARGS: dict[str, str] = {
     "--data-source": "offline",
     "--offline-shard-root": r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12",
     "--offline-train-start-date": "2019-01-01",
-    "--offline-train-end-date": "2022-01-01",
+    # The immutable catalog is built once through 2026-08-01. Training owns
+    # 2019-2025 and the loader selects January-July 2026 as the fixed OOT view.
+    "--offline-train-end-date": "2026-01-01",
     "--offline-validation-start-date": "2026-01-01",
     "--offline-validation-end-date": "2026-08-01",
     "--start-date": "2019-01-01",

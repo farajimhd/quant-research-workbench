@@ -30,6 +30,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def catalog_lock_payload(root: Path, *, reason: str) -> dict[str, Any]:
     catalog_path = root / "manifest" / "catalog.json"
+    build_plan_path = root / "manifest" / "build_plan.json"
     if not catalog_path.is_file():
         raise RuntimeError(f"cannot lock shard root without a certified catalog: {catalog_path}")
     try:
@@ -44,7 +45,7 @@ def catalog_lock_payload(root: Path, *, reason: str) -> dict[str, Any]:
     counts = catalog.get("counts")
     if not isinstance(counts, dict) or int(counts.get("units", 0)) <= 0:
         raise RuntimeError(f"catalog has no certified units: {catalog_path}")
-    return {
+    payload = {
         "schema_version": 1,
         "state": "immutable",
         "locked_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -63,6 +64,16 @@ def catalog_lock_payload(root: Path, *, reason: str) -> dict[str, Any]:
             "future_cohorts": "require_new_output_root",
         },
     }
+    if build_plan_path.is_file():
+        try:
+            build_plan = json.loads(build_plan_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"cannot read shard build plan: {build_plan_path}") from exc
+        payload["build_plan_path"] = str(build_plan_path)
+        payload["build_plan_sha256"] = _sha256(build_plan_path)
+        payload["selection"] = build_plan.get("selection")
+        payload["planned_units"] = build_plan.get("planned_units")
+    return payload
 
 
 def lock_catalog(root: Path, *, reason: str, execute: bool) -> dict[str, Any]:

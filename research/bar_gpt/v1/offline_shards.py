@@ -478,6 +478,14 @@ def verify_shard_catalog_lock(root: Path) -> dict[str, Any]:
         raise RuntimeError(
             f"offline shard catalog changed after it was locked: catalog={catalog} marker={marker}"
         )
+    build_plan_digest = str(value.get("build_plan_sha256", ""))
+    if build_plan_digest:
+        build_plan = root / "manifest" / "build_plan.json"
+        if not build_plan.is_file() or build_plan_digest != _sha256(build_plan):
+            raise RuntimeError(
+                f"offline shard build plan changed after the catalog was locked: "
+                f"build_plan={build_plan} marker={marker}"
+            )
     return value
 
 
@@ -2206,7 +2214,7 @@ def rebuild_catalog(root: Path, expected_hash: str) -> dict[str, Any]:
 
 
 def _run_main(args: argparse.Namespace, run_log: BuildRunLog | None) -> int:
-    from research.bar_gpt.v1.train import preflight, sequential_coverage_counts
+    from research.bar_gpt.v1.train import _stream_config, preflight, sequential_coverage_counts
 
     config = build_data_config(args)
     root = args.output_root.resolve()
@@ -2237,12 +2245,50 @@ def _run_main(args: argparse.Namespace, run_log: BuildRunLog | None) -> int:
         default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
     )
     if config.source_mode == "direct_events":
-        from research.bar_gpt.v1.direct_event_shards import direct_event_preflight
+        from research.bar_gpt.v1.direct_event_shards import (
+            DirectEventArrowStreamClient,
+            calendar_lookback_days,
+            direct_event_preflight,
+        )
         preflight_started = time.perf_counter()
-        print("Preflight: validating direct-event authority and scheduling weights...", flush=True)
+        print(
+            "Preflight: validating direct-event authority, point-in-time identities, "
+            "split ownership, and scheduling weights...",
+            flush=True,
+        )
         if run_log is not None:
             run_log.record("direct_event_preflight_started")
         evidence, ticker_weights = direct_event_preflight(client, config, selected_tickers)
+        metadata_start = max(
+            config.daily_history_start_date,
+            (
+                dt.date.fromisoformat(config.start_date)
+                - dt.timedelta(days=calendar_lookback_days(config))
+            ).isoformat(),
+        )
+        metadata_client = DirectEventArrowStreamClient(_stream_config(config), config)
+        identity_intervals = metadata_client.read_identity_intervals(
+            selected_tickers,
+            identity_database=config.identity_database,
+            interval_table=config.identity_interval_table,
+            entity_table=config.identity_entity_table,
+            event_table=config.identity_event_table,
+            coverage_start=metadata_start,
+        )
+        split_actions = metadata_client.read_split_actions(
+            identity_intervals,
+            start_date=metadata_start,
+            end_date=config.end_date,
+            split_database=config.split_database,
+            split_table=config.split_table,
+        )
+        evidence["metadata_preflight"] = {
+            "tickers": len(selected_tickers),
+            "identity_intervals": sum(len(values) for values in identity_intervals.values()),
+            "split_actions": sum(len(values) for values in split_actions.values()),
+            "start_date": metadata_start,
+            "end_date": config.end_date,
+        }
         preflight_seconds = time.perf_counter() - preflight_started
         print(f"Preflight complete in {preflight_seconds:.1f}s", flush=True)
         if run_log is not None:

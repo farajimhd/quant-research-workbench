@@ -221,8 +221,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     discovery_root = Path(args.discovery_root)
     shard_root = Path(args.shard_root)
     verify_shard_catalog_lock(shard_root)
-    manifest_path = Path(args.manifest) if args.manifest else discovery_root / "fixed_panels_v5.json"
-    campaign_state_path = discovery_root / "campaign_state_v5.json"
+    manifest_path = Path(args.manifest) if args.manifest else discovery_root / "fixed_panels_v6.json"
+    campaign_state_path = discovery_root / "campaign_state_v6.json"
     if not campaign_state_path.is_file():
         raise RuntimeError(f"discovery campaign state is missing: {campaign_state_path}")
     campaign_state = json.loads(campaign_state_path.read_text(encoding="utf-8"))

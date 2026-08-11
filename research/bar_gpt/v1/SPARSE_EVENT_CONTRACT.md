@@ -41,6 +41,14 @@ The old shard roots are immutable. Contract-v12 shards are rebuilt under
 `offline_shards_v12`; old shards, checkpoints, cursors, discovery panels, and
 validation manifests are not compatible or repairable in place.
 
+The production v12 storage authority contains one SHA-256-frozen cohort of 300
+tickers and one continuous interval, 2019-01-01 through 2026-08-01. Training
+and out-of-time validation are loader-owned views of this same catalog; the
+builder does not execute a separate validation pass. Completion requires all
+27,300 ticker-month units plus bounded source reconstruction audits, after
+which the catalog is automatically locked. Future data must use another shard
+root and cannot be appended to this authority.
+
 ## Bar, context, and condition authority
 
 * A one-second model bar exists only when `eligible_trade_event_count > 0`.

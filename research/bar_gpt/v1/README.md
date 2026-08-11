@@ -666,24 +666,43 @@ contract.
 one independently addressable block—not the number of blocks collated into a
 training batch.
 
-The production eager build targets calendar years 2019, 2020, and 2021 for
-training and all eligible tickers from January through July 2026 as the
-chronological validation pool. One restart-safe launcher builds the corrected
-one-second and daily authorities, then both shard ranges beneath the same
-production root. It does not rerun the already certified pilot:
+The production authority is one immutable 300-ticker catalog spanning
+2019-01-01 through 2026-08-01. It preserves the original 99 usable diverse
+cohort members and adds 201 current point-in-time-resolvable identities ranked
+by estimated output size from the compact event-day index. The exact sorted
+cohort is protected by SHA-256
+`069d7b781ffe6d7dfa4d4168f7fde7791cf79d9a115418cb77820e2eae07651d`.
+There are 91 ticker-month units per ticker and 27,300 planned units in total.
+
+One restart-safe launcher builds the complete date interval in one direct-event
+pass beneath the production root. It does not build training and validation
+separately: after storage is complete, loaders select 2019-2025 for training
+and January-July 2026 for the fixed out-of-time validation view. It does not
+persist or rebuild intermediate one-second or daily tables:
 
 ```powershell
 python -B -m research.bar_gpt.v1.run_build_offline_dataset
 python -B -m research.bar_gpt.v1.run_build_offline_dataset --execute
 ```
 
-The first command prints two exact commands without writing. The execute form
-reads compact events directly and emits only the requested 2019-2021 training
-and 2026 validation shards. Every tensor file is
-SHA-256 certified during its normal atomic write, so this launcher does not add
-a second full-catalog validation pass. Use `--force-rebuild` only to replace
-existing compatible production shards deliberately; normal execution skips
-already certified units.
+The first command prints the exact four-step lifecycle without writing. The
+execute form reads compact events once per ticker pipeline for the full range,
+atomically SHA-256-certifies every tensor shard, runs bounded structural/source
+and ClickHouse-to-tensor reconstruction audits, verifies the exact 27,300-unit
+catalog, and automatically writes `SHARD_CATALOG_IMMUTABLE.json`. If a build or
+audit fails, the root remains unlocked and rerunning the same command resumes
+from already certified units. There is intentionally no force-rebuild option
+on this production launcher.
+
+Before a fresh execute, the launcher requires 5.5 decimal TB free on the output
+volume. On a resumed build it derives the remaining requirement from certified
+bytes per completed unit and adds a 10% reserve, so already-written shards do
+not cause the fresh-root floor to block a valid resume. The preflight prints
+both free and required capacity before any worker starts.
+
+After the lock is written, all supported builders and repair tools fail before
+mutating this root. Future dates, replacement cohorts, and any later expansion
+must use a different `--output-root`; there is no unlock or append mode.
 
 Before the full build, create and audit two isolated ticker-month shards in a
 separate pilot root:
@@ -827,8 +846,9 @@ sidecars are skipped. `--max-shards N` provides a bounded smoke. The optional
 substantial I/O to the 2.3 TB catalog; without it, the original certified digest
 is preserved while tensor structure and metadata are still checked.
 
-The completed `offline_shards_v12` authority can be permanently sealed after its
-catalog has been certified:
+The full production launcher seals `offline_shards_v12` automatically only
+after its bounded audits and exact-catalog certification pass. The lower-level
+manual command remains available for other deliberately managed roots:
 
 ```powershell
 python -B -m research.bar_gpt.v1.lock_offline_shard_catalog

@@ -25,12 +25,19 @@ from research.bar_gpt.v1.direct_event_shards import (
 )
 from research.bar_gpt.v1.loader import ClickHouseBarStreamConfig, TickerInterval
 from research.bar_gpt.v1.offline_shards import (
+    OFFLINE_SHARD_CONTRACT_VERSION,
     ShardBuildReporter,
     build_data_config,
     parse_args as parse_offline_args,
 )
-from research.bar_gpt.v1.run_build_offline_dataset import commands as full_commands
-from research.bar_gpt.v1.run_build_offline_dataset import parse_args as parse_full_args
+from research.bar_gpt.v1.run_build_offline_dataset import (
+    DATASET_END_DATE,
+    DATASET_START_DATE,
+    EXPECTED_UNITS,
+    certify_complete_catalog,
+    commands as full_commands,
+    parse_args as parse_full_args,
+)
 from research.bar_gpt.v1.run_build_offline_shards import parse_args as parse_build_launcher_args
 from research.bar_gpt.v1.run_pilot_offline_shards import commands as pilot_commands
 from research.bar_gpt.v1.run_pilot_offline_shards import parse_args as parse_pilot_args
@@ -242,16 +249,62 @@ class DirectEventShardContractTest(unittest.TestCase):
 
     def test_full_launcher_uses_32_workers_and_resolvable_cohort(self) -> None:
         stages = full_commands(parse_full_args(["--workers", "32"]))
-        self.assertEqual(len(stages), 2)
-        for _label, command in stages:
-            self.assertEqual(command[command.index("--workers") + 1], "32")
-            self.assertEqual(command[command.index("--source-mode") + 1], "direct_events")
-            self.assertEqual(command[command.index("--clickhouse-max-threads-per-worker") + 1], "2")
-            self.assertEqual(command[command.index("--progress-layout") + 1], "rich")
-            self.assertEqual(
-                tuple(command[command.index("--tickers") + 1].split(",")),
-                BAR_GPT_TRAINING_TICKERS,
-            )
+        self.assertEqual(len(stages), 3)
+        build = dict(stages)["single 2019-2026 direct-event shard pass"]
+        self.assertEqual(build[build.index("--workers") + 1], "32")
+        self.assertEqual(build[build.index("--source-mode") + 1], "direct_events")
+        self.assertEqual(build[build.index("--clickhouse-max-threads-per-worker") + 1], "2")
+        self.assertEqual(build[build.index("--progress-layout") + 1], "rich")
+        self.assertEqual(build[build.index("--start-date") + 1], "2019-01-01")
+        self.assertEqual(build[build.index("--end-date") + 1], "2026-08-01")
+        self.assertEqual(
+            tuple(build[build.index("--tickers") + 1].split(",")),
+            BAR_GPT_TRAINING_TICKERS,
+        )
+
+    def test_full_launcher_locks_only_the_exact_complete_unit_set(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest"
+            manifest.mkdir()
+            units = [
+                {"unit_key": f"{ticker}:{year:04d}-{month:02d}"}
+                for ticker in BAR_GPT_TRAINING_TICKERS
+                for year in range(2019, 2027)
+                for month in range(1, 13)
+                if f"{year:04d}-{month:02d}-01" < DATASET_END_DATE
+            ]
+            self.assertEqual(len(units), EXPECTED_UNITS)
+            (manifest / "build_plan.json").write_text(json.dumps({
+                "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
+                "config_hash": "abc123",
+                "selection": {
+                    "tickers": list(BAR_GPT_TRAINING_TICKERS),
+                    "start_date": DATASET_START_DATE,
+                    "end_date": DATASET_END_DATE,
+                },
+                "planned_units": EXPECTED_UNITS,
+            }), encoding="utf-8")
+            catalog_path = manifest / "catalog.json"
+            catalog = {
+                "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
+                "config_hash": "abc123",
+                "counts": {
+                    "units": EXPECTED_UNITS,
+                    "complete": EXPECTED_UNITS,
+                    "covered_empty": 0,
+                    "bytes": 1,
+                },
+                "units": units,
+            }
+            catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+            self.assertEqual(certify_complete_catalog(root)["counts"]["units"], EXPECTED_UNITS)
+            catalog["units"] = catalog["units"][:-1]
+            catalog["counts"]["units"] -= 1
+            catalog["counts"]["complete"] -= 1
+            catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "incomplete catalog"):
+                certify_complete_catalog(root)
 
 
 if __name__ == "__main__":

@@ -137,6 +137,7 @@ from research.bar_gpt.v1.run_build_conditions_1s import default_argv as conditio
 from research.bar_gpt.v1.run_build_offline_dataset import (
     commands as offline_dataset_commands,
     parse_args as parse_offline_dataset_args,
+    required_free_bytes,
 )
 from research.bar_gpt.v1.run_profile_train import DEFAULT_ARGS as profile_launcher_args
 from research.bar_gpt.v1.run_pilot_offline_shards import commands as pilot_commands, parse_args as parse_pilot_args
@@ -1198,22 +1199,42 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(args.end_date, "2021-02-01")
         self.assertIn("offline_shards_v12_condition_pilot", str(args.output_root))
 
-    def test_complete_offline_dataset_launcher_owns_disjoint_ranges(self) -> None:
+    def test_complete_offline_dataset_launcher_builds_one_catalog_then_audits(self) -> None:
         args = parse_offline_dataset_args(["--execute", "--workers", "32"])
         stages = offline_dataset_commands(args)
         by_label = dict(stages)
-        self.assertEqual(len(stages), 2)
-        train_shards = by_label["2019-2021 direct-event training shards"]
-        validation_shards = by_label["2026 direct-event validation shards"]
-        self.assertEqual(train_shards[train_shards.index("--selection") + 1], "all")
-        self.assertEqual(train_shards[train_shards.index("--workers") + 1], "32")
-        self.assertEqual(train_shards[train_shards.index("--source-mode") + 1], "direct_events")
-        self.assertIn("--execute", train_shards)
-        self.assertEqual(validation_shards[validation_shards.index("--selection") + 1], "all")
-        self.assertIn("--execute", validation_shards)
+        self.assertEqual(len(stages), 3)
+        build = by_label["single 2019-2026 direct-event shard pass"]
+        self.assertEqual(build[build.index("--selection") + 1], "all")
+        self.assertEqual(build[build.index("--workers") + 1], "32")
+        self.assertEqual(build[build.index("--source-mode") + 1], "direct_events")
+        self.assertEqual(build[build.index("--start-date") + 1], "2019-01-01")
+        self.assertEqual(build[build.index("--end-date") + 1], "2026-08-01")
+        self.assertEqual(len(build[build.index("--tickers") + 1].split(",")), 300)
+        self.assertIn("--execute", build)
+        self.assertIn("--verify-direct-source", by_label["bounded structural and source audit"])
+        self.assertIn(
+            "research.bar_gpt.v1.run_audit_shard_data",
+            by_label["bounded ClickHouse-to-tensor reconstruction audit"],
+        )
         joined = " ".join(item for _label, command in stages for item in command)
         self.assertNotIn("run_build_1s", joined)
         self.assertNotIn("run_build_daily", joined)
+
+    def test_complete_offline_dataset_space_preflight_scales_on_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fresh, basis = required_free_bytes(root, fresh_minimum_tb=5.5)
+            self.assertEqual(fresh, 5_500_000_000_000)
+            self.assertIn("fresh-root", basis)
+            manifest = root / "manifest"
+            manifest.mkdir()
+            (manifest / "catalog.json").write_text(json.dumps({
+                "counts": {"units": 13_650, "bytes": 2_500_000_000_000},
+            }), encoding="utf-8")
+            resumed, basis = required_free_bytes(root, fresh_minimum_tb=5.5)
+            self.assertEqual(resumed, 2_750_000_000_000)
+            self.assertIn("10% reserve", basis)
 
     def test_immutable_catalog_blocks_execute_before_build_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1816,7 +1837,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v12"))
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
-        self.assertEqual(training_launcher_args["--offline-train-end-date"], "2022-01-01")
+        self.assertEqual(training_launcher_args["--offline-train-end-date"], "2026-01-01")
         self.assertEqual(training_launcher_args["--batch-size"], "32")
         self.assertEqual(training_launcher_args["--validation-blocks-per-slice"], "2")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "1")
@@ -2332,7 +2353,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             )
             self.assertEqual(actual, values)
             self.assertEqual(parsed.epochs, 1)
-            self.assertEqual(parsed.offline_train_end_date, "2022-01-01")
+            self.assertEqual(parsed.offline_train_end_date, "2026-01-01")
             self.assertEqual(parsed.wandb_project, BAR_GPT_WANDB_PROJECT)
             self.assertEqual(COMPARISON_RUNS[model_size].effective_blocks, 32)
             names.add(comparison_run_name(model_size, "fixed"))

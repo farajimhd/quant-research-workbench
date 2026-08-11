@@ -25,7 +25,7 @@ from research.bar_gpt.v1.offline_shards import (
 )
 
 
-DISCOVERY_CONTRACT_VERSION = 6
+DISCOVERY_CONTRACT_VERSION = 7
 DISCOVERY_WANDB_PROJECT = "bar gpt model discovery"
 DISCOVERY_ORIGIN_BARS_1S = 4_096
 DISCOVERY_TRAIN_ORIGINS_PER_EPOCH = 100_000_000
@@ -330,7 +330,7 @@ def build_discovery_manifest(
         config,
         tickers=config.training_tickers,
         start_date="2019-01-01",
-        end_date="2021-01-01",
+        end_date="2026-01-01",
     )
     held_out_tickers = tuple(sorted({ticker for ticker, _start, _end in config.validation_slices}))
     held_out_units = discover_offline_units(
@@ -409,7 +409,7 @@ def build_discovery_manifest(
         "seed": seed,
         "shard_root": str(shard_root),
         "shard_config_hash": discovery_shard_compatibility_hash(config),
-        "ranges": {"train": ["2019-01-01", "2021-01-01"], "held_out": ["2026-01-01", "2026-08-01"]},
+        "ranges": {"train": ["2019-01-01", "2026-01-01"], "held_out": ["2026-01-01", "2026-08-01"]},
         "targets": {
             "train_origins_per_epoch": train_origins,
             "monitor_origins": monitor_origins,
@@ -573,7 +573,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if unknown:
         raise ValueError(f"unknown architectures: {unknown}")
     output_root = Path(args.output_root)
-    manifest_path = output_root / "fixed_panels_v5.json"
+    manifest_path = output_root / "fixed_panels_v6.json"
     print(f"W&B project: {args.wandb_project}", flush=True)
     print("Metric namespaces: monitor_*, validation_*, locked_test_*", flush=True)
     print(
@@ -608,7 +608,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             config=discovery_data_config(Path(args.shard_root)),
         )
         print(f"Reusing verified manifest: {manifest_path}", flush=True)
-    state_path = output_root / "campaign_state_v5.json"
+    state_path = output_root / "campaign_state_v6.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {
         "contract_version": DISCOVERY_CONTRACT_VERSION,
         "campaign_id": time.strftime("%Y%m%d-%H%M%S"),

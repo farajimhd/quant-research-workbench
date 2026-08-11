@@ -26,6 +26,8 @@ from research.bar_gpt.v1.cohort import (
     BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
     BAR_GPT_COHORT_2TB_SHA256,
     BAR_GPT_COHORT_2TB_TABLE,
+    BAR_GPT_COHORT_5TB_300,
+    BAR_GPT_COHORT_5TB_300_SHA256,
     BAR_GPT_IDENTITY_HOLDOUT_TICKERS,
     BAR_GPT_IDENTITY_QUARANTINE,
     BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE,
@@ -185,7 +187,13 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertEqual(DataConfig().one_second_table, BAR_GPT_COHORT_2TB_TABLE)
         self.assertEqual(DataConfig().tickers, BAR_GPT_TRAINING_TICKERS)
         self.assertEqual(BAR_GPT_IDENTITY_QUARANTINE, ("MOGO",))
-        self.assertEqual(len(BAR_GPT_VALIDATION_SLICES_2026), 99)
+        self.assertEqual(len(BAR_GPT_COHORT_5TB_300), 300)
+        self.assertEqual(len(set(BAR_GPT_COHORT_5TB_300)), 300)
+        self.assertEqual(
+            BAR_GPT_COHORT_5TB_300_SHA256,
+            "069d7b781ffe6d7dfa4d4168f7fde7791cf79d9a115418cb77820e2eae07651d",
+        )
+        self.assertEqual(len(BAR_GPT_VALIDATION_SLICES_2026), 300)
         self.assertEqual(
             tuple(ticker for ticker, _start, _end in BAR_GPT_VALIDATION_SLICES_2026),
             BAR_GPT_TRAINING_TICKERS,
@@ -199,7 +207,7 @@ class BuilderSqlTest(unittest.TestCase):
             set(BAR_GPT_TRAINING_TICKERS) - set(DataConfig().training_tickers),
             set(BAR_GPT_IDENTITY_HOLDOUT_TICKERS),
         )
-        self.assertEqual(len(DataConfig().training_tickers), 91)
+        self.assertEqual(len(DataConfig().training_tickers), 292)
 
     def test_data_config_accepts_single_ticker_for_bounded_shard_builds(self) -> None:
         config = DataConfig(

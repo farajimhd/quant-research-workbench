@@ -5,7 +5,7 @@ import shlex
 import sys
 
 from pipelines.market_sip.events.clickhouse_build_intraday_base_bars import main
-from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS
+from research.bar_gpt.v1.cohort import BAR_GPT_MATERIALIZED_TICKERS_2TB
 
 
 DEFAULT_ARGS: dict[str, str] = {
@@ -13,7 +13,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--start-date": "2019-01-01",
     "--end-date": "2026-08-01",
     "--resolutions": "1s",
-    "--tickers": ",".join(BAR_GPT_TRAINING_TICKERS),
+    "--tickers": ",".join(BAR_GPT_MATERIALIZED_TICKERS_2TB),
     "--chunk-mode": "month",
     "--ticker-batch-max-events": "40000000",
     "--ticker-batch-max-tickers": "256",
