@@ -2232,7 +2232,11 @@ def _run_main(args: argparse.Namespace, run_log: BuildRunLog | None) -> int:
                                 "worker_process_completed", worker=worker, ticker=ticker,
                                 pid=int(process.pid or -1), exit_code=0,
                             )
-                        worker_block_offsets[worker] += int(ticker_weights[ticker])
+                        # Weight estimates may be absent for an event-empty
+                        # ticker.  Its covered-empty units are still valid and
+                        # must not turn successful worker completion into a
+                        # controller failure.
+                        worker_block_offsets[worker] += int(ticker_weights.get(ticker, 0))
                     if process.exitcode in {0, None} and ticker_queues[worker] and not stop.is_set():
                         launch_next_ticker(worker)
                     else:

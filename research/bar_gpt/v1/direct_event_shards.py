@@ -160,10 +160,18 @@ GROUP BY ticker
 FORMAT TSV
 """
     ) if tickers else ""
-    weights = {
+    observed_weights = {
         fields[0].upper(): int(fields[1])
         for line in weight_rows.splitlines()
         if len(fields := line.split("\t")) == 2
+    }
+    # Scheduler weights are estimates, not coverage authority.  A requested
+    # ticker can legitimately have no rows in the selected interval (for
+    # example, a later IPO in a historical build), so retain it explicitly
+    # with zero weight instead of returning a partial mapping.
+    weights = {
+        ticker.upper(): max(0, int(observed_weights.get(ticker.upper(), 0)))
+        for ticker in tickers
     }
     return {
         "mode": "direct_events",

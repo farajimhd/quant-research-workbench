@@ -14,6 +14,7 @@ from research.bar_gpt.v1.direct_event_shards import (
     _is_event_authority_boundary,
     _iter_prefetched_pages_in_order,
     calendar_lookback_days,
+    direct_event_preflight,
     direct_trade_bar_query,
 )
 from research.bar_gpt.v1.loader import ClickHouseBarStreamConfig, TickerInterval
@@ -30,6 +31,33 @@ from research.bar_gpt.v1.run_pilot_offline_shards import parse_args as parse_pil
 
 
 class DirectEventShardContractTest(unittest.TestCase):
+    def test_preflight_retains_event_empty_ticker_with_zero_scheduler_weight(self) -> None:
+        config = DataConfig(
+            tickers=("AAPL", "ARM"),
+            start_date="2019-01-01",
+            end_date="2022-01-01",
+        )
+
+        class Client:
+            def execute(self, query: str) -> str:
+                if "FROM system.tables" in query:
+                    return "\n".join((
+                        "events_2019", "events_2020", "events_2021",
+                        "events_ticker_day_index", "events_source_day_stats",
+                        config.condition_reference_table,
+                    ))
+                if "groupUniqArray(source_filter_key)" in query:
+                    return "['drop_trade_correction_codes=07,08,10,11|condition_slots=5']"
+                if "sum(event_count)" in query:
+                    return "AAPL\t12345\n"
+                raise AssertionError(f"unexpected preflight query: {query}")
+
+        _evidence, weights = direct_event_preflight(
+            Client(), config, ("AAPL", "ARM"),
+        )
+
+        self.assertEqual(weights, {"AAPL": 12345, "ARM": 0})
+
     def test_reporter_shows_precompletion_stage_and_source_page_progress(self) -> None:
         reporter = ShardBuildReporter(
             total=2,
