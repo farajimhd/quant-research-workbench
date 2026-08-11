@@ -6,7 +6,7 @@ import re
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Iterator
+from typing import Callable, Iterator
 from zoneinfo import ZoneInfo
 
 import polars as pl
@@ -338,7 +338,9 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
 
     def iter_session_views(self, *, ticker: str, start_date: str, end_date: str,
                            source_intervals: tuple[TickerInterval, ...] = (), device: torch.device | str = "cpu",
-                           prefetch_pages: int = 1) -> Iterator[tuple[str, BarView]]:
+                           prefetch_pages: int = 1,
+                           page_callback: Callable[[str, str, int, float], None] | None = None,
+                           ) -> Iterator[tuple[str, BarView]]:
         def read_page(left: dt.date, right: dt.date) -> list[tuple[str, BarView]]:
             started = time.perf_counter()
             query = direct_trade_bar_query(
@@ -360,27 +362,48 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
 
         cursor = dt.date.fromisoformat(start_date)
         end = dt.date.fromisoformat(end_date)
+        pages: deque[tuple[dt.date, dt.date]] = deque()
+        page_start = cursor
+        while page_start < end:
+            # events_YYYY is partitioned by calendar month. Query each monthly
+            # partition once instead of repeatedly rescanning it in seven-day
+            # windows; the first and last ranges remain bounded by the request.
+            next_month = (page_start.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+            page_end = min(end, next_month)
+            pages.append((page_start, page_end))
+            page_start = page_end
         depth = max(1, int(prefetch_pages))
         with ThreadPoolExecutor(max_workers=depth, thread_name_prefix="bar-gpt-direct-page") as executor:
-            pending: deque[tuple[dt.date, Future[list[tuple[str, BarView]]]]] = deque()
-            submit = cursor
-            while submit < end and len(pending) < depth:
-                right = min(end, submit + dt.timedelta(days=max(1, int(self.config.query_days))))
-                pending.append((right, executor.submit(read_page, submit, right)))
-                submit = right
+            pending: deque[tuple[dt.date, dt.date, float, Future[list[tuple[str, BarView]]]]] = deque()
+            while pages and len(pending) < depth:
+                left, right = pages.popleft()
+                pending.append((left, right, time.perf_counter(), executor.submit(read_page, left, right)))
             while pending:
-                right, future = pending.popleft()
+                left, right, started, future = pending.popleft()
                 page = future.result()
-                if submit < end:
-                    next_right = min(end, submit + dt.timedelta(days=max(1, int(self.config.query_days))))
-                    pending.append((next_right, executor.submit(read_page, submit, next_right)))
-                    submit = next_right
+                if page_callback is not None:
+                    page_callback(left.isoformat(), right.isoformat(), len(page), time.perf_counter() - started)
+                if pages:
+                    next_left, next_right = pages.popleft()
+                    pending.append((
+                        next_left, next_right, time.perf_counter(), executor.submit(read_page, next_left, next_right)
+                    ))
                 yield from page
                 cursor = right
 
 
 class DirectEventShardDataset(BarGPTIterableDataset):
     """Single-pass event-to-shard dataset with ticker-owned rolling state."""
+
+    def __init__(self, *, progress_callback: Callable[[str], None] | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.progress_callback = progress_callback
+
+    def _page_progress(self, phase: str, left: str, right: str, sessions: int, seconds: float) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(
+                f"{phase} page {left}..{right}: {sessions} sessions in {seconds:.1f}s"
+            )
 
     def __iter__(self) -> Iterator[BarGPTExample]:
         if self.split != "cache" or self.data_config.coverage_mode != "sequential":
@@ -439,6 +462,9 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                 for day, session in client.iter_session_views(
                     ticker=unit.ticker, start_date=warmup_start, end_date=unit.start_date,
                     source_intervals=intervals[unit.ticker], prefetch_pages=self.data_config.clickhouse_prefetch_pages,
+                    page_callback=lambda left, right, sessions, seconds: self._page_progress(
+                        "warmup", left, right, sessions, seconds
+                    ),
                 ):
                     history.append(session, materialize=False)
                     if day not in excluded_daily:
@@ -452,6 +478,9 @@ class DirectEventShardDataset(BarGPTIterableDataset):
             for day, session in client.iter_session_views(
                 ticker=unit.ticker, start_date=fetch_start, end_date=unit.end_date,
                 source_intervals=intervals[unit.ticker], prefetch_pages=self.data_config.clickhouse_prefetch_pages,
+                page_callback=lambda left, right, sessions, seconds: self._page_progress(
+                    "build", left, right, sessions, seconds
+                ),
             ):
                 if day < unit.start_date:
                     history.append(session, materialize=False)

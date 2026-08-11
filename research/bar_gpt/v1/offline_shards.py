@@ -1414,6 +1414,11 @@ def _ticker_worker_main(
         if config.source_mode == "direct_events":
             from research.bar_gpt.v1.direct_event_shards import DirectEventShardDataset
             dataset_class = DirectEventShardDataset
+        dataset_kwargs: dict[str, Any] = {}
+        if config.source_mode == "direct_events":
+            dataset_kwargs["progress_callback"] = lambda message: events.put(
+                ("unit", worker_id, str(message), ticker)
+            )
         dataset = dataset_class(
             data_config=config,
             stream_config=_stream_config(config),
@@ -1422,6 +1427,7 @@ def _ticker_worker_main(
             unit_tickers=(ticker,),
             skip_unit_keys=skipped,
             query_gate=query_gate,
+            **dataset_kwargs,
         )
         current_key = ""
         current_date = ""
