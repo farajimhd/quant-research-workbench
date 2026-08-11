@@ -32,7 +32,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
     parser.add_argument("--clickhouse-max-threads-per-query", type=int, default=2)
     parser.add_argument("--clickhouse-max-concurrent-pages", type=int, default=0)
-    parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
+    parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="rich")
     parser.add_argument(
         "--force-rebuild",
         action="store_true",

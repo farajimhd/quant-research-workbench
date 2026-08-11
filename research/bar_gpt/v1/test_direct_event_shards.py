@@ -166,6 +166,7 @@ class DirectEventShardContractTest(unittest.TestCase):
             self.assertEqual(command[command.index("--workers") + 1], "32")
             self.assertEqual(command[command.index("--source-mode") + 1], "direct_events")
             self.assertEqual(command[command.index("--clickhouse-max-threads-per-worker") + 1], "2")
+            self.assertEqual(command[command.index("--progress-layout") + 1], "rich")
             self.assertEqual(
                 tuple(command[command.index("--tickers") + 1].split(",")),
                 BAR_GPT_TRAINING_TICKERS,
