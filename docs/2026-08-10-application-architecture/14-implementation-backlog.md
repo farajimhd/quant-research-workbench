@@ -591,6 +591,10 @@ broker command outside OMS.
         HTTP request exists. Backend Watchlist/Strategy/chart publishers derive
         bounded IDs from membership, Run Plan target, or chart request; QMD
         target snapshot schema v2 stores and exposes both identities.
+  - [x] Give every durable trading-journal continuation fallback lineage when
+        no request or domain-specific predecessor exists; derive correlation
+        from the run and causation from the event identity and clock while
+        preserving explicit Strategy/Portfolio/OMS lineage.
   - [ ] Give autonomous source events and generic background continuations
         explicit causation lineage when no HTTP request context exists.
 - [x] Add QMD transition/gap/lag/cache/queue metrics.

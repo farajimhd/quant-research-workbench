@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from src.request_context import current_request_identity
+from src.request_context import causal_identity, current_request_identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +59,20 @@ class TradingJournal:
         event_time = (event_time or datetime.now(timezone.utc)).astimezone(timezone.utc)
         recorded_at = datetime.now(timezone.utc)
         record_id = str(uuid.uuid4())
-        payload = {**current_request_identity(), **payload}
+        active_lineage = current_request_identity()
+        needs_generic_lineage = not payload.get("intent_id") or bool(active_lineage)
+        lineage = (
+            causal_identity(
+                correlation_seed=run_id,
+                causation_seed=(
+                    f"{category}:{entity_type}:{entity_id}:"
+                    f"{event_time.isoformat(timespec='microseconds')}"
+                ),
+            )
+            if needs_generic_lineage
+            else {}
+        )
+        payload = {**lineage, **payload}
         payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True, default=_json_default)
         with self._lock, self._connection:
             sequence = int(

@@ -121,6 +121,9 @@ class JournalTests(unittest.TestCase):
             journal = TradingJournal(path)
             first = journal.append(run_id="run", category="command", entity_type="order", entity_id="1", payload={"a": 1})
             second = journal.append(run_id="run", category="broker", entity_type="order", entity_id="1", payload={"status": "Submitted"})
+            self.assertEqual(first.payload["correlation_id"], "run:run")
+            self.assertTrue(first.payload["causation_id"].startswith("event:"))
+            self.assertNotEqual(first.payload["causation_id"], second.payload["causation_id"])
             journal.save_checkpoint("run", "cursor", {"events": 2}, TS)
             journal.save_strategy(strategy_id="s", revision=1, name="Strategy", implementation="module:Class", automatic=True, config={"x": 2})
             journal.close()
@@ -131,6 +134,24 @@ class JournalTests(unittest.TestCase):
             self.assertEqual(reopened.load_checkpoint("run")["state"], {"events": 2})
             self.assertTrue(reopened.strategy("s")["automatic"])
             reopened.close()
+
+    def test_journal_preserves_explicit_autonomous_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            record = journal.append(
+                run_id="run",
+                category="portfolio",
+                entity_type="decision",
+                entity_id="decision-1",
+                payload={
+                    "correlation_id": "strategy:assignment-7",
+                    "causation_id": "intent:intent-9",
+                },
+                event_time=TS,
+            )
+            self.assertEqual(record.payload["correlation_id"], "strategy:assignment-7")
+            self.assertEqual(record.payload["causation_id"], "intent:intent-9")
+            journal.close()
 
     def test_trade_annotations_are_durable_and_replace_by_episode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

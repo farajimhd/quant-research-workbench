@@ -710,6 +710,14 @@ bounded direct ClickHouse paths remain documented in
     Ticker Facts, registry, and Watchlist tests passed. One broader Canvas test
     remains stale against the pre-existing News query (`provider_tags` versus
     `channels`) and is unrelated to this change.
+94. Closed fallback lineage for the durable shared trading journal. Records
+    created outside an HTTP context now receive a bounded run-derived
+    correlation ID and an event/category/entity/time-derived causation ID.
+    Explicit domain lineage from Strategy, Portfolio, OMS, or a request still
+    wins, so this does not overwrite more precise causal predecessors. This
+    covers background Replay, Backtest, Strategy, Portfolio, and OMS journal
+    continuations; autonomous QMD source-event lineage remains a separate open
+    item. Python compile and the focused journal/runtime tests passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
