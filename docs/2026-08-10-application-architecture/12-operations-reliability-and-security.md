@@ -89,6 +89,10 @@ Their service retains at most 32 resident run controllers by default, evicts
 only the oldest terminal controller, preserves its durable run directory, and
 rejects new runs with HTTP 429 when every resident slot is active. The bound is
 configurable through `TRADING_REPLAY_MAX_RESIDENT_RUNS`.
+Replay/Backtest historical warm-up also admits at most eight concurrent derived
+QMD History streams by default, configurable from one through 32 with
+`TRADING_REPLAY_HISTORY_FETCH_CONCURRENCY`; the cross-sectional Scanner signal
+snapshot is fetched once per run window rather than once per ticker.
 
 Logs are structured, bounded and redact credentials, account identifiers where required, licensed payloads and sensitive model prompts. Audit records are append-only and include actor, action, target, before/after version references and result.
 

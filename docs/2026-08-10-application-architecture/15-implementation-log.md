@@ -357,6 +357,13 @@ bounded direct ClickHouse paths remain documented in
     and pinned by the immutable approved configuration, while other discovered
     process caches are bounded and revision/signature keyed. Eighteen focused
     Watchlist/cache tests, Python compile, and diff validation passed.
+57. Corrected Replay/Backtest historical warm-up fan-out. The controller now
+    fetches the full Scanner signal product once per run window, groups it by
+    assigned ticker, and limits ticker/timeframe derived WebSocket fetches with
+    a configurable semaphore (default eight, accepted range one through 32).
+    This removes per-ticker duplicate Scanner computation and unbounded request
+    concurrency. Five focused Replay capacity/fetch tests, Python compile, and
+    diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

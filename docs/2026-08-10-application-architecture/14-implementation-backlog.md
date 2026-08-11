@@ -216,6 +216,8 @@ budgets and invalid scope broadening fails configuration validation.
 - [ ] Implement HTTP snapshot plus sequenced delta streams.
 - [ ] Fill reconnect gaps or require resnapshot.
 - [ ] Isolate budgets for commands, discovery, charts, simulation, and offline work.
+  - [x] Give Replay/Backtest historical warm-up a configurable bounded fetch
+        semaphore and deduplicate the cross-sectional Scanner signal request.
 - [x] Bound and version caches.
   - [x] Replace backend service-table and News/SEC histogram dictionaries with
         bounded thread-safe TTL/LRU caches carrying explicit contract revisions.
@@ -447,6 +449,8 @@ broker command outside OMS.
   - [x] Bound Replay/Backtest subscriber queues and resident controllers;
         coalesce replaceable snapshots, evict only terminal controllers, and
         return HTTP 429 when all configured resident slots are active.
+  - [x] Bound Replay/Backtest QMD History derived-stream concurrency and issue
+        one cross-sectional Scanner signal query per run window.
 - [ ] Shed replaceable projections before authoritative events or journal writes.
 - [ ] Test QMD boundaries, retention, and live/history parity.
 - [ ] Test point-in-time identity and enrichment behavior.

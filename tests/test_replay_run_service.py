@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from dataclasses import asdict
@@ -16,6 +17,7 @@ from src.backend.replay_run_service import (
     ReplayRunService,
     _attach_historical_signals,
     _canvas_profile_tickers,
+    _historical_signal_events,
     backtest_preflight,
     replay_preflight,
 )
@@ -207,6 +209,108 @@ class ReplayRunServiceCapacityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 429)
         self.assertEqual(raised.exception.detail, "capacity full")
+
+
+class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_loads_scanner_signals_once_and_bounds_derived_fetches(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 10),
+            start_time=time(9, 45),
+            tickers=tuple(f"T{index}" for index in range(12)),
+            configuration_revision=approved_configuration(),
+        )
+        controller = ReplayRunController(
+            definition,
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        assignments = [
+            MagicMock(ticker=f"T{index}", parameters={}) for index in range(12)
+        ]
+        controller._strategy = MagicMock()
+        controller._strategy.assignments.return_value = assignments
+        active = 0
+        maximum_active = 0
+
+        async def derived(**kwargs):
+            nonlocal active, maximum_active
+            active += 1
+            maximum_active = max(maximum_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return []
+
+        signal_rows = {f"T{index}": [] for index in range(12)}
+        with (
+            patch(
+                "src.backend.replay_run_service.strategy_rule_timeframes",
+                return_value={"1m"},
+            ),
+            patch(
+                "src.backend.replay_run_service._historical_derived_frames",
+                side_effect=derived,
+            ) as derived_fetch,
+            patch(
+                "src.backend.replay_run_service._historical_signal_events",
+                AsyncMock(return_value=signal_rows),
+            ) as signal_fetch,
+            patch.dict(
+                "os.environ",
+                {"TRADING_REPLAY_HISTORY_FETCH_CONCURRENCY": "8"},
+            ),
+        ):
+            frames = await controller._load_strategy_frames()
+
+        self.assertEqual(frames, [])
+        self.assertEqual(derived_fetch.call_count, 12)
+        self.assertLessEqual(maximum_active, 8)
+        signal_fetch.assert_awaited_once_with(
+            tickers=tuple(sorted(f"T{index}" for index in range(12))),
+            start=definition.session_start,
+            end=definition.session_end,
+        )
+
+    async def test_groups_one_cross_sectional_signal_response_by_ticker(self) -> None:
+        payload = MagicMock(
+            payload={
+                "recent_signal_events": [
+                    {
+                        "ticker": "AAPL",
+                        "effective_at": "2026-08-10T15:00:02+00:00",
+                    },
+                    {
+                        "ticker": "MSFT",
+                        "effective_at": "2026-08-10T15:00:01+00:00",
+                    },
+                    {
+                        "ticker": "AAPL",
+                        "effective_at": "2026-08-10T15:00:01+00:00",
+                    },
+                    {
+                        "ticker": "TSLA",
+                        "effective_at": "2026-08-10T15:00:01+00:00",
+                    },
+                ]
+            }
+        )
+        with patch(
+            "src.backend.replay_run_service.qmd_product_request",
+            return_value=payload,
+        ) as request:
+            grouped = await _historical_signal_events(
+                tickers=("AAPL", "MSFT"),
+                start=datetime(2026, 8, 10, 14, tzinfo=NEW_YORK),
+                end=datetime(2026, 8, 10, 16, tzinfo=NEW_YORK),
+            )
+
+        request.assert_called_once()
+        self.assertEqual(list(grouped), ["AAPL", "MSFT"])
+        self.assertEqual(
+            [row["effective_at"] for row in grouped["AAPL"]],
+            [
+                "2026-08-10T15:00:01+00:00",
+                "2026-08-10T15:00:02+00:00",
+            ],
+        )
 
 
 class BacktestPreflightTests(unittest.TestCase):

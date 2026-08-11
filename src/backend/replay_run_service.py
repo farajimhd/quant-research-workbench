@@ -77,6 +77,7 @@ REPLAY_STATUSES = {
 TERMINAL_REPLAY_STATUSES = {"completed", "stopped", "failed"}
 PLAYBACK_SPEEDS = (1.0, 5.0, 30.0, 120.0, 0.0)
 DEFAULT_MAX_RESIDENT_RUNS = 32
+DEFAULT_HISTORY_FETCH_CONCURRENCY = 8
 
 
 class ReplayRunCapacityError(RuntimeError):
@@ -1139,35 +1140,26 @@ class ReplayRunController:
         }
         if not requests:
             return []
-        groups = await asyncio.gather(
-            *(
-                _historical_derived_frames(
+        fetch_permits = asyncio.Semaphore(replay_history_fetch_concurrency())
+
+        async def load_derived(ticker: str, timeframe: str) -> list[ReplayDerivedFrame]:
+            async with fetch_permits:
+                return await _historical_derived_frames(
                     ticker=ticker,
                     timeframe=timeframe,
                     start=self.definition.session_start,
                     end=self.definition.session_end,
                 )
-                for ticker, timeframe in sorted(requests)
-            )
+
+        groups = await asyncio.gather(
+            *(load_derived(ticker, timeframe) for ticker, timeframe in sorted(requests))
         )
-        signal_events = await asyncio.gather(
-            *(
-                _historical_signal_events(
-                    ticker=ticker,
-                    start=self.definition.session_start,
-                    end=self.definition.session_end,
-                )
-                for ticker in sorted({ticker for ticker, _ in requests})
-            )
+        tickers = tuple(sorted({ticker for ticker, _ in requests}))
+        events_by_ticker = await _historical_signal_events(
+            tickers=tickers,
+            start=self.definition.session_start,
+            end=self.definition.session_end,
         )
-        events_by_ticker = {
-            ticker: events
-            for ticker, events in zip(
-                sorted({ticker for ticker, _ in requests}),
-                signal_events,
-                strict=True,
-            )
-        }
         frames = [frame for group in groups for frame in group]
         for ticker in events_by_ticker:
             _attach_historical_signals(
@@ -1702,10 +1694,10 @@ async def _historical_derived_frames(
 
 async def _historical_signal_events(
     *,
-    ticker: str,
+    tickers: tuple[str, ...],
     start: datetime,
     end: datetime,
-) -> list[dict[str, Any]]:
+) -> dict[str, list[dict[str, Any]]]:
     request = QmdProductRequest(
         "scanner",
         authority="history",
@@ -1723,15 +1715,39 @@ async def _historical_signal_events(
 
     payload = await asyncio.to_thread(fetch)
     if payload.get("error"):
-        raise RuntimeError(f"QMD historical signal stream failed for {ticker}: {payload['error']}")
-    return sorted(
-        [
-            dict(row)
-            for row in payload.get("recent_signal_events") or []
-            if str(row.get("ticker") or "").upper() == ticker.upper()
-        ],
-        key=lambda row: _aware_datetime(row.get("effective_at") or row.get("observed_at")),
+        raise RuntimeError(f"QMD historical signal stream failed: {payload['error']}")
+    requested = set(tickers)
+    grouped = {ticker: [] for ticker in tickers}
+    for raw in payload.get("recent_signal_events") or []:
+        row = dict(raw)
+        ticker = str(row.get("ticker") or "").upper()
+        if ticker in requested:
+            grouped[ticker].append(row)
+    for rows in grouped.values():
+        rows.sort(
+            key=lambda row: _aware_datetime(
+                row.get("effective_at") or row.get("observed_at")
+            )
+        )
+    return grouped
+
+
+def replay_history_fetch_concurrency() -> int:
+    value = os.environ.get(
+        "TRADING_REPLAY_HISTORY_FETCH_CONCURRENCY",
+        str(DEFAULT_HISTORY_FETCH_CONCURRENCY),
     )
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(
+            "TRADING_REPLAY_HISTORY_FETCH_CONCURRENCY must be an integer"
+        ) from exc
+    if not 1 <= parsed <= 32:
+        raise ValueError(
+            "TRADING_REPLAY_HISTORY_FETCH_CONCURRENCY must be between 1 and 32"
+        )
+    return parsed
 
 
 def _attach_historical_signals(

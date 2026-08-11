@@ -146,6 +146,10 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
   at maximum event speed across the selected exchange sessions and pins the
   approved configuration revision. Its setup page can create, monitor, and
   stop a run.
+- Historical Strategy warm-up fetches the cross-sectional Scanner signal product
+  once per run window and groups it by assigned ticker. Ticker/timeframe derived
+  streams use a bounded semaphore (default eight, maximum 32) rather than opening
+  every QMD History request concurrently.
 - Backtest Watchlist membership is currently resolved at the first event clock.
   Session-varying membership activation/deactivation and strategy attribution
   remain incomplete; this is a disclosed partial implementation, not mode
