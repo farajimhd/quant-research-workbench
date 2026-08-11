@@ -259,6 +259,18 @@ bounded direct ClickHouse paths remain documented in
     both all-target compile gates passed. Archive watermark promotion
     still needs an explicit retained QMD equivalence certificate and remains
     open; no Market SIP producer or schema changed.
+46. Reconciled the computational-funnel checklist with the enforced runtime
+    contract and added an exact regression fence. QMD already represented all
+    six scopes, rejected leased Universal/Core work, locked the six Universal
+    primitives, and limited Core Scan to five low-cost families. The new catalog
+    test fixes those exact sets and costs so a new indicator cannot silently
+    become all-market work. Existing bounded Scanner materializations and the
+    append-only Watchlist membership journal close the compact-history item.
+    Generic Structure still executes in the broad bar store, measured Core Scan
+    profiling is still required, offline requirements are not yet part of the
+    live lease identity, and warm state is not reclaimed; those gaps remain
+    explicitly open. All 86 QMD Gateway tests and its all-target compile gate
+    passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

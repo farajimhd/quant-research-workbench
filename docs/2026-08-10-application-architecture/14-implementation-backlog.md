@@ -138,14 +138,19 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
 
 ## 3. Computational funnel and Market Discovery runtime
 
-- [ ] Enforce `universal_ingest`, `core_scan`, `watchlist`, `strategy_run`,
-      `request`, and `offline` execution scopes.
-- [ ] Lock integrity-critical Universal Ingest primitives.
-- [ ] Limit Universal Ingest to normalization, identity preservation,
-      sequencing, NBBO/trade state, freshness, quality, and required persistence.
+- [x] Enforce `universal_ingest`, `core_scan`, `watchlist`, `strategy_run`,
+      `request`, and `offline` execution scopes. QMD validates every capability
+      against its allowed scopes and rejects leased Universal/Core broadening;
+      backend configuration applies the same fail-closed contract.
+- [x] Lock integrity-critical Universal Ingest primitives.
+- [x] Limit Universal Ingest to normalization/encoding, point-in-time identity,
+      sequencing, NBBO/trade state, freshness/quality, and compact persistence
+      fanout. The exact six-family set is catalog-tested.
 - [ ] Profile all-market computations before Core Scan approval.
-- [ ] Limit default Core Scan to last/change, volume/dollar volume, activity,
-      spread, halt/stale, basic liquidity, and rank inputs.
+- [x] Limit default Core Scan to last/change, volume/dollar volume, activity,
+      spread, halt/stale, basic liquidity, reference context, and rank inputs.
+      Its exact five low-cost runtime families are catalog-tested; optional
+      narrower families cannot enter this set without changing the authority.
 - [x] Maintain one compact row per eligible security.
 - [x] Publish scanner snapshots plus row deltas.
 - [ ] Remove broad expensive indicators from the default all-market path.
@@ -166,7 +171,10 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
       indicator/structure state is not reclaimed after the final lease ends.
 - [x] Reject unapproved moves to broader populations.
 - [ ] Trigger targeted recomputation from relevant enrichment changes.
-- [ ] Preserve compact scanner/Watchlist history and explicitly approved materializations.
+- [x] Preserve compact Scanner/Watchlist history and explicitly approved
+      materializations. Scanner history is bounded/versioned and Watchlist
+      membership transitions are append-only journal evidence; indicator rows
+      remain memory-first unless their persistence policy is explicitly enabled.
 
 Acceptance gate: representative all-market load satisfies latency/memory
 budgets and invalid scope broadening fails configuration validation.

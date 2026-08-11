@@ -51,6 +51,16 @@ consumers permit it. Moving it toward a broader population requires an explicit
 configuration change, dependency validation, and cost approval. Locked
 integrity primitives cannot be moved.
 
+**Current:** the Rust capability catalog is the QMD scope authority. It locks
+six Universal primitives and fixes Core Scan to five low-cost families;
+computation leases may use only Watchlist, Strategy Run, Request, or Offline and
+are rejected when a capability does not allow the requested scope. Backend
+configuration validates the same scope/policy fields. The exact Universal/Core
+sets are regression-tested. Generic Structure remains the known exception to
+the desired cost boundary because it still executes inside the broad bar store;
+that stateful migration requires a sequence barrier and exact replay before it
+can safely become lease-only.
+
 ## Universal ingest
 
 Universal Ingest is visible as the first Market Discovery page and is normally

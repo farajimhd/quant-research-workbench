@@ -358,4 +358,29 @@ mod tests {
             ExecutionScope::Offline
         ));
     }
+
+    #[test]
+    fn default_all_market_scope_is_the_exact_minimal_family_set() {
+        let catalog = computation_capability_catalog();
+        let core = catalog
+            .iter()
+            .filter(|row| matches!(row.execution_scope, ExecutionScope::CoreScan))
+            .map(|row| row.key)
+            .collect::<HashSet<_>>();
+        let expected = CORE_FAMILIES.iter().copied().collect::<HashSet<_>>();
+
+        assert_eq!(core, expected);
+        assert!(catalog
+            .iter()
+            .filter(|row| matches!(row.execution_scope, ExecutionScope::CoreScan))
+            .all(|row| matches!(row.cost_class, CostClass::Low)));
+        assert!(UNIVERSAL_PRIMITIVES.iter().all(|(key, _, _, _)| {
+            catalog.iter().any(|row| {
+                row.key == *key
+                    && matches!(row.execution_scope, ExecutionScope::UniversalIngest)
+                    && matches!(row.configuration_policy, ConfigurationPolicy::Locked)
+                    && matches!(row.cost_class, CostClass::Minimal)
+            })
+        }));
+    }
 }
