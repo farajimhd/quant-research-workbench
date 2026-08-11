@@ -163,6 +163,13 @@ offline calculation is available in its proper scope.
 ## Current gaps
 
 - Core Scan now uses the compact QMD Scanner row; broad indicators are opt-in.
+- QMD's all-market state keeps one current row per observed symbol plus bounded
+  per-second trade counters for the 10/60-second activity rates; it does not
+  retain full trade objects for Core Scan rate calculation.
+- `GET /snapshot/scanner` and `WS /stream/scanner` use the same monotonic
+  sequence authority. The WebSocket sends a typed initial snapshot followed by
+  typed row deltas. A lag warning requires a new snapshot instead of silently
+  continuing across a sequence gap.
 - Live/Paper scheduling resolves configured Watchlists, journals membership,
   and publishes bounded focused QMD leases. Replay resolves the same rules
   against its point-in-time Scanner and enrichment clock.

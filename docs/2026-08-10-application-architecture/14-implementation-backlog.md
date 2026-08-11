@@ -115,8 +115,8 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
 - [ ] Profile all-market computations before Core Scan approval.
 - [ ] Limit default Core Scan to last/change, volume/dollar volume, activity,
       spread, halt/stale, basic liquidity, and rank inputs.
-- [ ] Maintain one compact row per eligible security.
-- [ ] Publish scanner snapshots plus row deltas.
+- [x] Maintain one compact row per eligible security.
+- [x] Publish scanner snapshots plus row deltas.
 - [x] Remove broad expensive indicators from the default all-market path.
 - [x] Implement dynamic Watchlist inclusion, exclusion, ranking, maximum size,
       TTL, manual override, and promotion/demotion reasons.

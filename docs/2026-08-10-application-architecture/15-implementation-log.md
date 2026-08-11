@@ -95,6 +95,11 @@ bounded direct ClickHouse paths remain documented in
     timezone-aware causal windows resolve to the consumer-neutral QMD History
     contract, whose internal source planner alone chooses archive/recent/gap
     segments. Replay WebSockets use the same client URL authority.
+20. Replaced Core Scan's per-symbol full-trade rate buffers with bounded
+    per-second counters and gave Scanner snapshot plus row-delta delivery one
+    monotonic sequence. WebSocket clients subscribe before snapshot capture,
+    discard already-covered deltas, and receive an explicit resnapshot action
+    if their delta subscription lags.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -2,7 +2,7 @@ use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -15,6 +15,7 @@ pub struct SharedMarketState {
 struct MarketState {
     events_received: u64,
     quotes_received: u64,
+    scanner_sequence: u64,
     trades_received: u64,
     symbols: HashMap<String, SymbolState>,
 }
@@ -28,7 +29,8 @@ struct SymbolState {
     last_price: f64,
     last_quote: Option<QuoteEvent>,
     last_trade: Option<TradeEvent>,
-    recent_trades: VecDeque<TradeEvent>,
+    latest_trade_second: Option<i64>,
+    recent_trade_counts: BTreeMap<i64, u64>,
     session_date: Option<NaiveDate>,
 }
 
@@ -62,7 +64,15 @@ pub struct ScannerSnapshot {
     pub as_of: DateTime<Utc>,
     pub row_count: usize,
     pub rows: Vec<SymbolSnapshot>,
+    pub sequence: u64,
     pub total_symbols: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ScannerRowDelta {
+    pub as_of: DateTime<Utc>,
+    pub row: SymbolSnapshot,
+    pub sequence: u64,
 }
 
 impl SharedMarketState {
@@ -72,15 +82,18 @@ impl SharedMarketState {
         }
     }
 
-    pub async fn apply_event(&self, event: &MarketEvent) {
+    pub async fn apply_event(&self, event: &MarketEvent) -> ScannerRowDelta {
         let mut state = self.inner.write().await;
         state.events_received += 1;
+        state.scanner_sequence = state.scanner_sequence.saturating_add(1);
+        let sequence = state.scanner_sequence;
+        let ticker = event.ticker().to_ascii_uppercase();
         match event {
             MarketEvent::Trade(trade) => {
                 state.trades_received += 1;
                 let symbol = state
                     .symbols
-                    .entry(trade.ticker.clone())
+                    .entry(ticker.clone())
                     .or_insert_with(SymbolState::new);
                 symbol.apply_trade(trade.clone());
             }
@@ -88,10 +101,25 @@ impl SharedMarketState {
                 state.quotes_received += 1;
                 let symbol = state
                     .symbols
-                    .entry(quote.ticker.clone())
+                    .entry(ticker.clone())
                     .or_insert_with(SymbolState::new);
                 symbol.apply_quote(quote.clone());
             }
+        }
+        let as_of = state
+            .symbols
+            .get(&ticker)
+            .and_then(|symbol| symbol.last_event_ts)
+            .unwrap_or_else(Utc::now);
+        let row = state
+            .symbols
+            .get(&ticker)
+            .expect("the applied market event creates its symbol state")
+            .snapshot(&ticker, as_of);
+        ScannerRowDelta {
+            as_of,
+            row,
+            sequence,
         }
     }
 
@@ -107,10 +135,11 @@ impl SharedMarketState {
 
     pub async fn scanner_snapshot(&self, limit: usize) -> ScannerSnapshot {
         let state = self.inner.read().await;
+        let as_of = Utc::now();
         let mut rows: Vec<_> = state
             .symbols
             .iter()
-            .map(|(ticker, symbol)| symbol.snapshot(ticker))
+            .map(|(ticker, symbol)| symbol.snapshot(ticker, as_of))
             .collect();
         rows.sort_by(|left, right| {
             right
@@ -121,9 +150,10 @@ impl SharedMarketState {
         let total_symbols = rows.len();
         rows.truncate(limit);
         ScannerSnapshot {
-            as_of: Utc::now(),
+            as_of,
             row_count: rows.len(),
             rows,
+            sequence: state.scanner_sequence,
             total_symbols,
         }
     }
@@ -134,7 +164,7 @@ impl SharedMarketState {
         state
             .symbols
             .get(&normalized)
-            .map(|symbol| symbol.snapshot(&normalized))
+            .map(|symbol| symbol.snapshot(&normalized, Utc::now()))
     }
 }
 
@@ -148,7 +178,8 @@ impl SymbolState {
             last_price: 0.0,
             last_quote: None,
             last_trade: None,
-            recent_trades: VecDeque::with_capacity(1_000),
+            latest_trade_second: None,
+            recent_trade_counts: BTreeMap::new(),
             session_date: None,
         }
     }
@@ -162,10 +193,18 @@ impl SymbolState {
         self.day_volume += trade.size.max(0.0);
         self.day_dollar_volume += trade.size.max(0.0) * trade.price.max(0.0);
         self.day_trade_count += 1;
-        self.recent_trades.push_back(trade.clone());
-        while self.recent_trades.len() > 1_000 {
-            self.recent_trades.pop_front();
+        let second = trade.ts.timestamp();
+        let watermark = self
+            .latest_trade_second
+            .map(|current| current.max(second))
+            .unwrap_or(second);
+        self.latest_trade_second = Some(watermark);
+        let cutoff = watermark - 60;
+        if second >= cutoff {
+            *self.recent_trade_counts.entry(second).or_insert(0) += 1;
         }
+        self.recent_trade_counts
+            .retain(|timestamp, _| *timestamp >= cutoff);
         self.last_trade = Some(trade);
     }
 
@@ -192,11 +231,12 @@ impl SymbolState {
         self.day_dollar_volume = 0.0;
         self.day_trade_count = 0;
         self.day_volume = 0.0;
-        self.recent_trades.clear();
+        self.latest_trade_second = None;
+        self.recent_trade_counts.clear();
         true
     }
 
-    fn snapshot(&self, ticker: &str) -> SymbolSnapshot {
+    fn snapshot(&self, ticker: &str, as_of: DateTime<Utc>) -> SymbolSnapshot {
         let (bid, bid_size, ask, ask_size) = self
             .last_quote
             .as_ref()
@@ -225,29 +265,30 @@ impl SymbolState {
                 0.0
             },
             ticker: ticker.to_string(),
-            trade_rate_10s: self.trade_rate(10),
-            trade_rate_60s: self.trade_rate(60),
+            trade_rate_10s: self.trade_rate(10, as_of),
+            trade_rate_60s: self.trade_rate(60, as_of),
         }
     }
 
-    fn trade_rate(&self, seconds: i64) -> f64 {
-        let Some(latest) = self.last_trade.as_ref().map(|trade| trade.ts) else {
+    fn trade_rate(&self, seconds: i64, as_of: DateTime<Utc>) -> f64 {
+        if self.last_trade.is_none() {
             return 0.0;
-        };
-        let cutoff = latest - chrono::Duration::seconds(seconds);
-        let count = self
-            .recent_trades
+        }
+        let cutoff = as_of.timestamp() - seconds;
+        let count: u64 = self
+            .recent_trade_counts
             .iter()
-            .filter(|trade| trade.ts >= cutoff)
-            .count();
+            .filter(|(timestamp, _)| **timestamp >= cutoff)
+            .map(|(_, count)| *count)
+            .sum();
         count as f64 / seconds.max(1) as f64
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SymbolState;
-    use crate::event::TradeEvent;
+    use super::{SharedMarketState, SymbolState};
+    use crate::event::{MarketEvent, TradeEvent};
     use chrono::{DateTime, Utc};
     use serde_json::Value;
 
@@ -287,5 +328,45 @@ mod tests {
         assert_eq!(state.day_trade_count, 1);
         assert_eq!(state.day_volume, 7.0);
         assert_eq!(state.last_price, 11.0);
+    }
+
+    #[test]
+    fn trade_rates_use_bounded_per_second_counts_and_decay() {
+        let mut state = SymbolState::new();
+        for offset in 0..120 {
+            let ts = format!("2026-07-14T14:{:02}:{:02}Z", offset / 60, offset % 60);
+            state.apply_trade(trade(&ts, 10.0, 1.0));
+        }
+        state.apply_trade(trade("2026-07-14T14:00:00Z", 9.0, 1.0));
+        assert!(state.recent_trade_counts.len() <= 61);
+        let active = "2026-07-14T14:01:59Z".parse::<DateTime<Utc>>().unwrap();
+        assert!(state.trade_rate(60, active) > 0.0);
+        let stale = "2026-07-14T14:03:00Z".parse::<DateTime<Utc>>().unwrap();
+        assert_eq!(state.trade_rate(60, stale), 0.0);
+    }
+
+    #[tokio::test]
+    async fn scanner_snapshot_and_row_deltas_share_one_sequence() {
+        let state = SharedMarketState::new();
+        let first = state
+            .apply_event(&MarketEvent::Trade(trade(
+                "2026-07-14T14:00:00Z",
+                10.0,
+                5.0,
+            )))
+            .await;
+        let second = state
+            .apply_event(&MarketEvent::Trade(trade(
+                "2026-07-14T14:00:01Z",
+                11.0,
+                7.0,
+            )))
+            .await;
+        let snapshot = state.scanner_snapshot(10).await;
+
+        assert_eq!(first.sequence, 1);
+        assert_eq!(second.sequence, 2);
+        assert_eq!(snapshot.sequence, 2);
+        assert_eq!(snapshot.rows[0].last_price, 11.0);
     }
 }

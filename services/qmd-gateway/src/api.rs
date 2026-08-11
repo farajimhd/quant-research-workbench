@@ -27,7 +27,9 @@ use crate::metrics::{MetricsSnapshot, OperationalSnapshot, SharedMetrics};
 use crate::scanner::{MarketSignalSnapshot, ScannerPrimitiveSnapshot, SharedScannerStore};
 use crate::session::session_phase;
 use crate::signal_catalog::{signal_taxonomy_catalog, SignalTaxonomyEntry};
-use crate::state::{ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot};
+use crate::state::{
+    ScannerRowDelta, ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot,
+};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -61,6 +63,7 @@ pub struct AppState {
     pub metrics: SharedMetrics,
     pub intraday_bars: broadcast::Sender<IntradayBarRow>,
     pub scanner: SharedScannerStore,
+    pub scanner_deltas: broadcast::Sender<ScannerRowDelta>,
     pub scanner_events: broadcast::Sender<MarketSignalEvent>,
     pub shutdown: watch::Sender<bool>,
     pub trade_aggregation_rules: TradeAggregationRules,
@@ -1343,25 +1346,51 @@ async fn stream_events(mut socket: WebSocket, state: Arc<AppState>) {
 }
 
 async fn stream_scanner(mut socket: WebSocket, state: Arc<AppState>) {
-    let mut timer = interval(Duration::from_millis(state.config.scanner_broadcast_ms));
+    let mut receiver = state.scanner_deltas.subscribe();
+    let snapshot = state.market.scanner_snapshot(250).await;
+    let snapshot_sequence = snapshot.sequence;
+    match serde_json::to_string(&json!({"kind": "snapshot", "snapshot": snapshot})) {
+        Ok(text) => {
+            if socket.send(Message::Text(text.into())).await.is_err() {
+                return;
+            }
+        }
+        Err(error) => {
+            let _ = socket
+                .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
+                .await;
+            return;
+        }
+    }
     loop {
-        timer.tick().await;
-        let snapshot = state.market.scanner_snapshot(250).await;
-        match serde_json::to_string(&snapshot) {
-            Ok(text) => {
-                if socket.send(Message::Text(text.into())).await.is_err() {
+        match receiver.recv().await {
+            Ok(delta) if delta.sequence <= snapshot_sequence => continue,
+            Ok(delta) => match serde_json::to_string(&json!({"kind": "row_delta", "delta": delta}))
+            {
+                Ok(text) => {
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    if socket
+                        .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            },
+            Err(broadcast::error::RecvError::Lagged(count)) => {
+                let warning = format!(
+                    r#"{{"warning":"scanner_delta_stream_lagged","skipped":{count},"action":"resnapshot"}}"#
+                );
+                if socket.send(Message::Text(warning.into())).await.is_err() {
                     break;
                 }
             }
-            Err(error) => {
-                if socket
-                    .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
+            Err(broadcast::error::RecvError::Closed) => break,
         }
     }
 }

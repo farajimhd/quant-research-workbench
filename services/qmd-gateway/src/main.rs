@@ -28,7 +28,7 @@ use qmd_core::market_signal::MarketSignalEvent;
 use qmd_core::massive::{run_massive_ingest, MarketEventFanout};
 use qmd_core::metrics::SharedMetrics;
 use qmd_core::scanner::{spawn_scanner_primitive_engine, SharedScannerStore};
-use qmd_core::state::SharedMarketState;
+use qmd_core::state::{ScannerRowDelta, SharedMarketState};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::{error::Error, io};
@@ -170,6 +170,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (compact_event_sender, _compact_event_receiver) =
         broadcast::channel::<LiveCompactEvent>(10_000);
     let (scanner_sender, _scanner_receiver) = broadcast::channel::<MarketSignalEvent>(10_000);
+    let (scanner_delta_sender, _scanner_delta_receiver) =
+        broadcast::channel::<ScannerRowDelta>(10_000);
     let (live_market_state_sender, _live_market_state_receiver) =
         broadcast::channel::<LiveSymbolMarketStateEvent>(10_000);
     let intraday_bar_service = spawn_intraday_bar_service(config.clone(), metrics.clone())
@@ -331,6 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         indicator_router: indicator_router.clone(),
         live_market_state_router: live_market_state_router.clone(),
         event_sender: event_sender.clone(),
+        scanner_delta_sender: scanner_delta_sender.clone(),
         metrics: metrics.clone(),
     };
 
@@ -353,6 +356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         products,
         intraday_bars: intraday_bar_service.rows.clone(),
         scanner,
+        scanner_deltas: scanner_delta_sender,
         scanner_events: scanner_sender,
         shutdown: shutdown_sender,
         trade_aggregation_rules,

@@ -4,7 +4,7 @@ use crate::event::{massive_status_message, parse_massive_payload, MarketEvent};
 use crate::indicators::IndicatorEventRouter;
 use crate::live_market_state::LiveMarketStateRouter;
 use crate::metrics::SharedMetrics;
-use crate::state::SharedMarketState;
+use crate::state::{ScannerRowDelta, SharedMarketState};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc};
@@ -20,6 +20,7 @@ pub struct MarketEventFanout {
     pub indicator_router: IndicatorEventRouter,
     pub live_market_state_router: LiveMarketStateRouter,
     pub event_sender: broadcast::Sender<MarketEvent>,
+    pub scanner_delta_sender: broadcast::Sender<ScannerRowDelta>,
     pub metrics: SharedMetrics,
 }
 
@@ -131,7 +132,10 @@ pub async fn fanout_market_event(event: MarketEvent, fanout: &MarketEventFanout)
         MarketEvent::Quote(_) => "quote",
     };
     fanout.metrics.observe_event(kind, event.ts());
-    fanout.state.apply_event(&event).await;
+    let scanner_delta = fanout.state.apply_event(&event).await;
+    if fanout.scanner_delta_sender.send(scanner_delta).is_err() {
+        fanout.metrics.inc_event_broadcast_dropped();
+    }
     if fanout
         .live_market_state_router
         .send_event(event.clone())
