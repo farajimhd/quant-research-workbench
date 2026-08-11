@@ -304,6 +304,7 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertEqual(params["as_of"], "2026-07-10T13:45:00+00:00")
         self.assertEqual(params["before"], "2026-07-10T13:44:00+00:00")
         self.assertEqual(params["indicator_columns"], "bar_start,ema_20")
+        self.assertEqual(params["stage"], "full")
         self.assertEqual(result["next_before"], "2026-07-10T13:44:00+00:00")
         self.assertTrue(result["has_more_in_session"])
         self.assertEqual(len(result["indicators"]), 1)
@@ -313,6 +314,30 @@ class HistoricalContractTests(unittest.TestCase):
         )
         self.assertEqual(result["structure_level_history"][0]["price"], 314.75)
         self.assertEqual(result["market_signal_events"][0]["signal_id"], "signal-1")
+
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_chart_bar_stage_is_forwarded_without_indicator_projection(self, gateway_get) -> None:
+        gateway_get.return_value = {
+            "bars": [{"bar_start": "2026-07-10T13:44:00+00:00", "close": 315.0}],
+            "has_more": False,
+            "indicators": [],
+            "indicators_available": False,
+        }
+
+        result = historical_bar_history_before(
+            before=date(2026, 7, 11),
+            session_date=date(2026, 7, 10),
+            as_of="2026-07-10T13:45:00+00:00",
+            ticker="AAPL",
+            timeframe="1m",
+            stage="bars",
+        )
+
+        _, params = gateway_get.call_args_list[0].args[:2]
+        self.assertEqual(params["stage"], "bars")
+        self.assertIsNone(params["indicator_columns"])
+        self.assertEqual(result["stage"], "bars")
+        self.assertEqual(len(result["history"]), 1)
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_chart_history_orders_fractional_rfc3339_timestamps_chronologically(self, gateway_get) -> None:

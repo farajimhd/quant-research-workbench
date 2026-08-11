@@ -4926,6 +4926,7 @@ def trading_canvas_live_chart_history(
     as_of: str | None = None,
     before_bar: str | None = None,
     indicator_columns: str | None = None,
+    stage: str = Query(default="full", pattern="^(bars|full)$"),
     days: int = Query(default=1, ge=1, le=1),
     row_limit: int = Query(default=20_000, ge=1, le=50_000),
 ) -> dict[str, Any]:
@@ -4953,6 +4954,7 @@ def trading_canvas_live_chart_history(
             as_of=as_of,
             before_bar=before_bar,
             indicator_columns=projected_columns,
+            stage=stage,
             row_limit=row_limit,
         )
     except Exception as exc:
@@ -4968,6 +4970,7 @@ def _canvas_live_chart_history(
     as_of: str | None,
     before_bar: str | None,
     indicator_columns: list[str] | None,
+    stage: str,
     row_limit: int,
 ) -> dict[str, Any]:
     before_date = date.fromisoformat(before) if before else datetime.now(ZoneInfo(EXCHANGE_TIME_ZONE)).date()
@@ -4980,6 +4983,7 @@ def _canvas_live_chart_history(
         as_of=as_of,
         before_bar=before_bar,
         indicator_columns=indicator_columns,
+        stage=stage,
     )
 
 

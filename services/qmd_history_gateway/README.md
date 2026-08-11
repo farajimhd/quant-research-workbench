@@ -138,8 +138,11 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
   uses this bounded pull contract so pausing does not leave a push stream
   saturated or require buffering an unbounded remainder of the session.
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
-- `GET /snapshot/chart-bars/{ticker}?start=...&end=...&timeframe=100ms|1s|5s|10s|30s|1m|5m|1h&limit=...`
-  (bounded chronological chart bars and indicators, canonical
+- `GET /snapshot/chart-bars/{ticker}?start=...&end=...&timeframe=100ms|1s|5s|10s|30s|1m|5m|1h&limit=...&stage=bars|full`
+  (`stage=bars` releases bounded chronological price bars after the complete
+  source window is consumed, while the same single-flight cache entry continues
+  its indicator build; the backward-compatible default `stage=full` also returns
+  indicators, canonical
   `market_signal_events`, structure events, and the newest 4,000 distinct
   causal, latest-session `structure_level_history` entries needed to
   reconstruct encountered-level volume profiles without projecting historical

@@ -74,6 +74,7 @@ struct ChartQuery {
     indicator_columns: Option<String>,
     limit: Option<usize>,
     start: String,
+    stage: Option<String>,
     timeframe: Option<String>,
 }
 
@@ -403,6 +404,7 @@ async fn chart_bar_snapshot(
     let (window, as_of) = causal_product_window(&product_query, &ticker)?;
     let before = query.before.as_deref().map(parse_timestamp).transpose()?;
     let indicator_columns = parse_indicator_projection(query.indicator_columns.as_deref())?;
+    let bars_only = parse_chart_stage(query.stage.as_deref())?;
     let snapshot = state
         .cache
         .chart_snapshot(
@@ -412,10 +414,21 @@ async fn chart_bar_snapshot(
             product_query.limit.unwrap_or(5_000).clamp(1, 50_000),
             as_of,
             before,
+            bars_only,
         )
         .await
         .map_err(service_error)?;
     project_chart_snapshot(snapshot, indicator_columns.as_ref()).map(Json)
+}
+
+fn parse_chart_stage(raw: Option<&str>) -> Result<bool, ApiError> {
+    match raw.unwrap_or("full") {
+        "bars" => Ok(true),
+        "full" => Ok(false),
+        value => Err(bad_request(format!(
+            "invalid chart stage {value}; expected bars or full"
+        ))),
+    }
 }
 
 fn parse_indicator_projection(raw: Option<&str>) -> Result<Option<BTreeSet<String>>, ApiError> {
@@ -1135,8 +1148,8 @@ fn service_error(message: String) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        causal_product_window, parse_indicator_projection, parse_timestamp, product_resolution,
-        validate_timeframe, ProductQuery,
+        causal_product_window, parse_chart_stage, parse_indicator_projection, parse_timestamp,
+        product_resolution, validate_timeframe, ProductQuery,
     };
 
     #[test]
@@ -1190,5 +1203,13 @@ mod tests {
         assert!(columns.contains("bar_start"));
         assert!(columns.contains("ema_20"));
         assert!(parse_indicator_projection(Some("ema-20")).is_err());
+    }
+
+    #[test]
+    fn chart_stage_defaults_to_full_and_rejects_unknown_values() {
+        assert!(!parse_chart_stage(None).unwrap());
+        assert!(parse_chart_stage(Some("bars")).unwrap());
+        assert!(!parse_chart_stage(Some("full")).unwrap());
+        assert!(parse_chart_stage(Some("indicators")).is_err());
     }
 }

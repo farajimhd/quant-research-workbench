@@ -856,9 +856,12 @@ def historical_bar_history_before(
     as_of: str | None = None,
     before_bar: str | None = None,
     indicator_columns: list[str] | None = None,
+    stage: str = "full",
 ) -> dict[str, Any]:
     resolved_ticker = _historical_ticker(ticker)
     resolved_timeframe = _historical_timeframe(timeframe)
+    if stage not in {"bars", "full"}:
+        raise ValueError("chart stage must be bars or full")
     if resolved_timeframe in MACRO_CHART_TIMEFRAMES:
         return historical_macro_bar_history(
             ticker=resolved_ticker,
@@ -886,6 +889,7 @@ def historical_bar_history_before(
             "earliest_session_date": "",
             "has_more": False,
             "source": "qmd_history_gateway",
+            "stage": stage,
         }
     resolved_session_date = date.fromisoformat(session_date_text)
     window = historical_window_preview(
@@ -927,6 +931,7 @@ def historical_bar_history_before(
             "previous_session_before": previous_session_before,
             "as_of": resolved_as_of.isoformat(),
             "source": "qmd_history_gateway",
+            "stage": stage,
         }
     snapshot = _historical_gateway_get(
         f"/snapshot/chart-bars/{urllib.parse.quote(resolved_ticker)}",
@@ -936,6 +941,7 @@ def historical_bar_history_before(
             "as_of": resolved_as_of.isoformat(),
             "before": before_bar,
             "indicator_columns": ",".join(dict.fromkeys(indicator_columns)) if indicator_columns else None,
+            "stage": stage,
             "timeframe": resolved_timeframe,
             "limit": max(1, min(row_limit, 50_000)),
         },
@@ -974,6 +980,7 @@ def historical_bar_history_before(
         "previous_session_before": previous_session_before,
         "as_of": resolved_as_of.isoformat(),
         "source": "qmd_history_gateway",
+        "stage": stage,
     }
 
 

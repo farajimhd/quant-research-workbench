@@ -213,6 +213,7 @@ struct CacheIndex {
 
 #[derive(Default)]
 struct EntryState {
+    bars_ready: bool,
     complete: bool,
     error: Option<String>,
     events_processed: u64,
@@ -402,6 +403,7 @@ impl HistoricalDerivedCache {
         limit: usize,
         as_of: DateTime<Utc>,
         before: Option<DateTime<Utc>>,
+        bars_only: bool,
     ) -> Result<ChartSnapshot, String> {
         let resolution_us = parse_resolution_us(&timeframe)
             .ok_or_else(|| format!("unsupported chart timeframe {timeframe}"))?;
@@ -411,7 +413,11 @@ impl HistoricalDerivedCache {
             CacheProfile::Products
         };
         let lease = self.acquire(window, ticker.clone(), profile).await?;
-        let event_count = lease.entry.wait_ready().await?;
+        let event_count = if bars_only && qmd_core::bars::is_supported_timeframe(&timeframe) {
+            lease.entry.wait_bars_ready().await?
+        } else {
+            lease.entry.wait_ready().await?
+        };
         let cache = CacheEvidence {
             engine_version: HISTORICAL_ENGINE_VERSION,
             event_count,
@@ -421,6 +427,41 @@ impl HistoricalDerivedCache {
 
         if qmd_core::bars::is_supported_timeframe(&timeframe) {
             let state = lease.entry.state.lock().await;
+            if bars_only {
+                let mut selected = state
+                    .bars
+                    .iter()
+                    .rev()
+                    .filter(|update| {
+                        update.bar.timeframe.eq_ignore_ascii_case(&timeframe)
+                            && update.bar.bar_end <= as_of
+                            && before.is_none_or(|bound| update.bar.bar_start < bound)
+                    })
+                    .take(limit.saturating_add(1))
+                    .collect::<Vec<_>>();
+                let has_more = selected.len() > limit;
+                selected.truncate(limit);
+                selected.reverse();
+                let bars = selected
+                    .iter()
+                    .map(|update| ChartBarRow::from_bar(&update.bar))
+                    .collect::<Vec<_>>();
+                let next_before = has_more.then(|| bars[0].bar_start);
+                return Ok(ChartSnapshot {
+                    as_of,
+                    bars,
+                    cache,
+                    has_more,
+                    indicators: Vec::new(),
+                    indicators_available: false,
+                    market_signal_events: Vec::new(),
+                    next_before,
+                    structure_events: Vec::new(),
+                    structure_level_history: Vec::new(),
+                    ticker,
+                    timeframe,
+                });
+            }
             let mut selected = state
                 .frames
                 .iter()
@@ -901,6 +942,12 @@ impl HistoricalDerivedCache {
             final_indicator_bars.push((sequence, bar));
         }
         if let Some(sender) = indicator_sender.take() {
+            {
+                let mut state = entry.state.lock().await;
+                state.bars_ready = true;
+                state.events_processed = events_processed;
+            }
+            entry.notify.notify_waiters();
             sender
                 .send(IndicatorWork::Finalize {
                     bars: final_indicator_bars,
@@ -1309,6 +1356,25 @@ impl CacheEntry {
         Ok((state.frames.clone(), events_processed))
     }
 
+    async fn wait_bars_ready(&self) -> Result<u64, String> {
+        loop {
+            let notified = self.notify.notified();
+            {
+                let state = self.state.lock().await;
+                if state.bars_ready {
+                    return Ok(state.events_processed);
+                }
+                if state.complete {
+                    if let Some(error) = &state.error {
+                        return Err(error.clone());
+                    }
+                    return Ok(state.events_processed);
+                }
+            }
+            notified.await;
+        }
+    }
+
     async fn wait_ready(&self) -> Result<u64, String> {
         loop {
             let notified = self.notify.notified();
@@ -1646,6 +1712,43 @@ mod tests {
         assert_eq!(allocated.load(Ordering::Acquire), 900);
         drop(entry);
         assert_eq!(allocated.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn chart_bar_waiter_releases_before_indicator_completion() {
+        let allocated = Arc::new(AtomicU64::new(0));
+        let (updates, _) = broadcast::channel(16);
+        let (bar_updates, _) = broadcast::channel(16);
+        let entry = Arc::new(CacheEntry {
+            allocated_bytes: allocated,
+            complete: AtomicBool::new(false),
+            frame_bytes: AtomicU64::new(0),
+            global_max_bytes: 100_000,
+            notify: Notify::new(),
+            state: Mutex::new(EntryState::default()),
+            bar_updates,
+            updates,
+            estimated_bytes: AtomicU64::new(0),
+            max_update_bytes: 100_000,
+            max_updates: 100,
+            product_bytes: AtomicU64::new(0),
+        });
+        let waiter = {
+            let entry = entry.clone();
+            tokio::spawn(async move { entry.wait_bars_ready().await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        {
+            let mut state = entry.state.lock().await;
+            state.bars_ready = true;
+            state.events_processed = 42;
+        }
+        entry.notify.notify_waiters();
+
+        assert_eq!(waiter.await.unwrap().unwrap(), 42);
+        assert!(!entry.complete.load(Ordering::Acquire));
     }
 
     #[tokio::test]
