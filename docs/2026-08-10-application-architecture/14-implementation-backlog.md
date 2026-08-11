@@ -549,6 +549,11 @@ load progressively without false continuity.
             independently verifies schema, clocks, source contracts, resource
             bounds, transition/state-carry semantics, and the exact Python/Rust
             canonical content hash before any market-event replay begins.
+      - [x] Implement the bounded Rust predicate/rank reducer: exact cadence
+            clocks, fail-closed missing evidence, inclusion/exclusion and score
+            rules, deterministic rank/limit/overrides, add/remove/rank-change
+            deltas, and content-bound state carry between chunks. Event-derived
+            candidate-frame production and endpoint materialization remain open.
   - [x] Build canonical Backtest performance, Portfolio, position, order,
         execution, and closed-trade result projections.
   - [x] Add strategy/run attribution and comparative analysis projections.

@@ -1061,6 +1061,21 @@ bounded direct ClickHouse paths remain documented in
      microstructure, and signal state until terminal finalization. A regression
      test interleaves AAPL, MSFT, then AAPL and proves both symbol projections
      survive. All 33 QMD History tests passed.
+126. Implemented the bounded transition reducer for historical Watchlists.
+     QMD History now independently validates the exact compiled rule graph and
+     source union, including unique referenced rules/conditions, comparators,
+     score thresholds, right-hand dependencies, ranking input, expiry,
+     overrides, and a two-million membership-slot chunk budget. Its reducer
+     accepts exact cadence frames, fails closed on undeclared evidence, applies
+     inclusion/exclusion/manual-override semantics, ranks deterministically,
+     emits only add/remove/rank-change events, and carries a plan-bound state
+     cursor into the next fixed chunk. A two-chunk test proves causal additions,
+     reranking, removal, and continuation. All 35 QMD History tests passed.
+
+     This is the internal product reducer, not yet the completed public
+     materialization path: the single-pass event replay must still feed these
+     frames, merge certified external-feature intervals, persist revisioned
+     output, and replace Backtest's session-boundary fallback.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
