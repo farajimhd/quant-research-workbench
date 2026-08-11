@@ -278,6 +278,9 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Move bounded backend reads of published News Synthesis and scoped SEC
         labels into `intelligence.published_consumer.v1` without changing the
         deferred Text Intelligence engines, schemas, or publication behavior.
+  - [x] Move canonical News detail, exact rendered-revision, and ticker-link
+        reads into `news.detail_asof.v1`; retain validation and presentation in
+        the route without changing News Gateway tables or publication.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -303,6 +306,8 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Remove published News Synthesis and scoped-label SQL from their backend
         presentation loaders; keep payload mapping and optional degradation in
         the consumers.
+  - [x] Remove five identity-scoped News detail queries from `app.py`; the
+        route now composes registered builders and user-facing fields only.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [x] Consume deferred producer services through unchanged bounded contracts.

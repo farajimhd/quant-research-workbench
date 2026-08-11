@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from research.text_intelligence.news_synthesis_v1.engine import ENGINE_VERSION
 from research.text_intelligence.news_synthesis_v1.storage import (
+    LIVE_SEMANTIC_TABLE,
     SYNTHESIS_TABLE,
 )
 from src.backend.query_plans.text_intelligence_consumer_v1 import (

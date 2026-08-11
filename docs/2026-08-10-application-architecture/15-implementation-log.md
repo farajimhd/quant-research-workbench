@@ -1343,6 +1343,23 @@ bounded direct ClickHouse paths remain documented in
      cross the deferred producer/research boundary. Nineteen focused registry,
      query-plan, News presentation, scoped-label, and SEC Canvas tests passed,
      and every changed Python module compiled with bytecode writes disabled.
+141. Moved the five canonical News detail reads out of the backend route and
+     into registered `news.detail_asof.v1` builders. Service detail binds the
+     canonical News ID to the exact event, rendered-text revision, and ticker
+     link. Trading detail first resolves the event identity, then uses its
+     published date, provider article ID, and source-revision key for bounded
+     rendered-text and ticker reads. Empty or incomplete identities fail
+     closed. The route still owns ISO timestamp validation, query-session
+     hints, optional Synthesis enrichment, transport error mapping, and the
+     public presentation contract; News Gateway and Text Intelligence code and
+     publications were not changed.
+
+     The wider route test also caught and corrected a compatibility regression
+     from entry 140: `app.py` still imports `LIVE_SEMANTIC_TABLE` through the
+     News presentation module, so that re-export is retained until its callers
+     migrate. Thirty-one focused query-plan, route, application-registry, News
+     presentation, and scoped-label tests passed, and all changed Python
+     modules compiled with bytecode writes disabled.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -142,6 +142,13 @@ from src.backend.query_plans.market_schema_inventory_v1 import (
     configured_table_preview,
     configured_table_stats,
 )
+from src.backend.query_plans.news_detail_asof_v1 import (
+    rendered_article as news_rendered_article_query,
+    service_article as service_news_article_query,
+    service_tickers as service_news_tickers_query,
+    trading_article as trading_news_article_query,
+    trading_tickers as trading_news_tickers_query,
+)
 from src.backend.real_live_trading_service import (
     apply_tradable_filter_to_scanner_payload,
     configured_real_live_accounts,
@@ -1648,47 +1655,11 @@ def news_detail_source(canonical_news_id: str) -> tuple[str, str, str, str, dict
     normalized_table = "benzinga_news_event_v2"
     rendered_table = "benzinga_news_rendered_v2"
     ticker_table = "benzinga_news_ticker_v2"
-    news_id_sql = sql_string(news_id)
-    row_query = f"""
-        SELECT
-            n.* EXCEPT(published_at_utc, downloaded_at_utc, last_updated_at_utc, updated_at_utc),
-            ifNull(r.rendered_text, '') AS normalized_full_text,
-            ifNull(r.rendered_text_hash, '') AS text_hash,
-            ifNull(r.source_count, 0) AS source_count,
-            ifNull(r.block_count, 0) AS block_count,
-            formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
-            formatDateTime(n.downloaded_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS downloaded_at_utc,
-            if(
-                isNull(n.last_updated_at_utc),
-                NULL,
-                formatDateTime(assumeNotNull(n.last_updated_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC')
-            ) AS last_updated_at_utc,
-            formatDateTime(n.updated_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS updated_at_utc
-        FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-        LEFT JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
-            ON r.published_date=n.published_date
-            AND r.provider_article_id=n.provider_article_id
-            AND r.source_revision_key=n.source_revision_key
-        WHERE n.canonical_news_id = {news_id_sql}
-        LIMIT 1
-        FORMAT JSONEachRow
-    """
+    row_query = service_news_article_query(news_id)
     rows = [json.loads(line) for line in clickhouse_status_query(row_query).splitlines() if line.strip()]
     if not rows:
         raise HTTPException(status_code=404, detail="News row not found")
-    ticker_query = f"""
-        SELECT
-            t.canonical_news_id, t.provider_article_id, t.ticker, t.ticker_index, t.ticker_count,
-            formatDateTime(t.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc
-        FROM {quote_ident(database)}.{quote_ident(ticker_table)} AS t FINAL
-        INNER JOIN {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-            ON n.published_date=t.published_date
-            AND n.provider_article_id=t.provider_article_id
-            AND n.source_revision_key=t.source_revision_key
-        WHERE t.canonical_news_id = {news_id_sql}
-        ORDER BY t.ticker ASC
-        FORMAT JSONEachRow
-    """
+    ticker_query = service_news_tickers_query(news_id)
     ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query).splitlines() if line.strip()]
     return news_id, database, normalized_table, ticker_table, rows[0], ticker_rows
 
@@ -1709,56 +1680,31 @@ def trading_news_detail(canonical_news_id: str, *, published_at: str = "", query
     news_id = canonical_news_id.strip()
     if not news_id:
         raise HTTPException(status_code=400, detail="canonical_news_id is required")
-    news_id_sql = sql_string(news_id)
     hint = TEXT_QUERY_SESSIONS.hint(query_id, "news", news_id)
     published_hint = published_at.strip() or hint.get("published_at_utc", "")
-    date_prewhere = ""
+    published_date = ""
     if published_hint:
         try:
             published_date = datetime.fromisoformat(published_hint.replace("Z", "+00:00")).date().isoformat()
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="published_at must be an ISO-8601 timestamp") from exc
-        date_prewhere = f"PREWHERE n.published_date = toDate({sql_string(published_date)})"
-    row_query = f"""
-        SELECT
-            n.published_date, n.provider_article_id, n.source_revision_key,
-            n.title, n.article_url, n.url_domain, n.author, n.channels, n.provider_tags, n.links,
-            formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc
-        FROM q_live.benzinga_news_event_v2 AS n FINAL
-        {date_prewhere}
-        WHERE n.canonical_news_id = {news_id_sql}
-        LIMIT 1
-        FORMAT JSONEachRow
-    """
+    row_query = trading_news_article_query(news_id, published_date=published_date)
     rows = [json.loads(line) for line in clickhouse_status_query(row_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
     if not rows:
         raise HTTPException(status_code=404, detail="News row not found")
     source_row = rows[0]
     source_date = str(source_row.get("published_date") or "")
-    render_query = f"""
-        SELECT rendered_text AS text,
-               if(source_count = 0, 'title_only', 'rendered') AS render_status
-        FROM q_live.benzinga_news_rendered_v2 FINAL
-        PREWHERE published_date = toDate({sql_string(source_date)})
-        WHERE provider_article_id = {sql_string(str(source_row.get('provider_article_id') or ''))}
-          AND source_revision_key = {sql_string(str(source_row.get('source_revision_key') or ''))}
-        LIMIT 1
-        FORMAT JSONEachRow
-    """
+    render_query = news_rendered_article_query(
+        published_date=source_date,
+        provider_article_id=str(source_row.get("provider_article_id") or ""),
+        source_revision_key=str(source_row.get("source_revision_key") or ""),
+    )
     rendered_rows = [json.loads(line) for line in clickhouse_status_query(render_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
     if rendered_rows:
         source_row.update(rendered_rows[0])
     else:
         source_row.update({"render_status": "unrendered", "text": ""})
-    ticker_prewhere = f"PREWHERE t.published_date = toDate({sql_string(source_date)})" if source_date else ""
-    ticker_query = f"""
-        SELECT ticker
-        FROM q_live.benzinga_news_ticker_v2 AS t FINAL
-        {ticker_prewhere}
-        WHERE t.canonical_news_id = {news_id_sql}
-        ORDER BY t.ticker ASC
-        FORMAT JSONEachRow
-    """
+    ticker_query = trading_news_tickers_query(news_id, published_date=source_date)
     ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
     try:
         synthesis_by_source = load_news_synthesis(
