@@ -705,14 +705,14 @@ Its JSON report is
 written beneath the pilot root's `manifest/audits` directory. The pilot root is
 never used by the default training or production-build launchers.
 Use `--force-rebuild` only when replacing pilot shards after a contract change.
-The 2026 audit requires every origin to expose complete 90/52/12
+The 2026 audit requires every origin to expose complete 90/52/24
 daily/weekly/monthly calendar context; an incomplete calendar prefix fails the
 pilot.
 
 The offline compiler fails closed before writing a shard when any origin lacks
 the configured 720/360/360/240/240/96/16/8 intraday histories. Calendar rows
 are stored from the history actually available at the 2019 authority boundary,
-but the model-facing as-of index remains `-1` until the complete 90/52/12
+but the model-facing as-of index remains `-1` until the complete 90/52/24
 daily/weekly/monthly context exists. The audit rejects any partially populated
 calendar view that is accidentally exposed as available.
 

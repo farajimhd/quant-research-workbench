@@ -67,7 +67,7 @@ validation manifests are not compatible or repairable in place.
   `bar_start_us < bar_end_us <= available_at_us`.
 * Each origin is an active one-second bar. Context is the latest configured
   fixed number of nonempty, completed bars: 720/360/360/240/240/96/16/8 for
-  1s through 1h and 90/52/12 for 1D/1W/1MO.
+  1s through 1h and 90/52/24 for 1D/1W/1MO.
 * Timestamp gaps remain explicit. Fixed token counts therefore span variable
   physical time for less-active instruments.
 * The builder derives its warm-up requirement from the configured timeframe

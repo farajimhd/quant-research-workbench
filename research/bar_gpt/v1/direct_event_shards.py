@@ -36,6 +36,7 @@ from research.bar_gpt.v1.loader import (
 )
 from research.bar_gpt.v1.sampling import has_condition_target, session_phase
 from research.bar_gpt.v1.schema import (
+    FEATURE_SPECS,
     FEATURE_NAMES,
     ONE_SECOND_US,
     SESSION_END_SECOND,
@@ -45,12 +46,17 @@ from research.bar_gpt.v1.schema import (
 from research.mlops.clickhouse import quote_ident, sql_string
 
 
-DIRECT_EVENT_SOURCE_VERSION = "bar_gpt_direct_events_trade_sparse_v1"
+DIRECT_EVENT_SOURCE_VERSION = "bar_gpt_direct_events_trade_sparse_v2"
+
+
+def calendar_lookback_days(config: DataConfig) -> int:
+    """Convert the configured trading-day warm-up to a conservative calendar span."""
+    return max(366, math.ceil(int(config.calendar_warmup_daily_bars) * 1.5))
 
 
 def direct_event_preflight(client: object, config: DataConfig, tickers: tuple[str, ...]) -> tuple[dict[str, object], dict[str, int]]:
     """Validate immutable event inputs and obtain non-scanning scheduler weights."""
-    lookback_days = max(730, math.ceil(config.calendar_warmup_daily_bars * 2.2))
+    lookback_days = calendar_lookback_days(config)
     source_start = max(
         config.daily_history_start_date,
         (dt.date.fromisoformat(config.start_date) - dt.timedelta(days=lookback_days)).isoformat(),
@@ -178,8 +184,57 @@ def direct_trade_bar_query(
     start_date: str,
     end_date: str,
     source_intervals: tuple[TickerInterval, ...],
+    group_daily: bool = False,
+    _finalize: bool = True,
 ) -> str:
-    """Build sparse trade-bearing 1s rows directly from compact events."""
+    """Build trade-bearing 1s or daily sufficient-statistic rows from events."""
+    if group_daily:
+        inner = direct_trade_bar_query(
+            config,
+            stream_config,
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            source_intervals=source_intervals,
+            _finalize=False,
+        )
+        rolled: list[str] = []
+        for spec in FEATURE_SPECS:
+            column = quote_ident(spec.name)
+            source_column = f"s.{column}"
+            valid = "1" if spec.validity == "always" else f"s.{quote_ident(spec.validity)} != 0"
+            if spec.reducer == "sum":
+                expression = f"sum({source_column})"
+            elif spec.reducer == "max":
+                expression = f"maxIf({source_column}, {valid})"
+            elif spec.reducer == "min":
+                expression = f"minIf({source_column}, {valid})"
+            elif spec.reducer == "first":
+                expression = f"argMinIf({source_column}, s.bar_start_us, {valid})"
+            elif spec.reducer == "last":
+                expression = f"argMaxIf({source_column}, s.bar_start_us, {valid})"
+            else:
+                raise ValueError(f"unsupported feature reducer: {spec.reducer}")
+            rolled.append(f"{expression} AS {column}")
+        selected_rollup = ",\n    ".join(rolled)
+        return f"""
+SELECT
+    s.local_date,
+    any(s.ticker) AS ticker,
+    min(s.bar_start_us) AS bar_start_us,
+    max(s.bar_end_us) AS bar_end_us,
+    max(s.available_at_us) AS available_at_us,
+    {selected_rollup},
+    toUInt64(count()) AS eligible_trade_second_count
+FROM
+(
+{inner}
+) AS s
+GROUP BY s.local_date
+ORDER BY local_date
+SETTINGS max_threads={max(1, int(stream_config.max_threads))}, max_block_size={max(1, int(stream_config.max_block_size))}, max_memory_usage={max(1, int(stream_config.max_memory_usage))}
+FORMAT ArrowStream
+"""
     predicates: list[str] = []
     for interval in source_intervals:
         left = max(start_date, interval.valid_from)
@@ -237,6 +292,14 @@ def direct_trade_bar_query(
         f"second_start_us + toUInt64({ONE_SECOND_US}) AS available_at_us",
         *aggregates,
     ))
+    final_clause = (
+        f"ORDER BY local_date, bar_start_us\n"
+        f"SETTINGS max_threads={max(1, int(stream_config.max_threads))}, "
+        f"max_block_size={max(1, int(stream_config.max_block_size))}, "
+        f"max_memory_usage={max(1, int(stream_config.max_memory_usage))}, optimize_read_in_order=1\n"
+        "FORMAT ArrowStream"
+        if _finalize else ""
+    )
     return f"""
 WITH
     (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(config.database)}.{quote_ident(config.condition_reference_table)} WHERE source_family='trade_conditions' AND is_join_canonical=1 AND update_last=1) AS update_last_tokens,
@@ -286,9 +349,7 @@ PREWHERE {' OR '.join(predicates)}
 WHERE local_second>={SESSION_START_SECOND} AND local_second<{SESSION_END_SECOND}
 GROUP BY local_date_value, second_start_us
 HAVING eligible_trade_event_count>0
-ORDER BY local_date, bar_start_us
-SETTINGS max_threads={max(1, int(stream_config.max_threads))}, max_block_size={max(1, int(stream_config.max_block_size))}, max_memory_usage={max(1, int(stream_config.max_memory_usage))}, optimize_read_in_order=1
-FORMAT ArrowStream
+{final_clause}
 """
 
 
@@ -391,6 +452,86 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
                 yield from page
                 cursor = right
 
+    def iter_daily_views(
+        self,
+        *,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+        source_intervals: tuple[TickerInterval, ...] = (),
+        device: torch.device | str = "cpu",
+        prefetch_pages: int = 1,
+        page_callback: Callable[[str, str, int, float], None] | None = None,
+    ) -> Iterator[tuple[str, BarView, int]]:
+        """Aggregate calendar warm-up directly to daily rows inside ClickHouse."""
+        def read_page(left: dt.date, right: dt.date) -> list[tuple[str, BarView, int]]:
+            started = time.perf_counter()
+            query = direct_trade_bar_query(
+                self.data_config,
+                self.config,
+                ticker=ticker,
+                start_date=left.isoformat(),
+                end_date=right.isoformat(),
+                source_intervals=source_intervals,
+                group_daily=True,
+            )
+            frames: list[pl.DataFrame] = []
+            with self.record_batches(query) as batches:
+                frames.extend(pl.from_arrow(batch) for batch in batches if batch.num_rows)
+            result: list[tuple[str, BarView, int]] = []
+            if frames:
+                frame = pl.concat(frames, how="vertical")
+                for part in frame.partition_by("local_date", maintain_order=True):
+                    day = str(part["local_date"][0])
+                    view = frame_to_sparse_view(part, device=device)
+                    midnight = dt.datetime.combine(
+                        dt.date.fromisoformat(day), dt.time(), tzinfo=ZoneInfo(SESSION_TIMEZONE)
+                    )
+                    session_start = int(
+                        (midnight + dt.timedelta(seconds=SESSION_START_SECOND)).timestamp() * 1_000_000
+                    )
+                    session_end = int(
+                        (midnight + dt.timedelta(seconds=SESSION_END_SECOND)).timestamp() * 1_000_000
+                    )
+                    view.bar_start_us[:] = session_start
+                    view.bar_end_us[:] = session_end
+                    view.available_at_us[:] = session_end
+                    result.append((day, view, int(part["eligible_trade_second_count"][0])))
+            self._add_timing("direct_daily_page_seconds", time.perf_counter() - started)
+            return result
+
+        start = dt.date.fromisoformat(start_date)
+        end = dt.date.fromisoformat(end_date)
+        pages: deque[tuple[dt.date, dt.date]] = deque()
+        page_start = start
+        while page_start < end:
+            next_month = (page_start.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+            page_end = min(end, next_month)
+            pages.append((page_start, page_end))
+            page_start = page_end
+        depth = max(1, int(prefetch_pages))
+        with ThreadPoolExecutor(max_workers=depth, thread_name_prefix="bar-gpt-direct-daily") as executor:
+            pending: deque[
+                tuple[dt.date, dt.date, float, Future[list[tuple[str, BarView, int]]]]
+            ] = deque()
+            while pages and len(pending) < depth:
+                left, right = pages.popleft()
+                pending.append((left, right, time.perf_counter(), executor.submit(read_page, left, right)))
+            while pending:
+                left, right, started, future = pending.popleft()
+                page = future.result()
+                if page_callback is not None:
+                    page_callback(left.isoformat(), right.isoformat(), len(page), time.perf_counter() - started)
+                if pages:
+                    next_left, next_right = pages.popleft()
+                    pending.append((
+                        next_left,
+                        next_right,
+                        time.perf_counter(),
+                        executor.submit(read_page, next_left, next_right),
+                    ))
+                yield from page
+
 
 class DirectEventShardDataset(BarGPTIterableDataset):
     """Single-pass event-to-shard dataset with ticker-owned rolling state."""
@@ -415,7 +556,7 @@ class DirectEventShardDataset(BarGPTIterableDataset):
         tickers = tuple(sorted({unit.ticker for _index, unit in units}))
         first_start = min(unit.start_date for _index, unit in units)
         final_end = max(unit.end_date for _index, unit in units)
-        lookback_days = max(730, math.ceil(self.data_config.calendar_warmup_daily_bars * 2.2))
+        lookback_days = calendar_lookback_days(self.data_config)
         metadata_start = max(
             self.data_config.daily_history_start_date,
             (dt.date.fromisoformat(first_start) - dt.timedelta(days=lookback_days)).isoformat(),
@@ -459,19 +600,48 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                     self.data_config.daily_history_start_date,
                     (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=lookback_days)).isoformat(),
                 )
+                eligible_seconds_by_day: list[tuple[str, int]] = []
+                for day, daily_view, eligible_seconds in client.iter_daily_views(
+                    ticker=unit.ticker,
+                    start_date=warmup_start,
+                    end_date=unit.start_date,
+                    source_intervals=intervals[unit.ticker],
+                    prefetch_pages=self.data_config.clickhouse_prefetch_pages,
+                    page_callback=lambda left, right, sessions, seconds: self._page_progress(
+                        "calendar warmup", left, right, sessions, seconds
+                    ),
+                ):
+                    eligible_seconds_by_day.append((day, eligible_seconds))
+                    if day not in excluded_daily:
+                        daily = append_daily(
+                            daily,
+                            ([day], daily_view),
+                            max_rows=int(self.data_config.calendar_warmup_daily_bars) + 32,
+                        )
+                required_intraday = max(
+                    int(self.data_config.intraday_warmup_bars_1s),
+                    int(self.data_config.context_bars_1s),
+                )
+                accumulated = 0
+                intraday_warmup_start = warmup_start
+                for day, eligible_seconds in reversed(eligible_seconds_by_day):
+                    accumulated += int(eligible_seconds)
+                    intraday_warmup_start = day
+                    if accumulated >= required_intraday:
+                        break
+                if accumulated < required_intraday:
+                    raise RuntimeError(
+                        f"{unit.ticker}: only {accumulated:,} eligible trade seconds are available before "
+                        f"{unit.start_date}; {required_intraday:,} are required for intraday warm-up"
+                    )
                 for day, session in client.iter_session_views(
-                    ticker=unit.ticker, start_date=warmup_start, end_date=unit.start_date,
+                    ticker=unit.ticker, start_date=intraday_warmup_start, end_date=unit.start_date,
                     source_intervals=intervals[unit.ticker], prefetch_pages=self.data_config.clickhouse_prefetch_pages,
                     page_callback=lambda left, right, sessions, seconds: self._page_progress(
-                        "warmup", left, right, sessions, seconds
+                        "intraday warmup", left, right, sessions, seconds
                     ),
                 ):
                     history.append(session, materialize=False)
-                    if day not in excluded_daily:
-                        daily = append_daily(
-                            daily, daily_bar_from_session(day, session),
-                            max_rows=int(self.data_config.calendar_warmup_daily_bars) + 32,
-                        )
                 loaded_through = unit.start_date
             fetch_start = loaded_through
             emitted = emitted_by_unit.get(f"{unit.ticker}:{unit.start_date[:7]}", 0)

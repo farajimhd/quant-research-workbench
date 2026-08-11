@@ -4,7 +4,7 @@ import unittest
 
 from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS
 from research.bar_gpt.v1.config import DataConfig
-from research.bar_gpt.v1.direct_event_shards import direct_trade_bar_query
+from research.bar_gpt.v1.direct_event_shards import calendar_lookback_days, direct_trade_bar_query
 from research.bar_gpt.v1.loader import ClickHouseBarStreamConfig, TickerInterval
 from research.bar_gpt.v1.run_build_offline_dataset import commands as full_commands
 from research.bar_gpt.v1.run_build_offline_dataset import parse_args as parse_full_args
@@ -35,6 +35,19 @@ class DirectEventShardContractTest(unittest.TestCase):
         self.assertNotIn("bar_gpt_trade_correction_overlay", sql)
         self.assertIn("FORMAT ArrowStream", sql)
 
+        daily_sql = direct_trade_bar_query(
+            config,
+            ClickHouseBarStreamConfig(url="http://localhost:8123", user="default", password=""),
+            ticker="AAPL",
+            start_date="2026-01-02",
+            end_date="2026-02-01",
+            source_intervals=(TickerInterval("AAPL", "AAPL", "2019-01-01", "9999-12-31"),),
+            group_daily=True,
+        )
+        self.assertIn("GROUP BY local_date_value, second_start_us", daily_sql)
+        self.assertIn("GROUP BY s.local_date\n", daily_sql)
+        self.assertIn("toUInt64(count()) AS eligible_trade_second_count", daily_sql)
+
     def test_pilot_builds_then_runs_complete_direct_source_audit(self) -> None:
         stages = dict(pilot_commands(parse_pilot_args(["--execute", "--workers", "32"])))
         build = stages["direct event-to-shard pilot"]
@@ -45,6 +58,11 @@ class DirectEventShardContractTest(unittest.TestCase):
         self.assertIn("--verify-sha256", audit)
         self.assertIn("--require-calendar-context", audit)
         self.assertIn("--verify-direct-source", audit)
+        self.assertEqual(build[build.index("--clickhouse-prefetch-pages") + 1], "16")
+        self.assertEqual(build[build.index("--clickhouse-max-concurrent-pages") + 1], "32")
+
+    def test_calendar_lookback_is_derived_from_configured_daily_warmup(self) -> None:
+        self.assertEqual(calendar_lookback_days(DataConfig(calendar_warmup_daily_bars=500)), 750)
 
     def test_full_launcher_uses_32_workers_and_resolvable_cohort(self) -> None:
         stages = full_commands(parse_full_args(["--workers", "32"]))

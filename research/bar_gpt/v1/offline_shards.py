@@ -2056,10 +2056,11 @@ def _run_main(args: argparse.Namespace, run_log: BuildRunLog | None) -> int:
             interrupted = True
             stop.set()
             reporter.state = "interrupted"
-            reporter.message("Interrupt received; finishing atomic writes and stopping workers")
+            reporter.message("Interrupt received; allowing 5s for atomic writes, then terminating workers")
         finally:
+            graceful_deadline = time.monotonic() + (5.0 if interrupted else 30.0)
             for process in active_processes.values():
-                process.join(timeout=30)
+                process.join(timeout=max(0.0, graceful_deadline - time.monotonic()))
             for worker, process in active_processes.items():
                 if process.is_alive():
                     process.terminate()
