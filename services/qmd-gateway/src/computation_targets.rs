@@ -14,6 +14,10 @@ pub struct ComputationTargetRequest {
     #[serde(default)]
     pub timeframes: Vec<String>,
     pub ttl_seconds: Option<u64>,
+    #[serde(default)]
+    pub correlation_id: String,
+    #[serde(default)]
+    pub causation_id: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -26,10 +30,13 @@ pub struct ComputationTargetLease {
     pub timeframes: Vec<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    pub correlation_id: String,
+    pub causation_id: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ComputationTargetSnapshot {
+    pub schema_version: u16,
     pub as_of: DateTime<Utc>,
     pub active_target_count: usize,
     pub active_symbol_count: usize,
@@ -110,6 +117,8 @@ impl SharedComputationTargets {
             timeframes,
             expires_at,
             updated_at: now,
+            correlation_id: lineage_identity(&request.correlation_id, "lease", &target_id),
+            causation_id: lineage_identity(&request.causation_id, "target", &target_id),
         };
         let mut state = self
             .inner
@@ -222,6 +231,7 @@ impl SharedComputationTargets {
             .copied()
             .fold(0_u64, u64::saturating_add);
         ComputationTargetSnapshot {
+            schema_version: 2,
             as_of: now,
             active_target_count: targets.len(),
             active_symbol_count: symbol_ref_counts.len(),
@@ -276,6 +286,27 @@ fn normalize_values(values: Vec<String>, uppercase: bool) -> Vec<String> {
         .collect()
 }
 
+fn lineage_identity(requested: &str, fallback_prefix: &str, target_id: &str) -> String {
+    let candidate = requested.trim();
+    if valid_lineage_identity(candidate) {
+        return candidate.to_string();
+    }
+    let fallback = format!("{fallback_prefix}:{target_id}");
+    if valid_lineage_identity(&fallback) {
+        fallback
+    } else {
+        format!("{fallback_prefix}:unattributed")
+    }
+}
+
+fn valid_lineage_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
 fn validate_capabilities(requested: &[String], scope: ExecutionScope) -> Result<(), String> {
     let catalog = computation_capability_catalog();
     for key in requested {
@@ -308,6 +339,8 @@ mod tests {
             capabilities: vec!["opening_range".to_string()],
             timeframes: vec!["1m".to_string()],
             ttl_seconds: None,
+            correlation_id: String::new(),
+            causation_id: String::new(),
         }
     }
 
@@ -322,12 +355,15 @@ mod tests {
         targets.replace(second).unwrap();
 
         let snapshot = targets.snapshot();
+        assert_eq!(snapshot.schema_version, 2);
         assert_eq!(snapshot.active_target_count, 2);
         assert_eq!(snapshot.active_symbol_count, 2);
         assert_eq!(snapshot.symbol_ref_counts.get("AAPL"), Some(&2));
         assert_eq!(snapshot.scope_target_counts.get("watchlist"), Some(&1));
         assert_eq!(snapshot.scope_target_counts.get("request"), Some(&1));
         assert_eq!(snapshot.scope_symbol_counts.get("watchlist"), Some(&2));
+        assert_eq!(snapshot.targets[0].correlation_id, "lease:request:chart");
+        assert_eq!(snapshot.targets[0].causation_id, "target:request:chart");
         assert!(snapshot.estimated_demand_units > 0);
         assert_eq!(
             snapshot.estimated_demand_units,
@@ -360,6 +396,19 @@ mod tests {
         let mut invalid = request("expired", ExecutionScope::Watchlist);
         invalid.ttl_seconds = Some(0);
         assert!(targets.replace(invalid).unwrap_err().contains("positive"));
+    }
+
+    #[test]
+    fn preserves_explicit_autonomous_lineage() {
+        let targets = SharedComputationTargets::default();
+        let mut explicit = request("watchlist:lineage", ExecutionScope::Watchlist);
+        explicit.correlation_id = "run:watchlist-small".to_string();
+        explicit.causation_id = "event:membership-17".to_string();
+
+        let lease = targets.replace(explicit).unwrap();
+
+        assert_eq!(lease.correlation_id, "run:watchlist-small");
+        assert_eq!(lease.causation_id, "event:membership-17");
     }
 
     #[test]

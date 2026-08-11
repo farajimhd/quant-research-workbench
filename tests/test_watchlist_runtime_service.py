@@ -15,6 +15,7 @@ from src.backend.watchlist_runtime_service import (
     focused_target_contract,
     normalize_watchlist_candidate,
     publish_watchlist_target,
+    publish_computation_target,
     resolve_historical_watchlist,
     strategy_target_contracts,
     watchlist_requires_focused_evidence,
@@ -231,6 +232,25 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         put_json.assert_not_called()
         delete_json.assert_called_once_with(
             "/computation-targets/watchlist:small", timeout=3
+        )
+
+    @patch("src.backend.watchlist_runtime_service.qmd_put_json")
+    def test_autonomous_target_publishes_explicit_lineage(self, put_json) -> None:
+        publish_computation_target(
+            "strategy:run-7",
+            ["AAPL"],
+            ["momentum_core"],
+            ["1m"],
+            owner="backend.strategy_runtime",
+            scope="strategy_run",
+            ttl_ms=300_000,
+            causation_seed="watchlist:small:revision-19",
+        )
+
+        lease = put_json.call_args.args[1]
+        self.assertEqual(lease["correlation_id"], "run:strategy:run-7")
+        self.assertEqual(
+            lease["causation_id"], "event:watchlist:small:revision-19"
         )
 
     def test_membership_journal_rehydrates_current_projection(self) -> None:

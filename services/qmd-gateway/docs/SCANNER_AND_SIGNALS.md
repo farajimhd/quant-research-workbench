@@ -70,10 +70,15 @@ concepts are deliberately absent. Strategies compose the seven observations with
 QMD structure/level indicators, news, SEC, model, portfolio, and risk inputs.
 
 All seven methods are implemented. Live calculation and emission are limited to
-validated computation-target leases. Watchlist and chart/request producers are
-wired today; Strategy Run and offline producers are not yet wired into this
-lease authority. Each lease declares its owner, execution scope, ticker
-population, capabilities, timeframes, and optional expiry. QMD validates
+validated computation-target leases. Watchlist, Strategy Run, and chart/request
+producers are wired today; offline producers are not yet wired into this lease
+authority. Each lease declares its owner, execution scope, ticker population,
+capabilities, timeframes, optional expiry, correlation identity, and causal
+predecessor. Autonomous backend publishers derive bounded lineage from the
+Watchlist membership clock, Run Plan target, or chart request. QMD target
+snapshot schema v2 stores and exposes that evidence; older callers without
+explicit IDs receive a bounded target-derived fallback rather than an empty
+lineage. QMD validates
 requested capabilities against their allowed scopes, unions overlapping symbol
 demand, and rejects unrelated finalized timeframes before indicator shards.
 When the last lease for a symbol expires or is removed, QMD stops routing that

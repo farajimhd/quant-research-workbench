@@ -16,6 +16,7 @@ from research.mlops.clickhouse import (
 )
 from src.backend.daily_session_bars import daily_session_trade_bars_relation_sql
 from src.backend.qmd_gateway_client import qmd_delete_json, qmd_put_json
+from src.request_context import causal_identity
 from src.trading_runtime.watchlist_resolver import (
     SOURCE_FIELDS,
     classify_watchlist_row,
@@ -123,6 +124,7 @@ class WatchlistRuntime:
                                 capabilities,
                                 timeframes,
                                 ttl_ms=int(watchlist.get("membership_ttl_ms") or 300_000),
+                                causation_seed=f"{watchlist_id}:{as_of.isoformat()}",
                             )
                             self._published_targets.add(f"watchlist:{watchlist_id}")
                         elif f"watchlist:{watchlist_id}" in self._published_targets:
@@ -146,6 +148,7 @@ class WatchlistRuntime:
                                 owner="backend.strategy_runtime",
                                 scope="strategy_run",
                                 ttl_ms=int(watchlist.get("membership_ttl_ms") or 300_000),
+                                causation_seed=f"{watchlist_id}:{as_of.isoformat()}",
                             )
                             if current and target["capabilities"]:
                                 self._published_targets.add(target_id)
@@ -498,6 +501,7 @@ def publish_watchlist_target(
     timeframes: list[str],
     *,
     ttl_ms: int,
+    causation_seed: object | None = None,
 ) -> None:
     publish_computation_target(
         f"watchlist:{watchlist_id}",
@@ -507,6 +511,7 @@ def publish_watchlist_target(
         owner="backend.market_discovery",
         scope="watchlist",
         ttl_ms=ttl_ms,
+        causation_seed=causation_seed,
     )
 
 
@@ -519,10 +524,15 @@ def publish_computation_target(
     owner: str,
     scope: str,
     ttl_ms: int,
+    causation_seed: object | None = None,
 ) -> None:
     if not tickers or not capabilities:
         qmd_delete_json(f"/computation-targets/{target_id}", timeout=3)
         return
+    lineage = causal_identity(
+        correlation_seed=target_id,
+        causation_seed=causation_seed or target_id,
+    )
     qmd_put_json(
         "/computation-targets",
         {
@@ -533,6 +543,7 @@ def publish_computation_target(
             "capabilities": capabilities,
             "timeframes": timeframes,
             "ttl_seconds": max(1, int(ttl_ms) // 1000),
+            **lineage,
         },
         timeout=3,
     )

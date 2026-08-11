@@ -316,6 +316,16 @@ bounded direct ClickHouse paths remain documented in
     and Python compile passed. Broader async suites exceeded their bounded test
     timeouts and are not counted as passing; restart reconciliation remains an
     open backlog acceptance item.
+51. Added explicit causal lineage to focused computation demand. Autonomous
+    Watchlist and Strategy Run leases derive correlation from the target and
+    causation from the membership clock; chart leases derive both from the
+    request when present or a stable chart identity otherwise. QMD validates,
+    stores, and exposes the identities in computation-target snapshot schema
+    v2, with bounded target-derived fallbacks for older callers. This closes the
+    computation-lease portion of the operations lineage backlog; autonomous
+    source events and generic background continuations remain open. Thirty-four
+    focused Python tests, five Rust computation-target tests, Rust formatting,
+    Python compile, and the QMD all-target compile gate passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

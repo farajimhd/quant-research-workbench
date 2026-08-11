@@ -15,7 +15,7 @@ from typing import Any, Callable, Collection, Literal
 
 from dotenv import load_dotenv
 
-from src.request_context import current_request_headers, current_request_query
+from src.request_context import causal_identity, current_request_headers, current_request_query
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -974,10 +974,15 @@ def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) 
     if not symbol.strip():
         raise ValueError("symbol is required for QMD indicators.")
     ticker = symbol.strip().upper()
+    target_id = f"chart:{ticker}:{timeframe}"
+    lineage = causal_identity(
+        correlation_seed=target_id,
+        causation_seed=f"chart-request:{ticker}:{timeframe}",
+    )
     qmd_put_json(
         "/computation-targets",
         {
-            "target_id": f"chart:{ticker}:{timeframe}",
+            "target_id": target_id,
             "owner": "backend.chart",
             "scope": "request",
             "tickers": [ticker],
@@ -989,6 +994,7 @@ def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) 
             ],
             "timeframes": [timeframe],
             "ttl_seconds": 300,
+            **lineage,
         },
         timeout=3,
     )

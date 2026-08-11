@@ -573,6 +573,8 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(lease["tickers"], ["AAPL"])
         self.assertEqual(lease["timeframes"], ["1m"])
         self.assertEqual(lease["ttl_seconds"], 300)
+        self.assertEqual(lease["correlation_id"], "run:chart:AAPL:1m")
+        self.assertEqual(lease["causation_id"], "event:chart-request:AAPL:1m")
         get_json.assert_called_once_with(
             "/snapshot/indicators/AAPL",
             {"timeframe": "1m", "limit": 50},

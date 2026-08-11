@@ -423,9 +423,12 @@ broker command outside OMS.
   - [x] Give autonomous Strategy evaluations, Portfolio decisions/reservations,
         and OMS lifecycle records explicit causal predecessors when no HTTP
         request context exists.
-  - [ ] Give autonomous source events, computation leases, and generic
-        background continuations explicit causation lineage when no HTTP
-        request context exists.
+  - [x] Give autonomous computation leases explicit causation lineage when no
+        HTTP request exists. Backend Watchlist/Strategy/chart publishers derive
+        bounded IDs from membership, Run Plan target, or chart request; QMD
+        target snapshot schema v2 stores and exposes both identities.
+  - [ ] Give autonomous source events and generic background continuations
+        explicit causation lineage when no HTTP request context exists.
 - [x] Add QMD transition/gap/lag/cache/queue metrics.
 - [x] Add discovery computation-cost metrics.
 - [x] Add Portfolio disposition/reservation and OMS reconciliation metrics.
