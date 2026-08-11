@@ -1445,6 +1445,23 @@ it does not imply all application work is complete.
      accepted as a UI pass; the current backend returned the complete base
      configuration successfully before the repeated browser checks.
 
+148. Moved the complete SEC Canvas read domain out of its presentation and
+     composition service into the registered `sec.canvas_asof.v1` backend query
+     plan. The plan now owns filing discovery and cursor filtering, approved
+     disclosure taxonomy, scoped-label accession filtering, document/text/XBRL
+     coverage, related filing entities, point-in-time identity, filing detail,
+     document metadata, rendered/original text pagination, and XBRL fact pages.
+     Its registry record declares every existing SEC, intelligence-publication,
+     and identity source it reads. SEC Gateway and Reference Gateway producer
+     code and schemas were not changed.
+
+     `sec_canvas_service` now owns validation, bounded fan-out, optional
+     degradation, session cursors, and response presentation only. Existing
+     builder imports remain compatible by resolving directly to the registered
+     plan implementations. Twenty-four focused query-plan, SEC Canvas filter,
+     service, and application-registry tests passed, and all changed Python
+     modules compiled with bytecode writes disabled.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

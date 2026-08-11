@@ -291,6 +291,9 @@ budgets and invalid scope broadening fails configuration validation.
         operational identity join into `sec.operations_intraday.v1`.
   - [x] Move the exact CIK/accession SEC detail bundle for parent, documents,
         rendered text, company facts, and frames into the same plan.
+  - [x] Move SEC Canvas filing discovery, taxonomy, coverage, related entities,
+        event-valid identity, document/text pagination, and XBRL fact reads into
+        the registered `sec.canvas_asof.v1` plan.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -328,6 +331,8 @@ budgets and invalid scope broadening fails configuration validation.
         deterministic primary-identity selection and presentation there.
   - [x] Remove the Services SEC detail SQL from `app.py`; retain parent error
         semantics, independently degradable children, and presentation there.
+  - [x] Remove SEC Canvas SQL from its composition service; retain the existing
+        builder names as compatibility imports from `sec.canvas_asof.v1`.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [x] Consume deferred producer services through unchanged bounded contracts.
