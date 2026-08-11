@@ -111,11 +111,11 @@ def _run(
     completed = 0
     try:
         for index in range(warmup_batches + measured_batches):
-            batch, wait = prefetcher.next()
             if index == warmup_batches:
                 if device.type == "cuda":
                     torch.cuda.synchronize(device)
                 started = time.perf_counter()
+            batch, wait = prefetcher.next()
             if index >= warmup_batches:
                 waits.append(wait)
                 origins += batch.origin_count
