@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +9,12 @@ from src.backend.historical_scanner_service import (
     historical_scanner_qmd_projection,
     historical_scanner_reference_projection,
     historical_scanner_snapshot,
+    _prune_materialization_states,
+    _schedule_scanner_materialization,
+    _SCANNER_MATERIALIZATIONS,
+    MAX_ACTIVE_MATERIALIZATIONS,
+    MAX_TRACKED_MATERIALIZATIONS,
+    MATERIALIZATION_STATE_TTL_SECONDS,
 )
 
 
@@ -29,6 +35,56 @@ class FakeClient:
 
 
 class HistoricalScannerServiceTest(unittest.TestCase):
+    def test_materialization_state_pruning_bounds_terminal_entries_only(self) -> None:
+        states = {
+            f"ready-{index}": {
+                "status": "ready",
+                "finished_monotonic": float(index + 1),
+            }
+            for index in range(MAX_TRACKED_MATERIALIZATIONS + 44)
+        }
+        states["building"] = {"status": "building", "started_monotonic": 1.0}
+        _prune_materialization_states(states, now=500.0)
+        self.assertLessEqual(len(states), MAX_TRACKED_MATERIALIZATIONS)
+        self.assertIn("building", states)
+        self.assertNotIn("ready-0", states)
+
+        states["expired"] = {
+            "status": "error",
+            "finished_monotonic": 1.0,
+        }
+        _prune_materialization_states(
+            states,
+            now=MATERIALIZATION_STATE_TTL_SECONDS + 2.0,
+        )
+        self.assertNotIn("expired", states)
+        self.assertIn("building", states)
+
+    def test_scanner_materialization_admission_is_concurrency_bounded(self) -> None:
+        _SCANNER_MATERIALIZATIONS.clear()
+        _SCANNER_MATERIALIZATIONS.update(
+            {
+                f"active-{index}": {"status": "building", "started_monotonic": 1.0}
+                for index in range(MAX_ACTIVE_MATERIALIZATIONS)
+            }
+        )
+        snapshot = datetime(2026, 8, 11, 15, 45, tzinfo=UTC)
+        try:
+            with patch("src.backend.historical_scanner_service.Thread") as thread:
+                status = _schedule_scanner_materialization(
+                    source_database="market_sip_compact",
+                    table_prefix="events_",
+                    snapshot_at=snapshot,
+                    window_start=snapshot - timedelta(minutes=15),
+                    lookback_minutes=15,
+                    source_revision="revision-new",
+                )
+            self.assertEqual(status, "capacity_limited")
+            thread.assert_not_called()
+            self.assertEqual(len(_SCANNER_MATERIALIZATIONS), MAX_ACTIVE_MATERIALIZATIONS)
+        finally:
+            _SCANNER_MATERIALIZATIONS.clear()
+
     def test_latest_cached_snapshot_uses_a_non_conflicting_aggregate_alias(self) -> None:
         class LatestClient:
             def execute(self, sql: str, **_kwargs) -> str:

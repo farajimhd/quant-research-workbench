@@ -625,6 +625,9 @@ broker command outside OMS.
         return HTTP 429 when all configured resident slots are active.
   - [x] Bound Replay/Backtest QMD History derived-stream concurrency and issue
         one cross-sectional Scanner signal query per run window.
+  - [x] Bound Historical Scanner and QMD materialization threads to four active
+        builds per family; cap coordination registries at 256 terminal/active
+        entries with terminal TTL eviction while preserving active work.
 - [ ] Shed replaceable projections before authoritative events or journal writes.
 - [ ] Test QMD boundaries, retention, and live/history parity.
 - [ ] Test point-in-time identity and enrichment behavior.

@@ -66,6 +66,13 @@ Load shedding is semantic:
 - reject new expensive work with a typed capacity response;
 - never silently truncate a supposedly complete result.
 
+Historical Scanner and QMD cross-sectional materialization coordination is
+bounded independently from durable ClickHouse results. Each family admits at
+most four active background builds, reports `capacity_limited` for retryable
+excess demand, retains at most 256 coordination entries, expires terminal state
+after one hour, and never evicts active work. A later request reads the durable
+snapshot or retries admission; no authoritative result is dropped.
+
 ## 5. Failure and degradation matrix
 
 | Failure | Allowed behavior | Prohibited behavior |

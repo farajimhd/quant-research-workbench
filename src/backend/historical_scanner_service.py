@@ -169,6 +169,38 @@ _QMD_MATERIALIZATION_LOCK = Lock()
 _QMD_MATERIALIZATIONS: dict[str, dict[str, Any]] = {}
 _SCANNER_MATERIALIZATION_LOCK = Lock()
 _SCANNER_MATERIALIZATIONS: dict[str, dict[str, Any]] = {}
+MAX_ACTIVE_MATERIALIZATIONS = 4
+MAX_TRACKED_MATERIALIZATIONS = 256
+MATERIALIZATION_STATE_TTL_SECONDS = 3_600
+
+
+def _prune_materialization_states(
+    states: dict[str, dict[str, Any]],
+    *,
+    now: float,
+) -> None:
+    """Bound terminal coordination state without ever evicting active work."""
+    terminal = [
+        (key, float(state.get("finished_monotonic") or 0))
+        for key, state in states.items()
+        if state.get("status") in {"error", "ready"}
+    ]
+    for key, finished in terminal:
+        if finished and now - finished >= MATERIALIZATION_STATE_TTL_SECONDS:
+            states.pop(key, None)
+    excess = max(0, len(states) - MAX_TRACKED_MATERIALIZATIONS)
+    if not excess:
+        return
+    terminal = sorted(
+        (
+            (key, float(state.get("finished_monotonic") or 0))
+            for key, state in states.items()
+            if state.get("status") in {"error", "ready"}
+        ),
+        key=lambda item: item[1],
+    )
+    for key, _finished in terminal[:excess]:
+        states.pop(key, None)
 
 
 def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -534,20 +566,31 @@ def historical_scanner_qmd_projection_or_schedule(
     key = f"{_clock(snapshot_at)}|{source_revision}|{SCANNER_QMD_SCHEMA_VERSION}"
     now = monotonic()
     with _QMD_MATERIALIZATION_LOCK:
+        _prune_materialization_states(_QMD_MATERIALIZATIONS, now=now)
         state = _QMD_MATERIALIZATIONS.get(key)
         retryable = state is None or (
             state.get("status") == "error"
             and now - float(state.get("finished_monotonic") or 0) >= 60
         )
         if retryable:
-            state = {"error": "", "started_monotonic": now, "status": "building"}
-            _QMD_MATERIALIZATIONS[key] = state
-            Thread(
-                target=_run_qmd_materialization,
-                args=(key, snapshot_at, source_revision),
-                daemon=True,
-                name=f"canvas-qmd-{snapshot_at:%Y%m%d-%H%M}",
-            ).start()
+            active = sum(
+                row.get("status") == "building"
+                for row in _QMD_MATERIALIZATIONS.values()
+            )
+            if active >= MAX_ACTIVE_MATERIALIZATIONS:
+                state = {
+                    "error": "Historical QMD materialization capacity is in use; retry shortly.",
+                    "status": "capacity_limited",
+                }
+            else:
+                state = {"error": "", "started_monotonic": now, "status": "building"}
+                _QMD_MATERIALIZATIONS[key] = state
+                Thread(
+                    target=_run_qmd_materialization,
+                    args=(key, snapshot_at, source_revision),
+                    daemon=True,
+                    name=f"canvas-qmd-{snapshot_at:%Y%m%d-%H%M}",
+                ).start()
         status = str(state.get("status") or "building")
         error = str(state.get("error") or "")
     return {}, [], {
@@ -1112,28 +1155,39 @@ def _schedule_scanner_materialization(
     key = f"{_clock(snapshot_at)}|{lookback_minutes}|{source_revision}|{SCANNER_SCHEMA_VERSION}"
     now = monotonic()
     with _SCANNER_MATERIALIZATION_LOCK:
+        _prune_materialization_states(_SCANNER_MATERIALIZATIONS, now=now)
         state = _SCANNER_MATERIALIZATIONS.get(key)
         retryable = state is None or (
             state.get("status") == "error"
             and now - float(state.get("finished_monotonic") or 0) >= 60
         )
         if retryable:
-            state = {"error": "", "started_monotonic": now, "status": "building"}
-            _SCANNER_MATERIALIZATIONS[key] = state
-            Thread(
-                target=_run_scanner_materialization,
-                kwargs={
-                    "key": key,
-                    "lookback_minutes": lookback_minutes,
-                    "snapshot_at": snapshot_at,
-                    "source_database": source_database,
-                    "source_revision": source_revision,
-                    "table_prefix": table_prefix,
-                    "window_start": window_start,
-                },
-                daemon=True,
-                name=f"canvas-scanner-{snapshot_at:%Y%m%d-%H%M}",
-            ).start()
+            active = sum(
+                row.get("status") == "building"
+                for row in _SCANNER_MATERIALIZATIONS.values()
+            )
+            if active >= MAX_ACTIVE_MATERIALIZATIONS:
+                state = {
+                    "error": "Historical Scanner materialization capacity is in use; retry shortly.",
+                    "status": "capacity_limited",
+                }
+            else:
+                state = {"error": "", "started_monotonic": now, "status": "building"}
+                _SCANNER_MATERIALIZATIONS[key] = state
+                Thread(
+                    target=_run_scanner_materialization,
+                    kwargs={
+                        "key": key,
+                        "lookback_minutes": lookback_minutes,
+                        "snapshot_at": snapshot_at,
+                        "source_database": source_database,
+                        "source_revision": source_revision,
+                        "table_prefix": table_prefix,
+                        "window_start": window_start,
+                    },
+                    daemon=True,
+                    name=f"canvas-scanner-{snapshot_at:%Y%m%d-%H%M}",
+                ).start()
         return str(state.get("status") or "building")
 
 

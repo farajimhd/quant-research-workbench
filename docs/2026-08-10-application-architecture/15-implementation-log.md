@@ -766,6 +766,15 @@ bounded direct ClickHouse paths remain documented in
     evaluation and include it in the run manifest. Python compile and all 64
     focused Replay, Watchlist, Scanner, reference-plan, and fundamentals-plan
     tests passed.
+100. Bounded Historical Scanner background materialization. Scanner snapshots
+     and QMD-derived cross-sectional snapshots now admit at most four concurrent
+     builds per family; excess requests return a retryable
+     `capacity_limited` state rather than spawning another thread. Coordination
+     registries retain at most 256 entries, expire terminal state after one
+     hour, and evict only oldest ready/error entries--never active builds. The
+     durable ClickHouse snapshots remain authoritative and are unaffected by
+     coordination eviction. Python compile and all 60 focused Scanner,
+     Watchlist, Replay, and capacity tests passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
