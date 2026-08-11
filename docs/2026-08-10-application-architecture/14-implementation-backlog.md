@@ -638,7 +638,7 @@ broker command outside OMS.
   - [x] Report historical-run checkpoint status and clocks without claiming
         that an existing checkpoint is resumable.
 - [x] Build a central backend/frontend readiness view.
-- [ ] Propagate end-to-end correlation and causation IDs.
+- [x] Propagate end-to-end correlation and causation IDs.
   - [x] Generate/preserve bounded IDs from browser requests through backend
         context, QMD HTTP headers and WebSocket query identity, QMD Live/History
         response evidence, broker-event envelopes, and authoritative
@@ -663,8 +663,10 @@ broker command outside OMS.
         cause, per-event autonomous cause, and retry ancestry across subprocess
         and restart boundaries; command-triggered events retain the request
         cause.
-  - [ ] Give remaining autonomous market-source events explicit causation
-        lineage when no HTTP request context exists.
+  - [x] Give autonomous market-source events explicit causation lineage. QMD's
+        shared decoder derives a bounded ticker/session correlation root and
+        immutable-field event cause before computation; Live, recent, and
+        archive reconstruction agree because storage ordinal is excluded.
 - [x] Add QMD transition/gap/lag/cache/queue metrics.
 - [x] Add discovery computation-cost metrics.
 - [x] Add Portfolio disposition/reservation and OMS reconciliation metrics.

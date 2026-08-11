@@ -176,6 +176,13 @@ quote/trade persistence is intentionally optional and is not part of the default
 coverage repair contract. The compact event row is the durable live equivalent
 of the historical `market_sip_compact.events_YYYY` training tables.
 
+The shared compact-event decoder derives bounded causal lineage from immutable
+market identity. `correlation_id` groups one ticker/session source and
+`causation_id` hashes ticker, SIP clock, source sequence, event type, prices,
+sizes, and exchanges. Storage arrival/ordinal is deliberately excluded, so
+Live, recent, and archive reconstruction produce identical lineage without
+changing compact schema v4. Every decoded `MarketEvent.raw` carries both IDs.
+
 Strategies and Canvas consume the canonical closed-bar indicator contract from
 `/snapshot/indicators/{ticker}` or `/stream/indicators/{ticker}`. QMD no longer
 publishes the overlapping 25-, 100-, and 500-event forecast endpoint. Instead,

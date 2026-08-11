@@ -866,6 +866,16 @@ bounded direct ClickHouse paths remain documented in
      failure cause and retry command. Forty-four job, request-context, and QMD
      client tests passed and the changed modules compiled. Remaining raw market
      source-event lineage stays open at QMD's source schema boundary.
+110. Completed autonomous QMD source-event lineage in the shared Live/History
+     decoder. Each canonical event now derives a bounded ticker/session
+     correlation root and an event causation hash from ticker, SIP clock,
+     source sequence, type, prices, sizes, and exchanges before downstream
+     computation. Storage arrival sequence/archive ordinal is intentionally
+     excluded, so one market event retains identical lineage across Live,
+     recent, and archive reconstruction without changing compact storage schema
+     v4. Decoded raw metadata carries both IDs. Seven focused QMD compact-event
+     tests and eight QMD History source tests passed using the external Cargo
+     target, including explicit cross-ordinal and historical-decoder evidence.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

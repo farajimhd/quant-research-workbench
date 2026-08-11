@@ -1759,6 +1759,8 @@ mod tests {
                 assert_eq!(quote.sequence, 42);
                 assert_eq!(quote.conditions, vec![7]);
                 assert_eq!(quote.tape, 1);
+                assert_eq!(quote.raw["correlation_id"], "source:AAPL:2026-07-13");
+                assert_eq!(quote.raw["causation_id"], compact.causation_id());
             }
             MarketEvent::Trade(_) => panic!("expected quote"),
         }

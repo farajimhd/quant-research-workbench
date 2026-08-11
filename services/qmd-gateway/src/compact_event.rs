@@ -50,6 +50,49 @@ impl LiveCompactEvent {
         self.event_meta & 0x01
     }
 
+    pub fn correlation_id(&self) -> String {
+        let readable = format!("source:{}:{}", self.ticker, self.event_date);
+        if readable.len() <= 128
+            && readable
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | ':' | '-'))
+        {
+            readable
+        } else {
+            format!(
+                "source:{:016x}",
+                causal_hash(&[self.ticker.as_bytes(), self.event_date.as_bytes()])
+            )
+        }
+    }
+
+    pub fn causation_id(&self) -> String {
+        let sip = self.sip_timestamp_us.to_le_bytes();
+        let source_sequence = self.source_sequence.to_le_bytes();
+        let primary_price = self.price_primary_int.to_le_bytes();
+        let secondary_price = self.price_secondary_int.to_le_bytes();
+        let primary_size = self.size_primary.to_bits().to_le_bytes();
+        let secondary_size = self.size_secondary.to_bits().to_le_bytes();
+        let event_meta = [self.event_meta];
+        let primary_exchange = [self.exchange_primary];
+        let secondary_exchange = [self.exchange_secondary];
+        format!(
+            "event:{:016x}",
+            causal_hash(&[
+                self.ticker.as_bytes(),
+                &sip,
+                &source_sequence,
+                &event_meta,
+                &primary_price,
+                &secondary_price,
+                &primary_size,
+                &secondary_size,
+                &primary_exchange,
+                &secondary_exchange,
+            ])
+        )
+    }
+
     fn with_condition_tokens(mut self, tokens: [u8; CONDITION_TOKEN_SLOTS]) -> Self {
         self.condition_token_1 = tokens[0];
         self.condition_token_2 = tokens[1];
@@ -113,6 +156,8 @@ impl CompactEventDecoder {
             "event_meta": event.event_meta,
             "issue_flags": event.issue_flags,
             "sip_timestamp_us": event.sip_timestamp_us,
+            "correlation_id": event.correlation_id(),
+            "causation_id": event.causation_id(),
         });
         if event.event_type() == TRADE_EVENT_TYPE {
             let conditions = tokens
@@ -170,6 +215,19 @@ impl CompactEventDecoder {
             })
         }
     }
+}
+
+fn causal_hash(parts: &[&[u8]]) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for part in parts {
+        for byte in *part {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 #[derive(Clone)]
@@ -1811,9 +1869,26 @@ mod tests {
                 assert_eq!(decoded.conditions, vec![12, 16]);
                 assert_eq!(decoded.indicators, vec![7]);
                 assert_eq!(decoded.tape, 3);
+                assert_eq!(decoded.raw["correlation_id"], converted.correlation_id());
+                assert_eq!(decoded.raw["causation_id"], converted.causation_id());
             }
             MarketEvent::Trade(_) => panic!("expected quote"),
         }
+    }
+
+    #[test]
+    fn source_lineage_is_bounded_and_stable_across_storage_ordinals() {
+        let timestamp = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
+        let first = compact_quote_at(timestamp, 41);
+        let mut historical = first.clone();
+        historical.arrival_sequence = 9_999;
+
+        assert_eq!(first.correlation_id(), historical.correlation_id());
+        assert_eq!(first.causation_id(), historical.causation_id());
+        assert!(first.correlation_id().starts_with("source:TEST:"));
+        assert!(first.causation_id().starts_with("event:"));
+        assert!(first.correlation_id().len() <= 128);
+        assert!(first.causation_id().len() <= 128);
     }
 
     #[test]

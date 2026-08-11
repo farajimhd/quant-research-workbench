@@ -173,6 +173,11 @@ therefore exposes `live_continuation_sequence` and `request_complete` separately
 from `complete_for_history`: a request may be complete while still not being an
 immutable durable revision suitable for a paused Replay.
 
+Archive and recent rows pass through QMD's shared source-lineage derivation.
+Decoded event metadata therefore carries the same bounded correlation and
+causation IDs as Live for an identical market event, even when storage ordinal
+or arrival sequence differs.
+
 Bars and indicators have separate ordered streams. A cold derived build emits
 each finalized bar before the bounded indicator worker calculates its evidence,
 so chart price data is never held behind indicator calculation. Builds calculate

@@ -312,6 +312,12 @@ products are updated after encoding/sanitization in `compact_event.rs`, not from
 the pre-canonical WebSocket object; History uses the same decoder over
 `events_YYYY` rows.
 
+That decoder is also source-event lineage authority. It derives a bounded
+ticker/session correlation ID and a stable event causation ID from immutable
+market fields. Arrival sequence and archive ordinal are excluded, which keeps
+lineage identical across Live, recent ClickHouse, and archive adapters. The IDs
+enter canonical raw event metadata before any bar, signal, or structure engine.
+
 ## Future-safe invariants
 
 - Canonical prices remain raw; corporate-action adjustment is a point-in-time
