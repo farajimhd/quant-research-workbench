@@ -61,6 +61,19 @@ class QmdHistoricalEventSource:
                 self._read_page, page_cursor, pinned_revision
             )
             revision = _source_revision(payload)
+            if revision["request_complete"] is not True:
+                raise RuntimeError(
+                    "QMD historical event source contains an explicit coverage gap; "
+                    "Replay and Backtest require complete source authority"
+                )
+            if (
+                self.revision_policy == "pinned"
+                and revision["complete_for_history"] is not True
+            ):
+                raise RuntimeError(
+                    "Pinned QMD historical event source requires live continuation; "
+                    "Replay and Backtest require a fully durable source plan"
+                )
             if pinned_revision is None:
                 pinned_revision = revision
                 self.source_revision = dict(revision)
@@ -82,8 +95,12 @@ class QmdHistoricalEventSource:
             ]
             if events:
                 yield _batch(events)
-            if payload.get("complete") or not events:
+            if payload.get("complete"):
                 return
+            if not events:
+                raise RuntimeError(
+                    "QMD historical event pagination ended before complete=true"
+                )
             next_cursor = payload.get("next_cursor")
             if not isinstance(next_cursor, dict):
                 raise RuntimeError("QMD historical event page omitted its continuation cursor")
@@ -153,8 +170,19 @@ def _source_revision(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(
             "QMD historical event page returned an incomplete source_revision"
         )
+    request_complete = revision.get("request_complete")
+    complete_for_history = revision.get("complete_for_history")
+    if not isinstance(request_complete, bool) or not isinstance(
+        complete_for_history, bool
+    ):
+        raise RuntimeError(
+            "QMD historical event page omitted source completeness evidence"
+        )
     return {
+        "complete_for_history": complete_for_history,
+        "request_complete": request_complete,
         "source_plan_hash": plan_hash,
+        "source_tiers": [str(value) for value in revision.get("source_tiers") or []],
         "revision_token": revision_token,
     }
 

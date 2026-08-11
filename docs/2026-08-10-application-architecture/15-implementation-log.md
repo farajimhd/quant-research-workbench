@@ -1999,6 +1999,32 @@ it does not imply all application work is complete.
      No deferred producer service, Market SIP pipeline, broker gateway, or
      unrelated dirty worktree file was changed.
 
+177. Separated pagination completeness from source-coverage completeness in
+     QMD acceptance and offline Replay. The authority runner previously could
+     pass an exhausted page sequence even when the pinned revision declared a
+     source gap. Normal and direct-parity runs now require exhausted pagination
+     and `request_complete=true`. A new explicit-gap mode passes only when
+     pagination is exhausted, the plan contains typed gap segments, and the
+     revision declares `request_complete=false`; it cannot be combined with
+     direct parity or history-only mode.
+
+     The real Archive-to-Recent AAPL gap-contract report
+     `qmd_authority_validation_20260811T224255Z.json` passed with 528 ordered
+     events, 528 lineage records, and three explicit subsecond gaps. This is
+     distinct from the still-open complete parity gate. Pinned Replay/Backtest
+     now rejects either a source gap or a live-dependent plan before applying
+     the first event, and records both completeness flags plus source tiers.
+     Twelve authority-runner and 45 Replay tests passed. The real pinned AAPL
+     Archive-to-Recent window was also rejected before yielding a batch with
+     the typed explicit-coverage-gap error.
+
+     A read-only ClickHouse catalog audit also confirmed there is no existing
+     full-market event-time archive projection: yearly event tables are monthly
+     partitioned and ordered by `(ticker, ordinal)`; `events_2026` is roughly
+     98.3 billion rows/775 GB. The existing ticker-day index is useful evidence
+     but cannot supply globally time-ordered full-market reads by itself, so no
+     unapproved duplicate cache or Market SIP mutation was introduced.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

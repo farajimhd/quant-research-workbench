@@ -180,6 +180,14 @@ still pinned, but the current-tail revision token and live arrival watermark may
 advance between pages. A tier boundary or source-plan change remains a typed
 restart conflict under both policies.
 
+The event-page `complete` field means pagination reached the end of every
+queryable segment; it does not claim the requested window has complete source
+coverage. Coverage completeness is separately authoritative as
+`source_revision.request_complete`, while `complete_for_history` states whether
+the plan needs QMD Live continuation. Acceptance tooling and offline consumers
+must evaluate all three fields rather than treating pagination exhaustion as
+coverage proof.
+
 ## Retention and archive handoff
 
 ```mermaid

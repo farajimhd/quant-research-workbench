@@ -1102,7 +1102,10 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
         }
         cursor = {"ordinal": 1, "sip_timestamp_us": 1_774_708_700_000_000, "ticker": "AAPL"}
         revision = {
+            "complete_for_history": True,
+            "request_complete": True,
             "source_plan_hash": "fnv1a64:test-plan",
+            "source_tiers": ["archive"],
             "token": "revision-7",
         }
         with patch.object(
@@ -1127,7 +1130,10 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([batch.events[0].sequence for batch in batches], [1, 2])
         pinned = {
+            "complete_for_history": True,
+            "request_complete": True,
             "source_plan_hash": "fnv1a64:test-plan",
+            "source_tiers": ["archive"],
             "revision_token": "revision-7",
         }
         self.assertEqual(source.source_revision, pinned)
@@ -1169,7 +1175,10 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
                     "events": [event],
                     "next_cursor": cursor,
                     "source_revision": {
+                        "complete_for_history": True,
+                        "request_complete": True,
                         "source_plan_hash": "plan-a",
+                        "source_tiers": ["archive"],
                         "token": "revision-a",
                     },
                 },
@@ -1178,7 +1187,10 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
                     "events": [],
                     "next_cursor": None,
                     "source_revision": {
+                        "complete_for_history": True,
+                        "request_complete": True,
                         "source_plan_hash": "plan-b",
+                        "source_tiers": ["archive"],
                         "token": "revision-b",
                     },
                 },
@@ -1223,7 +1235,10 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
                     "events": [event],
                     "next_cursor": cursor,
                     "source_revision": {
+                        "complete_for_history": False,
+                        "request_complete": True,
                         "source_plan_hash": "plan-a",
+                        "source_tiers": ["recent", "currentlive"],
                         "token": "revision-a",
                     },
                 },
@@ -1232,7 +1247,10 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
                     "events": [{**event, "sequence": 2}],
                     "next_cursor": None,
                     "source_revision": {
+                        "complete_for_history": False,
+                        "request_complete": True,
                         "source_plan_hash": "plan-a",
+                        "source_tiers": ["recent", "currentlive"],
                         "token": "revision-b",
                     },
                 },
@@ -1242,6 +1260,84 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([batch.events[0].sequence for batch in batches], [1, 2])
         self.assertEqual(source.source_revision["revision_token"], "revision-b")
+
+    async def test_pinned_pull_rejects_explicit_source_gap_before_events(self) -> None:
+        source = QmdHistoricalEventSource(
+            "http://127.0.0.1:8801",
+            start=datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK),
+            end=datetime(2026, 7, 28, 9, 46, tzinfo=NEW_YORK),
+            tickers=["AAPL"],
+        )
+        with patch.object(
+            source,
+            "_read_page",
+            return_value={
+                "complete": True,
+                "events": [],
+                "next_cursor": None,
+                "source_revision": {
+                    "complete_for_history": False,
+                    "request_complete": False,
+                    "source_plan_hash": "plan-gap",
+                    "source_tiers": ["recent", "gap", "recent"],
+                    "token": "revision-gap",
+                },
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, "explicit coverage gap"):
+                _ = [batch async for batch in source.stream()]
+
+    async def test_pinned_pull_rejects_live_dependent_source_before_events(self) -> None:
+        source = QmdHistoricalEventSource(
+            "http://127.0.0.1:8801",
+            start=datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK),
+            end=datetime(2026, 7, 28, 9, 46, tzinfo=NEW_YORK),
+            tickers=["AAPL"],
+        )
+        with patch.object(
+            source,
+            "_read_page",
+            return_value={
+                "complete": True,
+                "events": [],
+                "next_cursor": None,
+                "source_revision": {
+                    "complete_for_history": False,
+                    "request_complete": True,
+                    "source_plan_hash": "plan-live",
+                    "source_tiers": ["recent", "currentlive"],
+                    "token": "revision-live",
+                },
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, "fully durable source plan"):
+                _ = [batch async for batch in source.stream()]
+
+    async def test_pinned_pull_rejects_empty_incomplete_pagination(self) -> None:
+        source = QmdHistoricalEventSource(
+            "http://127.0.0.1:8801",
+            start=datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK),
+            end=datetime(2026, 7, 28, 9, 46, tzinfo=NEW_YORK),
+            tickers=["AAPL"],
+        )
+        with patch.object(
+            source,
+            "_read_page",
+            return_value={
+                "complete": False,
+                "events": [],
+                "next_cursor": None,
+                "source_revision": {
+                    "complete_for_history": True,
+                    "request_complete": True,
+                    "source_plan_hash": "plan-durable",
+                    "source_tiers": ["archive"],
+                    "token": "revision-durable",
+                },
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, "before complete=true"):
+                _ = [batch async for batch in source.stream()]
 
 
 class ReplayPreflightTests(unittest.TestCase):

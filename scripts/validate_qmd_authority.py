@@ -322,6 +322,7 @@ def collect_evidence(
     clickhouse_user: str = "default",
     clickhouse_password: str = "",
     allow_history_only: bool = False,
+    allow_explicit_gaps: bool = False,
 ) -> dict[str, Any]:
     history_health = _get_json(history_url, "/health")
     history_status = _get_json(history_url, "/snapshot/status")
@@ -427,6 +428,28 @@ def collect_evidence(
 
     if revision and revision.get("source_plan_hash") != plan.get("plan_hash"):
         failures.append("event revision source_plan_hash differs from planned hash")
+    explicit_gap_segments = [
+        segment
+        for segment in plan.get("segments") or []
+        if isinstance(segment, dict) and segment.get("tier") == "gap"
+    ]
+    request_complete = (
+        revision.get("request_complete") if isinstance(revision, dict) else None
+    )
+    gap_contract_proven = (
+        allow_explicit_gaps
+        and complete
+        and bool(explicit_gap_segments)
+        and request_complete is False
+    )
+    if not complete:
+        failures.append("event pagination is incomplete or truncated")
+    if request_complete is not True and not gap_contract_proven:
+        failures.append(
+            "source coverage is incomplete; use --allow-explicit-gaps only for an exhausted, explicitly gap-declared contract test"
+        )
+    if allow_explicit_gaps and not gap_contract_proven:
+        failures.append("explicit-gap mode did not prove the required gap contract")
     parity: dict[str, Any] = {"enabled": direct_clickhouse_parity}
     if direct_clickhouse_parity:
         if not complete:
@@ -452,7 +475,13 @@ def collect_evidence(
         "schema_version": 1,
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "request": {"start": start, "end": end, "tickers": tickers},
-        "validation_scope": "durable_history_only" if allow_history_only else "live_and_history",
+        "validation_scope": (
+            "durable_history_only"
+            if allow_history_only
+            else "explicit_gap_contract"
+            if allow_explicit_gaps
+            else "live_and_history"
+        ),
         "services": {"live_health": live_health, "history_health": history_health},
         "operations": {"live": live_status, "history": history_status},
         "source_plan": plan,
@@ -463,6 +492,9 @@ def collect_evidence(
             "lineage_count": lineage_count,
             "max_events": max_events,
             "pages": pages,
+            "explicit_gap_count": len(explicit_gap_segments),
+            "request_complete": request_complete,
+            "explicit_gap_contract_accepted": gap_contract_proven,
             "source_revision": revision,
         },
         "direct_clickhouse_scanner_parity": parity,
@@ -503,6 +535,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Skip QMD Live only when the source plan is fully durable/queryable",
     )
+    parser.add_argument(
+        "--allow-explicit-gaps",
+        action="store_true",
+        help=(
+            "Accept exhausted pagination with incomplete coverage only when the plan declares a gap and "
+            "the pinned revision confirms request_complete=false"
+        ),
+    )
     parser.add_argument("--clickhouse-url", default=os.environ.get("CLICKHOUSE_URL", "http://127.0.0.1:8123/"))
     parser.add_argument("--clickhouse-user", default=os.environ.get("CLICKHOUSE_USER", "default"))
     parser.add_argument(
@@ -515,6 +555,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--page-size must be between 1 and 100000")
     if args.max_events < 1:
         parser.error("--max-events must be positive")
+    if args.allow_history_only and args.allow_explicit_gaps:
+        parser.error("--allow-history-only and --allow-explicit-gaps are mutually exclusive")
+    if args.direct_clickhouse_parity and args.allow_explicit_gaps:
+        parser.error("--direct-clickhouse-parity requires completeness and cannot allow gaps")
     if _timestamp(args.end) <= _timestamp(args.start):
         parser.error("--end must be after --start")
     return args
@@ -536,6 +580,7 @@ def main(argv: list[str] | None = None) -> int:
             clickhouse_user=args.clickhouse_user,
             clickhouse_password=os.environ.get(args.clickhouse_password_env, ""),
             allow_history_only=args.allow_history_only,
+            allow_explicit_gaps=args.allow_explicit_gaps,
         )
         target = _write_report(report, args.output_dir)
     except ValidationFailure as error:

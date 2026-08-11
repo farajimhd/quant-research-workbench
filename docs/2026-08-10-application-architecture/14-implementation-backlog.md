@@ -1026,6 +1026,11 @@ broker command outside OMS.
         close, and 105 ms at the 2026-08-11 open without durable coverage.
         Scheduled closure is no longer mislabeled as either a gap or a live
         continuation, but possible session gaps are not fabricated away.
+        The separate gap-contract report
+        `qmd_authority_validation_20260811T224255Z.json` passed with 528 ordered
+        events, lineage on all 528, exhausted pagination, three declared gaps,
+        and `request_complete=false`. This proves gap disclosure and ordering,
+        not complete archive/recent parity.
   - [x] Classify known weekend and 20:00-04:00 New York closure as
         covered-empty source-plan segments on both intermediate and tail
         paths, using wall-clock boundaries across DST. Keep holidays, early
@@ -1107,6 +1112,12 @@ broker command outside OMS.
       uncertain outcomes, partial fills and protection, durable recovery,
       Replay/Backtest clocks and state, configuration authority, and rejection
       of direct order paths.
+  - [x] Make pinned Replay/Backtest market-event admission require exhausted
+        pagination, `request_complete=true`, and
+        `complete_for_history=true` before applying the first event. Preserve
+        both completeness flags and source tiers in recorded run authority;
+        advancing live reads remain a separate policy. Forty-five Replay tests
+        passed, including explicit-gap and live-dependency rejection.
 - [ ] Run representative end-to-end load tests.
   - [x] Pass the bounded post-close application read profile across Scanner,
         Watchlist, Canvas chart, and computation management. Eight concurrent
@@ -1140,7 +1151,11 @@ inside the currently approved service boundary. These release gates remain:
       projection before imposing a full-market archive latency SLO. The current
       archive order is ticker/ordinal and a broad event-time scan cannot meet
       that SLO through query tuning alone; changing Market SIP is outside the
-      approved services.
+      approved services. Read-only catalog evidence confirms `events_2019`
+      through `events_2026` are monthly-partitioned and ordered by
+      `(ticker, ordinal)`; `events_2026` contains about 98.3 billion rows and
+      775 GB. The existing `events_ticker_day_index` provides per-ticker ordinal
+      bounds but is not a time-ordered full-market projection.
 - [ ] Retire compatibility endpoints only after the remaining Market AI and
       Text Intelligence callers migrate. Those callers are in explicitly
       deferred producer services, so their adapters remain measured rather

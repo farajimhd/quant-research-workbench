@@ -188,6 +188,14 @@ implemented, but restart reconstruction is not yet authorized as safe resume.
   fails the run. Backtest Debug uses the exact fixture content hash as both its
   plan and revision authority. This proves what an active run consumed; it does
   not yet make superseded ClickHouse revisions rereadable after restart.
+- Pinned offline market-event admission fails before applying the first event
+  if QMD reports `request_complete=false` or `complete_for_history=false`. The
+  first condition proves an explicit source gap; the second means the plan
+  still needs live continuation and is not a durable Replay/Backtest authority.
+  Plan hash, revision token, both completeness flags, and source tiers remain
+  in the run's recorded data authority. An advancing live consumer may accept
+  a complete request that needs QMD Live, but that policy is not an offline-run
+  substitute.
 - Each causal historical Watchlist membership snapshot adds its own authority
   bundle before Strategy evaluation. It names the full-market Scanner and
   technical archive revision, technical windows/schema, and the versioned

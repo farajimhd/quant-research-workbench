@@ -175,6 +175,13 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
   select `revision_policy=advancing` and pin only `expected_source_plan_hash`;
   newer tail revision tokens are accepted, while a changed source plan still
   requires restart.
+
+  `complete=true` means event pagination is exhausted. It must be read together
+  with `source_revision.request_complete` (no declared source gap) and
+  `source_revision.complete_for_history` (no live continuation required).
+  Replay and Backtest require all three conditions; an explicit-gap contract
+  audit may intentionally accept only exhausted pagination while recording the
+  declared gaps and `request_complete=false`.
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
 - `GET /snapshot/chart-bars/{ticker}?start=...&end=...&timeframe=100ms|1s|5s|10s|30s|1m|5m|1h&limit=...&stage=bars|full`
   (`stage=bars` releases bounded chronological price bars after the complete

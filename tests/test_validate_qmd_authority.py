@@ -194,7 +194,11 @@ class QmdAuthorityValidationTests(unittest.TestCase):
             "event_schema_version": 4,
             "segments": [{"start": "2026-08-01T00:00:00Z", "end": "2026-08-02T00:00:00Z", "tier": "archive"}],
         }
-        revision = {"source_plan_hash": "plan-1", "token": "revision-1"}
+        revision = {
+            "source_plan_hash": "plan-1",
+            "token": "revision-1",
+            "request_complete": True,
+        }
         event = {"ts": "2026-08-01T15:00:00Z", "ticker": "AAPL", "raw": {"correlation_id": "c", "causation_id": "a"}}
         responses = [
             {"service": "qmd_history_gateway", "status": "ready"},
@@ -233,7 +237,11 @@ class QmdAuthorityValidationTests(unittest.TestCase):
                 }
             ],
         }
-        revision = {"source_plan_hash": "plan-1", "token": "revision-1"}
+        revision = {
+            "source_plan_hash": "plan-1",
+            "token": "revision-1",
+            "request_complete": True,
+        }
         get_json.side_effect = [
             {"service": "qmd_history_gateway", "status": "ready"},
             {"header": {"service": "qmd_history_gateway"}},
@@ -285,6 +293,95 @@ class QmdAuthorityValidationTests(unittest.TestCase):
                 max_events=100,
                 allow_history_only=True,
             )
+
+    @patch("scripts.validate_qmd_authority._get_json")
+    def test_incomplete_read_fails_without_explicit_gap_mode(self, get_json) -> None:
+        plan = {
+            "plan_hash": "plan-gap",
+            "event_schema_version": 4,
+            "segments": [
+                {
+                    "start": "2026-08-01T00:00:00Z",
+                    "end": "2026-08-01T00:00:01Z",
+                    "queryable_by_history": False,
+                    "source": "coverage_gap",
+                    "tier": "gap",
+                }
+            ],
+        }
+        revision = {
+            "source_plan_hash": "plan-gap",
+            "token": "revision-gap",
+            "request_complete": False,
+        }
+        get_json.side_effect = [
+            {"service": "qmd_history_gateway", "status": "ready"},
+            {"header": {"service": "qmd_history_gateway"}},
+            plan,
+            {"complete": False},
+            {"running": True, "status": "running"},
+            {"header": {"service": "qmd_gateway"}},
+            {"complete": True, "events": [], "next_cursor": None, "source_revision": revision},
+        ]
+
+        report = collect_evidence(
+            live_url="http://live",
+            history_url="http://history",
+            start="2026-08-01T00:00:00Z",
+            end="2026-08-01T00:00:01Z",
+            tickers="AAPL",
+            page_size=100,
+            max_events=100,
+        )
+
+        self.assertEqual(report["verdict"], "fail")
+        self.assertTrue(any("source coverage is incomplete" in value for value in report["failures"]))
+
+    @patch("scripts.validate_qmd_authority._get_json")
+    def test_explicit_gap_mode_requires_and_records_exhausted_gap_evidence(self, get_json) -> None:
+        plan = {
+            "plan_hash": "plan-gap",
+            "event_schema_version": 4,
+            "segments": [
+                {
+                    "start": "2026-08-01T00:00:00Z",
+                    "end": "2026-08-01T00:00:01Z",
+                    "queryable_by_history": False,
+                    "source": "coverage_gap",
+                    "tier": "gap",
+                }
+            ],
+        }
+        revision = {
+            "source_plan_hash": "plan-gap",
+            "token": "revision-gap",
+            "request_complete": False,
+        }
+        get_json.side_effect = [
+            {"service": "qmd_history_gateway", "status": "ready"},
+            {"header": {"service": "qmd_history_gateway"}},
+            plan,
+            {"complete": False},
+            {"running": True, "status": "running"},
+            {"header": {"service": "qmd_gateway"}},
+            {"complete": True, "events": [], "next_cursor": None, "source_revision": revision},
+        ]
+
+        report = collect_evidence(
+            live_url="http://live",
+            history_url="http://history",
+            start="2026-08-01T00:00:00Z",
+            end="2026-08-01T00:00:01Z",
+            tickers="AAPL",
+            page_size=100,
+            max_events=100,
+            allow_explicit_gaps=True,
+        )
+
+        self.assertEqual(report["verdict"], "pass")
+        self.assertEqual(report["validation_scope"], "explicit_gap_contract")
+        self.assertEqual(report["event_page_proof"]["explicit_gap_count"], 1)
+        self.assertTrue(report["event_page_proof"]["explicit_gap_contract_accepted"])
 
 
 if __name__ == "__main__":
