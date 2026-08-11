@@ -572,6 +572,15 @@ bounded direct ClickHouse paths remain documented in
     existing Reference/SEC query-plan authority. No producer service changed.
     All 16 focused projection, application-registry, Canvas, and preflight tests
     plus Python compile and diff validation passed.
+80. Began the approved backend SQL migration with the complete Canvas context
+    family. Company-News, SEC filings, cross-sectional News/SEC summaries, and
+    bounded CIK-to-ticker identity queries now live in the versioned
+    `canvas_context_v1` module. The application registry exposes five exact plan
+    IDs with physical source paths, identity joins, causal clocks, and coverage
+    authorities; the Canvas composition service no longer embeds those query
+    strings. This is a backend consumer migration only and changes no News, SEC,
+    Reference, or Text Intelligence producer. All 15 focused query-plan,
+    Canvas, and registry tests plus Python compile and diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

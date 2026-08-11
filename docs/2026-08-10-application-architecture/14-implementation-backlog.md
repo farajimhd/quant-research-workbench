@@ -218,7 +218,14 @@ budgets and invalid scope broadening fails configuration validation.
 - [x] Implement shared QMD source and query planner boundaries.
 - [x] Expose capability, field, container, and configuration catalogs.
 - [ ] Move approved SQL into versioned query plans.
+  - [x] Move Canvas context company-News, SEC filing, Scanner summary, and
+        bounded SEC identity SQL into registered `canvas_context_v1` builders.
+  - [ ] Move remaining approved backend SQL domains without modifying deferred
+        producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
+  - [x] Remove the migrated Canvas context SQL from its composition service.
+  - [ ] Remove remaining route/service-local SQL only after its registered plan
+        and focused parity tests exist.
 - [ ] Consume deferred producer services through unchanged bounded contracts.
 - [x] Bulk-load point-in-time enrichment and avoid per-row remote queries.
       Scanner reference, corporate-event, float, short-interest, fundamental,

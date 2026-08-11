@@ -91,6 +91,14 @@ Backend route handlers call shared typed clients:
 
 Direct ClickHouse SQL embedded across route handlers is a migration target. SQL belongs in versioned repository/query-plan definitions behind the appropriate client.
 
+Canvas configuration context is the first completed backend SQL migration.
+Bounded company-News, SEC filing, Scanner summary, and CIK-to-ticker queries now
+live in `canvas_context_v1`; the application registry names each plan and its
+physical sources, identity join, event/availability clocks, and coverage path.
+The Canvas composition service supplies only validated cutoff/CIK inputs and
+executes the selected versioned builder. Other backend SQL domains remain open
+and are not implied complete by this migration.
+
 Scanner enrichment is already set-based at the service boundary. One causal
 reference query resolves the eligible universe with identity, market snapshot,
 float, short interest, country, presentation assets, IPOs and splits; one

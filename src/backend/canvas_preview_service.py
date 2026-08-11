@@ -4,7 +4,7 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -13,7 +13,6 @@ from research.mlops.clickhouse import (
     default_clickhouse_password,
     default_clickhouse_url,
     default_clickhouse_user,
-    sql_string,
 )
 from src.backend.news_synthesis import ENGINE_VERSION, SYNTHESIS_TABLE
 from src.backend.trading_runtime_service import (
@@ -32,6 +31,7 @@ from src.backend.historical_scanner_service import (
     historical_scanner_qmd_projection_or_schedule,
 )
 from src.backend.feature_projection import compact_feature_projection
+from src.backend.query_plans import canvas_context_v1
 from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, BrokerEventType, BrokerProvider, TradingMode
 from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
@@ -363,106 +363,30 @@ def _clickhouse_rows(query: str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in payload.splitlines() if line.strip()]
 
 
-def _utc_sql(value: datetime) -> str:
-    return sql_string(value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3])
-
-
 def _query_news(cutoff: datetime) -> list[dict[str, Any]]:
-    start = cutoff - timedelta(days=3)
-    ticker_links_sql = "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
     return _clickhouse_rows(
-        f"""
-        SELECT
-            n.canonical_news_id,
-            formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
-            n.title, n.teaser, {ticker_links_sql} AS tickers, n.channels,
-            toUInt8(s.information_origin = 'issuer') AS is_company_news,
-            s.concepts AS news_topics
-        FROM q_live.benzinga_news_event_v2 AS n FINAL
-        LEFT JOIN q_live.{SYNTHESIS_TABLE} AS s FINAL
-            ON s.canonical_news_id=n.canonical_news_id
-            AND s.engine_version={sql_string(ENGINE_VERSION)}
-        WHERE n.published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
-            AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
-        ORDER BY n.published_at_utc DESC
-        LIMIT 30
-        """
+        canvas_context_v1.company_news(
+            cutoff, engine_version=ENGINE_VERSION, synthesis_table=SYNTHESIS_TABLE
+        )
     )
 
 
 def _query_sec(cutoff: datetime) -> list[dict[str, Any]]:
-    start = cutoff - timedelta(days=45)
-    return _clickhouse_rows(
-        f"""
-        SELECT cik, accession_number, company_name, form_type,
-            formatDateTime(accepted_at_raw, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS accepted_at_utc
-        FROM
-        (
-            SELECT cik, accession_number, company_name, form_type, accepted_at_utc AS accepted_at_raw
-            FROM q_live.sec_filing_v3 FINAL
-            WHERE accepted_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
-                AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
-            ORDER BY accepted_at_utc DESC
-            LIMIT 30
-        )
-        ORDER BY accepted_at_raw DESC
-        LIMIT 30
-        """
-    )
+    return _clickhouse_rows(canvas_context_v1.sec_filings(cutoff))
 
 
 def _query_scanner_news_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
     """Return one causal company-news summary per ticker for scanner enrichment."""
-    start = cutoff - timedelta(days=3)
     return _clickhouse_rows(
-        f"""
-        SELECT
-            ticker,
-            uniqExact(canonical_news_id) AS live_news_count,
-            formatDateTime(max(published_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_news_at,
-            arraySort(arrayDistinct(arrayFlatten(groupArray(news_topics)))) AS news_labels
-        FROM
-        (
-            SELECT
-                n.canonical_news_id,
-                n.published_at_utc,
-                arrayJoin(s.tickers) AS ticker,
-                toUInt8(s.information_origin = 'issuer') AS is_company_news,
-                s.concepts AS news_topics
-            FROM q_live.benzinga_news_event_v2 AS n FINAL
-            INNER JOIN q_live.{SYNTHESIS_TABLE} AS s FINAL
-                ON s.canonical_news_id=n.canonical_news_id
-                AND s.engine_version={sql_string(ENGINE_VERSION)}
-            WHERE n.published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
-                AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
+        canvas_context_v1.scanner_company_news(
+            cutoff, engine_version=ENGINE_VERSION, synthesis_table=SYNTHESIS_TABLE
         )
-        WHERE is_company_news AND notEmpty(ticker)
-        GROUP BY ticker
-        """
     )
 
 
 def _query_scanner_sec_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
     """Return one point-in-time filing summary per ticker using the SEC identity bridge."""
-    start = cutoff - timedelta(days=45)
-    return _clickhouse_rows(
-        f"""
-        SELECT
-            upperUTF8(trimBoth(b.ticker)) AS ticker,
-            uniqExact(f.accession_number) AS sec_count,
-            formatDateTime(max(f.accepted_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_sec_at,
-            arraySort(groupUniqArray(f.form_type)) AS sec_labels
-        FROM q_live.sec_filing_v3 AS f FINAL
-        INNER JOIN q_live.id_sec_market_bridge_v3 AS b FINAL
-            ON toString(b.cik) = toString(f.cik)
-            AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
-            AND (b.valid_to_date_exclusive IS NULL OR toDate(f.accepted_at_utc) < b.valid_to_date_exclusive)
-        WHERE f.accepted_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
-            AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
-            AND notEmpty(b.ticker)
-        GROUP BY ticker
-        """
-    )
+    return _clickhouse_rows(canvas_context_v1.scanner_sec_filings(cutoff))
 
 
 def _attach_sec_tickers(rows: Any) -> None:
@@ -471,15 +395,7 @@ def _attach_sec_tickers(rows: Any) -> None:
     ciks = sorted({str(row.get("cik") or "").strip() for row in rows if isinstance(row, dict) and row.get("cik")})
     if not ciks:
         return
-    values = ", ".join(sql_string(cik) for cik in ciks)
-    identities = _clickhouse_rows(
-        f"""
-        SELECT toString(cik) AS cik, argMax(upper(ticker), confidence_score) AS mapped_ticker
-        FROM q_live.id_sec_market_bridge_v3 FINAL
-        WHERE toString(cik) IN ({values}) AND notEmpty(ticker)
-        GROUP BY cik
-        """
-    )
+    identities = _clickhouse_rows(canvas_context_v1.sec_ticker_identities(ciks))
     ticker_by_cik = {str(row.get("cik") or ""): str(row.get("mapped_ticker") or "").upper() for row in identities}
     for row in rows:
         if isinstance(row, dict):

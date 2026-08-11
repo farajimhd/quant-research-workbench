@@ -27,6 +27,15 @@ class ApplicationRegistryTests(unittest.TestCase):
         sources = {source for plan in QUERY_PLANS for source in plan.source_paths}
         self.assertTrue({f"q_live.{table}" for table in OWNED_REFERENCE_TABLES}.issubset(sources))
         self.assertIn("qmd.scanner.snapshot.v1", {plan.plan_id for plan in QUERY_PLANS})
+        self.assertTrue(
+            {
+                "news.company_asof.v1",
+                "news.scanner_company_asof.v1",
+                "sec.filing_asof.v1",
+                "sec.scanner_filing_asof.v1",
+                "sec.ticker_identity_batch.v1",
+            }.issubset({plan.plan_id for plan in QUERY_PLANS})
+        )
 
     def test_baseline_covers_scanner_chart_strategy_and_diagnostic_enrichments(self) -> None:
         fields = {field.field_id: field for field in FIELD_DEFINITIONS}
