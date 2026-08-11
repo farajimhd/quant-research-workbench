@@ -4724,6 +4724,34 @@ def trading_backtest_run(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Backtest run not found") from exc
 
 
+@app.get("/api/trading/backtest/runs/{run_id}/results")
+async def trading_backtest_run_results(
+    run_id: str,
+    symbol: str = "AAPL",
+) -> dict[str, Any]:
+    try:
+        controller = backtest_run_service.get(run_id)
+        payload = await controller.canvas_payload(symbol)
+        trading = dict(payload.get("trading") or {})
+        return {
+            "schema_version": 1,
+            "run": controller.snapshot(),
+            "as_of": payload.get("as_of"),
+            "performance_snapshot": trading.get("performance_snapshot") or {},
+            "portfolio": trading.get("portfolio") or {},
+            "positions": trading.get("positions") or [],
+            "orders": trading.get("orders") or [],
+            "executions": trading.get("executions") or [],
+            "closed_trades": trading.get("closed_trades") or [],
+            "activity": trading.get("activity") or [],
+            "strategy": payload.get("strategy") or {},
+        }
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/trading/backtest/runs/{run_id}/stop")
 async def trading_backtest_run_stop(run_id: str) -> dict[str, Any]:
     try:

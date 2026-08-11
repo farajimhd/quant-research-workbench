@@ -54,6 +54,8 @@ bounded direct ClickHouse paths remain documented in
    captured market/identity/protection evidence and the normal Portfolio-to-OMS
    authority path. Live/Paper execution remains disabled pending their shared
    controller migration and separate broker authorization.
+10. Added Backtest result projection and UI summaries directly from the run's
+    canonical Portfolio/OMS journal state; strategy attribution remains open.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

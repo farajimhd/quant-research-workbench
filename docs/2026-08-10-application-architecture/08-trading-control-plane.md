@@ -134,9 +134,10 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
   approved configuration revision. Its setup page can create, monitor, and
   stop a run.
 - Backtest Watchlist membership is currently resolved at the first event clock.
-  Session-varying membership activation/deactivation and full result
-  projections remain incomplete; this is a disclosed partial implementation,
-  not mode parity.
+  Session-varying membership activation/deactivation and strategy attribution
+  remain incomplete; this is a disclosed partial implementation, not mode
+  parity. The Backtest page now projects canonical performance, Portfolio,
+  positions, orders, executions, and closed trades from the same run journal.
 - Live still contains legacy paths and has not reached controller parity.
 - Portfolio admission is fenced across backend/run processes sharing the same authoritative trading journal. A multi-host deployment would still need to move the same lease/reservation contract to a networked transactional authority.
 - Several UI pages imply configuration objects without one backend compiler and immutable Run Plan contract.

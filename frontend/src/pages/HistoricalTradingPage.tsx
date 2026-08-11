@@ -41,6 +41,16 @@ type BacktestRun = {
   status: string;
 };
 
+type BacktestResults = {
+  as_of: string;
+  closed_trades: Array<Record<string, unknown>>;
+  executions: Array<Record<string, unknown>>;
+  orders: Array<Record<string, unknown>>;
+  performance_snapshot: Record<string, unknown>;
+  portfolio: { metrics?: Record<string, unknown>; position_count?: number };
+  positions: Array<Record<string, unknown>>;
+};
+
 export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [anchorDate, setAnchorDate] = useState(previousWeekdayIsoDate);
   const [sessionCount, setSessionCount] = useState(20);
@@ -51,6 +61,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [creating, setCreating] = useState(false);
   const [run, setRun] = useState<BacktestRun | null>(null);
+  const [results, setResults] = useState<BacktestResults | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,6 +106,13 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     return () => window.clearInterval(timer);
   }, [run]);
 
+  useEffect(() => {
+    if (!run || !["completed", "stopped", "failed"].includes(run.status)) return;
+    api<BacktestResults>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/results`, { timeoutMs: 60_000 })
+      .then(setResults)
+      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+  }, [run?.run_id, run?.status]);
+
   async function createRun() {
     if (!preflight?.strategy_run_ready) return;
     setCreating(true);
@@ -110,6 +128,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         method: "POST",
         timeoutMs: 60_000,
       });
+      setResults(null);
       setRun(created);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -156,6 +175,16 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               {preflight?.checks.map((check) => <EvidenceCheck check={check} key={check.id} />)}
             </div>
           </section>
+          {results ? <section className="historical-run-card historical-results-card">
+            <header><div><span>Canonical results</span><strong>Portfolio and OMS journal projection</strong></div><small>{results.as_of}</small></header>
+            <div className="historical-results-grid">
+              <ResultMetric label="Net P&L" value={formatResultValue(results.performance_snapshot.net_pnl_today ?? results.portfolio.metrics?.net_pnl)} />
+              <ResultMetric label="Open positions" value={String(results.positions.length)} />
+              <ResultMetric label="Orders" value={String(results.orders.length)} />
+              <ResultMetric label="Executions" value={String(results.executions.length)} />
+              <ResultMetric label="Closed trades" value={String(results.closed_trades.length)} />
+            </div>
+          </section> : null}
         </main>
 
         <aside className="historical-action-column">
@@ -179,6 +208,16 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
 
 function EvidenceCheck({ check }: { check: HistoricalCheck }) {
   return <article data-status={check.status}><div className="historical-evidence-icon">{check.status === "ready" ? <CheckCircle2 size={20} /> : <TriangleAlert size={20} />}</div><div><header><strong>{check.label}</strong></header><p>{check.summary}</p><small>{check.evidence}</small></div></article>;
+}
+
+function ResultMetric({ label, value }: { label: string; value: string }) {
+  return <div><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function formatResultValue(value: unknown) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return new Intl.NumberFormat("en-US", { currency: "USD", maximumFractionDigits: 2, style: "currency" }).format(number);
 }
 
 function previousWeekdayIsoDate() {

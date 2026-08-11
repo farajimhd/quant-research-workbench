@@ -550,7 +550,7 @@ class ReplayRunController:
                 row for row in strategy_records if row["category"] == "order_management"
             ],
             "taxonomy": definition.get("taxonomy"),
-            "historical_source": "replay_run_journal_only",
+            "historical_source": f"{self.definition.mode.value}_run_journal_only",
         }
         return {
             "as_of": trading["as_of"],
@@ -562,7 +562,7 @@ class ReplayRunController:
             "news": [],
             "orders": trading.get("orders", []),
             "portfolio": trading.get("portfolio", {}),
-            "preview_kind": "replay_run",
+            "preview_kind": f"{self.definition.mode.value}_run",
             "scanner": [],
             "scanner_meta": {"status": "run_clock", "row_count": 0},
             "sec": [],

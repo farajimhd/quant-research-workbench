@@ -228,7 +228,9 @@ load progressively without false continuity.
   - [x] Create, monitor, and stop Backtest runs from the Backtest UI.
   - [ ] Apply causal Watchlist membership changes during the run rather than
         holding first-clock membership static.
-  - [ ] Build complete Backtest result and attribution projections.
+  - [x] Build canonical Backtest performance, Portfolio, position, order,
+        execution, and closed-trade result projections.
+  - [ ] Add strategy/run attribution and comparative analysis projections.
   - [ ] Add durable resume/restart from checkpoints.
 - [ ] Add deterministic Debug fixtures.
 - [ ] Pin causal market/enrichment versions for historical decisions.
