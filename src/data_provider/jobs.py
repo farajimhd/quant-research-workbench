@@ -310,6 +310,7 @@ def attach_job_summary(payload: dict[str, Any], events: list[dict[str, Any]] | N
         finished_at=payload.get("finished_at"),
         supported_commands=("pause", "resume", "cancel", "retry_stateful"),
         authority="market_data_job_file",
+        mode="offline",
     )
     return payload
 

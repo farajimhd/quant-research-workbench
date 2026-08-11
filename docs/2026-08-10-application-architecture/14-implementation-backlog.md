@@ -653,7 +653,11 @@ load progressively without false continuity.
       Backtest, Live, and Paper resolve runtime projections from that pinned
       approved payload rather than mutable UI session state.
 - [ ] Implement one lifecycle for Live, Paper, Replay, Backtest, and Debug.
-- [ ] Inject mode-specific clock, observation source, latency, and fill/broker adapter.
+  - [x] Publish one lifecycle schema-v2 projection across Live, Paper, Replay,
+        Backtest, Debug, and offline market-data builds. Live/Paper currently
+        expose canonical-state status without broker command authority.
+- [x] Inject and expose mode-specific clock, observation source, latency, and
+      fill/broker adapter identity.
 - [ ] Share Strategy, Portfolio, OMS, and journal state machines.
 - [ ] Use Replay as the parity benchmark.
 - [ ] Migrate remaining Live legacy paths.
@@ -792,8 +796,12 @@ load progressively without false continuity.
         background market-data builds, including canonical state, progress,
         terminal state, timestamps, failure retryability, checkpoint evidence,
         enabled commands, resource identity, and controlling authority.
-  - [ ] Unify lifecycle command/status envelopes across Live/Paper controllers
-        and background research jobs.
+  - [ ] Unify lifecycle command/status envelopes across every background
+        research job.
+    - [x] Add the shared schema-v2 status envelope to Live/Paper canonical
+          state with explicit wall/exchange clock, QMD Live observations,
+          measured latency, IBKR adapter, and canonical fill identities.
+    - [ ] Migrate research-job producers owned by deferred intelligence work.
 - [x] Add restart-safe checkpoints.
   - [x] Expose durable historical-run checkpoint cursor, event/write clocks,
         processed count, interval, and honest resume-support status in backend

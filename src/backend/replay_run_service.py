@@ -616,6 +616,7 @@ class ReplayRunController:
             ),
             supported_commands=("pause", "play", "stop", "resume"),
             authority="historical_run_controller",
+            mode=self.definition.mode.value,
         )
         return payload
 

@@ -1755,6 +1755,20 @@ it does not imply all application work is complete.
      was separately observed to hang in its admission-lease path and is not
      represented as passing.
 
+165. Published lifecycle contract schema v2 across the permitted application
+     paths. Every projection now declares its mode and exact clock,
+     observation-source, latency, execution, and fill adapters. Replay,
+     Backtest, Debug, and offline market-data builds continue to use their
+     existing bounded command/checkpoint authorities. Live/Paper canonical
+     state now exposes the same envelope as a continuous session projection,
+     but deliberately advertises no start/stop/broker commands. Unknown modes
+     and incomplete adapter contracts fail closed. This makes parity and
+     intentional mode differences reviewable without changing the IBKR
+     Gateway, Supervisor, or broker submission runtime. Seventy-six focused
+     lifecycle, cache, historical-controller, Canvas, and canonical-state tests
+     passed. Remaining research-job producer migrations stay deferred with
+     their owning intelligence services.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

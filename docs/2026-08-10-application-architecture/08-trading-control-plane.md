@@ -70,6 +70,13 @@ The user should not have to hand-author a deployment if it is deterministically 
 
 Strategy, Portfolio, OMS state machines and journal event schemas should be shared. Source, clock, latency, and fill adapters are injected. A replay must not silently use today’s identity, fundamentals, news, or corrections for a historical decision.
 
+The backend publishes those adapter bindings in lifecycle schema v2 for every
+mode. This is review evidence, not a user-editable deployment object. Live and
+Paper publish a continuous canonical-state lifecycle with no command authority;
+Replay, Backtest, and Debug publish their bounded controller commands; offline
+builds publish job/checkpoint commands. Adding broker commands to the
+Live/Paper envelope remains part of the separately authorized runtime rollout.
+
 ## 4. Portfolio Management authority
 
 Portfolio Management exclusively owns:

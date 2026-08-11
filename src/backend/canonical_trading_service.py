@@ -5,6 +5,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.backend.bounded_cache import BoundedTtlCache
+from src.backend.lifecycle_contract import lifecycle_projection
 from src.backend.real_live_trading_service import real_live_portfolio
 from src.trading_runtime.domain import (
     BrokerEventEnvelope,
@@ -64,6 +65,23 @@ def canonical_live_state(account_type: str = "paper", account_keys: str = "", *,
         return cached
     snapshot = canonical_live_snapshot(account_type, account_keys)
     payload = trading_state_payload(snapshot)
+    payload["lifecycle"] = lifecycle_projection(
+        resource_type="trading_session_projection",
+        resource_id=(
+            f"{snapshot.mode.value}:" + ",".join(sorted(snapshot.account_ids))
+        ),
+        status="running" if snapshot.complete and not snapshot.stale else "blocked",
+        authority="canonical_live_state",
+        checkpoint={
+            "status": "available" if snapshot.complete else "incomplete",
+            "as_of": snapshot.as_of.isoformat(),
+            "resume_supported": False,
+        },
+        error=snapshot.stale_reason if snapshot.stale else "",
+        created_at=snapshot.as_of.isoformat(),
+        updated_at=snapshot.as_of.isoformat(),
+        mode=snapshot.mode.value,
+    )
     _CACHE.set(cache_key, payload)
     return payload
 

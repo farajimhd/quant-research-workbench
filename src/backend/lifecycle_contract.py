@@ -6,6 +6,52 @@ from typing import Any
 TERMINAL_STATES = {"cancelled", "completed", "failed", "stopped"}
 
 
+MODE_ADAPTERS = {
+    "live": {
+        "clock": "wall_exchange_clock",
+        "observation_source": "qmd_live",
+        "latency": "measured_source_and_processing_latency",
+        "execution": "ibkr_cpapi",
+        "fills": "canonical_broker_events",
+    },
+    "paper": {
+        "clock": "wall_exchange_clock",
+        "observation_source": "qmd_live",
+        "latency": "measured_source_and_processing_latency",
+        "execution": "ibkr_cpapi_paper",
+        "fills": "canonical_broker_events",
+    },
+    "replay": {
+        "clock": "replay_clock",
+        "observation_source": "qmd_history",
+        "latency": "configured_replay_latency",
+        "execution": "simulated_broker",
+        "fills": "simulated_execution_events",
+    },
+    "backtest": {
+        "clock": "simulation_clock",
+        "observation_source": "qmd_history",
+        "latency": "configured_simulation_latency",
+        "execution": "simulated_broker",
+        "fills": "simulated_execution_events",
+    },
+    "backtest_debug": {
+        "clock": "fixture_clock",
+        "observation_source": "content_hashed_fixture",
+        "latency": "configured_simulation_latency",
+        "execution": "simulated_broker",
+        "fills": "simulated_execution_events",
+    },
+    "offline": {
+        "clock": "job_clock",
+        "observation_source": "pinned_persisted_source",
+        "latency": "not_applicable",
+        "execution": "none",
+        "fills": "none",
+    },
+}
+
+
 def lifecycle_projection(
     *,
     resource_type: str,
@@ -23,6 +69,8 @@ def lifecycle_projection(
     started_at: Any = None,
     finished_at: Any = None,
     supported_commands: tuple[str, ...] = (),
+    mode: str = "offline",
+    adapter_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     state = canonical_lifecycle_state(status)
     fraction = None if progress is None else min(1.0, max(0.0, float(progress)))
@@ -35,7 +83,7 @@ def lifecycle_projection(
         for command in supported_commands
     ]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "resource_type": str(resource_type),
         "resource_id": str(resource_id),
         "state": state,
@@ -68,7 +116,26 @@ def lifecycle_projection(
             "finished_at": finished_at,
         },
         "authority": str(authority),
+        "mode": str(mode),
+        "adapters": mode_adapter_contract(mode, adapter_overrides),
     }
+
+
+def mode_adapter_contract(
+    mode: str,
+    overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
+    normalized = str(mode or "offline").strip().lower()
+    if normalized not in MODE_ADAPTERS:
+        raise ValueError(f"Unsupported lifecycle mode: {mode}")
+    adapters = {**MODE_ADAPTERS[normalized], **dict(overrides or {})}
+    required = {"clock", "observation_source", "latency", "execution", "fills"}
+    missing = sorted(key for key in required if not str(adapters.get(key) or "").strip())
+    if missing:
+        raise ValueError(
+            "Lifecycle adapter contract omitted: " + ", ".join(missing)
+        )
+    return adapters
 
 
 def canonical_lifecycle_state(status: str) -> str:
