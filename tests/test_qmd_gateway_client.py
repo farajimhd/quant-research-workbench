@@ -15,6 +15,7 @@ from src.backend.qmd_gateway_client import (
     qmd_compact_events,
     qmd_compact_event_page,
     qmd_computation_demand,
+    qmd_computation_requirements,
     qmd_history_base_url,
     qmd_history_websocket_url,
     qmd_historical_scanner_snapshot,
@@ -630,6 +631,59 @@ class QmdGatewayClientTests(unittest.TestCase):
 
         self.assertEqual(qmd_computation_demand(), get_json.return_value)
         get_json.assert_called_once_with("/computation-targets", timeout=3)
+
+    def test_computation_requirements_preserve_live_and_history_authorities(self) -> None:
+        live_get = MagicMock(
+            return_value={
+                "requirements": [
+                    {
+                        "requirement_id": "live-1",
+                        "ticker": "AAPL",
+                        "source_revision": "advancing_live",
+                    }
+                ]
+            }
+        )
+        history_get = MagicMock(
+            return_value={
+                "requirements": [
+                    {
+                        "requirement_id": "history-1",
+                        "ticker": "AAPL",
+                        "source_revision": "revision-17",
+                    }
+                ]
+            }
+        )
+
+        payload = qmd_computation_requirements(
+            live_get=live_get,
+            history_get=history_get,
+        )
+
+        self.assertTrue(payload["complete"])
+        self.assertEqual(payload["active_requirement_count"], 2)
+        self.assertEqual(payload["live_requirement_count"], 1)
+        self.assertEqual(payload["offline_requirement_count"], 1)
+        self.assertEqual(
+            {row["authority"] for row in payload["requirements"]},
+            {"qmd_gateway", "qmd_history"},
+        )
+        live_get.assert_called_once_with("/computation-targets", timeout=3)
+        history_get.assert_called_once_with("/snapshot/cache", timeout=3)
+
+    def test_computation_requirements_degrades_one_authority_explicitly(self) -> None:
+        def unavailable(*_args, **_kwargs):
+            raise RuntimeError("history offline")
+
+        payload = qmd_computation_requirements(
+            live_get=lambda *_args, **_kwargs: {"requirements": []},
+            history_get=unavailable,
+        )
+
+        self.assertFalse(payload["complete"])
+        self.assertEqual(payload["authorities"]["qmd_history"], "unavailable")
+        self.assertIn("history offline", payload["errors"]["qmd_history"])
 
     @patch("src.backend.qmd_gateway_client.qmd_put_json")
     @patch("src.backend.qmd_gateway_client.qmd_get_json")

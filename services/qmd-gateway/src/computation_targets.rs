@@ -58,11 +58,27 @@ pub struct ComputationTargetSnapshot {
     pub requested_demand_units: u64,
     pub deduplicated_demand_units_saved: u64,
     pub requirement_ref_counts: BTreeMap<String, usize>,
+    pub requirements: Vec<EffectiveComputationRequirement>,
     pub scope_capability_counts: BTreeMap<String, usize>,
     pub scope_estimated_demand_units: BTreeMap<String, u64>,
     pub scope_symbol_counts: BTreeMap<String, usize>,
     pub scope_target_counts: BTreeMap<String, usize>,
     pub target_estimated_demand_units: BTreeMap<String, u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct EffectiveComputationRequirement {
+    pub requirement_id: String,
+    pub ticker: String,
+    pub capability: String,
+    pub timeframe: String,
+    pub implementation_version: u16,
+    pub parameter_hash: String,
+    pub anchor: String,
+    pub source_revision: String,
+    pub ref_count: usize,
+    pub demand_units: u64,
+    pub scopes: BTreeSet<String>,
 }
 
 #[derive(Default)]
@@ -224,6 +240,7 @@ impl SharedComputationTargets {
         let mut target_estimated_demand_units = BTreeMap::new();
         let mut requirement_ref_counts = BTreeMap::<String, usize>::new();
         let mut effective_requirement_costs = BTreeMap::<String, u64>::new();
+        let mut effective_requirements = BTreeMap::<String, EffectiveComputationRequirement>::new();
         let mut scope_requirement_costs = BTreeMap::<String, BTreeMap<String, u64>>::new();
         let catalog = computation_capability_catalog();
         for target in &targets {
@@ -272,6 +289,23 @@ impl SharedComputationTargets {
                         *requirement_ref_counts
                             .entry(requirement.clone())
                             .or_insert(0) += 1;
+                        let effective = effective_requirements
+                            .entry(requirement.clone())
+                            .or_insert_with(|| EffectiveComputationRequirement {
+                                requirement_id: requirement.clone(),
+                                ticker: ticker.clone(),
+                                capability: capability.clone(),
+                                timeframe: timeframe.clone(),
+                                implementation_version: definition.implementation_version,
+                                parameter_hash: target.parameter_hash.clone(),
+                                anchor: target.anchor.clone(),
+                                source_revision: target.source_revision.clone(),
+                                ref_count: 0,
+                                demand_units: weight,
+                                scopes: BTreeSet::new(),
+                            });
+                        effective.ref_count += 1;
+                        effective.scopes.insert(scope.clone());
                         effective_requirement_costs.insert(requirement.clone(), weight);
                         scope_requirement_costs
                             .entry(scope.clone())
@@ -312,7 +346,7 @@ impl SharedComputationTargets {
             .copied()
             .fold(0_u64, u64::saturating_add);
         ComputationTargetSnapshot {
-            schema_version: 4,
+            schema_version: 5,
             as_of: now,
             active_target_count: targets.len(),
             active_symbol_count: symbol_ref_counts.len(),
@@ -325,6 +359,7 @@ impl SharedComputationTargets {
             deduplicated_demand_units_saved: requested_demand_units
                 .saturating_sub(estimated_demand_units),
             requirement_ref_counts,
+            requirements: effective_requirements.into_values().collect(),
             scope_capability_counts,
             scope_estimated_demand_units,
             scope_symbol_counts,
@@ -481,7 +516,7 @@ mod tests {
         targets.replace(second).unwrap();
 
         let snapshot = targets.snapshot();
-        assert_eq!(snapshot.schema_version, 4);
+        assert_eq!(snapshot.schema_version, 5);
         assert_eq!(snapshot.active_target_count, 2);
         assert_eq!(snapshot.active_symbol_count, 2);
         assert_eq!(snapshot.symbol_ref_counts.get("AAPL"), Some(&2));
@@ -504,6 +539,23 @@ mod tests {
             Some(&2)
         );
         assert!(targets.requires_focused_computation("aapl"));
+        let aapl = snapshot
+            .requirements
+            .iter()
+            .find(|row| {
+                row.ticker == "AAPL"
+                    && row.capability == "opening_range"
+                    && row.timeframe == "100ms"
+            })
+            .unwrap();
+        assert_eq!(aapl.ref_count, 2);
+        assert_eq!(
+            aapl.scopes,
+            BTreeSet::from(["request".to_string(), "watchlist".to_string()])
+        );
+        assert_eq!(aapl.parameter_hash, "params-v1");
+        assert_eq!(aapl.anchor, "new_york_session");
+        assert_eq!(aapl.source_revision, "advancing_live");
         assert!(targets.remove("request:chart"));
         assert_eq!(targets.snapshot().symbol_ref_counts.get("AAPL"), Some(&1));
     }

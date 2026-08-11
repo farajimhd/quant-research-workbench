@@ -111,7 +111,7 @@ from src.backend.qmd_gateway_client import (
     qmd_catalogs,
     qmd_chart_bars,
     qmd_compact_events,
-    qmd_computation_demand,
+    qmd_computation_requirements,
     qmd_indicators,
     qmd_historical_scanner_snapshot,
     qmd_live_market_state,
@@ -4499,11 +4499,18 @@ def market_discovery_watchlist_runtime() -> dict[str, Any]:
     from src.backend.watchlist_runtime_service import WATCHLIST_RUNTIME
 
     payload = WATCHLIST_RUNTIME.snapshot()
-    try:
-        payload["computation_demand"] = qmd_computation_demand()
-    except Exception as exc:
-        payload["computation_demand_error"] = str(exc)
+    planner = qmd_computation_requirements()
+    payload["computation_requirements"] = planner
+    if isinstance(planner.get("live_demand"), dict):
+        payload["computation_demand"] = planner["live_demand"]
+    elif planner.get("errors", {}).get("qmd_gateway"):
+        payload["computation_demand_error"] = planner["errors"]["qmd_gateway"]
     return payload
+
+
+@app.get("/api/system/computation-requirements")
+def system_computation_requirements() -> dict[str, Any]:
+    return qmd_computation_requirements()
 
 
 @app.get("/api/market-discovery/scanner/history")

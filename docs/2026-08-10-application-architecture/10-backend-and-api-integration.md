@@ -102,6 +102,13 @@ typed transport, and proxied QMD WebSockets preserve the legacy human-readable
 `error` field inside a schema-v1 terminal frame with machine-readable
 `error_detail`.
 
+`GET /api/system/computation-requirements` is the read-only cross-service
+planner projection. It composes QMD Gateway's structured live requirements and
+QMD History's revisioned offline cache requirements without merging their
+authorities or source revisions. Each side may degrade independently; the
+response returns partial evidence plus typed per-authority errors rather than
+failing the available side. Market Discovery consumes the same projection.
+
 ## 6. Configuration registry and compiler
 
 The catalog contains capability, field, container, strategy, policy, mode and service descriptors. Configuration records reference stable IDs and versions. The compiler:

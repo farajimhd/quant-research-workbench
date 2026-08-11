@@ -472,6 +472,18 @@ bounded direct ClickHouse paths remain documented in
     identity. All 27 QMD History tests, six backend readiness tests, Rust
     formatting, Python compile, and diff validation passed. A single aggregated
     live-plus-history planner projection remains open.
+70. Added the cross-service computation planner projection. QMD demand schema
+    v5 now returns structured live requirements and reference counts rather
+    than requiring consumers to parse identity strings. The backend composes
+    those rows with QMD History's offline requirements at
+    `/api/system/computation-requirements`, preserves distinct authority and
+    revision, and returns partial evidence with per-authority errors. Market
+    Discovery shows live/offline counts even before its first Scanner
+    resolution. All 92 QMD Gateway tests, 46 focused backend tests, Python
+    compile, Rust formatting, and the managed external-runtime frontend build
+    passed. The strict Market Discovery browser matrix captured all 12
+    light/dark, scale, and viewport scenarios with zero objective issues; a
+    focused loaded-state capture verified the partial-authority planner text.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

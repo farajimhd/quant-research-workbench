@@ -198,7 +198,7 @@ offline calculation is available in its proper scope.
   A one-minute chart or Watchlist lease no longer runs unrelated five-minute,
   hourly, or other finalized timeframe rows for that ticker. Legacy leases
   with no timeframe declaration retain all-timeframe behavior.
-- QMD computation-demand schema v4 expands every lease into effective
+- QMD computation-demand schema v5 expands every lease into structured effective
   `(ticker, capability, timeframe, implementation version, parameter hash,
   anchor, source revision)` requirements,
   reference-counts the shared identities, and reports requested versus
@@ -247,8 +247,10 @@ offline calculation is available in its proper scope.
   owned by QMD History build/query planning and now publishes the same semantic
   dimensions: product/profile, ticker, timeframe, engine-parameter hash,
   event-time anchor, and exact source revision. Identical historical work still
-  executes once through the existing revisioned single-flight cache; the
-  remaining union gap is one cross-service aggregate planner view.
+  executes once through the existing revisioned single-flight cache. The
+  backend composes both authorities under `/api/system/computation-requirements`
+  and in the Market Discovery Watchlist runtime projection; missing authority
+  remains explicit instead of erasing the requirements that are available.
 - QMD's active target snapshot now reports unique symbols and capabilities by
   Watchlist, Strategy Run, Request, and Offline scope plus weighted demand
   units. The weight combines registered cost class, ticker count, and requested

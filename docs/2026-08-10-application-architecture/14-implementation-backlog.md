@@ -171,13 +171,16 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
       TTL, manual override, and promotion/demotion reasons.
 - [x] Persist membership add/remove/expire events.
 - [x] Subscribe focused calculations only for current members.
-- [ ] Union Watchlist, Strategy, chart, and offline computation requests.
+- [x] Union Watchlist, Strategy, chart, and offline computation requests.
       QMD now owns the validated live lease union and Watchlist, Paper/Live
       Strategy Run, and chart producers are wired.
   - [x] Register QMD History cache work with product/profile, ticker, timeframe,
         engine-parameter hash, event-time anchor, exact source revision, state,
         event count, and footprint; preserve it through backend operations.
-  - [ ] Aggregate live and historical requirements into one planner projection.
+  - [x] Aggregate live and historical requirements into one planner projection.
+        The backend preserves distinct live/history authority and revision,
+        returns partial evidence when one service is unavailable, and exposes
+        the result through System and Market Discovery APIs.
 - [ ] Deduplicate by capability, identity, parameters, timeframe, anchor, and revision.
   - [x] Deduplicate live demand by ticker, capability, timeframe, and capability
         implementation version; expose exact requirement reference counts and

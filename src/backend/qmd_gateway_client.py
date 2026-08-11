@@ -758,6 +758,75 @@ def qmd_computation_demand() -> dict[str, Any]:
     return payload
 
 
+def qmd_computation_requirements(
+    *,
+    live_get: Callable[..., Any] = qmd_get_json,
+    history_get: Callable[..., Any] = qmd_history_get_json,
+) -> dict[str, Any]:
+    """Compose live and historical computation requirements without merging authorities."""
+    errors: dict[str, str] = {}
+    payloads: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            "qmd_gateway": executor.submit(live_get, "/computation-targets", timeout=3),
+            "qmd_history": executor.submit(history_get, "/snapshot/cache", timeout=3),
+        }
+        for authority, future in futures.items():
+            try:
+                value = future.result()
+                if not isinstance(value, dict):
+                    raise RuntimeError(f"{authority} returned an invalid computation envelope")
+                payloads[authority] = value
+            except Exception as exc:
+                errors[authority] = str(exc)
+
+    requirements: list[dict[str, Any]] = []
+    live_payload = payloads.get("qmd_gateway", {})
+    for row in live_payload.get("requirements") or []:
+        if isinstance(row, dict):
+            requirements.append({**row, "authority": "qmd_gateway"})
+    if not requirements and isinstance(live_payload.get("requirement_ref_counts"), dict):
+        requirements.extend(
+            {
+                "authority": "qmd_gateway",
+                "requirement_id": str(requirement_id),
+                "ref_count": int(ref_count or 0),
+                "details_unavailable": True,
+            }
+            for requirement_id, ref_count in live_payload["requirement_ref_counts"].items()
+        )
+
+    history_payload = payloads.get("qmd_history", {})
+    for row in history_payload.get("requirements") or []:
+        if isinstance(row, dict):
+            requirements.append({**row, "authority": "qmd_history"})
+    requirements.sort(
+        key=lambda row: (
+            str(row.get("authority") or ""),
+            str(row.get("requirement_id") or ""),
+        )
+    )
+    return {
+        "schema_version": 1,
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "complete": not errors,
+        "authorities": {
+            "qmd_gateway": "available" if "qmd_gateway" in payloads else "unavailable",
+            "qmd_history": "available" if "qmd_history" in payloads else "unavailable",
+        },
+        "active_requirement_count": len(requirements),
+        "live_requirement_count": sum(
+            1 for row in requirements if row.get("authority") == "qmd_gateway"
+        ),
+        "offline_requirement_count": sum(
+            1 for row in requirements if row.get("authority") == "qmd_history"
+        ),
+        "live_demand": payloads.get("qmd_gateway"),
+        "requirements": requirements,
+        "errors": errors,
+    }
+
+
 def qmd_scanner_snapshot(
     row_limit: int = 250,
     *,
