@@ -129,6 +129,14 @@ authorities or source revisions. Each side may degrade independently; the
 response returns partial evidence plus typed per-authority errors rather than
 failing the available side. Market Discovery consumes the same projection.
 
+The backend's causal daily-session aggregation is the registered
+`market.daily_session_bars.v1` plan. Historical Scanner, ticker facts, and
+Watchlist consumers call that versioned builder directly. It requires all three
+extended-session partitions, rejects ambiguous source identity, applies the
+`available_at_us` cutoff, and falls back to a source ticker only when canonical
+coverage for the requested ticker is absent. `daily_session_bars.py` remains a
+compatibility import, not a second SQL authority.
+
 ## 6. Configuration registry and compiler
 
 The catalog contains capability, field, container, strategy, policy, mode and service descriptors. Configuration records reference stable IDs and versions. The compiler:

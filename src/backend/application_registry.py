@@ -406,6 +406,16 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "service://qmd-gateway/coverage",
         ),
         QueryPlanDefinition(
+            "market.daily_session_bars.v1",
+            "backend",
+            "src.backend.query_plans.market_daily_bars_v1:daily_session_trade_bars",
+            ("market_sip_compact.daily_session_bars_by_symbol_time_v1",),
+            "canonical ticker with source-ticker fallback only when canonical coverage is absent",
+            "New York session date and SIP bar timestamps",
+            "available_at_us",
+            "market_sip_compact.daily_session_bars_by_symbol_time_v1",
+        ),
+        QueryPlanDefinition(
             "reference.schema_inventory.v1",
             "reference_gateway",
             "services.reference_gateway.table_groups:REFERENCE_TABLE_GROUPS",

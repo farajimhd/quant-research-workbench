@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from src.backend.daily_session_bars import daily_session_trade_bars_relation_sql
+from src.backend.query_plans.market_daily_bars_v1 import daily_session_trade_bars
 
 
 def test_daily_session_relation_is_complete_causal_and_identity_safe() -> None:
@@ -32,3 +33,7 @@ def test_daily_session_relation_rejects_noncausal_inputs() -> None:
             end_date=date(2026, 1, 2),
             as_of=datetime(2026, 1, 2),
         )
+
+
+def test_compatibility_import_is_the_registered_plan_builder() -> None:
+    assert daily_session_trade_bars_relation_sql is daily_session_trade_bars

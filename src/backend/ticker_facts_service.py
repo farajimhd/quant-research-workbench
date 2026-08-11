@@ -17,7 +17,7 @@ from research.mlops.clickhouse import (
     quote_ident,
     sql_string,
 )
-from src.backend.daily_session_bars import (
+from src.backend.query_plans.market_daily_bars_v1 import (
     DEFAULT_DAILY_SESSION_BARS_TABLE,
     daily_session_trade_bars_relation_sql,
 )

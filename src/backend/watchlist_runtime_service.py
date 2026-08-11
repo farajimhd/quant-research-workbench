@@ -15,7 +15,9 @@ from research.mlops.clickhouse import (
     default_clickhouse_url,
     default_clickhouse_user,
 )
-from src.backend.daily_session_bars import daily_session_trade_bars_relation_sql
+from src.backend.query_plans.market_daily_bars_v1 import (
+    daily_session_trade_bars_relation_sql,
+)
 from src.backend.bounded_cache import BoundedTtlCache
 from src.backend.qmd_gateway_client import qmd_delete_json, qmd_put_json
 from src.request_context import causal_identity

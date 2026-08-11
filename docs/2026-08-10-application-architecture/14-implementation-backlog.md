@@ -220,10 +220,15 @@ budgets and invalid scope broadening fails configuration validation.
 - [ ] Move approved SQL into versioned query plans.
   - [x] Move Canvas context company-News, SEC filing, Scanner summary, and
         bounded SEC identity SQL into registered `canvas_context_v1` builders.
+  - [x] Move the causal daily-session-bar aggregation used by historical
+        Scanner, ticker facts, and Watchlists into the registered
+        `market.daily_session_bars.v1` plan.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
   - [x] Remove the migrated Canvas context SQL from its composition service.
+  - [x] Replace daily-session-bar service imports with the registered plan;
+        retain only a compatibility re-export for external callers.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [ ] Consume deferred producer services through unchanged bounded contracts.

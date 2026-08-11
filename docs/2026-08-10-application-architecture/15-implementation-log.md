@@ -598,6 +598,15 @@ bounded direct ClickHouse paths remain documented in
     review captured the page at 1600x1000 and 1280x720 with zero objective
     issues; because no backend was running, the screenshots correctly showed
     the typed preflight failure state rather than ready/run-state evidence.
+82. Moved the causal daily-session-bar SQL into the registered
+    `market.daily_session_bars.v1` plan. Historical Scanner, ticker facts, and
+    Watchlist consumers now import the versioned plan directly; the old module
+    is only an identity-preserving compatibility re-export. The plan keeps its
+    three-session completeness gate, identity ambiguity rejection,
+    canonical/source-ticker fallback rule, and `available_at_us` cutoff.
+    Python compile and 33 focused plan, registry, Watchlist, and historical
+    Scanner tests passed (pytest ran in the existing `ml4t` environment because
+    the default repository Python does not contain pytest).
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

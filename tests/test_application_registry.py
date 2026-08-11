@@ -27,6 +27,14 @@ class ApplicationRegistryTests(unittest.TestCase):
         sources = {source for plan in QUERY_PLANS for source in plan.source_paths}
         self.assertTrue({f"q_live.{table}" for table in OWNED_REFERENCE_TABLES}.issubset(sources))
         self.assertIn("qmd.scanner.snapshot.v1", {plan.plan_id for plan in QUERY_PLANS})
+        daily_plan = {
+            plan.plan_id: plan for plan in QUERY_PLANS
+        }["market.daily_session_bars.v1"]
+        self.assertEqual(
+            daily_plan.implementation,
+            "src.backend.query_plans.market_daily_bars_v1:daily_session_trade_bars",
+        )
+        self.assertEqual(daily_plan.availability_clock, "available_at_us")
         self.assertTrue(
             {
                 "news.company_asof.v1",

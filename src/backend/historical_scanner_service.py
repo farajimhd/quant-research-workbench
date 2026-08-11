@@ -17,7 +17,9 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
     sql_string,
 )
-from src.backend.daily_session_bars import daily_session_trade_bars_relation_sql
+from src.backend.query_plans.market_daily_bars_v1 import (
+    daily_session_trade_bars_relation_sql,
+)
 from src.backend.real_live_market_data.startup import logo_asset_url
 from src.backend.qmd_gateway_client import (
     normalize_qmd_indicator_scanner_row,
