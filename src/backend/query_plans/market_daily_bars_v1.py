@@ -73,6 +73,33 @@ def daily_session_trade_bars(
     """
 
 
+def daily_market_reference_projection(
+    *,
+    database: str,
+    start_date: date,
+    end_date: date,
+    as_of: datetime,
+    table: str = DEFAULT_DAILY_SESSION_BARS_TABLE,
+) -> str:
+    """Causal previous-close and average-volume projection for Watchlists."""
+    relation = daily_session_trade_bars(
+        database=database,
+        start_date=start_date,
+        end_date=end_date,
+        as_of=as_of,
+        table=table,
+    )
+    return f"""
+        SELECT
+            upper(sym) AS ticker,
+            argMax(close, session_date) AS previous_close,
+            avg(size_sum) AS average_daily_volume
+        FROM ({relation})
+        GROUP BY ticker
+        FORMAT JSONEachRow
+    """
+
+
 # Compatibility name for existing service callers. The registered plan entry
 # points at ``daily_session_trade_bars`` and new callers should use that name.
 daily_session_trade_bars_relation_sql = daily_session_trade_bars

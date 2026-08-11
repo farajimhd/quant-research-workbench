@@ -16,7 +16,7 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
 )
 from src.backend.query_plans.market_daily_bars_v1 import (
-    daily_session_trade_bars_relation_sql,
+    daily_market_reference_projection,
 )
 from src.backend.bounded_cache import BoundedTtlCache
 from src.backend.qmd_gateway_client import qmd_delete_json, qmd_put_json
@@ -628,7 +628,7 @@ def live_market_reference_projection(
     source_database = os.environ.get(
         "QMD_HISTORY_CLICKHOUSE_DATABASE", "market_sip_compact"
     ).strip()
-    daily_relation = daily_session_trade_bars_relation_sql(
+    daily_query = daily_market_reference_projection(
         database=source_database,
         start_date=cutoff.date() - timedelta(days=45),
         end_date=cutoff.date(),
@@ -639,17 +639,7 @@ def live_market_reference_projection(
         default_clickhouse_user(),
         default_clickhouse_password(),
     )
-    daily_rows = client.execute(
-        f"""
-        SELECT
-            upper(sym) AS ticker,
-            argMax(close, session_date) AS previous_close,
-            avg(size_sum) AS average_daily_volume
-        FROM ({daily_relation})
-        GROUP BY ticker
-        FORMAT JSONEachRow
-        """
-    )
+    daily_rows = client.execute(daily_query)
     import json
 
     for line in daily_rows.splitlines():

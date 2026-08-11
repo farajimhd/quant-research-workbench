@@ -242,6 +242,8 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Move the causal daily-session-bar aggregation used by historical
         Scanner, ticker facts, and Watchlists into the registered
         `market.daily_session_bars.v1` plan.
+  - [x] Move Watchlist previous-close and average-volume projection into the
+        same causal daily-bar plan instead of wrapping it in service-local SQL.
   - [x] Move bounded ticker branding and issuer-name lookup into the registered
         `market.ticker_presentation.v1` plan while retaining the existing
         service import as a compatibility re-export.

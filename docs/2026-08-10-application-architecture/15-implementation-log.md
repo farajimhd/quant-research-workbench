@@ -982,6 +982,14 @@ bounded direct ClickHouse paths remain documented in
      user file was modified to bypass these constraints. The unchecked items in
      the backlog therefore remain honest gates rather than being administratively
      marked complete.
+118. Removed the remaining Watchlist-local daily-market projection SQL. The
+     registered `market.daily_session_bars.v1` module now owns the causal
+     previous-close and average-volume projection as well as its underlying
+     completed-session relation; Watchlist composition only executes the
+     versioned plan and projects its rows. Thirteen Watchlist runtime tests,
+     focused causal-plan assertions, and Python compilation passed. The
+     Miniconda runtime does not provide pytest, so the existing pytest wrapper
+     file was not claimed as executed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
