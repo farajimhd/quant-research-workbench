@@ -5,8 +5,8 @@ import math
 import re
 import time
 from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Callable, Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from typing import Callable, Iterator, TypeVar
 from zoneinfo import ZoneInfo
 
 import polars as pl
@@ -47,6 +47,56 @@ from research.mlops.clickhouse import quote_ident, sql_string
 
 
 DIRECT_EVENT_SOURCE_VERSION = "bar_gpt_direct_events_trade_sparse_v2"
+
+PageValue = TypeVar("PageValue")
+
+
+def _iter_prefetched_pages_in_order(
+    pages: deque[tuple[dt.date, dt.date]],
+    *,
+    depth: int,
+    read_page: Callable[[dt.date, dt.date], list[PageValue]],
+    page_callback: Callable[[str, str, int, float], None] | None,
+    thread_name_prefix: str,
+) -> Iterator[list[PageValue]]:
+    """Keep query slots full and report completions without reordering data.
+
+    ClickHouse partitions can finish out of order. Waiting on the oldest future
+    hid completed work from the terminal and left newly free query slots idle.
+    Results are buffered by page ordinal so callers still receive strict
+    chronological input, while callbacks and replacement submissions happen as
+    soon as any partition finishes.
+    """
+    pending_pages = deque(enumerate(pages))
+    pending: dict[Future[list[PageValue]], tuple[int, dt.date, dt.date, float]] = {}
+    ready: dict[int, list[PageValue]] = {}
+    next_ordinal = 0
+
+    with ThreadPoolExecutor(
+        max_workers=max(1, int(depth)), thread_name_prefix=thread_name_prefix
+    ) as executor:
+        def submit_available() -> None:
+            while pending_pages and len(pending) < max(1, int(depth)):
+                ordinal, (left, right) = pending_pages.popleft()
+                future = executor.submit(read_page, left, right)
+                pending[future] = (ordinal, left, right, time.perf_counter())
+
+        submit_available()
+        while pending:
+            completed, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+            for future in completed:
+                ordinal, left, right, started = pending.pop(future)
+                page = future.result()
+                ready[ordinal] = page
+                if page_callback is not None:
+                    page_callback(
+                        left.isoformat(), right.isoformat(), len(page),
+                        time.perf_counter() - started,
+                    )
+            submit_available()
+            while next_ordinal in ready:
+                yield ready.pop(next_ordinal)
+                next_ordinal += 1
 
 
 def calendar_lookback_days(config: DataConfig) -> int:
@@ -433,24 +483,14 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
             page_end = min(end, next_month)
             pages.append((page_start, page_end))
             page_start = page_end
-        depth = max(1, int(prefetch_pages))
-        with ThreadPoolExecutor(max_workers=depth, thread_name_prefix="bar-gpt-direct-page") as executor:
-            pending: deque[tuple[dt.date, dt.date, float, Future[list[tuple[str, BarView]]]]] = deque()
-            while pages and len(pending) < depth:
-                left, right = pages.popleft()
-                pending.append((left, right, time.perf_counter(), executor.submit(read_page, left, right)))
-            while pending:
-                left, right, started, future = pending.popleft()
-                page = future.result()
-                if page_callback is not None:
-                    page_callback(left.isoformat(), right.isoformat(), len(page), time.perf_counter() - started)
-                if pages:
-                    next_left, next_right = pages.popleft()
-                    pending.append((
-                        next_left, next_right, time.perf_counter(), executor.submit(read_page, next_left, next_right)
-                    ))
-                yield from page
-                cursor = right
+        for page in _iter_prefetched_pages_in_order(
+            pages,
+            depth=prefetch_pages,
+            read_page=read_page,
+            page_callback=page_callback,
+            thread_name_prefix="bar-gpt-direct-page",
+        ):
+            yield from page
 
     def iter_daily_views(
         self,
@@ -509,28 +549,14 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
             page_end = min(end, next_month)
             pages.append((page_start, page_end))
             page_start = page_end
-        depth = max(1, int(prefetch_pages))
-        with ThreadPoolExecutor(max_workers=depth, thread_name_prefix="bar-gpt-direct-daily") as executor:
-            pending: deque[
-                tuple[dt.date, dt.date, float, Future[list[tuple[str, BarView, int]]]]
-            ] = deque()
-            while pages and len(pending) < depth:
-                left, right = pages.popleft()
-                pending.append((left, right, time.perf_counter(), executor.submit(read_page, left, right)))
-            while pending:
-                left, right, started, future = pending.popleft()
-                page = future.result()
-                if page_callback is not None:
-                    page_callback(left.isoformat(), right.isoformat(), len(page), time.perf_counter() - started)
-                if pages:
-                    next_left, next_right = pages.popleft()
-                    pending.append((
-                        next_left,
-                        next_right,
-                        time.perf_counter(),
-                        executor.submit(read_page, next_left, next_right),
-                    ))
-                yield from page
+        for page in _iter_prefetched_pages_in_order(
+            pages,
+            depth=prefetch_pages,
+            read_page=read_page,
+            page_callback=page_callback,
+            thread_name_prefix="bar-gpt-direct-daily",
+        ):
+            yield from page
 
 
 class DirectEventShardDataset(BarGPTIterableDataset):

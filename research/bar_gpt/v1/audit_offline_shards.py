@@ -6,8 +6,9 @@ import dataclasses
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import torch
 
@@ -520,6 +521,10 @@ def verify_direct_source(sidecar_path: Path) -> dict[str, Any]:
         end_date=end.isoformat(),
         validation_start_date=start.isoformat(),
         validation_slices=((ticker, start.isoformat(), end.isoformat()),),
+        # Source verification is execution-only and does not alter the shard
+        # contract. Two threads matches the measured workstation optimum while
+        # the bounded audit pool keeps aggregate ClickHouse load small.
+        clickhouse_max_threads_per_worker=2,
     )
     config.validate()
     client = DirectEventArrowStreamClient(_stream_config(config), config)
@@ -571,6 +576,7 @@ def run_audit(
     require_calendar_context: bool = False,
     output: Path | None = None,
     verify_direct_events: bool = False,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     sidecars = discover_sidecars(
@@ -580,15 +586,40 @@ def run_audit(
         end_date=end_date,
         limit=limit,
     )
-    audited = [
-        audit_shard(
+    audited: list[dict[str, Any]] = []
+    for index, path in enumerate(sidecars, start=1):
+        if progress_callback is not None:
+            progress_callback(f"structural audit {index}/{len(sidecars)} started: {path.stem}")
+        audited.append(audit_shard(
             path,
             verify_sha256=verify_sha256,
             require_calendar_context=require_calendar_context,
-        )
-        for path in sidecars
-    ]
-    direct_source = [verify_direct_source(path) for path in sidecars] if verify_direct_events else []
+        ))
+        if progress_callback is not None:
+            progress_callback(f"structural audit {index}/{len(sidecars)} passed: {path.stem}")
+
+    direct_source: list[dict[str, Any]] = []
+    if verify_direct_events:
+        resolved: list[dict[str, Any] | None] = [None] * len(sidecars)
+        with ThreadPoolExecutor(
+            max_workers=min(4, max(1, len(sidecars))),
+            thread_name_prefix="bar-gpt-source-audit",
+        ) as executor:
+            pending = {}
+            for index, path in enumerate(sidecars):
+                if progress_callback is not None:
+                    progress_callback(
+                        f"direct-source audit {index + 1}/{len(sidecars)} started: {path.stem}"
+                    )
+                pending[executor.submit(verify_direct_source, path)] = (index, path)
+            for future in as_completed(pending):
+                index, path = pending[future]
+                resolved[index] = future.result()
+                if progress_callback is not None:
+                    progress_callback(
+                        f"direct-source audit {index + 1}/{len(sidecars)} passed: {path.stem}"
+                    )
+        direct_source = [item for item in resolved if item is not None]
     payload = {
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "root": str(root),
@@ -622,6 +653,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         require_calendar_context=bool(args.require_calendar_context),
         output=args.output.resolve() if args.output is not None else None,
         verify_direct_events=bool(args.verify_direct_source),
+        progress_callback=lambda message: print(message, flush=True),
     )
     for shard in report["shards"]:
         print(
