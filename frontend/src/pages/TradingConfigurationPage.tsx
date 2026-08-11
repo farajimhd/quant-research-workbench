@@ -461,6 +461,15 @@ type WatchlistRuntimeSnapshot = {
   watchlist_count: number;
   watchlists: Array<{ member_count: number; members: Array<Record<string, unknown>>; watchlist_id: string }>;
 };
+type HistoricalScannerSnapshot = {
+  as_of: string;
+  engine_version: string;
+  event_count: number;
+  indicators: Array<Record<string, unknown>>;
+  schema_version: string;
+  source_revision: { complete_for_history?: boolean; source_tiers?: string[]; token?: string };
+  ticker_count: number;
+};
 type WatchlistColumn = { column_id: string; name: string; description: string; source: string; value_type: string; default_visible: boolean };
 type MarketClassification = { classification_id: string; group: string; name: string; description: string; minimum: number; maximum: number | null; unit: string; source_id: string };
 const WATCHLIST_GUIDED_STEPS = ["identity", "rules", "ranking", "columns", "timing", "overrides", "calculations", "review"] as const;
@@ -1882,6 +1891,11 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
   const [watchlistQuestionIndex, setWatchlistQuestionIndex] = useState(0);
   const [watchlistRuntime, setWatchlistRuntime] = useState<WatchlistRuntimeSnapshot | null>(null);
   const [watchlistRuntimeError, setWatchlistRuntimeError] = useState("");
+  const [scannerHistoryDate, setScannerHistoryDate] = useState(defaultScannerHistoryDate);
+  const [scannerHistoryTime, setScannerHistoryTime] = useState("10:00");
+  const [scannerHistory, setScannerHistory] = useState<HistoricalScannerSnapshot | null>(null);
+  const [scannerHistoryError, setScannerHistoryError] = useState("");
+  const [scannerHistoryLoading, setScannerHistoryLoading] = useState(false);
   const discoveryCapabilities = useMemo(() => section.core_scan.calculations.map(normalizedDiscoveryCapability), [section.core_scan.calculations]);
   const universalCapabilities = useMemo(() => discoveryCapabilities.filter((row) => row.execution_scope === "universal_ingest"), [discoveryCapabilities]);
   const coreCapabilities = useMemo(() => discoveryCapabilities.filter((row) => row.execution_scope === "core_scan"), [discoveryCapabilities]);
@@ -2011,6 +2025,20 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
     setDiscoveryCapabilityEnabled(capabilityToAddId, true);
   }
 
+  function loadScannerHistory() {
+    setScannerHistoryLoading(true);
+    setScannerHistoryError("");
+    const params = new URLSearchParams({
+      lookback_minutes: "30",
+      market_time: scannerHistoryTime,
+      session_date: scannerHistoryDate,
+    });
+    api<HistoricalScannerSnapshot>(`/api/market-discovery/scanner/history?${params.toString()}`, { timeoutMs: 120_000 })
+      .then(setScannerHistory)
+      .catch((reason) => setScannerHistoryError(reason instanceof Error ? reason.message : String(reason)))
+      .finally(() => setScannerHistoryLoading(false));
+  }
+
   return <div className="strategy-studio-workspace market-discovery-studio">
     <nav className="strategy-editor-toolbar" aria-label="Market Discovery navigation">
       <span><strong>QMD MARKET DISCOVERY</strong><small>{mode === "catalog" ? "Capability Catalog" : "Guided Configuration"}</small></span>
@@ -2109,11 +2137,46 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
             {watchlistQuestion === "review" ? <><header><h2>Review this Watchlist</h2></header><div className="discovery-watchlist-review"><article><span>Source</span><strong>{section.core_scan.name}</strong><small>Core Scan candidates</small></article><article><span>Membership</span><strong>Top {selectedWatchlist.maximum_size} · {selectedWatchlist.ranking_direction === "descending" ? "highest" : "lowest"} first</strong><small>Refreshes every {selectedWatchlist.refresh_interval_ms} ms · {selectedWatchlist.membership_expiry === "end_of_trading_day" ? "expires at trading-day end" : selectedWatchlist.membership_expiry === "time_to_live" ? `expires after ${selectedWatchlist.membership_ttl_ms} ms` : "no automatic expiry"}</small></article><article><span>Rules</span><strong>{selectedWatchlist.inclusion_rule_sets.length} include · {selectedWatchlist.exclusion_rule_sets.length} exclude</strong><small>{selectedWatchlist.manual_inclusions.length} manual inclusions · {selectedWatchlist.manual_exclusions.length} manual exclusions</small></article><article><span>Visible data</span><strong>{selectedWatchlist.columns.length} columns</strong><small>{selectedWatchlist.calculations.length} focused calculations · {selectedWatchlist.enabled ? "enabled" : "disabled"}</small></article></div></> : null}
           </section>
         </div> : <EmptyState title="Watchlist unavailable" detail="Return to the Watchlist list and choose another configuration." /> : null}
-        {guidedStep === "history" ? <><header className="strategy-identity-intro"><h2>Trace every Watchlist membership change</h2></header><div className="discovery-history-intro"><BadgeCheck size={20} /><div><strong>Append-only membership evidence</strong><p>Add, remove, expiry, and manual-override events are journaled with their Watchlist, clocks, causal rule, rank, scores, and reason. Current membership is the recovered projection of this history.</p></div></div><div className="discovery-history-list">{(watchlistRuntime?.history ?? []).map((event, index) => <article key={[event.watchlist_id ?? "watchlist", event.ticker ?? "symbol", event.available_at ?? index].map(String).join(":")}><strong>{String(event.ticker ?? "Unknown symbol")}</strong><span>{section.watchlists.find((watchlist) => watchlist.watchlist_id === String(event.watchlist_id ?? ""))?.name ?? String(event.watchlist_id ?? "Unknown Watchlist")}</span><small>{readableLabel(String(event.event ?? "membership event"))}: {String(event.reason ?? "Membership state changed")}</small></article>)}{watchlistRuntime && !watchlistRuntime.history.length ? <EmptyState title="No recorded membership events" detail="The runtime journal has no membership transitions yet." /> : null}{!watchlistRuntime ? <EmptyState title="Membership history unavailable" detail={watchlistRuntimeError || "Reading the runtime membership journal projection."} /> : null}</div></> : null}
+        {guidedStep === "history" ? <DiscoveryHistoryView error={scannerHistoryError} history={scannerHistory} loading={scannerHistoryLoading} marketDate={scannerHistoryDate} marketTime={scannerHistoryTime} onDateChange={setScannerHistoryDate} onLoad={loadScannerHistory} onTimeChange={setScannerHistoryTime} section={section} watchlistRuntime={watchlistRuntime} watchlistRuntimeError={watchlistRuntimeError} /> : null}
       </section>
     </article>}
     {editingCapability ? <DiscoveryCapabilityDialog capability={editingCapability} key={editingCapability.capability_id} onCancel={() => setEditingCapabilityId(null)} onSave={(next) => { replaceDiscoveryCapability(next); setEditingCapabilityId(null); }} /> : null}
   </div>;
+}
+
+function DiscoveryHistoryView({ error, history, loading, marketDate, marketTime, onDateChange, onLoad, onTimeChange, section, watchlistRuntime, watchlistRuntimeError }: {
+  error: string;
+  history: HistoricalScannerSnapshot | null;
+  loading: boolean;
+  marketDate: string;
+  marketTime: string;
+  onDateChange: (value: string) => void;
+  onLoad: () => void;
+  onTimeChange: (value: string) => void;
+  section: MarketDiscoverySection;
+  watchlistRuntime: WatchlistRuntimeSnapshot | null;
+  watchlistRuntimeError: string;
+}) {
+  const rows = (history?.indicators ?? []).slice(0, 25);
+  return <>
+    <header className="strategy-identity-intro"><h2>Review Scanner state and Watchlist membership history</h2><p>Historical Scanner snapshots are rebuilt on demand by QMD History from the causal market-event source plan. Membership events remain the durable evidence of which candidates entered or left each Watchlist.</p></header>
+    <div className="discovery-history-intro"><ScanSearch size={20} /><div><strong>Historical Core Scanner</strong><p>Select a New York market clock. This bounded request never changes the live Scanner or expands a computation lease.</p></div></div>
+    <div className="discovery-capability-filters">
+      <label><span>Market date</span><input aria-label="Historical Scanner market date" onChange={(event) => onDateChange(event.target.value)} type="date" value={marketDate} /></label>
+      <label><span>Market time (ET)</span><input aria-label="Historical Scanner market time" onChange={(event) => onTimeChange(event.target.value)} type="time" value={marketTime} /></label>
+      <button className="button compact" disabled={loading || !marketDate || !marketTime} onClick={onLoad} type="button">{loading ? "Rebuilding…" : "Load snapshot"}</button>
+    </div>
+    {error ? <p className="configuration-safety-note"><TriangleAlert size={15} />{error}</p> : null}
+    {history ? <><div className="discovery-core-summary"><article><span>As of</span><strong>{new Date(history.as_of).toLocaleString()}</strong><p>{history.engine_version} · {history.schema_version}</p><em>{history.source_revision.complete_for_history ? "Complete source plan" : "Partial source plan"}</em></article><article><span>Replay evidence</span><strong>{history.ticker_count.toLocaleString()} tickers</strong><p>{history.event_count.toLocaleString()} canonical events</p><em>{history.source_revision.source_tiers?.join(" + ") || "QMD source plan"}</em></article></div><div className="discovery-history-list">{rows.map((row, index) => <article key={String(row.sym ?? index)}><strong>{String(row.sym ?? "Unknown symbol")}</strong><span>{Number(row.close || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span><small>{readableLabel(String(row.flow_structure_composite_bias ?? "neutral"))} · confidence {Number(row.flow_structure_composite_confidence || 0).toFixed(2)} · {String(row.timeframe ?? history.indicators[0]?.timeframe ?? "100ms")}</small></article>)}</div></> : null}
+    <div className="discovery-history-intro"><BadgeCheck size={20} /><div><strong>Append-only membership evidence</strong><p>Add, remove, expiry, and manual-override events are journaled with their Watchlist, clocks, causal rule, rank, scores, and reason. Current membership is the recovered projection of this history.</p></div></div>
+    <div className="discovery-history-list">{(watchlistRuntime?.history ?? []).map((event, index) => <article key={[event.watchlist_id ?? "watchlist", event.ticker ?? "symbol", event.available_at ?? index].map(String).join(":")}><strong>{String(event.ticker ?? "Unknown symbol")}</strong><span>{section.watchlists.find((watchlist) => watchlist.watchlist_id === String(event.watchlist_id ?? ""))?.name ?? String(event.watchlist_id ?? "Unknown Watchlist")}</span><small>{readableLabel(String(event.event ?? "membership event"))}: {String(event.reason ?? "Membership state changed")}</small></article>)}{watchlistRuntime && !watchlistRuntime.history.length ? <EmptyState title="No recorded membership events" detail="The runtime journal has no membership transitions yet." /> : null}{!watchlistRuntime ? <EmptyState title="Membership history unavailable" detail={watchlistRuntimeError || "Reading the runtime membership journal projection."} /> : null}</div>
+  </>;
+}
+
+function defaultScannerHistoryDate(): string {
+  const value = new Date(Date.now() - 24 * 60 * 60 * 1_000);
+  while (value.getUTCDay() === 0 || value.getUTCDay() === 6) value.setUTCDate(value.getUTCDate() - 1);
+  return value.toISOString().slice(0, 10);
 }
 
 function DiscoveryCapabilityDialog({ capability, onCancel, onSave }: { capability: DiscoveryCapability; onCancel: () => void; onSave: (value: DiscoveryCapability) => void }) {

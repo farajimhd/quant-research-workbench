@@ -128,6 +128,11 @@ bounded direct ClickHouse paths remain documented in
     consumes it without another request when the user loads earlier history,
     and aborts/discards it whenever symbol, timeframe, projection, or workspace
     navigation supersedes the request.
+27. Added the Market Discovery historical Scanner view. A backend-owned route
+    converts the chosen New York market clock, calls QMD History's typed
+    full-market Scanner replay contract, and returns source revision, engine,
+    event, ticker, and indicator evidence. The UI presents that snapshot beside
+    the existing append-only Watchlist membership history.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

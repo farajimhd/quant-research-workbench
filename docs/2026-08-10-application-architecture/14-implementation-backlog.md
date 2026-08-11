@@ -177,8 +177,9 @@ internal topology, or producer formula.
 - [x] Separate implementation, execution scope, configuration authority,
       operational readiness, and coverage status.
 - [ ] Show enrichment provenance, freshness, gaps, and null reasons.
-- [ ] Add scanner and membership history views. Runtime membership history is
-      connected; compact Scanner history remains.
+- [x] Add scanner and membership history views. Market Discovery rebuilds a
+      bounded full-market historical Scanner snapshot through QMD History for
+      a chosen New York clock and shows the append-only Watchlist event journal.
 - [ ] Generate fields, columns, and filters from registry metadata.
 - [ ] Preserve theme, global scale, responsive, and accessibility authorities.
 - [ ] Validate all affected states in real browsers.

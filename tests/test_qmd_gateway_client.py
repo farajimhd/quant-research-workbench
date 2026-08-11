@@ -10,6 +10,7 @@ from src.backend.qmd_gateway_client import (
     qmd_compact_events,
     qmd_history_base_url,
     qmd_history_websocket_url,
+    qmd_historical_scanner_snapshot,
     qmd_catalogs,
     qmd_live_market_state,
     qmd_indicators,
@@ -22,6 +23,22 @@ from src.backend.qmd_gateway_client import (
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    @patch("src.backend.qmd_gateway_client.qmd_history_get_json")
+    def test_historical_scanner_uses_qmd_history_full_market_contract(self, get_json) -> None:
+        get_json.return_value = {"ticker_count": 2, "indicators": []}
+
+        payload = qmd_historical_scanner_snapshot(
+            as_of="2026-08-07T10:15:00-04:00",
+            lookback_minutes=45,
+        )
+
+        self.assertEqual(payload["ticker_count"], 2)
+        path, params = get_json.call_args.args
+        self.assertEqual(path, "/snapshot/scanner-derived")
+        self.assertEqual(params["as_of"], "2026-08-07T14:15:00+00:00")
+        self.assertEqual(params["start"], "2026-08-07T13:30:00+00:00")
+        self.assertEqual(params["end"], "2026-08-07T14:15:00+00:00")
+
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_typed_product_request_routes_windowless_chart_to_live(self, get_json) -> None:
         get_json.return_value = {"history": []}

@@ -96,6 +96,7 @@ from src.backend.qmd_gateway_client import (
     qmd_chart_bars,
     qmd_compact_events,
     qmd_indicators,
+    qmd_historical_scanner_snapshot,
     qmd_live_market_state,
     qmd_market_signals,
     qmd_service_status,
@@ -4373,6 +4374,28 @@ def market_discovery_watchlist_runtime() -> dict[str, Any]:
     from src.backend.watchlist_runtime_service import WATCHLIST_RUNTIME
 
     return WATCHLIST_RUNTIME.snapshot()
+
+
+@app.get("/api/market-discovery/scanner/history")
+def market_discovery_scanner_history(
+    session_date: date,
+    market_time: str = "10:00",
+    lookback_minutes: int = Query(default=30, ge=1, le=390),
+) -> dict[str, Any]:
+    try:
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", market_time):
+            raise ValueError("market_time must use HH:MM")
+        as_of = datetime.fromisoformat(
+            f"{session_date.isoformat()}T{market_time}:00"
+        ).replace(tzinfo=ZoneInfo(EXCHANGE_TIME_ZONE))
+        return qmd_historical_scanner_snapshot(
+            as_of=as_of.isoformat(),
+            lookback_minutes=lookback_minutes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/real-live-trading/market-gateway/status")

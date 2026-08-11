@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Collection, Literal
 
@@ -447,6 +447,29 @@ def qmd_scanner_snapshot(
     payload["computation_scope"] = "core_scan"
     payload["included_enrichments"] = sorted(requested)
     return payload
+
+
+def qmd_historical_scanner_snapshot(
+    *,
+    as_of: str,
+    lookback_minutes: int = 30,
+    timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    cutoff = _validate_window_timestamp("as_of", as_of).astimezone(timezone.utc)
+    lookback = max(1, min(int(lookback_minutes), 390))
+    response = qmd_product_request(
+        QmdProductRequest(
+            "scanner",
+            authority="history",
+            start=(cutoff - timedelta(minutes=lookback)).isoformat(),
+            end=cutoff.isoformat(),
+            as_of=cutoff.isoformat(),
+            timeout_seconds=timeout_seconds,
+        )
+    )
+    if not isinstance(response.payload, dict):
+        raise RuntimeError("QMD History Scanner response was not an object")
+    return response.payload
 
 
 def qmd_market_signals(
