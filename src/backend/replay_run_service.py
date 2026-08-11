@@ -2717,11 +2717,11 @@ def backtest_preflight(
             "label": "Historical strategy population",
             "status": "ready" if work_ready else "blocked",
             "summary": (
-                f"{len(assignments)} pinned assignment(s) and {len(watchlist_members)} causal Watchlist member(s) across {watchlist_snapshot_count} session snapshot(s) are configured."
+                f"{len(assignments)} pinned assignment(s) and {len(watchlist_members)} causal Watchlist member(s) across {watchlist_snapshot_count} transition state(s) are configured."
                 if work_ready
                 else watchlist_error or "Backtest needs an active assignment or a non-empty causal Watchlist universe."
             ),
-            "evidence": "Point-in-time membership is pinned at the first event clock and every later exchange-session boundary.",
+            "evidence": "The revisioned Watchlist timeline is pinned and applied at every configured intraday refresh clock before same-clock Strategy evaluation.",
             "required": True,
         }
     )

@@ -854,6 +854,10 @@ class BacktestPreflightTests(unittest.TestCase):
         checks = {row["id"]: row for row in payload["checks"]}
         self.assertEqual(checks["simulated_accounts"]["status"], "ready")
         self.assertEqual(checks["runtime_storage"]["status"], "ready")
+        self.assertIn(
+            "every configured intraday refresh clock",
+            checks["strategy_assignments"]["evidence"],
+        )
 
     def test_backtest_definition_spans_sessions_with_one_runtime_window(self) -> None:
         definition = ReplayRunDefinition(

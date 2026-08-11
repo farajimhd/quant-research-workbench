@@ -1477,6 +1477,19 @@ it does not imply all application work is complete.
      registry tests passed, and all changed Python modules compiled with
      bytecode writes disabled.
 
+150. Reconciled the Backtest backlog and preflight evidence with the implemented
+     causal Watchlist runtime. Backtest already consumes the revisioned QMD
+     History transition timeline, applies all due membership states before a
+     same-clock market event or Strategy frame, journals add/remove transitions,
+     and checkpoints/restores its timeline cursor and active membership. The
+     unchecked session-boundary wording was stale; no duplicate runtime path
+     was added.
+
+     Backtest preflight now reports transition-state count and explicitly says
+     the pinned timeline is applied at every configured intraday refresh clock.
+     The separate representative active-session performance gate remains open
+     and is not represented as passed by this contract correction.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

@@ -595,14 +595,14 @@ load progressively without false continuity.
         published Canvas resolver. The preflight and broker/gateway boundaries
         remain unchanged; the legacy renderer remains compiled only as a
         temporary rollback path.
-- [ ] Complete Backtest through shared runtime contracts.
+- [x] Complete Backtest through shared runtime contracts.
   - [x] Run a pinned approved revision through one continuous shared
         Strategy/Portfolio/OMS/simulator runtime across multiple sessions.
   - [x] Create, monitor, and stop Backtest runs from the Backtest UI.
-  - [ ] Apply causal Watchlist membership changes during the run rather than
+  - [x] Apply causal Watchlist membership changes during the run rather than
         holding first-clock membership static.
     - [x] Apply and journal causal activation/deactivation at every exchange-session boundary.
-    - [ ] Replay intraday membership events at the configured Watchlist refresh cadence.
+    - [x] Replay intraday membership events at the configured Watchlist refresh cadence.
       - [x] Define the single-pass QMD History membership-timeline contract:
             compiled QMD predicates/ranking, causal external-feature intervals,
             bounded stateful chunks, transition-only output, and pinned market,
