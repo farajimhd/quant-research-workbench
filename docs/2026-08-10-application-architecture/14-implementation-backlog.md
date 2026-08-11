@@ -948,6 +948,13 @@ broker command outside OMS.
         2.2 MB. Its warm end-to-end latency still varied from 1.4 to 2.6
         seconds while QMD startup catch-up was active, so the representative
         steady-state budget gate remains open.
+  - [x] Remove periodic synchronous reference-cache stalls from the Live
+        Scanner request. The first process load remains synchronous; after the
+        60-second freshness interval, requests return the prior projection with
+        its unchanged `reference_available_at` and start at most one background
+        refresh. Real validation measured 8.31 seconds cold, 1.66 seconds at
+        expiry using honest stale evidence, and 1.33 seconds after the new
+        projection became current.
 - [x] Test streaming reconnect and resnapshot. QMD unit coverage proves typed
       terminal lag/sequence-gap frames; an actual backend WebSocket route test
       proves upstream subscription precedes snapshot capture and forwards the

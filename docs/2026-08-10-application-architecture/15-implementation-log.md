@@ -1590,6 +1590,27 @@ it does not imply all application work is complete.
      backend Watchlist, QMD-client, authority, and summary-contract tests
      passed; changed Python modules compiled with bytecode writes disabled.
 
+156. Removed the once-per-minute cold-query stall from Live Scanner reference
+     enrichment. The previous cache bound each entry to the current minute, so
+     the first Scanner request after a minute boundary synchronously repeated
+     the full point-in-time identity, supply, short, market-reference, and
+     daily-bar reads. A 60-second UI-cadence soak captured the defect with zero
+     request failures but alternating Scanner latency: 1.93/2.16 seconds warm
+     versus 6.45/7.95 seconds on reference refresh. The generated report is
+     `D:\TradingML\runtimes\qmd_validation\scanner_watchlist_soak_20260811T183953Z.json`.
+
+     Live reference enrichment now uses a single bounded stale-while-refresh
+     authority. The first process load is still synchronous and fail closed;
+     after expiry, concurrent requests retain the prior projection and its
+     original `reference_available_at`, while exactly one daemon refresh loads
+     the next point-in-time projection. A refresh failure preserves visibly
+     stale evidence rather than fabricating a new timestamp. Real expiry
+     validation measured 8.307 seconds for the initial cold read, 1.664 seconds
+     for the expired request returning the prior timestamp, and 1.327 seconds
+     after the background refresh published a new timestamp. All 64 focused
+     Watchlist, QMD-client, application-authority, and cache tests passed, and
+     the changed Python modules compiled with bytecode writes disabled.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

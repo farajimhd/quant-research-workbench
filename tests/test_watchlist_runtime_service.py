@@ -21,6 +21,7 @@ from src.backend.watchlist_runtime_service import (
     strategy_target_contracts,
     watchlist_requires_focused_evidence,
 )
+from src.backend import watchlist_runtime_service
 from src.trading_runtime.journal import TradingJournal
 
 
@@ -350,6 +351,39 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             second["AAPL"]["reference_available_at"],
         )
         self.assertEqual(historical_projection.call_count, 2)
+
+    @patch("src.backend.watchlist_runtime_service.threading.Thread")
+    @patch("src.backend.watchlist_runtime_service._load_market_reference_projection")
+    def test_live_reference_expiry_returns_stale_and_single_flights_refresh(
+        self, load_projection, thread
+    ) -> None:
+        cutoff = datetime(2026, 8, 10, 16, tzinfo=UTC)
+        old = {"OLD": {"reference_available_at": "old"}}
+        new = {"NEW": {"reference_available_at": "new"}}
+        load_projection.return_value = new
+        watchlist_runtime_service._LIVE_REFERENCE_PROJECTION = old
+        watchlist_runtime_service._LIVE_REFERENCE_LOADED_AT = cutoff - timedelta(seconds=61)
+        watchlist_runtime_service._LIVE_REFERENCE_REFRESHING = False
+
+        class ImmediateThread:
+            def __init__(self, *, target, args, **kwargs):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                self.target(*self.args)
+
+        thread.side_effect = ImmediateThread
+        try:
+            returned = live_market_reference_projection()
+            self.assertIs(returned, old)
+            self.assertEqual(watchlist_runtime_service._LIVE_REFERENCE_PROJECTION, new)
+            self.assertFalse(watchlist_runtime_service._LIVE_REFERENCE_REFRESHING)
+            thread.assert_called_once()
+        finally:
+            watchlist_runtime_service._LIVE_REFERENCE_PROJECTION = None
+            watchlist_runtime_service._LIVE_REFERENCE_LOADED_AT = None
+            watchlist_runtime_service._LIVE_REFERENCE_REFRESHING = False
 
     def test_membership_journal_rehydrates_current_projection(self) -> None:
         with TemporaryDirectory() as directory:

@@ -44,6 +44,11 @@ _REFERENCE_CACHE = BoundedTtlCache[str, dict[str, dict[str, Any]]](
     ttl_seconds=REFERENCE_CACHE_SECONDS,
     contract_revision="watchlist-reference-projection.v1",
 )
+_LIVE_REFERENCE_LOCK = threading.RLock()
+_LIVE_REFERENCE_PROJECTION: dict[str, dict[str, Any]] | None = None
+_LIVE_REFERENCE_LOADED_AT: datetime | None = None
+_LIVE_REFERENCE_REFRESHING = False
+_LIVE_REFERENCE_REFRESH_ERROR = ""
 
 
 class WatchlistRuntime:
@@ -780,14 +785,74 @@ def live_market_reference_projection(
     as_of: datetime | None = None,
 ) -> dict[str, dict[str, Any]]:
     cutoff = (as_of or datetime.now(UTC)).astimezone(UTC)
-    source_revision = (
-        cutoff.isoformat()
-        if as_of is not None
-        else cutoff.replace(second=0, microsecond=0).isoformat()
-    )
+    if as_of is None:
+        return _live_reference_projection(cutoff)
+    source_revision = cutoff.isoformat()
     cached = _REFERENCE_CACHE.get("eligible-market", source_revision=source_revision)
     if cached is not None:
         return cached
+    projection = _load_market_reference_projection(cutoff)
+    _REFERENCE_CACHE.set(
+        "eligible-market",
+        projection,
+        source_revision=source_revision,
+    )
+    return projection
+
+
+def _live_reference_projection(cutoff: datetime) -> dict[str, dict[str, Any]]:
+    global _LIVE_REFERENCE_LOADED_AT
+    global _LIVE_REFERENCE_PROJECTION
+    global _LIVE_REFERENCE_REFRESHING
+
+    with _LIVE_REFERENCE_LOCK:
+        projection = _LIVE_REFERENCE_PROJECTION
+        loaded_at = _LIVE_REFERENCE_LOADED_AT
+        fresh = bool(
+            projection is not None
+            and loaded_at is not None
+            and (cutoff - loaded_at).total_seconds() < REFERENCE_CACHE_SECONDS
+        )
+        if fresh:
+            return projection or {}
+        if projection is None:
+            projection = _load_market_reference_projection(cutoff)
+            _LIVE_REFERENCE_PROJECTION = projection
+            _LIVE_REFERENCE_LOADED_AT = cutoff
+            return projection
+        if not _LIVE_REFERENCE_REFRESHING:
+            _LIVE_REFERENCE_REFRESHING = True
+            threading.Thread(
+                target=_refresh_live_reference_projection,
+                args=(cutoff,),
+                name="watchlist-reference-refresh",
+                daemon=True,
+            ).start()
+        return projection
+
+
+def _refresh_live_reference_projection(cutoff: datetime) -> None:
+    global _LIVE_REFERENCE_LOADED_AT
+    global _LIVE_REFERENCE_PROJECTION
+    global _LIVE_REFERENCE_REFRESHING
+    global _LIVE_REFERENCE_REFRESH_ERROR
+
+    try:
+        projection = _load_market_reference_projection(cutoff)
+    except Exception as exc:
+        with _LIVE_REFERENCE_LOCK:
+            _LIVE_REFERENCE_REFRESH_ERROR = str(exc)
+    else:
+        with _LIVE_REFERENCE_LOCK:
+            _LIVE_REFERENCE_PROJECTION = projection
+            _LIVE_REFERENCE_LOADED_AT = cutoff
+            _LIVE_REFERENCE_REFRESH_ERROR = ""
+    finally:
+        with _LIVE_REFERENCE_LOCK:
+            _LIVE_REFERENCE_REFRESHING = False
+
+
+def _load_market_reference_projection(cutoff: datetime) -> dict[str, dict[str, Any]]:
     from src.backend.historical_scanner_service import historical_scanner_reference_projection
 
     projection = historical_scanner_reference_projection(cutoff)
@@ -821,11 +886,6 @@ def live_market_reference_projection(
                     "reference_available_at": cutoff.isoformat(),
                 }
             )
-    _REFERENCE_CACHE.set(
-        "eligible-market",
-        projection,
-        source_revision=source_revision,
-    )
     return projection
 
 
