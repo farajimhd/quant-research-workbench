@@ -24,13 +24,18 @@ import websockets
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.backend.json_utils import json_safe, parse_csv_list
-from src.backend.response_contract import error_response_envelope
+from src.backend.response_contract import (
+    RESPONSE_ENVELOPE_HEADER,
+    RESPONSE_ENVELOPE_VERSION,
+    error_response_envelope,
+    success_response_envelope,
+)
 from src.request_context import (
     CAUSATION_HEADER,
     CORRELATION_HEADER,
@@ -517,7 +522,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=[CORRELATION_HEADER, CAUSATION_HEADER],
+    expose_headers=[CORRELATION_HEADER, CAUSATION_HEADER, RESPONSE_ENVELOPE_HEADER],
 )
 
 
@@ -551,11 +556,61 @@ async def request_identity_middleware(request: Request, call_next: Any) -> Any:
                     },
                 },
             )
+        response = await _negotiated_success_envelope(
+            request,
+            response,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
         response.headers[CORRELATION_HEADER] = correlation_id
         response.headers[CAUSATION_HEADER] = causation_id
         return response
     finally:
         end_request_context(correlation_token, causation_token)
+
+
+async def _negotiated_success_envelope(
+    request: Request,
+    response: Any,
+    *,
+    correlation_id: str,
+    causation_id: str,
+) -> Any:
+    if (
+        request.headers.get(RESPONSE_ENVELOPE_HEADER) != RESPONSE_ENVELOPE_VERSION
+        or not 200 <= int(response.status_code) < 300
+        or int(response.status_code) == 204
+        or "application/json" not in str(response.headers.get("content-type") or "").lower()
+    ):
+        return response
+    chunks: list[bytes] = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
+    raw = b"".join(chunks)
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return Response(
+            content=raw,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=response.media_type,
+            background=response.background,
+        )
+    headers = dict(response.headers)
+    headers.pop("content-length", None)
+    headers.pop("content-type", None)
+    headers[RESPONSE_ENVELOPE_HEADER] = RESPONSE_ENVELOPE_VERSION
+    return JSONResponse(
+        status_code=response.status_code,
+        content=success_response_envelope(
+            payload,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        ),
+        headers=headers,
+        background=response.background,
+    )
 
 
 class ScopeUpdate(BaseModel):

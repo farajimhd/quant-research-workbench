@@ -293,17 +293,19 @@ budgets and invalid scope broadening fails configuration validation.
       Strategy, Watchlist universe, account mandates, action authority, OMS
       profile, runtime assignments, and observation dependencies into the
       content-hashed approved release consumed by mode-specific resolvers.
-- [ ] Standardize response envelopes, warnings, partial coverage, and typed errors.
-      The shared QMD product response is now schema v2 with completeness,
-      warnings, coverage status and source revision, and QMD GET transport
-      failures are typed through backend HTTP routes. QMD lease mutations use
-      the same typed boundary and proxied QMD streams emit schema-v1 terminal
-      error frames while retaining the compatible `error` string. Non-QMD
-      clients and application-wide success envelopes still need the same
-      contract before this broad item is closed.
+- [x] Standardize response envelopes, warnings, partial coverage, and typed errors.
+      QMD product responses carry completeness, warnings, coverage, and source
+      revision. All backend failures use the typed compatibility envelope. JSON
+      success envelopes are content-negotiated so existing external callers are
+      unchanged; the shared browser client requests them application-wide,
+      promotes existing partial-coverage evidence, and unwraps `data` for page
+      compatibility.
   - [x] Standardize every backend HTTP and request-validation failure behind a
         typed compatibility envelope and expose code, retryability, correlation,
         and causation through the shared frontend `ApiError` client.
+  - [x] Negotiate versioned JSON success envelopes with completeness, warnings,
+        data, and request lineage; make the sole browser fetch authority request
+        and transparently unwrap the contract for every application API call.
 - [ ] Implement HTTP snapshot plus sequenced delta streams.
   - [x] Give the live Canvas compact-event path a versioned ticker snapshot
         with snapshot ID/last sequence and establish its QMD delta subscription

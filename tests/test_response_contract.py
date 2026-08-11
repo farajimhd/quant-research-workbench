@@ -5,11 +5,41 @@ import unittest
 from fastapi.testclient import TestClient
 
 from src.backend.app import app
-from src.backend.response_contract import error_response_envelope
+from src.backend.response_contract import error_response_envelope, success_response_envelope
 from src.request_context import begin_request_context, end_request_context
 
 
 class ResponseContractTests(unittest.TestCase):
+    def test_application_negotiates_success_envelope_without_changing_default(self) -> None:
+        with TestClient(app) as client:
+            default_response = client.get("/api/health")
+            negotiated = client.get(
+                "/api/health",
+                headers={
+                    "X-Correlation-ID": "web:health-1",
+                    "X-Causation-ID": "view:readiness",
+                    "X-Response-Envelope": "1",
+                },
+            )
+        self.assertNotIn("X-Response-Envelope", default_response.headers)
+        self.assertEqual(negotiated.headers["X-Response-Envelope"], "1")
+        payload = negotiated.json()
+        self.assertEqual(payload["data"], default_response.json())
+        self.assertTrue(payload["complete"])
+        self.assertEqual(payload["meta"]["correlation_id"], "web:health-1")
+        self.assertEqual(payload["meta"]["causation_id"], "view:readiness")
+
+    def test_success_envelope_promotes_existing_coverage_evidence(self) -> None:
+        data = {"complete": False, "warnings": [{"code": "partial"}], "rows": []}
+        payload = success_response_envelope(
+            data,
+            correlation_id="run:scanner",
+            causation_id="snapshot:17",
+        )
+        self.assertFalse(payload["complete"])
+        self.assertEqual(payload["warnings"], data["warnings"])
+        self.assertIs(payload["data"], data)
+
     def test_application_http_errors_use_the_shared_envelope(self) -> None:
         with TestClient(app) as client:
             response = client.get(

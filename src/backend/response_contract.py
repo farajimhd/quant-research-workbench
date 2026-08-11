@@ -6,6 +6,30 @@ from src.request_context import current_request_identity
 
 
 ERROR_SCHEMA_VERSION = 1
+RESPONSE_ENVELOPE_HEADER = "X-Response-Envelope"
+RESPONSE_ENVELOPE_VERSION = "1"
+
+
+def success_response_envelope(
+    data: Any,
+    *,
+    correlation_id: str,
+    causation_id: str,
+) -> dict[str, Any]:
+    """Wrap one successful payload without changing the payload itself."""
+    record = data if isinstance(data, dict) else {}
+    warnings = record.get("warnings") if isinstance(record.get("warnings"), list) else []
+    complete = bool(record.get("complete", True))
+    return {
+        "schema_version": 1,
+        "complete": complete,
+        "data": data,
+        "warnings": warnings,
+        "meta": {
+            "correlation_id": correlation_id,
+            "causation_id": causation_id,
+        },
+    }
 
 
 def error_response_envelope(

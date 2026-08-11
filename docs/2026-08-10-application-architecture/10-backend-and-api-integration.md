@@ -187,7 +187,11 @@ message, retryability, HTTP status, and correlation/causation identity. The
 legacy FastAPI `detail` field remains present during client migration. The
 shared frontend client reads the typed fields into `ApiError` while retaining
 the existing human-readable exception message. Success-envelope migration is
-separate because existing route payloads remain intentionally compatible.
+negotiated through `X-Response-Envelope: 1`: the backend wraps JSON success in
+`data` plus completeness, warnings, and request lineage, while unnegotiated
+external callers retain their exact payload. The shared frontend client is the
+only browser fetch authority, requests this envelope on all 127 API call sites,
+and transparently returns the inner payload to existing page code.
 
 ## 6. Configuration registry and compiler
 

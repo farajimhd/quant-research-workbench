@@ -18,6 +18,7 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
     const headers = new Headers(requestInit.headers ?? {});
     if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
     if (!headers.has("X-Correlation-ID")) headers.set("X-Correlation-ID", requestIdentity());
+    if (!headers.has("X-Response-Envelope")) headers.set("X-Response-Envelope", "1");
     const response = await fetch(path, {
       ...requestInit,
       headers,
@@ -39,11 +40,19 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
     if (payload === undefined) {
       throw new Error(formatNonJsonApiResponse(path, text));
     }
-    return payload as T;
+    return unwrapApiSuccess(payload, response) as T;
   } finally {
     if (timeout !== null) window.clearTimeout(timeout);
     requestInit.signal?.removeEventListener("abort", abortFromCaller);
   }
+}
+
+function unwrapApiSuccess(payload: unknown, response: Response): unknown {
+  if (response.headers.get("X-Response-Envelope") !== "1") return payload;
+  if (!payload || typeof payload !== "object" || !("data" in payload)) {
+    throw new Error("API returned an invalid negotiated success envelope.");
+  }
+  return (payload as { data: unknown }).data;
 }
 
 function typedApiError(payload: unknown): {

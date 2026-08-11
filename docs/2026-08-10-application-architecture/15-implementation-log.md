@@ -736,6 +736,16 @@ bounded direct ClickHouse paths remain documented in
     still produces the same readable message for existing callers. Python
     compile, 43 focused response/request/QMD/workload tests, a real ASGI 404
     contract check, and the managed TypeScript/Vite production build passed.
+97. Completed the application response-envelope migration without breaking
+    external callers. JSON success responses now negotiate schema v1 through
+    `X-Response-Envelope: 1`, carrying `data`, completeness, warnings, and
+    correlation/causation metadata. Requests without the header receive their
+    byte-compatible route shape. The shared frontend client—the only direct
+    browser `fetch` authority—requests the envelope for all 127 API call sites
+    and unwraps the inner payload before returning it to pages. Existing QMD
+    partial-coverage warnings are promoted to the outer contract. Python
+    compile, all 45 focused response/request/QMD/workload tests, negotiated and
+    legacy ASGI checks, and the managed TypeScript/Vite build passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
