@@ -1,9 +1,9 @@
 use crate::config::HistoricalGatewayConfig;
 use crate::source::{EventWindow, HistoricalEventSource, SourceRevision};
 use crate::watchlist_timeline::{
-    validate_plan, ExternalFeatureRevisionEvidence, HistoricalWatchlistTimelineRequest,
-    WatchlistCandidate, WatchlistCandidateDeltaFrame, WatchlistTimelineChunk,
-    WatchlistTimelineReducer,
+    plan_evaluation_clock, validate_plan, ExternalFeatureRevisionEvidence,
+    HistoricalWatchlistTimelineRequest, WatchlistCandidate, WatchlistCandidateDeltaFrame,
+    WatchlistTimelineChunk, WatchlistTimelineReducer,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
@@ -576,9 +576,9 @@ pub async fn materialize_watchlist_timeline(
         for compact in events? {
             let event = source.market_event(&compact);
             while evaluation_index < validation.evaluation_count
-                && evaluation_clock(&request.plan, start, evaluation_index)? <= event.ts()
+                && plan_evaluation_clock(&request.plan, evaluation_index)? <= event.ts()
             {
-                let clock = evaluation_clock(&request.plan, start, evaluation_index)?;
+                let clock = plan_evaluation_clock(&request.plan, evaluation_index)?;
                 advance_external_boundaries(&boundaries, &mut boundary_index, clock, &mut dirty);
                 mark_rate_updates(clock, &mut recent_until, &mut dirty);
                 let session = session_date(clock);
@@ -628,7 +628,7 @@ pub async fn materialize_watchlist_timeline(
         }
     }
     while evaluation_index < validation.evaluation_count {
-        let clock = evaluation_clock(&request.plan, start, evaluation_index)?;
+        let clock = plan_evaluation_clock(&request.plan, evaluation_index)?;
         advance_external_boundaries(&boundaries, &mut boundary_index, clock, &mut dirty);
         mark_rate_updates(clock, &mut recent_until, &mut dirty);
         let session = session_date(clock);
@@ -870,18 +870,6 @@ fn mark_rate_updates(
         dirty.insert(ticker.clone());
         recent_until.remove(&ticker);
     }
-}
-
-fn evaluation_clock(
-    plan: &crate::watchlist_timeline::HistoricalWatchlistPlan,
-    start: DateTime<Utc>,
-    index: u64,
-) -> Result<DateTime<Utc>, String> {
-    Ok(start
-        + chrono::Duration::milliseconds(
-            i64::try_from(index.saturating_mul(plan.cadence_ms))
-                .map_err(|_| "historical Watchlist cadence clock overflowed".to_string())?,
-        ))
 }
 
 fn finish_reducer_chunk_if_due<'a>(

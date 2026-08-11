@@ -541,10 +541,11 @@ load progressively without false continuity.
             calculation, configuration, and feature revisions. Repeated
             terminal Scanner snapshots are explicitly invalid.
       - [x] Compile each approved historical Watchlist into a deterministic,
-            content-hashed schema-v1 plan that separates QMD fields from
+            content-hashed schema-v2 plan that separates QMD fields from
             registered point-in-time external features, rejects deferred or
-            noncausal sources, bounds chunk evaluations, and is persisted in
-            Backtest preflight and data-authority evidence.
+            noncausal sources, carries explicit New York evaluation windows,
+            bounds chunk evaluations, and is persisted in Backtest preflight
+            and data-authority evidence.
       - [x] Admit the compiled plan through a typed QMD History endpoint that
             independently verifies schema, clocks, source contracts, resource
             bounds, transition/state-carry semantics, and the exact Python/Rust

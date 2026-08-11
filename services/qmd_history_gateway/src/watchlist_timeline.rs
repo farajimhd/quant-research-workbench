@@ -4,7 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION: u16 = 2;
 pub const MAX_EVALUATIONS_PER_CHUNK: u64 = 1_800;
 pub const MAX_MEMBERSHIP_SLOTS_PER_CHUNK: u64 = 2_000_000;
 const QMD_SOURCES: [&str; 6] = [
@@ -29,11 +29,18 @@ pub struct ExternalFeatureContract {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WatchlistEvaluationWindow {
+    pub end: String,
+    pub start: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HistoricalWatchlistPlan {
     pub schema_version: u16,
     pub watchlist_id: String,
     pub start: String,
     pub end: String,
+    pub evaluation_windows: Vec<WatchlistEvaluationWindow>,
     pub cadence_ms: u64,
     pub chunk_duration_ms: u64,
     pub max_evaluations_per_chunk: u64,
@@ -165,7 +172,6 @@ pub struct WatchlistTimelineReducer<'a> {
     members: BTreeMap<String, WatchlistTimelineMember>,
     plan: &'a HistoricalWatchlistPlan,
     ranked: BTreeSet<RankKey>,
-    start: DateTime<Utc>,
     start_index: u64,
     transitions: Vec<WatchlistMembershipTransition>,
 }
@@ -324,9 +330,7 @@ pub fn validate_plan(
     }
     validate_rule_graph(plan, &qmd_sources, &feature_ids)?;
     verify_plan_hash(plan)?;
-    let duration_ms = u64::try_from((end - start).num_milliseconds())
-        .map_err(|_| "historical Watchlist duration overflowed".to_string())?;
-    let evaluation_count = duration_ms.div_ceil(plan.cadence_ms);
+    let evaluation_count = validate_evaluation_windows(plan, start, end)?;
     let chunk_count = evaluation_count.div_ceil(plan.max_evaluations_per_chunk);
     Ok(HistoricalWatchlistPlanValidation {
         schema_version: WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION,
@@ -339,6 +343,63 @@ pub fn validate_plan(
         qmd_source_count: plan.qmd_sources.len(),
         valid: true,
     })
+}
+
+fn validate_evaluation_windows(
+    plan: &HistoricalWatchlistPlan,
+    plan_start: DateTime<Utc>,
+    plan_end: DateTime<Utc>,
+) -> Result<u64, String> {
+    if plan.evaluation_windows.is_empty() {
+        return Err("historical Watchlist plan requires evaluation_windows".to_string());
+    }
+    let mut prior_end = None;
+    let mut evaluation_count = 0_u64;
+    for window in &plan.evaluation_windows {
+        let start = parse_time(&window.start, "evaluation window start")?;
+        let end = parse_time(&window.end, "evaluation window end")?;
+        if start < plan_start || end > plan_end || end <= start {
+            return Err(
+                "historical Watchlist evaluation window is outside plan bounds or reversed"
+                    .to_string(),
+            );
+        }
+        if prior_end.is_some_and(|prior| start < prior) {
+            return Err(
+                "historical Watchlist evaluation windows overlap or are out of order".to_string(),
+            );
+        }
+        let duration_ms = u64::try_from((end - start).num_milliseconds())
+            .map_err(|_| "historical Watchlist evaluation window overflowed".to_string())?;
+        evaluation_count = evaluation_count.saturating_add(duration_ms.div_ceil(plan.cadence_ms));
+        prior_end = Some(end);
+    }
+    Ok(evaluation_count)
+}
+
+pub fn plan_evaluation_clock(
+    plan: &HistoricalWatchlistPlan,
+    index: u64,
+) -> Result<DateTime<Utc>, String> {
+    let mut remaining = index;
+    for window in &plan.evaluation_windows {
+        let start = parse_time(&window.start, "evaluation window start")?;
+        let end = parse_time(&window.end, "evaluation window end")?;
+        let duration_ms = u64::try_from((end - start).num_milliseconds())
+            .map_err(|_| "historical Watchlist evaluation window overflowed".to_string())?;
+        let count = duration_ms.div_ceil(plan.cadence_ms);
+        if remaining < count {
+            return Ok(start
+                + chrono::Duration::milliseconds(
+                    i64::try_from(remaining.saturating_mul(plan.cadence_ms))
+                        .map_err(|_| "historical Watchlist cadence clock overflowed".to_string())?,
+                ));
+        }
+        remaining = remaining.saturating_sub(count);
+    }
+    Err(format!(
+        "historical Watchlist evaluation index={index} exceeds its window schedule"
+    ))
 }
 
 pub fn materialize_candidate_chunk(
@@ -359,7 +420,6 @@ impl<'a> WatchlistTimelineReducer<'a> {
         prior_state: Option<WatchlistTimelineState>,
     ) -> Result<Self, String> {
         let validation = validate_plan(plan)?;
-        let start = parse_time(&plan.start, "start")?;
         let start_index = prior_state
             .as_ref()
             .map(|state| {
@@ -399,7 +459,6 @@ impl<'a> WatchlistTimelineReducer<'a> {
             members,
             plan,
             ranked: BTreeSet::new(),
-            start,
             start_index,
             transitions: Vec::new(),
         };
@@ -436,11 +495,7 @@ impl<'a> WatchlistTimelineReducer<'a> {
             return Err("historical Watchlist chunk received too many cadence frames".to_string());
         }
         let evaluation_index = self.start_index.saturating_add(self.frames_applied as u64);
-        let expected_at = self.start
-            + chrono::Duration::milliseconds(
-                i64::try_from(evaluation_index.saturating_mul(self.plan.cadence_ms))
-                    .map_err(|_| "historical Watchlist cadence clock overflowed".to_string())?,
-            );
+        let expected_at = plan_evaluation_clock(self.plan, evaluation_index)?;
         let effective_at = parse_time(&frame.effective_at, "candidate delta effective_at")?;
         if effective_at != expected_at {
             return Err(format!(
@@ -979,8 +1034,9 @@ fn parse_time(value: &str, field: &str) -> Result<DateTime<Utc>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        materialize_candidate_chunk, validate_plan, ExternalFeatureContract,
+        materialize_candidate_chunk, plan_evaluation_clock, validate_plan, ExternalFeatureContract,
         HistoricalWatchlistPlan, WatchlistCandidate, WatchlistCandidateFrame,
+        WatchlistEvaluationWindow,
     };
     use serde_json::json;
     use sha2::{Digest, Sha256};
@@ -997,10 +1053,14 @@ mod tests {
 
     fn plan() -> HistoricalWatchlistPlan {
         let mut plan = HistoricalWatchlistPlan {
-            schema_version: 1,
+            schema_version: 2,
             watchlist_id: "core-candidates".to_string(),
             start: "2026-08-07T13:30:00+00:00".to_string(),
             end: "2026-08-07T20:00:00+00:00".to_string(),
+            evaluation_windows: vec![WatchlistEvaluationWindow {
+                start: "2026-08-07T09:30:00-04:00".to_string(),
+                end: "2026-08-07T16:00:00-04:00".to_string(),
+            }],
             cadence_ms: 1_000,
             chunk_duration_ms: 1_800_000,
             max_evaluations_per_chunk: 1_800,
@@ -1064,7 +1124,7 @@ mod tests {
         rehash(&mut plan);
         assert_eq!(
             plan.plan_hash,
-            "sha256:95047e760497de35bf7bcb95d8d0703adf7093a8ddaeb7772e9f443245eb5ce0"
+            "sha256:34c4a658a1002098ad5c09dfe71bbb6d5bd7daabb4a134361068c7c49efe16a8"
         );
         plan
     }
@@ -1123,6 +1183,7 @@ mod tests {
     fn materializes_bounded_transition_only_chunks_with_state_carry() {
         let mut plan = plan();
         plan.end = "2026-08-07T13:30:03+00:00".to_string();
+        plan.evaluation_windows[0].end = plan.end.clone();
         plan.max_evaluations_per_chunk = 2;
         plan.chunk_duration_ms = 2_000;
         rehash(&mut plan);
@@ -1180,5 +1241,31 @@ mod tests {
         assert_eq!(second.transitions[0].event, "removed");
         assert_eq!(second.transitions[0].ticker, "AAPL");
         assert_eq!(second.next_state.members.len(), 1);
+    }
+
+    #[test]
+    fn evaluation_clock_skips_closed_overnight_and_weekend_windows() {
+        let mut plan = plan();
+        plan.end = "2026-08-10T13:30:02+00:00".to_string();
+        plan.evaluation_windows = vec![
+            WatchlistEvaluationWindow {
+                start: "2026-08-07T09:30:00-04:00".to_string(),
+                end: "2026-08-07T09:30:02-04:00".to_string(),
+            },
+            WatchlistEvaluationWindow {
+                start: "2026-08-10T09:30:00-04:00".to_string(),
+                end: "2026-08-10T09:30:02-04:00".to_string(),
+            },
+        ];
+        plan.max_evaluations_per_chunk = 4;
+        plan.chunk_duration_ms = 4_000;
+        rehash(&mut plan);
+
+        let validation = validate_plan(&plan).unwrap();
+        assert_eq!(validation.evaluation_count, 4);
+        assert_eq!(
+            plan_evaluation_clock(&plan, 2).unwrap().to_rfc3339(),
+            "2026-08-10T13:30:00+00:00"
+        );
     }
 }

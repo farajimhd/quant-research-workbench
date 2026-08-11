@@ -1100,6 +1100,16 @@ bounded direct ClickHouse paths remain documented in
      contract. Backend production of causal Reference/fundamental intervals,
      ticker-sharded load acceptance, durable reuse, and Backtest cutover remain
      explicit open items.
+128. Corrected the historical Watchlist plan schedule before consumer cutover.
+     Schema v1 treated the wall-clock span from the first session start through
+     the last session close as continuous cadence time, which would evaluate
+     nights and weekends and inflate a 20-session one-second plan to roughly
+     1.7 million clocks. Schema v2 now content-hashes explicit New York 04:00 to
+     20:00 evaluation windows, clamps partial first/last sessions, and maps the
+     reducer cursor across closed gaps without weakening in-session cadence.
+     Python and Rust share the new fixed plan hash. Five Rust plan/reducer tests
+     and 14 backend compiler/registry tests passed; the changed Python modules
+     compiled.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

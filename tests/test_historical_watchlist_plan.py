@@ -30,7 +30,7 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         self.assertEqual(plan["plan_hash"], repeated["plan_hash"])
         self.assertEqual(
             plan["plan_hash"],
-            "sha256:95047e760497de35bf7bcb95d8d0703adf7093a8ddaeb7772e9f443245eb5ce0",
+            "sha256:34c4a658a1002098ad5c09dfe71bbb6d5bd7daabb4a134361068c7c49efe16a8",
         )
         self.assertEqual(plan["qmd_sources"], ["liquidity-rank"])
         self.assertEqual(plan["external_features"][0]["field_id"], "reference.float_shares")
@@ -60,6 +60,20 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
                 start=datetime(2026, 8, 7, 13, 30),
                 end=datetime(2026, 8, 7, 20, 0),
             )
+
+    def test_multi_session_plan_excludes_overnight_and_weekend_cadence(self) -> None:
+        configuration = _default_draft()
+        plan = compile_historical_watchlist_plan(
+            configuration,
+            "core-candidates",
+            start=datetime(2026, 8, 7, 8, 0, tzinfo=UTC),
+            end=datetime(2026, 8, 11, 0, 0, tzinfo=UTC),
+        )
+
+        self.assertEqual(plan["schema_version"], 2)
+        self.assertEqual(len(plan["evaluation_windows"]), 2)
+        self.assertEqual(plan["evaluation_windows"][0]["start"], "2026-08-07T04:00:00-04:00")
+        self.assertEqual(plan["evaluation_windows"][1]["start"], "2026-08-10T04:00:00-04:00")
 
     def test_approved_runtime_universe_compiles_exact_watchlist_plan(self) -> None:
         model = _default_draft()

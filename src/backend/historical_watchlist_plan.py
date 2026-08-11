@@ -3,15 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.backend.application_registry import FIELD_DEFINITIONS
 from src.trading_runtime.watchlist_resolver import SOURCE_FIELDS
 
 
-HISTORICAL_WATCHLIST_PLAN_SCHEMA_VERSION = 1
+HISTORICAL_WATCHLIST_PLAN_SCHEMA_VERSION = 2
 MAX_EVALUATIONS_PER_CHUNK = 1_800
+NEW_YORK = ZoneInfo("America/New_York")
 SUPPORTED_COMPARATORS = {
     "above_by_bps",
     "equals",
@@ -94,11 +96,13 @@ def compile_historical_watchlist_plan(
         )
 
     cadence_ms = max(1, int(watchlist.get("refresh_interval_ms") or 0))
+    evaluation_windows = _evaluation_windows(start, end)
     body = {
         "schema_version": HISTORICAL_WATCHLIST_PLAN_SCHEMA_VERSION,
         "watchlist_id": watchlist_id,
         "start": start.isoformat(),
         "end": end.isoformat(),
+        "evaluation_windows": evaluation_windows,
         "cadence_ms": cadence_ms,
         "chunk_duration_ms": cadence_ms * MAX_EVALUATIONS_PER_CHUNK,
         "max_evaluations_per_chunk": MAX_EVALUATIONS_PER_CHUNK,
@@ -121,6 +125,30 @@ def compile_historical_watchlist_plan(
     }
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     return {**body, "plan_hash": f"sha256:{hashlib.sha256(encoded).hexdigest()}"}
+
+
+def _evaluation_windows(start: datetime, end: datetime) -> list[dict[str, str]]:
+    local_start = start.astimezone(NEW_YORK)
+    local_end = end.astimezone(NEW_YORK)
+    cursor = local_start.date()
+    windows: list[dict[str, str]] = []
+    while cursor <= local_end.date():
+        if cursor.weekday() < 5:
+            session_start = datetime.combine(cursor, time(4, 0), tzinfo=NEW_YORK)
+            session_end = datetime.combine(cursor, time(20, 0), tzinfo=NEW_YORK)
+            bounded_start = max(session_start, local_start)
+            bounded_end = min(session_end, local_end)
+            if bounded_end > bounded_start:
+                windows.append(
+                    {
+                        "start": bounded_start.isoformat(),
+                        "end": bounded_end.isoformat(),
+                    }
+                )
+        cursor += timedelta(days=1)
+    if not windows:
+        raise ValueError("historical Watchlist plan has no New York market evaluation window")
+    return windows
 
 
 def _validated_sources(watchlist: dict[str, Any], rules: list[dict[str, Any]]) -> set[str]:
