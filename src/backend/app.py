@@ -3321,6 +3321,7 @@ def service_operational_evidence(
             "hits": effective.get("cache_hits", cache.get("hits")),
             "misses": effective.get("cache_misses", cache.get("misses")),
             "hit_rate": effective.get("cache_hit_rate"),
+            "requirements": cache.get("requirements", []),
         },
         "transitions": {
             "failed_lanes": failed_lanes,

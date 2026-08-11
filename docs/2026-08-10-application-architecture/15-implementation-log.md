@@ -462,6 +462,16 @@ bounded direct ClickHouse paths remain documented in
     focused backend QMD/Watchlist tests, Python compile, Rust formatting, and
     diff validation passed. Offline QMD History demand remains a separate open
     planner-integration item.
+69. Made offline QMD History computation demand explicit. Every revisioned
+    derived-cache entry now publishes a stable requirement ID, product/profile,
+    ticker, timeframe, deterministic engine-parameter hash, event-time anchor,
+    exact source revision/plan, runtime state, processed-event count, and memory
+    footprint. The backend operations envelope preserves that producer evidence
+    instead of reducing historical work to an active-build count. Identical
+    historical requests continue to single-flight on the same complete cache
+    identity. All 27 QMD History tests, six backend readiness tests, Rust
+    formatting, Python compile, and diff validation passed. A single aggregated
+    live-plus-history planner projection remains open.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

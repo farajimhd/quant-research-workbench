@@ -97,6 +97,17 @@ class ServiceReadinessTests(unittest.TestCase):
                 "runtime": {"cache_entries": 9, "cache_hit_rate": 0.75, "active_builds": 2},
                 "coverage": {"status": "ready", "archive_session_date": "2026-08-08"},
                 "queues": {"build_capacity": 4},
+                "service_specific": {
+                    "cache": {
+                        "requirements": [
+                            {
+                                "requirement_id": "offline-17",
+                                "scope": "offline",
+                                "ticker": "AAPL",
+                            }
+                        ]
+                    }
+                },
             },
             health={},
             metrics={},
@@ -107,6 +118,7 @@ class ServiceReadinessTests(unittest.TestCase):
         self.assertEqual(payload["cache"]["hit_rate"], 0.75)
         self.assertEqual(payload["queues"]["active_builds"], 2)
         self.assertEqual(payload["queues"]["build_capacity"], 4)
+        self.assertEqual(payload["cache"]["requirements"][0]["requirement_id"], "offline-17")
 
 
 if __name__ == "__main__":

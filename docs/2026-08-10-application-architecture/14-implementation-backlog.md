@@ -173,8 +173,11 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
 - [x] Subscribe focused calculations only for current members.
 - [ ] Union Watchlist, Strategy, chart, and offline computation requests.
       QMD now owns the validated live lease union and Watchlist, Paper/Live
-      Strategy Run, and chart producers are wired. Offline demand still needs
-      the same requirement identity inside QMD History planning.
+      Strategy Run, and chart producers are wired.
+  - [x] Register QMD History cache work with product/profile, ticker, timeframe,
+        engine-parameter hash, event-time anchor, exact source revision, state,
+        event count, and footprint; preserve it through backend operations.
+  - [ ] Aggregate live and historical requirements into one planner projection.
 - [ ] Deduplicate by capability, identity, parameters, timeframe, anchor, and revision.
   - [x] Deduplicate live demand by ticker, capability, timeframe, and capability
         implementation version; expose exact requirement reference counts and

@@ -83,6 +83,25 @@ pub struct CacheMetrics {
     pub hits: u64,
     pub misses: u64,
     pub max_bytes: usize,
+    pub requirements: Vec<HistoricalComputationRequirement>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HistoricalComputationRequirement {
+    pub schema_version: u16,
+    pub requirement_id: String,
+    pub scope: String,
+    pub product: String,
+    pub ticker: String,
+    pub timeframe: Option<String>,
+    pub parameter_hash: String,
+    pub anchor_start: DateTime<Utc>,
+    pub anchor_end: DateTime<Utc>,
+    pub source_revision: String,
+    pub source_plan_hash: String,
+    pub state: String,
+    pub event_count: u64,
+    pub estimated_bytes: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -204,6 +223,7 @@ pub struct CacheEntry {
     max_update_bytes: usize,
     max_updates: usize,
     product_bytes: AtomicU64,
+    requirement: Option<HistoricalComputationRequirement>,
 }
 
 struct CacheIndex {
@@ -299,6 +319,8 @@ impl HistoricalDerivedCache {
         }
         let (bar_updates, _) = broadcast::channel(self.config.cache_update_capacity.max(16));
         let (updates, _) = broadcast::channel(self.config.cache_update_capacity.max(16));
+        let requirement =
+            historical_requirement(&key, &window, &ticker, &profile, &source_revision);
         let entry = Arc::new(CacheEntry {
             allocated_bytes: self.allocated_bytes.clone(),
             complete: AtomicBool::new(false),
@@ -312,6 +334,7 @@ impl HistoricalDerivedCache {
             max_update_bytes: self.config.cache_max_bytes / 2,
             max_updates: self.config.cache_max_updates_per_entry,
             product_bytes: AtomicU64::new(0),
+            requirement: Some(requirement),
         });
         index.entries.insert(key.clone(), entry.clone());
         index.order.push_back(key);
@@ -640,16 +663,41 @@ impl HistoricalDerivedCache {
 
     pub async fn metrics(&self) -> CacheMetrics {
         let index = self.inner.lock().await;
+        let entries = index.entries.values().cloned().collect::<Vec<_>>();
+        let entry_count = index.entries.len();
+        drop(index);
+        let mut requirements = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let Some(mut requirement) = entry.requirement.clone() else {
+                continue;
+            };
+            let state = entry.state.lock().await;
+            requirement.state = if state.error.is_some() {
+                "failed"
+            } else if state.complete {
+                "ready"
+            } else if state.bars_ready {
+                "bars_ready"
+            } else {
+                "building"
+            }
+            .to_string();
+            requirement.event_count = state.events_processed;
+            requirement.estimated_bytes = entry.estimated_bytes.load(Ordering::Relaxed);
+            requirements.push(requirement);
+        }
+        requirements.sort_by(|left, right| left.requirement_id.cmp(&right.requirement_id));
         CacheMetrics {
             active_builds: self.config.cache_max_concurrent_builds
                 - self.build_permits.available_permits(),
             builds: self.stats.builds.load(Ordering::Relaxed),
             estimated_bytes: self.allocated_bytes.load(Ordering::Relaxed),
-            entries: index.entries.len(),
+            entries: entry_count,
             evictions: self.stats.evictions.load(Ordering::Relaxed),
             hits: self.stats.hits.load(Ordering::Relaxed),
             misses: self.stats.misses.load(Ordering::Relaxed),
             max_bytes: self.config.cache_max_bytes,
+            requirements,
         }
     }
 
@@ -1530,6 +1578,51 @@ fn cache_key(
     )
 }
 
+fn historical_requirement(
+    key: &str,
+    window: &EventWindow,
+    ticker: &str,
+    profile: &CacheProfile,
+    revision: &SourceRevision,
+) -> HistoricalComputationRequirement {
+    let parameter_contract = format!(
+        "{}|bar:{}|indicator:{}|product:{}|{}",
+        HISTORICAL_ENGINE_VERSION,
+        BAR_SCHEMA_VERSION,
+        INDICATOR_SCHEMA_VERSION,
+        MARKET_PRODUCT_SCHEMA_VERSION,
+        profile.key(),
+    );
+    HistoricalComputationRequirement {
+        schema_version: 1,
+        requirement_id: stable_hash_hex(key),
+        scope: "offline".to_string(),
+        product: profile.key(),
+        ticker: ticker.to_ascii_uppercase(),
+        timeframe: match profile {
+            CacheProfile::Derived(timeframe) => Some(timeframe.clone()),
+            CacheProfile::Products => None,
+        },
+        parameter_hash: stable_hash_hex(&parameter_contract),
+        anchor_start: window.start,
+        anchor_end: window.end,
+        source_revision: revision.token.clone(),
+        source_plan_hash: revision.source_plan_hash.clone(),
+        state: "queued".to_string(),
+        event_count: 0,
+        estimated_bytes: 0,
+    }
+}
+
+fn stable_hash_hex(value: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
 fn touch(order: &mut VecDeque<String>, key: &str) {
     if let Some(index) = order.iter().position(|candidate| candidate == key) {
         order.remove(index);
@@ -1550,9 +1643,9 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 mod tests {
     use super::{
         bounded_encountered_structure_levels, cache_key, encountered_structure_levels_for_session,
-        ensure_monotonic_bar_start, split_event_window, structure_events_overlapping, CacheEntry,
-        CacheProfile, EntryState, SourceRevision, HISTORICAL_ENGINE_VERSION,
-        MAX_ENCOUNTERED_STRUCTURE_LEVELS,
+        ensure_monotonic_bar_start, historical_requirement, split_event_window, stable_hash_hex,
+        structure_events_overlapping, CacheEntry, CacheProfile, EntryState, SourceRevision,
+        HISTORICAL_ENGINE_VERSION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
     };
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -1604,6 +1697,46 @@ mod tests {
             &CacheProfile::Derived("1m".to_string())
         )
         .contains(HISTORICAL_ENGINE_VERSION));
+    }
+
+    #[test]
+    fn offline_requirement_includes_anchor_parameters_and_source_revision() {
+        let window = EventWindow {
+            start: Utc.with_ymd_and_hms(2026, 7, 17, 13, 30, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 7, 17, 20, 0, 0).unwrap(),
+            tickers: vec!["AAPL".to_string()],
+        };
+        let revision = SourceRevision {
+            complete_for_history: true,
+            event_count: 10,
+            live_continuation_sequence: None,
+            max_build_step: 1,
+            max_updated_at: "2026-07-18T00:00:00Z".to_string(),
+            request_complete: true,
+            source_plan_hash: "plan-17".to_string(),
+            source_tiers: vec!["archive".to_string()],
+            token: "revision-17".to_string(),
+        };
+        let requirement = historical_requirement(
+            "exact-cache-key",
+            &window,
+            "aapl",
+            &CacheProfile::Derived("1m".to_string()),
+            &revision,
+        );
+
+        assert_eq!(requirement.scope, "offline");
+        assert_eq!(requirement.ticker, "AAPL");
+        assert_eq!(requirement.timeframe.as_deref(), Some("1m"));
+        assert_eq!(requirement.anchor_start, window.start);
+        assert_eq!(requirement.anchor_end, window.end);
+        assert_eq!(requirement.source_revision, "revision-17");
+        assert_eq!(requirement.source_plan_hash, "plan-17");
+        assert_eq!(
+            requirement.requirement_id,
+            stable_hash_hex("exact-cache-key")
+        );
+        assert_eq!(stable_hash_hex("abc"), "e71fa2190541574b");
     }
 
     #[test]
@@ -1733,6 +1866,7 @@ mod tests {
             max_update_bytes: 1_000,
             max_updates: 10,
             product_bytes: AtomicU64::new(0),
+            requirement: None,
         };
         assert!(entry.set_estimated_bytes(900).is_ok());
         assert!(entry.set_estimated_bytes(1_001).is_err());
@@ -1759,6 +1893,7 @@ mod tests {
             max_update_bytes: 100_000,
             max_updates: 100,
             product_bytes: AtomicU64::new(0),
+            requirement: None,
         });
         let waiter = {
             let entry = entry.clone();
@@ -1796,6 +1931,7 @@ mod tests {
             max_update_bytes: 100_000,
             max_updates: 100,
             product_bytes: AtomicU64::new(0),
+            requirement: None,
         };
         let confirmed_at = Utc.with_ymd_and_hms(2026, 7, 17, 13, 30, 0).unwrap();
         let event = |event_id: u64, timeframe: &str| GenericStructureEvent {

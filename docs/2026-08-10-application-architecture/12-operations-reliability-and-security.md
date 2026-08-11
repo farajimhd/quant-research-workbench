@@ -156,9 +156,12 @@ operational contract. QMD reports live-event lag, persistence and drop
 counters, maintenance/gap state, writer-lane transitions, pending rows and
 recoveries. QMD History publishes a standardized status snapshot with the
 latest archive coverage watermark, cache hit/miss/eviction/footprint evidence,
-and active build capacity. The backend normalizes those producer-declared
-values under a versioned `operations` envelope, and the Services UI consumes
-that envelope without treating an absent value as zero or ready.
+active build capacity, and every resident offline computation requirement with
+its product, ticker, timeframe, parameter hash, event-time anchor, exact source
+revision, runtime state, event count, and footprint. The backend preserves
+those producer-declared requirements under the versioned `operations` envelope;
+the Services UI consumes the envelope without treating an absent value as zero
+or ready.
 
 Remaining drift:
 

@@ -244,8 +244,11 @@ offline calculation is available in its proper scope.
   bound to a resolved Watchlist publish a
   separate `strategy_run` lease for the exact current membership; overlapping
   Watchlist, Strategy and chart requests are unioned by QMD. Offline demand is
-  still owned by QMD History build/query planning and is not yet represented in
-  the same requirement identity.
+  owned by QMD History build/query planning and now publishes the same semantic
+  dimensions: product/profile, ticker, timeframe, engine-parameter hash,
+  event-time anchor, and exact source revision. Identical historical work still
+  executes once through the existing revisioned single-flight cache; the
+  remaining union gap is one cross-service aggregate planner view.
 - QMD's active target snapshot now reports unique symbols and capabilities by
   Watchlist, Strategy Run, Request, and Offline scope plus weighted demand
   units. The weight combines registered cost class, ticker count, and requested
