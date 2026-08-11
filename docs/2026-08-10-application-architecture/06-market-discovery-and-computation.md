@@ -194,8 +194,12 @@ offline calculation is available in its proper scope.
 - The fallback snapshot remains duplicate code and should be replaced by a
   durable last-known QMD catalog artifact before the competing-catalog backlog
   item can be closed.
-- Strategy-run and offline computation consumers do not yet publish their full
-  target union into QMD's computation planner.
+- Published Run Plans now carry typed observation dependencies compiled from
+  Strategy taxonomy. Paper/Live plans bound to a resolved Watchlist publish a
+  separate `strategy_run` lease for the exact current membership; overlapping
+  Watchlist, Strategy and chart requests are unioned by QMD. Offline demand is
+  still owned by QMD History build/query planning and is not yet represented in
+  the same requirement identity.
 - Expired or removed live leases stop new focused routing, but retained warm
   indicator/structure state is not yet reclaimed.
 - The UI now separates implementation, execution scope, configuration policy,

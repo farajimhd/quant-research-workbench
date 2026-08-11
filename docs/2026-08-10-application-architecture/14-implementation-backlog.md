@@ -125,10 +125,13 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
 - [x] Persist membership add/remove/expire events.
 - [x] Subscribe focused calculations only for current members.
 - [ ] Union Watchlist, Strategy, chart, and offline computation requests.
-      QMD now owns the validated leased union and chart requests are wired;
-      Watchlist, Strategy, and offline producers still need to publish targets.
+      QMD now owns the validated live lease union and Watchlist, Paper/Live
+      Strategy Run, and chart producers are wired. Offline demand still needs
+      the same requirement identity inside QMD History planning.
 - [ ] Deduplicate by capability, identity, parameters, timeframe, anchor, and revision.
-- [x] Reference-count subscriptions and release unused state.
+- [ ] Reference-count subscriptions and release unused state.
+      Overlapping leases are reference-counted for routing, but retained warm
+      indicator/structure state is not reclaimed after the final lease ends.
 - [x] Reject unapproved moves to broader populations.
 - [ ] Trigger targeted recomputation from relevant enrichment changes.
 - [ ] Preserve compact scanner/Watchlist history and explicitly approved materializations.

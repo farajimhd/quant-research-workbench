@@ -36,6 +36,7 @@ from src.trading_runtime.strategy_engine import (
     strategy_input_catalog,
 )
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
+from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
 CONFIGURATION_SCHEMA_VERSION = 16
@@ -2436,9 +2437,48 @@ def _compile_profile_run_plan(candidate: dict[str, Any], profile: dict[str, Any]
             "enabled": True,
             "allowed_environments": list(composition.get("allowed_environments") or []),
             "runtime_assignments": runtime_assignments,
+            "observation_dependencies": _compiled_observation_dependencies(profile),
             "compiled": True,
         }],
     }
+
+
+def _compiled_observation_dependencies(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    definition = get_strategy_definition(
+        str(profile.get("definition_id") or ""),
+        int(profile.get("definition_revision") or 0) or None,
+    )
+    taxonomy = StrategyTaxonomy.from_payload(
+        definition.get("taxonomy") or dict(definition.get("config") or {}).get("taxonomy")
+    )
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for input_kind, refs in (("indicator", taxonomy.indicators), ("signal", taxonomy.signals)):
+        for ref in refs:
+            capability_key = ref.capability_key or ref.key
+            producer = ref.producer or "strategy_payload"
+            key = (producer, capability_key)
+            row = grouped.setdefault(key, {
+                "producer": producer,
+                "capability_key": capability_key,
+                "input_kinds": set(),
+                "input_keys": set(),
+                "timeframes": set(),
+                "required": False,
+            })
+            row["input_kinds"].add(input_kind)
+            row["input_keys"].add(ref.key)
+            if ref.timeframe:
+                row["timeframes"].add(ref.timeframe.lower())
+            row["required"] = bool(row["required"] or ref.required)
+    return [
+        {
+            **row,
+            "input_kinds": sorted(row["input_kinds"]),
+            "input_keys": sorted(row["input_keys"]),
+            "timeframes": sorted(row["timeframes"]),
+        }
+        for _, row in sorted(grouped.items())
+    ]
 
 
 def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True) -> None:
@@ -3133,9 +3173,18 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             if universe_ids
             else "configured-watch-universe"
         )
+        profiles_by_id = {
+            str(profile.get("profile_id") or ""): profile
+            for profile in result["strategy"].get("profiles") or []
+        }
         for run_plan in result["run_plans"].get("plans") or []:
             run_plan.setdefault("universe_id", fallback_universe)
             run_plan.setdefault("book_id", "default")
+            if "observation_dependencies" not in run_plan:
+                profile = profiles_by_id.get(str(run_plan.get("profile_id") or ""))
+                run_plan["observation_dependencies"] = (
+                    _compiled_observation_dependencies(profile) if profile else []
+                )
         existing_oms = {
             str(row.get("profile_id"))
             for row in dict(result.get("oms") or {}).get("profiles") or []

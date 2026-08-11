@@ -343,18 +343,18 @@ def long_momentum_strategy_definition() -> dict[str, Any]:
             "taxonomy": {
                 "schema_version": 3,
                 "indicators": [
-                    {"key": "flow_structure_composite", "timeframe": "100ms", "role": "confirmation", "required": False, "maximum_age_ms": 300, "minimum_score": 0.3, "minimum_confidence": 0.5},
-                    {"key": "vwap", "timeframe": "5s", "role": "confirmation", "required": False, "maximum_age_ms": 6000},
-                    {"key": "macd", "timeframe": "5s", "role": "confirmation", "required": False, "maximum_age_ms": 6000},
-                    {"key": "generic_structure", "timeframe": "1s", "role": "trigger", "required": True, "maximum_age_ms": 2000},
+                    {"key": "flow_structure_composite", "producer": "qmd", "capability_key": "flow_structure_composite", "timeframe": "100ms", "role": "confirmation", "required": False, "maximum_age_ms": 300, "minimum_score": 0.3, "minimum_confidence": 0.5},
+                    {"key": "vwap", "producer": "qmd", "capability_key": "momentum_core", "timeframe": "5s", "role": "confirmation", "required": False, "maximum_age_ms": 6000},
+                    {"key": "macd", "producer": "qmd", "capability_key": "momentum_core", "timeframe": "5s", "role": "confirmation", "required": False, "maximum_age_ms": 6000},
+                    {"key": "generic_structure", "producer": "qmd", "capability_key": "qmd_generic_structure", "timeframe": "1s", "role": "trigger", "required": True, "maximum_age_ms": 2000},
                 ],
                 "signals": [
-                    {"key": "price_volume_expansion", "timeframe": "1s", "role": "trigger", "required": False, "maximum_age_ms": 2000, "minimum_score": 0.65},
-                    {"key": "vwap_transition", "timeframe": "10s", "role": "trigger", "required": False, "maximum_age_ms": 11000, "minimum_score": 0.6},
-                    {"key": "flow_price_divergence", "timeframe": "100ms", "role": "veto", "required": False, "maximum_age_ms": 500},
-                    {"key": "liquidity_dislocation", "timeframe": "100ms", "role": "veto", "required": False, "maximum_age_ms": 500},
-                    {"key": "company_news", "role": "trigger", "required": False, "maximum_age_ms": 60000, "minimum_score": 0.7},
-                    {"key": "sec_filing", "role": "trigger", "required": False, "maximum_age_ms": 60000},
+                    {"key": "price_volume_expansion", "producer": "qmd", "capability_key": "price_volume_expansion", "timeframe": "1s", "role": "trigger", "required": False, "maximum_age_ms": 2000, "minimum_score": 0.65},
+                    {"key": "vwap_transition", "producer": "qmd", "capability_key": "vwap_transition", "timeframe": "10s", "role": "trigger", "required": False, "maximum_age_ms": 11000, "minimum_score": 0.6},
+                    {"key": "flow_price_divergence", "producer": "qmd", "capability_key": "flow_price_divergence", "timeframe": "100ms", "role": "veto", "required": False, "maximum_age_ms": 500},
+                    {"key": "liquidity_dislocation", "producer": "qmd", "capability_key": "liquidity_dislocation", "timeframe": "100ms", "role": "veto", "required": False, "maximum_age_ms": 500},
+                    {"key": "company_news", "producer": "news_gateway", "role": "trigger", "required": False, "maximum_age_ms": 60000, "minimum_score": 0.7},
+                    {"key": "sec_filing", "producer": "sec_gateway", "role": "trigger", "required": False, "maximum_age_ms": 60000},
                 ],
                 "allow_developing_inputs": False,
                 "presentation": {

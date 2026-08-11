@@ -413,6 +413,27 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             "long-momentum-balanced",
         )
         self.assertTrue(published["payload"]["run_plans"]["plans"][0]["compiled"])
+        dependencies = published["payload"]["run_plans"]["plans"][0][
+            "observation_dependencies"
+        ]
+        qmd_dependencies = {
+            row["capability_key"]: row
+            for row in dependencies
+            if row["producer"] == "qmd"
+        }
+        self.assertEqual(
+            set(qmd_dependencies),
+            {
+                "flow_structure_composite",
+                "flow_price_divergence",
+                "liquidity_dislocation",
+                "momentum_core",
+                "price_volume_expansion",
+                "qmd_generic_structure",
+                "vwap_transition",
+            },
+        )
+        self.assertEqual(qmd_dependencies["momentum_core"]["input_keys"], ["macd", "vwap"])
         self.assertEqual(saved_draft["run_plans"], published["payload"]["run_plans"])
 
     def test_approved_canvas_projection_exposes_only_published_profile_identity(self) -> None:

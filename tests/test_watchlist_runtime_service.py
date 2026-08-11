@@ -16,6 +16,7 @@ from src.backend.watchlist_runtime_service import (
     normalize_watchlist_candidate,
     publish_watchlist_target,
     resolve_historical_watchlist,
+    strategy_target_contracts,
     watchlist_requires_focused_evidence,
 )
 from src.trading_runtime.journal import TradingJournal
@@ -118,6 +119,77 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             capabilities, ["momentum_core", "trend_moving_averages"]
         )
         self.assertIn("1m", timeframes)
+
+    def test_live_strategy_target_contract_comes_from_compiled_run_plan_dependencies(self) -> None:
+        watchlist_id = self.configuration["market_discovery"]["watchlists"][0]["watchlist_id"]
+        self.configuration["run_plans"] = {
+            "universes": [{
+                "universe_id": "live-small-caps",
+                "source": "watchlist",
+                "scanner_view_id": watchlist_id,
+            }],
+            "plans": [{
+                "run_plan_id": "paper-momentum",
+                "universe_id": "live-small-caps",
+                "allowed_environments": ["paper"],
+                "enabled": True,
+                "observation_dependencies": [
+                    {"producer": "qmd", "capability_key": "momentum_core", "timeframes": ["5s"]},
+                    {"producer": "qmd", "capability_key": "qmd_generic_structure", "timeframes": ["1s"]},
+                    {"producer": "news_gateway", "capability_key": "company_news", "timeframes": []},
+                ],
+            }],
+        }
+
+        contracts = strategy_target_contracts(self.configuration, watchlist_id)
+
+        self.assertEqual(contracts, [{
+            "run_plan_id": "paper-momentum",
+            "capabilities": ["momentum_core", "qmd_generic_structure"],
+            "timeframes": ["1s", "5s"],
+        }])
+
+    @patch("src.backend.watchlist_runtime_service.publish_computation_target")
+    @patch("src.backend.watchlist_runtime_service.publish_watchlist_target")
+    def test_exact_watchlist_members_publish_strategy_run_lease(
+        self, publish_watchlist, publish_strategy
+    ) -> None:
+        watchlist_id = self.configuration["market_discovery"]["watchlists"][0]["watchlist_id"]
+        self.configuration["run_plans"] = {
+            "universes": [{
+                "universe_id": "live-small-caps",
+                "source": "watchlist",
+                "scanner_view_id": watchlist_id,
+            }],
+            "plans": [{
+                "run_plan_id": "paper-momentum",
+                "universe_id": "live-small-caps",
+                "allowed_environments": ["paper"],
+                "enabled": True,
+                "observation_dependencies": [{
+                    "producer": "qmd",
+                    "capability_key": "momentum_core",
+                    "timeframes": ["5s"],
+                }],
+            }],
+        }
+
+        WatchlistRuntime().resolve(
+            self.configuration,
+            [{"ticker": "AAA", "market_cap": 1_000_000_000, "change_pct": 4.0}],
+            as_of=datetime(2026, 8, 10, 16, tzinfo=UTC),
+        )
+
+        publish_watchlist.assert_called_once()
+        publish_strategy.assert_called_once_with(
+            "strategy:paper-momentum",
+            ["AAA"],
+            ["momentum_core"],
+            ["5s"],
+            owner="backend.strategy_runtime",
+            scope="strategy_run",
+            ttl_ms=300_000,
+        )
 
     @patch("src.backend.watchlist_runtime_service.publish_watchlist_target")
     def test_vwap_rule_seeds_bounded_focused_candidates(self, publish) -> None:

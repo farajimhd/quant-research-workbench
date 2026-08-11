@@ -128,6 +128,12 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
 
 ## 9. Current implementation
 
+- Strategy taxonomy now separates an observation's strategy-facing key from
+  its producer and producer capability. The configuration compiler groups
+  those inputs into typed `observation_dependencies` on the immutable Run Plan.
+  Paper/Live plans bound to QMD Watchlists use that manifest to renew an exact
+  `strategy_run` computation lease; deferred News/SEC inputs remain declared
+  dependencies but are not sent to QMD.
 - Replay and Backtest now use the same historical controller, Strategy,
   Portfolio, OMS, simulator, and journal. Backtest runs one continuous runtime
   at maximum event speed across the selected exchange sessions and pins the
@@ -140,7 +146,8 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
   positions, orders, executions, and closed trades from the same run journal.
 - Live still contains legacy paths and has not reached controller parity.
 - Portfolio admission is fenced across backend/run processes sharing the same authoritative trading journal. A multi-host deployment would still need to move the same lease/reservation contract to a networked transactional authority.
-- Several UI pages imply configuration objects without one backend compiler and immutable Run Plan contract.
+- Configuration publishing emits immutable compiled Run Plans, but Live still
+  has legacy paths that do not all execute through the shared mode controller.
 - Account bindings are partly environment-backed as desired, but broker/account readiness and generated deployment review are not yet one complete flow.
 
 ---

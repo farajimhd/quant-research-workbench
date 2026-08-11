@@ -107,6 +107,11 @@ bounded direct ClickHouse paths remain documented in
     exposes QMD's hashed capability, indicator, and signal catalogs and returns
     a typed retryable 503 instead of presenting the Python review fallback as
     live runtime authority.
+23. Extended Strategy taxonomy inputs with producer/capability identity,
+    compiled the grouped observation dependency manifest into immutable Run
+    Plans, and made exact Paper/Live Watchlist membership publish and retire
+    separate `strategy_run` QMD leases. Deferred intelligence dependencies stay
+    declared but are never misrouted to QMD.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

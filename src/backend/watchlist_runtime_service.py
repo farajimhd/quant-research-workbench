@@ -60,6 +60,7 @@ class WatchlistRuntime:
         normalized_candidates = [normalize_watchlist_candidate(row) for row in candidates]
         snapshots: list[dict[str, Any]] = []
         target_errors: list[dict[str, str]] = []
+        desired_strategy_targets: set[str] = set()
         with self._lock:
             if journal is not None and not self._hydrated:
                 self._hydrate(journal)
@@ -123,14 +124,39 @@ class WatchlistRuntime:
                                 timeframes,
                                 ttl_ms=int(watchlist.get("membership_ttl_ms") or 300_000),
                             )
-                            self._published_targets.add(watchlist_id)
-                        elif watchlist_id in self._published_targets:
+                            self._published_targets.add(f"watchlist:{watchlist_id}")
+                        elif f"watchlist:{watchlist_id}" in self._published_targets:
                             publish_watchlist_target(
                                 watchlist_id, [], [], [], ttl_ms=1_000
                             )
-                            self._published_targets.discard(watchlist_id)
+                            self._published_targets.discard(f"watchlist:{watchlist_id}")
                     except Exception as exc:
                         target_errors.append({"watchlist_id": watchlist_id, "error": str(exc)})
+                strategy_targets = strategy_target_contracts(configuration, watchlist_id)
+                if publish_targets:
+                    for target in strategy_targets:
+                        target_id = f"strategy:{target['run_plan_id']}"
+                        desired_strategy_targets.add(target_id)
+                        try:
+                            publish_computation_target(
+                                target_id,
+                                sorted(current),
+                                target["capabilities"],
+                                target["timeframes"],
+                                owner="backend.strategy_runtime",
+                                scope="strategy_run",
+                                ttl_ms=int(watchlist.get("membership_ttl_ms") or 300_000),
+                            )
+                            if current and target["capabilities"]:
+                                self._published_targets.add(target_id)
+                            else:
+                                self._published_targets.discard(target_id)
+                        except Exception as exc:
+                            target_errors.append({
+                                "watchlist_id": watchlist_id,
+                                "run_plan_id": target["run_plan_id"],
+                                "error": str(exc),
+                            })
                 snapshots.append(
                     {
                         "watchlist_id": watchlist_id,
@@ -140,9 +166,37 @@ class WatchlistRuntime:
                         "members": list(current.values()),
                         "focused_capabilities": capabilities,
                         "focused_timeframes": timeframes,
+                        "strategy_target_ids": [
+                            f"strategy:{target['run_plan_id']}" for target in strategy_targets
+                        ],
                         "events": events,
                     }
                 )
+            if publish_targets:
+                stale_strategy_targets = {
+                    target_id
+                    for target_id in self._published_targets
+                    if target_id.startswith("strategy:")
+                    and target_id not in desired_strategy_targets
+                }
+                for target_id in stale_strategy_targets:
+                    try:
+                        publish_computation_target(
+                            target_id,
+                            [],
+                            [],
+                            [],
+                            owner="backend.strategy_runtime",
+                            scope="strategy_run",
+                            ttl_ms=1_000,
+                        )
+                        self._published_targets.discard(target_id)
+                    except Exception as exc:
+                        target_errors.append({
+                            "watchlist_id": "*",
+                            "run_plan_id": target_id.removeprefix("strategy:"),
+                            "error": str(exc),
+                        })
         return {
             "as_of": as_of.isoformat(),
             "watchlist_count": len(snapshots),
@@ -445,7 +499,27 @@ def publish_watchlist_target(
     *,
     ttl_ms: int,
 ) -> None:
-    target_id = f"watchlist:{watchlist_id}"
+    publish_computation_target(
+        f"watchlist:{watchlist_id}",
+        tickers,
+        capabilities,
+        timeframes,
+        owner="backend.market_discovery",
+        scope="watchlist",
+        ttl_ms=ttl_ms,
+    )
+
+
+def publish_computation_target(
+    target_id: str,
+    tickers: list[str],
+    capabilities: list[str],
+    timeframes: list[str],
+    *,
+    owner: str,
+    scope: str,
+    ttl_ms: int,
+) -> None:
     if not tickers or not capabilities:
         qmd_delete_json(f"/computation-targets/{target_id}", timeout=3)
         return
@@ -453,8 +527,8 @@ def publish_watchlist_target(
         "/computation-targets",
         {
             "target_id": target_id,
-            "owner": "backend.market_discovery",
-            "scope": "watchlist",
+            "owner": owner,
+            "scope": scope,
             "tickers": tickers,
             "capabilities": capabilities,
             "timeframes": timeframes,
@@ -462,6 +536,48 @@ def publish_watchlist_target(
         },
         timeout=3,
     )
+
+
+def strategy_target_contracts(
+    configuration: dict[str, Any], watchlist_id: str
+) -> list[dict[str, Any]]:
+    run_plans = dict(configuration.get("run_plans") or {})
+    universe_ids = {
+        str(universe.get("universe_id") or "")
+        for universe in run_plans.get("universes") or []
+        if str(universe.get("source") or "") == "watchlist"
+        and str(universe.get("scanner_view_id") or "") == watchlist_id
+    }
+    contracts: list[dict[str, Any]] = []
+    for plan in run_plans.get("plans") or []:
+        run_plan_id = str(plan.get("run_plan_id") or "").strip()
+        if (
+            not run_plan_id
+            or not bool(plan.get("enabled", True))
+            or str(plan.get("universe_id") or "") not in universe_ids
+            or not ({"paper", "live"} & set(plan.get("allowed_environments") or []))
+        ):
+            continue
+        qmd_dependencies = [
+            row
+            for row in plan.get("observation_dependencies") or []
+            if str(row.get("producer") or "") == "qmd"
+            and str(row.get("capability_key") or "")
+        ]
+        capabilities = sorted({str(row["capability_key"]) for row in qmd_dependencies})
+        timeframes = sorted({
+            str(timeframe).lower()
+            for row in qmd_dependencies
+            for timeframe in row.get("timeframes") or []
+            if str(timeframe).strip()
+        })
+        if capabilities:
+            contracts.append({
+                "run_plan_id": run_plan_id,
+                "capabilities": capabilities,
+                "timeframes": timeframes,
+            })
+    return contracts
 
 
 def live_market_reference_projection(

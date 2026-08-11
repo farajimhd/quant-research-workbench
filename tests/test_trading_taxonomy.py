@@ -76,6 +76,24 @@ class TradingTaxonomyTests(unittest.TestCase):
         self.assertTrue(taxonomy.presentation.show_holds)
         self.assertEqual(taxonomy.presentation.label, "Continuation")
 
+    def test_strategy_inputs_bind_observation_names_to_producer_capabilities(self) -> None:
+        taxonomy = StrategyTaxonomy.from_payload({
+            "indicators": [{
+                "key": "macd",
+                "producer": "qmd",
+                "capability_key": "momentum_core",
+                "timeframe": "5s",
+            }],
+        })
+        payload = taxonomy.payload()["indicators"][0]
+        self.assertEqual(payload["key"], "macd")
+        self.assertEqual(payload["producer"], "qmd")
+        self.assertEqual(payload["capability_key"], "momentum_core")
+        with self.assertRaisesRegex(ValueError, "requires a producer"):
+            StrategyTaxonomy.from_payload({
+                "indicators": [{"key": "custom_input", "capability_key": "custom_family"}],
+            })
+
     def test_indicator_definition_declares_type_producer_outputs_and_clock(self) -> None:
         definition = IndicatorDefinition(
             indicator_id="qmd.flow_imbalance",

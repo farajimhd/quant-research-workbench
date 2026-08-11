@@ -7,6 +7,20 @@ from typing import Any, Iterable
 
 TAXONOMY_SCHEMA_VERSION = 3
 SUPPORTED_TAXONOMY_SCHEMA_VERSIONS = {1, 2, TAXONOMY_SCHEMA_VERSION}
+LEGACY_QMD_INPUT_CAPABILITIES = {
+    "flow_structure_composite": "flow_structure_composite",
+    "vwap": "momentum_core",
+    "macd": "momentum_core",
+    "generic_structure": "qmd_generic_structure",
+    "price_volume_expansion": "price_volume_expansion",
+    "vwap_transition": "vwap_transition",
+    "flow_price_divergence": "flow_price_divergence",
+    "liquidity_dislocation": "liquidity_dislocation",
+}
+LEGACY_EXTERNAL_INPUT_PRODUCERS = {
+    "company_news": "news_gateway",
+    "sec_filing": "sec_gateway",
+}
 
 
 class IndicatorType(StrEnum):
@@ -129,6 +143,8 @@ class SignalDefinition:
 @dataclass(frozen=True, slots=True)
 class StrategyInputRef:
     key: str
+    producer: str = ""
+    capability_key: str = ""
     required: bool = True
     timeframe: str = ""
     role: str = "context"
@@ -141,6 +157,8 @@ class StrategyInputRef:
 
     def __post_init__(self) -> None:
         _require_identifier(self.key, "strategy input key")
+        if self.capability_key and not self.producer:
+            raise ValueError("Strategy input capability_key requires a producer")
         if self.role not in {"trigger", "confirmation", "veto", "sizing", "exit", "context"}:
             raise ValueError(f"Unsupported strategy input role: {self.role}")
         if self.evaluation_mode not in {item.value for item in EvaluationMode}:
@@ -238,19 +256,35 @@ def _input_refs(value: Any) -> tuple[StrategyInputRef, ...]:
         return ()
     if not isinstance(value, list):
         raise ValueError("Strategy taxonomy inputs must be lists")
-    return tuple(
-        StrategyInputRef(
-            key=str(item.get("key") or "") if isinstance(item, dict) else str(item),
-            required=bool(item.get("required", True)) if isinstance(item, dict) else True,
-            timeframe=str(item.get("timeframe") or "") if isinstance(item, dict) else "",
-            role=str(item.get("role") or "context") if isinstance(item, dict) else "context",
-            evaluation_mode=str(item.get("evaluation_mode") or "closed_only") if isinstance(item, dict) else "closed_only",
-            maximum_age_ms=int(item["maximum_age_ms"]) if isinstance(item, dict) and item.get("maximum_age_ms") is not None else None,
-            weight=float(item.get("weight", 1.0)) if isinstance(item, dict) else 1.0,
-            minimum_score=float(item["minimum_score"]) if isinstance(item, dict) and item.get("minimum_score") is not None else None,
-            minimum_confidence=float(item["minimum_confidence"]) if isinstance(item, dict) and item.get("minimum_confidence") is not None else None,
-            parameters=dict(item.get("parameters") or {}) if isinstance(item, dict) else {},
+    def input_ref(item: Any) -> StrategyInputRef:
+        raw = dict(item) if isinstance(item, dict) else {"key": str(item)}
+        key = str(raw.get("key") or "")
+        explicit_producer = str(raw.get("producer") or "")
+        inferred_capability = (
+            LEGACY_QMD_INPUT_CAPABILITIES.get(key, "")
+            if explicit_producer in {"", "qmd"}
+            else ""
         )
+        producer = str(
+            explicit_producer
+            or ("qmd" if inferred_capability else LEGACY_EXTERNAL_INPUT_PRODUCERS.get(key, ""))
+        )
+        return StrategyInputRef(
+            key=key,
+            producer=producer,
+            capability_key=str(raw.get("capability_key") or inferred_capability),
+            required=bool(raw.get("required", True)),
+            timeframe=str(raw.get("timeframe") or ""),
+            role=str(raw.get("role") or "context"),
+            evaluation_mode=str(raw.get("evaluation_mode") or "closed_only"),
+            maximum_age_ms=int(raw["maximum_age_ms"]) if raw.get("maximum_age_ms") is not None else None,
+            weight=float(raw.get("weight", 1.0)),
+            minimum_score=float(raw["minimum_score"]) if raw.get("minimum_score") is not None else None,
+            minimum_confidence=float(raw["minimum_confidence"]) if raw.get("minimum_confidence") is not None else None,
+            parameters=dict(raw.get("parameters") or {}),
+        )
+    return tuple(
+        input_ref(item)
         for item in value
     )
 
