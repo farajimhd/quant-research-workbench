@@ -684,6 +684,13 @@ broker command outside OMS.
         newest job files before reading their payload/event summaries.
 - [ ] Shed replaceable projections before authoritative events or journal writes.
 - [ ] Test QMD boundaries, retention, and live/history parity.
+  - [x] Add a read-only, fail-closed acceptance runner that records Live and
+        History readiness/operations, exact source-plan tiling, coverage,
+        pinned revision stability, event ordering, and source-event lineage to
+        `D:\TradingML\runtimes\qmd_validation`.
+  - [ ] Run the acceptance runner across representative archive/recent/live
+        boundary windows and attach passing runtime evidence. The harness alone
+        does not satisfy the production parity gate.
 - [ ] Test point-in-time identity and enrichment behavior.
 - [ ] Test scanner population, cost, and performance.
 - [ ] Test streaming reconnect and resnapshot.
@@ -692,7 +699,9 @@ broker command outside OMS.
 - [ ] Run representative end-to-end load tests.
 - [ ] Migrate one authority domain at a time with compatibility measurement.
 - [ ] Remove duplicate paths only after zero production callers are proven.
-- [ ] Document release, rollback, and recovery for every migration.
+- [x] Document release, rollback, and recovery for every active migration
+      domain in the linked operational runbook; execution evidence remains a
+      per-release requirement.
 
 Acceptance gate: every concern has one declared authority and retired paths
 have no production callers.

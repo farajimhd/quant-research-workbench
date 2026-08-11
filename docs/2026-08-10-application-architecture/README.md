@@ -38,6 +38,7 @@ Every detailed document uses these labels:
 13. [Current drift and implementation roadmap](13-current-drift-and-roadmap.md)
 14. [Complete implementation backlog](14-implementation-backlog.md)
 15. [Implementation decision and delivery log](15-implementation-log.md)
+16. [Release, rollback, and recovery runbook](16-release-rollback-and-recovery.md)
 
 ## Complete application at a glance
 

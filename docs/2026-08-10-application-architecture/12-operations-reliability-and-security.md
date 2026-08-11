@@ -158,6 +158,25 @@ Environment identity, code commit, configuration release and data/model versions
 
 A release records code commit, schema migrations, configuration/catalog versions, artifact hashes and validation evidence. Apply schema-compatible services before dependent configuration/UI. Rollback restores executable configuration and service version while preserving newer append-only source/journal records; destructive data rollback is not a normal deployment mechanism.
 
+The executable migration order, evidence manifest, rollback boundaries, and
+domain recovery procedures are defined in the
+[release, rollback, and recovery runbook](16-release-rollback-and-recovery.md).
+
+QMD acceptance evidence is captured read-only from both services. For example:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python scripts\validate_qmd_authority.py `
+  --start 2026-08-07T08:00:00-04:00 `
+  --end 2026-08-11T16:00:00-04:00 `
+  --tickers AAPL,MSFT
+```
+
+The report is written atomically under
+`D:\TradingML\runtimes\qmd_validation`. A passing unit test or compiled binary
+does not replace a passing report across representative archive, recent, and
+current-live segments.
+
 ## 10. Current implementation and remaining drift
 
 The backend now projects a versioned readiness envelope for every registered

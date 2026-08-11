@@ -876,6 +876,15 @@ bounded direct ClickHouse paths remain documented in
      v4. Decoded raw metadata carries both IDs. Seven focused QMD compact-event
      tests and eight QMD History source tests passed using the external Cargo
      target, including explicit cross-ordinal and historical-decoder evidence.
+111. Added a read-only QMD authority acceptance runner. It validates both QMD
+     service identities/readiness, exact archive/recent/current-live/gap source
+     tiling, source-plan and pinned page-revision agreement, deterministic
+     event ordering, and correlation/causation presence. Evidence is written
+     atomically only under `D:\TradingML\runtimes\qmd_validation`. Three focused
+     tests and Python compilation passed. Representative active-service runs
+     remain an explicit acceptance gate; the harness does not manufacture a
+     parity verdict when QMD is unavailable or the requested population is
+     truncated.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
