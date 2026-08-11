@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from research.mlops.sync import copy_family_runtime_modules, copy_runtime_module, copy_tree
+from research.mlops.sync import (
+    copy_family_runtime_modules,
+    copy_pipeline_runtime_dependencies,
+    copy_runtime_module,
+    copy_tree,
+)
 
 
 class RuntimeSyncTests(unittest.TestCase):
@@ -59,6 +64,32 @@ class RuntimeSyncTests(unittest.TestCase):
             copy_tree(source, destination)
             self.assertTrue((destination / "runtime.py").is_file())
             self.assertFalse((destination / "test_runtime.py").exists())
+
+    def test_bar_gpt_sync_includes_direct_event_pipeline_import_closure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            destination = root / "destination"
+            events = source / "pipelines" / "market_sip" / "events"
+            events.mkdir(parents=True)
+            for package in (source / "pipelines", source / "pipelines" / "market_sip", events):
+                (package / "__init__.py").write_text("", encoding="utf-8")
+            (events / "session_bar_contract.py").write_text("SESSION = 1\n", encoding="utf-8")
+            (events / "clickhouse_build_intraday_base_bars.py").write_text(
+                "CONDITIONS = 1\n", encoding="utf-8"
+            )
+            (events / "test_pipeline.py").write_text("raise AssertionError\n", encoding="utf-8")
+
+            copy_pipeline_runtime_dependencies(
+                source,
+                destination,
+                model_family="bar_gpt",
+            )
+
+            self.assertTrue(
+                (destination / "pipelines/market_sip/events/clickhouse_build_intraday_base_bars.py").is_file()
+            )
+            self.assertFalse((destination / "pipelines/market_sip/events/test_pipeline.py").exists())
 
 
 if __name__ == "__main__":

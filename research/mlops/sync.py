@@ -22,11 +22,7 @@ def sync_version_code(
     research_destination = destination_root / "research"
     copy_tree(repo_root / "research" / "mlops", research_destination / "mlops")
     copy_tree(repo_root / "research" / "market_references", research_destination / "market_references")
-    copy_runtime_module(
-        repo_root,
-        destination_root,
-        Path("pipelines/market_sip/events/session_bar_contract.py"),
-    )
+    copy_pipeline_runtime_dependencies(repo_root, destination_root, model_family=model_family)
     family_source = repo_root / "research" / model_family
     family_destination = research_destination / model_family
     copy_family_runtime_modules(family_source, family_destination)
@@ -39,6 +35,28 @@ def sync_version_code(
     if not family_init.exists():
         family_init.write_text('"""Runtime model family package."""\n', encoding="utf-8")
     return destination_root
+
+
+def copy_pipeline_runtime_dependencies(
+    repo_root: Path,
+    destination_root: Path,
+    *,
+    model_family: str,
+) -> None:
+    """Copy the import closure required by an isolated model runtime."""
+    copy_runtime_module(
+        repo_root,
+        destination_root,
+        Path("pipelines/market_sip/events/session_bar_contract.py"),
+    )
+    if model_family == "bar_gpt":
+        # Direct-event shard SQL reuses the canonical market-SIP condition
+        # contract. Copy its complete package closure from committed source so
+        # the isolated workstation runtime never falls back to another checkout.
+        copy_tree(
+            repo_root / "pipelines" / "market_sip",
+            destination_root / "pipelines" / "market_sip",
+        )
 
 
 def copy_family_runtime_modules(source: Path, destination: Path) -> None:
