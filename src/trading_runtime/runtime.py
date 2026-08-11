@@ -345,11 +345,12 @@ class TradingRuntime:
         evaluation: StrategyEvaluation,
         account_id: str,
         event: MarketEvent | None,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         if evaluation.intents and self.intent_planner is None:
             raise ValueError("Strategy emitted semantic intents but the runtime has no intent planner")
         if evaluation.intents and self.order_manager is None:
             raise ValueError("Strategy emitted semantic intents but the runtime has no order manager")
+        results: list[dict[str, Any]] = []
         for intent in evaluation.intents:
             self.journal.append(
                 run_id=self.run_id,
@@ -366,13 +367,18 @@ class TradingRuntime:
             )
             decision, approved_intent = await self.portfolio.approve(intent, account_id=account_id)
             if approved_intent is None:
+                results.append({"decision": decision.payload(), "order_group": None})
                 continue
             try:
-                await self.order_manager.submit_intent(
+                order_group = await self.order_manager.submit_intent(
                     approved_intent,
                     account_id=account_id,
                     event=event,
                 )
+                results.append({
+                    "decision": decision.payload(),
+                    "order_group": asdict(order_group),
+                })
             except Exception:
                 snapshot = self.order_manager.snapshot_for_intent(approved_intent.intent_id)
                 if snapshot is None or snapshot.state != OrderManagementState.OUTCOME_UNKNOWN:
@@ -381,6 +387,83 @@ class TradingRuntime:
                         reason="order_management_submission_failed",
                     )
                 raise
+        return results
+
+    async def submit_external_intent(
+        self,
+        intent: StrategyIntent,
+        *,
+        account_id: str,
+        proposal_id: str,
+        proposal_authority: str,
+    ) -> dict[str, Any]:
+        """Route a confirmed manual/semi-auto proposal through Portfolio and OMS.
+
+        This is deliberately broker-neutral. Callers cannot pass an order; they
+        provide one semantic intent whose proposal evidence is journaled before
+        normal Portfolio admission and OMS planning run.
+        """
+
+        if proposal_authority not in {"manual", "semi_automatic"}:
+            raise ValueError("External proposal authority must be manual or semi_automatic")
+        if not proposal_id:
+            raise ValueError("External proposal_id is required")
+        if account_id not in self.config.account_ids:
+            raise ValueError("External proposal account is outside this run")
+        if self.last_event_time is not None and intent.event_time < self.last_event_time:
+            raise ValueError("External proposal cannot move behind the runtime clock")
+        self.journal.append(
+            run_id=self.run_id,
+            category="trade_proposal",
+            entity_type="trade_proposal_confirmed",
+            entity_id=proposal_id,
+            account_id=account_id,
+            event_time=intent.event_time,
+            payload={
+                "proposal_id": proposal_id,
+                "authority": proposal_authority,
+                "status": "confirmed",
+                "intent": intent.payload(),
+            },
+        )
+        try:
+            results = await self._execute_intents(
+                StrategyEvaluation(intents=(intent,)),
+                account_id,
+                None,
+            )
+        except Exception as exc:
+            self.journal.append(
+                run_id=self.run_id,
+                category="trade_proposal",
+                entity_type="trade_proposal_result",
+                entity_id=proposal_id,
+                account_id=account_id,
+                event_time=intent.event_time,
+                payload={
+                    "proposal_id": proposal_id,
+                    "authority": proposal_authority,
+                    "status": "failed",
+                    "error": str(exc),
+                },
+            )
+            raise
+        result = results[0]
+        self.journal.append(
+            run_id=self.run_id,
+            category="trade_proposal",
+            entity_type="trade_proposal_result",
+            entity_id=proposal_id,
+            account_id=account_id,
+            event_time=intent.event_time,
+            payload={
+                "proposal_id": proposal_id,
+                "authority": proposal_authority,
+                "status": str(result["decision"].get("status") or "rejected"),
+                **result,
+            },
+        )
+        return {"proposal_id": proposal_id, **result}
 
     def _persist_strategy_assignments(self, event_time: datetime) -> None:
         assignments = getattr(self.strategy, "assignments", None)

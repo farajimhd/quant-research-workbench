@@ -41,6 +41,7 @@ from src.trading_runtime.portfolio import (
 )
 from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
+from src.trading_runtime.signals import StrategyIntent
 from src.trading_runtime.strategy_engine import (
     AssignmentStatus,
     AssignedLongMomentumStrategy,
@@ -342,6 +343,99 @@ class ReplayRunController:
             self._journal.save_strategy_assignment(assignment.payload())
         await self._publish(force=True)
         return assignment.payload()
+
+    async def submit_trade_proposal(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._runtime is None or self._planner is None:
+            raise ValueError("Historical trading runtime is not ready")
+        account_id = str(payload.get("account_id") or "").strip()
+        if account_id not in self.account_ids:
+            raise ValueError("Trade proposal account is outside this simulated run")
+        ticker = _ticker(payload.get("ticker"))
+        conid = int(payload.get("conid") or 0)
+        if conid <= 0:
+            raise ValueError("Trade proposal requires a positive point-in-time conid")
+        market = dict(payload.get("market_snapshot") or {})
+        observed_at = _aware_datetime(market.get("observed_at"))
+        event_time = self.current_time or self.definition.requested_start
+        if observed_at > event_time:
+            raise ValueError("Trade proposal market snapshot is ahead of the run clock")
+        if str(market.get("freshness") or "") != "ready":
+            raise ValueError("Trade proposal requires a ready market snapshot")
+        reference_price = float(market.get("reference_price") or 0)
+        if reference_price <= 0:
+            raise ValueError("Trade proposal requires a positive reference price")
+        quantity = float(payload.get("quantity") or 0)
+        if quantity <= 0:
+            raise ValueError("Trade proposal quantity must be positive")
+        action = str(payload.get("action") or "enter_long")
+        if action not in {
+            "enter_long", "add_long", "reduce_long", "take_profit", "exit",
+            "enter_short", "add_short", "reduce_short", "cover",
+        }:
+            raise ValueError("Trade proposal action is unsupported")
+        authority = str(payload.get("authority") or "manual")
+        proposal_id = str(payload.get("proposal_id") or uuid4())
+        self._planner.upsert_instrument(
+            InstrumentContract(
+                instrument_id=f"simulated:{conid}",
+                conid=conid,
+                symbol=ticker,
+                security_type="STK",
+                currency=str(payload.get("currency") or "USD"),
+                exchange=str(payload.get("exchange") or "SMART"),
+            )
+        )
+        intent = StrategyIntent(
+            intent_id=f"proposal:{proposal_id}",
+            ticker=ticker,
+            event_time=event_time,
+            action=action,
+            quantity=quantity,
+            reference_price=reference_price,
+            invalidation_price=_optional_positive(payload.get("invalidation_price")),
+            profit_target_price=_optional_positive(payload.get("profit_target_price")),
+            trailing_amount=_optional_positive(payload.get("trailing_amount")),
+            urgency=str(payload.get("urgency") or "aggressive_limit"),
+            reason=str(payload.get("reason") or "Canvas trade proposal"),
+            metadata={
+                "origin": "canvas_trade_proposal",
+                "proposal_id": proposal_id,
+                "proposal_authority": authority,
+                "market_snapshot": market,
+                "identity_revision": str(payload.get("identity_revision") or ""),
+                "bid": float(market.get("bid") or 0),
+                "ask": float(market.get("ask") or 0),
+                "tick_size": float(market.get("tick_size") or 0.01),
+                "quote_observed_at": observed_at,
+            },
+        )
+        result = await self._runtime.submit_external_intent(
+            intent,
+            account_id=account_id,
+            proposal_id=proposal_id,
+            proposal_authority=authority,
+        )
+        await self._publish(force=True)
+        self._write_manifest()
+        return {
+            "schema_version": 1,
+            "mode": self.definition.mode.value,
+            "run_id": self.run_id,
+            "proposal": {
+                "proposal_id": proposal_id,
+                "authority": authority,
+                "account_id": account_id,
+                "ticker": ticker,
+                "conid": conid,
+                "action": action,
+                "quantity": quantity,
+                "event_time": event_time.isoformat(),
+                "market_snapshot": market,
+                "invalidation_price": intent.invalidation_price,
+                "profit_target_price": intent.profit_target_price,
+            },
+            **result,
+        }
 
     @property
     def account_ids(self) -> tuple[str, ...]:

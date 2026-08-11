@@ -50,6 +50,10 @@ bounded direct ClickHouse paths remain documented in
 8. Made the QMD Gateway runtime catalog authoritative for backend Market
    Discovery projection, with a short-lived and explicitly unavailable legacy
    review fallback when QMD cannot be reached.
+9. Added Replay chart-originated manual and semi-automatic proposals with
+   captured market/identity/protection evidence and the normal Portfolio-to-OMS
+   authority path. Live/Paper execution remains disabled pending their shared
+   controller migration and separate broker authorization.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

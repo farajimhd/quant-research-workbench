@@ -201,8 +201,14 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
 - [ ] Return indicator provenance and warm-up.
 - [x] Keep chart indicators request-scoped rather than expanding Core Scan.
 - [ ] Create chart-originated manual and semi-automatic proposals.
+  - [x] Create and confirm both proposal authorities in Replay Canvas.
+  - [ ] Add the same proposal lifecycle to Paper/Live after shared-controller
+        migration; broker execution still requires separate authorization.
 - [ ] Attach snapshot, identity, price sequence, freshness, and requested protection.
+  - [x] Attach and validate those fields for Replay chart proposals.
 - [ ] Revalidate every proposal through Portfolio and OMS.
+  - [x] Route confirmed Replay proposals through durable Portfolio admission
+        and OMS planning; rejected/deferred proposals never reach the simulator.
 - [ ] Keep Live, Paper, Replay, and Backtest visually and authoritatively isolated.
 
 Acceptance gate: the same workspace operates in compatible modes and charts

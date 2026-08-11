@@ -2140,6 +2140,15 @@ function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, onLin
   const updateSlot = (slot: "daily" | "main" | "month", next: CanvasChartSettings) => {
     updateSettings((current) => ({ ...current, charts_quotes: { ...current.charts_quotes, [slot]: next } }));
   };
+  const proposalBar = main.bars.at(-1);
+  const proposalMarketSnapshot = proposalBar ? {
+    freshness: main.error || main.loading ? "unavailable" : "ready",
+    observed_at: proposalBar.bar_end || proposalBar.bar_start,
+    reference_price: proposalBar.close,
+    source_sequence: proposalBar.bar_start,
+    source: "qmd_history_chart_bar",
+    tick_size: 0.01,
+  } : null;
   const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
     dailyChart={<ChartPreview {...chartProps} baseHeight={255} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
@@ -2151,7 +2160,7 @@ function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, onLin
     onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined}
     start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()}
     symbol={linkContext.symbol}
-    reservedPanel={<StrategyOrderEntry strategy={strategy} symbol={linkContext.symbol} trading={trading} />}
+    reservedPanel={<StrategyOrderEntry marketSnapshot={proposalMarketSnapshot} strategy={strategy} symbol={linkContext.symbol} trading={trading} />}
   />;
 }
 
@@ -3753,7 +3762,7 @@ function nestedValue(row: PreviewRow, container: string, ...keys: string[]) {
 function signedMoney(value: unknown) { const number = Number(value || 0); return `${number > 0 ? "+" : ""}${money(number)}`; }
 function numberTone(value: unknown): "negative" | "positive" | "neutral" { const number = Number(value || 0); return number > 0 ? "positive" : number < 0 ? "negative" : "neutral"; }
 
-function StrategyOrderEntry({ strategy, symbol, trading }: { strategy?: CanvasPreview["strategy"]; symbol: string; trading?: CanonicalTradingPreview }) {
+function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { marketSnapshot?: Record<string, unknown> | null; strategy?: CanvasPreview["strategy"]; symbol: string; trading?: CanonicalTradingPreview }) {
   const initialAssignment = strategy?.assignment ?? null;
   const [assignment, setAssignment] = useState<PreviewRow | null>(initialAssignment);
   const [accountId, setAccountId] = useState(String(initialAssignment?.account_id || trading?.accounts[0]?.account_id || ""));
@@ -3763,6 +3772,10 @@ function StrategyOrderEntry({ strategy, symbol, trading }: { strategy?: CanvasPr
   const [reenter, setReenter] = useState(Boolean((initialAssignment?.permissions as PreviewRow | undefined)?.reenter));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [proposalAuthority, setProposalAuthority] = useState<"manual" | "semi_automatic">("manual");
+  const [proposalQuantity, setProposalQuantity] = useState(1);
+  const [proposalStop, setProposalStop] = useState("");
+  const [proposalTarget, setProposalTarget] = useState("");
   const configuredCapabilities = (strategy?.capabilities ?? []).filter((capability) => capability.enabled !== false);
 
   useEffect(() => {
@@ -3830,6 +3843,41 @@ function StrategyOrderEntry({ strategy, symbol, trading }: { strategy?: CanvasPr
     }
   }
 
+  async function submitTradeProposal() {
+    if (!strategy?.run_id) {
+      setMessage("Live/Paper proposals remain review-only until those modes use the shared runtime controller.");
+      return;
+    }
+    if (!accountId.trim() || !Number(conid) || !marketSnapshot || marketSnapshot.freshness !== "ready") {
+      setMessage("A simulated account, point-in-time conid, and ready chart snapshot are required.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await api<{ decision: { status: string }; proposal_id: string }>(`/api/trading/replay/runs/${encodeURIComponent(strategy.run_id)}/trade-proposals`, {
+        body: JSON.stringify({
+          account_id: accountId.trim(),
+          action: "enter_long",
+          authority: proposalAuthority,
+          conid: Number(conid),
+          invalidation_price: proposalStop ? Number(proposalStop) : null,
+          market_snapshot: marketSnapshot,
+          profit_target_price: proposalTarget ? Number(proposalTarget) : null,
+          quantity: proposalQuantity,
+          reason: "Confirmed from the Canvas chart order-entry panel",
+          ticker: symbol,
+        }),
+        method: "POST",
+      });
+      setMessage(`Proposal ${result.proposal_id.slice(0, 8)} · Portfolio ${result.decision.status}`);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const status = String(assignment?.status || "not assigned");
   return <section className="strategy-order-entry">
     <header><span><strong>Order entry</strong><small>{strategy?.name || "Long Momentum Campaign"}</small></span><em data-state={status}>{status.replaceAll("_", " ")}</em></header>
@@ -3850,6 +3898,14 @@ function StrategyOrderEntry({ strategy, symbol, trading }: { strategy?: CanvasPr
         <button disabled={busy || status === "paused"} onClick={() => command("force_entry")} type="button">Force + attach</button>
         <button disabled={busy} onClick={() => command(status === "paused" ? "resume" : "pause")} type="button">{status === "paused" ? "Resume" : "Pause"}</button>
         <button className="danger" disabled={busy} onClick={() => command("disable_after_exit")} type="button">Disable after exit</button>
+      </div>
+      <div className="strategy-order-proposal">
+        <span><strong>Chart trade proposal</strong><small>Snapshot is revalidated by the run, then Portfolio and OMS retain exclusive authority.</small></span>
+        <label><span>Authority</span><select onChange={(event) => setProposalAuthority(event.target.value as typeof proposalAuthority)} value={proposalAuthority}><option value="manual">Manual confirm</option><option value="semi_automatic">Semi-automatic</option></select></label>
+        <label><span>Quantity</span><input min={1} onChange={(event) => setProposalQuantity(Math.max(1, Number(event.target.value) || 1))} type="number" value={proposalQuantity} /></label>
+        <label><span>Stop price</span><input min={0.01} onChange={(event) => setProposalStop(event.target.value)} placeholder="Optional" step="0.01" type="number" value={proposalStop} /></label>
+        <label><span>Target price</span><input min={0.01} onChange={(event) => setProposalTarget(event.target.value)} placeholder="Optional" step="0.01" type="number" value={proposalTarget} /></label>
+        <button disabled={busy || !strategy?.run_id || !marketSnapshot || marketSnapshot.freshness !== "ready"} onClick={submitTradeProposal} type="button">Confirm proposal</button>
       </div>
       <small className="strategy-order-disclosure">Commands are persisted here. Orders are placed only by the shared runtime after causal evaluation and risk validation.</small>
     </>}

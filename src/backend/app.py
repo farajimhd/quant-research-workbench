@@ -554,6 +554,25 @@ class BacktestRunCreateRequest(BaseModel):
     configuration_revision_id: str = Field(default="", max_length=128)
 
 
+class ReplayTradeProposalSubmit(BaseModel):
+    proposal_id: str = Field(default="", max_length=128)
+    authority: str = Field(default="manual", pattern="^(manual|semi_automatic)$")
+    account_id: str = Field(min_length=1, max_length=128)
+    ticker: str = Field(min_length=1, max_length=32)
+    conid: int = Field(gt=0)
+    action: str = Field(default="enter_long", max_length=32)
+    quantity: float = Field(gt=0)
+    market_snapshot: dict[str, Any]
+    invalidation_price: float | None = Field(default=None, gt=0)
+    profit_target_price: float | None = Field(default=None, gt=0)
+    trailing_amount: float | None = Field(default=None, gt=0)
+    urgency: str = Field(default="aggressive_limit", max_length=32)
+    reason: str = Field(default="Canvas trade proposal", max_length=1000)
+    identity_revision: str = Field(default="", max_length=256)
+    currency: str = Field(default="USD", max_length=16)
+    exchange: str = Field(default="SMART", max_length=32)
+
+
 class TradingConfigurationPublishSubmit(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     canvas_revision: str = Field(min_length=1, max_length=128)
@@ -4771,6 +4790,21 @@ async def trading_replay_assignment_create(
 ) -> dict[str, Any]:
     try:
         return await replay_run_service.get(run_id).add_assignment(payload.model_dump())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Replay run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/replay/runs/{run_id}/trade-proposals")
+async def trading_replay_trade_proposal(
+    run_id: str,
+    payload: ReplayTradeProposalSubmit,
+) -> dict[str, Any]:
+    try:
+        return await replay_run_service.get(run_id).submit_trade_proposal(
+            payload.model_dump()
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Replay run not found") from exc
     except ValueError as exc:

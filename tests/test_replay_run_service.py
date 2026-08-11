@@ -5,7 +5,7 @@ import unittest
 from dataclasses import asdict
 from datetime import date, datetime, time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from src.backend.replay_run_service import (
@@ -181,6 +181,52 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chart_proposal_captures_snapshot_before_runtime_authority(self) -> None:
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 7, 28),
+                start_time=time(9, 45),
+                tickers=("AAPL",),
+                configuration_revision=approved_configuration(),
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        controller.current_time = datetime(2026, 7, 28, 10, 0, tzinfo=NEW_YORK)
+        controller._runtime = AsyncMock()
+        controller._runtime.submit_external_intent.return_value = {
+            "proposal_id": "proposal-1",
+            "decision": {"status": "approved"},
+            "order_group": {"state": "submitted"},
+        }
+        controller._planner = MagicMock()
+
+        result = await controller.submit_trade_proposal({
+            "proposal_id": "proposal-1",
+            "authority": "manual",
+            "account_id": "SIM-REPLAY",
+            "ticker": "AAPL",
+            "conid": 265598,
+            "action": "enter_long",
+            "quantity": 10,
+            "market_snapshot": {
+                "observed_at": "2026-07-28T09:59:00-04:00",
+                "reference_price": 101.25,
+                "bid": 101.24,
+                "ask": 101.26,
+                "tick_size": 0.01,
+                "freshness": "ready",
+                "source_sequence": "bar-42",
+            },
+            "invalidation_price": 99.0,
+        })
+
+        self.assertEqual(result["proposal"]["market_snapshot"]["source_sequence"], "bar-42")
+        intent = controller._runtime.submit_external_intent.await_args.args[0]
+        self.assertEqual(intent.reference_price, 101.25)
+        self.assertEqual(intent.invalidation_price, 99.0)
+        self.assertEqual(intent.metadata["proposal_id"], "proposal-1")
+        controller._planner.upsert_instrument.assert_called_once()
+
     async def test_commands_keep_event_clock_and_transport_state_separate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = ReplayRunController(

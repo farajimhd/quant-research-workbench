@@ -141,7 +141,14 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   by QMD History. The remaining chart drift is the explicit watermark merge with
   the live tail, adjacent-window prefetch, correction/provenance presentation,
   and published Canvas defaults across every workspace.
-- Manual and semi-automatic chart actions are not yet normalized into the same proposal → Portfolio → OMS path used by strategies.
+- Replay Canvas now creates manual or semi-automatic semantic proposals from
+  the visible closed-bar snapshot, point-in-time conid, price/source sequence,
+  freshness, quantity, and optional stop/target. The Replay controller rejects
+  future/stale snapshots and then journals the confirmation before using the
+  same Portfolio admission and OMS planning path as automatic intent.
+- Live/Paper proposal execution stays disabled until those modes adopt the
+  shared controller. This preserves the existing broker authorization boundary;
+  the UI does not fall back to the legacy direct-order helper.
 
 ---
 
