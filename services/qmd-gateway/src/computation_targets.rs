@@ -32,6 +32,7 @@ pub struct ComputationTargetLease {
     pub updated_at: DateTime<Utc>,
     pub correlation_id: String,
     pub causation_id: String,
+    pub event_driven: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -40,10 +41,14 @@ pub struct ComputationTargetSnapshot {
     pub as_of: DateTime<Utc>,
     pub active_target_count: usize,
     pub active_symbol_count: usize,
+    pub active_requirement_count: usize,
     pub targets: Vec<ComputationTargetLease>,
     pub symbol_ref_counts: BTreeMap<String, usize>,
     pub capability_ref_counts: BTreeMap<String, usize>,
     pub estimated_demand_units: u64,
+    pub requested_demand_units: u64,
+    pub deduplicated_demand_units_saved: u64,
+    pub requirement_ref_counts: BTreeMap<String, usize>,
     pub scope_capability_counts: BTreeMap<String, usize>,
     pub scope_estimated_demand_units: BTreeMap<String, u64>,
     pub scope_symbol_counts: BTreeMap<String, usize>,
@@ -108,6 +113,7 @@ impl SharedComputationTargets {
             ),
             None => None,
         };
+        let event_driven = capabilities_require_events(&capabilities);
         let lease = ComputationTargetLease {
             target_id: target_id.clone(),
             owner,
@@ -119,6 +125,7 @@ impl SharedComputationTargets {
             updated_at: now,
             correlation_id: lineage_identity(&request.correlation_id, "lease", &target_id),
             causation_id: lineage_identity(&request.causation_id, "target", &target_id),
+            event_driven,
         };
         let mut state = self
             .inner
@@ -144,6 +151,17 @@ impl SharedComputationTargets {
         let state = self.inner.read().expect("computation target lock poisoned");
         state.targets.values().any(|target| {
             target.expires_at.map(|expiry| expiry > now).unwrap_or(true)
+                && target.tickers.binary_search(&normalized).is_ok()
+        })
+    }
+
+    pub fn requires_event_computation(&self, ticker: &str) -> bool {
+        let now = Utc::now();
+        let normalized = ticker.trim().to_ascii_uppercase();
+        let state = self.inner.read().expect("computation target lock poisoned");
+        state.targets.values().any(|target| {
+            target.event_driven
+                && target.expires_at.map(|expiry| expiry > now).unwrap_or(true)
                 && target.tickers.binary_search(&normalized).is_ok()
         })
     }
@@ -181,6 +199,9 @@ impl SharedComputationTargets {
         let mut scope_target_counts = BTreeMap::new();
         let mut scope_estimated_demand_units = BTreeMap::new();
         let mut target_estimated_demand_units = BTreeMap::new();
+        let mut requirement_ref_counts = BTreeMap::<String, usize>::new();
+        let mut effective_requirement_costs = BTreeMap::<String, u64>::new();
+        let mut scope_requirement_costs = BTreeMap::<String, BTreeMap<String, u64>>::new();
         let catalog = computation_capability_catalog();
         for target in &targets {
             let scope = scope_key(target.scope).to_string();
@@ -199,24 +220,45 @@ impl SharedComputationTargets {
                     .or_default()
                     .insert(capability.clone());
             }
-            let timeframe_count = if target.timeframes.is_empty() {
-                1
+            let mut timeframes = if target.timeframes.is_empty() {
+                vec!["*".to_string()]
             } else {
-                target.timeframes.len()
-                    + usize::from(!target.timeframes.iter().any(|value| value == "100ms"))
+                target.timeframes.clone()
             };
-            let capability_weight = target
-                .capabilities
-                .iter()
-                .filter_map(|key| catalog.iter().find(|row| row.key == key))
-                .map(|row| cost_weight(row.cost_class))
+            if !timeframes.iter().any(|value| value == "100ms") {
+                timeframes.push("100ms".to_string());
+            }
+            timeframes.sort();
+            timeframes.dedup();
+            let mut target_requirements = BTreeMap::<String, u64>::new();
+            for ticker in &target.tickers {
+                for capability in &target.capabilities {
+                    let Some(definition) = catalog.iter().find(|row| row.key == capability) else {
+                        continue;
+                    };
+                    let weight = cost_weight(definition.cost_class);
+                    for timeframe in &timeframes {
+                        let requirement = format!(
+                            "{ticker}|{capability}|{timeframe}|v{}",
+                            definition.implementation_version
+                        );
+                        target_requirements.insert(requirement.clone(), weight);
+                        *requirement_ref_counts
+                            .entry(requirement.clone())
+                            .or_insert(0) += 1;
+                        effective_requirement_costs.insert(requirement.clone(), weight);
+                        scope_requirement_costs
+                            .entry(scope.clone())
+                            .or_default()
+                            .insert(requirement, weight);
+                    }
+                }
+            }
+            let demand = target_requirements
+                .values()
+                .copied()
                 .fold(0_u64, u64::saturating_add);
-            let demand = (target.tickers.len() as u64)
-                .saturating_mul(timeframe_count as u64)
-                .saturating_mul(capability_weight);
             target_estimated_demand_units.insert(target.target_id.clone(), demand);
-            let scope_demand = scope_estimated_demand_units.entry(scope).or_insert(0_u64);
-            *scope_demand = (*scope_demand).saturating_add(demand);
         }
         let scope_symbol_counts = scope_symbols
             .into_iter()
@@ -226,19 +268,37 @@ impl SharedComputationTargets {
             .into_iter()
             .map(|(scope, capabilities)| (scope, capabilities.len()))
             .collect();
-        let estimated_demand_units = target_estimated_demand_units
+        for (scope, requirements) in scope_requirement_costs {
+            scope_estimated_demand_units.insert(
+                scope,
+                requirements
+                    .values()
+                    .copied()
+                    .fold(0_u64, u64::saturating_add),
+            );
+        }
+        let requested_demand_units = target_estimated_demand_units
+            .values()
+            .copied()
+            .fold(0_u64, u64::saturating_add);
+        let estimated_demand_units = effective_requirement_costs
             .values()
             .copied()
             .fold(0_u64, u64::saturating_add);
         ComputationTargetSnapshot {
-            schema_version: 2,
+            schema_version: 3,
             as_of: now,
             active_target_count: targets.len(),
             active_symbol_count: symbol_ref_counts.len(),
+            active_requirement_count: requirement_ref_counts.len(),
             targets,
             symbol_ref_counts,
             capability_ref_counts,
             estimated_demand_units,
+            requested_demand_units,
+            deduplicated_demand_units_saved: requested_demand_units
+                .saturating_sub(estimated_demand_units),
+            requirement_ref_counts,
             scope_capability_counts,
             scope_estimated_demand_units,
             scope_symbol_counts,
@@ -322,6 +382,21 @@ fn validate_capabilities(requested: &[String], scope: ExecutionScope) -> Result<
     Ok(())
 }
 
+fn capabilities_require_events(capabilities: &[String]) -> bool {
+    let catalog = computation_capability_catalog();
+    capabilities.iter().any(|key| {
+        catalog
+            .iter()
+            .find(|row| row.key == key)
+            .map(|row| {
+                row.cadence == "on_event_or_state_change"
+                    || (row.kind == "market_observation"
+                        && row.timeframes.iter().any(|timeframe| *timeframe == "100ms"))
+            })
+            .unwrap_or(false)
+    })
+}
+
 fn prune_expired(targets: &mut HashMap<String, ComputationTargetLease>, now: DateTime<Utc>) {
     targets.retain(|_, target| target.expires_at.map(|expiry| expiry > now).unwrap_or(true));
 }
@@ -355,7 +430,7 @@ mod tests {
         targets.replace(second).unwrap();
 
         let snapshot = targets.snapshot();
-        assert_eq!(snapshot.schema_version, 2);
+        assert_eq!(snapshot.schema_version, 3);
         assert_eq!(snapshot.active_target_count, 2);
         assert_eq!(snapshot.active_symbol_count, 2);
         assert_eq!(snapshot.symbol_ref_counts.get("AAPL"), Some(&2));
@@ -365,13 +440,17 @@ mod tests {
         assert_eq!(snapshot.targets[0].correlation_id, "lease:request:chart");
         assert_eq!(snapshot.targets[0].causation_id, "target:request:chart");
         assert!(snapshot.estimated_demand_units > 0);
+        assert!(snapshot.requested_demand_units > snapshot.estimated_demand_units);
+        assert!(snapshot.deduplicated_demand_units_saved > 0);
         assert_eq!(
-            snapshot.estimated_demand_units,
+            snapshot.active_requirement_count,
+            snapshot.requirement_ref_counts.len()
+        );
+        assert_eq!(
             snapshot
-                .target_estimated_demand_units
-                .values()
-                .copied()
-                .sum::<u64>()
+                .requirement_ref_counts
+                .get("AAPL|opening_range|100ms|v1"),
+            Some(&2)
         );
         assert!(targets.requires_focused_computation("aapl"));
         assert!(targets.remove("request:chart"));
@@ -423,5 +502,31 @@ mod tests {
         assert!(targets.requires_bar_computation("aapl", "100ms"));
         assert!(!targets.requires_bar_computation("AAPL", "5m"));
         assert!(!targets.requires_bar_computation("MSFT", "1m"));
+    }
+
+    #[test]
+    fn bar_only_leases_do_not_enable_tick_event_processing() {
+        let targets = SharedComputationTargets::default();
+        let mut bar_only = request("chart", ExecutionScope::Request);
+        bar_only.tickers = vec!["AAPL".to_string()];
+        targets.replace(bar_only).unwrap();
+
+        assert!(targets.requires_focused_computation("AAPL"));
+        assert!(!targets.requires_event_computation("AAPL"));
+
+        let mut tick = request("tape", ExecutionScope::Watchlist);
+        tick.tickers = vec!["AAPL".to_string()];
+        tick.capabilities = vec!["tape_rates".to_string()];
+        targets.replace(tick).unwrap();
+        assert!(targets.requires_event_computation("AAPL"));
+        targets.remove("tape");
+        assert!(!targets.requires_event_computation("AAPL"));
+
+        let mut event_signal = request("signal", ExecutionScope::Watchlist);
+        event_signal.tickers = vec!["AAPL".to_string()];
+        event_signal.capabilities = vec!["flow_structure_alignment".to_string()];
+        event_signal.timeframes = vec!["100ms".to_string()];
+        targets.replace(event_signal).unwrap();
+        assert!(targets.requires_event_computation("AAPL"));
     }
 }

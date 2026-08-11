@@ -524,7 +524,9 @@ impl SharedBarStore {
     /// a bounded latest-state projection without creating thousands of
     /// per-symbol router tasks or copying the bar implementation.
     pub async fn apply_event(&self, event: &MarketEvent) -> Vec<BarRow> {
-        self.shard_for_ticker(event.ticker()).apply_event(event).await
+        self.shard_for_ticker(event.ticker())
+            .apply_event(event)
+            .await
     }
 
     /// Finalize every ticker shard at an explicit event-time boundary.

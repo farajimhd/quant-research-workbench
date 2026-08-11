@@ -965,7 +965,7 @@ impl IndicatorEventRouter {
     ) -> Result<(), mpsc::error::SendError<MarketEvent>> {
         if !self
             .computation_targets
-            .requires_focused_computation(event.ticker())
+            .requires_event_computation(event.ticker())
         {
             return Ok(());
         }

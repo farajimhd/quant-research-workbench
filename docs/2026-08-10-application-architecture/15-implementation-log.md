@@ -428,6 +428,14 @@ bounded direct ClickHouse paths remain documented in
     newer live arrivals cannot enter a page labeled with the older revision.
     Rust formatting and all 26 QMD History tests passed using the external Cargo
     runtime.
+65. Corrected focused-computation union evidence and tick routing. QMD demand
+    schema v3 now expands leases into versioned ticker/capability/timeframe
+    requirements, reference-counts overlaps, and distinguishes requested cost
+    from effective deduplicated cost. Bar-only leases no longer route every raw
+    trade and quote through the indicator event engine; a lease must contain a
+    catalog capability with event-driven cadence. Market Discovery displays the
+    effective requirement count and duplicate cost removed. All 89 QMD Gateway
+    tests and the managed external-runtime frontend production build passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -172,9 +172,14 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
       Strategy Run, and chart producers are wired. Offline demand still needs
       the same requirement identity inside QMD History planning.
 - [ ] Deduplicate by capability, identity, parameters, timeframe, anchor, and revision.
+  - [x] Deduplicate live demand by ticker, capability, timeframe, and capability
+        implementation version; expose exact requirement reference counts and
+        requested-versus-effective weighted cost.
+  - [ ] Add parameter hash, anchor, and source revision to the effective identity.
 - [ ] Reference-count subscriptions and release unused state.
       Overlapping leases are reference-counted for routing, but retained warm
       indicator/structure state is not reclaimed after the final lease ends.
+  - [x] Prevent bar-only leases from enabling per-tick indicator processing.
 - [x] Reject unapproved moves to broader populations.
 - [ ] Trigger targeted recomputation from relevant enrichment changes.
 - [x] Preserve compact Scanner/Watchlist history and explicitly approved
