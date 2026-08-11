@@ -287,6 +287,8 @@ budgets and invalid scope broadening fails configuration validation.
         the bounded `sec.operations_intraday.v1` plan.
   - [x] Move the Services SEC market-day summary, bounded filing rows, and
         exact returned-key document/text/XBRL aggregates into the same plan.
+  - [x] Move the bounded CIK-to-SEC-bridge/issuer/security/listing/symbol
+        operational identity join into `sec.operations_intraday.v1`.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -320,6 +322,8 @@ budgets and invalid scope broadening fails configuration validation.
         degradation, row decoding, and operational presentation there.
   - [x] Remove the Services SEC market-day base and related-count SQL from
         `app.py`; retain set-based execution and response composition there.
+  - [x] Remove the Services SEC operational identity SQL from `app.py`; retain
+        deterministic primary-identity selection and presentation there.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [x] Consume deferred producer services through unchanged bounded contracts.

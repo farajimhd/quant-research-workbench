@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from src.backend.query_plans.sec_operations_v1 import (
     intraday_histogram,
+    identity_rows_by_cik,
     related_filing_counts,
     today_filings,
     today_summary,
@@ -50,6 +51,16 @@ class SecOperationsQueryPlanTests(unittest.TestCase):
 
     def test_empty_related_key_set_executes_no_query(self) -> None:
         self.assertEqual(related_filing_counts([]), {})
+
+    def test_identity_query_is_bounded_and_preserves_primary_order(self) -> None:
+        sql = identity_rows_by_cik(["456", "123", "123"])
+
+        self.assertIn("WHERE b.cik IN ('123', '456')", sql)
+        self.assertIn("sym.primary_symbol_flag DESC", sql)
+        self.assertIn("listing.is_primary_listing DESC", sql)
+        self.assertIn("b.confidence_score DESC", sql)
+        with self.assertRaises(ValueError):
+            identity_rows_by_cik([])
 
 
 if __name__ == "__main__":

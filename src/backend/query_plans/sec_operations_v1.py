@@ -256,6 +256,93 @@ def related_filing_counts(
     }
 
 
+def identity_rows_by_cik(ciks: Iterable[str]) -> str:
+    normalized = sorted({str(cik).strip() for cik in ciks if str(cik).strip()})
+    if not normalized:
+        raise ValueError("SEC identity query requires at least one CIK")
+    cik_clause = ", ".join(sql_string(cik) for cik in normalized)
+    return f"""
+        SELECT
+            b.bridge_id,
+            b.cik,
+            b.issuer_id AS bridge_issuer_id,
+            ifNull(b.security_id, '') AS bridge_security_id,
+            ifNull(b.listing_id, '') AS bridge_listing_id,
+            ifNull(b.symbol_id, '') AS bridge_symbol_id,
+            ifNull(b.ticker, '') AS ticker,
+            ifNull(b.accession_number, '') AS bridge_accession_number,
+            toString(b.valid_from_date) AS bridge_valid_from_date,
+            toString(b.valid_to_date_exclusive) AS bridge_valid_to_date_exclusive,
+            b.mapping_method,
+            b.mapping_status,
+            b.confidence_score AS mapping_confidence_score,
+            b.ambiguity_status,
+            issuer.issuer_id,
+            issuer.issuer_name,
+            issuer.issuer_name_normalized,
+            ifNull(issuer.legal_name, '') AS issuer_legal_name,
+            ifNull(issuer.branding_name, '') AS issuer_branding_name,
+            ifNull(issuer.entity_type, '') AS issuer_entity_type,
+            ifNull(issuer.domicile_country_code, '') AS issuer_domicile_country_code,
+            ifNull(issuer.state_of_incorporation, '') AS issuer_state_of_incorporation,
+            ifNull(issuer.sic_code, '') AS issuer_sic_code,
+            ifNull(issuer.sic_description, '') AS issuer_sic_description,
+            ifNull(issuer.sector, '') AS issuer_sector,
+            ifNull(issuer.industry, '') AS issuer_industry,
+            ifNull(issuer.industry_group, '') AS issuer_industry_group,
+            ifNull(issuer.website_url, '') AS issuer_website_url,
+            ifNull(issuer.investor_website_url, '') AS issuer_investor_website_url,
+            issuer.status AS issuer_status,
+            sec.security_id,
+            sec.security_name,
+            sec.product_type AS security_product_type,
+            ifNull(sec.asset_class, '') AS security_asset_class,
+            ifNull(sec.instrument_type, '') AS security_instrument_type,
+            ifNull(sec.security_type, '') AS security_type,
+            ifNull(toString(sec.has_options), '') AS security_has_options,
+            sec.status AS security_status,
+            listing.listing_id,
+            listing.exchange_code,
+            listing.currency_code,
+            ifNull(listing.ibkr_conid, '') AS ibkr_conid,
+            ifNull(listing.board_code, '') AS listing_board_code,
+            ifNull(listing.segment_name, '') AS listing_segment_name,
+            listing.listing_status,
+            listing.is_primary_listing,
+            toString(listing.list_date) AS listing_list_date,
+            toString(listing.delisted_date) AS listing_delisted_date,
+            sym.symbol_id,
+            sym.source_system AS symbol_source_system,
+            sym.ticker_normalized,
+            sym.display_name AS symbol_display_name,
+            ifNull(sym.ticker_root, '') AS ticker_root,
+            ifNull(sym.ticker_suffix, '') AS ticker_suffix,
+            ifNull(sym.ticker_type_id, '') AS ticker_type_id,
+            sym.asset_type AS symbol_asset_type,
+            sym.instrument_type AS symbol_instrument_type,
+            ifNull(sym.security_type, '') AS symbol_security_type,
+            sym.status AS symbol_status,
+            sym.primary_symbol_flag
+        FROM `q_live`.id_sec_market_bridge_v3 AS b FINAL
+        LEFT JOIN `q_live`.id_issuer_v1 AS issuer FINAL
+            ON issuer.issuer_id = b.issuer_id
+        LEFT JOIN `q_live`.id_security_v1 AS sec FINAL
+            ON sec.security_id = ifNull(b.security_id, '')
+        LEFT JOIN `q_live`.id_listing_v1 AS listing FINAL
+            ON listing.listing_id = ifNull(b.listing_id, '')
+        LEFT JOIN `q_live`.id_symbol_v1 AS sym FINAL
+            ON sym.symbol_id = ifNull(b.symbol_id, '')
+        WHERE b.cik IN ({cik_clause})
+        ORDER BY
+            b.cik ASC,
+            sym.primary_symbol_flag DESC,
+            listing.is_primary_listing DESC,
+            b.confidence_score DESC,
+            ifNull(b.ticker, '') ASC
+        FORMAT JSONEachRow
+    """
+
+
 def _datetime64(value: datetime) -> str:
     aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     formatted = aware.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")

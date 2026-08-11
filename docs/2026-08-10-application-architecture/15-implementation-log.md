@@ -1384,6 +1384,19 @@ bounded direct ClickHouse paths remain documented in
      Fourteen focused SEC operations, SEC Canvas, and application-registry
      tests passed. All changed Python modules compiled with bytecode writes
      disabled.
+145. Moved the Services SEC operational identity join into
+     `sec.operations_intraday.v1`. The builder accepts a nonempty, normalized,
+     deduplicated CIK set and joins the published SEC bridge to issuer,
+     security, listing, and symbol identities in one bounded query. Ordering
+     preserves the existing primary-symbol, primary-listing, confidence, and
+     ticker precedence used by backend presentation. The consumer rejects a
+     database other than the registered `q_live` authority instead of silently
+     issuing a query against an unregistered source. Reference and SEC Gateway
+     publications were not changed.
+
+     Fifteen focused SEC operations, SEC Canvas, and application-registry
+     tests passed. All changed Python modules compiled with bytecode writes
+     disabled.
 143. Moved the Services SEC market-day classification histogram into the
      registered `sec.operations_intraday.v1` plan. The query uses the bounded
      half-open `accepted_at_utc` window and the canonical CIK/accession identity
