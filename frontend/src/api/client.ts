@@ -68,6 +68,9 @@ function formatApiErrorDetail(payload: unknown): string {
     if (messages.length) return messages.join("; ");
   }
   if (detail && typeof detail === "object") {
+    if ("message" in detail && typeof (detail as { message?: unknown }).message === "string") {
+      return String((detail as { message: string }).message);
+    }
     if ("msg" in detail && typeof (detail as { msg?: unknown }).msg === "string") {
       return String((detail as { msg: string }).msg);
     }

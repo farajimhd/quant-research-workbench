@@ -284,6 +284,17 @@ bounded direct ClickHouse paths remain documented in
     configuration, and QMD-client tests passed. Four Watchlist runtime tests still fail when run
     without live QMD catalog evidence; that pre-existing fail-closed behavior
     was not weakened or counted as validation for this change.
+48. Reconciled the point-in-time enrichment backlog against the runnable
+    Scanner/Watchlist services: reference, float, short-interest,
+    corporate-event, SEC fundamental, previous-close, and daily-volume inputs
+    are already loaded in causal full-universe queries and joined without
+    per-symbol remote calls, so that stale item is closed. Began the broader
+    response-contract migration at the shared QMD boundary. Product response
+    schema v2 now carries completeness, warnings, coverage and source revision;
+    GET transport failures carry stable typed error details through QMD-facing
+    backend routes, and the frontend displays their message. Other transports
+    and services remain explicitly open. Sixty-nine focused backend tests and
+    the managed TypeScript/Vite production build passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -97,6 +97,7 @@ from src.backend.progress_model import build_progress_model
 from src.backend.qmd_gateway_client import (
     ENRICHED_QMD_TIMEFRAMES,
     MACRO_QMD_TIMEFRAMES,
+    QmdServiceError,
     normalize_qmd_family_bar_snapshot,
     normalize_qmd_macro_bar_snapshot,
     qmd_catalogs,
@@ -415,6 +416,15 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
 }
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
+
+
+def _qmd_http_exception(error: QmdServiceError) -> HTTPException:
+    return HTTPException(
+        status_code=503 if error.code == "qmd_upstream_unavailable" else 502,
+        detail=error.as_detail(),
+    )
+
+
 replay_run_service = ReplayRunService()
 backtest_run_service = ReplayRunService(runtime_root=backtest_runtime_root())
 app.add_middleware(
@@ -4423,6 +4433,8 @@ def market_discovery_scanner_history(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -4445,6 +4457,8 @@ def real_live_market_gateway_status() -> dict[str, Any]:
 def real_live_qmd_gateway_status() -> dict[str, Any]:
     try:
         return qmd_status()
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -4453,6 +4467,8 @@ def real_live_qmd_gateway_status() -> dict[str, Any]:
 def real_live_qmd_gateway_catalogs() -> dict[str, Any]:
     try:
         return qmd_catalogs()
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -4507,6 +4523,8 @@ def real_live_qmd_gateway_indicators(symbol: str, timeframe: str = "1m", row_lim
         return qmd_indicators(symbol, timeframe=timeframe, row_limit=row_limit)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -5319,6 +5337,8 @@ def trading_canvas_live_chart(symbol: str, timeframe: str = "1m", row_limit: int
         )
         try:
             bars = bars_future.result()
+        except QmdServiceError as exc:
+            raise _qmd_http_exception(exc) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         errors: dict[str, str] = {}
@@ -5355,6 +5375,8 @@ def trading_canvas_market_signals(
             include_history=include_history,
             row_limit=row_limit,
         )
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -5387,6 +5409,8 @@ def trading_canvas_market_events(
             "source": "qmd-gateway",
             "symbol": ticker,
         }
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -5400,6 +5424,8 @@ def trading_canvas_market_state(symbol: str, start: str | None = None, end: str 
         raise HTTPException(status_code=400, detail="start and end must be provided together")
     try:
         return historical_market_state(ticker, start=start, end=end) if start and end else qmd_live_market_state(ticker)
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -5413,6 +5439,8 @@ def trading_ticker_change(symbol: str, as_of: str) -> dict[str, Any]:
         return historical_ticker_change(ticker, as_of=as_of)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -5458,6 +5486,8 @@ def trading_canvas_live_chart_history(
             stage=stage,
             row_limit=row_limit,
         )
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

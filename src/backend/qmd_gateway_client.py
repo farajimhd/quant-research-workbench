@@ -53,6 +53,44 @@ class QmdProductResponse:
     authority: Literal["live", "history"]
     endpoint: str
     payload: Any
+    complete: bool | None = None
+    warnings: tuple[str, ...] = ()
+    coverage_status: str = ""
+    source_revision: str = ""
+
+
+class QmdServiceError(RuntimeError):
+    """Typed backend boundary error for QMD Live and QMD History transport."""
+
+    def __init__(
+        self,
+        *,
+        service: str,
+        operation: str,
+        path: str,
+        code: str,
+        message: str,
+        retryable: bool,
+        upstream_status: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.service = service
+        self.operation = operation
+        self.path = path
+        self.code = code
+        self.retryable = retryable
+        self.upstream_status = upstream_status
+
+    def as_detail(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": str(self),
+            "operation": self.operation,
+            "path": self.path,
+            "retryable": self.retryable,
+            "service": self.service,
+            "upstream_status": self.upstream_status,
+        }
 
 
 def qmd_product_request(
@@ -80,7 +118,50 @@ def qmd_product_request(
             if authority == "live"
             else resolved_history_get(endpoint, params, timeout=timeout)
         )
-    return QmdProductResponse(1, request.product, authority, endpoint, payload)
+    complete, warnings, coverage_status, source_revision = _qmd_response_metadata(payload)
+    return QmdProductResponse(
+        schema_version=2,
+        product=request.product,
+        authority=authority,
+        endpoint=endpoint,
+        payload=payload,
+        complete=complete,
+        warnings=warnings,
+        coverage_status=coverage_status,
+        source_revision=source_revision,
+    )
+
+
+def _qmd_response_metadata(
+    payload: Any,
+) -> tuple[bool | None, tuple[str, ...], str, str]:
+    if not isinstance(payload, dict):
+        return None, (), "", ""
+    complete_value = payload.get("complete")
+    complete = complete_value if isinstance(complete_value, bool) else None
+    warning_rows = payload.get("warnings") or []
+    if isinstance(warning_rows, (str, dict)):
+        warning_rows = [warning_rows]
+    elif not isinstance(warning_rows, (list, tuple)):
+        warning_rows = []
+    warnings = tuple(
+        str(row.get("message") or row.get("detail") or row.get("code") or "").strip()
+        if isinstance(row, dict)
+        else str(row).strip()
+        for row in warning_rows
+        if (isinstance(row, dict) or str(row).strip())
+    )
+    coverage = payload.get("coverage")
+    coverage_status = str(
+        payload.get("coverage_status")
+        or (coverage.get("status") if isinstance(coverage, dict) else "")
+        or ""
+    )
+    revision = payload.get("source_revision")
+    source_revision = str(
+        revision.get("token") if isinstance(revision, dict) else revision or ""
+    )
+    return complete, tuple(value for value in warnings if value), coverage_status, source_revision
 
 
 def _qmd_compact_event_window(
@@ -344,15 +425,42 @@ def _qmd_service_get_json(
             text = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"{service_label} GET {safe_qmd_url(url)} failed with HTTP {exc.code}: {body[:500]}") from exc
+        raise QmdServiceError(
+            service=service_label,
+            operation="GET",
+            path=path,
+            code="qmd_upstream_http_error",
+            message=f"{service_label} GET {safe_qmd_url(url)} failed with HTTP {exc.code}: {body[:500]}",
+            retryable=exc.code in {408, 425, 429} or exc.code >= 500,
+            upstream_status=exc.code,
+        ) from exc
     except urllib.error.URLError as exc:
         if service_label == "QMD History":
-            raise RuntimeError(
+            message = (
                 f"QMD History gateway is not reachable at {base_url.rstrip('/')}. "
                 "Start scripts/run_qmd_history_gateway.ps1 and wait for its /health status to be ready."
-            ) from exc
-        raise RuntimeError(f"{service_label} GET {safe_qmd_url(url)} failed: {exc.reason}") from exc
-    return json.loads(text) if text.strip() else {}
+            )
+        else:
+            message = f"{service_label} GET {safe_qmd_url(url)} failed: {exc.reason}"
+        raise QmdServiceError(
+            service=service_label,
+            operation="GET",
+            path=path,
+            code="qmd_upstream_unavailable",
+            message=message,
+            retryable=True,
+        ) from exc
+    try:
+        return json.loads(text) if text.strip() else {}
+    except json.JSONDecodeError as exc:
+        raise QmdServiceError(
+            service=service_label,
+            operation="GET",
+            path=path,
+            code="qmd_invalid_json",
+            message=f"{service_label} GET {path} returned invalid JSON.",
+            retryable=False,
+        ) from exc
 
 
 def qmd_put_json(path: str, payload: dict[str, Any], *, timeout: int = 3) -> Any:

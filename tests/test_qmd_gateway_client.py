@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import unittest
+import urllib.error
 from datetime import datetime
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from src.backend.qmd_gateway_client import (
     QmdProductRequest,
+    QmdServiceError,
     normalize_qmd_macro_bar_snapshot,
     normalize_qmd_market_signal,
     qmd_compact_events,
@@ -116,11 +118,53 @@ class QmdGatewayClientTests(unittest.TestCase):
         )
 
         self.assertEqual(response.authority, "history")
+        self.assertEqual(response.schema_version, 2)
         self.assertEqual(response.endpoint, "/snapshot/chart-bars/AAPL")
         params = get_json.call_args.args[1]
         self.assertEqual(params["stage"], "bars")
         self.assertEqual(params["as_of"], "2026-08-08T12:00:00-04:00")
         self.assertEqual(get_json.call_args.kwargs["timeout"], 12)
+
+    @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
+    @patch("src.backend.qmd_gateway_client.qmd_enabled", return_value=True)
+    @patch("src.backend.qmd_gateway_client.qmd_base_url", return_value="http://127.0.0.1:8795")
+    def test_http_transport_raises_typed_retryable_error(
+        self, _base_url, _enabled, urlopen
+    ) -> None:
+        urlopen.side_effect = urllib.error.URLError("connection refused")
+        from src.backend.qmd_gateway_client import qmd_get_json
+
+        with self.assertRaises(QmdServiceError) as raised:
+            qmd_get_json("/snapshot/scanner")
+
+        self.assertEqual(raised.exception.code, "qmd_upstream_unavailable")
+        self.assertEqual(raised.exception.path, "/snapshot/scanner")
+        self.assertTrue(raised.exception.retryable)
+        self.assertEqual(raised.exception.as_detail()["service"], "QMD")
+
+    @patch("src.backend.qmd_gateway_client.qmd_history_get_json")
+    def test_typed_product_response_projects_standard_metadata(self, get_json) -> None:
+        get_json.return_value = {
+            "bars": [],
+            "complete": False,
+            "coverage": {"status": "partial"},
+            "source_revision": {"token": "rev-17"},
+            "warnings": [{"code": "archive_pending", "message": "Archive segment is pending."}],
+        }
+
+        response = qmd_product_request(
+            QmdProductRequest(
+                "chart",
+                ticker="AAPL",
+                start="2026-08-08T08:00:00-04:00",
+                end="2026-08-08T20:00:00-04:00",
+            )
+        )
+
+        self.assertFalse(response.complete)
+        self.assertEqual(response.coverage_status, "partial")
+        self.assertEqual(response.source_revision, "rev-17")
+        self.assertEqual(response.warnings, ("Archive segment is pending.",))
 
     def test_compact_event_window_composes_history_with_filtered_live_tail(self) -> None:
         boundary_us = int(datetime.fromisoformat("2026-08-08T20:00:00+00:00").timestamp() * 1_000_000)

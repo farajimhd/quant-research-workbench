@@ -188,7 +188,11 @@ budgets and invalid scope broadening fails configuration validation.
 - [ ] Move approved SQL into versioned query plans.
 - [ ] Remove duplicated route-level SQL as callers migrate.
 - [ ] Consume deferred producer services through unchanged bounded contracts.
-- [ ] Bulk-load point-in-time enrichment and avoid per-row remote queries.
+- [x] Bulk-load point-in-time enrichment and avoid per-row remote queries.
+      Scanner reference, corporate-event, float, short-interest, fundamental,
+      previous-close, and daily-volume inputs are resolved through causal
+      full-universe queries and joined in memory; no per-ticker remote query is
+      present on the interactive Scanner/Watchlist path.
 - [ ] Maintain a compact feature projection with source, version,
       `available_at`, freshness, and null reasons.
 - [x] Compile configuration dependencies, warm-up, modes, permissions, and
@@ -202,6 +206,11 @@ budgets and invalid scope broadening fails configuration validation.
       profile, runtime assignments, and observation dependencies into the
       content-hashed approved release consumed by mode-specific resolvers.
 - [ ] Standardize response envelopes, warnings, partial coverage, and typed errors.
+      The shared QMD product response is now schema v2 with completeness,
+      warnings, coverage status and source revision, and QMD GET transport
+      failures are typed through backend HTTP routes. Mutation transports,
+      non-QMD clients, WebSocket terminal frames, and application-wide success
+      envelopes still need the same contract before this broad item is closed.
 - [ ] Implement HTTP snapshot plus sequenced delta streams.
 - [ ] Fill reconnect gaps or require resnapshot.
 - [ ] Isolate budgets for commands, discovery, charts, simulation, and offline work.

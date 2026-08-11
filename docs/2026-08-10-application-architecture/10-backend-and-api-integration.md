@@ -84,6 +84,21 @@ Backend route handlers call shared typed clients:
 
 Direct ClickHouse SQL embedded across route handlers is a migration target. SQL belongs in versioned repository/query-plan definitions behind the appropriate client.
 
+Scanner enrichment is already set-based at the service boundary. One causal
+reference query resolves the eligible universe with identity, market snapshot,
+float, short interest, country, presentation assets, IPOs and splits; one
+causal fundamentals query resolves SEC facts for the same population; and one
+daily-bar query supplies previous close and volume baselines. The backend joins
+those projections in memory and does not issue a remote request per ticker.
+
+The typed QMD client response schema v2 preserves product, authority, endpoint,
+payload, completeness, warnings, coverage status and source revision. QMD Live
+and History GET failures now cross the backend boundary as `QmdServiceError`
+with stable code, service, operation, path, retryability and upstream status.
+QMD-facing HTTP routes return that structured detail while retaining the
+request correlation header; the frontend renders its message without discarding
+the machine-readable error fields.
+
 ## 6. Configuration registry and compiler
 
 The catalog contains capability, field, container, strategy, policy, mode and service descriptors. Configuration records reference stable IDs and versions. The compiler:
