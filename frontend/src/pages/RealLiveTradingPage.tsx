@@ -35,6 +35,7 @@ import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../a
 import { MetricRatio } from "../app/components/MetricRatio";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
+import { ApprovedCanvasRuntimePage } from "./CanvasConfigurationPage";
 import {
   WorkspaceCanvasManager,
   WorkspaceWindow,
@@ -1413,6 +1414,19 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
         onToggleAccount={(accountKey) => toggleSelectedAccount(accountKey, availableAccounts, setSelectedAccountKeys)}
       />
     );
+  }
+
+  if (started) {
+    const runtimeMode = selectedAccounts.some((account) => account.trading_mode === "live") ? "live" : "paper";
+    return <ApprovedCanvasRuntimePage
+      accountKeys={selectedAccountKeys}
+      mode={runtimeMode}
+      modeControls={<div className="live-global-status-actions" aria-label={`${runtimeMode} workspace controls`}>
+        <button className="button secondary compact" disabled={loading} onClick={refreshCurrentBar} type="button"><RefreshCw size={14} /> Refresh</button>
+        <button className="button secondary compact" disabled={loading} onClick={() => void checkConnections()} type="button"><CheckCircle2 size={14} /> Check</button>
+        <button className="button secondary compact" onClick={closeSession} type="button"><X size={14} /> Account Gate</button>
+      </div>}
+    />;
   }
 
   return (

@@ -537,6 +537,20 @@ bounded direct ClickHouse paths remain documented in
     are not guessed forward. The managed external-runtime frontend production
     build passed; real browser conflict-state validation remains part of the
     broader UI acceptance gate.
+77. Migrated the active post-gate Live/Paper workspace to the published Canvas
+    resolver without changing broker services or the account/gateway preflight.
+    The published profile supplies layout, links, and container settings;
+    mode-and-account-set scopes isolate runtime overlays; QMD Live supplies the
+    scanner, tape, current bars, and indicators; and canonical trading endpoints
+    supply broker, Portfolio, and OMS projections. Charts render their causal
+    QMD History base first, merge bounded QMD Live snapshots by bar timestamp,
+    replace corrected current bars, and label transition, partial, reconnecting,
+    and stale-tail states. The legacy renderer remains compiled only as a
+    rollback seam, and Live/Paper trade proposals remain review-only pending the
+    separately authorized shared execution-controller migration. The managed
+    external-runtime frontend production build and nine focused account-gate,
+    retired-order-authority, and QMD Canvas stream tests passed. Authenticated
+    post-gate browser validation remains in the broader UI acceptance gate.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

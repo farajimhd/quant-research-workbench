@@ -142,12 +142,14 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   reported, and a failed registry check leaves existing workspaces visible but
   blocks unverified additions.
 - The backend now exposes a Canvas-only projection of the approved release.
-  Standalone Canvas and Replay instantiate that published/pinned profile, while
+  Standalone Canvas, Replay, Live, and Paper instantiate that
+  published/pinned profile, while
   revision-scoped browser overlays persist layout, links, symbols and container
   settings without writing to Configuration storage. Each workspace can
   reset its overlay to the approved profile or clone its current state into a
-  separate revision-scoped workspace. Live/Paper and Backtest still need this
-  same integration as part of their shared-controller migration. For overlays
+  separate revision-scoped workspace. Live/Paper overlays are additionally
+  isolated by mode and selected account set; Backtest/research still need this
+  integration. For overlays
   saved under the current overlay-record schema, a newer approved revision is
   compared through a three-way base/overlay/new-base merge. The UI reports
   conflicting leaf paths and requires an explicit choice to apply the
@@ -160,21 +162,26 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   source revision, completeness and stale reason through the backend to a
   compact Canvas notice. Canvas also keeps one bounded exact-cursor prefetch for
   the next earlier page and discards it when navigation changes the request.
-  The remaining chart drift is the explicit watermark merge with the live tail,
-  richer correction presentation, and published Canvas defaults in the
-  remaining mode workspaces.
-- The legacy Paper and Live processed-artifact chart workspaces now request the
-  primary chart independently so it can render without waiting for secondary
-  views. Daily and five-minute charts are fetched independently only while
-  visible, with per-chart loading and error state. This improves the current
-  manual-trading path without representing it as the target QMD/Canvas resolver;
-  that migration and live-tail continuity remain open.
+  Live/Paper now start from that causal base and merge bounded QMD Live bar and
+  indicator snapshots by bar timestamp. This replaces a corrected current bar
+  instead of drawing a duplicate, labels historical-to-live transition and
+  partial/stale tail states, and retries from another complete snapshot. The
+  remaining workspace drift is Backtest/research adoption and storage-version
+  invalidation for derived chart caches.
+- The existing Live/Paper account preflight and gateway-start boundary remains
+  authoritative. After the gate, the route resolves the published Canvas,
+  obtains scanner/chart/tape state from QMD Live, and obtains broker,
+  Portfolio, and OMS projections from the canonical trading-state endpoints.
+  It no longer presents the legacy processed-artifact layout as the active
+  workspace. The legacy renderer remains compiled as an explicit rollback seam
+  until parity evidence allows deletion.
 - The active live tape/quote Canvas path now establishes the QMD broadcast
   subscription before returning a versioned ticker snapshot. The backend
   forwards terminal control frames even though they carry no ticker, and the
   browser replaces local state from a new snapshot after `stream_gap` instead
   of continuing across a hidden hole. Historical-to-live chart-bar watermark
-  merging and its correction/staleness presentation remain open.
+  merging now uses bounded live bar snapshots with timestamp replacement and
+  explicit correction/staleness presentation.
 - Replay Canvas now creates manual or semi-automatic semantic proposals from
   the visible closed-bar snapshot, point-in-time conid, price/source sequence,
   freshness, quantity, and optional stop/target. The Replay controller rejects

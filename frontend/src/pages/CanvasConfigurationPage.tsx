@@ -55,6 +55,7 @@ import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations } from
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsCanvasLink, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
+import type { TradingWorkspaceMode } from "../app/tradingWorkspace";
 import { DEFAULT_STRATEGY_CHART_PRESENTATION, strategyInvalidationZones, strategyPresentationMarkers, type StrategyAction, type StrategyChartPresentation, type StrategyDecisionEvent } from "../app/strategyPresentation";
 
 type HistoricalBar = { bar_end?: string; bar_start: string; close: number; high: number; is_closed?: boolean; low: number; open: number; volume: number };
@@ -275,6 +276,13 @@ type CanvasScannerSnapshot = {
 };
 type CanvasContext = { coverage: { event_count: number; session_date: string | null; ticker_count: number }; preview_time: string; session_date: string | null };
 type QmdLiveBar = HistoricalBar & { session_date?: string };
+type QmdLiveChartPayload = {
+  bars: { current?: QmdLiveBar | null; history?: QmdLiveBar[] };
+  errors?: Record<string, string>;
+  indicators: { current?: HistoricalIndicator | null; history?: HistoricalIndicator[] };
+  source?: string;
+  stream_interval_ms?: number;
+};
 type QmdBarHistory = {
   as_of: string;
   market_signal_events: QmdMarketSignalEvent[];
@@ -406,6 +414,7 @@ type ContainerSettings = {
 };
 
 type CanvasPreviewContext = { previewTime: string; sessionDate: string };
+type CanvasRuntimeMode = Extract<TradingWorkspaceMode, "live" | "paper"> | "canvas" | "replay";
 type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; title: string };
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
@@ -703,8 +712,8 @@ function qmdIndicatorKnowledge(shortDescription: string, detailedDescription: st
   };
 }
 
-function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[]): CanvasLiveChartState {
-  const pointInTime = true;
+function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[], liveTail = false): CanvasLiveChartState {
+  const pointInTime = !liveTail;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
   const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
   const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
@@ -834,7 +843,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
               canLoadEarlier: payload.has_more && !merged.atCapacity,
               marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
               historyError: "",
-              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? "Loading requested indicators..." : "",
+              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? "Loading requested indicators..." : liveTail ? "Historical base loaded; connecting the QMD live tail..." : "",
               indicators: merged.indicators,
               indicatorsAvailable: progressive ? current.indicatorsAvailable : payload.indicators_available,
               indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
@@ -898,6 +907,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
   }, [indicatorColumns, pointInTime, prefetchEarlier, rowBudget, sessionDate, symbol, timeframe]);
 
   useEffect(() => {
+    if (liveTail) return;
     const ticker = symbol.trim().toUpperCase();
     const requestKey = `${ticker}:${timeframe}:${indicatorColumns}`;
     if (!ticker || cutoffMs <= loadedCutoffRef.current || requestKeyRef.current !== requestKey) return;
@@ -937,7 +947,69 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
         }
       });
     return () => controller.abort();
-  }, [cutoffMs, indicatorColumns, rowBudget, sessionDate, symbol, timeframe]);
+  }, [cutoffMs, indicatorColumns, liveTail, rowBudget, sessionDate, symbol, timeframe]);
+
+  useEffect(() => {
+    if (!liveTail) return;
+    const ticker = symbol.trim().toUpperCase();
+    if (!ticker) return;
+    let cancelled = false;
+    let controller: AbortController | null = null;
+    let timer: number | null = null;
+    const refresh = async () => {
+      if (cancelled || controller || document.visibilityState === "hidden") {
+        if (!cancelled) timer = window.setTimeout(refresh, 1_000);
+        return;
+      }
+      const request = new AbortController();
+      controller = request;
+      try {
+        const payload = await api<QmdLiveChartPayload>(`/api/trading/canvas-live-chart${query({ row_limit: chartPageSize(timeframe), symbol: ticker, timeframe })}`, { signal: request.signal, timeoutMs: 30_000 });
+        if (cancelled || request.signal.aborted) return;
+        const bars = [...(payload.bars.history ?? []), ...(payload.bars.current ? [payload.bars.current] : [])];
+        const indicators = [...(payload.indicators.history ?? []), ...(payload.indicators.current ? [payload.indicators.current] : [])];
+        const liveError = Object.values(payload.errors ?? {}).filter(Boolean).join("; ");
+        setState((current) => {
+          const mergedBars = limitLiveRowsWithHysteresis(mergeRowsByTime(current.bars, bars), rowBudget);
+          const admittedTimes = new Set(mergedBars.map(barStartTime));
+          return {
+            ...current,
+            bars: mergedBars,
+            connected: true,
+            error: liveError,
+            historyNotice: liveError ? `Live bars are current; one derived stream is partial: ${liveError}` : "QMD live tail connected; current-bar replacements are applied by bar timestamp.",
+            indicators: limitLiveRowsWithHysteresis(mergeRowsByTime(current.indicators, indicators), rowBudget).filter((row) => admittedTimes.has(barStartTime(row))),
+            lastUpdateAt: new Date().toISOString(),
+            loading: false,
+            pointInTime: false,
+          };
+        });
+        const minimumRefreshMs = ["1d", "1w", "1mo", "1y"].includes(timeframe) ? 15_000 : timeframeDurationMs(timeframe) >= 300_000 ? 5_000 : 1_000;
+        timer = window.setTimeout(refresh, Math.max(minimumRefreshMs, payload.stream_interval_ms ?? 1_000));
+      } catch (reason) {
+        if (!cancelled && !request.signal.aborted) {
+          setState((current) => ({ ...current, connected: false, error: reason instanceof Error ? reason.message : String(reason), historyNotice: "Live tail is stale; the chart is retaining the last complete historical/live snapshot while reconnecting." }));
+          timer = window.setTimeout(refresh, 5_000);
+        }
+      } finally {
+        if (controller === request) controller = null;
+      }
+    };
+    void refresh();
+    const resume = () => {
+      if (document.visibilityState !== "visible" || cancelled || controller) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      void refresh();
+    };
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (timer !== null) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [liveTail, rowBudget, symbol, timeframe]);
 
   return { ...state, loadEarlier };
 }
@@ -1263,6 +1335,16 @@ function readLiveAccountKeys(): string[] {
   return ["paper"];
 }
 
+function currentLivePreviewContext(now = new Date()): CanvasPreviewContext {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone: "America/New_York",
+  }).formatToParts(now).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return { previewTime: `${parts.hour === "24" ? "00" : parts.hour}:${parts.minute}`, sessionDate: marketSessionDate(now.toISOString()) };
+}
+
 function liveAccountSignature(accountKeys: string[]) {
   return [...accountKeys].map((item) => String(item)).filter(Boolean).sort().join(",");
 }
@@ -1313,8 +1395,9 @@ function normalizePerformanceSnapshot(payload: CanonicalTradingPreview): Perform
   };
 }
 
-function useLivePerformanceState(enabled = true): LivePerformanceState {
-  const [accountKeys, setAccountKeys] = useState(readLiveAccountKeys);
+function useLivePerformanceState(enabled = true, requestedAccountKeys?: string[]): LivePerformanceState {
+  const requestedSignature = requestedAccountKeys?.join(",") ?? "";
+  const [accountKeys, setAccountKeys] = useState(() => requestedAccountKeys?.length ? requestedAccountKeys : readLiveAccountKeys());
   const [state, setState] = useState<LivePerformanceState>(() => {
     const cached = readCachedLivePerformance(accountKeys);
     return { data: cached, status: cached ? "stale" : "loading" };
@@ -1322,12 +1405,16 @@ function useLivePerformanceState(enabled = true): LivePerformanceState {
 
   useEffect(() => {
     if (!enabled) return;
+    if (requestedAccountKeys?.length) {
+      setAccountKeys(requestedAccountKeys);
+      return;
+    }
     const syncAccounts = (event: StorageEvent) => {
       if (event.key === LIVE_ACCOUNT_KEYS_STORAGE_KEY) setAccountKeys(readLiveAccountKeys());
     };
     window.addEventListener("storage", syncAccounts);
     return () => window.removeEventListener("storage", syncAccounts);
-  }, [enabled]);
+  }, [enabled, requestedSignature]);
 
   useEffect(() => {
     if (!enabled) {
@@ -1440,7 +1527,7 @@ export function CanvasConfigurationPage() {
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager />;
 }
 
-type ApprovedCanvasProfile = {
+export type ApprovedCanvasProfile = {
   available: boolean;
   canvas_revision: string;
   configuration_revision: number;
@@ -1449,6 +1536,25 @@ type ApprovedCanvasProfile = {
   revision_id: string;
   schema_version: number;
 };
+
+export function ApprovedCanvasRuntimePage({ accountKeys, mode, modeControls }: { accountKeys: string[]; mode: "live" | "paper"; modeControls?: ReactNode }) {
+  const [approved, setApproved] = useState<ApprovedCanvasProfile | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    api<ApprovedCanvasProfile>("/api/trading/configuration/canvas-profile", { timeoutMs: 20_000 })
+      .then((payload) => {
+        if (cancelled) return;
+        if (!payload.available || !payload.profile) throw new Error("Publish an approved configuration with a Canvas profile before opening a trading workspace.");
+        setApproved(payload);
+      })
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { cancelled = true; };
+  }, []);
+  if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
+  if (!approved) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Loading approved Canvas</strong><span>Resolving the published default for this {mode} workspace.</span></div></div>;
+  return <CanvasWorkspaceSurface accountKeys={accountKeys} approvedCanvas={approved} canvasId={MAIN_CANVAS_ID} manager={false} modeControls={modeControls} runtimeMode={mode} />;
+}
 
 export function CanvasFocusPage() {
   const params = new URLSearchParams(window.location.search);
@@ -1509,10 +1615,14 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} replayRun={run} runtimeWorkspaceId={focusToken} />;
 }
 
-export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, modeControls, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeWorkspaceId }: { approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeWorkspaceId?: string }) {
+export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string }) {
+  const runtimeMode: CanvasRuntimeMode = replayRun ? "replay" : requestedRuntimeMode ?? (approvedCanvas ? "canvas" : "canvas");
+  const liveMode = runtimeMode === "live" || runtimeMode === "paper";
+  const resolvedAccountKeys = accountKeys?.length ? accountKeys : readLiveAccountKeys();
+  const accountSignature = [...resolvedAccountKeys].sort().join(".") || runtimeMode;
   const runtimeBase = replayRun?.canvas_profile ?? approvedCanvas?.profile;
   const runtimeRevision = replayRun?.configuration_content_hash || replayRun?.canvas_revision || approvedCanvas?.content_hash || approvedCanvas?.canvas_revision || "draft";
-  const runtimeScope = replayRun ? `replay.${replayRun.run_id}.${runtimeWorkspaceId || "main"}` : approvedCanvas ? "canvas" : "configuration";
+  const runtimeScope = replayRun ? `replay.${replayRun.run_id}.${runtimeWorkspaceId || "main"}` : liveMode ? `${runtimeMode}.${accountSignature}` : approvedCanvas ? "canvas" : "configuration";
   const runtimeRegistryStorageKey = runtimeBase ? canvasRuntimeRegistryStorageKey(runtimeScope, runtimeRevision) : "";
   const workspaceStorageKey = runtimeBase
     ? canvasRuntimeWorkspaceStorageKey(runtimeScope, runtimeRevision, canvasId)
@@ -1531,9 +1641,9 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
   const [registry, setRegistry] = useState<CanvasRegistry>(() => runtimeBase
     ? readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
     : readCanvasRegistry());
-  const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => replayRun ? replayPreviewContext(replayRun) : readPreviewContext());
+  const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => replayRun ? replayPreviewContext(replayRun) : liveMode ? currentLivePreviewContext() : readPreviewContext());
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
-  const [contextReady, setContextReady] = useState(Boolean(replayRun));
+  const [contextReady, setContextReady] = useState(Boolean(replayRun || liveMode));
   const [contextError, setContextError] = useState("");
   const [workspaceState, setWorkspaceState] = useState<CanvasWorkspaceState | null>(initialCanvasState);
   const [loading, setLoading] = useState(true);
@@ -1569,15 +1679,17 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
   const chartCutoffMs = useMemo(() => dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(), [previewContext]);
   const scannerCutoffMs = replayRun ? Math.floor(chartCutoffMs / 15_000) * 15_000 : chartCutoffMs;
-  const { error: scannerError, loading: scannerLoading, snapshot: scannerSnapshot } = useCanvasScannerSnapshot({
+  const historicalScanner = useCanvasScannerSnapshot({
     cutoffMs: scannerCutoffMs,
-    enabled: Boolean(scannerContainerKey) && contextReady,
+    enabled: Boolean(scannerContainerKey) && contextReady && !liveMode,
     technicalWindows: scannerTechnicalWindows,
   });
+  const liveScanner = useCanvasLiveScannerSnapshot(Boolean(scannerContainerKey) && contextReady && liveMode);
+  const { error: scannerError, loading: scannerLoading, snapshot: scannerSnapshot } = liveMode ? liveScanner : historicalScanner;
   const previewClocks = useMemo(() => previewClockReadings(previewContext), [previewContext]);
   const clockIcons = [Clock3, MapPin];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
-  const livePerformance = useLivePerformanceState(!replayRun);
+  const livePerformance = useLivePerformanceState(!replayRun, liveMode ? resolvedAccountKeys : undefined);
   const performanceState: LivePerformanceState = replayRun
     ? {
         data: preview?.trading.performance_snapshot ?? null,
@@ -1617,9 +1729,17 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
   }, [canvasId, registry, runtimeBase, runtimeRebase, runtimeRevision, runtimeScope, workspaceState]);
 
   useEffect(() => {
-    if (replayRun) return;
+    if (replayRun || liveMode) return;
     window.localStorage.setItem(CANVAS_PREVIEW_CONTEXT_STORAGE_KEY, JSON.stringify(previewContext));
-  }, [previewContext, replayRun]);
+  }, [liveMode, previewContext, replayRun]);
+
+  useEffect(() => {
+    if (!liveMode) return;
+    const update = () => setPreviewContext(currentLivePreviewContext());
+    update();
+    const timer = window.setInterval(update, 15_000);
+    return () => window.clearInterval(timer);
+  }, [liveMode]);
 
   useEffect(() => {
     if (!replayRun) return;
@@ -1665,7 +1785,7 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
   }, [runtimeBase, runtimeRegistryStorageKey]);
 
   useEffect(() => {
-    if (replayRun) return;
+    if (replayRun || liveMode) return;
     let cancelled = false;
     api<CanvasContext>("/api/trading/canvas-context", { timeoutMs: 20000 })
       .then((payload) => {
@@ -1681,7 +1801,7 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
       .catch(() => { if (!cancelled) { setContextError("Historical coverage is temporarily unavailable."); setLoading(false); } })
       .finally(() => { if (!cancelled) setContextReady(true); });
     return () => { cancelled = true; };
-  }, [replayRun]);
+  }, [liveMode, replayRun]);
 
   useEffect(() => {
     if (!contextReady) return;
@@ -1709,12 +1829,16 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
           method: "POST",
           signal: controller.signal,
           timeoutMs: 60000,
+        }).then(async (payload) => {
+          if (!liveMode) return payload;
+          const trading = await api<CanonicalTradingPreview>(`/api/trading/state${query({ account_keys: resolvedAccountKeys.join(","), account_type: resolvedAccountKeys[0] || "paper", mode: runtimeMode })}`, { signal: controller.signal, timeoutMs: 45_000 });
+          return { ...payload, preview_kind: `${runtimeMode}_runtime`, trading };
         });
     request.then((payload) => { if (!controller.signal.aborted) setPreview(payload); })
       .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [activeSymbol, contextError, contextReady, previewContainerKey, previewContext.previewTime, previewContext.sessionDate, replayRun?.run_id]);
+  }, [accountSignature, activeSymbol, contextError, contextReady, liveMode, previewContainerKey, previewContext.previewTime, previewContext.sessionDate, replayRun?.run_id, runtimeMode]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (definition.id === "chart") {
@@ -1727,17 +1851,17 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
     }
     if (definition.id === "charts_quotes") {
       return {
-        detail: "Canonical historical charts, NBBO updates, and trade prints for one symbol at the active Replay or Canvas clock.",
+        detail: liveMode ? "Canonical history merged with the current QMD bar tail, live NBBO updates, and trade prints." : "Canonical historical charts, NBBO updates, and trade prints for one symbol at the active Replay or Canvas clock.",
         freshness: previewContext.previewTime,
-        sourceLabel: "QMD History",
+        sourceLabel: liveMode ? "QMD History + Live" : "QMD History",
         status: contextError ? "error" : "ready",
       };
     }
     if (definition.id === "microstructure") {
       return {
-        detail: "Canonical historical NBBO updates and trade prints decoded once against the same event sequence and active clock.",
+        detail: liveMode ? "Canonical live NBBO updates and trade prints decoded once from the active QMD event sequence." : "Canonical historical NBBO updates and trade prints decoded once against the same event sequence and active clock.",
         freshness: previewContext.previewTime,
-        sourceLabel: "QMD History",
+        sourceLabel: liveMode ? "QMD Live" : "QMD History",
         status: contextError ? "error" : "ready",
       };
     }
@@ -1756,10 +1880,10 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
           : scannerLoading
             ? "Building and enriching the complete point-in-time market cross-section."
             : scannerSnapshot
-              ? `${definition.title} rendered from the complete point-in-time market cross-section.`
+              ? `${definition.title} rendered from the complete ${liveMode ? "live" : "point-in-time"} market cross-section.`
               : "Waiting for the point-in-time market cross-section.",
         freshness: previewContext.previewTime,
-        sourceLabel: scannerError ? "Unavailable" : "QMD History",
+        sourceLabel: scannerError ? "Unavailable" : liveMode ? "QMD Live" : "QMD History",
         status: scannerError ? "error" : scannerLoading ? "connecting" : scannerSnapshot ? "ready" : "idle",
       };
     }
@@ -1783,7 +1907,7 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
       sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : newsContainer || secContainer || definition.id === "xbrl" ? "Point-in-time" : "IBKR preview",
       status: sourceError ? "error" : newsContainer || secContainer || preview ? "ready" : "idle",
     };
-  }, [contextError, preview, previewContext.previewTime, replayRun, scannerError, scannerLoading, scannerSnapshot]);
+  }, [contextError, liveMode, preview, previewContext.previewTime, replayRun, scannerError, scannerLoading, scannerSnapshot]);
 
   const canvasTargets = registry.canvases.map((canvas, index) => ({
     color: ["var(--primary)", "var(--info)", "var(--success)", "var(--warning)"][index % 4],
@@ -2104,11 +2228,11 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
         managementContent={manager
           ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} />
           : runtimeBase
-            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={replayRun ? "Replay" : "Canvas"} onApplyRebase={applyRuntimeRebase} onKeepApproved={keepApprovedAfterRebase} onReset={resetRuntimeOverlay} onSaveAs={saveRuntimeWorkspace} rebase={runtimeRebase} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
+            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={runtimeMode === "replay" ? "Replay" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : "Canvas"} onApplyRebase={applyRuntimeRebase} onKeepApproved={keepApprovedAfterRebase} onReset={resetRuntimeOverlay} onSaveAs={saveRuntimeWorkspace} rebase={runtimeRebase} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
             : null}
         managementOpen={managementEnabled && managementOpen}
         metaForContainer={metaForContainer}
-        mode="replay"
+        mode={runtimeMode === "canvas" ? "replay" : runtimeMode}
         onContainerAdded={registerContainerInstance}
         onMoveContainerToCanvas={runtimeBase ? undefined : moveContainer}
         onMoveGroupToCanvas={runtimeBase ? undefined : moveGroup}
@@ -2142,6 +2266,7 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
             linkGroup={group}
             linkedContainers={linkedContainers}
             loading={loading}
+            liveMode={liveMode}
             onLinkChange={(nextGroup) => setContainerLink(instanceId, definition.id, nextGroup)}
             onLinkContextChange={(patch) => {
               if (group !== "none") updateLinkContext(group, patch);
@@ -2209,7 +2334,7 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
           </>;
         }}
         titleForContainer={(definition, instanceId) => containerInstanceTitle(definition.id, instanceId, workspaceState, registry)}
-        workspaceBadge={replayRun ? "Replay" : approvedCanvas ? "Canvas" : manager ? "Main" : "Focus"}
+        workspaceBadge={runtimeMode === "replay" ? "Replay" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : approvedCanvas ? "Canvas" : manager ? "Main" : "Focus"}
       />
     </div>
   );
@@ -2231,7 +2356,7 @@ function CanvasManager({ availableCanvasIds, onCreate, onOpen, onRemove, registr
   </section>;
 }
 
-function RuntimeCanvasScope({ mode, onApplyRebase, onKeepApproved, onReset, onSaveAs, rebase, revision }: { mode: "Canvas" | "Replay"; onApplyRebase: () => void; onKeepApproved: () => void; onReset: () => void; onSaveAs: () => void; rebase: CanvasRuntimeRebase | null; revision: string }) {
+function RuntimeCanvasScope({ mode, onApplyRebase, onKeepApproved, onReset, onSaveAs, rebase, revision }: { mode: "Canvas" | "Live" | "Paper" | "Replay"; onApplyRebase: () => void; onKeepApproved: () => void; onReset: () => void; onSaveAs: () => void; rebase: CanvasRuntimeRebase | null; revision: string }) {
   return <section aria-label={`${mode} layout scope`} className="replay-layout-scope">
     <ShieldCheck aria-hidden="true" size={15} />
     <div><strong>{mode} workspace overlay</strong><small>{rebase ? `A newer approved Canvas is available. Three-way rebase found ${rebase.conflicts.length} conflict${rebase.conflicts.length === 1 ? "" : "s"}.` : `Starts from approved Canvas ${revision.slice(0, 10)}. Changes persist only for this revision and never rewrite Configuration defaults.`}</small>{rebase?.conflicts.length ? <span title={rebase.conflicts.join("\n")}>{rebase.conflicts.slice(0, 3).join(", ")}{rebase.conflicts.length > 3 ? ` +${rebase.conflicts.length - 3}` : ""}</span> : null}</div>
@@ -2243,7 +2368,7 @@ function RuntimeCanvasScope({ mode, onApplyRebase, onKeepApproved, onReset, onSa
 
 type SettingsUpdater = (update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) => void;
 
-function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, onTickerWorkspaceOpen, preview, previewContext, requestedNewsId, requestedSecAccession, requestedSecCik, scannerError, scannerLoading, scannerSnapshot, settings, settingsOpen, symbolEditable, updateSettings }: {
+function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, liveMode, loading, onLinkChange, onLinkContextChange, onTickerWorkspaceOpen, preview, previewContext, requestedNewsId, requestedSecAccession, requestedSecCik, scannerError, scannerLoading, scannerSnapshot, settings, settingsOpen, symbolEditable, updateSettings }: {
   canvasId: string;
   chartCutoffMs: number;
   definition: WorkspaceContainerDefinition;
@@ -2252,6 +2377,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
   linkGroup: CanvasLinkGroupId;
   linkedContainers: LinkedContainerState[];
   linkOpen: boolean;
+  liveMode: boolean;
   loading: boolean;
   onLinkChange: (group: CanvasLinkGroupId) => void;
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
@@ -2274,11 +2400,11 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
     {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={instanceId}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
-        ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
+        ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "charts_quotes"
-        ? <ChartsQuotesContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
+        ? <ChartsQuotesContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "microstructure"
-        ? <QuotesTapeContainer end={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.microstructure} start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
+        ? <QuotesTapeContainer end={liveMode ? undefined : new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.microstructure} start={liveMode ? undefined : dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
       : definition.id === "facts"
         ? <StockFactsContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} symbol={linkContext.symbol} />
       : definition.id === "news"
@@ -2362,6 +2488,7 @@ type ChartContainerPreviewProps = {
   instanceId: string;
   linkContext: CanvasLinkContext;
   linkGroup: CanvasLinkGroupId;
+  liveMode: boolean;
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
   previewContext: CanvasPreviewContext;
   settings: ContainerSettings;
@@ -2371,18 +2498,18 @@ type ChartContainerPreviewProps = {
   updateSettings: SettingsUpdater;
 };
 
-const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, strategy, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
-  const liveChart = useCanvasHistoricalChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators);
+const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, settings, strategy, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
+  const liveChart = useCanvasHistoricalChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators, liveMode);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const strategyDecisions = useMemo(() => strategyDecisionEvents(strategy), [strategy]);
   const strategyPresentation = useMemo(() => resolvedStrategyPresentation(strategy), [strategy]);
   return <ChartPreview changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={settings.chart} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: next }))} onLinkContextChange={onLinkContextChange} strategyDecisions={strategyDecisions} strategyPresentation={strategyPresentation} symbolEditable={symbolEditable} trading={trading} />;
 }, chartContainerPreviewPropsEqual);
 
-function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
-  const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators);
-  const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators);
-  const daily = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.daily.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.daily.visibleIndicators);
+function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
+  const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators, liveMode);
+  const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators, liveMode);
+  const daily = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.daily.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.daily.visibleIndicators, liveMode);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const logoUrl = presentations[linkContext.symbol]?.logo_url;
   const changeAsOf = new Date(cutoffMs).toISOString();
@@ -2397,19 +2524,19 @@ function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, onLin
     observed_at: proposalBar.bar_end || proposalBar.bar_start,
     reference_price: proposalBar.close,
     source_sequence: proposalBar.bar_start,
-    source: "qmd_history_chart_bar",
+    source: liveMode ? "qmd_live_chart_bar" : "qmd_history_chart_bar",
     tick_size: 0.01,
   } : null;
   const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
     dailyChart={<ChartPreview {...chartProps} baseHeight={255} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
-    end={changeAsOf}
+    end={liveMode ? undefined : changeAsOf}
     layout={settings.charts_quotes.layout}
     mainChart={<ChartPreview {...chartProps} baseHeight={460} chartSettings={settings.charts_quotes.main} fillHeight instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
     monthChart={<ChartPreview {...chartProps} baseHeight={255} chartSettings={settings.charts_quotes.month} fillHeight instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} timeframes={["1mo"]} />}
     onLayoutChange={(layout) => updateSettings((current) => ({ ...current, charts_quotes: { ...current.charts_quotes, layout } }))}
     onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined}
-    start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()}
+    start={liveMode ? undefined : dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()}
     symbol={linkContext.symbol}
     reservedPanel={<StrategyOrderEntry marketSnapshot={proposalMarketSnapshot} strategy={strategy} symbol={linkContext.symbol} trading={trading} />}
   />;
@@ -2420,6 +2547,7 @@ function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, n
   const nextChart = next.settings.chart;
   return previous.instanceId === next.instanceId
     && previous.cutoffMs === next.cutoffMs
+    && previous.liveMode === next.liveMode
     && previous.linkGroup === next.linkGroup
     && previous.linkContext.symbol === next.linkContext.symbol
     && previous.previewContext.sessionDate === next.previewContext.sessionDate
@@ -4522,6 +4650,59 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
     pump();
   }, [cutoffMs, enabled, pump, technicalWindows]);
 
+  return { error, loading, snapshot };
+}
+
+function useCanvasLiveScannerSnapshot(enabled: boolean) {
+  const [snapshot, setSnapshot] = useState<CanvasScannerSnapshot | null>(null);
+  const [loading, setLoading] = useState(enabled);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!enabled) {
+      setSnapshot(null);
+      setLoading(false);
+      setError("");
+      return;
+    }
+    let cancelled = false;
+    let controller: AbortController | null = null;
+    let timer: number | null = null;
+    const load = async () => {
+      if (cancelled || controller) return;
+      const request = new AbortController();
+      controller = request;
+      try {
+        const payload = await api<{ market_time?: string; provider?: string; rows?: Record<string, unknown>[]; session_date?: string }>("/api/real-live-trading/scanner?row_limit=500", { signal: request.signal, timeoutMs: 45_000 });
+        if (cancelled || request.signal.aborted) return;
+        const rows = payload.rows ?? [];
+        const asOfContext = payload.session_date && payload.market_time
+          ? dateInTimeZone(payload.session_date, payload.market_time, "America/New_York")
+          : new Date();
+        setSnapshot({
+          as_of: asOfContext.toISOString(),
+          errors: {},
+          meta: { complete_universe: true, row_count: rows.length, source: payload.provider || "qmd-gateway", status: "ready" } as ScannerSnapshotMeta,
+          rows,
+          signal_rows: [],
+        });
+        setError("");
+      } catch (reason) {
+        if (!cancelled && !request.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        if (controller === request) controller = null;
+        if (!cancelled) {
+          setLoading(false);
+          timer = window.setTimeout(load, 15_000);
+        }
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [enabled]);
   return { error, loading, snapshot };
 }
 function readPreviewContext(): CanvasPreviewContext { try { const parsed = JSON.parse(window.localStorage.getItem(CANVAS_PREVIEW_CONTEXT_STORAGE_KEY) || "null") as CanvasPreviewContext | null; return parsed?.sessionDate && parsed?.previewTime ? parsed : { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } catch { return { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } }

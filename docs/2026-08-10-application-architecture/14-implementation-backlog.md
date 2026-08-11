@@ -336,11 +336,15 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
 - [ ] Instantiate published defaults in Live, Replay, Backtest, and research workspaces.
   - [x] Standalone Canvas resolves the approved profile; Replay uses its pinned
         release profile.
-  - [ ] Migrate Live/Paper and Backtest/research workspaces to the same resolver.
+  - [x] Migrate Live/Paper to the same resolver after the existing account and
+        service preflight. Backtest/research workspaces remain open.
+  - [ ] Migrate Backtest/research workspaces to the same resolver.
 - [ ] Persist user/workspace overlays separately from defaults.
   - [x] Standalone Canvas and Replay overlays are isolated by workspace/run and approved revision
         and can be reset without changing Configuration defaults.
-  - [ ] Apply the same overlay contract to remaining mode workspaces.
+  - [x] Apply the same overlay contract to Live/Paper using separate
+        mode-and-account-set scopes. Backtest/research remain open.
+  - [ ] Apply the same overlay contract to Backtest/research workspaces.
 - [x] Route intraday historical charts through QMD History source planning and
       its shared derived cache.
 - [x] Return base bars first and progressively add requested indicators,
@@ -349,7 +353,9 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
       visible daily and five-minute secondary charts on demand, with isolated
       loading and failure state. This is an interim smooth-loading correction,
       not completion of the shared Canvas/QMD resolver migration.
-- [ ] Merge archive, recent, and live tail by watermark.
+- [x] Merge the QMD History archive/recent base with QMD Live bar snapshots by
+      canonical bar timestamp; full live snapshots replace corrections rather
+      than appending duplicate candles.
 - [x] Deduplicate identical historical derived requests with QMD History
       single-flight execution.
 - [x] Cancel superseded navigation requests and prefetch adjacent windows.
@@ -358,11 +364,13 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
 - [ ] Bound caches and invalidate by source/corporate-action/calculation revision.
 - [ ] Recover live sequence gaps or resnapshot.
   - [x] Resnapshot the active live compact-event Canvas after a typed QMD gap.
-  - [ ] Apply the same state replacement to the future merged chart-bar tail.
+  - [x] Resnapshot the merged chart-bar tail from complete bounded QMD Live
+        snapshots; a failed refresh retains the last snapshot and reconnects.
 - [ ] Expose partial, stale, corrected, and source-transition states.
   - [x] Show source tiers, source-plan completeness, engine/schema revision and
         warm-up state for historical chart indicators.
-  - [ ] Add live-tail transition, correction, and stale-state presentation.
+  - [x] Add live-tail transition, current-bar replacement, partial-indicator,
+        reconnecting, and stale-snapshot presentation.
 - [x] Return indicator provenance and warm-up.
 - [x] Keep chart indicators request-scoped rather than expanding Core Scan.
 - [ ] Create chart-originated manual and semi-automatic proposals.
@@ -375,6 +383,9 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
   - [x] Route confirmed Replay proposals through durable Portfolio admission
         and OMS planning; rejected/deferred proposals never reach the simulator.
 - [ ] Keep Live, Paper, Replay, and Backtest visually and authoritatively isolated.
+  - [x] Live and Paper now render explicit mode badges and use distinct
+        account-scoped overlays while retaining canonical trading-state and
+        QMD Live authorities. Backtest migration remains open.
 
 Acceptance gate: the same workspace operates in compatible modes and charts
 load progressively without false continuity.
@@ -390,6 +401,10 @@ load progressively without false continuity.
 - [ ] Share Strategy, Portfolio, OMS, and journal state machines.
 - [ ] Use Replay as the parity benchmark.
 - [ ] Migrate remaining Live legacy paths.
+  - [x] Replace the active post-gate Live/Paper workspace presentation with the
+        published Canvas resolver. The preflight and broker/gateway boundaries
+        remain unchanged; the legacy renderer remains compiled only as a
+        temporary rollback path.
 - [ ] Complete Backtest through shared runtime contracts.
   - [x] Run a pinned approved revision through one continuous shared
         Strategy/Portfolio/OMS/simulator runtime across multiple sessions.
