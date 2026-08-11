@@ -20,6 +20,9 @@ GET /snapshot/signals?limit=250
 GET /snapshot/signal-events?limit=1000
 WS  /stream/signals
 GET /signal-catalog
+GET /computation-targets
+PUT /computation-targets
+DELETE /computation-targets/{target_id}
 ```
 
 `/snapshot/signals` contains only active lifecycles. The event snapshot and
@@ -66,9 +69,24 @@ level rejection, opening-range breakout, gap-and-go, and similar strategy
 concepts are deliberately absent. Strategies compose the seven observations with
 QMD structure/level indicators, news, SEC, model, portfolio, and risk inputs.
 
-All seven methods are implemented and emitted. The Canvas Scanner joins the
-strongest active QMD lifecycle to each security and sorts its Signals preset by
-`rank_score`; Signal Stream shows lifecycle events and the live method catalog.
+All seven methods are implemented. Live calculation and emission are limited to
+the union of current Watchlist, Strategy, and request-scoped computation target
+leases. Each lease declares its owner, execution scope, ticker population,
+capabilities, timeframes, and optional expiry. QMD validates requested
+capabilities against their allowed scopes, deduplicates the symbol union, and
+reference-counts overlapping targets. When the last lease for a symbol expires
+or is removed, QMD stops routing that symbol through the non-core indicator and
+signal engine.
+
+The compact Core Scanner remains independent and does not fetch indicator or
+signal cross-sections during an ordinary refresh. Consumers that explicitly
+request those projections receive only already-focused state. A single-symbol
+chart lease is warmed once from QMD's authoritative in-memory core bar history
+before its indicator snapshot is returned.
+
+The Canvas Scanner can join the strongest active focused QMD lifecycle and sort
+its Signals preset by `rank_score`; Signal Stream shows lifecycle events and the
+live method catalog.
 The rank score is produced by QMD from causal, per-symbol/timeframe normalized
 surprises rather than recomputed in the UI.
 

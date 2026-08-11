@@ -9,7 +9,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Collection
 
 from dotenv import load_dotenv
 
@@ -56,6 +56,29 @@ def qmd_get_json(path: str, params: dict[str, Any] | None = None, *, timeout: in
     return json.loads(text) if text.strip() else {}
 
 
+def qmd_put_json(path: str, payload: dict[str, Any], *, timeout: int = 3) -> Any:
+    if not qmd_enabled():
+        raise RuntimeError("QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.")
+    url = f"{qmd_base_url().rstrip('/')}{path}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        method="PUT",
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"QMD PUT {safe_qmd_url(url)} failed with HTTP {exc.code}: {body[:500]}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"QMD PUT {safe_qmd_url(url)} failed: {exc.reason}") from exc
+    return json.loads(text) if text.strip() else {}
+
+
 def qmd_websocket_url(path: str, params: dict[str, Any] | None = None) -> str:
     if not qmd_enabled():
         raise RuntimeError("QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.")
@@ -94,28 +117,46 @@ def qmd_live_market_state(ticker: str) -> dict[str, Any]:
     return payload
 
 
-def qmd_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
+def qmd_scanner_snapshot(
+    row_limit: int = 250,
+    *,
+    enrichments: Collection[str] = (),
+) -> dict[str, Any]:
+    """Return the compact Core Scanner projection.
+
+    Watchlist-level indicators and signal lifecycle rows are deliberately
+    opt-in. Fetching them for every ordinary scanner refresh defeats the
+    computational funnel even when QMD has already materialized the values.
+    """
+    requested = frozenset(str(value).strip().lower() for value in enrichments)
+    supported = frozenset({"indicators", "signals", "signal_events"})
+    unknown = requested - supported
+    if unknown:
+        raise ValueError(f"Unsupported QMD scanner enrichment(s): {', '.join(sorted(unknown))}")
+
     cross_section_limit = 5_000
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        scanner_future = executor.submit(
-            qmd_get_json, "/snapshot/scanner", {"limit": row_limit}, timeout=3
-        )
-        active_signal_future = executor.submit(
-            qmd_get_json, "/snapshot/signals", {"limit": cross_section_limit}, timeout=3
-        )
-        signal_event_future = executor.submit(
-            qmd_get_json, "/snapshot/signal-events", {"limit": row_limit}, timeout=3
-        )
-        indicator_future = executor.submit(
-            qmd_get_json,
+    requests: dict[str, tuple[str, dict[str, Any]]] = {
+        "scanner": ("/snapshot/scanner", {"limit": row_limit}),
+    }
+    if "signals" in requested:
+        requests["signals"] = ("/snapshot/signals", {"limit": cross_section_limit})
+    if "signal_events" in requested:
+        requests["signal_events"] = ("/snapshot/signal-events", {"limit": row_limit})
+    if "indicators" in requested:
+        requests["indicators"] = (
             "/snapshot/scanner-indicators",
             {"limit": cross_section_limit, "timeframe": "10s"},
-            timeout=3,
         )
-        snapshot_payload = scanner_future.result()
-        active_signal_payload = active_signal_future.result()
-        signal_event_payload = signal_event_future.result()
-        indicator_payload = indicator_future.result()
+    with ThreadPoolExecutor(max_workers=len(requests)) as executor:
+        futures = {
+            key: executor.submit(qmd_get_json, path, params, timeout=3)
+            for key, (path, params) in requests.items()
+        }
+        responses = {key: future.result() for key, future in futures.items()}
+    snapshot_payload = responses["scanner"]
+    active_signal_payload = responses.get("signals", {})
+    signal_event_payload = responses.get("signal_events", {})
+    indicator_payload = responses.get("indicators", {})
     snapshot_rows = snapshot_payload.get("rows", []) if isinstance(snapshot_payload, dict) else []
     rows = [normalize_qmd_symbol_snapshot(row) for row in snapshot_rows if isinstance(row, dict)]
     active_rows = [
@@ -184,6 +225,8 @@ def qmd_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
         if isinstance(row, dict)
     ]
     payload["signal_row_count"] = len(payload["signal_rows"])
+    payload["computation_scope"] = "core_scan"
+    payload["included_enrichments"] = sorted(requested)
     return payload
 
 
@@ -351,7 +394,26 @@ def is_qmd_trade_price_bar(row: dict[str, Any]) -> bool:
 def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
     if not symbol.strip():
         raise ValueError("symbol is required for QMD indicators.")
-    payload = qmd_get_json(f"/snapshot/indicators/{urllib.parse.quote(symbol.strip().upper())}", {"timeframe": timeframe, "limit": row_limit}, timeout=3)
+    ticker = symbol.strip().upper()
+    qmd_put_json(
+        "/computation-targets",
+        {
+            "target_id": f"chart:{ticker}:{timeframe}",
+            "owner": "backend.chart",
+            "scope": "request",
+            "tickers": [ticker],
+            "capabilities": [
+                "flow_structure_composite",
+                "momentum_core",
+                "trend_moving_averages",
+                "volatility_core",
+            ],
+            "timeframes": [timeframe],
+            "ttl_seconds": 300,
+        },
+        timeout=3,
+    )
+    payload = qmd_get_json(f"/snapshot/indicators/{urllib.parse.quote(ticker)}", {"timeframe": timeframe, "limit": row_limit}, timeout=3)
     return payload if isinstance(payload, dict) else {"ticker": symbol.upper(), "timeframe": timeframe, "history": [], "current": None, "tick": None}
 
 

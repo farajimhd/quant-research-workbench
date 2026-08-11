@@ -1,7 +1,12 @@
 use crate::bars::TradeAggregationRules;
 use crate::bars::{BarSnapshot, SharedBarStore};
+use crate::capability_catalog::ExecutionScope;
 use crate::capability_catalog::{computation_capability_catalog, ComputationCapability};
 use crate::compact_event::{CompactEventDecoder, LiveCompactEvent, SharedCompactEventStore};
+use crate::computation_targets::{
+    ComputationTargetLease, ComputationTargetRequest, ComputationTargetSnapshot,
+    SharedComputationTargets,
+};
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_taxonomy_catalog, IndicatorTaxonomyEntry};
@@ -27,7 +32,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -43,6 +48,7 @@ pub struct AppState {
     pub compact_event_store: SharedCompactEventStore,
     pub compact_event_decoder: CompactEventDecoder,
     pub compact_events: broadcast::Sender<LiveCompactEvent>,
+    pub computation_targets: SharedComputationTargets,
     pub config: GatewayConfig,
     pub events: broadcast::Sender<MarketEvent>,
     pub indicators: SharedIndicatorStore,
@@ -120,6 +126,14 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/maintenance", get(maintenance_snapshot))
         .route("/snapshot/coverage", get(coverage_snapshot))
         .route("/capability-catalog", get(capability_catalog_snapshot))
+        .route(
+            "/computation-targets",
+            get(computation_target_snapshot).put(replace_computation_target),
+        )
+        .route(
+            "/computation-targets/{target_id}",
+            delete(remove_computation_target),
+        )
         .route("/indicator-catalog", get(indicator_catalog_snapshot))
         .route("/signal-catalog", get(signal_catalog_snapshot))
         .route("/snapshot/signals", get(market_signal_snapshot))
@@ -172,6 +186,44 @@ pub fn app(state: AppState) -> Router {
         .route("/stream/indicators/{ticker}", get(indicator_stream))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
+}
+
+async fn computation_target_snapshot(
+    State(state): State<Arc<AppState>>,
+) -> Json<ComputationTargetSnapshot> {
+    Json(state.computation_targets.snapshot())
+}
+
+async fn replace_computation_target(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ComputationTargetRequest>,
+) -> Result<Json<ComputationTargetLease>, (StatusCode, Json<Value>)> {
+    let lease = state
+        .computation_targets
+        .replace(request)
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))))?;
+    if lease.scope == ExecutionScope::Request {
+        for ticker in &lease.tickers {
+            for timeframe in &lease.timeframes {
+                let bars = state.bars.snapshot(ticker, timeframe, 500).await;
+                state
+                    .indicators
+                    .warm_from_bars(ticker, timeframe, bars.history)
+                    .await;
+            }
+        }
+    }
+    Ok(Json(lease))
+}
+
+async fn remove_computation_target(
+    State(state): State<Arc<AppState>>,
+    Path(target_id): Path<String>,
+) -> Json<Value> {
+    Json(json!({
+        "removed": state.computation_targets.remove(&target_id),
+        "target_id": target_id,
+    }))
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<HealthPayload> {

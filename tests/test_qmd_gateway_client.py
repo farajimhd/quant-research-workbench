@@ -8,6 +8,7 @@ from src.backend.qmd_gateway_client import (
     normalize_qmd_market_signal,
     qmd_compact_events,
     qmd_live_market_state,
+    qmd_indicators,
     qmd_market_signals,
     qmd_scanner_snapshot,
     qmd_websocket_url,
@@ -166,7 +167,10 @@ class QmdGatewayClientTests(unittest.TestCase):
             self.fail(f"Unexpected QMD route: {path}")
 
         get_json.side_effect = response
-        payload = qmd_scanner_snapshot(row_limit=25)
+        payload = qmd_scanner_snapshot(
+            row_limit=25,
+            enrichments={"indicators", "signals", "signal_events"},
+        )
 
         self.assertEqual([row["ticker"] for row in payload["rows"]], ["AAPL", "MSFT"])
         self.assertEqual(payload["rows"][0]["signal_id"], "signal-b")
@@ -180,6 +184,31 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertNotIn("signal_id", payload["rows"][1])
         self.assertEqual(payload["signal_rows"][0]["signal_event_id"], "resolved-c")
         self.assertEqual(payload["signal_row_count"], 1)
+        self.assertEqual(
+            payload["included_enrichments"],
+            ["indicators", "signal_events", "signals"],
+        )
+
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_core_scanner_does_not_fetch_watchlist_computations(self, get_json) -> None:
+        get_json.return_value = {
+            "rows": [{"ticker": "AAPL", "price": 315.0}],
+            "as_of": "2026-07-17T13:45:01Z",
+        }
+
+        payload = qmd_scanner_snapshot(row_limit=25)
+
+        get_json.assert_called_once_with(
+            "/snapshot/scanner", {"limit": 25}, timeout=3
+        )
+        self.assertEqual(payload["computation_scope"], "core_scan")
+        self.assertEqual(payload["included_enrichments"], [])
+        self.assertEqual(payload["signal_rows"], [])
+        self.assertNotIn("indicator_type", payload["rows"][0])
+
+    def test_scanner_rejects_unknown_enrichment_scope(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported QMD scanner enrichment"):
+            qmd_scanner_snapshot(enrichments={"everything"})
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_live_market_state_uses_symbol_snapshot(self, get_json) -> None:
@@ -187,6 +216,33 @@ class QmdGatewayClientTests(unittest.TestCase):
 
         self.assertEqual(qmd_live_market_state("aapl"), get_json.return_value)
         get_json.assert_called_once_with("/snapshot/live-market-state/AAPL", timeout=3)
+
+    @patch("src.backend.qmd_gateway_client.qmd_put_json")
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_indicator_request_leases_focused_chart_computation(
+        self, get_json, put_json
+    ) -> None:
+        get_json.return_value = {
+            "ticker": "AAPL",
+            "timeframe": "1m",
+            "history": [],
+            "current": None,
+        }
+
+        payload = qmd_indicators("aapl", timeframe="1m", row_limit=50)
+
+        self.assertEqual(payload["ticker"], "AAPL")
+        lease = put_json.call_args.args[1]
+        self.assertEqual(lease["target_id"], "chart:AAPL:1m")
+        self.assertEqual(lease["scope"], "request")
+        self.assertEqual(lease["tickers"], ["AAPL"])
+        self.assertEqual(lease["timeframes"], ["1m"])
+        self.assertEqual(lease["ttl_seconds"], 300)
+        get_json.assert_called_once_with(
+            "/snapshot/indicators/AAPL",
+            {"timeframe": "1m", "limit": 50},
+            timeout=3,
+        )
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_compact_events_preserve_only_object_rows(self, get_json) -> None:

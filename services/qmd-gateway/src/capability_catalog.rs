@@ -1,8 +1,8 @@
 use crate::indicator_catalog::{indicator_catalog, ImplementationStatus, IndicatorPriority};
 use crate::signal_catalog::signal_catalog;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionScope {
     UniversalIngest,

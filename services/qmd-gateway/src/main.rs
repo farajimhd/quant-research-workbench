@@ -7,6 +7,7 @@ use qmd_core::clickhouse::ClickHouseWriter;
 use qmd_core::compact_event::{
     CompactEventClickHouseWriter, CompactEventReferences, LiveCompactEvent, SharedCompactEventStore,
 };
+use qmd_core::computation_targets::SharedComputationTargets;
 use qmd_core::config::{load_env_files, GatewayConfig};
 use qmd_core::event::MarketEvent;
 use qmd_core::gapfill::{run_gap_fill_service, run_startup_maintenance};
@@ -149,6 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         trade_aggregation_rules.clone(),
         market_structure_references,
     );
+    let computation_targets = SharedComputationTargets::default();
     let reference_refresh_indicators = indicators.clone();
     let scanner = SharedScannerStore::new(config.scanner_primitive_history_limit);
     let live_market_state = SharedLiveMarketStateStore::new(config.live_market_state_history_limit);
@@ -292,6 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     let indicator_router = spawn_indicator_engines(
         indicators.clone(),
+        computation_targets.clone(),
         config.indicator_channel_capacity,
         config.indicator_bar_channel_capacity,
         indicator_writer_sender,
@@ -337,6 +340,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         compact_event_decoder,
         compact_event_store: compact_event_store.clone(),
         compact_events: compact_event_sender,
+        computation_targets,
         config: config.clone(),
         events: event_sender,
         indicators,

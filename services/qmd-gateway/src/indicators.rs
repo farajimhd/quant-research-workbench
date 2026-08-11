@@ -1,4 +1,5 @@
 use crate::bars::{BarRow, SharedBarStore, TradeAggregationRules};
+use crate::computation_targets::SharedComputationTargets;
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::generic_structure::{
@@ -647,6 +648,7 @@ pub struct SharedIndicatorStore {
 #[derive(Clone)]
 pub struct IndicatorEventRouter {
     bar_sender: mpsc::Sender<BarRow>,
+    computation_targets: SharedComputationTargets,
     event_senders: Arc<Vec<mpsc::Sender<MarketEvent>>>,
 }
 
@@ -892,6 +894,33 @@ impl SharedIndicatorStore {
         }
     }
 
+    /// Seed a newly focused calculation from the already-authoritative core
+    /// bar cache. Existing indicator state is never replayed a second time.
+    pub async fn warm_from_bars(&self, ticker: &str, timeframe: &str, bars: Vec<BarRow>) -> usize {
+        let ticker = ticker.to_ascii_uppercase();
+        let timeframe = canonical_timeframe(timeframe);
+        let shard = self.shard_for_ticker(&ticker);
+        let mut store = shard.inner.lock().await;
+        let key = IndicatorKey {
+            sym: ticker,
+            timeframe,
+        };
+        if store
+            .history
+            .get(&key)
+            .is_some_and(|history| !history.is_empty())
+        {
+            return 0;
+        }
+        let mut ordered = bars;
+        ordered.sort_by_key(|bar| bar.bar_end);
+        let count = ordered.len();
+        for bar in ordered {
+            store.apply_bar(bar);
+        }
+        count
+    }
+
     pub async fn replace_market_structure_references(
         &self,
         references: HashMap<String, MarketStructureReferenceLevels>,
@@ -934,6 +963,12 @@ impl IndicatorEventRouter {
         &self,
         event: MarketEvent,
     ) -> Result<(), mpsc::error::SendError<MarketEvent>> {
+        if !self
+            .computation_targets
+            .requires_focused_computation(event.ticker())
+        {
+            return Ok(());
+        }
         let index = shard_index(event.ticker(), self.event_senders.len());
         self.event_senders[index].send(event).await
     }
@@ -1851,6 +1886,7 @@ impl RollingStats {
 
 pub fn spawn_indicator_engines(
     indicators: SharedIndicatorStore,
+    computation_targets: SharedComputationTargets,
     event_channel_capacity: usize,
     bar_channel_capacity: usize,
     writer_sender: mpsc::Sender<IndicatorRow>,
@@ -1878,9 +1914,14 @@ pub fn spawn_indicator_engines(
         ));
     }
     let (bar_sender, bar_receiver) = mpsc::channel::<BarRow>(bar_channel_capacity.max(1));
-    tokio::spawn(route_indicator_bars(bar_receiver, Arc::new(bar_senders)));
+    tokio::spawn(route_indicator_bars(
+        bar_receiver,
+        Arc::new(bar_senders),
+        computation_targets.clone(),
+    ));
     IndicatorEventRouter {
         bar_sender,
+        computation_targets,
         event_senders: Arc::new(event_senders),
     }
 }
@@ -1888,8 +1929,12 @@ pub fn spawn_indicator_engines(
 async fn route_indicator_bars(
     mut receiver: mpsc::Receiver<BarRow>,
     shard_senders: Arc<Vec<mpsc::Sender<BarRow>>>,
+    computation_targets: SharedComputationTargets,
 ) {
     while let Some(row) = receiver.recv().await {
+        if !computation_targets.requires_focused_computation(&row.sym) {
+            continue;
+        }
         let index = shard_index(&row.sym, shard_senders.len());
         if shard_senders[index].send(row).await.is_err() {
             eprintln!("Indicator bar shard receiver closed; could not route one finalized bar.");
