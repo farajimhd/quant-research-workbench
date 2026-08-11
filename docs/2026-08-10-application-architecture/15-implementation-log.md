@@ -118,6 +118,11 @@ bounded direct ClickHouse paths remain documented in
     source/query paths, and ungoverned compatibility aliases. The legacy QMD
     scanner-primitives stream is registered as a deprecated alias of the
     canonical signal stream with an explicit removal condition.
+25. Carried QMD capability owner, implementation version, compute cadence,
+    persistence policy, and intended consumer scopes through the backend
+    configuration contract. Market Discovery now presents that evidence with
+    reason, cost, operational state, and coverage for locked Universal Ingest
+    primitives and the Core Scan inventory.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

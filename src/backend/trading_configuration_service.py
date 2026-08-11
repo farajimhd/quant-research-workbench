@@ -1544,6 +1544,7 @@ def _qmd_runtime_capabilities() -> list[dict[str, Any]]:
             "calculation": description,
             "category": category.replace("_", " ").title(),
             "provider": "QMD",
+            "owner": str(row.get("producer") or "qmd"),
             "output_type": "family",
             "capability_type": capability_type,
             "priority": priority,
@@ -1564,6 +1565,10 @@ def _qmd_runtime_capabilities() -> list[dict[str, Any]]:
             "coverage_status": "runtime_catalog",
             "cost_class": str(row.get("cost_class") or "unknown"),
             "stateful": bool(row.get("stateful")),
+            "implementation_version": int(row.get("implementation_version") or 1),
+            "cadence": str(row.get("cadence") or "service_owned"),
+            "persistence_policy": str(row.get("persistence_policy") or "no_default"),
+            "consumers": list(row.get("allowed_scopes") or []),
             "catalog_authority": "qmd_runtime_catalog",
         })
     _QMD_RUNTIME_CATALOG_CACHE = (now + 60.0, deepcopy(result))
@@ -1706,6 +1711,11 @@ def _normalize_discovery_capability_contract(row: dict[str, Any]) -> dict[str, A
             )
         ),
         "stateful": bool(normalized.get("stateful", execution_scope != "offline")),
+        "owner": str(normalized.get("owner") or normalized.get("provider") or "unknown"),
+        "implementation_version": max(1, int(normalized.get("implementation_version") or 1)),
+        "cadence": str(normalized.get("cadence") or "service_owned"),
+        "persistence_policy": str(normalized.get("persistence_policy") or "not_registered"),
+        "consumers": list(normalized.get("consumers") or normalized.get("allowed_scopes") or []),
     })
     return normalized
 

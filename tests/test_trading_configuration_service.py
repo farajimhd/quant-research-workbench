@@ -43,6 +43,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 "operational_status": "ready",
                 "cost_class": "medium",
                 "stateful": True,
+                "implementation_version": 4,
+                "cadence": "bar_close",
+                "persistence_policy": "if_signal_uses",
                 "inputs": ["bars"],
                 "outputs": ["rsi_14"],
             }],
@@ -67,6 +70,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(row["execution_scope"], "watchlist")
         self.assertEqual(row["timeframes"], ["1m", "5m"])
         self.assertEqual(row["catalog_authority"], "qmd_runtime_catalog")
+        self.assertEqual(row["owner"], "qmd")
+        self.assertEqual(row["implementation_version"], 4)
+        self.assertEqual(row["cadence"], "bar_close")
+        self.assertEqual(row["persistence_policy"], "if_signal_uses")
+        self.assertEqual(row["consumers"], ["watchlist", "strategy_run", "request", "offline"])
 
     def test_legacy_server_draft_table_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

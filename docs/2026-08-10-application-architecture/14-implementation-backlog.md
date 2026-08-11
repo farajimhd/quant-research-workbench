@@ -169,7 +169,7 @@ internal topology, or producer formula.
 ## 5. Market Discovery frontend
 
 - [x] Make Universal Ingest the first, normally locked configuration page.
-- [ ] Show primitive reason, owner, version, cost, coverage, and consumers.
+- [x] Show primitive reason, owner, version, cost, coverage, and consumers.
 - [ ] Generate Core Scan choices from eligible registry capabilities.
 - [ ] Show cost and broadening approval for all-market changes.
 - [x] Configure Watchlist rules, rank, size, TTL, overrides, and focused calculations.

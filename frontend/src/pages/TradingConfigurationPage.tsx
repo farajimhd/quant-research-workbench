@@ -421,6 +421,11 @@ type DiscoveryCapability = {
   coverage_status: string;
   cost_class: "minimal" | "low" | "medium" | "high" | "offline" | "unknown";
   stateful: boolean;
+  owner: string;
+  implementation_version: number;
+  cadence: string;
+  persistence_policy: string;
+  consumers: Array<"universal_ingest" | "core_scan" | "watchlist" | "strategy_run" | "request" | "offline">;
 };
 type WatchlistConfig = {
   watchlist_id: string;
@@ -524,6 +529,11 @@ function normalizedDiscoveryCapability(capability: DiscoveryCapability): Discove
     coverage_status: value.coverage_status ?? "unknown",
     cost_class: value.cost_class ?? "unknown",
     stateful: value.stateful ?? false,
+    owner: value.owner ?? value.provider ?? "Unknown",
+    implementation_version: value.implementation_version ?? 1,
+    cadence: value.cadence ?? "service_owned",
+    persistence_policy: value.persistence_policy ?? "not_registered",
+    consumers: value.consumers ?? value.allowed_scopes ?? [],
   } as DiscoveryCapability;
 }
 
@@ -2037,7 +2047,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
           <div className="discovery-capability-matrix">
             {universalCapabilities.map((capability, index) => <article data-status="required" key={capability.capability_id}>
               <span aria-label={`Universal primitive ${index + 1} of ${universalCapabilities.length}`} className="discovery-capability-index">{index + 1}</span>
-              <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type="system">Primitive</span><span>{capability.cost_class}</span></div><small>{capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ")}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.join(", ")}</dd></div><div><dt>Scope</dt><dd>{capabilityScopeLabel(capability.execution_scope)} · {readableLabel(capability.configuration_policy)}</dd></div></dl></div>
+              <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type="system">Primitive</span><span>{capability.cost_class}</span></div><small>{capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ")}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.join(", ")}</dd></div><div><dt>Authority</dt><dd>{capability.owner} · v{capability.implementation_version}</dd></div><div><dt>Cadence</dt><dd>{readableLabel(capability.cadence)}</dd></div><div><dt>Persistence</dt><dd>{readableLabel(capability.persistence_policy)}</dd></div><div><dt>Consumers</dt><dd>{capability.consumers.map(capabilityScopeLabel).join(", ") || "System-owned downstreams"}</dd></div></dl></div>
               <div className="discovery-capability-actions"><em>Required</em><small>{readableLabel(capability.operational_status)} · coverage {readableLabel(capability.coverage_status)}</small></div>
             </article>)}
           </div>
@@ -2064,7 +2074,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
               const configurationStatus = capability.configuration_policy === "locked" ? "Locked" : capability.configuration_policy === "configurable" ? capability.enabled ? "Active" : "Available" : readableLabel(capability.configuration_policy);
               return <article data-status={configurationStatus.toLowerCase().replaceAll(" ", "-")} key={capability.capability_id}>
                 <span aria-label={`Capability ${index + 1} of ${filteredDiscoveryCapabilities.length}`} className="discovery-capability-index">{index + 1}</span>
-                <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type={capability.capability_type}>{capabilityTypeLabel(capability.capability_type)}</span><span>{capability.priority.toUpperCase()}</span></div><small>{capability.calculation || capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ") || "Service owned"}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.slice(0, 8).join(", ") || capability.output_type}{capability.fields.length > 8 ? ` +${capability.fields.length - 8} more` : ""}</dd></div><div><dt>{capability.enabled ? "Active cadence" : "Supported cadence"}</dt><dd>{(capability.enabled ? capability.selected_timeframes : capability.timeframes).length ? (capability.enabled ? capability.selected_timeframes : capability.timeframes).join(", ") : "Service clock"}</dd></div></dl></div>
+                <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type={capability.capability_type}>{capabilityTypeLabel(capability.capability_type)}</span><span>{capability.priority.toUpperCase()}</span></div><small>{capability.calculation || capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ") || "Service owned"}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.slice(0, 8).join(", ") || capability.output_type}{capability.fields.length > 8 ? ` +${capability.fields.length - 8} more` : ""}</dd></div><div><dt>Authority</dt><dd>{capability.owner} · v{capability.implementation_version} · {readableLabel(capability.persistence_policy)}</dd></div><div><dt>{capability.enabled ? "Active cadence" : "Supported cadence"}</dt><dd>{(capability.enabled ? capability.selected_timeframes : capability.timeframes).length ? (capability.enabled ? capability.selected_timeframes : capability.timeframes).join(", ") : readableLabel(capability.cadence)}</dd></div><div><dt>Consumers</dt><dd>{capability.consumers.map(capabilityScopeLabel).join(", ") || "No registered consumer scope"}</dd></div></dl></div>
                 <div className="discovery-capability-actions"><em>{configurationStatus}</em><small>{readableLabel(capability.implementation_status)} · {readableLabel(capability.operational_status)} · coverage {readableLabel(capability.coverage_status)}</small>{removable && runnable ? <button aria-label={`Modify ${capability.name}`} className="button compact secondary" onClick={() => setEditingCapabilityId(capability.capability_id)} type="button"><PencilLine size={13} /> Modify</button> : null}{removable && capability.enabled ? <button aria-label={`Remove ${capability.name}`} className="button compact danger" onClick={() => setDiscoveryCapabilityEnabled(capability.capability_id, false)} type="button"><Trash2 size={13} /> Remove</button> : null}</div>
               </article>;
             })}
