@@ -6,7 +6,7 @@ import urllib.parse
 import urllib.request
 from urllib.error import HTTPError
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from src.market_engine.events import MarketEvent, QuoteEvent, TradeEvent
 from src.market_engine.sources import EventBatch, EventCursor
@@ -23,6 +23,7 @@ class QmdHistoricalEventSource:
         end: datetime,
         tickers: list[str] | None = None,
         batch_size: int = 10_000,
+        revision_policy: Literal["pinned", "advancing"] = "pinned",
     ) -> None:
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("Historical event boundaries must be timezone-aware")
@@ -30,11 +31,14 @@ class QmdHistoricalEventSource:
             raise ValueError("end must be later than start")
         if not 1 <= batch_size <= 100_000:
             raise ValueError("batch_size must be between 1 and 100000")
+        if revision_policy not in {"pinned", "advancing"}:
+            raise ValueError("revision_policy must be pinned or advancing")
         self.base_url = base_url.rstrip("/")
         self.start = start
         self.end = end
         self.tickers = list(tickers or [])
         self.batch_size = batch_size
+        self.revision_policy = revision_policy
         self.source_revision: dict[str, Any] | None = None
 
     async def health(self) -> dict[str, object]:
@@ -60,11 +64,18 @@ class QmdHistoricalEventSource:
             if pinned_revision is None:
                 pinned_revision = revision
                 self.source_revision = dict(revision)
-            elif revision != pinned_revision:
+            elif revision["source_plan_hash"] != pinned_revision["source_plan_hash"]:
+                raise RuntimeError(
+                    "QMD historical source plan changed during paged read; "
+                    "restart from the first page"
+                )
+            elif self.revision_policy == "pinned" and revision != pinned_revision:
                 raise RuntimeError(
                     "QMD historical source revision changed during paged read; "
                     "restart from the first page"
                 )
+            else:
+                self.source_revision = dict(revision)
             events = [
                 event_from_qmd_payload(dict(item))
                 for item in payload.get("events") or []
@@ -88,6 +99,7 @@ class QmdHistoricalEventSource:
             "end": self.end.isoformat(),
             "tickers": ",".join(self.tickers),
             "limit": self.batch_size,
+            "revision_policy": self.revision_policy,
         }
         if cursor:
             parameters.update(
@@ -98,16 +110,15 @@ class QmdHistoricalEventSource:
                 }
             )
         if pinned_revision:
-            parameters.update(
-                {
-                    "expected_source_plan_hash": str(
-                        pinned_revision["source_plan_hash"]
-                    ),
+            parameters["expected_source_plan_hash"] = str(
+                pinned_revision["source_plan_hash"]
+            )
+            if self.revision_policy == "pinned":
+                parameters.update({
                     "expected_revision_token": str(
                         pinned_revision["revision_token"]
                     ),
-                }
-            )
+                })
         query = urllib.parse.urlencode(parameters)
         try:
             with urllib.request.urlopen(

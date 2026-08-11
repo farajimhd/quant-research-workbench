@@ -512,6 +512,14 @@ bounded direct ClickHouse paths remain documented in
     contract tests, Python compile, and the managed external-runtime frontend
     production build passed. The historical-to-live chart-bar merge remains a
     separate open item.
+74. Added explicit QMD History event revision policies. Replay and Backtest keep
+    the default pinned contract and reject either source-plan or token drift.
+    Live consumers can request an advancing contract that accepts a newer live
+    arrival/revision watermark while holding the physical source plan fixed; a
+    tier or plan change still returns the typed restart conflict. The shared
+    Python historical source exposes the same policy and remains pinned by
+    default. All 30 QMD History tests, four focused Python consumer tests,
+    Python compile, and Rust formatting passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

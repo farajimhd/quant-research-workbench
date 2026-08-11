@@ -116,8 +116,27 @@ struct EventPageQuery {
     expected_revision_token: Option<String>,
     expected_source_plan_hash: Option<String>,
     limit: Option<usize>,
+    #[serde(default)]
+    revision_policy: EventRevisionPolicy,
     start: String,
     tickers: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum EventRevisionPolicy {
+    Advancing,
+    #[default]
+    Pinned,
+}
+
+impl EventRevisionPolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Advancing => "advancing",
+            Self::Pinned => "pinned",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +167,7 @@ struct MarketEventPage {
     complete: bool,
     events: Vec<MarketEvent>,
     next_cursor: Option<HistoricalCursor>,
+    revision_policy: &'static str,
     source_revision: SourceRevision,
 }
 
@@ -455,29 +475,27 @@ async fn event_page_snapshot(
         .map(str::to_string)
         .collect();
     let window = window(&query.start, &query.end, tickers)?;
-    let expected_revision =
-        match (
-            query.expected_source_plan_hash.as_deref(),
-            query.expected_revision_token.as_deref(),
-        ) {
-            (None, None) => None,
-            (Some(plan_hash), Some(revision_token)) => Some((plan_hash, revision_token)),
-            _ => return Err(bad_request(
-                "expected_source_plan_hash and expected_revision_token must be supplied together",
-            )),
-        };
+    let expected_revision = expected_event_revision(
+        query.revision_policy,
+        query.expected_source_plan_hash.as_deref(),
+        query.expected_revision_token.as_deref(),
+    )?;
     let source_revision = state
         .source
         .source_revision(&window)
         .await
         .map_err(service_error)?;
     if let Some((expected_plan_hash, expected_revision_token)) = expected_revision {
-        if source_revision.source_plan_hash != expected_plan_hash
-            || source_revision.token != expected_revision_token
-        {
+        if event_revision_changed(
+            query.revision_policy,
+            expected_plan_hash,
+            expected_revision_token,
+            &source_revision,
+        ) {
             return Err(source_revision_conflict(
                 expected_plan_hash,
-                expected_revision_token,
+                expected_revision_token.unwrap_or_default(),
+                query.revision_policy,
                 &source_revision,
             ));
         }
@@ -519,6 +537,7 @@ async fn event_page_snapshot(
             .map(|event| state.source.market_event(event))
             .collect(),
         next_cursor,
+        revision_policy: query.revision_policy.as_str(),
         source_revision,
     }))
 }
@@ -1400,13 +1419,15 @@ fn service_error(message: String) -> ApiError {
 fn source_revision_conflict(
     expected_plan_hash: &str,
     expected_revision_token: &str,
+    policy: EventRevisionPolicy,
     actual: &SourceRevision,
 ) -> ApiError {
     (
         StatusCode::CONFLICT,
         Json(json!({
-            "error": "historical source revision changed during paged read; restart from the first page",
+            "error": "historical source authority changed during paged read; restart from the first page",
             "error_code": "source_revision_conflict",
+            "revision_policy": policy.as_str(),
             "expected": {
                 "source_plan_hash": expected_plan_hash,
                 "revision_token": expected_revision_token,
@@ -1420,12 +1441,47 @@ fn source_revision_conflict(
     )
 }
 
+fn expected_event_revision<'a>(
+    policy: EventRevisionPolicy,
+    expected_plan_hash: Option<&'a str>,
+    expected_revision_token: Option<&'a str>,
+) -> Result<Option<(&'a str, Option<&'a str>)>, ApiError> {
+    match (policy, expected_plan_hash, expected_revision_token) {
+        (_, None, None) => Ok(None),
+        (EventRevisionPolicy::Pinned, Some(plan_hash), Some(token)) => {
+            Ok(Some((plan_hash, Some(token))))
+        }
+        (EventRevisionPolicy::Advancing, Some(plan_hash), token) => {
+            Ok(Some((plan_hash, token)))
+        }
+        (EventRevisionPolicy::Pinned, _, _) => Err(bad_request(
+            "pinned reads require expected_source_plan_hash and expected_revision_token together",
+        )),
+        (EventRevisionPolicy::Advancing, None, Some(_)) => Err(bad_request(
+            "advancing reads cannot supply expected_revision_token without expected_source_plan_hash",
+        )),
+    }
+}
+
+fn event_revision_changed(
+    policy: EventRevisionPolicy,
+    expected_plan_hash: &str,
+    expected_revision_token: Option<&str>,
+    actual: &SourceRevision,
+) -> bool {
+    actual.source_plan_hash != expected_plan_hash
+        || matches!(policy, EventRevisionPolicy::Pinned)
+            && expected_revision_token.is_some_and(|token| actual.token != token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        causal_product_window, parse_chart_stage, parse_indicator_projection, parse_timestamp,
-        product_resolution, stream_gap_frame, validate_timeframe, ProductQuery,
+        causal_product_window, event_revision_changed, expected_event_revision, parse_chart_stage,
+        parse_indicator_projection, parse_timestamp, product_resolution, stream_gap_frame,
+        validate_timeframe, EventRevisionPolicy, ProductQuery,
     };
+    use crate::source::SourceRevision;
 
     #[test]
     fn timestamps_require_explicit_timezone() {
@@ -1449,6 +1505,51 @@ mod tests {
         assert_eq!(frame["retry_action"], "reconnect_with_original_window");
         assert_eq!(frame["terminal"], true);
         assert_eq!(frame["skipped"], 9);
+    }
+
+    fn revision(plan: &str, token: &str) -> SourceRevision {
+        SourceRevision {
+            complete_for_history: false,
+            event_count: 1,
+            live_continuation_sequence: Some(7),
+            max_build_step: 7,
+            max_updated_at: "2026-08-11T14:00:00Z".to_string(),
+            request_complete: true,
+            source_plan_hash: plan.to_string(),
+            source_tiers: vec!["currentlive".to_string()],
+            token: token.to_string(),
+        }
+    }
+
+    #[test]
+    fn pinned_event_pages_reject_token_drift() {
+        let actual = revision("plan-a", "token-2");
+        assert!(event_revision_changed(
+            EventRevisionPolicy::Pinned,
+            "plan-a",
+            Some("token-1"),
+            &actual,
+        ));
+        assert!(
+            expected_event_revision(EventRevisionPolicy::Pinned, Some("plan-a"), None,).is_err()
+        );
+    }
+
+    #[test]
+    fn advancing_event_pages_accept_tail_progress_but_not_plan_drift() {
+        let actual = revision("plan-a", "token-2");
+        assert!(!event_revision_changed(
+            EventRevisionPolicy::Advancing,
+            "plan-a",
+            Some("token-1"),
+            &actual,
+        ));
+        assert!(event_revision_changed(
+            EventRevisionPolicy::Advancing,
+            "plan-b",
+            None,
+            &actual,
+        ));
     }
 
     #[test]

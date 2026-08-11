@@ -702,8 +702,64 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
                 },
             ],
         ):
-            with self.assertRaisesRegex(RuntimeError, "source revision changed"):
+            with self.assertRaisesRegex(RuntimeError, "source plan changed"):
                 _ = [batch async for batch in source.stream()]
+
+    async def test_advancing_paged_pull_accepts_tail_revision_progress(self) -> None:
+        source = QmdHistoricalEventSource(
+            "http://127.0.0.1:8801",
+            start=datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK),
+            end=datetime(2026, 7, 28, 9, 46, tzinfo=NEW_YORK),
+            tickers=["AAPL"],
+            batch_size=1,
+            revision_policy="advancing",
+        )
+        event = {
+            "ask_exchange": 11,
+            "ask_price": 100.1,
+            "ask_size": 100,
+            "bid_exchange": 12,
+            "bid_price": 100.0,
+            "bid_size": 100,
+            "conditions": [],
+            "indicators": [],
+            "ingest_ts": "2026-07-28T13:45:00+00:00",
+            "kind": "quote",
+            "raw": {},
+            "sequence": 1,
+            "tape": 3,
+            "ticker": "AAPL",
+            "ts": "2026-07-28T13:45:00+00:00",
+        }
+        cursor = {"ordinal": 1, "sip_timestamp_us": 1_774_708_700_000_000, "ticker": "AAPL"}
+        with patch.object(
+            source,
+            "_read_page",
+            side_effect=[
+                {
+                    "complete": False,
+                    "events": [event],
+                    "next_cursor": cursor,
+                    "source_revision": {
+                        "source_plan_hash": "plan-a",
+                        "token": "revision-a",
+                    },
+                },
+                {
+                    "complete": True,
+                    "events": [{**event, "sequence": 2}],
+                    "next_cursor": None,
+                    "source_revision": {
+                        "source_plan_hash": "plan-a",
+                        "token": "revision-b",
+                    },
+                },
+            ],
+        ):
+            batches = [batch async for batch in source.stream()]
+
+        self.assertEqual([batch.events[0].sequence for batch in batches], [1, 2])
+        self.assertEqual(source.source_revision["revision_token"], "revision-b")
 
 
 class ReplayPreflightTests(unittest.TestCase):

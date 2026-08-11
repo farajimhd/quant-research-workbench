@@ -97,6 +97,13 @@ current QMD macro snapshot. A current request can be complete; it is not an
 immutable Replay/Backtest revision until storage-level old-revision reads are
 implemented.
 
+Paged events now declare `revision_policy`. Replay and Backtest use the default
+`pinned` policy, which requires the source-plan hash and exact revision token to
+remain unchanged. Live consumers may use `advancing`: the source-plan hash is
+still pinned, but the current-tail revision token and live arrival watermark may
+advance between pages. A tier boundary or source-plan change remains a typed
+restart conflict under both policies.
+
 ## Retention and archive handoff
 
 ```mermaid

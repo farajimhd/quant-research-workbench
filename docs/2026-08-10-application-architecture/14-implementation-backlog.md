@@ -83,7 +83,10 @@ one backend registry record and one executable implementation status.
         every continuation; reject drift with a typed restart conflict.
   - [ ] Add storage-level immutable revision reads so a changed source can
         continue from the pinned old revision instead of restarting.
-- [ ] Permit advancing tail watermarks for Live consumers.
+- [x] Permit advancing tail watermarks for Live consumers. QMD History event
+      pages expose explicit `pinned` and `advancing` policies; advancing reads
+      accept newer live revision tokens while keeping the source-plan hash
+      fail-closed.
 - [x] Put routing behind one QMD client contract.
 - [x] Make QMD History read recent and archive tiers.
 - [x] Keep live tail ownership in QMD Gateway through explicit continuation.
