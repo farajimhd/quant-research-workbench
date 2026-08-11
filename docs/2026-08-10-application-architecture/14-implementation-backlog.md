@@ -294,6 +294,9 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Move SEC Canvas filing discovery, taxonomy, coverage, related entities,
         event-valid identity, document/text pagination, and XBRL fact reads into
         the registered `sec.canvas_asof.v1` plan.
+  - [x] Move Canvas News page and ticker-facet SQL into the registered
+        `news.canvas_asof.v1` plan while retaining validation, query sessions,
+        optional intelligence degradation, and presentation in the route.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -333,6 +336,9 @@ budgets and invalid scope broadening fails configuration validation.
         semantics, independently degradable children, and presentation there.
   - [x] Remove SEC Canvas SQL from its composition service; retain the existing
         builder names as compatibility imports from `sec.canvas_asof.v1`.
+  - [x] Remove Canvas News page and facet SQL from `app.py`; the route now
+        executes the registered plan and owns only request/session orchestration,
+        error mapping, optional synthesis composition, and response projection.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [x] Consume deferred producer services through unchanged bounded contracts.

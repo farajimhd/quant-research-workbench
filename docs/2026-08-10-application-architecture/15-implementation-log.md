@@ -1462,6 +1462,21 @@ it does not imply all application work is complete.
      service, and application-registry tests passed, and all changed Python
      modules compiled with bytecode writes disabled.
 
+149. Moved the Canvas News page and ticker-facet SQL out of `app.py` into the
+     registered `news.canvas_asof.v1` backend query plan. The plan owns the
+     bounded publication window, stable timestamp/source-ID cursor, canonical
+     event-to-rendered-revision join, ticker/search/content filters, and reads
+     of the existing News Synthesis publication used for optional semantic
+     filters. Its registry entry declares all three published source tables.
+
+     The route retains parameter validation, query-session and facet caching,
+     timeout/error mapping, optional synthesis projection, and its existing
+     user-facing response contract. News Gateway and Text Intelligence producer
+     code, schemas, and publication behavior were not changed. Thirty-two
+     focused Canvas News, trading-News, News operations/detail, and application-
+     registry tests passed, and all changed Python modules compiled with
+     bytecode writes disabled.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)
