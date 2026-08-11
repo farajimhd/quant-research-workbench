@@ -112,14 +112,17 @@ one backend registry record and one executable implementation status.
 - [x] Expose bounded historical events, bars, indicators, signals, and scanner products.
 - [x] Return source-plan hash, event schema, coverage, `as_of`, and continuation cursor.
 - [x] Provide a consumer-neutral historical contract suitable for future Market AI use.
-- [ ] Prove approved direct ClickHouse reads match QMD History decoding/results.
+- [x] Prove approved direct ClickHouse reads match QMD History decoding/results.
   - [x] Implement an opt-in, read-only parity probe in the QMD authority runner.
         It accepts only QMD-plan-declared archive/recent event tables, requires
         a complete durable window and exact ticker population, and compares
         first/last/five-minute price, volume, trade count, and quote count with
         QMD History's decoded ordered events.
-  - [ ] Capture a passing parity report from ready QMD services and ClickHouse;
-        the current laptop port conflict prevents production evidence.
+  - [x] Capture a passing durable-archive parity report from ready QMD History
+        and ClickHouse. A pinned one-minute AAPL/MSFT window returned 48,071
+        ordered events over two pages, lineage on every row, and exact two-row
+        Scanner primitive parity with zero failures. Live/recent boundary proof
+        remains part of the separate three-tier gate below.
 - [x] Prevent clients from choosing physical QMD databases/tables.
 
 Acceptance gate: a boundary-spanning request returns one ordered,
@@ -672,8 +675,9 @@ broker command outside OMS.
         cause.
   - [x] Give autonomous market-source events explicit causation lineage. QMD's
         shared decoder derives a bounded ticker/session correlation root and
-        immutable-field event cause before computation; Live, recent, and
-        archive reconstruction agree because storage ordinal is excluded.
+        event cause before computation. Live/recent preserve vendor sequence;
+        legacy archive rows use deterministic ordinal because their schema does
+        not persist that field, so cross-tier cause equality is not fabricated.
 - [x] Add QMD transition/gap/lag/cache/queue metrics.
 - [x] Add discovery computation-cost metrics.
 - [x] Add Portfolio disposition/reservation and OMS reconciliation metrics.
@@ -702,6 +706,10 @@ broker command outside OMS.
   - [ ] Run the acceptance runner across representative archive/recent/live
         boundary windows and attach passing runtime evidence. The harness alone
         does not satisfy the production parity gate.
+  - [x] Run the durable archive portion against real services/data. Report
+        `qmd_authority_validation_20260811T143323Z.json` passed for plan
+        `fnv1a64:24bdd17a110cb65f`; the 8800 IBKR/QMD collision still blocks the
+        Live/recent portion and is not hidden by history-only mode.
 - [ ] Test point-in-time identity and enrichment behavior.
   - [x] Validate the active Reference, fundamentals, ticker-facts, Watchlist,
         feature-projection, and Scanner query contracts for explicit as-of and

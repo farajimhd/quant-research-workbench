@@ -14,7 +14,11 @@ The archive watermark is the verified 20:00 America/New_York close of the last
 covered market session, converted to UTC with daylight-saving rules; it is not
 an assumed UTC-midnight boundary. Every emitted event is globally ordered by
 `sip_timestamp_us`, ticker, and source ordinal/arrival sequence, while the
-original `source_sequence` remains part of the shared compact-event contract.
+`source_sequence` field remains part of the shared compact-event contract.
+Recent `q_live` rows retain the original vendor sequence. Legacy archive tables
+do not persist it, so QMD History uses their deterministic `ordinal` as the
+explicit compatibility fallback; ordering remains exact, but a legacy archive
+event is not promised to retain the same causation hash as its earlier live row.
 Any uncovered interval is explicit, and the current live tail remains a QMD
 Gateway continuation rather than a hidden physical-table read.
 The application typed QMD client composes that continuation for compact-event
@@ -174,9 +178,9 @@ from `complete_for_history`: a request may be complete while still not being an
 immutable durable revision suitable for a paused Replay.
 
 Archive and recent rows pass through QMD's shared source-lineage derivation.
-Decoded event metadata therefore carries the same bounded correlation and
-causation IDs as Live for an identical market event, even when storage ordinal
-or arrival sequence differs.
+Decoded event metadata therefore always carries bounded correlation and
+causation IDs. Recent and Live agree when their stored vendor sequence agrees;
+legacy archive rows derive causation from the deterministic ordinal fallback.
 
 Bars and indicators have separate ordered streams. A cold derived build emits
 each finalized bar before the bounded indicator worker calculates its evidence,

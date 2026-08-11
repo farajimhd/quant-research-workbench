@@ -1379,7 +1379,14 @@ fn event_select(
     } else {
         "source.ordinal"
     };
-    let source_sequence = "source.source_sequence";
+    // Legacy archive compact tables do not persist the vendor source sequence;
+    // their deterministic ordinal is the only lossless ordering identity.
+    // Recent q_live rows retain the original source sequence.
+    let source_sequence = if recent {
+        "source.source_sequence"
+    } else {
+        "source.ordinal"
+    };
     let final_clause = if recent { " FINAL" } else { "" };
     let cursor_filter = cursor
         .filter(|value| value.sip_timestamp_us > 0)
@@ -1922,10 +1929,9 @@ mod tests {
             "",
             None,
         );
-        assert!(archive.contains("source.source_sequence AS source_sequence"));
+        assert!(archive.contains("source.ordinal AS source_sequence"));
         let recent = event_select("q_live.events", true, start, end, "", None);
         assert!(archive.contains("source.ordinal AS ordinal"));
-        assert!(!archive.contains("source.ordinal AS source_sequence"));
         assert!(recent.contains("source.arrival_sequence AS ordinal"));
         assert!(recent.contains("source.source_sequence AS source_sequence"));
         assert!(recent.contains("FROM q_live.events AS source FINAL"));

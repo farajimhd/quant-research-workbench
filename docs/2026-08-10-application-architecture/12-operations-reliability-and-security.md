@@ -94,7 +94,7 @@ snapshot or retries admission; no authoritative result is dropped.
 
 ## 6. Observability
 
-Use correlation IDs from UI request or source event through backend, service, computation, proposal, Portfolio and OMS. Browser API calls create bounded transport-safe `X-Correlation-ID` values; the backend preserves or creates correlation and causation context, returns both headers, propagates them to QMD HTTP/WebSocket transport, and injects them into broker-event envelopes and authoritative Portfolio/OMS journal payloads. QMD Live and QMD History validate and echo the headers. Autonomous Strategy evaluation derives bounded lineage from its assignment and newest source-signal/observation identity; Portfolio decisions then cite the Strategy intent and OMS records cite the durable Portfolio decision. Autonomous Watchlist, Strategy Run, and chart computation leases derive and persist bounded correlation/causation identities in QMD target snapshot schema v2. QMD's shared decoder derives source-event lineage from immutable market identity before computation; storage ordinal is excluded so Live, recent, and archive adapters agree. Durable generic background continuations preserve their own job root and per-event causes. Metrics include throughput, event/available/processing lag, coverage, source transitions, gaps, cache hit rate, queue age, rejected/deferred work, strategy latency, risk dispositions, order reconciliation and error budgets.
+Use correlation IDs from UI request or source event through backend, service, computation, proposal, Portfolio and OMS. Browser API calls create bounded transport-safe `X-Correlation-ID` values; the backend preserves or creates correlation and causation context, returns both headers, propagates them to QMD HTTP/WebSocket transport, and injects them into broker-event envelopes and authoritative Portfolio/OMS journal payloads. QMD Live and QMD History validate and echo the headers. Autonomous Strategy evaluation derives bounded lineage from its assignment and newest source-signal/observation identity; Portfolio decisions then cite the Strategy intent and OMS records cite the durable Portfolio decision. Autonomous Watchlist, Strategy Run, and chart computation leases derive and persist bounded correlation/causation identities in QMD target snapshot schema v2. QMD's shared decoder derives source-event lineage from immutable market identity before computation. Live and recent rows preserve the vendor sequence; legacy archive rows lack that column and use deterministic ordinal as an explicit fallback, so cross-tier causation equality is not claimed for those rows. Durable generic background continuations preserve their own job root and per-event causes. Metrics include throughput, event/available/processing lag, coverage, source transitions, gaps, cache hit rate, queue age, rejected/deferred work, strategy latency, risk dispositions, order reconciliation and error budgets.
 
 Every backend thread-pool fan-out uses a context-preserving executor. Each
 submission receives its own copied context, so QMD, Canvas, reference/facts,
@@ -178,6 +178,12 @@ python scripts\validate_qmd_authority.py `
   --tickers AAPL,MSFT `
   --direct-clickhouse-parity
 ```
+
+For a fully durable historical window, `--allow-history-only` may omit the Live
+health check. The validator first proves that every source-plan segment is
+queryable by QMD History; it rejects a gap or current-live continuation. This
+mode can certify archive/recent decoding and direct parity, but cannot satisfy
+the separate Live/recent/archive transition gate.
 
 The report is written atomically under
 `D:\TradingML\runtimes\qmd_validation`. A passing unit test or compiled binary

@@ -175,6 +175,11 @@ def _clickhouse_json_rows(
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             return [json.loads(line) for line in response if line.strip()]
+    except urllib.error.HTTPError as error:
+        detail = error.read(4096).decode("utf-8", errors="replace").strip()
+        raise ValidationFailure(
+            f"approved direct ClickHouse parity query failed with HTTP {error.code}: {detail}"
+        ) from error
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
         raise ValidationFailure(f"approved direct ClickHouse parity query failed: {error}") from error
 
@@ -214,10 +219,11 @@ def direct_scanner_rows(
         )
         for source_table in sources:
             ordinal = "arrival_sequence" if source_table == "q_live.events" else "ordinal"
+            final_clause = " FINAL" if source_table == "q_live.events" else ""
             selects.append(
                 "SELECT ticker, "
                 f"{ordinal} AS source_ordinal, event_meta, sip_timestamp_us, "
-                f"price_primary_int, size_primary FROM {source_table} FINAL "
+                f"price_primary_int, size_primary FROM {source_table}{final_clause} "
                 f"PREWHERE sip_timestamp_us >= {start_us} AND sip_timestamp_us < {end_us} "
                 f"WHERE ticker IN ({ticker_sql})"
             )
@@ -298,10 +304,9 @@ def collect_evidence(
     clickhouse_url: str = "http://127.0.0.1:8123/",
     clickhouse_user: str = "default",
     clickhouse_password: str = "",
+    allow_history_only: bool = False,
 ) -> dict[str, Any]:
-    live_health = _get_json(live_url, "/health")
     history_health = _get_json(history_url, "/health")
-    live_status = _get_json(live_url, "/snapshot/status")
     history_status = _get_json(history_url, "/snapshot/status")
     params = {"start": start, "end": end, "tickers": tickers}
     plan = _get_json(history_url, "/source-plan", params)
@@ -309,13 +314,26 @@ def collect_evidence(
     if not isinstance(plan, dict):
         raise ValidationFailure("source plan response is not an object")
     failures = validate_source_plan(plan, start=start, end=end)
-    if not isinstance(live_health, dict):
-        failures.append("live health response is not an object")
-    else:
-        if live_health.get("running") is not True:
-            failures.append("live health does not report running=true")
-        if live_health.get("status") in {"degraded", "action_required"}:
-            failures.append(f"live health is not operational: {live_health.get('status')!r}")
+    durable_plan = all(
+        isinstance(segment, dict) and bool(segment.get("queryable_by_history"))
+        for segment in plan.get("segments") or []
+    )
+    if allow_history_only and not durable_plan:
+        raise ValidationFailure(
+            "--allow-history-only requires every source-plan segment to be durable and queryable"
+        )
+    live_health: Any = {"skipped": True, "reason": "durable_history_only"}
+    live_status: Any = {"skipped": True, "reason": "durable_history_only"}
+    if not allow_history_only:
+        live_health = _get_json(live_url, "/health")
+        live_status = _get_json(live_url, "/snapshot/status")
+        if not isinstance(live_health, dict):
+            failures.append("live health response is not an object")
+        else:
+            if live_health.get("running") is not True:
+                failures.append("live health does not report running=true")
+            if live_health.get("status") in {"degraded", "action_required"}:
+                failures.append(f"live health is not operational: {live_health.get('status')!r}")
     if not isinstance(history_health, dict):
         failures.append("history health response is not an object")
     else:
@@ -325,10 +343,10 @@ def collect_evidence(
             )
         if history_health.get("status") != "ready":
             failures.append(f"history health is not ready: {history_health.get('status')!r}")
-    for label, status, expected_service in (
-        ("live", live_status, "qmd_gateway"),
-        ("history", history_status, "qmd_history_gateway"),
-    ):
+    status_expectations = [("history", history_status, "qmd_history_gateway")]
+    if not allow_history_only:
+        status_expectations.insert(0, ("live", live_status, "qmd_gateway"))
+    for label, status, expected_service in status_expectations:
         header = status.get("header") if isinstance(status, dict) else None
         actual_service = header.get("service") if isinstance(header, dict) else None
         if actual_service != expected_service:
@@ -417,6 +435,7 @@ def collect_evidence(
         "schema_version": 1,
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "request": {"start": start, "end": end, "tickers": tickers},
+        "validation_scope": "durable_history_only" if allow_history_only else "live_and_history",
         "services": {"live_health": live_health, "history_health": history_health},
         "operations": {"live": live_status, "history": history_status},
         "source_plan": plan,
@@ -462,6 +481,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Compare QMD decoded Scanner primitives with approved plan-declared ClickHouse sources",
     )
+    parser.add_argument(
+        "--allow-history-only",
+        action="store_true",
+        help="Skip QMD Live only when the source plan is fully durable/queryable",
+    )
     parser.add_argument("--clickhouse-url", default=os.environ.get("CLICKHOUSE_URL", "http://127.0.0.1:8123/"))
     parser.add_argument("--clickhouse-user", default=os.environ.get("CLICKHOUSE_USER", "default"))
     parser.add_argument(
@@ -494,6 +518,7 @@ def main(argv: list[str] | None = None) -> int:
             clickhouse_url=args.clickhouse_url,
             clickhouse_user=args.clickhouse_user,
             clickhouse_password=os.environ.get(args.clickhouse_password_env, ""),
+            allow_history_only=args.allow_history_only,
         )
         target = _write_report(report, args.output_dir)
     except ValidationFailure as error:

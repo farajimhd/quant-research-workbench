@@ -870,12 +870,13 @@ bounded direct ClickHouse paths remain documented in
      decoder. Each canonical event now derives a bounded ticker/session
      correlation root and an event causation hash from ticker, SIP clock,
      source sequence, type, prices, sizes, and exchanges before downstream
-     computation. Storage arrival sequence/archive ordinal is intentionally
-     excluded, so one market event retains identical lineage across Live,
-     recent, and archive reconstruction without changing compact storage schema
-     v4. Decoded raw metadata carries both IDs. Seven focused QMD compact-event
+     computation. Live and recent storage preserve the vendor sequence. The
+     deployed legacy archive schema does not, so QMD History must use its
+     deterministic ordinal fallback; ordering and lineage presence remain
+     exact, but cross-tier causation equality is not claimed for those rows.
+     Decoded raw metadata carries both IDs. Seven focused QMD compact-event
      tests and eight QMD History source tests passed using the external Cargo
-     target, including explicit cross-ordinal and historical-decoder evidence.
+     target.
 111. Added a read-only QMD authority acceptance runner. It validates both QMD
      service identities/readiness, exact archive/recent/current-live/gap source
      tiling, source-plan and pinned page-revision agreement, deterministic
@@ -926,6 +927,26 @@ bounded direct ClickHouse paths remain documented in
      `provider_tags` although the current v48 query no longer selects it. That
      intelligence test drift remains deferred rather than being silently
      rewritten during this phase.
+116. Real durable QMD acceptance exposed and fixed an archive schema regression.
+     `market_sip_compact.events_2026` has the documented legacy compact schema
+     and no vendor `source_sequence`, but QMD History had begun selecting that
+     nonexistent column for archive rows. The adapter again uses deterministic
+     archive `ordinal` as the wire-contract fallback while recent `q_live` rows
+     retain vendor sequence. Documentation no longer claims fabricated
+     cross-tier causation equality for legacy rows.
+
+     The acceptance runner now has a fail-closed `--allow-history-only` mode
+     available only for fully durable plans and reports bounded ClickHouse HTTP
+     diagnostics. Against real QMD History and ClickHouse, the pinned
+     2026-08-07 13:30-13:31 UTC AAPL/MSFT window passed with 48,071 events over
+     two pages, 48,071 lineage-bearing decoded rows, exact plan hash
+     `fnv1a64:24bdd17a110cb65f`, two matching Scanner rows, and zero failures.
+     The report is
+     `D:\TradingML\runtimes\qmd_validation\qmd_authority_validation_20260811T143323Z.json`.
+     All 30 QMD History tests and eight acceptance-runner tests passed; QMD
+     History was stopped after validation. The separately authorized IBKR
+     Supervisor still occupies 8800, so Live/recent/archive transition proof
+     remains open.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

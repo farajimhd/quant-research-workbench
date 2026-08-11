@@ -133,12 +133,12 @@ class QmdAuthorityValidationTests(unittest.TestCase):
         revision = {"source_plan_hash": "plan-1", "token": "revision-1"}
         event = {"ts": "2026-08-01T15:00:00Z", "ticker": "AAPL", "raw": {"correlation_id": "c", "causation_id": "a"}}
         responses = [
-            {"running": True, "status": "closed"},
             {"service": "qmd_history_gateway", "status": "ready"},
-            {"header": {"service": "qmd_gateway"}},
             {"header": {"service": "qmd_history_gateway"}},
             plan,
             {"complete": True},
+            {"running": True, "status": "closed"},
+            {"header": {"service": "qmd_gateway"}},
             {"complete": True, "events": [event], "next_cursor": None, "source_revision": revision},
         ]
         get_json.side_effect = responses
@@ -153,6 +153,74 @@ class QmdAuthorityValidationTests(unittest.TestCase):
         )
         self.assertEqual(report["verdict"], "pass")
         self.assertEqual(report["event_page_proof"]["lineage_count"], 1)
+
+    @patch("scripts.validate_qmd_authority._get_json")
+    def test_history_only_requires_and_records_a_durable_plan(self, get_json) -> None:
+        plan = {
+            "plan_hash": "plan-1",
+            "event_schema_version": 4,
+            "segments": [
+                {
+                    "start": "2026-08-01T00:00:00Z",
+                    "end": "2026-08-02T00:00:00Z",
+                    "queryable_by_history": True,
+                    "source": "market_sip_compact.events_YYYY",
+                    "tier": "archive",
+                }
+            ],
+        }
+        revision = {"source_plan_hash": "plan-1", "token": "revision-1"}
+        get_json.side_effect = [
+            {"service": "qmd_history_gateway", "status": "ready"},
+            {"header": {"service": "qmd_history_gateway"}},
+            plan,
+            {"complete": True},
+            {"complete": True, "events": [], "next_cursor": None, "source_revision": revision},
+        ]
+        report = collect_evidence(
+            live_url="http://occupied",
+            history_url="http://history",
+            start="2026-08-01T00:00:00Z",
+            end="2026-08-02T00:00:00Z",
+            tickers="AAPL",
+            page_size=100,
+            max_events=100,
+            allow_history_only=True,
+        )
+        self.assertEqual(report["validation_scope"], "durable_history_only")
+        self.assertTrue(report["services"]["live_health"]["skipped"])
+
+    @patch("scripts.validate_qmd_authority._get_json")
+    def test_history_only_rejects_a_live_continuation(self, get_json) -> None:
+        get_json.side_effect = [
+            {"service": "qmd_history_gateway", "status": "ready"},
+            {"header": {"service": "qmd_history_gateway"}},
+            {
+                "plan_hash": "plan-1",
+                "event_schema_version": 4,
+                "segments": [
+                    {
+                        "start": "2026-08-01T00:00:00Z",
+                        "end": "2026-08-02T00:00:00Z",
+                        "queryable_by_history": False,
+                        "source": "http://127.0.0.1:8800",
+                        "tier": "current_live",
+                    }
+                ],
+            },
+            {"complete": False},
+        ]
+        with self.assertRaisesRegex(RuntimeError, "durable and queryable"):
+            collect_evidence(
+                live_url="http://occupied",
+                history_url="http://history",
+                start="2026-08-01T00:00:00Z",
+                end="2026-08-02T00:00:00Z",
+                tickers="AAPL",
+                page_size=100,
+                max_events=100,
+                allow_history_only=True,
+            )
 
 
 if __name__ == "__main__":
