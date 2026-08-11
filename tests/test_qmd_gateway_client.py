@@ -7,6 +7,8 @@ from src.backend.qmd_gateway_client import (
     normalize_qmd_macro_bar_snapshot,
     normalize_qmd_market_signal,
     qmd_compact_events,
+    qmd_history_base_url,
+    qmd_history_websocket_url,
     qmd_catalogs,
     qmd_live_market_state,
     qmd_indicators,
@@ -340,6 +342,22 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(
             qmd_websocket_url("stream/indicators/MSFT", {"timeframe": "5m"}),
             "wss://qmd.example.test/base/stream/indicators/MSFT?timeframe=5m",
+        )
+
+    @patch("src.backend.qmd_gateway_client.load_qmd_env")
+    def test_history_base_url_resolves_wildcard_bind_to_loopback(self, _load_env) -> None:
+        with patch.dict(
+            "os.environ",
+            {"QMD_HISTORY_BIND": "0.0.0.0:8801", "QMD_HISTORY_GATEWAY_URL": ""},
+            clear=False,
+        ):
+            self.assertEqual(qmd_history_base_url(), "http://127.0.0.1:8801")
+
+    @patch("src.backend.qmd_gateway_client.qmd_history_base_url", return_value="https://history.example.test/base")
+    def test_history_websocket_uses_shared_url_contract(self, _base_url) -> None:
+        self.assertEqual(
+            qmd_history_websocket_url("stream/events", {"start": "2026-08-08T08:00:00Z"}),
+            "wss://history.example.test/base/stream/events?start=2026-08-08T08%3A00%3A00Z",
         )
 
 

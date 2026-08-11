@@ -127,7 +127,10 @@ Service-to-service calls use scoped identities and explicit allowlists. Read acc
 
 ## 9. Current drift
 
-- The backend contains useful domain integrations, but route-level source/query logic and legacy aliases are not yet consolidated behind the shared planners.
+- Live and historical QMD HTTP/WebSocket transport, endpoint resolution,
+  encoding, and error handling now share `qmd_gateway_client.py`. Product-level
+  callers still choose live versus history explicitly, so source/query routing
+  and legacy aliases are not yet fully consolidated behind a typed planner.
 - Frontend configuration catalogs and backend runnable capability are not yet one generated contract.
 - Snapshot/delta recovery, completeness and standard error semantics vary by endpoint.
 - Replay, Live and draft Backtest surfaces do not yet all use one compiler and controller API.

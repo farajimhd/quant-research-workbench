@@ -67,6 +67,8 @@ one backend registry record and one executable implementation status.
 - [ ] Pin source plans/revisions for Replay and Backtest.
 - [ ] Permit advancing tail watermarks for Live consumers.
 - [ ] Put routing behind one QMD client contract.
+      Live and QMD History transport now share one backend client module;
+      product/window planning and caller migration remain open.
 - [x] Make QMD History read recent and archive tiers.
 - [x] Keep live tail ownership in QMD Gateway through explicit continuation.
 - [x] Reuse the same `qmd_core` decoder, bars, indicators, structure, and signals.

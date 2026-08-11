@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_QMD_BASE_URL = "http://127.0.0.1:8795"
+DEFAULT_QMD_HISTORY_BASE_URL = "http://127.0.0.1:8801"
 ENRICHED_QMD_TIMEFRAMES = frozenset({"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"})
 MACRO_QMD_TIMEFRAMES = frozenset({"1d", "1w", "1mo", "1y"})
 
@@ -38,11 +39,59 @@ def qmd_enabled() -> bool:
     return os.environ.get("REAL_LIVE_QMD_GATEWAY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
+def qmd_history_base_url() -> str:
+    load_qmd_env()
+    configured = os.environ.get("QMD_HISTORY_GATEWAY_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    bind = os.environ.get("QMD_HISTORY_BIND", "127.0.0.1:8801").strip()
+    if bind.startswith("http://") or bind.startswith("https://"):
+        return bind.rstrip("/")
+    host, separator, port = bind.rpartition(":")
+    resolved_host = host if separator else bind
+    resolved_port = port if separator else "8801"
+    if resolved_host in {"0.0.0.0", "::", "[::]"}:
+        resolved_host = "127.0.0.1"
+    return f"http://{resolved_host}:{resolved_port}" if resolved_host else DEFAULT_QMD_HISTORY_BASE_URL
+
+
 def qmd_get_json(path: str, params: dict[str, Any] | None = None, *, timeout: int = 3) -> Any:
     if not qmd_enabled():
         raise RuntimeError("QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.")
+    return _qmd_service_get_json(
+        qmd_base_url(),
+        path,
+        params,
+        timeout=timeout,
+        service_label="QMD",
+    )
+
+
+def qmd_history_get_json(
+    path: str,
+    params: dict[str, Any] | None = None,
+    *,
+    timeout: float = 3,
+) -> Any:
+    return _qmd_service_get_json(
+        qmd_history_base_url(),
+        path,
+        params,
+        timeout=timeout,
+        service_label="QMD History",
+    )
+
+
+def _qmd_service_get_json(
+    base_url: str,
+    path: str,
+    params: dict[str, Any] | None,
+    *,
+    timeout: float,
+    service_label: str,
+) -> Any:
     query = urllib.parse.urlencode({key: value for key, value in (params or {}).items() if value is not None})
-    url = f"{qmd_base_url().rstrip('/')}{path}"
+    url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
     if query:
         url = f"{url}?{query}"
     request = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
@@ -51,9 +100,9 @@ def qmd_get_json(path: str, params: dict[str, Any] | None = None, *, timeout: in
             text = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"QMD GET {safe_qmd_url(url)} failed with HTTP {exc.code}: {body[:500]}") from exc
+        raise RuntimeError(f"{service_label} GET {safe_qmd_url(url)} failed with HTTP {exc.code}: {body[:500]}") from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"QMD GET {safe_qmd_url(url)} failed: {exc.reason}") from exc
+        raise RuntimeError(f"{service_label} GET {safe_qmd_url(url)} failed: {exc.reason}") from exc
     return json.loads(text) if text.strip() else {}
 
 
@@ -105,9 +154,25 @@ def qmd_delete_json(path: str, *, timeout: int = 3) -> Any:
 def qmd_websocket_url(path: str, params: dict[str, Any] | None = None) -> str:
     if not qmd_enabled():
         raise RuntimeError("QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.")
-    parsed = urllib.parse.urlsplit(qmd_base_url().rstrip("/"))
+    return _qmd_service_websocket_url(qmd_base_url(), path, params, service_label="QMD")
+
+
+def qmd_history_websocket_url(path: str, params: dict[str, Any] | None = None) -> str:
+    return _qmd_service_websocket_url(
+        qmd_history_base_url(), path, params, service_label="QMD History"
+    )
+
+
+def _qmd_service_websocket_url(
+    base_url: str,
+    path: str,
+    params: dict[str, Any] | None,
+    *,
+    service_label: str,
+) -> str:
+    parsed = urllib.parse.urlsplit(base_url.rstrip("/"))
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise RuntimeError("QMD gateway URL must use http or https.")
+        raise RuntimeError(f"{service_label} gateway URL must use http or https.")
     query = urllib.parse.urlencode({key: value for key, value in (params or {}).items() if value is not None})
     target_path = f"{parsed.path.rstrip('/')}/{path.lstrip('/')}"
     return urllib.parse.urlunsplit(("wss" if parsed.scheme == "https" else "ws", parsed.netloc, target_path, query, ""))

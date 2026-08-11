@@ -4,9 +4,7 @@ import os
 import json
 import re
 import threading
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
@@ -16,7 +14,12 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from pipelines.reference_data.clickhouse_load_market_references import build_condition_token_rows
-from src.backend.qmd_gateway_client import ENRICHED_QMD_TIMEFRAMES
+from src.backend.qmd_gateway_client import (
+    ENRICHED_QMD_TIMEFRAMES,
+    qmd_history_base_url as historical_gateway_base_url,
+    qmd_history_get_json as _historical_gateway_get,
+    qmd_history_websocket_url as historical_gateway_websocket_url,
+)
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.orchestrator import historical_run_window
 from src.trading_runtime.runtime import RunMode
@@ -557,37 +560,10 @@ def save_trade_annotation(episode_id: str, payload: dict[str, Any]) -> dict[str,
     )
 
 
-def historical_gateway_base_url() -> str:
-    configured = os.environ.get("QMD_HISTORY_GATEWAY_URL", "").strip()
-    if configured:
-        return configured.rstrip("/")
-    bind = os.environ.get("QMD_HISTORY_BIND", "127.0.0.1:8801").strip()
-    if bind.startswith("http://") or bind.startswith("https://"):
-        return bind.rstrip("/")
-    host, separator, port = bind.rpartition(":")
-    resolved_host = host if separator else bind
-    resolved_port = port if separator else "8801"
-    if resolved_host in {"0.0.0.0", "::", "[::]"}:
-        resolved_host = "127.0.0.1"
-    return f"http://{resolved_host}:{resolved_port}"
-
-
-def historical_gateway_websocket_url(path: str, params: dict[str, Any]) -> str:
-    parsed = urllib.parse.urlsplit(historical_gateway_base_url())
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise RuntimeError("QMD History gateway URL must use http or https")
-    query = urllib.parse.urlencode({key: value for key, value in params.items() if value is not None})
-    target_path = f"{parsed.path.rstrip('/')}/{path.lstrip('/')}"
-    return urllib.parse.urlunsplit(
-        ("wss" if parsed.scheme == "https" else "ws", parsed.netloc, target_path, query, "")
-    )
-
-
 def historical_gateway_snapshot() -> dict[str, Any]:
     base_url = historical_gateway_base_url()
     try:
-        with urllib.request.urlopen(f"{base_url}/health", timeout=3) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        payload = _historical_gateway_get("/health", {}, timeout=3)
         ready = (
             payload.get("service") == "qmd_history_gateway"
             and payload.get("host_role") == "historical"
@@ -1261,25 +1237,6 @@ def _reference_rows(path: Path) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         raise RuntimeError(f"Market reference file must contain a results array: {path}")
     return [row for row in rows if isinstance(row, dict)]
-
-
-def _historical_gateway_get(path: str, params: dict[str, Any], *, timeout: float) -> Any:
-    query = urllib.parse.urlencode({key: value for key, value in params.items() if value is not None})
-    url = f"{historical_gateway_base_url()}{path}?{query}"
-    request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"QMD History returned HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(
-            f"QMD History gateway is not reachable at {historical_gateway_base_url()}. "
-            "Start scripts/run_qmd_history_gateway.ps1 and wait for its /health status to be ready."
-        ) from exc
-    except Exception as exc:
-        raise RuntimeError(f"QMD History request failed: {exc}") from exc
 
 
 def _historical_ticker(value: str) -> str:

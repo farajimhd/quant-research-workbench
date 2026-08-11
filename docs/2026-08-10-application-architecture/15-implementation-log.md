@@ -86,6 +86,10 @@ bounded direct ClickHouse paths remain documented in
     record is implemented and mode-compatible; failed verification is visible
     and blocks new unverified container choices without destroying an existing
     saved layout.
+18. Consolidated QMD live/history base-URL resolution, HTTP JSON transport,
+    WebSocket URL construction and error handling in the backend QMD client.
+    Existing trading/replay imports remain compatible; typed product/window
+    routing is the next migration step and is not claimed complete.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
