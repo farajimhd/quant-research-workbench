@@ -90,6 +90,11 @@ bounded direct ClickHouse paths remain documented in
     WebSocket URL construction and error handling in the backend QMD client.
     Existing trading/replay imports remain compatible; typed product/window
     routing is the next migration step and is not claimed complete.
+19. Added and adopted typed QMD product/window routing for chart,
+    compact-event and Scanner reads. Windowless requests resolve to QMD live;
+    timezone-aware causal windows resolve to the consumer-neutral QMD History
+    contract, whose internal source planner alone chooses archive/recent/gap
+    segments. Replay WebSockets use the same client URL authority.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

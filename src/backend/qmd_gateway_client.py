@@ -8,9 +8,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Collection
+from typing import Any, Callable, Collection, Literal
 
 from dotenv import load_dotenv
 
@@ -20,6 +21,131 @@ DEFAULT_QMD_BASE_URL = "http://127.0.0.1:8795"
 DEFAULT_QMD_HISTORY_BASE_URL = "http://127.0.0.1:8801"
 ENRICHED_QMD_TIMEFRAMES = frozenset({"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"})
 MACRO_QMD_TIMEFRAMES = frozenset({"1d", "1w", "1mo", "1y"})
+
+QmdProduct = Literal["chart", "compact_events", "scanner"]
+QmdAuthority = Literal["auto", "live", "history"]
+
+
+@dataclass(frozen=True, slots=True)
+class QmdProductRequest:
+    product: QmdProduct
+    authority: QmdAuthority = "auto"
+    ticker: str = ""
+    timeframe: str = ""
+    start: str | None = None
+    end: str | None = None
+    as_of: str | None = None
+    before: str | None = None
+    indicator_columns: tuple[str, ...] = ()
+    stage: str = "full"
+    limit: int = 500
+    tail: bool = False
+    timeout_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QmdProductResponse:
+    schema_version: int
+    product: QmdProduct
+    authority: Literal["live", "history"]
+    endpoint: str
+    payload: Any
+
+
+def qmd_product_request(
+    request: QmdProductRequest,
+    *,
+    live_get: Callable[..., Any] | None = None,
+    history_get: Callable[..., Any] | None = None,
+) -> QmdProductResponse:
+    authority, endpoint, params = _qmd_product_route(request)
+    timeout = request.timeout_seconds or (3 if authority == "live" else 90)
+    resolved_live_get = live_get or qmd_get_json
+    resolved_history_get = history_get or qmd_history_get_json
+    payload = (
+        resolved_live_get(endpoint, params, timeout=int(timeout))
+        if authority == "live"
+        else resolved_history_get(endpoint, params, timeout=timeout)
+    )
+    return QmdProductResponse(1, request.product, authority, endpoint, payload)
+
+
+def _qmd_product_route(
+    request: QmdProductRequest,
+) -> tuple[Literal["live", "history"], str, dict[str, Any]]:
+    if request.product not in {"chart", "compact_events", "scanner"}:
+        raise ValueError(f"unsupported QMD product: {request.product}")
+    if request.stage not in {"bars", "full"}:
+        raise ValueError("QMD chart stage must be bars or full")
+    limit = max(1, min(int(request.limit), 50_000))
+    has_window = bool(request.start or request.end or request.as_of)
+    authority: Literal["live", "history"] = (
+        "history" if request.authority == "history" or request.authority == "auto" and has_window else "live"
+    )
+    if request.authority == "live" and has_window:
+        raise ValueError("Live QMD product requests cannot carry a historical window")
+    if authority == "history":
+        if not request.start or not request.end:
+            raise ValueError("Historical QMD product requests require start and end")
+        window_start = _validate_window_timestamp("start", request.start)
+        window_end = _validate_window_timestamp("end", request.end)
+        if window_start >= window_end:
+            raise ValueError("QMD historical window start must precede end")
+        if request.as_of:
+            _validate_window_timestamp("as_of", request.as_of)
+
+    ticker = request.ticker.strip().upper()
+    if request.product != "scanner" and not ticker:
+        raise ValueError(f"ticker is required for QMD {request.product}")
+    quoted_ticker = urllib.parse.quote(ticker)
+    if request.product == "scanner":
+        if authority == "live":
+            return authority, "/snapshot/scanner", {"limit": min(limit, 5_000)}
+        return authority, "/snapshot/scanner-derived", {
+            "as_of": request.as_of or request.end,
+            "end": request.end,
+            "start": request.start,
+        }
+    if request.product == "compact_events":
+        return authority, f"/snapshot/compact-events/{quoted_ticker}", (
+            {"limit": limit}
+            if authority == "live"
+            else {"start": request.start, "end": request.end, "limit": limit, "tail": str(request.tail).lower()}
+        )
+    timeframe = request.timeframe.strip().lower() or "1m"
+    if authority == "live":
+        if timeframe in MACRO_QMD_TIMEFRAMES:
+            return authority, f"/snapshot/macro-bars/{quoted_ticker}", {"limit": limit, "timeframe": timeframe}
+        if timeframe in ENRICHED_QMD_TIMEFRAMES:
+            return authority, f"/snapshot/bars/{quoted_ticker}", {"timeframe": timeframe, "limit": limit}
+        return authority, f"/snapshot/family-bars/{quoted_ticker}", {
+            "family": "trade", "limit": limit, "price_only": True, "resolution": timeframe,
+        }
+    endpoint = (
+        f"/snapshot/chart-macro-bars/{quoted_ticker}"
+        if timeframe in MACRO_QMD_TIMEFRAMES
+        else f"/snapshot/chart-bars/{quoted_ticker}"
+    )
+    return authority, endpoint, {
+        "start": request.start,
+        "end": request.end,
+        "as_of": request.as_of or request.end,
+        "before": request.before,
+        "indicator_columns": ",".join(dict.fromkeys(request.indicator_columns)) or None,
+        "stage": request.stage,
+        "timeframe": timeframe,
+        "limit": limit,
+    }
+
+
+def _validate_window_timestamp(label: str, value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"QMD {label} must be an ISO timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"QMD {label} must include a timezone")
+    return parsed
 
 
 def load_qmd_env() -> None:
@@ -102,6 +228,11 @@ def _qmd_service_get_json(
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"{service_label} GET {safe_qmd_url(url)} failed with HTTP {exc.code}: {body[:500]}") from exc
     except urllib.error.URLError as exc:
+        if service_label == "QMD History":
+            raise RuntimeError(
+                f"QMD History gateway is not reachable at {base_url.rstrip('/')}. "
+                "Start scripts/run_qmd_history_gateway.ps1 and wait for its /health status to be ready."
+            ) from exc
         raise RuntimeError(f"{service_label} GET {safe_qmd_url(url)} failed: {exc.reason}") from exc
     return json.loads(text) if text.strip() else {}
 
@@ -373,26 +504,26 @@ def qmd_compact_events(symbol: str, *, row_limit: int = 250) -> list[dict[str, A
     ticker = symbol.strip().upper()
     if not ticker:
         raise ValueError("symbol is required for QMD compact events.")
-    payload = qmd_get_json(
-        f"/snapshot/compact-events/{urllib.parse.quote(ticker)}",
-        {"limit": row_limit},
-        timeout=3,
-    )
+    payload = qmd_product_request(
+        QmdProductRequest("compact_events", ticker=ticker, limit=row_limit)
+    ).payload
     return [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
 
 
 def qmd_chart_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
-    if timeframe in MACRO_QMD_TIMEFRAMES:
-        return qmd_macro_bars(symbol, timeframe=timeframe, row_limit=row_limit)
-    if timeframe in ENRICHED_QMD_TIMEFRAMES:
-        return qmd_bars(symbol, timeframe=timeframe, row_limit=row_limit)
-    if not symbol.strip():
-        raise ValueError("symbol is required for QMD chart bars.")
-    payload = qmd_get_json(
-        f"/snapshot/family-bars/{urllib.parse.quote(symbol.strip().upper())}",
-        {"family": "trade", "limit": row_limit, "price_only": True, "resolution": timeframe},
-        timeout=3,
+    response = qmd_product_request(
+        QmdProductRequest(
+            "chart",
+            ticker=symbol,
+            timeframe=timeframe,
+            limit=row_limit,
+        )
     )
+    payload = response.payload
+    if timeframe in MACRO_QMD_TIMEFRAMES:
+        return normalize_qmd_macro_bar_snapshot(payload, symbol=symbol, timeframe=timeframe)
+    if timeframe in ENRICHED_QMD_TIMEFRAMES:
+        return payload if isinstance(payload, dict) else {"ticker": symbol.upper(), "timeframe": timeframe, "history": [], "current": None}
     return normalize_qmd_family_bar_snapshot(payload, symbol=symbol, timeframe=timeframe)
 
 

@@ -156,6 +156,14 @@ derived from the daily authority and carry its source revision.
 
 ## Chart and computation products
 
+Backend consumers now express chart, compact-event, and Scanner reads as a
+typed `QmdProductRequest`. A request without a causal window resolves to QMD
+live; a timezone-aware `start`/`end`/`as_of` window resolves to QMD History.
+The planner owns the approved endpoint and rejects ambiguous live-plus-history
+requests, so route handlers do not select `q_live` or archive tables. QMD
+History remains the owner of archive/recent source planning inside the
+historical service.
+
 The same source plan supports:
 
 - compact events and Tape/Quotes;

@@ -66,9 +66,7 @@ one backend registry record and one executable implementation status.
 - [x] Return explicit missing and live-continuation segments.
 - [ ] Pin source plans/revisions for Replay and Backtest.
 - [ ] Permit advancing tail watermarks for Live consumers.
-- [ ] Put routing behind one QMD client contract.
-      Live and QMD History transport now share one backend client module;
-      product/window planning and caller migration remain open.
+- [x] Put routing behind one QMD client contract.
 - [x] Make QMD History read recent and archive tiers.
 - [x] Keep live tail ownership in QMD Gateway through explicit continuation.
 - [x] Reuse the same `qmd_core` decoder, bars, indicators, structure, and signals.
@@ -76,9 +74,9 @@ one backend registry record and one executable implementation status.
 - [ ] Add reconnect continuation and sequence-gap repair.
 - [x] Expose bounded historical events, bars, indicators, signals, and scanner products.
 - [x] Return source-plan hash, event schema, coverage, `as_of`, and continuation cursor.
-- [ ] Provide a consumer-neutral historical contract suitable for future Market AI use.
+- [x] Provide a consumer-neutral historical contract suitable for future Market AI use.
 - [ ] Prove approved direct ClickHouse reads match QMD History decoding/results.
-- [ ] Prevent clients from choosing physical QMD databases/tables.
+- [x] Prevent clients from choosing physical QMD databases/tables.
 
 Acceptance gate: a boundary-spanning request returns one ordered,
 duplicate-free, gap-explicit stream.
@@ -138,9 +136,9 @@ budgets and invalid scope broadening fails configuration validation.
 
 ## 4. Backend integration
 
-- [ ] Build one typed QMD client for live and historical products.
-- [ ] Remove physical source selection from route handlers.
-- [ ] Implement shared source and query planner boundaries.
+- [x] Build one typed QMD client for live and historical products.
+- [x] Remove physical QMD source selection from route handlers.
+- [x] Implement shared QMD source and query planner boundaries.
 - [ ] Expose capability, field, container, and configuration catalogs.
 - [ ] Move approved SQL into versioned query plans.
 - [ ] Remove duplicated route-level SQL as callers migrate.

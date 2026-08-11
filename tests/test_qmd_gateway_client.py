@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from src.backend.qmd_gateway_client import (
+    QmdProductRequest,
     normalize_qmd_macro_bar_snapshot,
     normalize_qmd_market_signal,
     qmd_compact_events,
@@ -13,6 +14,7 @@ from src.backend.qmd_gateway_client import (
     qmd_live_market_state,
     qmd_indicators,
     qmd_market_signals,
+    qmd_product_request,
     qmd_scanner_snapshot,
     qmd_scanner_indicators,
     qmd_websocket_url,
@@ -20,6 +22,66 @@ from src.backend.qmd_gateway_client import (
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_typed_product_request_routes_windowless_chart_to_live(self, get_json) -> None:
+        get_json.return_value = {"history": []}
+
+        response = qmd_product_request(
+            QmdProductRequest("chart", ticker="aapl", timeframe="1m", limit=75)
+        )
+
+        self.assertEqual(response.authority, "live")
+        self.assertEqual(response.endpoint, "/snapshot/bars/AAPL")
+        get_json.assert_called_once_with(
+            "/snapshot/bars/AAPL", {"timeframe": "1m", "limit": 75}, timeout=3
+        )
+
+    @patch("src.backend.qmd_gateway_client.qmd_history_get_json")
+    def test_typed_product_request_routes_causal_window_to_history(self, get_json) -> None:
+        get_json.return_value = {"bars": [], "complete": True}
+
+        response = qmd_product_request(
+            QmdProductRequest(
+                "chart",
+                ticker="aapl",
+                timeframe="1m",
+                start="2026-08-08T08:00:00-04:00",
+                end="2026-08-08T20:00:00-04:00",
+                as_of="2026-08-08T12:00:00-04:00",
+                stage="bars",
+                limit=80,
+                timeout_seconds=12,
+            )
+        )
+
+        self.assertEqual(response.authority, "history")
+        self.assertEqual(response.endpoint, "/snapshot/chart-bars/AAPL")
+        params = get_json.call_args.args[1]
+        self.assertEqual(params["stage"], "bars")
+        self.assertEqual(params["as_of"], "2026-08-08T12:00:00-04:00")
+        self.assertEqual(get_json.call_args.kwargs["timeout"], 12)
+
+    def test_typed_product_request_rejects_ambiguous_or_naive_windows(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot carry a historical window"):
+            qmd_product_request(
+                QmdProductRequest(
+                    "chart",
+                    authority="live",
+                    ticker="AAPL",
+                    start="2026-08-08T08:00:00-04:00",
+                    end="2026-08-08T20:00:00-04:00",
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "must include a timezone"):
+            qmd_product_request(
+                QmdProductRequest(
+                    "compact_events",
+                    ticker="AAPL",
+                    start="2026-08-08T08:00:00",
+                    end="2026-08-08T20:00:00",
+                )
+            )
+
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_catalog_bundle_includes_canonical_computation_scope(self, get_json) -> None:
         get_json.side_effect = lambda path, *, timeout: [{"key": path.strip("/")}]

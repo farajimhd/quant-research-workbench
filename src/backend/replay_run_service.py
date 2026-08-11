@@ -7,7 +7,6 @@ import os
 import re
 import time
 import urllib.parse
-import urllib.request
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
@@ -19,6 +18,11 @@ from zoneinfo import ZoneInfo
 import websockets
 
 from src.backend.canonical_trading_service import trading_state_payload
+from src.backend.qmd_gateway_client import (
+    QmdProductRequest,
+    qmd_history_websocket_url,
+    qmd_product_request,
+)
 from src.backend.trading_runtime_service import (
     historical_day_coverage,
     historical_gateway_base_url,
@@ -1612,10 +1616,8 @@ async def _historical_derived_frames(
     start: datetime,
     end: datetime,
 ) -> list[ReplayDerivedFrame]:
-    parsed = urllib.parse.urlsplit(historical_gateway_base_url())
-    scheme = "wss" if parsed.scheme == "https" else "ws"
-    path = f"{parsed.path.rstrip('/')}/stream/derived/{urllib.parse.quote(ticker)}"
-    query = urllib.parse.urlencode(
+    url = qmd_history_websocket_url(
+        f"/stream/derived/{urllib.parse.quote(ticker)}",
         {
             "start": start.isoformat(),
             "end": end.isoformat(),
@@ -1623,9 +1625,8 @@ async def _historical_derived_frames(
             "emit": "full",
             "as_of": end.isoformat(),
             "updates_per_second": 0,
-        }
+        },
     )
-    url = urllib.parse.urlunsplit((scheme, parsed.netloc, path, query, ""))
     async with websockets.connect(
         url,
         ping_interval=20,
@@ -1663,19 +1664,20 @@ async def _historical_signal_events(
     start: datetime,
     end: datetime,
 ) -> list[dict[str, Any]]:
-    query = urllib.parse.urlencode(
-        {
-            "as_of": end.isoformat(),
-            "end": end.isoformat(),
-            "start": start.isoformat(),
-            "tickers": ticker,
-        }
+    request = QmdProductRequest(
+        "scanner",
+        authority="history",
+        start=start.isoformat(),
+        end=end.isoformat(),
+        as_of=end.isoformat(),
+        timeout_seconds=120,
     )
-    url = f"{historical_gateway_base_url().rstrip('/')}/snapshot/scanner-derived?{query}"
 
     def fetch() -> dict[str, Any]:
-        with urllib.request.urlopen(url, timeout=120) as response:
-            return json.loads(response.read().decode("utf-8"))
+        payload = qmd_product_request(request).payload
+        if not isinstance(payload, dict):
+            raise RuntimeError("QMD historical Scanner response must be an object")
+        return payload
 
     payload = await asyncio.to_thread(fetch)
     if payload.get("error"):

@@ -16,9 +16,11 @@ from zoneinfo import ZoneInfo
 from pipelines.reference_data.clickhouse_load_market_references import build_condition_token_rows
 from src.backend.qmd_gateway_client import (
     ENRICHED_QMD_TIMEFRAMES,
+    QmdProductRequest,
     qmd_history_base_url as historical_gateway_base_url,
     qmd_history_get_json as _historical_gateway_get,
     qmd_history_websocket_url as historical_gateway_websocket_url,
+    qmd_product_request,
 )
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.orchestrator import historical_run_window
@@ -812,15 +814,17 @@ def historical_scanner_derived_snapshot(as_of: datetime) -> dict[str, Any]:
         session_count=1,
         replay_end_date=market_date,
     )
-    payload = _historical_gateway_get(
-        "/snapshot/scanner-derived",
-        {
-            "as_of": as_of.isoformat(),
-            "end": window["end"],
-            "start": window["start"],
-        },
-        timeout=float(os.environ.get("QMD_HISTORY_SCANNER_TIMEOUT_SECONDS", "1800")),
-    )
+    payload = qmd_product_request(
+        QmdProductRequest(
+            "scanner",
+            authority="history",
+            as_of=as_of.isoformat(),
+            end=window["end"],
+            start=window["start"],
+            timeout_seconds=float(os.environ.get("QMD_HISTORY_SCANNER_TIMEOUT_SECONDS", "1800")),
+        ),
+        history_get=_historical_gateway_get,
+    ).payload
     if not isinstance(payload, dict):
         raise RuntimeError("QMD History Scanner derived response must be an object")
     return payload
@@ -915,20 +919,23 @@ def historical_bar_history_before(
             "source": "qmd_history_gateway",
             "stage": stage,
         }
-    snapshot = _historical_gateway_get(
-        f"/snapshot/chart-bars/{urllib.parse.quote(resolved_ticker)}",
-        {
-            "start": window["start"],
-            "end": window["end"],
-            "as_of": resolved_as_of.isoformat(),
-            "before": before_bar,
-            "indicator_columns": ",".join(dict.fromkeys(indicator_columns)) if indicator_columns else None,
-            "stage": stage,
-            "timeframe": resolved_timeframe,
-            "limit": max(1, min(row_limit, 50_000)),
-        },
-        timeout=90,
-    )
+    snapshot = qmd_product_request(
+        QmdProductRequest(
+            "chart",
+            authority="history",
+            ticker=resolved_ticker,
+            timeframe=resolved_timeframe,
+            start=window["start"],
+            end=window["end"],
+            as_of=resolved_as_of.isoformat(),
+            before=before_bar,
+            indicator_columns=tuple(indicator_columns or ()),
+            stage=stage,
+            limit=row_limit,
+            timeout_seconds=90,
+        ),
+        history_get=_historical_gateway_get,
+    ).payload
     bars = list(snapshot.get("bars") or []) if isinstance(snapshot, dict) else []
     indicators = list(snapshot.get("indicators") or []) if isinstance(snapshot, dict) else []
     market_signal_events = list(snapshot.get("market_signal_events") or []) if isinstance(snapshot, dict) else []
@@ -1004,16 +1011,20 @@ def historical_macro_bar_history(
         )
     else:
         start = (resolved_as_of - timedelta(days=179)).replace(hour=0, minute=0, second=0, microsecond=0)
-    payload = _historical_gateway_get(
-        f"/snapshot/chart-macro-bars/{urllib.parse.quote(ticker)}",
-        {
-            "start": start.isoformat(),
-            "end": (resolved_as_of + timedelta(days=1)).isoformat(),
-            "as_of": resolved_as_of.isoformat(),
-            "timeframe": timeframe,
-        },
-        timeout=30,
-    )
+    payload = qmd_product_request(
+        QmdProductRequest(
+            "chart",
+            authority="history",
+            ticker=ticker,
+            timeframe=timeframe,
+            start=start.isoformat(),
+            end=(resolved_as_of + timedelta(days=1)).isoformat(),
+            as_of=resolved_as_of.isoformat(),
+            limit=50_000,
+            timeout_seconds=30,
+        ),
+        history_get=_historical_gateway_get,
+    ).payload
     rows = [
         {
             "schema_version": 1,
@@ -1088,11 +1099,19 @@ def historical_compact_events(
     row_limit: int = 500,
 ) -> list[dict[str, Any]]:
     resolved_ticker = _historical_ticker(ticker)
-    payload = _historical_gateway_get(
-        f"/snapshot/compact-events/{urllib.parse.quote(resolved_ticker)}",
-        {"start": start, "end": end, "limit": row_limit, "tail": "true"},
-        timeout=15,
-    )
+    payload = qmd_product_request(
+        QmdProductRequest(
+            "compact_events",
+            authority="history",
+            ticker=resolved_ticker,
+            start=start,
+            end=end,
+            limit=row_limit,
+            tail=True,
+            timeout_seconds=15,
+        ),
+        history_get=_historical_gateway_get,
+    ).payload
     if not isinstance(payload, list):
         raise RuntimeError("QMD History compact-event response must be an array")
     return [row for row in payload if isinstance(row, dict)]
