@@ -1042,6 +1042,16 @@ bounded direct ClickHouse paths remain documented in
      cadence, QMD fields, external feature contracts, and hash as data authority.
      Four compiler/wiring tests and all 40 Replay/Backtest controller tests
      passed; the changed modules compiled.
+124. Added the fail-closed QMD History admission boundary for compiled
+     historical Watchlist plans. A typed Rust contract now rejects unsupported
+     schemas, invalid clocks, widened chunk or membership bounds, unsupported
+     QMD fields, incomplete or duplicate external-feature contracts, non-delta
+     output, missing state carry, and altered content hashes before replay.
+     The backend submits the exact plan through a typed client and rejects a
+     mismatched returned identity. A fixed real compiler plan proves Python and
+     Rust canonical JSON produce the same SHA-256 identity. All 32 QMD History
+     tests and 39 focused backend compiler/client tests passed; the changed
+     Python modules compiled.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

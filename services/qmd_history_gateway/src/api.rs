@@ -9,12 +9,15 @@ use crate::source::{
     EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource, LatestEventCoverage,
     MarketSourcePlan, SourceRevision,
 };
+use crate::watchlist_timeline::{
+    validate_plan, HistoricalWatchlistPlan, HistoricalWatchlistPlanValidation,
+};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use futures_util::SinkExt;
@@ -194,6 +197,10 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/chart-bars/{ticker}", get(chart_bar_snapshot))
         .route("/snapshot/scanner-derived", get(scanner_derived_snapshot))
         .route(
+            "/plans/watchlist-timeline/validate",
+            post(validate_watchlist_timeline_plan),
+        )
+        .route(
             "/snapshot/chart-macro-bars/{ticker}",
             get(chart_macro_bar_snapshot),
         )
@@ -240,6 +247,12 @@ async fn scanner_derived_snapshot(
         .await
         .map(Json)
         .map_err(service_error)
+}
+
+async fn validate_watchlist_timeline_plan(
+    Json(plan): Json<HistoricalWatchlistPlan>,
+) -> Result<Json<HistoricalWatchlistPlanValidation>, ApiError> {
+    validate_plan(&plan).map(Json).map_err(bad_request)
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload>, ApiError> {

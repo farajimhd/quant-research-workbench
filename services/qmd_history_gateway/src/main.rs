@@ -3,6 +3,7 @@ mod cache;
 mod config;
 mod scanner;
 mod source;
+mod watchlist_timeline;
 
 use crate::api::{app, AppState};
 use crate::cache::HistoricalDerivedCache;

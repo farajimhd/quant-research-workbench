@@ -542,6 +542,10 @@ load progressively without false continuity.
             registered point-in-time external features, rejects deferred or
             noncausal sources, bounds chunk evaluations, and is persisted in
             Backtest preflight and data-authority evidence.
+      - [x] Admit the compiled plan through a typed QMD History endpoint that
+            independently verifies schema, clocks, source contracts, resource
+            bounds, transition/state-carry semantics, and the exact Python/Rust
+            canonical content hash before any market-event replay begins.
   - [x] Build canonical Backtest performance, Portfolio, position, order,
         execution, and closed-trade result projections.
   - [x] Add strategy/run attribution and comparative analysis projections.

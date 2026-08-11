@@ -17,6 +17,7 @@ from src.backend.qmd_gateway_client import (
     qmd_computation_demand,
     qmd_computation_requirements,
     qmd_history_base_url,
+    qmd_validate_historical_watchlist_plan,
     qmd_history_websocket_url,
     qmd_historical_scanner_snapshot,
     qmd_catalogs,
@@ -34,6 +35,28 @@ from src.request_context import begin_request_context, current_request_identity,
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
+    @patch("src.backend.qmd_gateway_client.qmd_history_base_url", return_value="http://127.0.0.1:8801")
+    def test_historical_watchlist_plan_uses_typed_post_and_matching_hash(
+        self, _base_url, urlopen
+    ) -> None:
+        response = MagicMock()
+        response.read.return_value = b'{"valid":true,"plan_hash":"sha256:abc"}'
+        urlopen.return_value.__enter__.return_value = response
+
+        payload = qmd_validate_historical_watchlist_plan(
+            {"schema_version": 1, "plan_hash": "sha256:abc"}
+        )
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(
+            request.full_url,
+            "http://127.0.0.1:8801/plans/watchlist-timeline/validate",
+        )
+        self.assertEqual(request.get_header("Content-type"), "application/json")
+        self.assertEqual(payload["plan_hash"], "sha256:abc")
+
     @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
     @patch("src.backend.qmd_gateway_client.qmd_enabled", return_value=True)
     @patch("src.backend.qmd_gateway_client.qmd_base_url", return_value="http://127.0.0.1:8795")

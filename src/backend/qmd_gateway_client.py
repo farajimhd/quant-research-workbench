@@ -534,6 +534,48 @@ def qmd_history_get_json(
     )
 
 
+def qmd_history_post_json(
+    path: str,
+    payload: dict[str, Any],
+    *,
+    timeout: float = 10,
+) -> Any:
+    url = f"{qmd_history_base_url().rstrip('/')}/{path.lstrip('/')}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            **current_request_headers(),
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raise _qmd_http_error("QMD History", "POST", path, url, exc) from exc
+    except urllib.error.URLError as exc:
+        raise _qmd_unavailable_error(
+            "QMD History", "POST", path, url, exc, base_url=qmd_history_base_url()
+        ) from exc
+    return _qmd_decode_json(text, service_label="QMD History", operation="POST", path=path)
+
+
+def qmd_validate_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    payload = qmd_history_post_json(
+        "/plans/watchlist-timeline/validate",
+        plan,
+        timeout=10,
+    )
+    if not isinstance(payload, dict) or not bool(payload.get("valid")):
+        raise RuntimeError("QMD History rejected the historical Watchlist plan")
+    if str(payload.get("plan_hash") or "") != str(plan.get("plan_hash") or ""):
+        raise RuntimeError("QMD History returned a different historical Watchlist plan hash")
+    return payload
+
+
 def _qmd_service_get_json(
     base_url: str,
     path: str,
