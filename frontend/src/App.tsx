@@ -16,7 +16,6 @@ const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
     const hash = window.location.hash.replace("#", "") as PageKey;
-    if (hash === "assignment-configuration") return "strategy-configuration";
     return validPages.includes(hash) ? hash : "real-live-trading";
   });
   const [visitedPages, setVisitedPages] = useState<Set<PageKey>>(() => new Set([page]));
@@ -26,8 +25,7 @@ export function App() {
   useEffect(() => {
     const syncPageFromHash = () => {
       const hashPage = window.location.hash.replace("#", "") as PageKey;
-      if (hashPage === "assignment-configuration") setPage("strategy-configuration");
-      else if (validPages.includes(hashPage)) setPage(hashPage);
+      if (validPages.includes(hashPage)) setPage(hashPage);
     };
     window.addEventListener("hashchange", syncPageFromHash);
     return () => window.removeEventListener("hashchange", syncPageFromHash);
@@ -85,7 +83,7 @@ export function App() {
 function configurationSection(page: PageKey): TradingConfigurationSection | null {
   if (page === "market-discovery-configuration") return "discovery";
   if (page === "strategy-configuration") return "strategy";
-  if (page === "assignment-configuration") return "strategy";
+  if (page === "assignment-configuration") return "assignments";
   if (page === "portfolio-configuration") return "portfolio";
   if (page === "oms-configuration") return "oms";
   if (page === "account-configuration") return "accounts";

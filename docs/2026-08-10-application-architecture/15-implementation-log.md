@@ -1519,6 +1519,29 @@ it does not imply all application work is complete.
      technical/service, and application-registry tests passed, and all changed
      Python modules compiled with bytecode writes disabled.
 
+153. Corrected the frontend's causal-universe authority and its Run Plan
+     navigation. New Run Plan universes now offer configured symbols and the
+     implemented versioned Watchlist resolver; the obsolete Scanner-view value
+     is shown only for an existing legacy draft and remains explicitly fail
+     closed until converted. The `assignment-configuration` route now opens the
+     existing Run Plan editor instead of being silently remapped to Strategy
+     Studio.
+
+     Canvas Watch Universe now consumes the canonical Market Discovery
+     Watchlist runtime, merges each versioned member with the current Scanner
+     projection, uses the runtime clock and actual member count, and presents
+     distinct loading, dependency-error, awaiting-first-resolution,
+     missing-snapshot, empty-membership, and legacy-source states. Its five-
+     second polling is single-flight, abortable, and bounded by the shared API
+     timeout. The managed TypeScript/Vite production build passed. In the
+     running app, the corrected hash route rendered `Strategy Run Plans` and
+     its guided configuration directly; the live runtime endpoint returned its
+     truthful `awaiting_first_resolution` state with both unavailable QMD
+     dependencies rather than inventing membership. The current standalone
+     Canvas registry was unverified and therefore correctly blocked adding a
+     new Watch Universe container during browser review; existing Canvas state
+     was preserved.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

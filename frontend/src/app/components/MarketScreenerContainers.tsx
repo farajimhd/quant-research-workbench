@@ -48,6 +48,11 @@ export type WatchUniverseDefinition = {
 export type StrategyActivitySettings = { eventType: string; limit: number; runId: string; strategyId: string; ticker: string };
 type StrategyActivityResponse = { as_of: string; complete: boolean; rows: ScreenerRow[]; source: string };
 type WatchUniverseCatalogResponse = { run_plans?: { plans?: Array<{ name?: string; run_plan_id: string; universe_id: string }>; universes?: WatchUniverseDefinition[] } };
+type WatchlistRuntimeResponse = {
+  as_of?: string;
+  status?: "awaiting_first_resolution" | "degraded" | "ready" | string;
+  watchlists?: Array<{ member_count?: number; members?: ScreenerRow[]; watchlist_id: string }>;
+};
 type SignalMethod = { key: string; label: string; signal_version: number; status: string; compute_mode: string; working_timeframes: string[]; confirmation_timeframes: string[]; trigger_rules: string[]; rationale: string; domain?: string; producer?: string; input_basis?: string; evaluation_mode?: string; update_trigger?: string; publication_cadence?: string; publication_interval_ms?: number | null; score_required?: boolean; rank_score_required?: boolean };
 
 type FieldKind = "derived" | "estimated" | "raw";
@@ -312,6 +317,8 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
 
 export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<WatchUniverseSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: WatchUniverseSettings }) {
   const [catalog, setCatalog] = useState<WatchUniverseCatalogResponse | null>(null);
+  const [runtime, setRuntime] = useState<WatchlistRuntimeResponse | null>(null);
+  const [runtimeError, setRuntimeError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
     api<WatchUniverseCatalogResponse>("/api/trading/configuration/base", { signal: controller.signal, timeoutMs: 10000 })
@@ -319,18 +326,59 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
       .catch(() => undefined);
     return () => controller.abort();
   }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    let pending = false;
+    const refresh = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const payload = await api<WatchlistRuntimeResponse>("/api/market-discovery/watchlists/runtime", { signal: controller.signal, timeoutMs: 10000 });
+        setRuntime(payload);
+        setRuntimeError("");
+      } catch (reason) {
+        if (!controller.signal.aborted) setRuntimeError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        pending = false;
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 5_000);
+    return () => { controller.abort(); window.clearInterval(interval); };
+  }, []);
   const universes = catalog?.run_plans?.universes ?? [];
   const runPlans = catalog?.run_plans?.plans ?? [];
   const sourceRows = useMemo(() => normalizeScannerRows(scannerRows), [scannerRows]);
   const rowByTicker = useMemo(() => new Map(sourceRows.map((row) => [String(row.ticker), row])), [sourceRows]);
   const universe = universes.find((row) => row.universe_id === settings.universeId) ?? universes[0];
   const symbols = (universe?.symbols ?? []).map((ticker) => ticker.trim().toUpperCase()).filter(Boolean);
-  const rows: ScreenerRow[] = symbols.map((ticker) => rowByTicker.get(ticker) ?? { ticker });
+  const runtimeWatchlist = runtime?.watchlists?.find((row) => row.watchlist_id === universe?.scanner_view_id);
+  const runtimeMembers = runtimeWatchlist?.members ?? [];
+  const runtimeReady = runtime?.status === "ready" && runtimeWatchlist !== undefined;
+  const resolvedSymbols = universe?.source === "watchlist"
+    ? runtimeMembers.map((row) => String(row.ticker ?? "").trim().toUpperCase()).filter(Boolean)
+    : symbols;
+  const runtimeMemberByTicker = new Map(runtimeMembers.map((row) => [String(row.ticker ?? "").trim().toUpperCase(), row]));
+  const rows: ScreenerRow[] = resolvedSymbols.map((ticker) => ({
+    ...(runtimeMemberByTicker.get(ticker) ?? {}),
+    ...(rowByTicker.get(ticker) ?? {}),
+    ticker,
+  }));
   const linkedPlans = runPlans.filter((plan) => plan.universe_id === universe?.universe_id);
-  const resolved = universe?.source === "configured_symbols";
+  const resolved = universe?.source === "configured_symbols" || (universe?.source === "watchlist" && runtimeReady);
+  const resolutionClock = universe?.source === "watchlist" ? runtime?.as_of ?? asOf : asOf;
+  const unresolvedDetail = universe?.source === "scanner_view"
+    ? `Legacy Scanner view ${universe.scanner_view_id || "not selected"} is presentation-only. Convert this universe to a Watchlist or configured symbols.`
+    : runtimeError
+      ? `Watchlist runtime could not be read: ${runtimeError}`
+      : runtime === null
+        ? "Loading the current Watchlist membership projection."
+        : runtime.status !== "ready"
+          ? "Waiting for the first complete causal Watchlist resolution."
+          : `Watchlist ${universe?.scanner_view_id || "not selected"} has no runtime snapshot.`;
   return <section className="market-list-surface watchlist-surface" aria-label={`${universe?.name ?? "Watch"} universe`}>
     <header className="market-list-heading">
-      <div><span className="market-list-eyebrow"><Star size={12} /> Run Plan boundary</span><h3>{universe?.name ?? "No watch universe configured"}</h3><p>{resolved ? `${symbols.length} eligible securities` : "Dynamic membership awaits its runtime resolver"} · state at <MarketTime value={asOf} /></p></div>
+      <div><span className="market-list-eyebrow"><Star size={12} /> Run Plan boundary</span><h3>{universe?.name ?? "No watch universe configured"}</h3><p>{resolved ? `${rows.length} eligible securities` : "Dynamic membership awaits its causal resolver"} · state at <MarketTime value={resolutionClock} /></p></div>
       <span className="market-list-owner strategy">{universe?.source?.replaceAll("_", " ") ?? "unavailable"}</span>
     </header>
     <div className="watch-universe-context">
@@ -338,11 +386,11 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
       <div><span>Used by</span><strong>{linkedPlans.map((plan) => plan.name || plan.run_plan_id).join(", ") || "No Run Plan"}</strong></div>
       <button onClick={() => { window.location.hash = "assignment-configuration"; }} type="button">Configure in Run Plans <ArrowRight size={13} /></button>
     </div>
-    {!resolved ? <div className="watch-universe-warning"><strong>Membership is not runtime-ready</strong><span>{universe?.source === "scanner_view" ? `Scanner view ${universe.scanner_view_id || "not selected"} cannot publish until a causal resolver produces versioned members.` : "This source cannot publish until a resolver produces versioned members."}</span></div> : null}
+    {!resolved ? <div className="watch-universe-warning" role="status"><strong>Membership is not runtime-ready</strong><span>{unresolvedDetail}</span></div> : null}
     <MarketListTable
       columns={withLockedColumns(settings.columns.length ? settings.columns : WATCHLIST_DEFAULT_COLUMNS, LOCKED_MARKET_LIST_COLUMNS)}
       customColumns={settings.customColumns}
-      empty={resolved ? "This watch universe has no configured members." : "No resolved membership is available."}
+      empty={resolved ? (universe?.source === "watchlist" ? "This Watchlist currently has no members." : "This watch universe has no configured members.") : "No resolved membership is available."}
       limit={settings.limit}
       lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
       onColumnsChange={(columns) => onSettingsChange({ columns })}

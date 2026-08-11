@@ -379,6 +379,11 @@ budgets and invalid scope broadening fails configuration validation.
       Strategy, Watchlist universe, account mandates, action authority, OMS
       profile, runtime assignments, and observation dependencies into the
       content-hashed approved release consumed by mode-specific resolvers.
+- [x] Keep causal universe authority separate from Scanner presentation. New
+      Run Plans can select only configured symbols or a versioned Watchlist;
+      legacy Scanner-view sources remain visible only long enough to migrate
+      and stay fail closed. The dedicated Run Plan route opens its actual editor
+      instead of being redirected to Strategy Studio.
 - [x] Standardize response envelopes, warnings, partial coverage, and typed errors.
       QMD product responses carry completeness, warnings, coverage, and source
       revision. All backend failures use the typed compatibility envelope. JSON
@@ -564,6 +569,11 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
         reconnecting, and stale-snapshot presentation.
 - [x] Return indicator provenance and warm-up.
 - [x] Keep chart indicators request-scoped rather than expanding Core Scan.
+- [x] Resolve Canvas Watch Universe from the canonical Watchlist runtime. The
+      container polls with bounded, non-overlapping requests, renders the
+      versioned member rows at the runtime clock, distinguishes loading,
+      dependency failure, first-resolution wait, missing snapshot, and an
+      empty resolved Watchlist, and links to the dedicated Run Plan editor.
 - [ ] Create chart-originated manual and semi-automatic proposals.
   - [x] Create and confirm both proposal authorities in Replay Canvas.
   - [ ] Add the same proposal lifecycle to Paper/Live after shared-controller

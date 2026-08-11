@@ -4782,14 +4782,19 @@ function WatchUniverseEditor({ onChange, section, selectedId }: {
   function replace(next: WatchUniverse) {
     onChange({ ...section, universes: section.universes.map((row) => row.universe_id === universeId ? next : row) });
   }
+  const sourceOptions = [
+    { description: "Exact configured ticker set.", label: "Configured symbols", value: "configured_symbols" },
+    { description: "Resolved causally from the named Market Discovery Watchlist.", label: "Watchlist", value: "watchlist" },
+    ...(universe.source === "scanner_view" ? [{ description: "Legacy presentation-only source. Select a Watchlist or configured symbols before publication.", label: "Legacy scanner view", value: "scanner_view" }] : []),
+  ];
   return (
     <div className="watch-universe-editor">
       <div className="configuration-field-grid">
         <label className="configuration-text-field"><span>Universe name</span><input onChange={(event) => replace({ ...universe, name: event.target.value })} value={universe.name} /></label>
-        <SelectField help="Configured symbols are static. Watchlist uses the implemented causal resolver in Live/Paper and a point-in-time historical resolver in Replay/Backtest. Scanner view remains unavailable." label="Source" onChange={(source) => replace({ ...universe, source: source as WatchUniverse["source"] })} options={["configured_symbols", "scanner_view", "watchlist"].map((value) => ({ description: value === "watchlist" ? "Resolved causally from the named Market Discovery Watchlist." : value === "scanner_view" ? "Not publishable until a saved Scanner-view resolver exists." : "Exact configured ticker set.", label: readableLabel(value), value }))} value={universe.source} />
+        <SelectField help="Configured symbols are static. Watchlist is the versioned causal membership authority in Live/Paper and Replay/Backtest. Scanner views are presentation filters and are not valid Strategy universe sources." label="Source" onChange={(source) => replace({ ...universe, source: source as WatchUniverse["source"] })} options={sourceOptions} value={universe.source} />
       </div>
       {universe.source === "scanner_view" ? (
-        <p className="configuration-safety-note"><TriangleAlert size={15} /> Scanner-view membership is not implemented and keeps publication fail closed. Select a configured-symbol or Watchlist source.</p>
+        <p className="configuration-safety-note"><TriangleAlert size={15} /> This legacy Scanner-view source remains fail closed because views are presentation filters, not causal membership authorities. Convert it to a Watchlist or configured-symbol source.</p>
       ) : universe.source === "watchlist" ? (
         <p className="configuration-safety-note"><BadgeCheck size={15} /> Watchlist resolution is implemented. Live and Paper wait for the current runtime snapshot; Replay and Backtest resolve membership at their pinned event clock.</p>
       ) : null}
