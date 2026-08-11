@@ -616,6 +616,18 @@ bounded direct ClickHouse paths remain documented in
     while the UI uses the shared command contract. Python compile, 41 focused
     historical runtime/API tests, and the managed frontend production build
     passed.
+84. Made historical-run checkpoint state operationally visible. Replay,
+    Backtest, and Backtest Debug snapshots now expose pending/available status,
+    durable cursor, event and write clocks, processed-event count, and interval;
+    the pages repeat that restart resume is not yet supported. Journal checkpoint
+    reads now use the journal lock because status HTTP calls and run publication
+    can occur on different threads. This intentionally does not mark durable
+    resume complete: Strategy, simulator, Portfolio, OMS, source cursor, and
+    clock restoration remain required. The five stale chart tests discovered
+    during validation now select the intended chart call rather than assuming it
+    is last after the planner's `/source-plan` request; no QMD behavior changed.
+    Python compile, all 65 historical, journal, checkpoint, and trading-runtime
+    tests, and the managed frontend production build passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

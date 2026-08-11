@@ -133,6 +133,11 @@ On restart:
 
 Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliation mismatch and journal failure each have explicit policies. Intelligence loss may degrade a strategy that declares it optional; loss of authoritative journaling or uncertain broker state must fail closed for new execution.
 
+Historical run snapshots expose the latest durable checkpoint cursor, event
+clock, write clock, processed-event count, and configured interval. They also
+explicitly report `resume_supported: false`: checkpoint observability is
+implemented, but restart reconstruction is not yet authorized as safe resume.
+
 ## 9. Current implementation
 
 - Strategy taxonomy now separates an observation's strategy-facing key from

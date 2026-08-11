@@ -441,7 +441,7 @@ load progressively without false continuity.
   - [x] Project the pinned Backtest run through the shared Canvas resolver and
         canonical Strategy/Portfolio/OMS state while keeping all interactive
         assignment/proposal commands read-only.
-  - [ ] Add durable resume/restart from checkpoints.
+- [ ] Add durable resume/restart from checkpoints.
 - [x] Add deterministic Debug fixtures.
   - [x] Inject bounded, causally ordered, content-hashed market-event and
         derived-frame fixtures through the shared historical controller,
@@ -455,6 +455,11 @@ load progressively without false continuity.
   - [ ] Unify lifecycle command/status envelopes across Live/Paper controllers
         and background research jobs.
 - [ ] Add restart-safe checkpoints.
+  - [x] Expose durable historical-run checkpoint cursor, event/write clocks,
+        processed count, interval, and honest resume-support status in backend
+        and UI snapshots.
+  - [ ] Restore clock, source cursor, Strategy, simulator, Portfolio, OMS, and
+        journal state before enabling restart resume.
 - [ ] Route manual, semi-automatic, and automatic proposals through one control plane.
 
 Acceptance gate: identical Run Plan and recorded inputs produce deterministic
@@ -530,6 +535,8 @@ broker command outside OMS.
       QMD live/history coverage, freshness, queue/cache, transition and source
       authority evidence is delivered; uniform checkpoint evidence across the
       remaining existing service contracts is still open.
+  - [x] Report historical-run checkpoint status and clocks without claiming
+        that an existing checkpoint is resumable.
 - [x] Build a central backend/frontend readiness view.
 - [ ] Propagate end-to-end correlation and causation IDs.
   - [x] Generate/preserve bounded IDs from browser requests through backend

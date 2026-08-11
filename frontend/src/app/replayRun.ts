@@ -6,6 +6,15 @@ export type CanvasReplayRun = {
   account_ids: string[];
   canvas_revision: string;
   canvas_profile: CanvasRegistry;
+  checkpoint?: {
+    cursor: string;
+    event_time: string | null;
+    interval_events: number;
+    processed_events: number;
+    resume_supported: boolean;
+    status: "available" | "pending";
+    updated_at: string | null;
+  };
   configuration_content_hash?: string;
   configuration_revision_id?: string;
   current_time: string;

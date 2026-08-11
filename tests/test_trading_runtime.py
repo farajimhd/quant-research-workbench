@@ -201,6 +201,14 @@ class JournalTests(unittest.TestCase):
 
 
 class HistoricalContractTests(unittest.TestCase):
+    @staticmethod
+    def gateway_call(gateway_get, expected_path: str):
+        return next(
+            call.args[:2]
+            for call in reversed(gateway_get.call_args_list)
+            if call.args and call.args[0] == expected_path
+        )
+
     def test_subsecond_and_five_second_charts_use_enriched_indicator_contract(self) -> None:
         self.assertIn("100ms", ENRICHED_QMD_TIMEFRAMES)
         self.assertIn("5s", ENRICHED_QMD_TIMEFRAMES)
@@ -304,7 +312,7 @@ class HistoricalContractTests(unittest.TestCase):
             indicator_columns=["bar_start", "ema_20", "ema_20"],
         )
 
-        path, params = gateway_get.call_args.args[:2]
+        path, params = self.gateway_call(gateway_get, "/snapshot/chart-bars/AAPL")
         self.assertEqual(path, "/snapshot/chart-bars/AAPL")
         self.assertEqual(params["timeframe"], "100ms")
         self.assertEqual(params["as_of"], "2026-07-10T13:45:00+00:00")
@@ -414,7 +422,9 @@ class HistoricalContractTests(unittest.TestCase):
             row_limit=5_000,
         )
 
-        path, params = gateway_get.call_args.args[:2]
+        path, params = self.gateway_call(
+            gateway_get, "/snapshot/chart-macro-bars/AAPL"
+        )
         self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
         self.assertEqual(params["timeframe"], "1mo")
         self.assertEqual(params["start"], "2024-08-01T00:00:00+00:00")
@@ -435,7 +445,9 @@ class HistoricalContractTests(unittest.TestCase):
             row_limit=5_000,
         )
 
-        path, params = gateway_get.call_args.args[:2]
+        path, params = self.gateway_call(
+            gateway_get, "/snapshot/chart-macro-bars/AAPL"
+        )
         self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
         self.assertEqual(params["timeframe"], "1d")
         self.assertEqual(params["start"], "2026-01-12T00:00:00+00:00")
@@ -458,7 +470,9 @@ class HistoricalContractTests(unittest.TestCase):
                     timeframe=timeframe,
                     row_limit=5_000,
                 )
-                path, params = gateway_get.call_args.args[:2]
+                path, params = self.gateway_call(
+                    gateway_get, "/snapshot/chart-macro-bars/AAPL"
+                )
                 self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
                 self.assertEqual(params["timeframe"], timeframe)
                 self.assertEqual(params["start"], expected_start)

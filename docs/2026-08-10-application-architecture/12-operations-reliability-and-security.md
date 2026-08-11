@@ -99,6 +99,12 @@ QMD History streams by default, configurable from one through 32 with
 `TRADING_REPLAY_HISTORY_FETCH_CONCURRENCY`; the cross-sectional Scanner signal
 snapshot is fetched once per run window rather than once per ticker.
 
+Replay, Backtest, and Backtest Debug status snapshots now distinguish a pending
+checkpoint from an available durable checkpoint and expose its cursor,
+event/write clocks, processed-event count, and interval. The UI repeats the
+explicit `resume_supported: false` limitation; a checkpoint is operational
+evidence, not proof that restart reconstruction has been implemented.
+
 Logs are structured, bounded and redact credentials, account identifiers where required, licensed payloads and sensitive model prompts. Audit records are append-only and include actor, action, target, before/after version references and result.
 
 ## 7. Security and storage topology

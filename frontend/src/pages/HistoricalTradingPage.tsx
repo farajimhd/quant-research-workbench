@@ -240,6 +240,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               ? <div className="historical-command-buttons"><button className="button secondary" disabled={Boolean(controlBusy)} onClick={() => commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={15} /> : <Pause size={15} />} {run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary" disabled={Boolean(controlBusy)} onClick={stopRun} type="button"><Square size={15} /> Stop</button></div>
               : <button className="button primary" disabled={checking || creating || !preflight?.strategy_run_ready} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating run…" : "Run backtest"}</button>}
             {run?.error ? <small>{run.error}</small> : null}
+            {run ? <small>{run.checkpoint?.status === "available" ? `Checkpoint ${run.checkpoint.processed_events.toLocaleString()} events · ${run.checkpoint.event_time}` : `Checkpoint pending · every ${run.checkpoint?.interval_events ?? 1_000} events`} · restart resume not yet enabled</small> : null}
           </section>
         </aside>
       </div>

@@ -520,6 +520,7 @@ class ReplayRunController:
 
     def snapshot(self) -> dict[str, Any]:
         current = self.current_time or self.definition.session_start
+        checkpoint = self._checkpoint_projection()
         duration = max(
             1.0,
             (self.definition.session_end - self.definition.requested_start).total_seconds(),
@@ -541,6 +542,7 @@ class ReplayRunController:
             "speed": self.speed,
             "processed_events": self.processed_events,
             "warmup_events": self.warmup_events,
+            "checkpoint": checkpoint,
             "progress": min(1.0, elapsed / duration),
             "account_ids": list(self.account_ids),
             "account_mapping": dict(self._account_map),
@@ -565,6 +567,37 @@ class ReplayRunController:
                 if self.definition.debug_fixture is not None
                 else None
             ),
+        }
+
+    def _checkpoint_projection(self) -> dict[str, Any]:
+        persisted = (
+            self._journal.load_checkpoint(self.run_id)
+            if self._journal is not None
+            else None
+        )
+        if persisted is None:
+            return {
+                "status": "pending",
+                "cursor": "",
+                "event_time": None,
+                "updated_at": None,
+                "processed_events": 0,
+                "interval_events": 1_000,
+                "resume_supported": False,
+            }
+        state = dict(persisted.get("state") or {})
+        return {
+            "status": "available",
+            "cursor": str(persisted.get("cursor") or ""),
+            "event_time": persisted.get("event_time"),
+            "updated_at": persisted.get("updated_at"),
+            "processed_events": int(state.get("processed_events") or 0),
+            "interval_events": (
+                self._runtime.config.checkpoint_interval_events
+                if self._runtime is not None
+                else 1_000
+            ),
+            "resume_supported": False,
         }
 
     async def canvas_payload(self, symbol: str = "AAPL") -> dict[str, Any]:

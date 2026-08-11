@@ -106,7 +106,10 @@ class TradingJournal:
             )
 
     def load_checkpoint(self, run_id: str) -> dict[str, Any] | None:
-        row = self._connection.execute("SELECT * FROM checkpoints WHERE run_id = ?", (run_id,)).fetchone()
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM checkpoints WHERE run_id = ?", (run_id,)
+            ).fetchone()
         if row is None:
             return None
         return {"run_id": row["run_id"], "cursor": row["cursor"], "event_time": row["event_time"], "state": json.loads(row["state_json"]), "updated_at": row["updated_at"]}

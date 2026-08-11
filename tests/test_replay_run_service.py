@@ -138,6 +138,8 @@ class ReplayRunDefinitionTests(unittest.TestCase):
         self.assertEqual(snapshot["mode"], "backtest")
         self.assertEqual(snapshot["canvas_revision"], "canvas-test")
         self.assertEqual(snapshot["canvas_profile"]["defaultState"]["openIds"], ["chart"])
+        self.assertEqual(snapshot["checkpoint"]["status"], "pending")
+        self.assertFalse(snapshot["checkpoint"]["resume_supported"])
 
     def test_debug_definition_requires_a_bounded_deterministic_fixture(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires a deterministic fixture"):
@@ -292,6 +294,10 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(controller.processed_events, 2)
                 self.assertEqual(controller.current_time.isoformat(), "2026-07-28T09:45:01-04:00")
                 self.assertIsNotNone(controller._journal.load_checkpoint(controller.run_id))
+                checkpoint = controller.snapshot()["checkpoint"]
+                self.assertEqual(checkpoint["status"], "available")
+                self.assertEqual(checkpoint["processed_events"], 2)
+                self.assertFalse(checkpoint["resume_supported"])
                 qmd_source.assert_not_called()
             finally:
                 if controller._journal is not None:
