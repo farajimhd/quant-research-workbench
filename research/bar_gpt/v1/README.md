@@ -754,6 +754,33 @@ Full SHA-256 verification is enabled by default and intentionally rereads every
 byte of the selected shard files; `--no-verify-sha256` is only a faster bounded
 diagnostic.
 
+For a dataset-level statistical view, run the read-only summary command after
+the compiler is idle:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_summarize_offline_dataset
+```
+
+The command inventories every matching sidecar exactly, then opens a
+deterministic sample of 256 complete mmap shards by default. It always includes
+the earliest complete shard for each sampled ticker before filling the sample
+by stable hash. The report covers all 54 model inputs in every one of the 11
+views, all 23 physical targets at each of the six horizons, and all 18
+autoregressive targets in each of the eight intraday views. Per-field CSV rows
+contain coverage/missingness, finite/nonfinite and zero rates, exact sampled
+mean/standard deviation/extrema, bounded-reservoir percentiles, model-space
+values, decoded human units, preprocessing descriptions, and one-basis-point
+direction balance where applicable.
+
+Separate tables report exact shard/session/block/origin/byte inventory,
+available versus missing historical context globally and by ticker/year for
+every view, context staleness, integrity findings, and simulated padding waste
+for microbatches 8, 16, and 32. Detailed summary/statistics JSON and CSV output is written under
+`D:\TradingML\runtimes\bar_gpt\v1\dataset_reports`; shards are never changed
+and W&B is not used. `--sample-shards 0` samples every complete shard, while
+`--sample-shards`, `--blocks-per-shard`, `--rows-per-view`, and
+`--origins-per-block` bound tensor I/O independently of the exact sidecar scan.
+
 For manual review, open `audit_shard_sample.ipynb` on the workstation. It loads
 one deterministic random real shard block and one random origin, then displays
 the complete context geometry, the last visible rows and all named input
