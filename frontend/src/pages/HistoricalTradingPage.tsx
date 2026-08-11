@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
+import type { CanvasReplayRun } from "../app/replayRun";
+import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
 type HistoricalCheck = {
   evidence: string;
@@ -28,17 +30,9 @@ type HistoricalPreflight = {
   };
 };
 
-type BacktestRun = {
+type BacktestRun = CanvasReplayRun & {
   configuration_revision: number;
-  current_time: string;
-  error: string;
   mode: "backtest";
-  processed_events: number;
-  progress: number;
-  run_id: string;
-  session_date: string;
-  session_end: string;
-  status: string;
 };
 
 type BacktestResults = {
@@ -218,7 +212,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           <section className={`historical-primary-action ${preflight?.strategy_run_ready ? "" : "blocked"}`}>
             {preflight?.strategy_run_ready ? <Play size={24} /> : <CircleStop size={24} />}
             <div><strong>{run ? `Backtest ${run.status.replaceAll("_", " ")}` : preflight?.strategy_run_ready ? "Backtest is ready" : "Backtest execution is blocked"}</strong><p>{run
-              ? `${Math.round(run.progress * 100)}% complete · ${new Intl.NumberFormat("en-US", { notation: "compact" }).format(run.processed_events)} events · ${run.current_time}`
+              ? `${Math.round(run.progress * 100)}% complete · ${new Intl.NumberFormat("en-US", { notation: "compact" }).format(run.processed_events || 0)} events · ${run.current_time}`
               : preflight?.strategy_run_ready
                 ? `Revision ${preflight.configuration_revision} will run through ${preflight.window.session_count} sessions using one simulated Portfolio/OMS state.`
                 : "Resolve every required preflight item before starting."}</p></div>
@@ -229,6 +223,15 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           </section>
         </aside>
       </div>
+      {run ? <section className="historical-runtime-canvas" aria-label="Backtest Canvas workspace">
+        <CanvasWorkspaceSurface
+          canvasId="main"
+          manager={false}
+          modeControls={<div className="historical-canvas-run-state"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><span>{Math.round(run.progress * 100)}% · {new Intl.NumberFormat("en-US", { notation: "compact" }).format(run.processed_events || 0)} events</span></div>}
+          replayRun={run}
+          runtimeWorkspaceId="main"
+        />
+      </section> : null}
     </div>
   );
 }

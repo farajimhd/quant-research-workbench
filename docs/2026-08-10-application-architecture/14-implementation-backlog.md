@@ -338,13 +338,16 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
         release profile.
   - [x] Migrate Live/Paper to the same resolver after the existing account and
         service preflight. Backtest/research workspaces remain open.
-  - [ ] Migrate Backtest/research workspaces to the same resolver.
+  - [x] Migrate Backtest to the same resolver using its pinned run profile and
+        causal run clock.
+  - [ ] Migrate a future research workspace to the same resolver.
 - [ ] Persist user/workspace overlays separately from defaults.
   - [x] Standalone Canvas and Replay overlays are isolated by workspace/run and approved revision
         and can be reset without changing Configuration defaults.
   - [x] Apply the same overlay contract to Live/Paper using separate
         mode-and-account-set scopes. Backtest/research remain open.
-  - [ ] Apply the same overlay contract to Backtest/research workspaces.
+  - [x] Apply the same run-and-revision overlay contract to Backtest.
+  - [ ] Apply the same overlay contract to a future research workspace.
 - [x] Route intraday historical charts through QMD History source planning and
       its shared derived cache.
 - [x] Return base bars first and progressively add requested indicators,
@@ -420,6 +423,9 @@ load progressively without false continuity.
         journal, including strategy-revision attribution, and a bounded
         comparison endpoint projects the latest terminal runs without
         recalculating statistics in the browser.
+  - [x] Project the pinned Backtest run through the shared Canvas resolver and
+        canonical Strategy/Portfolio/OMS state while keeping all interactive
+        assignment/proposal commands read-only.
   - [ ] Add durable resume/restart from checkpoints.
 - [ ] Add deterministic Debug fixtures.
 - [ ] Pin causal market/enrichment versions for historical decisions.

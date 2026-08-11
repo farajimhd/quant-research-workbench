@@ -464,6 +464,7 @@ class ReplayRunController:
         elapsed = max(0.0, (current - self.definition.requested_start).total_seconds())
         return {
             "schema_version": 1,
+            "mode": self.definition.mode.value,
             "run_id": self.run_id,
             "status": self.status,
             "error": self.error,
@@ -546,6 +547,7 @@ class ReplayRunController:
         strategy = {
             "fixture": False,
             "run_id": self.run_id,
+            "runtime_mode": self.definition.mode.value,
             "strategy_id": strategy_configuration["strategy_id"],
             "name": strategy_configuration["name"],
             "revision": strategy_configuration["revision"],

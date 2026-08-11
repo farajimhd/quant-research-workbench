@@ -251,6 +251,7 @@ type CanvasPreview = {
     signals: PreviewRow[];
     order_management?: PreviewRow[];
     run_id?: string;
+    runtime_mode?: "backtest" | "replay";
     state: string;
     strategy_id: string;
     name?: string;
@@ -414,7 +415,7 @@ type ContainerSettings = {
 };
 
 type CanvasPreviewContext = { previewTime: string; sessionDate: string };
-type CanvasRuntimeMode = Extract<TradingWorkspaceMode, "live" | "paper"> | "canvas" | "replay";
+type CanvasRuntimeMode = Extract<TradingWorkspaceMode, "backtest" | "live" | "paper"> | "canvas" | "replay";
 type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; title: string };
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
@@ -1616,13 +1617,13 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
 }
 
 export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string }) {
-  const runtimeMode: CanvasRuntimeMode = replayRun ? "replay" : requestedRuntimeMode ?? (approvedCanvas ? "canvas" : "canvas");
+  const runtimeMode: CanvasRuntimeMode = replayRun?.mode === "backtest" ? "backtest" : replayRun ? "replay" : requestedRuntimeMode ?? "canvas";
   const liveMode = runtimeMode === "live" || runtimeMode === "paper";
   const resolvedAccountKeys = accountKeys?.length ? accountKeys : readLiveAccountKeys();
   const accountSignature = [...resolvedAccountKeys].sort().join(".") || runtimeMode;
   const runtimeBase = replayRun?.canvas_profile ?? approvedCanvas?.profile;
   const runtimeRevision = replayRun?.configuration_content_hash || replayRun?.canvas_revision || approvedCanvas?.content_hash || approvedCanvas?.canvas_revision || "draft";
-  const runtimeScope = replayRun ? `replay.${replayRun.run_id}.${runtimeWorkspaceId || "main"}` : liveMode ? `${runtimeMode}.${accountSignature}` : approvedCanvas ? "canvas" : "configuration";
+  const runtimeScope = replayRun ? `${runtimeMode}.${replayRun.run_id}.${runtimeWorkspaceId || "main"}` : liveMode ? `${runtimeMode}.${accountSignature}` : approvedCanvas ? "canvas" : "configuration";
   const runtimeRegistryStorageKey = runtimeBase ? canvasRuntimeRegistryStorageKey(runtimeScope, runtimeRevision) : "";
   const workspaceStorageKey = runtimeBase
     ? canvasRuntimeWorkspaceStorageKey(runtimeScope, runtimeRevision, canvasId)
@@ -1815,7 +1816,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     setLoading(true);
     setError("");
     const request = replayRun
-      ? api<CanvasPreview>(`/api/trading/replay/runs/${encodeURIComponent(replayRun.run_id)}/canvas${query({ symbol: activeSymbol })}`, {
+      ? api<CanvasPreview>(`/api/trading/${runtimeMode}/runs/${encodeURIComponent(replayRun.run_id)}/canvas${query({ symbol: activeSymbol })}`, {
           signal: controller.signal,
           timeoutMs: 60000,
         })
@@ -1892,7 +1893,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       && ["activity", "closed_trades", "fills", "journal", "orders", "performance_journal", "portfolio", "positions", "strategy"].includes(definition.id)
     ) {
       return {
-        detail: `${definition.title} projected from this Replay run's canonical simulated broker state and durable journal.`,
+        detail: `${definition.title} projected from this ${runtimeMode === "backtest" ? "Backtest" : "Replay"} run's canonical simulated broker state and durable journal.`,
         freshness: previewContext.previewTime,
         sourceLabel: "Replay run",
         status: replayRun.error ? "error" : preview ? "ready" : "connecting",
@@ -1907,7 +1908,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : newsContainer || secContainer || definition.id === "xbrl" ? "Point-in-time" : "IBKR preview",
       status: sourceError ? "error" : newsContainer || secContainer || preview ? "ready" : "idle",
     };
-  }, [contextError, liveMode, preview, previewContext.previewTime, replayRun, scannerError, scannerLoading, scannerSnapshot]);
+  }, [contextError, liveMode, preview, previewContext.previewTime, replayRun, runtimeMode, scannerError, scannerLoading, scannerSnapshot]);
 
   const canvasTargets = registry.canvases.map((canvas, index) => ({
     color: ["var(--primary)", "var(--info)", "var(--success)", "var(--warning)"][index % 4],
@@ -2208,13 +2209,13 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         {managementEnabled ? <div className="canvas-toolbar-actions">{manager ? <button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button> : null}<button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
-      {contextError && replayRun ? <div aria-live="assertive" className="canvas-inline-error replay-runtime-error"><TriangleAlert aria-hidden="true" size={15} /><div><strong>Replay stopped</strong><span>{contextError}</span></div></div> : null}
+      {contextError && replayRun ? <div aria-live="assertive" className="canvas-inline-error replay-runtime-error"><TriangleAlert aria-hidden="true" size={15} /><div><strong>{runtimeMode === "backtest" ? "Backtest" : "Replay"} stopped</strong><span>{contextError}</span></div></div> : null}
       {error ? <div className="canvas-inline-error">{error}</div> : null}
 
       <TradingWorkspace
         key={`${workspaceStorageKey}:${overlayEpoch}`}
         allowMultipleInstances
-        canPopOut={!runtimeBase || Boolean(replayRun)}
+        canPopOut={!runtimeBase || (Boolean(replayRun) && runtimeMode === "replay")}
         canvasTargets={runtimeBase ? [] : canvasTargets}
         clockLabel=""
         commandBarVisible={false}
@@ -2228,7 +2229,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         managementContent={manager
           ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} />
           : runtimeBase
-            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={runtimeMode === "replay" ? "Replay" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : "Canvas"} onApplyRebase={applyRuntimeRebase} onKeepApproved={keepApprovedAfterRebase} onReset={resetRuntimeOverlay} onSaveAs={saveRuntimeWorkspace} rebase={runtimeRebase} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
+            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={runtimeMode === "backtest" ? "Backtest" : runtimeMode === "replay" ? "Replay" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : "Canvas"} onApplyRebase={applyRuntimeRebase} onKeepApproved={keepApprovedAfterRebase} onReset={resetRuntimeOverlay} onSaveAs={saveRuntimeWorkspace} rebase={runtimeRebase} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
             : null}
         managementOpen={managementEnabled && managementOpen}
         metaForContainer={metaForContainer}
@@ -2237,8 +2238,8 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         onMoveContainerToCanvas={runtimeBase ? undefined : moveContainer}
         onMoveGroupToCanvas={runtimeBase ? undefined : moveGroup}
         onManagementClose={() => setManagementOpen(false)}
-        onPopOutContainer={replayRun ? openReplayContainerCanvas : runtimeBase ? undefined : openNewCanvas}
-        onPopOutGroup={replayRun ? openReplayGroupCanvas : runtimeBase ? undefined : openGroupCanvas}
+        onPopOutContainer={replayRun && runtimeMode === "replay" ? openReplayContainerCanvas : runtimeBase ? undefined : openNewCanvas}
+        onPopOutGroup={replayRun && runtimeMode === "replay" ? openReplayGroupCanvas : runtimeBase ? undefined : openGroupCanvas}
         onStateChange={setWorkspaceState}
         renderContainer={(definition, instanceId) => {
           const settings = instanceSettings(registry, instanceId);
@@ -2334,7 +2335,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
           </>;
         }}
         titleForContainer={(definition, instanceId) => containerInstanceTitle(definition.id, instanceId, workspaceState, registry)}
-        workspaceBadge={runtimeMode === "replay" ? "Replay" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : approvedCanvas ? "Canvas" : manager ? "Main" : "Focus"}
+        workspaceBadge={runtimeMode === "backtest" ? "Backtest" : runtimeMode === "replay" ? "Replay" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : approvedCanvas ? "Canvas" : manager ? "Main" : "Focus"}
       />
     </div>
   );
@@ -2356,7 +2357,7 @@ function CanvasManager({ availableCanvasIds, onCreate, onOpen, onRemove, registr
   </section>;
 }
 
-function RuntimeCanvasScope({ mode, onApplyRebase, onKeepApproved, onReset, onSaveAs, rebase, revision }: { mode: "Canvas" | "Live" | "Paper" | "Replay"; onApplyRebase: () => void; onKeepApproved: () => void; onReset: () => void; onSaveAs: () => void; rebase: CanvasRuntimeRebase | null; revision: string }) {
+function RuntimeCanvasScope({ mode, onApplyRebase, onKeepApproved, onReset, onSaveAs, rebase, revision }: { mode: "Backtest" | "Canvas" | "Live" | "Paper" | "Replay"; onApplyRebase: () => void; onKeepApproved: () => void; onReset: () => void; onSaveAs: () => void; rebase: CanvasRuntimeRebase | null; revision: string }) {
   return <section aria-label={`${mode} layout scope`} className="replay-layout-scope">
     <ShieldCheck aria-hidden="true" size={15} />
     <div><strong>{mode} workspace overlay</strong><small>{rebase ? `A newer approved Canvas is available. Three-way rebase found ${rebase.conflicts.length} conflict${rebase.conflicts.length === 1 ? "" : "s"}.` : `Starts from approved Canvas ${revision.slice(0, 10)}. Changes persist only for this revision and never rewrite Configuration defaults.`}</small>{rebase?.conflicts.length ? <span title={rebase.conflicts.join("\n")}>{rebase.conflicts.slice(0, 3).join(", ")}{rebase.conflicts.length > 3 ? ` +${rebase.conflicts.length - 3}` : ""}</span> : null}</div>
@@ -4174,12 +4175,19 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
   const [proposalStop, setProposalStop] = useState("");
   const [proposalTarget, setProposalTarget] = useState("");
   const configuredCapabilities = (strategy?.capabilities ?? []).filter((capability) => capability.enabled !== false);
+  const readOnlyBacktest = strategy?.runtime_mode === "backtest";
+  const runId = strategy?.run_id || "";
+  const interactiveReplay = Boolean(runId && strategy?.runtime_mode !== "backtest");
 
   useEffect(() => {
     setAssignment(strategy?.assignment ?? null);
   }, [strategy?.assignment]);
 
   async function createAssignment() {
+    if (readOnlyBacktest) {
+      setMessage("Backtest assignments are pinned by the Run Plan and are read-only in Canvas.");
+      return;
+    }
     if (!accountId.trim() || !Number(conid)) {
       setMessage("Account and IBKR conid are required.");
       return;
@@ -4187,8 +4195,8 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
     setBusy(true);
     setMessage("");
     try {
-      const assignmentEndpoint = strategy?.run_id
-        ? `/api/trading/replay/runs/${encodeURIComponent(strategy.run_id)}/assignments`
+      const assignmentEndpoint = interactiveReplay
+        ? `/api/trading/replay/runs/${encodeURIComponent(runId)}/assignments`
         : "/api/trading/strategy-assignments";
       const created = await api<PreviewRow>(assignmentEndpoint, {
         body: JSON.stringify({
@@ -4219,13 +4227,17 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
   }
 
   async function command(commandName: string) {
+    if (readOnlyBacktest) {
+      setMessage("Backtest state is immutable inspection evidence; rerun with a new approved configuration to change it.");
+      return;
+    }
     const assignmentId = String(assignment?.assignment_id || "");
     if (!assignmentId) return;
     setBusy(true);
     setMessage("");
     try {
-      const commandEndpoint = strategy?.run_id
-        ? `/api/trading/replay/runs/${encodeURIComponent(strategy.run_id)}/assignments/${encodeURIComponent(assignmentId)}/commands`
+      const commandEndpoint = interactiveReplay
+        ? `/api/trading/replay/runs/${encodeURIComponent(runId)}/assignments/${encodeURIComponent(assignmentId)}/commands`
         : `/api/trading/strategy-assignments/${encodeURIComponent(assignmentId)}/commands`;
       const updated = await api<PreviewRow>(commandEndpoint, {
         body: JSON.stringify({ command: commandName }),
@@ -4241,8 +4253,8 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
   }
 
   async function submitTradeProposal() {
-    if (!strategy?.run_id) {
-      setMessage("Live/Paper proposals remain review-only until those modes use the shared runtime controller.");
+    if (!interactiveReplay) {
+      setMessage(readOnlyBacktest ? "Backtest proposals are immutable run evidence and cannot be submitted after the fact." : "Live/Paper proposals remain review-only until those modes use the shared runtime controller.");
       return;
     }
     if (!accountId.trim() || !Number(conid) || !marketSnapshot || marketSnapshot.freshness !== "ready") {
@@ -4252,7 +4264,7 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
     setBusy(true);
     setMessage("");
     try {
-      const result = await api<{ decision: { status: string }; proposal_id: string }>(`/api/trading/replay/runs/${encodeURIComponent(strategy.run_id)}/trade-proposals`, {
+      const result = await api<{ decision: { status: string }; proposal_id: string }>(`/api/trading/replay/runs/${encodeURIComponent(runId)}/trade-proposals`, {
         body: JSON.stringify({
           account_id: accountId.trim(),
           action: "enter_long",
@@ -4287,14 +4299,14 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
       <label><span>Conid</span><input inputMode="numeric" onChange={(event) => setConid(event.target.value.replace(/\D/g, ""))} placeholder="Contract ID" value={conid} /></label>
       <label><span>Authority</span><select onChange={(event) => setMode(event.target.value as typeof mode)} value={mode}><option value="request">Strategy entry</option><option value="manage">Manage after fill</option><option value="automatic">Fully automatic</option></select></label>
       <label className="strategy-order-check"><input checked={reenter} disabled={mode === "manage"} onChange={(event) => setReenter(event.target.checked)} type="checkbox" /><span>Allow re-entry</span></label>
-      <button disabled={busy} onClick={createAssignment} type="button">{busy ? "Saving…" : mode === "manage" ? "Attach plan" : "Arm strategy"}</button>
+      <button disabled={busy || readOnlyBacktest} onClick={createAssignment} type="button">{busy ? "Saving…" : readOnlyBacktest ? "Pinned by Run Plan" : mode === "manage" ? "Attach plan" : "Arm strategy"}</button>
     </> : <>
       <div className="strategy-order-summary"><span><small>Symbol</small><strong>{symbol}</strong></span><span><small>Account</small><strong>{String(assignment.account_id)}</strong></span></div>
       <div className="strategy-order-actions">
-        <button disabled={busy || status === "paused"} onClick={() => command("request_entry")} type="button">Request entry</button>
-        <button disabled={busy || status === "paused"} onClick={() => command("force_entry")} type="button">Force + attach</button>
-        <button disabled={busy} onClick={() => command(status === "paused" ? "resume" : "pause")} type="button">{status === "paused" ? "Resume" : "Pause"}</button>
-        <button className="danger" disabled={busy} onClick={() => command("disable_after_exit")} type="button">Disable after exit</button>
+        <button disabled={busy || readOnlyBacktest || status === "paused"} onClick={() => command("request_entry")} type="button">Request entry</button>
+        <button disabled={busy || readOnlyBacktest || status === "paused"} onClick={() => command("force_entry")} type="button">Force + attach</button>
+        <button disabled={busy || readOnlyBacktest} onClick={() => command(status === "paused" ? "resume" : "pause")} type="button">{status === "paused" ? "Resume" : "Pause"}</button>
+        <button className="danger" disabled={busy || readOnlyBacktest} onClick={() => command("disable_after_exit")} type="button">Disable after exit</button>
       </div>
       <div className="strategy-order-proposal">
         <span><strong>Chart trade proposal</strong><small>Snapshot is revalidated by the run, then Portfolio and OMS retain exclusive authority.</small></span>
@@ -4302,7 +4314,7 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
         <label><span>Quantity</span><input min={1} onChange={(event) => setProposalQuantity(Math.max(1, Number(event.target.value) || 1))} type="number" value={proposalQuantity} /></label>
         <label><span>Stop price</span><input min={0.01} onChange={(event) => setProposalStop(event.target.value)} placeholder="Optional" step="0.01" type="number" value={proposalStop} /></label>
         <label><span>Target price</span><input min={0.01} onChange={(event) => setProposalTarget(event.target.value)} placeholder="Optional" step="0.01" type="number" value={proposalTarget} /></label>
-        <button disabled={busy || !strategy?.run_id || !marketSnapshot || marketSnapshot.freshness !== "ready"} onClick={submitTradeProposal} type="button">Confirm proposal</button>
+        <button disabled={busy || !interactiveReplay || !marketSnapshot || marketSnapshot.freshness !== "ready"} onClick={submitTradeProposal} type="button">Confirm proposal</button>
       </div>
       <small className="strategy-order-disclosure">Commands are persisted here. Orders are placed only by the shared runtime after causal evaluation and risk validation.</small>
     </>}

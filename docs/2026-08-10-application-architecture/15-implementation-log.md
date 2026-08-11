@@ -551,6 +551,17 @@ bounded direct ClickHouse paths remain documented in
     external-runtime frontend production build and nine focused account-gate,
     retired-order-authority, and QMD Canvas stream tests passed. Authenticated
     post-gate browser validation remains in the broader UI acceptance gate.
+78. Migrated Backtest inspection to the same published Canvas resolver. Run
+    snapshots now declare their mode and retain the pinned Canvas revision and
+    profile; a bounded Backtest Canvas endpoint projects the active controller's
+    canonical Strategy, Portfolio, OMS, and journal state at the causal run
+    clock. The Backtest page mounts that run-scoped workspace alongside its
+    definition, progress, results, attribution, and comparison views. Backtest
+    assignment commands and chart proposals are explicitly disabled because
+    the run is immutable analysis evidence, not Replay execution authority.
+    All 30 focused historical-runtime/Canvas tests, Python compile, diff
+    validation, and the managed external-runtime frontend production build
+    passed. Real-browser validation remains in the broader UI acceptance gate.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

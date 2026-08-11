@@ -142,14 +142,15 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   reported, and a failed registry check leaves existing workspaces visible but
   blocks unverified additions.
 - The backend now exposes a Canvas-only projection of the approved release.
-  Standalone Canvas, Replay, Live, and Paper instantiate that
+  Standalone Canvas, Replay, Live, Paper, and Backtest instantiate that
   published/pinned profile, while
   revision-scoped browser overlays persist layout, links, symbols and container
   settings without writing to Configuration storage. Each workspace can
   reset its overlay to the approved profile or clone its current state into a
   separate revision-scoped workspace. Live/Paper overlays are additionally
-  isolated by mode and selected account set; Backtest/research still need this
-  integration. For overlays
+  isolated by mode and selected account set; Backtest overlays are isolated by
+  run and revision. A separate research workspace still needs this integration.
+  For overlays
   saved under the current overlay-record schema, a newer approved revision is
   compared through a three-way base/overlay/new-base merge. The UI reports
   conflicting leaf paths and requires an explicit choice to apply the
@@ -166,7 +167,7 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   indicator snapshots by bar timestamp. This replaces a corrected current bar
   instead of drawing a duplicate, labels historical-to-live transition and
   partial/stale tail states, and retries from another complete snapshot. The
-  remaining workspace drift is Backtest/research adoption and storage-version
+  remaining workspace drift is research-workspace adoption and storage-version
   invalidation for derived chart caches.
 - The existing Live/Paper account preflight and gateway-start boundary remains
   authoritative. After the gate, the route resolves the published Canvas,
@@ -187,6 +188,12 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   freshness, quantity, and optional stop/target. The Replay controller rejects
   future/stale snapshots and then journals the confirmation before using the
   same Portfolio admission and OMS planning path as automatic intent.
+- Backtest now exposes a read-only Canvas projection from its continuous pinned
+  run. The page uses the same container resolver, historical run clock,
+  Strategy/Portfolio/OMS projections, and run-scoped overlay contract as
+  Replay, but assignment commands and chart proposals are disabled because a
+  completed or advancing Backtest is immutable evidence rather than an
+  interactive execution authority.
 - Live/Paper proposal execution stays disabled until those modes adopt the
   shared controller. This preserves the existing broker authorization boundary;
   the UI does not fall back to the legacy direct-order helper.

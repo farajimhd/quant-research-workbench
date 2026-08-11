@@ -5246,6 +5246,19 @@ async def trading_backtest_run_results(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/trading/backtest/runs/{run_id}/canvas")
+async def trading_backtest_run_canvas(
+    run_id: str,
+    symbol: str = "AAPL",
+) -> dict[str, Any]:
+    try:
+        return await backtest_run_service.get(run_id).canvas_payload(symbol)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/trading/backtest/runs/{run_id}/stop")
 async def trading_backtest_run_stop(run_id: str) -> dict[str, Any]:
     try:

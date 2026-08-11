@@ -25174,6 +25174,34 @@ button {
   .news-query-visible-wide { display: none; }
 }
 
+.historical-runtime-canvas {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.historical-runtime-canvas .canvas-config-page {
+  padding: 0;
+}
+
+.historical-canvas-run-state {
+  align-items: flex-end;
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+}
+
+.historical-canvas-run-state strong {
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.historical-canvas-run-state span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
 .workspace-registry-warning {
   align-items: center;
   background: color-mix(in srgb, var(--danger) 9%, var(--surface-raised));

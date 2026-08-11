@@ -10,6 +10,7 @@ export type CanvasReplayRun = {
   configuration_revision_id?: string;
   current_time: string;
   error: string;
+  mode?: "backtest" | "replay";
   progress: number;
   run_id: string;
   session_date: string;

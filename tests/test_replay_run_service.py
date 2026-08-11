@@ -120,6 +120,20 @@ class ReplayRunDefinitionTests(unittest.TestCase):
                 configuration_revision=approved_configuration(),
             )
 
+    def test_backtest_snapshot_exposes_mode_and_pinned_canvas(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 7, 28),
+            start_time=time(9, 45),
+            mode=RunMode.BACKTEST,
+            configuration_revision=approved_configuration(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = ReplayRunController(definition, runtime_root=Path(directory)).snapshot()
+
+        self.assertEqual(snapshot["mode"], "backtest")
+        self.assertEqual(snapshot["canvas_revision"], "canvas-test")
+        self.assertEqual(snapshot["canvas_profile"]["defaultState"]["openIds"], ["chart"])
+
 
 class HistoricalWatchlistTimelineTests(unittest.TestCase):
     def test_resolves_first_clock_and_each_later_weekday_session_boundary(self) -> None:
