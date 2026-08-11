@@ -304,9 +304,12 @@ broker command outside OMS.
 
 - [x] Separate liveness from dependency/data/execution readiness.
 - [ ] Report coverage, freshness, queues, checkpoints, degradation, and authority.
+      QMD live/history coverage, freshness, queue/cache, transition and source
+      authority evidence is delivered; uniform checkpoint evidence across the
+      remaining existing service contracts is still open.
 - [x] Build a central backend/frontend readiness view.
 - [ ] Propagate end-to-end correlation and causation IDs.
-- [ ] Add QMD transition/gap/lag/cache/queue metrics.
+- [x] Add QMD transition/gap/lag/cache/queue metrics.
 - [ ] Add discovery computation-cost metrics.
 - [ ] Add Portfolio disposition/reservation and OMS reconciliation metrics.
 - [ ] Bound queues, caches, subscriptions, retries, concurrency, and result sets.

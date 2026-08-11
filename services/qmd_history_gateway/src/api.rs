@@ -153,6 +153,8 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/config", get(config))
+        .route("/metrics", get(cache_snapshot))
+        .route("/snapshot/status", get(status_snapshot))
         .route("/coverage", get(coverage))
         .route("/coverage/latest", get(latest_coverage))
         .route("/source-plan", get(source_plan))
@@ -223,6 +225,129 @@ async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload
         source: "market_source_plan:archive+recent+live_continuation",
         status: "ready",
     }))
+}
+
+async fn status_snapshot(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+    state.source.health().await.map_err(service_error)?;
+    let cache = state.cache.metrics().await;
+    let latest = state
+        .source
+        .latest_coverage_before(None)
+        .await
+        .map_err(service_error)?;
+    Ok(Json(history_status_payload(&state.config, &cache, &latest)))
+}
+
+fn history_status_payload(
+    config: &HistoricalGatewayConfig,
+    cache: &CacheMetrics,
+    latest: &LatestEventCoverage,
+) -> Value {
+    let requests = cache.hits + cache.misses;
+    let hit_rate = if requests == 0 {
+        None
+    } else {
+        Some(cache.hits as f64 / requests as f64)
+    };
+    let archive_evidence = if latest.session_date.is_some() {
+        "ready"
+    } else {
+        "unknown"
+    };
+    json!({
+        "attention": [],
+        "live_pipeline": [],
+        "downstream_products": [
+            {
+                "product": "Historical compact events",
+                "enabled": true,
+                "state": "ready",
+                "detail": "Queries are planned across archive, recent q_live, and current-live continuation tiers."
+            },
+            {
+                "product": "Derived chart and scanner products",
+                "enabled": true,
+                "state": "ready",
+                "detail": "Bars and indicators are derived through the shared QMD computation library."
+            }
+        ],
+        "header": {
+            "service": "qmd_history_gateway",
+            "status": "READY",
+            "bind": config.bind,
+            "mode": "read_only",
+            "read_database": config.clickhouse_database,
+            "recent_database": config.recent_database,
+            "snapshot_utc": Utc::now().to_rfc3339(),
+            "host_role": "historical"
+        },
+        "current_operation": {
+            "phase": if cache.active_builds > 0 { "building" } else { "serving" },
+            "status": "running",
+            "message": if cache.active_builds > 0 {
+                "Historical derived-cache builds are active."
+            } else {
+                "Waiting for bounded historical requests."
+            },
+            "next_action": ""
+        },
+        "configuration": {
+            "batch_size": config.batch_size,
+            "cache_max_concurrent_builds": config.cache_max_concurrent_builds,
+            "cache_max_entries": config.cache_max_entries,
+            "max_events_per_request": config.max_events_per_request,
+            "source_tiers": ["archive", "recent", "current_live"]
+        },
+        "runtime": {
+            "active_builds": cache.active_builds,
+            "builds": cache.builds,
+            "cache_entries": cache.entries,
+            "cache_estimated_bytes": cache.estimated_bytes,
+            "cache_evictions": cache.evictions,
+            "cache_hit_rate": hit_rate,
+            "cache_hits": cache.hits,
+            "cache_max_bytes": cache.max_bytes,
+            "cache_misses": cache.misses
+        },
+        "tasks": [
+            {
+                "task": "derived cache builds",
+                "status": if cache.active_builds > 0 { "running" } else { "idle" },
+                "rows": cache.entries,
+                "active": cache.active_builds,
+                "message": "Bounded, shared historical computations."
+            }
+        ],
+        "coverage": {
+            "status": archive_evidence,
+            "message": if let Some(session) = latest.session_date.as_deref() {
+                format!("Archive coverage is published through session {session}.")
+            } else {
+                "No published archive coverage session was reported.".to_string()
+            },
+            "archive_session_date": latest.session_date,
+            "archive_event_count": latest.event_count,
+            "archive_ticker_count": latest.ticker_count,
+            "coverage_table": latest.coverage_table
+        },
+        "queues": {
+            "active_builds": cache.active_builds,
+            "build_capacity": config.cache_max_concurrent_builds
+        },
+        "error_state": {
+            "status": "ok",
+            "active": false,
+            "severity": "info",
+            "message": "",
+            "retryable": true,
+            "last_error": ""
+        },
+        "service_specific": {
+            "cache": cache,
+            "latest_archive_coverage": latest,
+            "source": "market_source_plan:archive+recent+live_continuation"
+        }
+    })
 }
 
 async fn cache_snapshot(State(state): State<Arc<AppState>>) -> Json<CacheMetrics> {

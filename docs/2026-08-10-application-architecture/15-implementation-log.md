@@ -70,6 +70,11 @@ bounded direct ClickHouse paths remain documented in
 14. Added historical chart-indicator provenance from QMD History through the
     backend to Canvas: engine/schema versions, effective parameters, warm-up,
     source-plan hash and tiers, revision evidence, completeness, and stale reason.
+15. Standardized QMD History operational status and added a versioned backend
+    QMD operations envelope. The Services UI now shows declared archive
+    watermark, live lag, writer/drop state, cache efficiency/footprint, and
+    active historical build capacity without converting missing evidence into
+    healthy zeroes.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

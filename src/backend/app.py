@@ -3091,6 +3091,8 @@ def service_status_payload(service_id: str, *, include_database_tables: bool = T
     header = normalized_snapshot.get("header") if isinstance(normalized_snapshot.get("header"), dict) else {}
     current_operation = normalized_snapshot.get("current_operation") if isinstance(normalized_snapshot.get("current_operation"), dict) else {}
     metrics = metrics_payload if isinstance(metrics_payload, dict) else normalized_snapshot.get("service_specific", {})
+    metrics = metrics if isinstance(metrics, dict) else {}
+    health = health_payload if isinstance(health_payload, dict) else {}
     health_status = health_payload.get("service_status") if isinstance(health_payload, dict) else ""
     status = str(header.get("status") or health_status or "")
     if not status:
@@ -3118,8 +3120,14 @@ def service_status_payload(service_id: str, *, include_database_tables: bool = T
         "header": header,
         "current_operation": current_operation,
         "snapshot": normalized_snapshot,
-        "health": health_payload if isinstance(health_payload, dict) else {},
-        "metrics": metrics if isinstance(metrics, dict) else {},
+        "health": health,
+        "metrics": metrics,
+        "operations": service_operational_evidence(
+            service_id,
+            snapshot=normalized_snapshot,
+            health=health,
+            metrics=metrics,
+        ),
         "recent": recent_payload if recent_payload is not None else {},
         "logs": runtime_logs,
         "database_tables": database_tables,
@@ -3128,13 +3136,89 @@ def service_status_payload(service_id: str, *, include_database_tables: bool = T
             online=online,
             service_status=status,
             snapshot=normalized_snapshot,
-            health=health_payload if isinstance(health_payload, dict) else {},
-            metrics=metrics if isinstance(metrics, dict) else {},
+            health=health,
+            metrics=metrics,
             database_tables=database_tables,
             errors=errors,
         ),
         "errors": errors,
         "checked_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+
+
+def service_operational_evidence(
+    service_id: str,
+    *,
+    snapshot: dict[str, Any],
+    health: dict[str, Any],
+    metrics: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize producer-declared QMD evidence without inventing readiness."""
+
+    if service_id not in {"qmd", "qmd-history"}:
+        return {}
+    runtime = snapshot.get("runtime") if isinstance(snapshot.get("runtime"), dict) else {}
+    service_specific = (
+        snapshot.get("service_specific")
+        if isinstance(snapshot.get("service_specific"), dict)
+        else {}
+    )
+    effective = {**runtime, **metrics}
+    operational = (
+        service_specific.get("operational")
+        if isinstance(service_specific.get("operational"), dict)
+        else health.get("operational")
+        if isinstance(health.get("operational"), dict)
+        else {}
+    )
+    lanes = [row for row in operational.get("lanes") or [] if isinstance(row, dict)]
+    failed_lanes = [
+        row
+        for row in lanes
+        if bool(row.get("enabled", True)) and str(row.get("state") or "").lower() == "failed"
+    ]
+    pending_rows = sum(int(row.get("pending_rows") or 0) for row in lanes)
+    queues = snapshot.get("queues") if isinstance(snapshot.get("queues"), dict) else {}
+    queue_drops = queues.get("queue_drop_total")
+    cache = (
+        service_specific.get("cache")
+        if isinstance(service_specific.get("cache"), dict)
+        else health.get("cache")
+        if isinstance(health.get("cache"), dict)
+        else {}
+    )
+    coverage = snapshot.get("coverage") if isinstance(snapshot.get("coverage"), dict) else {}
+    return {
+        "schema_version": 1,
+        "authority": {
+            "service": service_id,
+            "source": str(service_specific.get("source") or health.get("source") or "producer_status_contract"),
+        },
+        "freshness": {
+            "last_event_utc": effective.get("last_event_ts"),
+            "last_event_lag_ms": effective.get("last_event_lag_ms"),
+        },
+        "coverage": coverage,
+        "queues": {
+            "drop_total": queue_drops,
+            "pending_rows": pending_rows if lanes else None,
+            "active_builds": effective.get("active_builds", cache.get("active_builds")),
+            "build_capacity": queues.get("build_capacity"),
+        },
+        "cache": {
+            "entries": effective.get("cache_entries", cache.get("entries")),
+            "estimated_bytes": effective.get("cache_estimated_bytes", cache.get("estimated_bytes")),
+            "evictions": effective.get("cache_evictions", cache.get("evictions")),
+            "hits": effective.get("cache_hits", cache.get("hits")),
+            "misses": effective.get("cache_misses", cache.get("misses")),
+            "hit_rate": effective.get("cache_hit_rate"),
+        },
+        "transitions": {
+            "failed_lanes": failed_lanes,
+            "recent_recoveries": [
+                row for row in operational.get("recent_recoveries") or [] if isinstance(row, dict)
+            ],
+        },
     }
 
 
@@ -3290,6 +3374,7 @@ def service_status_error_payload(service_id: str, exc: Exception) -> dict[str, A
         "snapshot": {},
         "health": {},
         "metrics": {},
+        "operations": {},
         "recent": {},
         "logs": {"path": "", "rows": [], "error": ""},
         "database_tables": {"rows": [], "error": ""},

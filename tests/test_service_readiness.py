@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.backend.app import service_readiness_payload
+from src.backend.app import service_operational_evidence, service_readiness_payload
 
 
 def readiness(
@@ -63,6 +63,50 @@ class ServiceReadinessTests(unittest.TestCase):
 
         self.assertEqual(unknown["execution"]["status"], "unknown")
         self.assertEqual(ready["execution"]["status"], "ready")
+
+    def test_qmd_operational_evidence_preserves_lag_queue_and_recovery(self) -> None:
+        payload = service_operational_evidence(
+            "qmd",
+            snapshot={
+                "runtime": {"last_event_lag_ms": 125, "last_event_ts": "2026-08-10T16:00:00Z"},
+                "queues": {"queue_drop_total": 2},
+                "service_specific": {
+                    "operational": {
+                        "lanes": [
+                            {"key": "compact_events", "enabled": True, "state": "healthy", "pending_rows": 3},
+                            {"key": "intraday_bars", "enabled": True, "state": "failed", "pending_rows": 5},
+                        ],
+                        "recent_recoveries": [{"area": "massive_feed"}],
+                    }
+                },
+            },
+            health={},
+            metrics={},
+        )
+
+        self.assertEqual(payload["freshness"]["last_event_lag_ms"], 125)
+        self.assertEqual(payload["queues"]["drop_total"], 2)
+        self.assertEqual(payload["queues"]["pending_rows"], 8)
+        self.assertEqual(payload["transitions"]["failed_lanes"][0]["key"], "intraday_bars")
+        self.assertEqual(payload["transitions"]["recent_recoveries"][0]["area"], "massive_feed")
+
+    def test_qmd_history_operational_evidence_uses_declared_cache_contract(self) -> None:
+        payload = service_operational_evidence(
+            "qmd-history",
+            snapshot={
+                "runtime": {"cache_entries": 9, "cache_hit_rate": 0.75, "active_builds": 2},
+                "coverage": {"status": "ready", "archive_session_date": "2026-08-08"},
+                "queues": {"build_capacity": 4},
+            },
+            health={},
+            metrics={},
+        )
+
+        self.assertEqual(payload["coverage"]["archive_session_date"], "2026-08-08")
+        self.assertEqual(payload["cache"]["entries"], 9)
+        self.assertEqual(payload["cache"]["hit_rate"], 0.75)
+        self.assertEqual(payload["queues"]["active_builds"], 2)
+        self.assertEqual(payload["queues"]["build_capacity"], 4)
 
 
 if __name__ == "__main__":

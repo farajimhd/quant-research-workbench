@@ -122,10 +122,20 @@ This is an application-side composition layer only. It does not change any
 producer service. Existing service status, coverage and database contracts are
 used when present, and absent structured evidence remains visible as unknown.
 
+QMD Gateway and QMD History now additionally publish/compose a bounded
+operational contract. QMD reports live-event lag, persistence and drop
+counters, maintenance/gap state, writer-lane transitions, pending rows and
+recoveries. QMD History publishes a standardized status snapshot with the
+latest archive coverage watermark, cache hit/miss/eviction/footprint evidence,
+and active build capacity. The backend normalizes those producer-declared
+values under a versioned `operations` envelope, and the Services UI consumes
+that envelope without treating an absent value as zero or ready.
+
 Remaining drift:
 
-- Producer status contracts still vary, so configuration/schema compatibility,
-  watermarks, queue depth and checkpoint evidence are not uniformly available.
+- Producer status contracts outside QMD still vary, so
+  configuration/schema compatibility, watermarks, queue depth and checkpoint
+  evidence are not uniformly available.
 - Data coverage and trading authority evidence share one operations view, but
   deeper product-level coverage and command-authority diagnostics remain to be
   projected consistently.

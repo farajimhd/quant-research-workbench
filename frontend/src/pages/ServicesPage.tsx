@@ -6,7 +6,7 @@ import { Button } from "../app/components/Button";
 import { DataTable } from "../app/components/DataTable";
 import { MetricRatio } from "../app/components/MetricRatio";
 import { Modal } from "../app/components/Modal";
-import { displayName, formatCell, formatCompactNumber, formatDuration } from "../app/format";
+import { displayName, formatBytes, formatCell, formatCompactNumber, formatDuration } from "../app/format";
 import "./ServicesOverview.css";
 
 export type ServicePageMode = "dashboard" | ServiceId;
@@ -33,6 +33,7 @@ type ServiceStatusPayload = {
   health: Record<string, unknown>;
   logs?: ServiceLogPayload;
   metrics: Record<string, unknown>;
+  operations?: Record<string, unknown>;
   online: boolean;
   readiness?: {
     schema_version: number;
@@ -5100,11 +5101,16 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
 
   if (service.registry.id === "qmd-history") {
     const config = isRecord(service.health.config) ? service.health.config : {};
+    const operations = isRecord(service.operations) ? service.operations : {};
+    const coverage = isRecord(operations.coverage) ? operations.coverage : {};
+    const cache = isRecord(operations.cache) ? operations.cache : {};
+    const queues = isRecord(operations.queues) ? operations.queues : {};
+    const hitRate = numericMetricOptional(cache, ["hit_rate"]);
     return [
-      { label: "Historical Source", value: service.online ? "Ready" : "Unavailable", detail: stringMetric(service.health, ["source"]) || "compact events" },
-      { label: "Serving Mode", value: "Read only", detail: "events + derived bars" },
-      { label: "Batch Size", value: compact(numericMetricOptional(config, ["batch_size"])), detail: "rows per source batch" },
-      { label: "Request Limit", value: compact(numericMetricOptional(config, ["max_events_per_request"])), detail: "events per bar request" },
+      { label: "Archive Through", value: stringMetric(coverage, ["archive_session_date"]) || "Unknown", detail: stringMetric(coverage, ["message"]) || "No archive watermark reported", tone: stringMetric(coverage, ["status"]) === "ready" ? "good" : "neutral" },
+      { label: "Cache Hit Rate", value: hitRate === null ? "—" : `${(hitRate * 100).toFixed(1)}%`, detail: `${compact(numericMetricOptional(cache, ["hits"]))} hits · ${compact(numericMetricOptional(cache, ["misses"]))} misses` },
+      { label: "Cache Footprint", value: compact(numericMetricOptional(cache, ["entries"])), detail: `${formatBytes(numericMetricOptional(cache, ["estimated_bytes"]))} allocated` },
+      { label: "Active Builds", value: compact(numericMetricOptional(queues, ["active_builds"])), detail: `${compact(numericMetricOptional(queues, ["build_capacity"]))} capacity · ${compact(numericMetricOptional(config, ["batch_size"]))} row batches` },
     ];
   }
 
@@ -5112,8 +5118,9 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
   const queueKeys = ["events_broadcast_dropped", "bar_events_dropped", "indicator_events_dropped", "compact_event_queue_dropped", "clickhouse_events_dropped"];
   const queueDropParts = queueKeys.map((key) => number([key])).filter((value): value is number => value !== null);
   const queueDrops = number(["queue_drop_total"]) ?? (queueDropParts.length ? queueDropParts.reduce((sum, value) => sum + value, 0) : null);
+  const eventLagMs = number(["last_event_lag_ms"]);
   return [
-    { label: "Events Ingested", value: compact(number(["ingest_events"])), detail: `${compact(number(["ingest_quotes"]))} quotes · ${compact(number(["ingest_trades"]))} trades` },
+    { label: "Events Ingested", value: compact(number(["ingest_events"])), detail: `${compact(number(["ingest_quotes"]))} quotes · ${compact(number(["ingest_trades"]))} trades · ${eventLagMs === null ? "unknown" : formatDuration(eventLagMs / 1000)} lag` },
     { label: "Events Persisted", value: compact(number(["compact_events_persisted"])), detail: `${compact(number(["compact_events_reorder_pending"]))} reorder pending` },
     { label: "Bars Persisted", value: compact(number(["intraday_bar_rows_persisted"])), detail: `${compact(number(["intraday_bar_repairs_completed"]))} late repairs` },
     { label: "Repair / Queue", ...ratio(optionalNumberOrNull(coverage.completed_jobs), optionalNumberOrNull(coverage.total_jobs)), detail: `${compact(queueDrops)} queue drops`, tone: (queueDrops ?? 0) > 0 ? "warn" : "neutral" },
