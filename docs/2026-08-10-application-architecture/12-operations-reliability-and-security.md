@@ -47,7 +47,12 @@ The frontend operations view consumes these facts. It does not infer health from
 
 Gateways and pipelines maintain coverage ledgers with expected, active, completed, skipped, retried, deferred and failed units. Idempotency keys and checkpoints make reruns safe. Deduplication, final-row semantics, ordering, partition boundaries, identity conflicts and timezone/session mappings are audited.
 
-QMD retention additionally proves archive equivalence before deleting recent data. Reference publications prove source and interval coverage before becoming scanner authority. Trading proves broker/journal/position reconciliation before accepting new executable commands.
+QMD retention additionally proves archive equivalence before deleting recent
+data and durably records the per-session proof before the first mutation. A
+retry may reuse that proof only while the current quote/trade remote identities
+and archive fingerprint remain identical. Reference publications prove source
+and interval coverage before becoming scanner authority. Trading proves
+broker/journal/position reconciliation before accepting new executable commands.
 
 ## 4. Resource control
 

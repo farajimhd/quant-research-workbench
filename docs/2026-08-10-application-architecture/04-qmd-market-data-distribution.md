@@ -124,9 +124,14 @@ timestamp, schema, and stable-identity fingerprints before deleting a session.
 QMD History likewise marks a streaming interval recent only when compact-event
 and base-bar confirmations from the same run overlap (or when an explicit
 repair/bootstrap row confirms it); it does not union one-sided writer rows.
-The remaining handoff gap is narrower: the source planner's archive watermark
-still comes from published archive continuity rather than a separately retained
-QMD equivalence certificate.
+Before either QMD-owned recent table is mutated, QMD now appends a per-session
+handoff certificate to its coverage ledger. The certificate captures the full
+quote/trade remote-object identities and the archive event fingerprint. If one
+retention mutation succeeds and a later mutation fails, a retry may reuse that
+certificate only when the current remote-object evidence and archive fingerprint
+still match exactly; any upstream or archive correction forces fresh proof.
+Published archive continuity remains the source-publication prerequisite, while
+the retained QMD certificate is the authority for the destructive handoff step.
 
 ## Bar hierarchy
 

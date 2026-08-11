@@ -125,7 +125,10 @@ duplicate-free, gap-explicit stream.
 - [x] Compare counts, bounds, stable identities, and schema versions before
       retention. Ordering remains preserved by the source contracts rather
       than accepted through an order-insensitive comparison.
-- [ ] Advance the archive handoff watermark only after equivalence passes.
+- [x] Advance the archive handoff watermark only after equivalence passes. QMD
+      appends a per-session certificate before deleting either recent table and
+      reuses it only when current remote identities and the archive fingerprint
+      still match the recorded proof.
 - [x] Block retention when archive coverage is incomplete or inconsistent.
 - [x] Delete only QMD-owned event and intraday-bar partitions beyond the
       configured recent market-session window.

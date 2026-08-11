@@ -494,6 +494,15 @@ bounded direct ClickHouse paths remain documented in
     Periodically sampled ticker/bar/indicator/product endpoints remain complete
     current snapshots. All 93 QMD Gateway tests, all 28 QMD History tests, Rust
     formatting, and diff validation passed.
+72. Made the QMD archive handoff restart-safe across separate event and bar
+    retention mutations. QMD now records a per-session handoff certificate only
+    after quote and trade publication are confirmed and the live/archive event
+    fingerprints are identical. If recent events have already been removed, a
+    retry accepts the certificate only when the current remote-object identities
+    and archive fingerprint still exactly match the recorded evidence; otherwise
+    retention remains blocked. Empty live partitions produce explicit zero
+    fingerprints instead of an unparsable aggregate row. Rust formatting and all
+    95 QMD Gateway tests passed using the external Cargo runtime.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

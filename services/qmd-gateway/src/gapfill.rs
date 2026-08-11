@@ -1726,24 +1726,24 @@ impl GapFillService {
             r#"SELECT
                 count() AS event_count,
                 uniqExact(ticker) AS ticker_count,
-                min(sip_timestamp_us) AS first_sip_timestamp_us,
-                max(sip_timestamp_us) AS last_sip_timestamp_us,
-                min({schema_version}) AS schema_version_min,
-                max({schema_version}) AS schema_version_max,
-                sumWithOverflow(cityHash64(
+                ifNull(min(sip_timestamp_us), 0) AS first_sip_timestamp_us,
+                ifNull(max(sip_timestamp_us), 0) AS last_sip_timestamp_us,
+                ifNull(min({schema_version}), 0) AS schema_version_min,
+                ifNull(max({schema_version}), 0) AS schema_version_max,
+                ifNull(sumWithOverflow(cityHash64(
                     ticker, sip_timestamp_us, source_sequence, bitAnd(event_meta, 1),
                     event_meta, price_primary_int, price_secondary_int,
                     size_primary, size_secondary, exchange_primary, exchange_secondary,
                     condition_token_1, condition_token_2, condition_token_3,
                     condition_token_4, condition_token_5
-                )) AS identity_hash_sum,
-                groupBitXor(cityHash64(
+                )), 0) AS identity_hash_sum,
+                ifNull(groupBitXor(cityHash64(
                     ticker, sip_timestamp_us, source_sequence, bitAnd(event_meta, 1),
                     event_meta, price_primary_int, price_secondary_int,
                     size_primary, size_secondary, exchange_primary, exchange_secondary,
                     condition_token_1, condition_token_2, condition_token_3,
                     condition_token_4, condition_token_5
-                )) AS identity_hash_xor
+                )), 0) AS identity_hash_xor
             FROM {table} FINAL
             WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)),
                 'America/New_York')) = toDate('{date}')
@@ -1778,6 +1778,9 @@ impl GapFillService {
                     "confirmed": confirmed,
                     "historical_rows": state.as_ref().map(|row| row.historical_rows).unwrap_or(0),
                     "remote_key": state.as_ref().map(|row| row.remote_key.as_str()).unwrap_or(""),
+                    "remote_etag": state.as_ref().map(|row| row.remote_etag.as_str()).unwrap_or(""),
+                    "remote_last_modified": state.as_ref().map(|row| row.remote_last_modified.as_str()).unwrap_or(""),
+                    "remote_content_length": state.as_ref().map(|row| row.remote_content_length).unwrap_or(0),
                 }),
             );
         }
@@ -1791,6 +1794,23 @@ impl GapFillService {
             self.event_coverage_fingerprint(date, false),
             self.event_coverage_fingerprint(date, true),
         )?;
+        if live.event_count == 0 {
+            if let Some(recorded) = self.recorded_archive_handoff(date).await? {
+                let current_archive = event_coverage_fingerprint_json(&archive);
+                if recorded_handoff_matches(&recorded, &flatfile_evidence, &current_archive) {
+                    return Ok((
+                        true,
+                        json!({
+                            "reason": "recorded_equivalent",
+                            "flatfiles": flatfile_evidence,
+                            "live": event_coverage_fingerprint_json(&live),
+                            "archive": current_archive,
+                            "recorded_at": recorded.get("recorded_at"),
+                        }),
+                    ));
+                }
+            }
+        }
         let equivalent = live.event_count > 0 && live == archive;
         Ok((
             equivalent,
@@ -1801,6 +1821,57 @@ impl GapFillService {
                 "archive": event_coverage_fingerprint_json(&archive),
             }),
         ))
+    }
+
+    async fn recorded_archive_handoff(&self, date: NaiveDate) -> Result<Option<Value>, String> {
+        let start = date_start_utc(date);
+        let end = date_start_utc(date + ChronoDuration::days(1));
+        let sql = format!(
+            "SELECT summary_json FROM {} WHERE coverage_kind = 'q_live_archive_handoff' AND status = 'verified' AND start_ts_utc = toDateTime64('{}', 3, 'UTC') AND end_ts_utc = toDateTime64('{}', 3, 'UTC') ORDER BY finished_at DESC LIMIT 1 FORMAT JSONEachRow",
+            self.config.qmd_coverage_table,
+            clickhouse_datetime64(&start),
+            clickhouse_datetime64(&end),
+        );
+        let body = self.query(&sql, true).await?;
+        let Some(line) = body.lines().find(|line| !line.trim().is_empty()) else {
+            return Ok(None);
+        };
+        let row: Value = serde_json::from_str(line)
+            .map_err(|error| format!("invalid archive handoff row: {error}"))?;
+        let Some(summary) = row.get("summary_json").and_then(Value::as_str) else {
+            return Err("archive handoff row is missing summary_json".to_string());
+        };
+        serde_json::from_str(summary)
+            .map(Some)
+            .map_err(|error| format!("invalid archive handoff summary: {error}"))
+    }
+
+    async fn record_archive_handoff(
+        &self,
+        started_at: DateTime<Utc>,
+        date: NaiveDate,
+        evidence: &Value,
+    ) -> Result<(), String> {
+        let mut summary = evidence.clone();
+        if let Some(object) = summary.as_object_mut() {
+            object.insert(
+                "recorded_at".to_string(),
+                Value::String(Utc::now().to_rfc3339()),
+            );
+        }
+        self.record_coverage_run(
+            started_at,
+            "q_live_archive_handoff",
+            "verified",
+            date_start_utc(date),
+            date_start_utc(date + ChronoDuration::days(1)),
+            "retain_archive_authority",
+            0,
+            &self.host_role(),
+            "",
+            &summary,
+        )
+        .await
     }
 
     async fn enforce_live_retention(&self, started_at: DateTime<Utc>) -> Result<(), String> {
@@ -1876,6 +1947,9 @@ impl GapFillService {
                 blocked_rows = blocked_rows.saturating_add(*count);
                 blocked_sessions
                     .push(json!({"session_date": date.to_string(), "evidence": evidence}));
+            } else if evidence.get("reason").and_then(Value::as_str) == Some("equivalent") {
+                self.record_archive_handoff(started_at, *date, &evidence)
+                    .await?;
             }
         }
         if blocked_rows > 0 {
@@ -2545,6 +2619,15 @@ fn event_coverage_fingerprint_json(value: &EventCoverageFingerprint) -> Value {
     })
 }
 
+fn recorded_handoff_matches(
+    recorded: &Value,
+    current_flatfiles: &serde_json::Map<String, Value>,
+    current_archive: &Value,
+) -> bool {
+    recorded.get("flatfiles") == Some(&Value::Object(current_flatfiles.clone()))
+        && recorded.get("archive") == Some(current_archive)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2600,6 +2683,68 @@ mod tests {
         let mut drifted = expected.clone();
         drifted.identity_hash_xor += 1;
         assert_ne!(expected, drifted);
+    }
+
+    #[test]
+    fn recorded_handoff_requires_identical_remote_and_archive_evidence() {
+        let archive = json!({
+            "event_count": 10,
+            "identity_hash_sum": 300,
+            "identity_hash_xor": 400,
+        });
+        let mut flatfiles = serde_json::Map::new();
+        flatfiles.insert(
+            "quote".to_string(),
+            json!({
+                "confirmed": true,
+                "historical_rows": 6,
+                "remote_key": "quotes.csv.gz",
+                "remote_etag": "etag-a",
+                "remote_last_modified": "yesterday",
+                "remote_content_length": 100,
+            }),
+        );
+        let recorded = json!({
+            "flatfiles": flatfiles.clone(),
+            "archive": archive.clone(),
+            "recorded_at": "2026-08-11T00:00:00Z",
+        });
+
+        assert!(recorded_handoff_matches(&recorded, &flatfiles, &archive));
+
+        let mut changed_flatfiles = flatfiles.clone();
+        changed_flatfiles
+            .get_mut("quote")
+            .and_then(Value::as_object_mut)
+            .unwrap()
+            .insert(
+                "remote_etag".to_string(),
+                Value::String("etag-b".to_string()),
+            );
+        assert!(!recorded_handoff_matches(
+            &recorded,
+            &changed_flatfiles,
+            &archive
+        ));
+
+        let changed_archive = json!({
+            "event_count": 10,
+            "identity_hash_sum": 301,
+            "identity_hash_xor": 400,
+        });
+        assert!(!recorded_handoff_matches(
+            &recorded,
+            &flatfiles,
+            &changed_archive
+        ));
+    }
+
+    #[test]
+    fn empty_event_fingerprint_parses_as_zero_evidence() {
+        let row = r#"{"event_count":0,"ticker_count":0,"first_sip_timestamp_us":0,"last_sip_timestamp_us":0,"schema_version_min":0,"schema_version_max":0,"identity_hash_sum":0,"identity_hash_xor":0}"#;
+        let parsed = parse_event_coverage_fingerprint(row).unwrap();
+        assert_eq!(parsed.event_count, 0);
+        assert_eq!(parsed, EventCoverageFingerprint::default());
     }
 
     #[test]
