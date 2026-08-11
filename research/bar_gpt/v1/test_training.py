@@ -2253,11 +2253,11 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(joint[0].microbatch, 2)
         launcher_candidates = profile_launcher_args[profile_launcher_args.index("--candidates") + 1]
         parsed = _parse_candidates(launcher_candidates)
-        self.assertEqual({item.model_size for item in parsed}, {"current", "medium", "large", "xlarge"})
+        self.assertEqual({item.model_size for item in parsed}, {"current", "medium", "large"})
         self.assertNotIn("small", {item.model_size for item in parsed})
         self.assertEqual({item.workers for item in parsed}, {16})
         self.assertEqual({item.microbatch for item in parsed if item.model_size == "current"}, {8, 16, 24, 32})
-        self.assertEqual({item.microbatch for item in parsed if item.model_size == "xlarge"}, {1, 2, 4, 8})
+        self.assertNotIn("xlarge", {item.model_size for item in parsed})
         self.assertEqual(profile_launcher_args[profile_launcher_args.index("--target-effective-blocks") + 1], "32")
         resolved = {name: _model_config(_parse_candidates(f"{name}:4096:1:1:16:1:0")[0]) for name in MODEL_SIZE_PRESETS}
         self.assertEqual((resolved["current"].d_model, resolved["current"].n_layers), (384, 8))
@@ -2271,6 +2271,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual((candidates[0].model_size, candidates[0].microbatch, candidates[0].accumulation), ("medium", 16, 2))
         profile_args = parse_profile_args(resolved)
+        self.assertEqual(profile_args.ready_queue_blocks, 128)
+        self.assertEqual(profile_args.worker_prefetch_batches, 2)
+        self.assertEqual(profile_args.offline_length_bucket_batches, 4)
         stream = io.StringIO()
         with redirect_stdout(stream):
             ProfileReporter("text").configuration(profile_args, candidates, torch.device("cpu"))
@@ -2337,7 +2340,6 @@ class LoaderTrainerContractTest(unittest.TestCase):
             "current": (384, 8, 8, 4, 32, 1),
             "medium": (512, 12, 8, 4, 16, 2),
             "large": (768, 12, 12, 4, 8, 4),
-            "xlarge": (1024, 16, 16, 8, 8, 4),
         }
         names = set()
         for model_size, values in expected.items():
@@ -2357,7 +2359,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(parsed.wandb_project, BAR_GPT_WANDB_PROJECT)
             self.assertEqual(COMPARISON_RUNS[model_size].effective_blocks, 32)
             names.add(comparison_run_name(model_size, "fixed"))
-        self.assertEqual(len(names), 4)
+        self.assertEqual(len(names), 3)
 
     def test_holdout_and_regime_resampling_are_deterministic(self) -> None:
         tickers = tuple(f"T{index:02d}" for index in range(20))

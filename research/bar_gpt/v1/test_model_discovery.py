@@ -20,6 +20,7 @@ from research.bar_gpt.v1.model_discovery import (
     _held_out_panel,
     _ranking_key,
     _resume_if_available,
+    _trainer_command,
     discovery_data_config,
     discovery_storage_config,
     discovery_shard_compatibility_hash,
@@ -54,10 +55,28 @@ def ref(ticker: str, day: str, offset: int, origins: int = 100) -> OfflineBlockR
 
 class ModelDiscoveryContractTest(unittest.TestCase):
     def test_architecture_grid_keeps_effective_batch_fixed(self) -> None:
-        self.assertEqual(len(ARCHITECTURE_GRID), 8)
+        self.assertEqual(len(ARCHITECTURE_GRID), 7)
         self.assertEqual({item.microbatch * item.accumulation for item in ARCHITECTURE_GRID}, {32})
+        self.assertNotIn("xlarge_1024x16", {item.name for item in ARCHITECTURE_GRID})
         self.assertEqual(DISCOVERY_TRAIN_ORIGINS_PER_EPOCH, 100_000_000)
         self.assertEqual(DISCOVERY_EPOCHS * DISCOVERY_TRAIN_ORIGINS_PER_EPOCH, 200_000_000)
+
+    def test_discovery_training_uses_production_loader_shape(self) -> None:
+        command = _trainer_command(
+            ARCHITECTURE_GRID[0],
+            shard_root=Path("shards"),
+            manifest_path=Path("panels.json"),
+            output_root=Path("output"),
+            project="project",
+            wandb_mode="disabled",
+            workers=16,
+            seed=17,
+            run_name="run",
+        )
+        self.assertEqual(command[command.index("--loader-workers") + 1], "16")
+        self.assertEqual(command[command.index("--ready-queue-blocks") + 1], "128")
+        self.assertEqual(command[command.index("--worker-prefetch-batches") + 1], "2")
+        self.assertEqual(command[command.index("--offline-length-bucket-batches") + 1], "4")
 
     def test_fixed_panel_sampling_is_deterministic_and_date_disjoint(self) -> None:
         refs = tuple(
@@ -284,8 +303,8 @@ class ModelDiscoveryContractTest(unittest.TestCase):
             root = Path(directory)
             campaign_id = "20260809-145210"
             completed_run = "discovery-architecture-anchor_384x8-complete"
-            expected_xlarge = f"discovery-architecture-xlarge_1024x16-{campaign_id}"
-            for run_name in (completed_run, expected_xlarge):
+            expected_wide = f"discovery-architecture-width_1024x12-{campaign_id}"
+            for run_name in (completed_run, expected_wide):
                 checkpoint = root / "runs" / run_name / "checkpoints" / "checkpoint_latest.pt"
                 checkpoint.parent.mkdir(parents=True)
                 checkpoint.touch()
@@ -295,9 +314,9 @@ class ModelDiscoveryContractTest(unittest.TestCase):
                     "campaign_id": campaign_id,
                     "runs": {"architecture/anchor_384x8": completed_run},
                 },
-                architecture_names=("anchor_384x8", "xlarge_1024x16"),
+                architecture_names=("anchor_384x8", "width_1024x12"),
             )
-        self.assertEqual([item.run_name for item in resolved], [completed_run, expected_xlarge])
+        self.assertEqual([item.run_name for item in resolved], [completed_run, expected_wide])
         self.assertEqual([item.batch_size for item in resolved], [32, 8])
 
     def test_final_validation_command_uses_separate_panel_namespace_and_project(self) -> None:

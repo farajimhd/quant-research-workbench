@@ -31,14 +31,13 @@ COMPARISON_RUNS: dict[str, ComparisonRun] = {
     "current": ComparisonRun("current", microbatch=32, accumulation=1),
     "medium": ComparisonRun("medium", microbatch=16, accumulation=2),
     "large": ComparisonRun("large", microbatch=8, accumulation=4),
-    "xlarge": ComparisonRun("xlarge", microbatch=8, accumulation=4),
 }
 DEFAULT_WANDB_MODE = "online"
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Plan or execute one of the four one-epoch BarGPT model comparisons."
+        description="Plan or execute one of the three one-epoch BarGPT model comparisons."
     )
     parser.add_argument("--model-size", choices=("all", *COMPARISON_RUNS), default="all")
     parser.add_argument("--execute", action="store_true")

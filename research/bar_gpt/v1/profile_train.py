@@ -68,16 +68,16 @@ MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
     "xlarge_1024x16": {"d_model": 1024, "n_layers": 16, "n_heads": 16, "n_kv_heads": 8},
 }
 
-# The joint default deliberately uses one microbatch per optimizer step. This
-# bounds the fit/throughput sweep across four architectures; the result records
-# the accumulation needed to recover the production target effective batch.
+# The joint default deliberately uses one microbatch per optimizer step. Keep
+# the routine grid to the three practical comparison sizes; xlarge remains an
+# explicit opt-in preset but is excluded from the default sweep because its
+# cost is disproportionate for routine fit/throughput checks.
 DEFAULT_JOINT_CANDIDATES = ",".join(
     f"{model}:4096:{microbatch}:1:16:1:0"
     for model, microbatches in (
         ("current", (8, 16, 24, 32)),
         ("medium", (4, 8, 12, 16)),
         ("large", (2, 4, 8, 12)),
-        ("xlarge", (1, 2, 4, 8)),
     )
     for microbatch in microbatches
 )

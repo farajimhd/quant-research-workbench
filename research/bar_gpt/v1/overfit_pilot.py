@@ -29,7 +29,7 @@ from research.bar_gpt.v1.targets import DIRECTION_TARGET_COUNT, DIRECTION_TARGET
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Deliberately overfit a tiny certified v6 pilot panel before the full shard build."
+        description="Deliberately overfit a tiny certified v12 sparse-event shard panel."
     )
     parser.add_argument("--shard-root", type=Path, default=DEFAULT_PILOT_ROOT)
     parser.add_argument("--tickers", default="AAPL,GOOGL")
@@ -446,7 +446,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             })
     passed = loss_passed and direction_passed
     report = {
-        "contract": "sparse-event-ohlc-v5-overfit-2",
+        "contract": "bar_gpt_v12_sparse_event_overfit_v1",
         "device": str(device),
         "tickers": list(tickers),
         "blocks": len(blocks),

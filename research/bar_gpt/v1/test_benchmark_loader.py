@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from research.bar_gpt.v1.benchmark_loader import _make_data_config, _percentile, parse_args
+from research.bar_gpt.v1.benchmark_offline_loader import _ints, parse_args as parse_offline_args
 from research.bar_gpt.v1.run_benchmark_loader import DEFAULT_ARGS
 
 
@@ -50,6 +51,20 @@ class LoaderBenchmarkContractTest(unittest.TestCase):
         args = parse_args(["--warmup-batches", "-1"])
         with self.assertRaisesRegex(ValueError, "warmup-batches"):
             _make_data_config(args)
+
+    def test_offline_loader_grid_is_v12_production_focused(self) -> None:
+        args = parse_offline_args([])
+        candidate_count = (
+            len(_ints(args.workers))
+            * len(_ints(args.worker_prefetch))
+            * len(_ints(args.host_cache_batches))
+            * len(_ints(args.length_bucket_batches))
+        )
+        self.assertEqual(candidate_count, 12)
+        self.assertIn(16, _ints(args.workers))
+        self.assertIn(2, _ints(args.worker_prefetch))
+        self.assertIn(4, _ints(args.host_cache_batches))
+        self.assertEqual(_ints(args.length_bucket_batches), (4,))
 
 
 if __name__ == "__main__":

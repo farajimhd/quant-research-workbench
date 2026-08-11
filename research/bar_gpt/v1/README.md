@@ -295,8 +295,8 @@ The canonical workstation training command is:
 python -B -m research.bar_gpt.v1.run_train
 ```
 
-The one-epoch model comparison is defined by four fixed, equal-effective-batch
-runs. Plan all four without starting training:
+The one-epoch model comparison is defined by three fixed, equal-effective-batch
+runs. Plan all three without starting training:
 
 ```powershell
 python -B -m research.bar_gpt.v1.run_train_model_comparison
@@ -308,7 +308,6 @@ Start one run explicitly; long runs are deliberately never chained:
 python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size current --execute
 python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size medium --execute
 python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size large --execute
-python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size xlarge --execute
 ```
 
 | Run | Width | Layers | Heads / KV heads | Microbatch | Accumulation | Effective blocks/update |
@@ -316,9 +315,8 @@ python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size xlarge 
 | Current | 384 | 8 | 8 / 4 | 32 | 1 | 32 |
 | Medium | 512 | 12 | 8 / 4 | 16 | 2 | 32 |
 | Large | 768 | 12 | 12 / 4 | 8 | 4 | 32 |
-| XLarge | 1024 | 16 | 16 / 8 | 8 | 4 | 32 |
 
-All four use one epoch, dropout `0.08`, the same certified training/validation
+All three use one epoch, dropout `0.08`, the same certified training/validation
 populations, and W&B project `bar gpt`. Run names use one consistent schema and
 include model size, microbatch, accumulation, and a timestamp. Checkpoint resume
 continues the original W&B run ID rather than creating a same-name replacement.
@@ -357,15 +355,16 @@ the catalog. It prints per-shard rate and ETA while indexing. Completed shard
 indices are durably cached under `model_discovery/manifest_index_v1`, so an
 interrupted manifest build resumes without reopening completed shards.
 
-The architecture stage contains eight width/depth shapes from 384x8 through
-1024x16, with an effective batch of 32 blocks for every run. Each model sees the
+The architecture stage contains seven width/depth shapes from 384x8 through
+1024x12, with an effective batch of 32 blocks for every run. The costly
+1024x16 experiment is intentionally excluded. Each model sees the
 same manifest for two epochs, a 4-million-origin warm-up, and one cosine decay
 over the complete two-epoch sample clock. The best two architectures advance to
 the fixed learning-rate (`1.5e-4`, `3e-4`) by dropout (`0.04`, `0.08`, `0.12`)
 grid. Exact duplicate anchor recipes are reused. The best two refined recipes
 are then evaluated on the locked test.
 
-Campaign state is durable under `model_discovery/campaign_state_v5.json`; rerunning
+Campaign state is durable under `model_discovery/campaign_state_v8.json`; rerunning
 the same command verifies the manifest and skips completed runs. Training,
 monitoring, validation, and locked-test metrics are written asynchronously.
 W&B uses the distinct project `bar gpt model discovery` and non-overlapping
@@ -388,14 +387,14 @@ python -B -m research.bar_gpt.v1.run_model_discovery_final_validation
 ```
 
 The evaluator runs architectures sequentially using their certified training
-microbatches, writes each result under `model_discovery/final_validation_v2`,
+microbatches, writes each result under `model_discovery/final_validation_v3`,
 and logs to the separate W&B project
 `bar gpt model discovery final validation` with `final_validation_*` metric
 groups. Its durable state skips a checkpoint only when path, size, timestamp,
 panel, and metric namespace still match. The consolidated JSON and CSV record
 the source training-origin count and an explicit completion flag, so an
 interrupted architecture checkpoint remains visible but cannot be mistaken for
-a 200-million-origin model. Use `--dry-run` to verify all eight checkpoint paths
+a 200-million-origin model. Use `--dry-run` to verify all seven checkpoint paths
 without loading a model or CUDA.
 
 The explicit training panel is shuffled hierarchically: ticker-month groups are
@@ -565,10 +564,12 @@ bounded family/view macro summaries.
 The joint candidate sweep measures loader wait, GPU time, origins/second,
 encoded tokens/second, parameter count, effective blocks per update, the
 recommended accumulation for a 32-block target update, and peak device memory.
-It crosses Current (13.7M), Medium (38.9M), Large (78.0M), and XLarge (193.2M)
-architectures with bounded model-appropriate microbatches. There is no Small
-candidate. The default fit sweep uses one microbatch per optimizer step so all
-four architectures finish in bounded time; use its recommended accumulation
+It crosses Current (13.7M), Medium (38.9M), and Large (78.0M) architectures
+with bounded model-appropriate microbatches. XLarge remains available only as
+an explicit custom candidate; it is not part of routine profiling or model
+comparison. There is no Small candidate. The default fit sweep uses one
+microbatch per optimizer step so all three architectures finish in bounded time;
+use its recommended accumulation
 for an equal-effective-batch follow-up. OOM candidates fail independently and
 larger microbatches of the same model/device shape are skipped; only candidates
 at or below 90% reserved memory are eligible. `torch.compile` remains an
@@ -577,6 +578,12 @@ update. Sixteen worker-owned offline mmap streams are held fixed so the sweep
 isolates model and GPU microbatch effects. Promote a selected per-model profile
 into a controlled equal-origin training comparison only after measuring it on
 the training workstation.
+
+The separate offline-loader benchmark does not run model forward or backward
+compute, so Task Manager GPU utilization during that benchmark is not training
+utilization. Its default v12 grid contains 12 focused worker/prefetch/cache
+candidates, including the production 16-worker, prefetch-2, four-host-batch,
+length-bucket-4 shape; the former 72-way Cartesian grid is no longer the default.
 
 ### Offline training-ready tensor shards
 

@@ -44,17 +44,24 @@ def _ints(value: str) -> tuple[int, ...]:
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark the complete v11 mmap, worker, collation, pinning, and CUDA handoff path."
+        description=(
+            "Benchmark the v12 mmap loader, worker, collation, pinning, and CUDA handoff path. "
+            "This is a loader benchmark; it does not run model forward or backward compute."
+        )
     )
     parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12")
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="2020-01-01")
     parser.add_argument("--tickers", default="")
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--workers", default="4,8,12,16")
-    parser.add_argument("--worker-prefetch", default="1,2,4")
-    parser.add_argument("--host-cache-batches", default="2,4,8")
-    parser.add_argument("--length-bucket-batches", default="0,2")
+    # Twelve focused candidates bracket the production 16/2/4/4 shape without
+    # the former 72-way Cartesian sweep. Larger queues were already shown to
+    # amplify host memory and page-cache pressure without establishing a
+    # training-throughput benefit.
+    parser.add_argument("--workers", default="8,12,16")
+    parser.add_argument("--worker-prefetch", default="1,2")
+    parser.add_argument("--host-cache-batches", default="2,4")
+    parser.add_argument("--length-bucket-batches", default="4")
     parser.add_argument("--warmup-batches", type=int, default=4)
     parser.add_argument("--measured-batches", type=int, default=32)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -223,7 +230,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         ),
     )
     payload = {
-        "contract": "bar_gpt_v11_offline_loader_benchmark_v1",
+        "contract": "bar_gpt_v12_offline_loader_benchmark_v1",
+        "scope": "loader_and_h2d_only_no_model_compute",
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "shard_root": str(root),
         "device": str(device),

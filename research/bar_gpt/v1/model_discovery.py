@@ -25,7 +25,7 @@ from research.bar_gpt.v1.offline_shards import (
 )
 
 
-DISCOVERY_CONTRACT_VERSION = 7
+DISCOVERY_CONTRACT_VERSION = 8
 DISCOVERY_WANDB_PROJECT = "bar gpt model discovery"
 DISCOVERY_ORIGIN_BARS_1S = 4_096
 DISCOVERY_TRAIN_ORIGINS_PER_EPOCH = 100_000_000
@@ -53,7 +53,6 @@ ARCHITECTURE_GRID: tuple[Architecture, ...] = (
     Architecture("depth_512x16", 512, 16, 8, 4, 8, 4),
     Architecture("mid_768x12", 768, 12, 12, 6, 8, 4),
     Architecture("width_1024x12", 1024, 12, 16, 8, 8, 4),
-    Architecture("xlarge_1024x16", 1024, 16, 16, 8, 8, 4),
 )
 
 
@@ -499,6 +498,9 @@ def _trainer_command(
         "--batch-size", str(architecture.microbatch),
         "--gradient-accumulation-steps", str(architecture.accumulation),
         "--loader-workers", str(workers),
+        "--ready-queue-blocks", "128",
+        "--worker-prefetch-batches", "2",
+        "--offline-length-bucket-batches", "4",
         "--d-model", str(architecture.d_model),
         "--n-layers", str(architecture.n_layers),
         "--n-heads", str(architecture.n_heads),
@@ -573,7 +575,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if unknown:
         raise ValueError(f"unknown architectures: {unknown}")
     output_root = Path(args.output_root)
-    manifest_path = output_root / "fixed_panels_v6.json"
+    manifest_path = output_root / "fixed_panels_v8.json"
     print(f"W&B project: {args.wandb_project}", flush=True)
     print("Metric namespaces: monitor_*, validation_*, locked_test_*", flush=True)
     print(
@@ -608,7 +610,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             config=discovery_data_config(Path(args.shard_root)),
         )
         print(f"Reusing verified manifest: {manifest_path}", flush=True)
-    state_path = output_root / "campaign_state_v6.json"
+    state_path = output_root / "campaign_state_v8.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {
         "contract_version": DISCOVERY_CONTRACT_VERSION,
         "campaign_id": time.strftime("%Y%m%d-%H%M%S"),
@@ -617,6 +619,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         "profiles": [],
         "locked_test": {},
     }
+    if int(state.get("contract_version", -1)) != DISCOVERY_CONTRACT_VERSION:
+        raise RuntimeError(f"unsupported discovery campaign state: {state_path}")
+    if Path(str(state.get("manifest", ""))).resolve() != manifest_path.resolve():
+        raise RuntimeError("discovery campaign state belongs to a different fixed-panel manifest")
     campaign_id = str(state["campaign_id"])
     runs: dict[str, str] = dict(state.get("runs", {}))
     for index, name in enumerate(names, start=1):

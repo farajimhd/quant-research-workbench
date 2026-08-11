@@ -16,6 +16,7 @@ from research.bar_gpt.v1.model_discovery import (
     ARCHITECTURE_GRID,
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_SHARD_ROOT,
+    DISCOVERY_CONTRACT_VERSION,
     DISCOVERY_EPOCHS,
     discovery_data_config,
     load_discovery_manifest,
@@ -23,7 +24,7 @@ from research.bar_gpt.v1.model_discovery import (
 from research.bar_gpt.v1.offline_shards import verify_shard_catalog_lock
 
 
-FINAL_VALIDATION_CONTRACT_VERSION = 6
+FINAL_VALIDATION_CONTRACT_VERSION = 7
 FINAL_VALIDATION_WANDB_PROJECT = "bar gpt model discovery final validation"
 
 
@@ -221,11 +222,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     discovery_root = Path(args.discovery_root)
     shard_root = Path(args.shard_root)
     verify_shard_catalog_lock(shard_root)
-    manifest_path = Path(args.manifest) if args.manifest else discovery_root / "fixed_panels_v6.json"
-    campaign_state_path = discovery_root / "campaign_state_v6.json"
+    manifest_path = Path(args.manifest) if args.manifest else discovery_root / "fixed_panels_v8.json"
+    campaign_state_path = discovery_root / "campaign_state_v8.json"
     if not campaign_state_path.is_file():
         raise RuntimeError(f"discovery campaign state is missing: {campaign_state_path}")
     campaign_state = json.loads(campaign_state_path.read_text(encoding="utf-8"))
+    if int(campaign_state.get("contract_version", -1)) != DISCOVERY_CONTRACT_VERSION:
+        raise RuntimeError("final validation requires the active discovery campaign contract")
+    if Path(str(campaign_state.get("manifest", ""))).resolve() != manifest_path.resolve():
+        raise RuntimeError("discovery campaign state belongs to a different fixed-panel manifest")
     manifest = load_discovery_manifest(
         manifest_path,
         shard_root=shard_root,
@@ -242,7 +247,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         batch_size_override=int(args.batch_size),
     )
     target_training_origins = int(manifest["targets"]["train_origins_per_epoch"]) * DISCOVERY_EPOCHS
-    output_root = discovery_root / "final_validation_v2"
+    output_root = discovery_root / "final_validation_v3"
     state_path = output_root / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {
         "contract_version": FINAL_VALIDATION_CONTRACT_VERSION,
