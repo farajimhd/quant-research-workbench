@@ -349,8 +349,16 @@ Replay and Backtest decisions.
 
 ## 8. Portfolio authority
 
-- [ ] Make Portfolio the exclusive account allocation, capital, and risk authority.
-- [ ] Define account/account-group ownership.
+- [x] Make Portfolio the exclusive account allocation, capital, and risk
+      authority. Strategy and confirmed external proposals enter
+      `PortfolioManagementEngine.approve`; OMS requires the matching durable
+      decision/reservation before submission. Dormant backend direct
+      submit/reply/modify/cancel helpers now fail closed, while broker what-if
+      preview remains non-executing.
+- [x] Define account/account-group ownership. Stable application account keys
+      bind one exact runtime broker account and policy; Run Plan mandates bind
+      Strategy allocation to those keys; validated Portfolio groups declare
+      their member keys and group exposure limits.
 - [x] Add cross-run and cross-strategy admission arbitration for processes
       sharing the authoritative trading journal.
 - [x] Replace process-local admission safety with SQLite-WAL-backed account and
@@ -362,7 +370,11 @@ Replay and Backtest decisions.
 - [x] Implement portfolio-level entry kill and emergency-flatten controls.
 - [x] Return approve, resize, defer, or reject dispositions. Queueing remains a
       scheduler concern and is not represented as Portfolio approval.
-- [ ] Treat run priority as an arbitration input, never authority.
+- [x] Remove generic run priority as an authority. Configuration migration
+      deletes legacy Run Plan, mandate, and capital-request priority fields;
+      allocation and concurrent admission are decided only by Portfolio policy,
+      current broker/canonical state, durable reservations, and fenced account
+      or group capacity.
 - [ ] Reconcile reservations, positions, cash, and broker truth after restart.
 - [x] Journal every Portfolio decision and reservation transition.
 - [x] Expose Portfolio configuration and operational UI/API, including distinct

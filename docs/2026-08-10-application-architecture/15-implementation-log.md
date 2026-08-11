@@ -304,6 +304,18 @@ bounded direct ClickHouse paths remain documented in
     The application-wide response item remains open for non-QMD clients and
     uniform success envelopes. Seventy-one focused backend tests, Python compile,
     and a direct typed-stream boundary smoke check passed.
+50. Closed the remaining callable direct-broker bypass in the backend. The
+    dormant real-live submit path now permits only non-executing IBKR what-if
+    preview; direct submit, reply confirmation, modify, and cancel calls fail
+    before account resolution or broker I/O. The low-level unused DELETE helper
+    was removed. Runnable execution remains `TradingRuntime` to Portfolio to
+    OMS to the broker adapter, and OMS independently rejects an intent without the exact
+    durable Portfolio decision and reservation. Reconciled stable account/group
+    ownership and removed generic run-priority fields as already-shipped
+    Portfolio authority. Seven exact bypass/Portfolio/OMS causal-authority tests
+    and Python compile passed. Broader async suites exceeded their bounded test
+    timeouts and are not counted as passing; restart reconciliation remains an
+    open backlog acceptance item.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

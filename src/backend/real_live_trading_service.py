@@ -437,6 +437,10 @@ def real_live_portfolio_for_account(account: RealLiveAccount, *, now: str | None
 
 
 def submit_real_live_order(account_type: str, order: dict[str, Any], *, preview: bool = False, account_keys: str | list[str] | None = None) -> dict[str, Any]:
+    if not preview:
+        raise RuntimeError(
+            "Direct broker order submission is retired; submit a semantic intent through Portfolio and OMS."
+        )
     selected_accounts = resolve_real_live_accounts(account_keys, account_type)
     normalized_order = normalize_live_order_intent(order)
     tradability = require_tradable_symbol(normalized_order["symbol"])
@@ -460,6 +464,10 @@ def submit_real_live_order(account_type: str, order: dict[str, Any], *, preview:
 
 
 def submit_real_live_order_for_account(account: RealLiveAccount, order: dict[str, Any], *, preview: bool = False) -> dict[str, Any]:
+    if not preview:
+        raise RuntimeError(
+            "Direct broker order submission is retired; submit a semantic intent through Portfolio and OMS."
+        )
     if not account.account_id:
         raise RuntimeError(f"Missing configured IBKR {account.label} account id.")
     ibkr_order = ibkr_order_payload(order, account.account_id)
@@ -613,38 +621,21 @@ def _positive_optional(value: Any) -> float | None:
 
 
 def reply_real_live_order(reply_id: str, confirmed: bool) -> dict[str, Any]:
-    reply_id = str(reply_id or "").strip()
-    if not reply_id:
-        raise ValueError("IBKR reply id is required.")
-    with IBKR_ORDER_LANE:
-        response = ibkr_post_json(
-            f"/iserver/reply/{urllib.parse.quote(reply_id, safe='')}",
-            {"confirmed": bool(confirmed)},
-            timeout=10,
-        )
-    return {"reply_id": reply_id, "confirmed": bool(confirmed), "broker_response": response, "requires_reply": response_requires_reply(response)}
+    raise RuntimeError(
+        "Direct broker reply confirmation is retired; broker replies are owned by OMS reconciliation."
+    )
 
 
 def modify_real_live_order(account_key: str, order_id: str, order: dict[str, Any]) -> dict[str, Any]:
-    account = resolve_real_live_accounts([account_key])[0]
-    if not account.account_id:
-        raise RuntimeError(f"Missing configured IBKR {account.label} account id.")
-    normalized = normalize_live_order_intent(order)
-    payload = ibkr_order_payload(normalized, account.account_id)
-    path = f"/iserver/account/{urllib.parse.quote(account.account_id, safe='')}/order/{urllib.parse.quote(str(order_id), safe='')}"
-    with IBKR_ORDER_LANE:
-        response = ibkr_post_json(path, payload, timeout=10)
-    return {"account": public_account(account), "order_id": str(order_id), "broker_response": response, "requires_reply": response_requires_reply(response)}
+    raise RuntimeError(
+        "Direct broker order modification is retired; replacements are owned by OMS."
+    )
 
 
 def cancel_real_live_order(account_key: str, order_id: str) -> dict[str, Any]:
-    account = resolve_real_live_accounts([account_key])[0]
-    if not account.account_id:
-        raise RuntimeError(f"Missing configured IBKR {account.label} account id.")
-    path = f"/iserver/account/{urllib.parse.quote(account.account_id, safe='')}/order/{urllib.parse.quote(str(order_id), safe='')}"
-    with IBKR_ORDER_LANE:
-        response = ibkr_delete_json(path, timeout=10)
-    return {"account": public_account(account), "order_id": str(order_id), "broker_response": response}
+    raise RuntimeError(
+        "Direct broker order cancellation is retired; cancellations are owned by OMS."
+    )
 
 
 def normalize_submitted_order(order: dict[str, Any], response: Any, account: RealLiveAccount | None = None) -> dict[str, Any]:
@@ -1273,10 +1264,6 @@ def ibkr_get_optional(path: str, *, timeout: int) -> tuple[Any, str]:
 
 def ibkr_post_json(path: str, payload: dict[str, Any], *, timeout: int) -> Any:
     return http_json("POST", f"{ibkr_base_url()}{path}", payload=payload, timeout=timeout, allow_self_signed=True)
-
-
-def ibkr_delete_json(path: str, *, timeout: int) -> Any:
-    return http_json("DELETE", f"{ibkr_base_url()}{path}", timeout=timeout, allow_self_signed=True)
 
 
 def http_json(method: str, url: str, payload: dict[str, Any] | None = None, *, timeout: int, allow_self_signed: bool = False) -> Any:

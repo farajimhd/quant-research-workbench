@@ -77,7 +77,14 @@ Portfolio Management exclusively owns:
 - portfolio-level loss, drawdown and flatten controls;
 - acceptance, resize, defer, queue, or rejection of proposals.
 
-Priority fields on individual runs are inputs to this authority; they are not themselves arbitration. Portfolio admission now acquires SQLite-WAL-backed account and account-group leases before reloading and committing durable reservations. Every acquisition advances a fencing epoch, expires after a bounded TTL, and can be released only by the exact owner/epoch; a stale owner cannot clear a newer lease. Process-local locks remain useful for scheduling inside one broker session but are no longer the shared-capital authority.
+Generic run-priority fields are not an authority or an arbitration shortcut and
+are removed by configuration migration. Portfolio admission acquires
+SQLite-WAL-backed account and account-group leases before reloading and
+committing durable reservations. Every acquisition advances a fencing epoch,
+expires after a bounded TTL, and can be released only by the exact owner/epoch;
+a stale owner cannot clear a newer lease. Process-local locks remain useful for
+scheduling inside one broker session but are no longer the shared-capital
+authority.
 
 ## 5. OMS authority
 
@@ -144,15 +151,18 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
   remain incomplete; this is a disclosed partial implementation, not mode
   parity. The Backtest page now projects canonical performance, Portfolio,
   positions, orders, executions, and closed trades from the same run journal.
-- Live still contains legacy paths and has not reached controller parity.
+- Live still has data/UI controller-parity work, but its dormant direct broker
+  submit/reply/modify/cancel helpers now fail closed. Broker what-if preview
+  remains non-executing; executable intents route through Portfolio and OMS.
 - Portfolio admission is fenced across backend/run processes sharing the same authoritative trading journal. A multi-host deployment would still need to move the same lease/reservation contract to a networked transactional authority.
 - The canonical Portfolio projection now exposes a bounded operational metrics
   envelope derived from the durable journal and current state: disposition and
   reservation-transition counts, active reserved notional/risk, reconciliation
   issues, OMS state counts, unknown outcomes, protection deficits, and
   reconciliation failures. Canvas renders the safety-critical subset.
-- Configuration publishing emits immutable compiled Run Plans, but Live still
-  has legacy paths that do not all execute through the shared mode controller.
+- Configuration publishing emits immutable compiled Run Plans. Live still has
+  shared-controller migration work, but no current backend route or retained
+  legacy order helper can issue a broker command outside OMS.
 - Account bindings are partly environment-backed as desired, but broker/account readiness and generated deployment review are not yet one complete flow.
 
 ---
