@@ -37,6 +37,7 @@ from src.backend.application_registry import (
     application_registry_payload,
     runtime_capability_registry_payload,
 )
+from src.backend.bounded_cache import BoundedTtlCache
 from src.backend.canvas_preview_service import canvas_preview_payload, scanner_snapshot_payload
 from src.backend.canonical_backtest_service import backtest_comparison_projection
 from src.backend.canonical_trading_service import canonical_trading_state
@@ -228,7 +229,9 @@ SERVICE_DASHBOARD_LOG_EVENTS = {
 }
 SERVICE_TABLE_STATE_LIMIT = 32
 SERVICE_TABLE_STATE_CACHE_SECONDS = 30.0
+SERVICE_TABLE_STATE_CACHE_MAX_ENTRIES = 32
 SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS = 20.0
+SERVICE_HISTOGRAM_CACHE_MAX_ENTRIES = 64
 SERVICE_NEWS_HISTOGRAM_BIN_SECONDS = 900
 SERVICE_SEC_HISTOGRAM_CACHE_SECONDS = 20.0
 SERVICE_SEC_HISTOGRAM_BIN_SECONDS = SERVICE_NEWS_HISTOGRAM_BIN_SECONDS
@@ -257,9 +260,21 @@ SERVICE_TABLE_TIME_COLUMN_CANDIDATES = (
     "period_end_date",
     "list_date",
 )
-_SERVICE_TABLE_STATE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_SERVICE_NEWS_HISTOGRAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_SERVICE_SEC_HISTOGRAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SERVICE_TABLE_STATE_CACHE = BoundedTtlCache[str, dict[str, Any]](
+    max_entries=SERVICE_TABLE_STATE_CACHE_MAX_ENTRIES,
+    ttl_seconds=SERVICE_TABLE_STATE_CACHE_SECONDS,
+    contract_revision="service-table-state.v1",
+)
+_SERVICE_NEWS_HISTOGRAM_CACHE = BoundedTtlCache[str, dict[str, Any]](
+    max_entries=SERVICE_HISTOGRAM_CACHE_MAX_ENTRIES,
+    ttl_seconds=SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS,
+    contract_revision="service-news-histogram.v1",
+)
+_SERVICE_SEC_HISTOGRAM_CACHE = BoundedTtlCache[str, dict[str, Any]](
+    max_entries=SERVICE_HISTOGRAM_CACHE_MAX_ENTRIES,
+    ttl_seconds=SERVICE_SEC_HISTOGRAM_CACHE_SECONDS,
+    contract_revision="service-sec-histogram.v1",
+)
 
 SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     "qmd": [
@@ -1153,8 +1168,8 @@ def service_database_table_state(service_id: str) -> dict[str, Any]:
     targets = SERVICE_DATABASE_TABLES.get(service_id, [])
     if not targets:
         return {"rows": [], "error": ""}
-    cached_at, cached_payload = _SERVICE_TABLE_STATE_CACHE.get(service_id, (0.0, {}))
-    if cached_payload and time.monotonic() - cached_at < SERVICE_TABLE_STATE_CACHE_SECONDS:
+    cached_payload = _SERVICE_TABLE_STATE_CACHE.get(service_id)
+    if cached_payload:
         return cached_payload
     try:
         stats = clickhouse_table_stats(targets)
@@ -1174,7 +1189,7 @@ def service_database_table_state(service_id: str) -> dict[str, Any]:
             ],
             "error": redact_log_text(f"{type(exc).__name__}: {exc}"),
         }
-        _SERVICE_TABLE_STATE_CACHE[service_id] = (time.monotonic(), payload)
+        _SERVICE_TABLE_STATE_CACHE.set(service_id, payload)
         return payload
 
     rows: list[dict[str, Any]] = []
@@ -1202,7 +1217,7 @@ def service_database_table_state(service_id: str) -> dict[str, Any]:
             }
         )
     payload = {"rows": rows, "error": ""}
-    _SERVICE_TABLE_STATE_CACHE[service_id] = (time.monotonic(), payload)
+    _SERVICE_TABLE_STATE_CACHE.set(service_id, payload)
     return payload
 
 
@@ -1246,8 +1261,8 @@ def service_news_histogram() -> dict[str, Any]:
     window_start_utc = window_start_et.astimezone(UTC)
     window_end_utc = window_end_et.astimezone(UTC)
     cache_key = f"{window_start_et.date().isoformat()}:{safe_bin_seconds}"
-    cached_at, cached_payload = _SERVICE_NEWS_HISTOGRAM_CACHE.get(cache_key, (0.0, {}))
-    if cached_payload and time.monotonic() - cached_at < SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS:
+    cached_payload = _SERVICE_NEWS_HISTOGRAM_CACHE.get(cache_key)
+    if cached_payload:
         return cached_payload
 
     bin_count = int(((window_end_utc - window_start_utc).total_seconds() + safe_bin_seconds - 1) // safe_bin_seconds)
@@ -1314,7 +1329,7 @@ def service_news_histogram() -> dict[str, Any]:
         "window_start_et": window_start_et.isoformat(),
         "window_start_utc": window_start_utc.isoformat().replace("+00:00", "Z"),
     }
-    _SERVICE_NEWS_HISTOGRAM_CACHE[cache_key] = (time.monotonic(), payload)
+    _SERVICE_NEWS_HISTOGRAM_CACHE.set(cache_key, payload)
     return payload
 
 
@@ -2154,8 +2169,8 @@ def service_sec_histogram(
 ) -> dict[str, Any]:
     safe_bin_seconds = SERVICE_SEC_HISTOGRAM_BIN_SECONDS
     cache_key = f"{window_start_et.date().isoformat()}:{database}:{safe_bin_seconds}"
-    cached_at, cached_payload = _SERVICE_SEC_HISTOGRAM_CACHE.get(cache_key, (0.0, {}))
-    if cached_payload and time.monotonic() - cached_at < SERVICE_SEC_HISTOGRAM_CACHE_SECONDS:
+    cached_payload = _SERVICE_SEC_HISTOGRAM_CACHE.get(cache_key)
+    if cached_payload:
         return cached_payload
 
     bin_count = int(((window_end_utc - window_start_utc).total_seconds() + safe_bin_seconds - 1) // safe_bin_seconds)
@@ -2304,7 +2319,7 @@ def service_sec_histogram(
         "window_start_et": window_start_et.isoformat(),
         "window_start_utc": window_start_utc.isoformat().replace("+00:00", "Z"),
     }
-    _SERVICE_SEC_HISTOGRAM_CACHE[cache_key] = (time.monotonic(), payload)
+    _SERVICE_SEC_HISTOGRAM_CACHE.set(cache_key, payload)
     return payload
 
 

@@ -128,6 +128,12 @@ This is an application-side composition layer only. It does not change any
 producer service. Existing service status, coverage and database contracts are
 used when present, and absent structured evidence remains visible as unknown.
 
+Backend service-table and News/SEC histogram projections use a shared
+thread-safe TTL/LRU cache contract with explicit entry limits and contract
+revisions. Source-revision-aware invalidation is available to callers; the
+remaining chart and mode-specific caches still need the same explicit source
+revision discipline before application-wide cache governance is complete.
+
 QMD Gateway and QMD History now additionally publish/compose a bounded
 operational contract. QMD reports live-event lag, persistence and drop
 counters, maintenance/gap state, writer-lane transitions, pending rows and

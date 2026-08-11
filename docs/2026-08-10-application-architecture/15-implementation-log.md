@@ -326,6 +326,13 @@ bounded direct ClickHouse paths remain documented in
     source events and generic background continuations remain open. Thirty-four
     focused Python tests, five Rust computation-target tests, Rust formatting,
     Python compile, and the QMD all-target compile gate passed.
+52. Bounded the backend service-monitor projections. Service-table and News/SEC
+    histogram caches now share a thread-safe TTL/LRU implementation with hard
+    entry limits, explicit contract revisions, optional source-revision keys,
+    and eviction metrics instead of process-lifetime dictionaries. The broader
+    cache backlog remains open for chart and mode-specific source-revision
+    invalidation. Four focused tests, including the real service-table helper,
+    Python compile, and diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

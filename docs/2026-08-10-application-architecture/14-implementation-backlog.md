@@ -217,6 +217,10 @@ budgets and invalid scope broadening fails configuration validation.
 - [ ] Fill reconnect gaps or require resnapshot.
 - [ ] Isolate budgets for commands, discovery, charts, simulation, and offline work.
 - [ ] Bound and version caches.
+  - [x] Replace backend service-table and News/SEC histogram dictionaries with
+        bounded thread-safe TTL/LRU caches carrying explicit contract revisions.
+  - [ ] Add source/calculation revision invalidation to chart and remaining
+        mode-specific caches before closing the application-wide item.
 - [ ] Enforce user, workspace, environment, mode, account, and command authority.
 - [ ] Resolve secrets and broker identifiers server-side.
 - [x] Aggregate service readiness separately from data readiness.
