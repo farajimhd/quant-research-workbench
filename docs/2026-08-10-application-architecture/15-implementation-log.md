@@ -856,6 +856,16 @@ bounded direct ClickHouse paths remain documented in
      including actual three-worker QMD catalog lineage and sequential
      no-leakage tests; all migrated modules compiled. Deferred producer and
      broker services were unchanged.
+109. Added durable causal lineage to generic market-data background jobs. Each
+     submission stores a correlation root and parent cause, workers receive
+     both identities across the subprocess boundary, and every append-only job
+     event carries correlation, event causation, and parent causation. An
+     autonomous event derives a stable identity from its job and event fields;
+     pause/cancel/retry actions preserve the active command cause. Stateful
+     retry keeps the original build correlation and records both the previous
+     failure cause and retry command. Forty-four job, request-context, and QMD
+     client tests passed and the changed modules compiled. Remaining raw market
+     source-event lineage stays open at QMD's source schema boundary.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -658,8 +658,13 @@ broker command outside OMS.
         no request or domain-specific predecessor exists; derive correlation
         from the run and causation from the event identity and clock while
         preserving explicit Strategy/Portfolio/OMS lineage.
-  - [ ] Give autonomous source events and generic background continuations
-        explicit causation lineage when no HTTP request context exists.
+  - [x] Give generic durable background continuations explicit causation
+        lineage. Market-data jobs persist their correlation root, worker parent
+        cause, per-event autonomous cause, and retry ancestry across subprocess
+        and restart boundaries; command-triggered events retain the request
+        cause.
+  - [ ] Give remaining autonomous market-source events explicit causation
+        lineage when no HTTP request context exists.
 - [x] Add QMD transition/gap/lag/cache/queue metrics.
 - [x] Add discovery computation-cost metrics.
 - [x] Add Portfolio disposition/reservation and OMS reconciliation metrics.

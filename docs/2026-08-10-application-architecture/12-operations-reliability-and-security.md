@@ -95,6 +95,14 @@ submission receives its own copied context, so QMD, Canvas, reference/facts,
 account, and market-data composition keeps request lineage across worker
 threads and cannot leak a previous submission identity.
 
+Durable market-data background jobs persist a lineage schema at submission,
+pass the job correlation root and parent causation into their worker process,
+and stamp every append-only event with correlation, event causation, and parent
+causation. Autonomous events derive stable causation from the job and event
+identity; pause/cancel/retry events retain the active command cause. A stateful
+retry keeps the original build correlation root and cites both the retry command
+and prior build cause.
+
 Portfolio/OMS operational counts are explicitly bounded to the newest 5,000
 journal records per authority and carry a truncation flag. Current managed-group
 state and active reservation totals are computed from durable state rather than

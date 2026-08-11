@@ -7,13 +7,14 @@ import subprocess
 import sys
 import uuid
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from src.data_provider.config import BuildRequest
 from src.data_provider.file_lock import file_lock
 from src.backend.lifecycle_contract import lifecycle_projection
+from src.request_context import causal_identity, current_request_identity, stable_causal_identity
 
 
 JOB_DIR = "jobs"
@@ -22,6 +23,8 @@ EVENTS_FILE = "events.jsonl"
 CANCEL_FILE = "cancel.requested"
 PAUSE_FILE = "pause.requested"
 LOG_FILE = "worker.log"
+BUILD_CORRELATION_ENV = "QW_BUILD_CORRELATION_ID"
+BUILD_CAUSATION_ENV = "QW_BUILD_PARENT_CAUSATION_ID"
 
 
 class BuildCancelled(RuntimeError):
@@ -70,11 +73,11 @@ def log_file(path: Path) -> Path:
 
 
 def utc_now() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def generated_build_name(request: BuildRequest, job_id: str) -> str:
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     return f"market_data_{request.start_date.isoformat()}_{request.end_date.isoformat()}_{timestamp}_{job_id[:6]}"
 
 
@@ -114,6 +117,10 @@ def append_event(path: Path, event: dict[str, Any]) -> None:
     payload = dict(event)
     payload.setdefault("build_id", path.name)
     payload.setdefault("emitted_at", utc_now())
+    lineage = _event_lineage(path, payload)
+    payload.setdefault("correlation_id", lineage["correlation_id"])
+    payload.setdefault("causation_id", lineage["causation_id"])
+    payload.setdefault("parent_causation_id", lineage["parent_causation_id"])
     with file_lock(events_lock_file(path)):
         with events_file(path).open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, default=str, sort_keys=True) + "\n")
@@ -312,11 +319,18 @@ def submit_build_job(
     *,
     session_workers: int = 8,
     polars_threads: int = 10,
+    parent_lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     job_id = uuid.uuid4().hex
     request.build_id = job_id
     request.build_name = request.build_name or generated_build_name(request, job_id)
     path = job_dir(request.processed_root, job_id)
+    lineage = causal_identity(
+        correlation_seed=f"market-data-build:{job_id}",
+        causation_seed=request.resume_from_build_id or request.build_name or job_id,
+    )
+    if parent_lineage and parent_lineage.get("correlation_id"):
+        lineage["correlation_id"] = str(parent_lineage["correlation_id"])
     payload = {
         "job_id": job_id,
         "build_name": request.build_name,
@@ -327,6 +341,15 @@ def submit_build_job(
         "finished_at": None,
         "request": request_to_dict(request),
         "resources": {"session_workers": session_workers, "polars_threads": polars_threads},
+        "lineage": {
+            "schema_version": 1,
+            "correlation_id": lineage["correlation_id"],
+            "causation_id": lineage["causation_id"],
+            "parent_build_id": request.resume_from_build_id,
+            "parent_causation_id": str(parent_lineage.get("causation_id") or "")
+            if parent_lineage
+            else "",
+        },
     }
     write_job(path, payload)
     return start_build_worker(path, payload, polars_threads=polars_threads)
@@ -337,6 +360,9 @@ def start_build_worker(path: Path, payload: dict[str, Any], *, polars_threads: i
     pause_file(path).unlink(missing_ok=True)
     env = os.environ.copy()
     env["POLARS_MAX_THREADS"] = str(polars_threads)
+    lineage = payload.get("lineage") if isinstance(payload.get("lineage"), dict) else {}
+    env[BUILD_CORRELATION_ENV] = str(lineage.get("correlation_id") or stable_causal_identity("job", path.name))
+    env[BUILD_CAUSATION_ENV] = str(lineage.get("causation_id") or stable_causal_identity("event", path.name))
     with log_file(path).open("a", encoding="utf-8") as log:
         process = subprocess.Popen(
             [sys.executable, "-m", "src.data_provider.worker", str(path)],
@@ -357,6 +383,49 @@ def start_build_worker(path: Path, payload: dict[str, Any], *, polars_threads: i
     return attach_job_summary(payload)
 
 
+def _event_lineage(path: Path, event: dict[str, Any]) -> dict[str, str]:
+    active = current_request_identity()
+    job_payload = read_job(path)
+    persisted = job_payload.get("lineage") if isinstance(job_payload.get("lineage"), dict) else {}
+    correlation_id = str(
+        persisted.get("correlation_id")
+        or os.environ.get(BUILD_CORRELATION_ENV)
+        or active.get("correlation_id")
+        or stable_causal_identity("job", path.name)
+    )
+    parent_causation_id = str(
+        persisted.get("causation_id")
+        or os.environ.get(BUILD_CAUSATION_ENV)
+        or stable_causal_identity("event", f"{path.name}:submitted")
+    )
+    event_seed = json.dumps(
+        {
+            key: event.get(key)
+            for key in (
+                "artifact_id",
+                "event",
+                "phase",
+                "session_date",
+                "stage",
+                "status",
+                "ticker",
+            )
+            if event.get(key) is not None
+        },
+        default=str,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return {
+        "correlation_id": correlation_id,
+        "causation_id": str(
+            active.get("causation_id")
+            or stable_causal_identity("event", f"{path.name}:{event_seed}")
+        ),
+        "parent_causation_id": parent_causation_id,
+    }
+
+
 def resume_build_job(processed_root: Path, job_id: str, *, session_workers: int | None = None, polars_threads: int | None = None) -> dict[str, Any]:
     source_path = job_dir(processed_root, job_id)
     source_payload = read_job(source_path)
@@ -375,6 +444,9 @@ def resume_build_job(processed_root: Path, job_id: str, *, session_workers: int 
         request,
         session_workers=int(session_workers or source_resources.get("session_workers") or 8),
         polars_threads=int(polars_threads or source_resources.get("polars_threads") or 10),
+        parent_lineage=source_payload.get("lineage")
+        if isinstance(source_payload.get("lineage"), dict)
+        else None,
     )
 
 
