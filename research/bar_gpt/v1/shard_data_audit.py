@@ -76,9 +76,19 @@ def _rank(seed: int, *values: object) -> bytes:
     return hashlib.sha256(text.encode("utf-8")).digest()
 
 
-def _next_month(month: str) -> str:
-    value = dt.date.fromisoformat(f"{month[:7]}-01")
-    return ((value.replace(day=28) + dt.timedelta(days=4)).replace(day=1)).isoformat()
+def _stored_session_interval(sample: LoadedAuditSample) -> tuple[str, str]:
+    """Return the exact effective date interval represented by a shard."""
+    dates: list[dt.date] = []
+    for session in sample.shard.get("sessions", ()):
+        try:
+            dates.append(dt.date.fromisoformat(str(session["local_date"])))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"invalid stored session date in {sample.ref.unit_key}: {session!r}"
+            ) from exc
+    if not dates:
+        raise RuntimeError(f"{sample.ref.unit_key} has no stored sessions to reconstruct")
+    return min(dates).isoformat(), (max(dates) + dt.timedelta(days=1)).isoformat()
 
 
 def _complete_sidecars(root: Path, tickers: Sequence[str] = ()) -> tuple[Path, ...]:
@@ -221,16 +231,14 @@ def reconstruct_clickhouse_example(
             "audit DataConfig is incompatible with the stored shard: "
             f"expected {sample.shard.get('config_hash')}, observed {expected_hash}"
         )
-    month = sample.ref.unit_key.split(":", 1)[1]
-    month_start = f"{month}-01"
-    month_end = _next_month(month)
+    coverage_start, coverage_end = _stored_session_interval(sample)
     resolved = replace(
         data_config,
         tickers=(sample.ref.ticker,),
-        start_date=month_start,
-        end_date=month_end,
-        validation_start_date=month_start,
-        validation_slices=((sample.ref.ticker, month_start, month_end),),
+        start_date=coverage_start,
+        end_date=coverage_end,
+        validation_start_date=coverage_start,
+        validation_slices=((sample.ref.ticker, coverage_start, coverage_end),),
         loader_workers=0,
         persistent_workers=False,
         clickhouse_prefetch_pages=(

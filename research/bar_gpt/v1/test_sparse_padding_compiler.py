@@ -86,12 +86,20 @@ class SparsePaddingCompilerTest(unittest.TestCase):
                 local_date="2019-01-03",
                 block_offset=7,
             ),
-            shard={"config_hash": shard_compatibility_hash(config)},
+            shard={
+                "config_hash": shard_compatibility_hash(config),
+                "sessions": [
+                    {"local_date": "2019-01-02"},
+                    {"local_date": "2019-01-03"},
+                ],
+            },
         )
 
+        dataset_kwargs = {}
+
         class FakeDirectDataset:
-            def __init__(self, **_kwargs) -> None:
-                pass
+            def __init__(self, **kwargs) -> None:
+                dataset_kwargs.update(kwargs)
 
             def __iter__(self):
                 yield rebuilt
@@ -108,6 +116,9 @@ class SparsePaddingCompilerTest(unittest.TestCase):
                 ),
             )
         self.assertIs(observed, rebuilt)
+        resolved = dataset_kwargs["data_config"]
+        self.assertEqual(resolved.start_date, "2019-01-02")
+        self.assertEqual(resolved.end_date, "2019-01-04")
 
 
 if __name__ == "__main__":
