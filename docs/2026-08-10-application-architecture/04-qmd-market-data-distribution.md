@@ -230,6 +230,40 @@ The same source plan supports:
 - live Market AI event/snapshot inputs;
 - historical Market AI replay, model input, and certification reads.
 
+### Historical Scanner membership timeline
+
+Cadence-level historical Watchlists require a distinct QMD History product;
+they must not call the terminal full-market Scanner snapshot once per refresh.
+The product contract is:
+
+```mermaid
+flowchart TD
+    A["One pinned archive/recent event window"]
+    B["Single ticker-partitioned qmd_core replay"]
+    C["Cadence-aligned Core and focused field states"]
+    D["Compiled QMD predicate and rank plan"]
+    E["Causal external-feature value intervals"]
+    F["Bounded membership add, remove and rank-change deltas"]
+    G["Revisioned timeline materialization"]
+    A --> B
+    B --> C
+    C --> D
+    E --> D
+    D --> F
+    F --> G
+```
+
+The backend compiles a consumer-neutral predicate/ranking plan from the
+approved Watchlist. QMD History evaluates QMD-owned dynamic fields through one
+shared replay. Point-in-time Reference and fundamental inputs arrive as bounded
+value intervals carrying their owner, plan version, `available_at`, and source
+revision; QMD does not query or reinterpret producer tables. Output contains an
+initial membership plus only add/remove/expire/rank-change deltas, the exact
+cadence, source-plan hash, calculation revision, external-feature revisions,
+and continuation materialization identity. Work is chunked by a fixed event
+window with state carried between chunks, rather than weakening the configured
+cadence or retaining an unbounded frame-by-symbol matrix.
+
 Each response includes the source plan hash, source revisions, product schema,
 calculation versions, coverage, `as_of`, and continuation cursor.
 

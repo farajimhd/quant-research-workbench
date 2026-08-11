@@ -1023,6 +1023,15 @@ bounded direct ClickHouse paths remain documented in
      Unavailable evidence is explicit and limits are review-only. The managed
      TypeScript/Vite production build passed in the external frontend runtime;
      real-browser inspection remains under the existing localhost policy gate.
+122. Defined the missing historical Watchlist cadence product at the QMD
+     History/backend boundary. One pinned market window is replayed once through
+     shared `qmd_core`; an approved compiled predicate/rank plan consumes QMD
+     fields plus bounded causal external-feature value intervals and emits only
+     explainable membership/rank transitions. Fixed event-window chunks carry
+     state and revision evidence forward, avoiding both repeated all-market
+     snapshots and an unbounded cadence-by-symbol matrix. Backtest wiring stays
+     open until this product is executable and validated; the session-boundary
+     fallback is not relabeled as cadence parity.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

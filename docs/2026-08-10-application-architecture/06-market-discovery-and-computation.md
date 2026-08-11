@@ -112,6 +112,15 @@ projection. Historical mode evaluates identical rules against point-in-time
 Scanner and enrichment states. Manual inclusions are explicit overrides, not a
 substitute for the resolver.
 
+Historical cadence replay uses the QMD History membership-timeline contract,
+not repeated Scanner snapshots. The compiled plan preserves the configured
+refresh interval, inclusion/exclusion operator, ranking, maximum size, expiry,
+and overrides. QMD-owned fields are evaluated during one streaming replay;
+external fields are supplied as causal value intervals from registered backend
+plans. Each emitted transition carries its rule evidence and both market and
+external-feature revisions. A request that cannot supply complete point-in-time
+evidence fails closed instead of holding first-clock membership silently.
+
 ## Computation planner
 
 The planner takes active requests from:

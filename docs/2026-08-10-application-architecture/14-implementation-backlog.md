@@ -532,6 +532,11 @@ load progressively without false continuity.
         holding first-clock membership static.
     - [x] Apply and journal causal activation/deactivation at every exchange-session boundary.
     - [ ] Replay intraday membership events at the configured Watchlist refresh cadence.
+      - [x] Define the single-pass QMD History membership-timeline contract:
+            compiled QMD predicates/ranking, causal external-feature intervals,
+            bounded stateful chunks, transition-only output, and pinned market,
+            calculation, configuration, and feature revisions. Repeated
+            terminal Scanner snapshots are explicitly invalid.
   - [x] Build canonical Backtest performance, Portfolio, position, order,
         execution, and closed-trade result projections.
   - [x] Add strategy/run attribution and comparative analysis projections.

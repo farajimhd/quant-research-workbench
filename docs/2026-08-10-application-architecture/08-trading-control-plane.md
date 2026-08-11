@@ -188,7 +188,10 @@ implemented, but restart reconstruction is not yet authorized as safe resume.
   flat-position evaluations while a synthetic Watchlist assignment is inactive,
   and continues managing an already-open position after removal. Intraday
   membership-event replay at the configured Watchlist refresh cadence remains
-  incomplete; this is still disclosed partial parity. The Backtest page projects canonical performance, Portfolio,
+  incomplete; it will consume the single-pass, revisioned QMD History
+  membership timeline defined in the market-data contract, never repeated
+  terminal Scanner snapshots. This is still disclosed partial parity. The
+  Backtest page projects canonical performance, Portfolio,
   positions, orders, executions, and closed trades from the same run journal.
 - Live still has data/UI controller-parity work, but its dormant direct broker
   submit/reply/modify/cancel helpers now fail closed. Broker what-if preview
