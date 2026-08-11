@@ -197,7 +197,7 @@ struct FetchEventsOutcome {
 }
 
 #[derive(Clone)]
-struct GapFillService {
+pub struct GapFillService {
     client: Client,
     config: GatewayConfig,
     fanout: MarketEventFanout,
@@ -208,7 +208,7 @@ struct GapFillService {
 }
 
 impl GapFillService {
-    fn new(
+    pub fn new(
         config: GatewayConfig,
         fanout: MarketEventFanout,
         maintenance: SharedMaintenanceState,
@@ -225,6 +225,55 @@ impl GapFillService {
             calendar,
             flatfiles,
         }
+    }
+
+    pub async fn repair_focused_ticker_intervals(
+        &self,
+        ticker: &str,
+        intervals: &[(DateTime<Utc>, DateTime<Utc>)],
+    ) -> Result<u64, String> {
+        let symbol = ticker.trim().to_ascii_uppercase();
+        if symbol.is_empty()
+            || intervals.is_empty()
+            || intervals.len() > 32
+            || intervals.iter().any(|(start, end)| {
+                end <= start
+                    || *end > Utc::now() + ChronoDuration::seconds(5)
+                    || *start < Utc::now() - ChronoDuration::days(3)
+            })
+        {
+            return Err("invalid focused QMD repair ticker or interval bounds".to_string());
+        }
+        let started_at = Utc::now();
+        let repairs = intervals
+            .iter()
+            .map(|(start, end)| RepairInterval {
+                start: *start,
+                end: *end,
+                reason: "focused_structure_activation_gap",
+            })
+            .collect::<Vec<_>>();
+        let outcome = self
+            .repair_symbol_intervals(
+                started_at,
+                "focused_structure_activation",
+                &format!("{:?}", session_phase(started_at)),
+                symbol,
+                repairs,
+                false,
+            )
+            .await?;
+        if outcome.errors > 0 || outcome.page_limit_hit {
+            return Err(format!(
+                "focused QMD repair was incomplete: errors={} page_limit_hit={}",
+                outcome.errors, outcome.page_limit_hit
+            ));
+        }
+        sleep(Duration::from_millis(
+            self.config.flush_interval_ms.saturating_mul(2).max(1_000),
+        ))
+        .await;
+        Ok(outcome.rows)
     }
 
     async fn run_startup_maintenance(&self) -> Result<(), String> {
@@ -628,6 +677,7 @@ impl GapFillService {
                             &phase,
                             symbol.clone(),
                             intervals,
+                            true,
                         )
                         .await;
                     (symbol, outcome)
@@ -715,6 +765,7 @@ impl GapFillService {
         phase: &str,
         symbol: String,
         intervals: Vec<RepairInterval>,
+        report_maintenance: bool,
     ) -> Result<SymbolRepairOutcome, String> {
         let window_start = intervals.iter().map(|interval| interval.start).min();
         let window_end = intervals.iter().map(|interval| interval.end).max();
@@ -741,9 +792,11 @@ impl GapFillService {
         let mut intervals_attempted = 0u64;
         let mut interval_records = Vec::with_capacity(intervals.len());
         for (index, interval) in intervals.into_iter().enumerate() {
-            self.maintenance
-                .start_interval(&symbol, interval.reason, interval.start, interval.end)
-                .await;
+            if report_maintenance {
+                self.maintenance
+                    .start_interval(&symbol, interval.reason, interval.start, interval.end)
+                    .await;
+            }
             eprintln!(
                 "QMD recent q_live repair: symbol={} reason={} start={} end={}",
                 symbol,
@@ -759,9 +812,11 @@ impl GapFillService {
                     symbol_rows += outcome.rows;
                     intervals_attempted += 1;
                     self.fanout.metrics.inc_gap_fill_rows(outcome.rows);
-                    self.maintenance
-                        .complete_interval(outcome.rows, false, outcome.page_limit_hit)
-                        .await;
+                    if report_maintenance {
+                        self.maintenance
+                            .complete_interval(outcome.rows, false, outcome.page_limit_hit)
+                            .await;
+                    }
                     if outcome.page_limit_hit {
                         symbol_partial = true;
                     }
@@ -776,7 +831,9 @@ impl GapFillService {
                 Err(error) => {
                     let error = redact_sensitive(&error);
                     symbol_errors += 1;
-                    self.maintenance.complete_interval(0, true, false).await;
+                    if report_maintenance {
+                        self.maintenance.complete_interval(0, true, false).await;
+                    }
                     eprintln!("QMD recent q_live repair failed for {symbol}: {error}");
                     interval_records.push(IntervalRepairRecord {
                         errors: 1,
@@ -840,7 +897,9 @@ impl GapFillService {
             }),
         )
         .await?;
-        self.maintenance.complete_symbol(&symbol).await;
+        if report_maintenance {
+            self.maintenance.complete_symbol(&symbol).await;
+        }
         Ok(SymbolRepairOutcome {
             errors: symbol_errors,
             interval_records,
@@ -1890,7 +1949,7 @@ impl GapFillService {
         let old_sessions = self
             .query(
                 &format!(
-                    "SELECT toString(toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York'))) AS session_date, count() FROM {} FINAL WHERE session_date < toDate('{}') GROUP BY session_date ORDER BY session_date FORMAT TSV",
+                    "SELECT toString(toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York'))) AS session_date, count() FROM {} FINAL WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) < toDate('{}') GROUP BY session_date ORDER BY session_date FORMAT TSV",
                     self.config.compact_event_table, cutoff,
                 ),
                 true,

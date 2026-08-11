@@ -228,18 +228,24 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
       narrower families cannot enter this set without changing the authority.
 - [x] Maintain one compact row per eligible security.
 - [x] Publish scanner snapshots plus row deltas.
-- [ ] Remove broad expensive indicators from the default all-market path.
-      Indicator shards are focused, but `GenericStructureEngine` still runs
-      inside the all-market bar store. Safe lease activation needs an atomic
-      event-sequence barrier and exact replay since the restored checkpoint.
+- [x] Remove broad expensive indicators from the default all-market path.
+      Indicator shards and `GenericStructureEngine` now follow the declared
+      focused capability-dependency union. The all-market bar path retains only
+      its one-second safety state.
   - [x] Persist a backward-compatible exact Generic Structure input cursor.
         New checkpoints store canonical arrival sequence beside event time,
         reject duplicate same-time replay, and use the composite cursor for
         dirty-state persistence. Legacy checkpoints deserialize with cursor
         zero and are not treated as exact-continuation evidence.
-  - [ ] Stage focus leases, replay from the exact checkpoint through a captured
+  - [x] Stage focus leases, replay from the exact checkpoint through a captured
         canonical barrier, drain the bounded live handoff, and only then expose
-        the lease to focused computation.
+        the lease to focused computation. Deployment gaps are repaired only for
+        the requested ticker through Massive REST and become queryable only
+        after QMD History verifies the completed per-symbol repair certificate.
+        On removal/expiry, the exact checkpoint is persisted before memory is
+        reclaimed. A restart-safe bounded registry advances inactive focused
+        checkpoints every 24 hours, before the three-day recent cursor ages out;
+        registry exhaustion keeps state active instead of losing continuity.
 - [x] Implement dynamic Watchlist inclusion, exclusion, ranking, maximum size,
       TTL, manual override, and promotion/demotion reasons.
 - [x] Persist membership add/remove/expire events.
@@ -266,8 +272,8 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
       expiry is reclaimed within 30 seconds. Cleanup rechecks current leases
       under each state shard so an overlapping or concurrent lease remains
       resident; workers recheck demand after dequeue so stale queued rows cannot
-      recreate released state. Generic Structure is tracked by its separate all-market-path
-      migration item rather than being mislabeled as focused retained state.
+      recreate released state. Generic Structure now follows the same lease
+      union through its exact replay/barrier path and persists before reclaim.
   - [x] Prevent bar-only leases from enabling per-tick indicator processing.
   - [x] Warm missing ticker/timeframe state once for every newly active scope
         and skip repeated core-bar copies for already-warm lease refreshes.

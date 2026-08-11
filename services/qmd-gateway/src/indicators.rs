@@ -2471,6 +2471,18 @@ impl IndicatorClickHouseWriter {
             true,
         )
         .await?;
+        self.execute(
+            r#"CREATE TABLE IF NOT EXISTS qmd_structure_focus_registry_v1
+            (
+                sym LowCardinality(String),
+                next_advance_at_ms Int64,
+                updated_at DateTime64(3, 'UTC')
+            )
+            ENGINE = ReplacingMergeTree(updated_at)
+            ORDER BY sym"#,
+            true,
+        )
+        .await?;
         Ok(())
     }
 
@@ -2510,6 +2522,120 @@ impl IndicatorClickHouseWriter {
                 Ok((sym, checkpoint))
             })
             .collect()
+    }
+
+    pub async fn load_structure_checkpoint(
+        &self,
+        ticker: &str,
+    ) -> Result<Option<GenericStructureCheckpoint>, String> {
+        let sym = ticker.trim().to_ascii_uppercase();
+        if sym.is_empty()
+            || sym.len() > 32
+            || !sym
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err("invalid QMD structure checkpoint ticker".to_string());
+        }
+        let escaped = sym.replace('\'', "''");
+        let sql = format!(
+            r#"SELECT argMax(snapshot_json, updated_at) AS snapshot_json
+            FROM qmd_structure_state_v2
+            WHERE algorithm_version = {}
+              AND sym = '{}'
+            HAVING length(snapshot_json) > 0
+            FORMAT JSONEachRow"#,
+            crate::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION,
+            escaped,
+        );
+        let text = self.query(&sql, true).await?;
+        let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
+            return Ok(None);
+        };
+        let value = serde_json::from_str::<serde_json::Value>(line)
+            .map_err(|error| format!("invalid QMD structure state row: {error}"))?;
+        let checkpoint_json = value
+            .get("snapshot_json")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if checkpoint_json.is_empty() {
+            return Ok(None);
+        }
+        serde_json::from_str(checkpoint_json)
+            .map(Some)
+            .map_err(|error| format!("invalid QMD structure checkpoint for {sym}: {error}"))
+    }
+
+    pub async fn persist_structure_checkpoint(
+        &self,
+        checkpoint: &GenericStructureCheckpoint,
+    ) -> Result<(), String> {
+        self.insert_structure_states(&[(checkpoint.sym.clone(), checkpoint.clone())])
+            .await
+    }
+
+    pub async fn load_structure_focus_registry(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(String, DateTime<Utc>)>, String> {
+        let bounded = limit.max(1);
+        let sql = format!(
+            r#"SELECT
+                sym,
+                argMax(next_advance_at_ms, updated_at) AS next_advance_at_ms
+            FROM qmd_structure_focus_registry_v1
+            GROUP BY sym
+            ORDER BY sym
+            LIMIT {}
+            FORMAT JSONEachRow"#,
+            bounded.saturating_add(1),
+        );
+        let text = self.query(&sql, true).await?;
+        let mut entries = Vec::new();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let value = serde_json::from_str::<serde_json::Value>(line)
+                .map_err(|error| format!("invalid structure focus registry row: {error}"))?;
+            let sym = value
+                .get("sym")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            let millis = value
+                .get("next_advance_at_ms")
+                .and_then(|value| {
+                    value
+                        .as_i64()
+                        .or_else(|| value.as_str().and_then(|raw| raw.parse().ok()))
+                })
+                .unwrap_or_default();
+            let next_due = DateTime::<Utc>::from_timestamp_millis(millis)
+                .ok_or_else(|| format!("invalid structure focus registry time for {sym}"))?;
+            entries.push((sym, next_due));
+        }
+        if entries.len() > bounded {
+            return Err(format!(
+                "structure focus registry exceeds configured limit {bounded}"
+            ));
+        }
+        Ok(entries)
+    }
+
+    pub async fn persist_structure_focus_registry(
+        &self,
+        ticker: &str,
+        next_advance_at: DateTime<Utc>,
+    ) -> Result<(), String> {
+        let body = serde_json::to_string(&json!({
+            "sym": ticker.trim().to_ascii_uppercase(),
+            "next_advance_at_ms": next_advance_at.timestamp_millis(),
+            "updated_at": clickhouse_datetime64(&Utc::now()),
+        }))
+        .map_err(|error| format!("failed to serialize structure focus registry: {error}"))?;
+        self.query_with_body(
+            "INSERT INTO qmd_structure_focus_registry_v1 FORMAT JSONEachRow",
+            body,
+        )
+        .await
     }
 
     pub async fn run(

@@ -122,6 +122,14 @@ impl SharedComputationTargets {
         &self,
         request: ComputationTargetRequest,
     ) -> Result<ComputationTargetLease, String> {
+        let lease = self.prepare(request)?;
+        Ok(self.activate(lease))
+    }
+
+    pub fn prepare(
+        &self,
+        request: ComputationTargetRequest,
+    ) -> Result<ComputationTargetLease, String> {
         let now = Utc::now();
         let target_id = request.target_id.trim().to_string();
         let owner = request.owner.trim().to_string();
@@ -192,17 +200,22 @@ impl SharedComputationTargets {
             causation_id: lineage_identity(&request.causation_id, "target", &target_id),
             event_driven,
         };
+        Ok(lease)
+    }
+
+    pub fn activate(&self, lease: ComputationTargetLease) -> ComputationTargetLease {
+        let now = Utc::now();
         let mut state = self
             .inner
             .write()
             .expect("computation target lock poisoned");
         prune_expired(&mut state.targets, now);
-        state.targets.insert(target_id, lease.clone());
+        state.targets.insert(lease.target_id.clone(), lease.clone());
         *self
             .summary_cache
             .write()
             .expect("computation summary cache lock poisoned") = None;
-        Ok(lease)
+        lease
     }
 
     pub fn remove(&self, target_id: &str) -> bool {
@@ -240,6 +253,20 @@ impl SharedComputationTargets {
             target.event_driven
                 && target.expires_at.map(|expiry| expiry > now).unwrap_or(true)
                 && target.tickers.binary_search(&normalized).is_ok()
+        })
+    }
+
+    pub fn requires_generic_structure(&self, ticker: &str) -> bool {
+        let now = Utc::now();
+        let normalized = ticker.trim().to_ascii_uppercase();
+        let state = self.inner.read().expect("computation target lock poisoned");
+        state.targets.values().any(|target| {
+            target.expires_at.map(|expiry| expiry > now).unwrap_or(true)
+                && target.tickers.binary_search(&normalized).is_ok()
+                && target
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability_requires_generic_structure(capability))
         })
     }
 
@@ -557,6 +584,19 @@ fn capabilities_require_events(capabilities: &[String]) -> bool {
     })
 }
 
+pub fn capability_requires_generic_structure(key: &str) -> bool {
+    computation_capability_catalog()
+        .into_iter()
+        .find(|row| row.key == key)
+        .map(|row| {
+            row.key == "qmd_generic_structure"
+                || row.inputs.iter().any(|input| {
+                    *input == "qmd_generic_structure" || input.starts_with("qmd_structure_")
+                })
+        })
+        .unwrap_or(false)
+}
+
 fn prune_expired(targets: &mut HashMap<String, ComputationTargetLease>, now: DateTime<Utc>) {
     targets.retain(|_, target| target.expires_at.map(|expiry| expiry > now).unwrap_or(true));
 }
@@ -580,6 +620,18 @@ mod tests {
             correlation_id: String::new(),
             causation_id: String::new(),
         }
+    }
+
+    #[test]
+    fn generic_structure_focus_follows_declared_capability_dependencies() {
+        assert!(capability_requires_generic_structure(
+            "qmd_generic_structure"
+        ));
+        assert!(capability_requires_generic_structure(
+            "flow_structure_composite"
+        ));
+        assert!(!capability_requires_generic_structure("opening_range"));
+        assert!(!capability_requires_generic_structure("momentum_core"));
     }
 
     #[test]

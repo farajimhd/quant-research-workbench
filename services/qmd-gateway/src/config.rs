@@ -108,6 +108,12 @@ pub struct GatewayConfig {
     pub historical_clickhouse_password_present: bool,
     pub historical_clickhouse_url: String,
     pub historical_clickhouse_user: String,
+    pub qmd_history_gateway_url: String,
+    pub structure_focus_history_timeout_seconds: u64,
+    pub structure_focus_inactive_advance_hours: u64,
+    pub structure_focus_inactive_batch_size: usize,
+    pub structure_focus_inactive_registry_limit: usize,
+    pub structure_focus_staging_max_events: usize,
     pub historical_flatfile_autorun: bool,
     pub historical_flatfile_update_enabled: bool,
     pub historical_pipeline_code_root: String,
@@ -290,6 +296,34 @@ impl GatewayConfig {
             historical_clickhouse_password_present: !historical_clickhouse.password.is_empty(),
             historical_clickhouse_url: historical_clickhouse.url,
             historical_clickhouse_user: historical_clickhouse.user,
+            qmd_history_gateway_url: env_string("QMD_HISTORY_GATEWAY_URL", "http://127.0.0.1:8801")
+                .trim_end_matches('/')
+                .to_string(),
+            structure_focus_history_timeout_seconds: env_u64(
+                "QMD_STRUCTURE_FOCUS_HISTORY_TIMEOUT_SECONDS",
+                60,
+            )
+            .clamp(1, 300),
+            structure_focus_inactive_advance_hours: env_u64(
+                "QMD_STRUCTURE_FOCUS_INACTIVE_ADVANCE_HOURS",
+                24,
+            )
+            .clamp(1, 48),
+            structure_focus_inactive_batch_size: env_usize(
+                "QMD_STRUCTURE_FOCUS_INACTIVE_BATCH_SIZE",
+                16,
+            )
+            .clamp(1, 256),
+            structure_focus_inactive_registry_limit: env_usize(
+                "QMD_STRUCTURE_FOCUS_INACTIVE_REGISTRY_LIMIT",
+                10_000,
+            )
+            .clamp(1, 100_000),
+            structure_focus_staging_max_events: env_usize(
+                "QMD_STRUCTURE_FOCUS_STAGING_MAX_EVENTS",
+                50_000,
+            )
+            .clamp(1_000, 1_000_000),
             historical_flatfile_autorun: env_bool("QMD_HISTORICAL_FLATFILE_AUTORUN", true),
             historical_flatfile_update_enabled: env_bool(
                 "QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED",

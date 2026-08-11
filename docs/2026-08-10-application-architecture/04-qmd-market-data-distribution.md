@@ -55,6 +55,37 @@ arrival identity. If the window reaches Archive ordinal identity or a coverage
 gap, advancement fails closed. QMD Gateway remains responsible for verifying
 and persisting the returned checkpoint; QMD History never mutates live state.
 
+### Focused Generic Structure activation
+
+```mermaid
+flowchart TD
+    A["Validated capability lease"] --> B{"Generic Structure dependency?"}
+    B -->|No| C["Commit ordinary focused lease"]
+    B -->|Yes| D["Stage ticker and buffer canonical live events"]
+    D --> E["Load exact persisted checkpoint"]
+    E --> F["Ask QMD History for source plan"]
+    F --> G{"Uncovered deployment gap?"}
+    G -->|Yes| H["Ticker-scoped Massive REST quote/trade repair"]
+    H --> I["Persist canonical events and completed repair certificate"]
+    I --> J["QMD History verifies certificate and re-plans"]
+    G -->|No| J
+    J --> K["Advance checkpoint with shared engine"]
+    K --> L["Atomically seed and drain staged live buffer"]
+    L --> M["Expose lease"]
+```
+
+Only `qmd_generic_structure` and registered capabilities whose declared inputs
+depend on it enter this path. A lease for Opening Range, momentum, or another
+independent family does not allocate a Generic Structure engine. Failure at
+any step cancels staging and leaves the prior lease unchanged.
+
+Removal, narrowing, or TTL expiry persists the final checkpoint before the
+engine is reclaimed. `qmd_structure_focus_registry_v1` is the restart-safe
+authority for formerly focused tickers. QMD advances a bounded batch of those
+checkpoints every 24 hours through the same History product. If the registry is
+full or persistence fails, it keeps the live engine resident and reports the
+deferred reclaim rather than sacrificing exact continuity.
+
 ## Three-source event distribution
 
 ```mermaid

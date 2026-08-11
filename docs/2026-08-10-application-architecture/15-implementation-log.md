@@ -1933,6 +1933,42 @@ it does not imply all application work is complete.
      staged focus activation, and removal from the all-market path remain the
      next live-QMD phase.
 
+174. Completed the focused-only Generic Structure cutover. QMD no longer
+     restores or updates every persisted structure engine in the universal bar
+     path. A validated lease is first prepared without mutation. Only
+     `qmd_generic_structure` and registered capabilities that declare it (or
+     one of its fields) as an input enter structure activation; Opening Range
+     and ordinary momentum requests do not.
+
+     For every newly focused ticker, QMD begins a bounded canonical-event
+     staging buffer, loads its exact persisted checkpoint, and asks QMD History
+     to advance it. Under the ticker shard lock QMD seeds that result, orders
+     and drains the staged events, marks the engine active, and only afterward
+     commits the lease. Overflow, History failure, or symbol/version mismatch
+     cancels staging and leaves no partially visible lease. Removal, narrowing,
+     and expiry persist the latest cursor before reclaiming memory.
+
+     The first real PLAG activation correctly failed because deployment had
+     created uncovered 41-50 second intervals. QMD now repairs only the focused
+     ticker's quotes and trades through its existing Massive REST/canonical
+     persistence path. The existing per-symbol gap-fill registry is the repair
+     certificate; QMD History promotes the gap to Recent only for a one-ticker
+     plan whose latest certificate is completed, untruncated, error-free, and
+     covers the requested interval. No global coverage is fabricated. The
+     focused repair path no longer mutates the global maintenance display.
+
+     A bounded ClickHouse-backed inactive registry is restored on restart and
+     advances formerly focused checkpoints every 24 hours, safely inside the
+     three-day recent retention tier. Registry or persistence failure keeps the
+     engine active. The real repaired PLAG activation completed in 37.247
+     seconds, exposed algorithm version 9 and reference price 1.3785, then
+     deletion persisted and reclaimed PLAG in 264 ms with zero active targets.
+     Its durable next advancement is 2026-08-12T22:14:58.809Z. A second
+     certificate-backed activation completed without REST repair and reclaimed
+     cleanly. The related startup-retention query also stopped comparing a
+     String alias to a Date; the next real startup maintenance completed
+     `up_to_date` with zero errors. All 112 QMD and 43 QMD History tests passed.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

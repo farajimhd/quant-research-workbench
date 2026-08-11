@@ -10,7 +10,7 @@ use qmd_core::compact_event::{
 use qmd_core::computation_targets::SharedComputationTargets;
 use qmd_core::config::{load_env_files, GatewayConfig};
 use qmd_core::event::MarketEvent;
-use qmd_core::gapfill::{run_gap_fill_service, run_startup_maintenance};
+use qmd_core::gapfill::{run_gap_fill_service, run_startup_maintenance, GapFillService};
 use qmd_core::indicators::{
     load_live_market_structure_references, spawn_indicator_engines, IndicatorClickHouseWriter,
     IndicatorRow, SharedIndicatorStore,
@@ -29,6 +29,7 @@ use qmd_core::massive::{run_canonical_event_fanout, run_massive_ingest, MarketEv
 use qmd_core::metrics::SharedMetrics;
 use qmd_core::scanner::{spawn_scanner_primitive_engine, MarketSignalDelta, SharedScannerStore};
 use qmd_core::state::{ScannerRowDelta, SharedMarketState};
+use qmd_core::structure_focus::StructureFocusCoordinator;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::{error::Error, io};
@@ -268,37 +269,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "Live event and canonical intraday-bar coverage ledger initialized.",
     );
     let indicator_writer = IndicatorClickHouseWriter::new(config.clone(), metrics.clone());
-    let mut structure_watermarks = HashMap::new();
+    let structure_checkpoint_store = indicator_writer.clone();
+    let structure_watermarks = HashMap::new();
     if config.persist_indicators || config.persist_structure_events {
         indicator_writer.initialize().await.map_err(|error| {
             startup_error(format!(
                 "qmd-gateway indicator ClickHouse preflight failed: {error}"
             ))
         })?;
-        if config.persist_structure_events {
-            let checkpoints = indicator_writer
-                .load_structure_checkpoints()
-                .await
-                .map_err(|error| {
-                    startup_error(format!(
-                        "qmd-gateway structure-state restore failed: {error}"
-                    ))
-                })?;
-            let restored = checkpoints.len();
-            for (sym, checkpoint) in &checkpoints {
-                if let Some(updated_at) = checkpoint.updated_at {
-                    structure_watermarks.insert(
-                        sym.clone(),
-                        (
-                            updated_at.timestamp_millis(),
-                            checkpoint.last_arrival_sequence,
-                        ),
-                    );
-                }
-            }
-            bars.seed_structure_checkpoints(checkpoints).await;
-            eprintln!("Restored {restored} canonical QMD structure states.");
-        }
     }
     if config.persist_indicators {
         metrics.set_lane_state(
@@ -379,6 +357,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         scanner_delta_sender: scanner_delta_sender.clone(),
         metrics: metrics.clone(),
     };
+    let focused_gap_repair = GapFillService::new(
+        config.clone(),
+        event_fanout.clone(),
+        maintenance.clone(),
+        compact_event_store.clone(),
+        market_calendar.clone(),
+    );
+    let structure_focus = StructureFocusCoordinator::new(
+        &config,
+        bars.clone(),
+        structure_checkpoint_store,
+        focused_gap_repair,
+    )
+    .map_err(startup_error)?;
+    let restored_inactive_focus =
+        structure_focus
+            .restore_inactive_registry()
+            .await
+            .map_err(|error| {
+                startup_error(format!(
+                    "qmd-gateway structure focus registry restore failed: {error}"
+                ))
+            })?;
+    eprintln!("Restored {restored_inactive_focus} inactive Generic Structure focus checkpoints.");
     drop(canonical_event_sender);
     let mut canonical_fanout = event_fanout.clone();
     canonical_fanout.canonical_event_capacity = None;
@@ -388,6 +390,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )));
 
     let (shutdown_sender, mut shutdown_receiver) = watch::channel(false);
+    let structure_focus_reclaimer = structure_focus.clone();
+    let structure_focus_advancer = structure_focus.clone();
+    let structure_focus_targets = computation_targets.clone();
     let app = app(AppState {
         bars,
         compact_event_decoder,
@@ -408,6 +413,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         scanner,
         scanner_deltas: scanner_delta_sender,
         scanner_events: scanner_sender,
+        structure_focus,
         shutdown: shutdown_sender,
         trade_aggregation_rules,
     });
@@ -429,6 +435,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .snapshot(Utc::now())
         .active_collection_window;
     let mut producer_handles = Vec::new();
+    producer_handles.push(tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(5)).await;
+            if let Err(error) = structure_focus_reclaimer
+                .persist_and_reclaim_unused(&structure_focus_targets)
+                .await
+            {
+                eprintln!("QMD structure-state expiry reclaim deferred: {error}");
+            }
+        }
+    }));
+    producer_handles.push(tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(60)).await;
+            match structure_focus_advancer.advance_inactive_due().await {
+                Ok(advanced) if !advanced.is_empty() => eprintln!(
+                    "QMD advanced {} inactive Generic Structure checkpoints before retention.",
+                    advanced.len()
+                ),
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("QMD inactive structure checkpoint advancement deferred: {error}")
+                }
+            }
+        }
+    }));
     producer_handles.push(tokio::spawn(run_market_structure_reference_refresh(
         config.clone(),
         reference_refresh_indicators,
@@ -551,9 +583,20 @@ fn preflight_config(config: &GatewayConfig) -> Result<(), String> {
     if config.clickhouse_user.trim().is_empty() {
         return Err("QMD_CLICKHOUSE_USER is required before qmd-gateway starts".to_string());
     }
+    if !(config.qmd_history_gateway_url.starts_with("http://")
+        || config.qmd_history_gateway_url.starts_with("https://"))
+    {
+        return Err("QMD_HISTORY_GATEWAY_URL must be an HTTP(S) URL".to_string());
+    }
     if !config.compact_events_enabled || !config.persist_compact_events {
         return Err(
             "canonical intraday bars require QMD_COMPACT_EVENTS_ENABLED=true and QMD_PERSIST_COMPACT_EVENTS=true".to_string(),
+        );
+    }
+    if !config.persist_structure_events {
+        return Err(
+            "focused Generic Structure continuity requires QMD_PERSIST_STRUCTURE_EVENTS=true"
+                .to_string(),
         );
     }
     Ok(())

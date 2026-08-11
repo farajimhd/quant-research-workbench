@@ -82,6 +82,11 @@ Generic Structure checkpoint advancement is bounded by
 `QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS`,
 `QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_EVENTS`, and
 `QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_WINDOW_HOURS`.
+Single-ticker deployment-gap repair evidence is read from
+`QMD_HISTORY_RECENT_FOCUSED_REPAIR_TABLE` (default
+`q_live.qmd_gap_fill_symbol_universe_v1`). A completed, error-free repair whose
+recorded window covers the gap promotes only that ticker's interval to Recent;
+it never broadens global coverage.
 
 Defaults:
 

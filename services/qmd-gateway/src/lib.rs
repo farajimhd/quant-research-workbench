@@ -34,4 +34,5 @@ pub mod scanner;
 pub mod session;
 pub mod signal_catalog;
 pub mod state;
+pub mod structure_focus;
 pub mod timefmt;

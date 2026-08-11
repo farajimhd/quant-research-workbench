@@ -123,8 +123,17 @@ screen.
 | `GET /snapshot/ticker/AAPL` | Latest quote/trade state for one ticker. |
 | `GET /snapshot/ticker-state/AAPL` | Versioned latest-state envelope with Scanner sequence, authority, freshness, and explicit missing state. |
 | `GET /computation-targets` | Active focused-computation leases, per-scope symbol/capability counts, and weighted demand units. |
-| `PUT /computation-targets` | Replace one lease, warm newly active ticker/timeframe state once, and reclaim state removed by a narrowed replacement. |
-| `DELETE /computation-targets/{target_id}` | Remove one lease and return exact reclaimed indicator-state counts; overlapping demand remains resident. |
+| `PUT /computation-targets` | Stage and replace one lease. Generic Structure dependencies are replayed through QMD History and an atomic live barrier before the lease becomes visible; independent capabilities skip that work. |
+| `DELETE /computation-targets/{target_id}` | Remove one lease and return exact reclaimed indicator and Generic Structure state; overlapping demand remains resident. |
+
+Focused Generic Structure continuity uses `QMD_HISTORY_GATEWAY_URL`,
+`QMD_STRUCTURE_FOCUS_HISTORY_TIMEOUT_SECONDS`,
+`QMD_STRUCTURE_FOCUS_STAGING_MAX_EVENTS`,
+`QMD_STRUCTURE_FOCUS_INACTIVE_ADVANCE_HOURS`,
+`QMD_STRUCTURE_FOCUS_INACTIVE_BATCH_SIZE`, and
+`QMD_STRUCTURE_FOCUS_INACTIVE_REGISTRY_LIMIT`. Structure persistence is required
+for the live service. The restart-safe inactive authority is
+`q_live.qmd_structure_focus_registry_v1`.
 | `GET /snapshot/bars/AAPL?timeframe=1m&limit=500` | Recent in-memory closed bars for one ticker/timeframe. |
 | `GET /snapshot/indicators/AAPL?timeframe=1m&limit=500` | Recent indicator state for one ticker/timeframe. |
 | `GET /snapshot/live-market-state?limit=250` | Active and recent abnormal market-state transitions. |

@@ -34,6 +34,7 @@ use crate::state::{
     ScannerRowDelta, ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot,
     TickerStateSnapshot,
 };
+use crate::structure_focus::StructureFocusCoordinator;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -71,6 +72,7 @@ pub struct AppState {
     pub scanner: SharedScannerStore,
     pub scanner_deltas: broadcast::Sender<ScannerRowDelta>,
     pub scanner_events: broadcast::Sender<MarketSignalDelta>,
+    pub structure_focus: StructureFocusCoordinator,
     pub shutdown: watch::Sender<bool>,
     pub trade_aggregation_rules: TradeAggregationRules,
 }
@@ -248,10 +250,26 @@ async fn replace_computation_target(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ComputationTargetRequest>,
 ) -> Result<Json<ComputationTargetLease>, (StatusCode, Json<Value>)> {
-    let lease = state
+    let prepared = state
         .computation_targets
-        .replace(request)
+        .prepare(request)
         .map_err(|error| (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))))?;
+    state
+        .structure_focus
+        .stage_and_activate(&prepared)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": error,
+                    "error_code": "structure_focus_activation_failed",
+                    "retryable": true,
+                    "retry_action": "retry_computation_target",
+                })),
+            )
+        })?;
+    let lease = state.computation_targets.activate(prepared);
     for ticker in &lease.tickers {
         for timeframe in &lease.timeframes {
             if !state.indicators.needs_warm(ticker, timeframe).await {
@@ -270,6 +288,13 @@ async fn replace_computation_target(
         .indicators
         .reclaim_unused(&state.computation_targets)
         .await;
+    if let Err(error) = state
+        .structure_focus
+        .persist_and_reclaim_unused(&state.computation_targets)
+        .await
+    {
+        eprintln!("QMD structure-state reclaim deferred after target replacement: {error}");
+    }
     Ok(Json(lease))
 }
 
@@ -282,9 +307,18 @@ async fn remove_computation_target(
         .indicators
         .reclaim_unused(&state.computation_targets)
         .await;
+    let reclaimed_structure_state = match state
+        .structure_focus
+        .persist_and_reclaim_unused(&state.computation_targets)
+        .await
+    {
+        Ok(symbols) => json!(symbols),
+        Err(error) => json!({"deferred": true, "error": error}),
+    };
     Json(json!({
         "removed": removed,
         "reclaimed_indicator_state": reclaimed,
+        "reclaimed_structure_state": reclaimed_structure_state,
         "target_id": target_id,
     }))
 }

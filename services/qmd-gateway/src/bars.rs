@@ -395,9 +395,18 @@ struct BarStore {
     trade_rules: TradeAggregationRules,
     luld: HashMap<String, EstimatedLuldState>,
     structure: HashMap<String, GenericStructureEngine>,
+    structure_active: BTreeSet<String>,
     structure_dirty: BTreeSet<String>,
+    structure_staging: HashMap<String, StructureStaging>,
     open: HashMap<BarKey, MutableBar>,
     closed: HashMap<BarKey, VecDeque<BarRow>>,
+}
+
+#[derive(Default)]
+struct StructureStaging {
+    events: Vec<MarketEvent>,
+    max_events: usize,
+    overflowed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -712,6 +721,128 @@ impl SharedBarStore {
         }
     }
 
+    pub async fn begin_structure_staging(
+        &self,
+        ticker: &str,
+        max_events: usize,
+    ) -> Result<bool, String> {
+        let sym = ticker.trim().to_ascii_uppercase();
+        if sym.is_empty() {
+            return Err("structure staging ticker is required".to_string());
+        }
+        let shard = self.shard_for_ticker(&sym);
+        let mut store = shard.inner.lock().await;
+        if store.structure_active.contains(&sym) {
+            return Ok(false);
+        }
+        if store.structure_staging.contains_key(&sym) {
+            return Err(format!("structure staging is already active for {sym}"));
+        }
+        store.structure_staging.insert(
+            sym,
+            StructureStaging {
+                events: Vec::new(),
+                max_events: max_events.max(1),
+                overflowed: false,
+            },
+        );
+        Ok(true)
+    }
+
+    pub async fn activate_structure_checkpoint(
+        &self,
+        ticker: &str,
+        checkpoint: &GenericStructureCheckpoint,
+    ) -> Result<(usize, (i64, u64)), String> {
+        let sym = ticker.trim().to_ascii_uppercase();
+        let shard = self.shard_for_ticker(&sym);
+        let mut store = shard.inner.lock().await;
+        let mut staging = store
+            .structure_staging
+            .remove(&sym)
+            .ok_or_else(|| format!("structure staging is not active for {sym}"))?;
+        if staging.overflowed {
+            return Err(format!(
+                "structure staging buffer overflowed for {sym} at {} events",
+                staging.max_events
+            ));
+        }
+        if checkpoint.sym.to_ascii_uppercase() != sym {
+            return Err(format!(
+                "structure checkpoint symbol {} does not match staged ticker {sym}",
+                checkpoint.sym
+            ));
+        }
+        staging
+            .events
+            .sort_by_key(|event| (event.ts(), event.arrival_sequence()));
+        let trade_rules = store.trade_rules.clone();
+        let engine = store
+            .structure
+            .entry(sym.clone())
+            .or_insert_with(|| GenericStructureEngine::new(&sym));
+        engine.seed_checkpoint(checkpoint);
+        let mut applied = 0usize;
+        for event in &staging.events {
+            let before = engine.checkpoint_cursor();
+            let trade_rule = match event {
+                MarketEvent::Trade(trade) => trade_rules.resolve(&trade.conditions, trade.ts),
+                MarketEvent::Quote(_) => TradeUpdateRule::excluded(),
+            };
+            engine.apply_event(event, trade_rule);
+            if engine.checkpoint_cursor() != before {
+                applied = applied.saturating_add(1);
+            }
+        }
+        let cursor = engine.checkpoint_cursor();
+        store.structure_active.insert(sym.clone());
+        store.structure_dirty.insert(sym);
+        Ok((applied, cursor))
+    }
+
+    pub async fn cancel_structure_staging(&self, ticker: &str) {
+        let sym = ticker.trim().to_ascii_uppercase();
+        self.shard_for_ticker(&sym)
+            .inner
+            .lock()
+            .await
+            .structure_staging
+            .remove(&sym);
+    }
+
+    pub async fn deactivate_structure(&self, ticker: &str) -> Option<GenericStructureCheckpoint> {
+        let sym = ticker.trim().to_ascii_uppercase();
+        let shard = self.shard_for_ticker(&sym);
+        let mut store = shard.inner.lock().await;
+        store.structure_active.remove(&sym);
+        store.structure_staging.remove(&sym);
+        store.structure_dirty.remove(&sym);
+        store
+            .structure
+            .remove(&sym)
+            .map(|engine| engine.checkpoint())
+    }
+
+    pub async fn structure_checkpoint(&self, ticker: &str) -> Option<GenericStructureCheckpoint> {
+        let sym = ticker.trim().to_ascii_uppercase();
+        self.shard_for_ticker(&sym)
+            .inner
+            .lock()
+            .await
+            .structure
+            .get(&sym)
+            .map(GenericStructureEngine::checkpoint)
+    }
+
+    pub async fn active_structure_symbols(&self) -> Vec<String> {
+        let mut symbols = Vec::new();
+        for shard in self.shards.iter() {
+            symbols.extend(shard.inner.lock().await.structure_active.iter().cloned());
+        }
+        symbols.sort();
+        symbols
+    }
+
     #[cfg(test)]
     async fn structure_engine_count(&self) -> usize {
         let mut count = 0usize;
@@ -765,7 +896,9 @@ impl BarShardStore {
                 trade_rules,
                 luld: HashMap::new(),
                 structure: HashMap::new(),
+                structure_active: BTreeSet::new(),
                 structure_dirty: BTreeSet::new(),
+                structure_staging: HashMap::new(),
                 open: HashMap::new(),
                 closed: HashMap::new(),
             })),
@@ -864,7 +997,17 @@ impl BarStore {
                     .observe_trade(trade.ts, trade.price);
             }
         }
-        let (structure_snapshot, structure_events) = if self.structure_enabled {
+        let structure_focused =
+            self.computation_targets.is_none() || self.structure_active.contains(&sym);
+        if let Some(staging) = self.structure_staging.get_mut(&sym) {
+            if staging.events.len() < staging.max_events {
+                staging.events.push(event.clone());
+            } else {
+                staging.overflowed = true;
+            }
+        }
+        let (structure_snapshot, structure_events) = if self.structure_enabled && structure_focused
+        {
             let result = self
                 .structure
                 .entry(sym.clone())
@@ -1824,6 +1967,7 @@ mod tests {
         .await;
         assert_eq!(bars.snapshot("AAPL", "1s", 4).await.history.len(), 1);
         assert!(bars.snapshot("AAPL", "5s", 4).await.history.is_empty());
+        assert_eq!(bars.structure_engine_count().await, 0);
 
         targets
             .replace(crate::computation_targets::ComputationTargetRequest {
@@ -1856,6 +2000,59 @@ mod tests {
         )))
         .await;
         assert_eq!(bars.snapshot("AAPL", "5s", 4).await.history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn staged_structure_activation_replays_buffer_before_becoming_active() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let targets = SharedComputationTargets::default();
+        let bars = SharedBarStore::new_for_computational_funnel(
+            vec!["1s".into()],
+            4,
+            1,
+            rules.clone(),
+            targets,
+        );
+        let start = Utc.with_ymd_and_hms(2026, 8, 11, 14, 0, 0).unwrap();
+        let event = |offset: i64, arrival: u64, price: f64| {
+            let mut trade = trade(
+                start + chrono::Duration::milliseconds(offset),
+                price,
+                10.0,
+                vec![],
+            );
+            trade.raw = serde_json::json!({"arrival_sequence": arrival});
+            MarketEvent::Trade(trade)
+        };
+        let mut baseline = GenericStructureEngine::new("AAPL");
+        baseline.apply_event(&event(0, 1, 100.0), TradeUpdateRule::regular());
+        let checkpoint = baseline.checkpoint();
+
+        assert!(bars.begin_structure_staging("AAPL", 8).await.unwrap());
+        bars.apply_event(&event(1, 2, 100.5)).await;
+        assert_eq!(bars.structure_engine_count().await, 0);
+        let (buffered, cursor) = bars
+            .activate_structure_checkpoint("AAPL", &checkpoint)
+            .await
+            .unwrap();
+        assert_eq!(buffered, 1);
+        assert_eq!(cursor.1, 2);
+        bars.apply_event(&event(2, 3, 101.0)).await;
+        assert_eq!(
+            bars.structure_checkpoint("AAPL")
+                .await
+                .unwrap()
+                .last_arrival_sequence,
+            3
+        );
+        assert_eq!(
+            bars.deactivate_structure("AAPL")
+                .await
+                .unwrap()
+                .last_arrival_sequence,
+            3
+        );
+        assert_eq!(bars.structure_engine_count().await, 0);
     }
 
     #[tokio::test]

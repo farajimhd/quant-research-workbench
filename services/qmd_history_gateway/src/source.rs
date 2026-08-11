@@ -283,11 +283,21 @@ impl HistoricalEventSource {
                 archive_session_end_utc(date)
             })
             .transpose()?;
-        let recent = if archive_end.is_some_and(|end| end >= window.end) {
+        let mut recent = if archive_end.is_some_and(|end| end >= window.end) {
             Vec::new()
         } else {
             self.recent_coverage_intervals(window).await?
         };
+        if window.tickers.len() == 1 {
+            if let Some(repaired) = self
+                .focused_repair_coverage(&window.tickers[0], window)
+                .await?
+            {
+                recent.push(repaired);
+                recent.sort_by_key(|interval| (interval.start, interval.end));
+                recent = merge_coverage_intervals(recent);
+            }
+        }
         Ok(build_source_plan(
             window,
             tickers,
@@ -323,6 +333,50 @@ impl HistoricalEventSource {
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(materialize_confirmed_recent_coverage(&rows))
+    }
+
+    async fn focused_repair_coverage(
+        &self,
+        ticker: &str,
+        window: &EventWindow,
+    ) -> Result<Option<CoverageInterval>, String> {
+        let symbol = normalize_ticker(ticker)?;
+        let table = format!(
+            "{}.{}",
+            self.config.recent_database, self.config.recent_focused_repair_table
+        );
+        let sql = format!(
+            r#"SELECT
+                argMax(status, updated_at_utc) AS status,
+                toString(argMax(last_window_start_utc, updated_at_utc)) AS start_text,
+                toString(argMax(last_window_end_utc, updated_at_utc)) AS end_text,
+                argMax(error_count, updated_at_utc) AS error_count
+            FROM {table}
+            WHERE symbol = {symbol}
+            FORMAT JSONEachRow"#,
+            symbol = sql_literal(&symbol),
+        );
+        let text = self.query(&sql).await?;
+        let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
+            return Ok(None);
+        };
+        #[derive(Deserialize)]
+        struct Row {
+            status: String,
+            start_text: String,
+            end_text: String,
+            error_count: u64,
+        }
+        let row = serde_json::from_str::<Row>(line)
+            .map_err(|error| format!("invalid focused repair coverage row: {error}"))?;
+        if row.status != "completed" || row.error_count > 0 {
+            return Ok(None);
+        }
+        let start = parse_clickhouse_datetime(&row.start_text)?;
+        let end = parse_clickhouse_datetime(&row.end_text)?;
+        let start = start.max(window.start);
+        let end = end.min(window.end);
+        Ok((end > start).then_some(CoverageInterval { start, end }))
     }
 
     pub fn market_event(&self, event: &LiveCompactEvent) -> MarketEvent {
