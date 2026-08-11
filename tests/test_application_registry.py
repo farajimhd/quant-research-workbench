@@ -78,6 +78,10 @@ class ApplicationRegistryTests(unittest.TestCase):
             fundamentals_plan.implementation,
             "src.backend.query_plans.sec_fundamentals_asof_v1:fundamental_fact_queries",
         )
+        self.assertIn(
+            "q_live.feature_tradable_universe_v1",
+            fundamentals_plan.source_paths,
+        )
         self.assertTrue(
             {
                 "news.company_asof.v1",

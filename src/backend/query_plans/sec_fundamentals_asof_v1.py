@@ -25,6 +25,71 @@ def fundamental_fact_queries(
     }
 
 
+def scanner_fundamentals(
+    tags: Iterable[str],
+    cutoff: datetime,
+    database: str,
+) -> str:
+    """Build the causal all-universe XBRL projection used by historical Scanner."""
+    db = quote_ident(database)
+    instant = sql_string(clickhouse_timestamp(cutoff))
+    cutoff_date = sql_string(cutoff.astimezone(UTC).date().isoformat())
+    history_start = sql_string(clickhouse_timestamp(XBRL_HISTORY_START))
+    return f"""
+        WITH
+            parseDateTime64BestEffort({instant}) AS cutoff,
+            toDate({cutoff_date}) AS cutoff_date,
+            (
+                SELECT max(universe_date)
+                FROM {db}.feature_tradable_universe_v1 FINAL
+                WHERE universe_date <= cutoff_date AND inserted_at <= cutoff
+            ) AS latest_universe_date,
+            universe AS
+            (
+                SELECT
+                    upper(u.ticker) AS ticker,
+                    argMax(
+                        replaceOne(u.issuer_id, 'issuer:cik:', ''),
+                        tuple(u.is_tradable, u.currency_code = 'USD', u.product_type = 'STK', u.inserted_at)
+                    ) AS cik
+                FROM {db}.feature_tradable_universe_v1 AS u FINAL
+                WHERE u.universe_date = latest_universe_date
+                  AND u.inserted_at <= cutoff
+                  AND notEmpty(u.ticker)
+                  AND startsWith(u.issuer_id, 'issuer:cik:')
+                GROUP BY upper(u.ticker)
+            )
+        SELECT *
+        FROM
+        (
+            SELECT
+                universe.ticker AS ticker,
+                f.tag AS tag,
+                f.taxonomy AS taxonomy,
+                f.unit_code AS unit_code,
+                f.value AS value,
+                f.fiscal_year AS fiscal_year,
+                f.fiscal_period AS fiscal_period,
+                f.period_end_date AS period_end_date,
+                f.filed_at_utc AS filed_at_utc,
+                f.form_type AS form_type,
+                f.accession_number AS accession_number,
+                f.recorded_at_utc AS recorded_at_utc
+            FROM {db}.sec_xbrl_company_fact_v3 AS f FINAL
+            INNER JOIN universe ON universe.cik = toString(f.cik)
+            WHERE f.tag IN ({_tag_clause(tags)})
+              AND f.filed_at_utc >= parseDateTime64BestEffort({history_start})
+              AND f.filed_at_utc <= cutoff
+              AND f.recorded_at_utc <= cutoff
+            ORDER BY ticker, tag, period_end_date DESC, filed_at_utc DESC, recorded_at_utc DESC
+            LIMIT 1 BY ticker, tag, period_end_date, fiscal_period, unit_code
+        )
+        ORDER BY ticker, tag, period_end_date DESC, filed_at_utc DESC, recorded_at_utc DESC
+        LIMIT 8 BY ticker, tag
+        FORMAT JSONEachRow
+    """
+
+
 def fundamentals(
     cik: str,
     tags: Iterable[str],

@@ -701,6 +701,15 @@ bounded direct ClickHouse paths remain documented in
     points `sec.fundamentals_asof.v1` at the real query bundle instead of the
     historical Scanner composition service. Python compile and all 28 focused
     fundamentals-plan, registry, and Ticker Facts tests passed.
+93. Moved Historical Scanner's all-universe XBRL read into the same versioned
+    fundamentals authority. The set-based builder causally resolves the latest
+    recorded universe, selects CIK identity from that publication, applies both
+    filing and recording cutoffs, and bounds comparison history per ticker and
+    tag. Historical Scanner now owns only fact analysis/card projection after
+    the query. Python compile and 49 focused fundamentals, historical Scanner,
+    Ticker Facts, registry, and Watchlist tests passed. One broader Canvas test
+    remains stale against the pre-existing News query (`provider_tags` versus
+    `channels`) and is unrelated to this change.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

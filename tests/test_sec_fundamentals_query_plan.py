@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from src.backend.query_plans.sec_fundamentals_asof_v1 import (
     fundamental_fact_queries,
     fundamental_history,
+    scanner_fundamentals,
 )
 from src.backend.ticker_facts_service import (
     FUNDAMENTAL_TAGS,
@@ -49,6 +50,19 @@ class SecFundamentalsQueryPlanTests(unittest.TestCase):
                 cutoff=datetime(2026, 8, 11),
                 database="q_live",
             )
+
+    def test_scanner_query_is_set_based_and_causal(self) -> None:
+        sql = scanner_fundamentals(
+            ("Revenue", "NetIncomeLoss"),
+            datetime(2026, 8, 11, 15, 45, tzinfo=UTC),
+            "q_live",
+        )
+        self.assertIn("latest_universe_date", sql)
+        self.assertIn("INNER JOIN universe", sql)
+        self.assertIn("u.inserted_at <= cutoff", sql)
+        self.assertIn("f.filed_at_utc <= cutoff", sql)
+        self.assertIn("f.recorded_at_utc <= cutoff", sql)
+        self.assertIn("LIMIT 8 BY ticker, tag", sql)
         with self.assertRaisesRegex(ValueError, "at least one"):
             fundamental_fact_queries(
                 cik="0000320193",

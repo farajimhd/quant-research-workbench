@@ -168,6 +168,8 @@ actually loads point-in-time IPO data, rather than claiming Ticker Facts as a
 source it does not query. SEC/XBRL facts remain in
 `sec.fundamentals_asof.v1`; its versioned backend builder now owns both the
 bounded current-fact query and comparison-history query used by Ticker Facts.
+The same plan owns Historical Scanner's set-based all-universe XBRL query,
+including the causal universe publication and filing/recording cutoffs.
 This extraction does not change SEC Gateway schemas, publication, or service
 behavior.
 

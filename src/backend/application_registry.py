@@ -527,8 +527,11 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "sec.fundamentals_asof.v1",
             "sec_gateway",
             "src.backend.query_plans.sec_fundamentals_asof_v1:fundamental_fact_queries",
-            ("q_live.sec_xbrl_company_fact_v3",),
-            "causally resolved CIK supplied by the caller's identity plan",
+            (
+                "q_live.sec_xbrl_company_fact_v3",
+                "q_live.feature_tradable_universe_v1",
+            ),
+            "causally resolved CIK or as-of tradable-universe issuer identity",
             "period_end_date",
             "filed_at_utc and recorded_at_utc",
             "q_live.sec_coverage_manifest_v3",

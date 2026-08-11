@@ -242,6 +242,9 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Move the Ticker Facts SEC/XBRL current and comparison-history SQL into
         the registered `sec.fundamentals_asof.v1` backend plan without changing
         SEC Gateway publication behavior.
+  - [x] Move Historical Scanner's set-based, all-universe XBRL query into the
+        same fundamentals plan with causal universe, filing, and recording
+        clocks.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -260,6 +263,8 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Remove SEC/XBRL SQL from Ticker Facts composition while retaining its
         existing builder names as compatibility wrappers over the versioned
         fundamentals plan.
+  - [x] Remove all-universe XBRL SQL from Historical Scanner composition; it now
+        consumes the registered fundamentals builder before deriving cards.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [ ] Consume deferred producer services through unchanged bounded contracts.

@@ -20,6 +20,7 @@ from research.mlops.clickhouse import (
 from src.backend.query_plans.market_daily_bars_v1 import (
     daily_session_trade_bars_relation_sql,
 )
+from src.backend.query_plans.sec_fundamentals_asof_v1 import scanner_fundamentals
 from src.backend.real_live_market_data.startup import logo_asset_url
 from src.backend.qmd_gateway_client import (
     normalize_qmd_indicator_scanner_row,
@@ -27,7 +28,6 @@ from src.backend.qmd_gateway_client import (
 )
 from src.backend.ticker_facts_service import (
     FUNDAMENTAL_TAGS,
-    XBRL_HISTORY_START,
     analyze_fundamentals,
     financial_card_and_scores,
     select_fundamentals,
@@ -522,67 +522,10 @@ def historical_scanner_fundamental_projection(
     if as_of.tzinfo is None:
         raise ValueError("Historical scanner clock must be timezone-aware.")
     cutoff = as_of.astimezone(UTC)
-    cutoff_sql = sql_string(_clock(cutoff))
-    cutoff_date_sql = sql_string(cutoff.date().isoformat())
     tags = sorted({tag for _, alternatives in FUNDAMENTAL_TAGS for tag in alternatives})
-    tag_clause = ", ".join(sql_string(tag) for tag in tags)
     client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
     rows = _json_rows(
-        client.execute(
-            f"""
-            WITH
-                parseDateTime64BestEffort({cutoff_sql}) AS cutoff,
-                toDate({cutoff_date_sql}) AS cutoff_date,
-                (
-                    SELECT max(universe_date)
-                    FROM q_live.feature_tradable_universe_v1 FINAL
-                    WHERE universe_date <= cutoff_date AND inserted_at <= cutoff
-                ) AS latest_universe_date,
-                universe AS
-                (
-                    SELECT
-                        upper(u.ticker) AS ticker,
-                        argMax(
-                            replaceOne(u.issuer_id, 'issuer:cik:', ''),
-                            tuple(u.is_tradable, u.currency_code = 'USD', u.product_type = 'STK', u.inserted_at)
-                        ) AS cik
-                    FROM q_live.feature_tradable_universe_v1 AS u FINAL
-                    WHERE u.universe_date = latest_universe_date
-                      AND u.inserted_at <= cutoff
-                      AND notEmpty(u.ticker)
-                      AND startsWith(u.issuer_id, 'issuer:cik:')
-                    GROUP BY upper(u.ticker)
-                )
-            SELECT *
-            FROM
-            (
-                SELECT
-                    universe.ticker AS ticker,
-                    f.tag AS tag,
-                    f.taxonomy AS taxonomy,
-                    f.unit_code AS unit_code,
-                    f.value AS value,
-                    f.fiscal_year AS fiscal_year,
-                    f.fiscal_period AS fiscal_period,
-                    f.period_end_date AS period_end_date,
-                    f.filed_at_utc AS filed_at_utc,
-                    f.form_type AS form_type,
-                    f.accession_number AS accession_number,
-                    f.recorded_at_utc AS recorded_at_utc
-                FROM q_live.sec_xbrl_company_fact_v3 AS f FINAL
-                INNER JOIN universe ON universe.cik = toString(f.cik)
-                WHERE f.tag IN ({tag_clause})
-                  AND f.filed_at_utc >= parseDateTime64BestEffort({sql_string(_clock(XBRL_HISTORY_START))})
-                  AND f.filed_at_utc <= cutoff
-                  AND f.recorded_at_utc <= cutoff
-                ORDER BY ticker, tag, period_end_date DESC, filed_at_utc DESC, recorded_at_utc DESC
-                LIMIT 1 BY ticker, tag, period_end_date, fiscal_period, unit_code
-            )
-            ORDER BY ticker, tag, period_end_date DESC, filed_at_utc DESC, recorded_at_utc DESC
-            LIMIT 8 BY ticker, tag
-            FORMAT JSONEachRow
-            """
-        )
+        client.execute(scanner_fundamentals(tags, cutoff, "q_live"))
     )
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
