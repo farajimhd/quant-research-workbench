@@ -139,6 +139,12 @@ bounded direct ClickHouse paths remain documented in
     without embedding database paths or producer formulas in browser code.
     Deferred intelligence producer fields remain visible as integration pending
     and are not mislabeled runnable.
+29. Removed the complete handwritten Python QMD family fallback. Current/default
+    choices now come only from the QMD runtime catalog, and an unavailable QMD
+    authority yields no invented capability rows. Saved configuration rows stay
+    embedded and reviewable through migration without being promoted to current
+    runtime evidence. The remaining reference and deferred-intelligence
+    projections are explicitly still open for registry generation.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

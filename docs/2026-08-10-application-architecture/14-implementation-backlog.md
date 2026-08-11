@@ -43,6 +43,10 @@ separate explicit authorization.
 - [x] Expose the registries through backend catalog APIs.
 - [x] Generate frontend choices and statuses from the backend catalogs.
 - [ ] Remove competing handwritten frontend/backend/QMD availability catalogs.
+  - [x] Remove the backend-authored QMD family fallback; an outage now yields no
+        invented current rows, while saved releases retain embedded review data.
+  - [ ] Generate remaining reference and deferred-intelligence projections from
+        registered fields rather than handwritten Market Discovery lists.
 - [x] Version approved configuration releases and compute deterministic hashes.
 - [x] Compile immutable Run Plans and preserve migration for saved configurations.
 

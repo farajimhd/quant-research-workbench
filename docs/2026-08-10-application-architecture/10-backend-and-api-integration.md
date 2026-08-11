@@ -106,7 +106,7 @@ declares implementation version, cadence, timeframe, warm-up, state class,
 persistence, cost/scope, mode support, and implementation status.
 `GET /api/registries/capabilities` exposes that QMD runtime authority with its
 content hash and family counts. It fails with a typed 503 when QMD cannot prove
-the runtime catalog; it never substitutes the Python review fallback.
+the runtime catalog; it never substitutes a Python-authored availability list.
 
 The UI derives choices and statuses from this catalog. It must not maintain a competing handwritten list of “available” features.
 
@@ -137,9 +137,10 @@ Service-to-service calls use scoped identities and explicit allowlists. Read acc
   live. Remaining non-product compatibility aliases and specialized operational
   endpoints still require separate migration.
 - Shared workspace containers now use the backend registry and QMD runtime
-  capabilities have a verified backend endpoint. Market Discovery still has a
-  Python review-only fallback that must be replaced by a durable last-known QMD
-  artifact before all handwritten availability projections can be retired.
+  capabilities have a verified backend endpoint. The duplicate Python QMD
+  fallback has been removed; saved releases retain embedded review evidence,
+  while current choices require QMD authority. Remaining handwritten reference
+  and deferred-intelligence projections still require registry generation.
 - Snapshot/delta recovery, completeness and standard error semantics vary by endpoint.
 - Replay, Live and draft Backtest surfaces do not yet all use one compiler and controller API.
 

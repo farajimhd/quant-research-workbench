@@ -10,6 +10,7 @@ from unittest.mock import patch
 from src.backend.trading_configuration_service import (
     _default_draft,
     _migrate_draft,
+    _qmd_family_capabilities,
     _qmd_runtime_capabilities,
     _resolved_source_account_id,
     _validate_draft,
@@ -75,6 +76,47 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(row["cadence"], "bar_close")
         self.assertEqual(row["persistence_policy"], "if_signal_uses")
         self.assertEqual(row["consumers"], ["watchlist", "strategy_run", "request", "offline"])
+
+    @patch("src.backend.trading_configuration_service.qmd_catalogs")
+    def test_market_discovery_does_not_invent_qmd_rows_during_outage(self, catalogs) -> None:
+        catalogs.side_effect = RuntimeError("QMD unavailable")
+        with patch(
+            "src.backend.trading_configuration_service._QMD_RUNTIME_CATALOG_CACHE",
+            (0.0, []),
+        ):
+            self.assertEqual(_qmd_family_capabilities(), [])
+
+    def test_saved_qmd_capability_remains_reviewable_during_outage(self) -> None:
+        draft = self._draft()
+        saved = {
+            "capability_id": "qmd.family.saved_only",
+            "name": "Saved capability",
+            "provider": "QMD",
+            "execution_scope": "watchlist",
+            "allowed_scopes": ["watchlist"],
+            "configuration_policy": "configurable",
+            "availability": "implemented",
+            "implementation_status": "implemented",
+            "enabled": True,
+            "timeframes": ["1m"],
+            "selected_timeframes": ["1m"],
+        }
+        draft["market_discovery"]["core_scan"]["calculations"].append(saved)
+        with patch(
+            "src.backend.trading_configuration_service.qmd_catalogs",
+            side_effect=RuntimeError("QMD unavailable"),
+        ), patch(
+            "src.backend.trading_configuration_service._QMD_RUNTIME_CATALOG_CACHE",
+            (0.0, []),
+        ):
+            migrated = _migrate_draft(draft)
+
+        rows = {
+            row["capability_id"]: row
+            for row in migrated["market_discovery"]["core_scan"]["calculations"]
+        }
+        self.assertIn("qmd.family.saved_only", rows)
+        self.assertTrue(rows["qmd.family.saved_only"]["enabled"])
 
     def test_legacy_server_draft_table_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -151,9 +193,6 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertIn("causally available market price", capabilities["Last price"]["description"])
         self.assertTrue(capabilities["Company news score"]["configurable"])
         self.assertFalse(capabilities["Company news score"]["system_required"])
-        self.assertEqual(capabilities["Core OHLCV Bars"]["capability_type"], "market_data")
-        self.assertEqual(capabilities["Core OHLCV Bars"]["availability"], "implemented")
-        self.assertTrue(capabilities["Core OHLCV Bars"]["fields"])
         self.assertEqual(capabilities["Last price"]["capability_type"], "market_data")
         self.assertEqual(capabilities["Previous close"]["capability_type"], "reference")
         self.assertEqual(capabilities["Previous high"]["capability_type"], "reference")
@@ -179,9 +218,6 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertTrue(all(row["system_required"] for row in universal))
         self.assertTrue(all(row["configuration_policy"] == "locked" for row in universal))
         self.assertTrue(all(row["allowed_scopes"] == ["universal_ingest"] for row in universal))
-        self.assertEqual(capabilities["Core Momentum Oscillators"]["tier"], "watchlist")
-        self.assertEqual(capabilities["Core Momentum Oscillators"]["execution_scope"], "watchlist")
-        self.assertEqual(capabilities["Statistical Features"]["execution_scope"], "offline")
         self.assertEqual(
             migrated["market_discovery"]["watchlists"][0]["membership_expiry"],
             "end_of_trading_day",

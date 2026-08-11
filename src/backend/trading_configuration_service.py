@@ -1354,106 +1354,22 @@ def _default_universe(runtime_assignments: list[dict[str, Any]]) -> dict[str, An
 
 
 def _qmd_family_capabilities() -> list[dict[str, Any]]:
-    """UI projection of the complete QMD indicator-family authority catalog.
+    """Project only the QMD-owned runtime catalog into configuration records.
 
-    The Rust catalog remains calculation authority. This projection makes every
-    family visible in configuration, including deliberately unavailable work,
-    without presenting planned calculations as active runtime behavior.
+    Saved configurations carry their own immutable capability rows and remain
+    reviewable during a QMD outage. New/default configuration never invents a
+    second backend-owned availability catalog when QMD authority is unavailable.
     """
 
-    runtime_rows = _qmd_runtime_capabilities()
-    if runtime_rows:
-        return runtime_rows
-
-    rows = [
-        ("core_bars", "Core OHLCV Bars", "market_data", "p0", "implemented", "trades, quotes", "open, high, low, close, volume, dollar volume, trade count, VWAP, return, range", "Aggregates causally available trades and NBBO quotes into non-overlapping OHLCV bars; VWAP is trade-price times size divided by accumulated size."),
-        ("quote_mid_spread_bars", "Quote Midpoint and Spread Bars", "market_data", "p0", "implemented", "quotes", "bid, ask and midpoint OHLC; mean and closing spread", "Samples NBBO bid and ask updates, calculates midpoint as (bid + ask) / 2 and spread as ask - bid, then aggregates each value over the bar."),
-        ("session_context", "Session Context", "reference", "p1", "planned_realtime", "bars, session clock, previous-day context", "session phase, minutes from open/close, gap, previous close/high/low", "Joins each bar to the New York trading-session clock and the causally available previous-session snapshot. This family is documented but not currently calculated."),
-        ("opening_range", "Opening Range and ORB State", "signal", "p1", "planned_realtime", "bars, session clock", "opening-range high/low, range width, break and reclaim state", "Builds the opening high and low during the configured opening interval, then compares later prices with the frozen range. This family is documented but not currently calculated."),
-        ("tape_rates", "Tape and Quote Event Rates", "indicator", "p0", "implemented", "trades, quotes", "trade rate, quote rate, share rate, dollar-volume rate, acceleration", "Counts eligible trade and quote events in rolling event-time windows and divides counts or size by elapsed time; acceleration compares the current rate with its prior window."),
-        ("tape_pressure", "Tape Pressure and Imbalance", "indicator", "p0", "implemented", "trades, quotes", "buy/sell volume, signed flow, imbalance, uptick/downtick pressure", "Classifies trade direction against the prevailing NBBO and price changes, accumulates signed size, and normalizes buy minus sell activity by total classified activity."),
-        ("flow_structure_composite", "Flow-Structure Composite", "signal", "p0", "implemented", "quotes, trades, aggregation rules, market structure", "flow score, structure score, confidence, divergence and composite state", "Combines causal tape pressure, liquidity and confirmed structure observations into confidence-weighted component scores. The canonical 100 ms observations are summarized into higher non-overlapping timeframes."),
-        ("large_trade_activity", "Large Trade Activity", "indicator", "p1", "implemented", "trades", "large-trade count, shares, notional, side imbalance", "Identifies trades above the configured causal size threshold, then aggregates their count, shares, notional value and classified side imbalance by timeframe."),
-        ("nbbo_liquidity", "NBBO Liquidity and Friction", "indicator", "p0", "implemented", "quotes, trades", "spread, spread bps, quoted size, depth imbalance, trade-through and slippage proxies", "Uses the prevailing NBBO to calculate absolute and basis-point spread, displayed-size imbalance and execution-friction proxies without requiring order-book depth."),
-        ("volume_relative", "Relative Volume and Dollar Volume", "indicator", "p1", "planned_realtime", "bars, daily context", "relative volume, relative dollar volume, volume percentile", "Compares cumulative or interval volume with point-in-time historical baselines for the same session interval. This family is documented but not currently calculated."),
-        ("volume_classic", "Classic Volume Indicators", "indicator", "p2", "planned_realtime", "bars", "OBV, AD, ADOSC, CMF, MFI, PVT, NVI, PVI, EOM, KVO, force index", "Applies standard price-volume accumulation and money-flow formulas to closed bars. This family is documented but not currently calculated."),
-        ("momentum_core", "Core Momentum Oscillators", "indicator", "p1", "implemented", "bars", "RSI 14, MACD line/signal/histogram, one-bar return, price versus VWAP", "Calculates RSI from smoothed gains and losses, MACD from fast minus slow exponential averages, and price displacement relative to the current causal VWAP."),
-        ("momentum_extended", "Extended Momentum Oscillators", "indicator", "p2", "strategy_specific", "bars", "stochastic, CCI, ROC, Williams %R, PPO, TRIX and related oscillators", "Applies additional closed-bar momentum formulas only when a strategy explicitly requests them; they are not enabled in the broad Core Scan."),
-        ("trend_moving_averages", "Moving Averages and Trend Overlays", "indicator", "p1", "implemented", "bars", "SMA, EMA, WMA, DEMA, TEMA, KAMA, VWMA and price-distance fields", "Computes rolling and exponentially weighted averages from closed bars and publishes both the average and the current price distance from selected windows."),
-        ("trend_directional", "Directional Trend Indicators", "indicator", "p1", "planned_realtime", "bars", "ADX, +DI, -DI, directional movement, Supertrend, PSAR, Ichimoku", "Derives directional movement and trend overlays from high, low and close series. This family is documented but not currently calculated."),
-        ("volatility_core", "Core Volatility Indicators", "indicator", "p1", "implemented", "bars", "true range, ATR, realized volatility, Bollinger width, range percent", "Calculates true range from current high/low and previous close, smooths it into ATR, and derives dispersion and channel width from rolling closed-bar returns."),
-        ("volatility_extended", "Extended Volatility and Channels", "indicator", "p2", "strategy_specific", "bars", "Keltner, Donchian, historical volatility, normalized ATR and channel position", "Builds additional volatility channels and normalized range measures from closed bars only when a selected strategy requires them."),
-        ("price_action", "Price Action and Candle Shape", "indicator", "p1", "planned_realtime", "bars", "body, wick and gap ratios; breakout, pullback and exhaustion state", "Normalizes candle body, wick, gap and location measurements by price or range, then derives reusable closed-bar price-action states. This family is documented but not currently calculated."),
-        ("qmd_generic_structure", "QMD Generic Market Structure", "signal", "p0", "implemented", "eligible trades, extended-session state, timeframe level books", "developing and confirmed swings, breaks, reclaims, structure state, executed-volume footprints", "Updates causal extrema from eligible trades, freezes a level on the first opposing trade, promotes levels independently by timeframe and records break/reclaim lifecycle with executed-volume evidence."),
-        ("shock_features", "Shock and Abnormality Features", "signal", "p1", "planned_realtime", "bars, tick indicators, rolling baselines", "return, volume, spread, rate and imbalance z-scores; shock state", "Standardizes current movement, activity and friction against trailing point-in-time baselines to identify abnormal changes. This family is documented but not currently calculated."),
-        ("cross_timeframe_confirmation", "Cross-Timeframe Confirmation", "signal", "p2", "strategy_specific", "bars, indicators", "direction agreement, trend alignment, confirmation score", "Aligns only causally closed values from multiple timeframes and combines their agreement into a strategy-requested confirmation score."),
-        ("statistics", "Statistical Features", "indicator", "p3", "offline_only", "bars, indicator history", "rolling moments, correlations, regressions, ranks and distribution diagnostics", "Computes vectorized statistical features from stored point-in-time histories for research and models; it is intentionally unavailable in the live scan."),
-        ("cycles", "Cycle Indicators", "indicator", "p3", "offline_only", "bars", "Hilbert-transform and cycle-period families", "Applies cycle-analysis transforms to stored closed bars for research; it is intentionally unavailable in the live scan."),
-        ("candlestick_patterns", "Candlestick Pattern Recognition", "signal", "p3", "offline_only", "bars", "TA-Lib candlestick pattern family", "Evaluates named multi-candle shape templates over stored closed bars; it is intentionally unavailable in the live scan."),
-        ("performance", "Performance and Risk Metrics", "system", "p3", "offline_only", "orders, fills, portfolio, bars", "returns, drawdown, Sharpe, exposure, turnover and execution metrics", "Combines order, fill, position and valuation histories after execution. These metrics belong to portfolio analysis, not QMD live symbol scanning."),
-        ("reference_context", "Reference and Fundamental Context", "reference", "p1", "reference_only", "point-in-time reference services", "identity, venue, security type, corporate/fundamental and routing attributes", "Loads versioned reference snapshots whose availability precedes evaluation; values are joined by point-in-time instrument identity rather than calculated from ticks."),
-    ]
-    timeframe_map = {
-        "market_data": ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"],
-        "indicator": ["1s", "10s", "30s", "1m", "5m", "1h"],
-        "signal": ["100ms", "1s", "10s", "30s", "1m", "5m", "1h"],
-        "reference": ["session", "1d"],
-        "system": [],
-    }
-    core_keys = {
-        "core_bars",
-        "quote_mid_spread_bars",
-        "tape_rates",
-        "nbbo_liquidity",
-        "reference_context",
-    }
-    offline_keys = {"statistics", "cycles", "candlestick_patterns", "performance"}
-    strategy_keys = {"momentum_extended", "volatility_extended", "cross_timeframe_confirmation"}
-    result: list[dict[str, Any]] = []
-    for key, name, capability_type, priority, availability, inputs, fields, calculation in rows:
-        runnable = availability not in {"planned_realtime", "integration_pending"}
-        tier = (
-            "core"
-            if key in core_keys
-            else "offline"
-            if key in offline_keys
-            else "strategy"
-            if key in strategy_keys
-            else "watchlist"
-        )
-        required = runnable and tier == "core" and priority == "p0"
-        result.append({
-            "capability_id": f"qmd.family.{key}",
-            "name": name,
-            "description": calculation,
-            "calculation": calculation,
-            "category": "QMD indicator families",
-            "provider": "QMD",
-            "output_type": "family",
-            "capability_type": capability_type,
-            "priority": priority,
-            "availability": availability,
-            "inputs": [value.strip() for value in inputs.split(",")],
-            "fields": [value.strip() for value in fields.split(",")],
-            "timeframes": timeframe_map[capability_type],
-            "selected_timeframes": list(timeframe_map[capability_type]),
-            "enabled": runnable and tier in {"core", "watchlist"},
-            "configurable": runnable and not required and tier not in {"offline"},
-            "system_required": required,
-            "tier": tier,
-            "operational_status": "catalog_source_unavailable",
-            "coverage_status": "fallback_snapshot",
-            "catalog_authority": "backend_fallback_snapshot",
-        })
-    return result
+    return _qmd_runtime_capabilities()
 
 
 def _qmd_runtime_capabilities() -> list[dict[str, Any]]:
     """Project the QMD-owned runtime catalog into configuration UI records.
 
-    QMD Gateway is the authority. The older Python family table is used only
-    when that service is unavailable so an existing approved configuration can
-    still be reviewed; those rows are explicitly marked unavailable below.
+    QMD Gateway is the sole availability authority. A missing or invalid
+    catalog produces no rows, so callers cannot mistake a backend snapshot for
+    current QMD behavior.
     """
 
     global _QMD_RUNTIME_CATALOG_CACHE
