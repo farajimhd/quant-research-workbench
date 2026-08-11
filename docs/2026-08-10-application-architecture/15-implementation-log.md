@@ -1372,6 +1372,18 @@ bounded direct ClickHouse paths remain documented in
      Twenty-nine focused operational-plan, News detail, trading-News route,
      and application-registry tests passed. All changed Python modules compiled
      with bytecode writes disabled.
+144. Extended `sec.operations_intraday.v1` to own the Services SEC market-day
+     summary, bounded parent-filing page, and document, rendered-text,
+     company-fact, and frame aggregates. Related reads are generated only for
+     the exact unique CIK/accession keys returned by the bounded parent page;
+     an empty page executes no aggregate query. The plan independently caps
+     parent rows at 1,000 while the route retains its stricter product limit.
+     The backend still owns SEC Gateway recent-feed composition, identity
+     presentation, classification, and optional degradation.
+
+     Fourteen focused SEC operations, SEC Canvas, and application-registry
+     tests passed. All changed Python modules compiled with bytecode writes
+     disabled.
 143. Moved the Services SEC market-day classification histogram into the
      registered `sec.operations_intraday.v1` plan. The query uses the bounded
      half-open `accepted_at_utc` window and the canonical CIK/accession identity

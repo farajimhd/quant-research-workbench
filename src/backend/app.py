@@ -156,6 +156,9 @@ from src.backend.query_plans.news_operations_v1 import (
 )
 from src.backend.query_plans.sec_operations_v1 import (
     intraday_histogram as sec_intraday_histogram_query,
+    related_filing_counts as sec_related_filing_count_queries,
+    today_filings as sec_today_filings_query,
+    today_summary as sec_today_summary_query,
 )
 from src.backend.real_live_trading_service import (
     apply_tradable_filter_to_scanner_payload,
@@ -2290,8 +2293,6 @@ def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, An
     company_fact_table = "sec_xbrl_company_fact_v3"
     frame_table = "sec_xbrl_frame_observation_v3"
     window_start_et, window_end_et, window_start_utc, window_end_utc = service_market_day_window()
-    window_start_sql = service_datetime64_sql(window_start_utc)
-    window_end_sql = service_datetime64_sql(window_end_utc)
     try:
         histogram = service_sec_histogram(
             company_fact_table=company_fact_table,
@@ -2316,54 +2317,15 @@ def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, An
             "window_start_et": window_start_et.isoformat(),
             "window_start_utc": window_start_utc.isoformat().replace("+00:00", "Z"),
         }
-    count_query = f"""
-        WITH
-            {window_start_sql} AS window_start,
-            {window_end_sql} AS window_end
-        SELECT
-            toUInt64(count()) AS total_filings,
-            formatDateTime(max(accepted_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_accepted_at_utc
-        FROM {quote_ident(database)}.{quote_ident(filing_table)}
-        WHERE accepted_at_utc >= window_start
-          AND accepted_at_utc < window_end
-        FORMAT JSONEachRow
-    """
+    count_query = sec_today_summary_query(window_start_utc, window_end_utc)
     summary_rows = clickhouse_json_each_row(count_query)
     count_summary = summary_rows[0] if summary_rows else {}
-    query = f"""
-        WITH
-            {window_start_sql} AS window_start,
-            {window_end_sql} AS window_end
-        SELECT
-            f.filing_id,
-            f.accession_number,
-            f.accession_number_compact,
-            toString(f.cik) AS cik,
-            f.issuer_id,
-            f.company_name,
-            f.form_type,
-            toString(f.filing_date) AS filing_date,
-            toString(f.report_date) AS report_date,
-            formatDateTime(f.accepted_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS accepted_at_utc,
-            f.acceptance_datetime_raw,
-            f.accepted_at_source,
-            f.primary_document,
-            f.primary_document_url,
-            f.filing_detail_url,
-            f.source_file_name,
-            f.filing_size,
-            f.items,
-            f.text_status,
-            'parent' AS activity_status
-        FROM {quote_ident(database)}.{quote_ident(filing_table)} AS f
-        WHERE f.accepted_at_utc >= window_start
-          AND f.accepted_at_utc < window_end
-        ORDER BY
-            f.accepted_at_utc {sort_direction},
-            f.accession_number {sort_direction}
-        LIMIT {safe_limit}
-        FORMAT JSONEachRow
-    """
+    query = sec_today_filings_query(
+        window_start_utc,
+        window_end_utc,
+        limit=safe_limit,
+        ascending=sort_direction == "ASC",
+    )
     rows = clickhouse_json_each_row(query)
     identity_rows_by_cik = service_sec_identity_rows_by_cik(
         database,
@@ -2371,84 +2333,20 @@ def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, An
     )
     key_pairs = [(str(row.get("cik") or ""), str(row.get("accession_number") or "")) for row in rows]
     key_pairs = [(cik_value, accession_value) for cik_value, accession_value in key_pairs if cik_value and accession_value]
-    key_clause = ", ".join(f"({sql_string(cik_value)}, {sql_string(accession_value)})" for cik_value, accession_value in key_pairs)
+    related_queries = sec_related_filing_count_queries(key_pairs)
 
     def keyed_rows(query_sql: str) -> dict[tuple[str, str], dict[str, Any]]:
-        if not key_clause:
+        if not related_queries:
             return {}
         return {
             (str(row.get("cik") or ""), str(row.get("accession_number") or "")): row
             for row in clickhouse_json_each_row(query_sql)
         }
 
-    document_counts = keyed_rows(
-        f"""
-        SELECT
-            toString(cik) AS cik,
-            accession_number,
-            toUInt64(count()) AS document_rows,
-            toUInt64(countIf(document_role = 'primary')) AS primary_document_rows,
-            toUInt64(countIf(has_normalized_text)) AS document_text_ready_rows,
-            toUInt64(countIf(extraction_status NOT IN ('', 'ok', 'complete', 'completed', 'extracted'))) AS document_issue_rows,
-            arraySort(arraySlice(groupUniqArray(nullIf(document_type, '')), 1, 8)) AS document_type_sample,
-            arraySort(arraySlice(groupUniqArray(nullIf(file_extension, '')), 1, 8)) AS file_extension_sample
-        FROM {quote_ident(database)}.{quote_ident(document_table)} FINAL
-        WHERE (toString(cik), accession_number) IN ({key_clause})
-        GROUP BY
-            cik,
-            accession_number
-        FORMAT JSONEachRow
-        """
-    )
-    text_counts = keyed_rows(
-        f"""
-        SELECT
-            toString(cik) AS cik,
-            accession_number,
-            toUInt64(count()) AS text_rows,
-            toUInt64(sum(text_char_count)) AS text_chars,
-            arraySort(arraySlice(groupUniqArray(nullIf(text_kind, '')), 1, 8)) AS text_kind_sample,
-            arraySort(arraySlice(arrayDistinct(arrayFlatten(groupArray(quality_flags))), 1, 10)) AS quality_flag_sample
-        FROM {quote_ident(database)}.{quote_ident(text_table)} FINAL
-        WHERE (toString(cik), accession_number) IN ({key_clause})
-        GROUP BY
-            cik,
-            accession_number
-        FORMAT JSONEachRow
-        """
-    )
-    company_fact_counts = keyed_rows(
-        f"""
-        SELECT
-            toString(cik) AS cik,
-            accession_number,
-            toUInt64(count()) AS xbrl_fact_rows,
-            toUInt64(uniqExact(tag)) AS xbrl_fact_tags,
-            arraySort(arraySlice(groupUniqArray(nullIf(tag, '')), 1, 12)) AS xbrl_fact_tag_sample
-        FROM {quote_ident(database)}.{quote_ident(company_fact_table)}
-        WHERE (toString(cik), accession_number) IN ({key_clause})
-        GROUP BY
-            cik,
-            accession_number
-        FORMAT JSONEachRow
-        """
-    )
-    frame_counts = keyed_rows(
-        f"""
-        SELECT
-            toString(cik) AS cik,
-            accession_number,
-            toUInt64(count()) AS xbrl_frame_rows,
-            toUInt64(uniqExact(tag)) AS xbrl_frame_tags,
-            arraySort(arraySlice(groupUniqArray(nullIf(tag, '')), 1, 12)) AS xbrl_frame_tag_sample
-        FROM {quote_ident(database)}.{quote_ident(frame_table)}
-        WHERE (toString(cik), accession_number) IN ({key_clause})
-        GROUP BY
-            cik,
-            accession_number
-        FORMAT JSONEachRow
-        """
-    )
+    document_counts = keyed_rows(related_queries.get("documents", ""))
+    text_counts = keyed_rows(related_queries.get("texts", ""))
+    company_fact_counts = keyed_rows(related_queries.get("company_facts", ""))
+    frame_counts = keyed_rows(related_queries.get("frames", ""))
     related_defaults = {
         "document_rows": 0,
         "primary_document_rows": 0,

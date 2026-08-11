@@ -285,6 +285,8 @@ budgets and invalid scope broadening fails configuration validation.
         bounded `news.operations_intraday.v1` plan.
   - [x] Move the Services SEC market-day filing/text/XBRL histogram SQL into
         the bounded `sec.operations_intraday.v1` plan.
+  - [x] Move the Services SEC market-day summary, bounded filing rows, and
+        exact returned-key document/text/XBRL aggregates into the same plan.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -316,6 +318,8 @@ budgets and invalid scope broadening fails configuration validation.
         caching, row decoding, and operational presentation in the backend.
   - [x] Remove the Services SEC histogram SQL from `app.py`; retain caching,
         degradation, row decoding, and operational presentation there.
+  - [x] Remove the Services SEC market-day base and related-count SQL from
+        `app.py`; retain set-based execution and response composition there.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [x] Consume deferred producer services through unchanged bounded contracts.
