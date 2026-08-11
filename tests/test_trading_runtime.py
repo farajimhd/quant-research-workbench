@@ -255,6 +255,12 @@ class HistoricalContractTests(unittest.TestCase):
             "has_more": True,
             "indicators": [{"bar_start": "2026-07-10T13:44:00+00:00", "ema_20": 314.8}],
             "indicators_available": True,
+            "indicator_provenance": {
+                "engine_version": "qmd-derived-v28",
+                "indicator_schema_version": 18,
+                "source": {"source_plan_hash": "plan-123", "tiers": ["archive", "recent"]},
+                "warm_up": {"status": "satisfied_in_response"},
+            },
             "next_before": "2026-07-10T13:44:00+00:00",
             "structure_events": [
                 {
@@ -308,6 +314,10 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertEqual(result["next_before"], "2026-07-10T13:44:00+00:00")
         self.assertTrue(result["has_more_in_session"])
         self.assertEqual(len(result["indicators"]), 1)
+        self.assertEqual(
+            result["indicator_provenance"]["source"]["source_plan_hash"],
+            "plan-123",
+        )
         self.assertEqual(
             [(row["event_id"], row["timeframe"]) for row in result["structure_events"]],
             [(91, "100ms"), (92, "1s")],

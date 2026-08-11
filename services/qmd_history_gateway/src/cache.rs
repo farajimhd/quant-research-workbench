@@ -1552,9 +1552,12 @@ mod tests {
             tickers: vec!["AAPL".to_string()],
         };
         let first = SourceRevision {
+            complete_for_history: true,
             event_count: 10,
             max_build_step: 1,
             max_updated_at: "2026-07-10 01:00:00".to_string(),
+            source_plan_hash: "plan-1".to_string(),
+            source_tiers: vec!["archive".to_string()],
             token: "1:10:2026-07-10 01:00:00".to_string(),
         };
         let second = SourceRevision {
@@ -1592,9 +1595,12 @@ mod tests {
             tickers: vec!["AAPL".to_string()],
         };
         let revision = SourceRevision {
+            complete_for_history: true,
             event_count: 10,
             max_build_step: 1,
             max_updated_at: "2026-07-10 13:45:00".to_string(),
+            source_plan_hash: "plan-1".to_string(),
+            source_tiers: vec!["archive".to_string()],
             token: "1:10:2026-07-10 13:45:00".to_string(),
         };
         let one_minute = cache_key(

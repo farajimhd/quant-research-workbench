@@ -143,8 +143,11 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
 - Intraday historical charts now request a QMD `bars` stage first and render it
   before requesting the `full` indicator, signal, and structure stage from the
   same single-flight cache entry. Archive/recent source selection remains owned
-  by QMD History. The remaining chart drift is the explicit watermark merge with
-  the live tail, adjacent-window prefetch, correction/provenance presentation,
+  by QMD History. Indicator responses now carry engine/schema versions,
+  effective parameters, response warm-up state, source-plan hash and tiers,
+  source revision, completeness and stale reason through the backend to a
+  compact Canvas notice. The remaining chart drift is the explicit watermark merge with
+  the live tail, adjacent-window prefetch, richer correction presentation,
   and published Canvas defaults in the remaining mode workspaces.
 - Replay Canvas now creates manual or semi-automatic semantic proposals from
   the visible closed-bar snapshot, point-in-time conid, price/source sequence,

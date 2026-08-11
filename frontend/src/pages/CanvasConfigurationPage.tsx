@@ -262,6 +262,7 @@ type QmdBarHistory = {
   history: QmdLiveBar[];
   indicators: HistoricalIndicator[];
   indicators_available: boolean;
+  indicator_provenance?: QmdIndicatorProvenance;
   structure_events: QmdStructureEvent[];
   structure_level_history: QmdStructureLevelCandidate[];
   next_before: string;
@@ -269,6 +270,15 @@ type QmdBarHistory = {
   stage?: "bars" | "full";
   ticker: string;
   timeframe: string;
+};
+type QmdIndicatorProvenance = {
+  as_of?: string;
+  complete?: boolean;
+  engine_version?: string;
+  indicator_schema_version?: number;
+  source?: { source_plan_hash?: string; tiers?: string[] };
+  stale_reason?: string;
+  warm_up?: { recommended_minimum_bars?: number; returned_bars?: number; status?: string };
 };
 type QmdMarketSignalEvent = {
   schema_version: number;
@@ -331,6 +341,7 @@ type CanvasLiveChartState = {
   historyNotice: string;
   indicators: HistoricalIndicator[];
   indicatorsAvailable: boolean;
+  indicatorProvenance?: QmdIndicatorProvenance;
   structureEvents: QmdStructureEvent[];
   structureLevelHistory: QmdStructureLevelCandidate[];
   lastUpdateAt: string;
@@ -714,6 +725,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
             historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
             indicators: merged.indicators,
             indicatorsAvailable: payload.indicators_available,
+            indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
             structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
             structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
           };
@@ -771,6 +783,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
               historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? "Loading requested indicators..." : "",
               indicators: merged.indicators,
               indicatorsAvailable: progressive ? current.indicatorsAvailable : payload.indicators_available,
+              indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
               structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
               structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
               loading: false,
@@ -798,6 +811,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
               historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
               indicators: merged.indicators,
               indicatorsAvailable: payload.indicators_available,
+              indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
               structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
               structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
             };
@@ -849,6 +863,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
             canLoadEarlier: payload.has_more && !merged.atCapacity,
             indicators: merged.indicators,
             indicatorsAvailable: payload.indicators_available,
+            indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
             lastUpdateAt: new Date().toISOString(),
             marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
             structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
@@ -927,6 +942,16 @@ function chartRowBudget(indicatorColumns: string): number {
 
 function chartHistoryLimitNotice(rowBudget: number): string {
   return `${rowBudget.toLocaleString()} chart points loaded. Choose a higher timeframe to inspect earlier history.`;
+}
+
+function indicatorProvenanceNotice(provenance?: QmdIndicatorProvenance): string {
+  if (!provenance?.engine_version) return "";
+  const source = provenance.source?.tiers?.length ? provenance.source.tiers.join(" + ") : "QMD source plan";
+  const warmUp = provenance.warm_up?.status === "partial_in_response"
+    ? `warm-up ${provenance.warm_up.returned_bars ?? 0}/${provenance.warm_up.recommended_minimum_bars ?? 50} bars`
+    : "warm-up satisfied";
+  const coverage = provenance.complete === false ? "partial source coverage" : "source coverage complete";
+  return `${provenance.engine_version} · indicators v${provenance.indicator_schema_version ?? "?"} · ${source} · ${warmUp} · ${coverage}`;
 }
 
 function requestedIndicatorColumns(visibleIndicatorIds: string[]): string {
@@ -2402,7 +2427,8 @@ function ChartPreview({
     quantity,
   } satisfies LiveEntryLine : null;
   const emptyMessage = `No closed ${linkContext.symbol} ${timeframe} bars are available from QMD History at this Canvas clock.`;
-  return <ChartPanel baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="recent" infoMessage={liveChart.historyNotice} liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />;
+  const infoMessage = [liveChart.historyNotice, indicatorProvenanceNotice(liveChart.indicatorProvenance)].filter(Boolean).join(" · ");
+  return <ChartPanel baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="recent" infoMessage={infoMessage} liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />;
 }
 
 function historicalMarketLevelZones(

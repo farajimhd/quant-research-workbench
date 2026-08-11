@@ -206,7 +206,10 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
 - [ ] Bound caches and invalidate by source/corporate-action/calculation revision.
 - [ ] Recover live sequence gaps or resnapshot.
 - [ ] Expose partial, stale, corrected, and source-transition states.
-- [ ] Return indicator provenance and warm-up.
+  - [x] Show source tiers, source-plan completeness, engine/schema revision and
+        warm-up state for historical chart indicators.
+  - [ ] Add live-tail transition, correction, and stale-state presentation.
+- [x] Return indicator provenance and warm-up.
 - [x] Keep chart indicators request-scoped rather than expanding Core Scan.
 - [ ] Create chart-originated manual and semi-automatic proposals.
   - [x] Create and confirm both proposal authorities in Replay Canvas.

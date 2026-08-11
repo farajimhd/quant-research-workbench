@@ -67,6 +67,9 @@ bounded direct ClickHouse paths remain documented in
     overlays from editable Configuration storage. Standalone Canvas and Replay now
     start from the approved/pinned profile, persist revision-scoped changes, and
     can reset to approved without rewriting application defaults.
+14. Added historical chart-indicator provenance from QMD History through the
+    backend to Canvas: engine/schema versions, effective parameters, warm-up,
+    source-plan hash and tiers, revision evidence, completeness, and stale reason.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

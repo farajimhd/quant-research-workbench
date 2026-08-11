@@ -20,6 +20,7 @@ use qmd_core::bars::is_supported_timeframe;
 use qmd_core::capability_catalog::{computation_capability_catalog, ComputationCapability};
 use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::event::MarketEvent;
+use qmd_core::indicators::INDICATOR_SCHEMA_VERSION;
 use qmd_core::market_products::{
     parse_resolution_us, ConditionBarSnapshot, FamilyBarSnapshot, MacroBarSnapshot,
 };
@@ -460,10 +461,15 @@ fn project_chart_snapshot(
     snapshot: ChartSnapshot,
     columns: Option<&BTreeSet<String>>,
 ) -> Result<Value, ApiError> {
+    let provenance = chart_indicator_provenance(&snapshot, columns);
     let Some(columns) = columns else {
-        return serde_json::to_value(snapshot).map_err(|error| {
+        let mut value = serde_json::to_value(snapshot).map_err(|error| {
             service_error(format!("failed to serialize chart snapshot: {error}"))
-        });
+        })?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert("indicator_provenance".to_string(), provenance);
+        }
+        return Ok(value);
     };
     let indicator_count = snapshot.indicators.len();
     let indicators = snapshot
@@ -491,6 +497,7 @@ fn project_chart_snapshot(
         "has_more": snapshot.has_more,
         "indicators": indicators,
         "indicators_available": snapshot.indicators_available,
+        "indicator_provenance": provenance,
         "market_signal_events": snapshot.market_signal_events,
         "next_before": snapshot.next_before,
         "structure_events": snapshot.structure_events,
@@ -498,6 +505,57 @@ fn project_chart_snapshot(
         "ticker": snapshot.ticker,
         "timeframe": snapshot.timeframe,
     }))
+}
+
+fn chart_indicator_provenance(
+    snapshot: &ChartSnapshot,
+    columns: Option<&BTreeSet<String>>,
+) -> Value {
+    let returned_bars = snapshot.bars.len();
+    let recommended_minimum_bars = 50_usize;
+    let requested_columns = columns
+        .map(|values| {
+            values
+                .iter()
+                .filter(|value| value.as_str() != "bar_start")
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({
+        "schema_version": 1,
+        "capability_id": "qmd.family.core_momentum_and_structure",
+        "calculation_scope": "request",
+        "engine_version": snapshot.cache.engine_version,
+        "indicator_schema_version": INDICATOR_SCHEMA_VERSION,
+        "effective_parameters": {
+            "atr_period": 14,
+            "bollinger_period": 20,
+            "bollinger_standard_deviations": 2,
+            "ema_periods": [9, 20, 50],
+            "macd_fast_period": 12,
+            "macd_signal_period": 9,
+            "macd_slow_period": 26,
+            "rsi_period": 14
+        },
+        "requested_columns": requested_columns,
+        "warm_up": {
+            "recommended_minimum_bars": recommended_minimum_bars,
+            "returned_bars": returned_bars,
+            "status": if returned_bars >= recommended_minimum_bars { "satisfied_in_response" } else { "partial_in_response" }
+        },
+        "source": {
+            "complete_for_history": snapshot.cache.source_revision.complete_for_history,
+            "event_count": snapshot.cache.event_count,
+            "revision_token": snapshot.cache.source_revision.token,
+            "source_plan_hash": snapshot.cache.source_revision.source_plan_hash,
+            "tiers": snapshot.cache.source_revision.source_tiers
+        },
+        "as_of": snapshot.as_of,
+        "observed_through": snapshot.bars.last().map(|bar| bar.bar_end),
+        "complete": snapshot.cache.source_revision.complete_for_history,
+        "stale_reason": if snapshot.cache.source_revision.complete_for_history { "" } else { "source_plan_requires_live_continuation_or_contains_a_gap" }
+    })
 }
 
 async fn family_bar_snapshot(

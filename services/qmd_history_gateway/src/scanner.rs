@@ -477,9 +477,12 @@ fn sort_and_bound_signal_events(events: &mut Vec<MarketSignalEvent>) {
 
 fn empty_source_revision() -> SourceRevision {
     SourceRevision {
+        complete_for_history: false,
         event_count: 0,
         max_build_step: 0,
         max_updated_at: String::new(),
+        source_plan_hash: String::new(),
+        source_tiers: Vec::new(),
         token: String::new(),
     }
 }

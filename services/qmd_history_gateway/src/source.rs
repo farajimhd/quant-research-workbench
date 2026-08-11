@@ -87,9 +87,12 @@ pub struct LatestEventCoverage {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SourceRevision {
+    pub complete_for_history: bool,
     pub event_count: u64,
     pub max_build_step: u64,
     pub max_updated_at: String,
+    pub source_plan_hash: String,
+    pub source_tiers: Vec<String>,
     pub token: String,
 }
 
@@ -419,9 +422,16 @@ impl HistoricalEventSource {
             .collect::<Vec<_>>()
             .join("|");
         Ok(SourceRevision {
+            complete_for_history: plan.complete_for_history,
             event_count,
             max_build_step,
             max_updated_at: max_updated_at.clone(),
+            source_plan_hash: plan.plan_hash.clone(),
+            source_tiers: plan
+                .segments
+                .iter()
+                .map(|segment| format!("{:?}", segment.tier).to_ascii_lowercase())
+                .collect(),
             token: format!(
                 "{}:{}:{}:{}",
                 max_build_step, event_count, max_updated_at, plan_token
