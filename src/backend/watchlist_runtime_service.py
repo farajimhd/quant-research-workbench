@@ -24,6 +24,8 @@ from src.request_context import causal_identity
 from src.trading_runtime.watchlist_resolver import (
     SOURCE_FIELDS,
     classify_watchlist_row,
+    evaluate_watchlist_candidate,
+    rank_watchlist_membership,
     resolve_watchlist_membership,
 )
 
@@ -46,6 +48,9 @@ class WatchlistRuntime:
         self._members: dict[str, dict[str, dict[str, Any]]] = {}
         self._history: deque[dict[str, Any]] = deque(maxlen=MEMBERSHIP_HISTORY_LIMIT)
         self._published_targets: set[str] = set()
+        self._eligible: dict[str, dict[str, dict[str, Any]]] = {}
+        self._candidate_fingerprints: dict[str, dict[str, str]] = {}
+        self._watchlist_revisions: dict[str, str] = {}
         self._hydrated = False
 
     def resolve(
@@ -65,6 +70,11 @@ class WatchlistRuntime:
             for row in dict(discovery.get("core_scan") or {}).get("calculations") or []
         }
         normalized_candidates = [normalize_watchlist_candidate(row) for row in candidates]
+        candidates_by_ticker = {
+            str(row.get("ticker") or "").upper(): row
+            for row in normalized_candidates
+            if str(row.get("ticker") or "").strip()
+        }
         snapshots: list[dict[str, Any]] = []
         target_errors: list[dict[str, str]] = []
         desired_strategy_targets: set[str] = set()
@@ -78,11 +88,18 @@ class WatchlistRuntime:
                 enabled = bool(watchlist.get("enabled", True)) and str(
                     watchlist.get("availability") or "available"
                 ) == "available"
-                resolved = (
-                    resolve_watchlist_membership(watchlist, rule_sets, normalized_candidates)
-                    if enabled
-                    else []
-                )
+                recomputed_candidate_count = 0
+                if enabled:
+                    resolved, recomputed_candidate_count = self._resolve_incremental(
+                        watchlist,
+                        rule_sets,
+                        candidates_by_ticker,
+                    )
+                else:
+                    resolved = []
+                    self._eligible.pop(watchlist_id, None)
+                    self._candidate_fingerprints.pop(watchlist_id, None)
+                    self._watchlist_revisions.pop(watchlist_id, None)
                 current = {
                     str(row.get("ticker") or "").upper(): {
                         **row,
@@ -179,6 +196,8 @@ class WatchlistRuntime:
                             f"strategy:{target['run_plan_id']}" for target in strategy_targets
                         ],
                         "events": events,
+                        "recomputed_candidate_count": recomputed_candidate_count,
+                        "candidate_population_count": len(candidates_by_ticker),
                     }
                 )
             if publish_targets:
@@ -214,6 +233,57 @@ class WatchlistRuntime:
             "target_errors": target_errors,
             "status": "ready" if not target_errors else "degraded",
         }
+
+    def _resolve_incremental(
+        self,
+        watchlist: dict[str, Any],
+        rule_sets: list[dict[str, Any]],
+        candidates_by_ticker: dict[str, dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Re-evaluate only symbols whose inputs used by this Watchlist changed."""
+
+        watchlist_id = str(watchlist.get("watchlist_id") or "")
+        revision = watchlist_resolution_revision(watchlist, rule_sets)
+        eligible = self._eligible.setdefault(watchlist_id, {})
+        previous_fingerprints = self._candidate_fingerprints.setdefault(
+            watchlist_id, {}
+        )
+        if self._watchlist_revisions.get(watchlist_id) != revision:
+            eligible.clear()
+            previous_fingerprints.clear()
+            self._watchlist_revisions[watchlist_id] = revision
+        fields = watchlist_dependency_fields(watchlist, rule_sets)
+        current_fingerprints = {
+            ticker: watchlist_candidate_fingerprint(row, fields)
+            for ticker, row in candidates_by_ticker.items()
+        }
+        changed = {
+            ticker
+            for ticker, fingerprint in current_fingerprints.items()
+            if previous_fingerprints.get(ticker) != fingerprint
+        }
+        removed = set(previous_fingerprints) - set(current_fingerprints)
+        for ticker in removed:
+            eligible.pop(ticker, None)
+        for ticker in changed:
+            matched = evaluate_watchlist_candidate(
+                watchlist,
+                rule_sets,
+                candidates_by_ticker[ticker],
+            )
+            if matched is None:
+                eligible.pop(ticker, None)
+            else:
+                eligible[ticker] = matched
+        self._candidate_fingerprints[watchlist_id] = current_fingerprints
+        return (
+            rank_watchlist_membership(
+                watchlist,
+                eligible.values(),
+                observed_symbols=candidates_by_ticker,
+            ),
+            len(changed) + len(removed),
+        )
 
     def _hydrate(self, journal: Any) -> None:
         for record in journal.watchlist_membership_records(
@@ -335,6 +405,74 @@ class WatchlistRuntime:
 
 
 WATCHLIST_RUNTIME = WatchlistRuntime()
+
+
+def watchlist_resolution_revision(
+    watchlist: dict[str, Any],
+    rule_sets: list[dict[str, Any]],
+) -> str:
+    selected_ids = {
+        str(value)
+        for key in ("inclusion_rule_sets", "exclusion_rule_sets")
+        for value in watchlist.get(key) or []
+    }
+    payload = {
+        "watchlist": watchlist,
+        "rule_sets": [
+            row
+            for row in rule_sets
+            if str(row.get("rule_set_id") or "") in selected_ids
+        ],
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def watchlist_dependency_fields(
+    watchlist: dict[str, Any],
+    rule_sets: list[dict[str, Any]],
+) -> tuple[str, ...]:
+    """Return only row fields that can alter eligibility or final rank."""
+
+    selected_ids = {
+        str(value)
+        for key in ("inclusion_rule_sets", "exclusion_rule_sets")
+        for value in watchlist.get(key) or []
+    }
+    source_ids = {str(watchlist.get("ranking_field") or "")}
+    for rule_set in rule_sets:
+        if str(rule_set.get("rule_set_id") or "") not in selected_ids:
+            continue
+        for condition in rule_set.get("conditions") or []:
+            if not bool(condition.get("enabled", True)):
+                continue
+            source_ids.add(str(condition.get("left_source_id") or ""))
+            source_ids.add(str(condition.get("right_source_id") or ""))
+    fields = {
+        SOURCE_FIELDS.get(source_id, source_id)
+        for source_id in source_ids
+        if source_id
+    }
+    return tuple(sorted(fields | {"ticker"}))
+
+
+def watchlist_candidate_fingerprint(
+    row: dict[str, Any],
+    fields: tuple[str, ...],
+) -> str:
+    payload = {field: row.get(field) for field in fields}
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def normalize_watchlist_candidate(row: dict[str, Any]) -> dict[str, Any]:

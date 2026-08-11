@@ -122,6 +122,51 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         )
         self.assertEqual(second["watchlists"][0]["member_count"], 3)
 
+    @patch("src.backend.watchlist_runtime_service.publish_watchlist_target")
+    def test_recomputes_only_candidates_with_rule_relevant_changes(self, publish) -> None:
+        runtime = WatchlistRuntime()
+        candidates = [
+            {
+                "ticker": "AAA",
+                "market_cap": 1_000_000_000,
+                "change_pct": 4.0,
+                "reference_available_at": "revision-1",
+            },
+            {
+                "ticker": "BBB",
+                "market_cap": 500_000_000,
+                "change_pct": 9.0,
+                "reference_available_at": "revision-1",
+            },
+        ]
+
+        first = runtime.resolve(self.configuration, candidates)
+        provenance_only = runtime.resolve(
+            self.configuration,
+            [
+                {**row, "reference_available_at": "revision-2"}
+                for row in candidates
+            ],
+        )
+        one_changed = runtime.resolve(
+            self.configuration,
+            [candidates[0], {**candidates[1], "change_pct": 3.0}],
+        )
+
+        self.assertEqual(
+            first["watchlists"][0]["recomputed_candidate_count"], 2
+        )
+        self.assertEqual(
+            provenance_only["watchlists"][0]["recomputed_candidate_count"], 0
+        )
+        self.assertEqual(
+            one_changed["watchlists"][0]["recomputed_candidate_count"], 1
+        )
+        self.assertEqual(
+            [row["ticker"] for row in one_changed["watchlists"][0]["members"]],
+            ["AAA", "BBB"],
+        )
+
     def test_focused_contract_translates_only_runnable_qmd_families(self) -> None:
         discovery = self.configuration["market_discovery"]
         calculations = {

@@ -80,34 +80,106 @@ def resolve_watchlist_membership(
     if not bool(watchlist.get("enabled", True)):
         return []
 
-    rule_by_id = {str(rule.get("rule_set_id") or ""): rule for rule in rule_sets}
-    include_ids = [str(value) for value in watchlist.get("inclusion_rule_sets") or []]
-    exclude_ids = [str(value) for value in watchlist.get("exclusion_rule_sets") or []]
-    include_operator = str(watchlist.get("inclusion_operator") or "all")
-    manual_inclusions = {str(value).upper() for value in watchlist.get("manual_inclusions") or []}
-    manual_exclusions = {str(value).upper() for value in watchlist.get("manual_exclusions") or []}
+    rule_list = list(rule_sets)
     accepted: list[dict[str, Any]] = []
-    by_symbol: dict[str, dict[str, Any]] = {}
+    observed_symbols: set[str] = set()
     for raw in candidates:
-        row = classify_watchlist_row(dict(raw))
-        symbol = str(row.get("ticker") or row.get("symbol") or "").upper()
-        if not symbol:
-            continue
-        row["ticker"] = symbol
-        by_symbol[symbol] = row
-        if symbol in manual_exclusions:
-            continue
-        include_results = [_rule_matches(rule_by_id.get(rule_id), row) for rule_id in include_ids]
-        included = not include_results or (any(include_results) if include_operator == "any" else all(include_results))
-        excluded = any(_rule_matches(rule_by_id.get(rule_id), row) for rule_id in exclude_ids)
-        if (included and not excluded) or symbol in manual_inclusions:
-            accepted.append({**row, "membership_reason": "manual inclusion" if symbol in manual_inclusions else "rules passed"})
-    for symbol in sorted(manual_inclusions - set(by_symbol) - manual_exclusions):
-        accepted.append({"ticker": symbol, "membership_reason": "manual inclusion; scanner evidence unavailable"})
+        symbol = str(raw.get("ticker") or raw.get("symbol") or "").upper()
+        if symbol:
+            observed_symbols.add(symbol)
+        matched = evaluate_watchlist_candidate(watchlist, rule_list, raw)
+        if matched is not None:
+            accepted.append(matched)
+    return rank_watchlist_membership(
+        watchlist,
+        accepted,
+        observed_symbols=observed_symbols,
+    )
+
+
+def evaluate_watchlist_candidate(
+    watchlist: dict[str, Any],
+    rule_sets: Iterable[dict[str, Any]],
+    raw: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Evaluate one symbol without applying cross-symbol rank or size limits."""
+
+    if not bool(watchlist.get("enabled", True)):
+        return None
+    row = classify_watchlist_row(dict(raw))
+    symbol = str(row.get("ticker") or row.get("symbol") or "").upper()
+    if not symbol:
+        return None
+    row["ticker"] = symbol
+    manual_inclusions = {
+        str(value).upper() for value in watchlist.get("manual_inclusions") or []
+    }
+    manual_exclusions = {
+        str(value).upper() for value in watchlist.get("manual_exclusions") or []
+    }
+    if symbol in manual_exclusions:
+        return None
+    rule_by_id = {
+        str(rule.get("rule_set_id") or ""): rule for rule in rule_sets
+    }
+    include_ids = [
+        str(value) for value in watchlist.get("inclusion_rule_sets") or []
+    ]
+    exclude_ids = [
+        str(value) for value in watchlist.get("exclusion_rule_sets") or []
+    ]
+    include_results = [
+        _rule_matches(rule_by_id.get(rule_id), row) for rule_id in include_ids
+    ]
+    include_operator = str(watchlist.get("inclusion_operator") or "all")
+    included = not include_results or (
+        any(include_results)
+        if include_operator == "any"
+        else all(include_results)
+    )
+    excluded = any(
+        _rule_matches(rule_by_id.get(rule_id), row) for rule_id in exclude_ids
+    )
+    if not ((included and not excluded) or symbol in manual_inclusions):
+        return None
+    return {
+        **row,
+        "membership_reason": (
+            "manual inclusion" if symbol in manual_inclusions else "rules passed"
+        ),
+    }
+
+
+def rank_watchlist_membership(
+    watchlist: dict[str, Any],
+    accepted: Iterable[dict[str, Any]],
+    *,
+    observed_symbols: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """Apply deterministic manual fallback, rank, and maximum-size semantics."""
+
+    rows = [dict(row) for row in accepted]
+    observed = {str(value).upper() for value in observed_symbols}
+    manual_inclusions = {
+        str(value).upper() for value in watchlist.get("manual_inclusions") or []
+    }
+    manual_exclusions = {
+        str(value).upper() for value in watchlist.get("manual_exclusions") or []
+    }
+    for symbol in sorted(manual_inclusions - observed - manual_exclusions):
+        rows.append(
+            {
+                "ticker": symbol,
+                "membership_reason": "manual inclusion; scanner evidence unavailable",
+            }
+        )
     ranking_field = SOURCE_FIELDS.get(str(watchlist.get("ranking_field") or ""), str(watchlist.get("ranking_field") or ""))
     descending = str(watchlist.get("ranking_direction") or "descending") == "descending"
-    accepted.sort(key=lambda row: _rank_key(row.get(ranking_field), descending), reverse=descending)
-    return accepted[: max(1, int(watchlist.get("maximum_size") or 1))]
+    rows.sort(
+        key=lambda row: _rank_key(row.get(ranking_field), descending),
+        reverse=descending,
+    )
+    return rows[: max(1, int(watchlist.get("maximum_size") or 1))]
 
 
 def _rule_matches(rule_set: dict[str, Any] | None, row: dict[str, Any]) -> bool:

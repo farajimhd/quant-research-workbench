@@ -224,7 +224,12 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
   - [x] Warm missing ticker/timeframe state once for every newly active scope
         and skip repeated core-bar copies for already-warm lease refreshes.
 - [x] Reject unapproved moves to broader populations.
-- [ ] Trigger targeted recomputation from relevant enrichment changes.
+- [x] Trigger targeted recomputation from relevant enrichment changes. The
+      backend Watchlist runtime hashes only each configured rule/rank field,
+      retains per-Watchlist eligible-symbol indexes, and re-evaluates changed
+      or removed symbols before deterministic cross-sectional ranking. Changes
+      to provenance-only fields do not fan out computation, while configuration
+      revisions invalidate the complete affected index.
 - [x] Preserve compact Scanner/Watchlist history and explicitly approved
       materializations. Scanner history is bounded/versioned and Watchlist
       membership transitions are append-only journal evidence; indicator rows

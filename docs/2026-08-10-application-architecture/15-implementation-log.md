@@ -1234,6 +1234,24 @@ bounded direct ClickHouse paths remain documented in
      localhost connection-error document despite both managed services being
      HTTP-ready; the exact validation processes were stopped, and visual
      acceptance remains open rather than being inferred from the build.
+135. Replaced full-population Watchlist rule re-evaluation with a targeted,
+     configuration-aware eligibility index. The shared pure resolver now
+     separates one-symbol rule evaluation from cross-sectional rank and size
+     reduction without changing fail-closed missing-evidence, manual override,
+     or deterministic ordering semantics. For each Watchlist, the backend
+     derives the exact row fields used by its active inclusion/exclusion rules
+     and ranking field, fingerprints only those values, and re-evaluates new,
+     changed, or removed symbols. A change to float, short interest,
+     fundamentals, labels, price, or another configured dependency therefore
+     affects only the corresponding symbols; advancing provenance timestamps
+     alone cause no rule work. Changing the Watchlist or any selected rule
+     invalidates and safely rebuilds the affected index.
+
+     Twenty focused Watchlist resolver/runtime tests passed, including a new
+     regression proving that a provenance-only revision recomputes zero of two
+     symbols and one changed rule input recomputes exactly one. The attempted
+     wider command named a nonexistent test module after those twenty tests
+     passed; no result is claimed for that nonexistent module.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
