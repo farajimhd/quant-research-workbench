@@ -321,7 +321,10 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Negotiate versioned JSON success envelopes with completeness, warnings,
         data, and request lineage; make the sole browser fetch authority request
         and transparently unwrap the contract for every application API call.
-- [ ] Implement HTTP snapshot plus sequenced delta streams.
+- [x] Implement HTTP snapshot plus sequenced delta streams. Scanner rows,
+      compact events, and market signals share their respective snapshot
+      watermark with monotonic deltas; periodic chart product streams publish
+      complete replacement snapshots and do not masquerade as deltas.
   - [x] Give the live Canvas compact-event path a versioned ticker snapshot
         with snapshot ID/last sequence and establish its QMD delta subscription
         before the snapshot is captured.
@@ -329,7 +332,7 @@ budgets and invalid scope broadening fails configuration validation.
         its upstream subscription is established; QMD snapshots and flattened
         deltas now share one monotonic publication sequence, retain event
         identity, and require resnapshot on lag.
-- [ ] Fill reconnect gaps or require resnapshot.
+- [x] Fill reconnect gaps or require resnapshot.
   - [x] Forward tickerless QMD terminal gap frames through the backend and make
         the live tape/quote Canvas replace state from a new snapshot on reconnect.
   - [x] Forward the same terminal gap contract after the market-signal snapshot.

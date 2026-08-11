@@ -1001,6 +1001,12 @@ bounded direct ClickHouse paths remain documented in
      agreement, subscription ordering, initial snapshot delivery, and
      lag-control forwarding; the changed Python modules also compiled.
 
+     This closes the backend snapshot/delta and reconnect parent contracts:
+     Scanner rows, compact events, and signals have monotonic watermark-aligned
+     deltas, while periodic chart products remain explicit complete replacement
+     snapshots and every lagging raw/product stream terminates with a resnapshot
+     requirement.
+
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
 item means its real runnable path was implemented and focused validation passed;
