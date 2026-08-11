@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 from rich.console import Console
 
 from research.bar_gpt.v1.summarize_offline_dataset import (
     BoundedDistribution,
+    PreparedShardSample,
     _context_counts,
     _decode_feature,
+    _iter_prepared_shards,
     _padding_statistics,
+    _prepare_shard_sample,
     _render,
     _select_sample,
+    _update_autoregressive_distributions,
     parse_args,
 )
+from research.bar_gpt.v1.targets import AUTOREGRESSIVE_TARGET_NAMES
 
 
 class OfflineDatasetSummaryTest(unittest.TestCase):
@@ -79,9 +86,10 @@ class OfflineDatasetSummaryTest(unittest.TestCase):
         args = parse_args(["--sample-shards", "2", "--batch-sizes", "8,16"])
         self.assertEqual(args.sample_shards, 2)
         self.assertEqual(args.batch_sizes, (8, 16))
+        self.assertEqual(args.workers, 8)
         report = {
             "inventory": {"origins": 100, "blocks": 4, "bytes": 1024},
-            "sampling": {"sampled_shards": 2, "sampled_blocks": 2, "sampled_origins": 20},
+            "sampling": {"sampled_shards": 2, "sampled_blocks": 2, "sampled_origins": 20, "workers": 2},
             "context": [{
                 "view": "1s", "configured_bars": 720, "full_context_rate": 0.5,
                 "partial_context_rate": 0.5, "empty_context_rate": 0.0, "available_p50": 700.0,
@@ -99,6 +107,43 @@ class OfflineDatasetSummaryTest(unittest.TestCase):
         self.assertIn("Dataset summary completed", rendered)
         self.assertIn("historical-context coverage", rendered)
         self.assertIn("Integrity findings: none", rendered)
+
+    def test_preparation_workers_are_concurrent_but_results_remain_ordered(self) -> None:
+        barrier = threading.Barrier(2)
+
+        def prepare(row: dict[str, object], _config: object, _args: object) -> PreparedShardSample:
+            barrier.wait(timeout=2.0)
+            return PreparedShardSample(
+                unit_key=str(row["unit_key"]), ticker=str(row["unit_key"]).split(":")[0],
+                year="2021", block_lengths=[], blocks=[], integrity_findings={},
+            )
+
+        rows = [{"unit_key": "AAA:2021-01"}, {"unit_key": "BBB:2021-01"}]
+        with patch("research.bar_gpt.v1.summarize_offline_dataset._prepare_shard_sample", side_effect=prepare):
+            values = list(_iter_prepared_shards(rows, object(), SimpleNamespace(workers=2)))
+        self.assertEqual([value.unit_key for value in values], ["AAA:2021-01", "BBB:2021-01"])
+
+    def test_shard_preparation_failure_identifies_unit(self) -> None:
+        row = {"unit_key": "BROKEN:2021-01", "tensor_path": "missing.pt"}
+        with patch("research.bar_gpt.v1.summarize_offline_dataset.load_shard", side_effect=OSError("disk error")):
+            with self.assertRaisesRegex(RuntimeError, "BROKEN:2021-01.*disk error"):
+                _prepare_shard_sample(row, object(), SimpleNamespace())
+
+    def test_autoregressive_merge_updates_every_target(self) -> None:
+        target_count = len(AUTOREGRESSIVE_TARGET_NAMES)
+        distributions = {}
+        target_meta = {}
+        _update_autoregressive_distributions(
+            view="1s",
+            values=torch.arange(2 * target_count, dtype=torch.float32).reshape(2, target_count),
+            mask=torch.ones((2, target_count), dtype=torch.bool),
+            distributions=distributions,
+            target_meta=target_meta,
+            capacity=8,
+            seed=17,
+        )
+        self.assertEqual(len(distributions), target_count)
+        self.assertTrue(all(distribution.total == 2 for distribution in distributions.values()))
 
 
 if __name__ == "__main__":

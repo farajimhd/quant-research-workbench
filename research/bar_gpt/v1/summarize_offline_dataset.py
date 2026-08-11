@@ -8,9 +8,10 @@ import json
 import math
 import os
 from collections import defaultdict
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterator, Sequence
 
 import numpy as np
 import torch
@@ -340,6 +341,158 @@ def _padding_statistics(lengths: Sequence[int], batch_sizes: Sequence[int], seed
     return rows
 
 
+@dataclass(slots=True)
+class PreparedBlockSample:
+    input_values: dict[str, torch.Tensor]
+    input_masks: dict[str, torch.Tensor]
+    context: dict[str, tuple[torch.Tensor, torch.Tensor]]
+    horizon_values: torch.Tensor
+    horizon_mask: torch.Tensor
+    autoregressive_values: dict[str, torch.Tensor]
+    autoregressive_masks: dict[str, torch.Tensor]
+    sampled_origins: int
+    integrity_findings: dict[str, int]
+
+
+@dataclass(slots=True)
+class PreparedShardSample:
+    unit_key: str
+    ticker: str
+    year: str
+    block_lengths: list[int]
+    blocks: list[PreparedBlockSample]
+    integrity_findings: dict[str, int]
+
+
+def _prepare_shard_sample(row: dict[str, Any], config: Any, args: argparse.Namespace) -> PreparedShardSample:
+    unit_key = str(row["unit_key"])
+    ticker, month = _unit_parts(unit_key)
+    integrity: dict[str, int] = defaultdict(int)
+    try:
+        shard = load_shard(Path(row["tensor_path"]))
+        if int(shard.get("contract_version", -1)) != int(row.get("contract_version", -2)):
+            integrity["sidecar_contract_mismatch"] += 1
+        if str(shard.get("config_hash", "")) != str(row.get("config_hash", "")):
+            integrity["sidecar_config_hash_mismatch"] += 1
+        refs = [
+            (session_index, block_index, block)
+            for session_index, session in enumerate(shard["sessions"])
+            for block_index, block in enumerate(session["blocks"])
+        ]
+        block_lengths = [int(block["origin_indices"].numel()) for _, _, block in refs]
+        order = sorted(
+            range(len(refs)), key=lambda index: _stable_seed(args.seed, unit_key, refs[index][0], refs[index][1])
+        )[: int(args.blocks_per_shard)]
+        prepared_blocks: list[PreparedBlockSample] = []
+        context_sizes = {**config.intraday_context_by_name, **config.calendar_context_by_name}
+        for ordinal in order:
+            session_index, block_index, _stored = refs[ordinal]
+            block = materialize_block(shard, session_index, block_index)
+            block_integrity: dict[str, int] = defaultdict(int)
+            origin_rows = _sample_indices(
+                int(block.origin_indices.numel()), int(args.origins_per_block),
+                seed=_stable_seed(args.seed, unit_key, session_index, block_index, "origins"),
+            )
+            if origin_rows.numel() > 1 and not bool(torch.all(
+                block.origin_timestamps_us[origin_rows][1:] > block.origin_timestamps_us[origin_rows][:-1]
+            )):
+                block_integrity["non_increasing_sampled_origin_timestamps"] += 1
+            input_values: dict[str, torch.Tensor] = {}
+            input_masks: dict[str, torch.Tensor] = {}
+            for view, values in block.views.items():
+                mask = block.view_mask[view].bool()
+                if bool(torch.any(values[~mask] != 0)):
+                    block_integrity["nonzero_masked_input_rows"] += 1
+                rows = _sample_indices(
+                    int(values.shape[0]), int(args.rows_per_view),
+                    seed=_stable_seed(args.seed, unit_key, session_index, block_index, view),
+                )
+                input_values[view] = values[rows].clone()
+                input_masks[view] = mask[rows].clone()
+            prepared_context: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+            for view, configured in context_sizes.items():
+                counts, staleness = _context_counts(block, view, origin_rows, configured)
+                if bool(torch.any(staleness[torch.isfinite(staleness)] < 0)):
+                    block_integrity["future_context_selection"] += 1
+                prepared_context[view] = (counts.clone(), staleness.clone())
+            horizon_values = block.horizon_targets[origin_rows].clone()
+            horizon_mask = block.horizon_mask[origin_rows].clone()
+            ar_values: dict[str, torch.Tensor] = {}
+            ar_masks: dict[str, torch.Tensor] = {}
+            for view, values in block.autoregressive_targets.items():
+                rows = _sample_indices(
+                    int(values.shape[0]), int(args.rows_per_view),
+                    seed=_stable_seed(args.seed, unit_key, session_index, block_index, view, "ar"),
+                )
+                ar_values[view] = values[rows].clone()
+                ar_masks[view] = block.autoregressive_mask[view][rows].clone()
+            prepared_blocks.append(PreparedBlockSample(
+                input_values=input_values,
+                input_masks=input_masks,
+                context=prepared_context,
+                horizon_values=horizon_values,
+                horizon_mask=horizon_mask,
+                autoregressive_values=ar_values,
+                autoregressive_masks=ar_masks,
+                sampled_origins=int(origin_rows.numel()),
+                integrity_findings=dict(block_integrity),
+            ))
+        return PreparedShardSample(
+            unit_key=unit_key,
+            ticker=ticker,
+            year=month[:4],
+            block_lengths=block_lengths,
+            blocks=prepared_blocks,
+            integrity_findings=dict(integrity),
+        )
+    except Exception as exc:
+        raise RuntimeError(f"failed to sample shard {unit_key}: {type(exc).__name__}: {exc}") from exc
+
+
+def _iter_prepared_shards(
+    rows: Sequence[dict[str, Any]], config: Any, args: argparse.Namespace,
+) -> Iterator[PreparedShardSample]:
+    workers = min(max(1, int(args.workers)), max(1, len(rows)))
+    if workers == 1:
+        for row in rows:
+            yield _prepare_shard_sample(row, config, args)
+        return
+    pending_limit = min(len(rows), workers * 2)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="bar-gpt-summary") as executor:
+        futures: dict[int, Future[PreparedShardSample]] = {}
+        next_submit = 0
+        while next_submit < pending_limit:
+            futures[next_submit] = executor.submit(_prepare_shard_sample, rows[next_submit], config, args)
+            next_submit += 1
+        for next_result in range(len(rows)):
+            future = futures.pop(next_result)
+            yield future.result()
+            if next_submit < len(rows):
+                futures[next_submit] = executor.submit(_prepare_shard_sample, rows[next_submit], config, args)
+                next_submit += 1
+
+
+def _update_autoregressive_distributions(
+    *,
+    view: str,
+    values: torch.Tensor,
+    mask: torch.Tensor,
+    distributions: dict[tuple[str, str], FieldDistribution],
+    target_meta: dict[str, tuple[str, str, bool]],
+    capacity: int,
+    seed: int,
+) -> None:
+    for target_index, target_name in enumerate(AUTOREGRESSIVE_TARGET_NAMES):
+        key = (view, target_name)
+        decoded, unit, transform, directional = _decode_target(target_name, values[:, target_index])
+        target_meta[target_name] = (unit, transform, directional)
+        if key not in distributions:
+            distributions[key] = FieldDistribution(
+                capacity, _stable_seed(seed, "ar", *key), directional=directional
+            )
+        distributions[key].update(values[:, target_index], mask[:, target_index], decoded)
+
+
 def summarize(args: argparse.Namespace, console: Console) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
     root = Path(args.root)
     config = load_shard_storage_config(root)
@@ -371,58 +524,30 @@ def summarize(args: argparse.Namespace, console: Console) -> tuple[dict[str, Any
     task = progress.add_task("scan", total=len(sample), unit="")
     progress.start()
     try:
-        for shard_index, row in enumerate(sample):
-            unit_key = str(row["unit_key"])
-            ticker, month = _unit_parts(unit_key)
-            year = month[:4]
+        for shard_index, prepared in enumerate(_iter_prepared_shards(sample, config, args)):
+            unit_key = prepared.unit_key
+            ticker = prepared.ticker
+            year = prepared.year
             progress.update(task, unit=unit_key)
-            shard = load_shard(Path(row["tensor_path"]))
-            if int(shard.get("contract_version", -1)) != int(row.get("contract_version", -2)):
-                integrity["sidecar_contract_mismatch"] += 1
-            if str(shard.get("config_hash", "")) != str(row.get("config_hash", "")):
-                integrity["sidecar_config_hash_mismatch"] += 1
-            refs = [
-                (session_index, block_index, block)
-                for session_index, session in enumerate(shard["sessions"])
-                for block_index, block in enumerate(session["blocks"])
-            ]
-            block_lengths.extend(int(block["origin_indices"].numel()) for _, _, block in refs)
-            order = sorted(
-                range(len(refs)), key=lambda index: _stable_seed(args.seed, unit_key, refs[index][0], refs[index][1])
-            )[: int(args.blocks_per_shard)]
-            for ordinal in order:
-                session_index, block_index, _stored = refs[ordinal]
-                block = materialize_block(shard, session_index, block_index)
+            block_lengths.extend(prepared.block_lengths)
+            for name, count in prepared.integrity_findings.items():
+                integrity[name] += count
+            for block in prepared.blocks:
                 sampled_blocks += 1
-                origin_rows = _sample_indices(
-                    int(block.origin_indices.numel()), int(args.origins_per_block),
-                    seed=_stable_seed(args.seed, unit_key, session_index, block_index, "origins"),
-                )
-                sampled_origins += int(origin_rows.numel())
-                if origin_rows.numel() > 1 and not bool(torch.all(
-                    block.origin_timestamps_us[origin_rows][1:] > block.origin_timestamps_us[origin_rows][:-1]
-                )):
-                    integrity["non_increasing_sampled_origin_timestamps"] += 1
-                for view, values in block.views.items():
-                    mask = block.view_mask[view].bool()
-                    if bool(torch.any(values[~mask] != 0)):
-                        integrity["nonzero_masked_input_rows"] += 1
-                    rows = _sample_indices(
-                        int(values.shape[0]), int(args.rows_per_view),
-                        seed=_stable_seed(args.seed, unit_key, session_index, block_index, view),
-                    )
-                    row_mask = mask[rows]
+                sampled_origins += block.sampled_origins
+                for name, count in block.integrity_findings.items():
+                    integrity[name] += count
+                for view, values in block.input_values.items():
+                    row_mask = block.input_masks[view]
                     for feature_index, feature_name in enumerate(MODEL_FEATURE_NAMES):
                         key = (view, feature_name)
                         if key not in inputs:
                             inputs[key] = FieldDistribution(capacity, _stable_seed(args.seed, "input", *key))
-                        decoded, unit, transform = _decode_feature(feature_name, values[rows, feature_index])
+                        decoded, unit, transform = _decode_feature(feature_name, values[:, feature_index])
                         input_meta[feature_name] = (unit, transform)
-                        inputs[key].update(values[rows, feature_index], row_mask, decoded)
-                for view, stats in context.items():
-                    counts, staleness = _context_counts(block, view, origin_rows, stats.configured)
-                    if bool(torch.any(staleness[torch.isfinite(staleness)] < 0)):
-                        integrity["future_context_selection"] += 1
+                        inputs[key].update(values[:, feature_index], row_mask, decoded)
+                for view, (counts, staleness) in block.context.items():
+                    stats = context[view]
                     stats.update(counts, staleness)
                     year_key = (year, view)
                     ticker_key = (ticker, view)
@@ -436,8 +561,8 @@ def summarize(args: argparse.Namespace, console: Console) -> tuple[dict[str, Any
                         )
                     context_by_year[year_key].update(counts, staleness)
                     context_by_ticker[ticker_key].update(counts, staleness)
-                horizon_values = block.horizon_targets[origin_rows]
-                horizon_mask = block.horizon_mask[origin_rows]
+                horizon_values = block.horizon_values
+                horizon_mask = block.horizon_mask
                 for horizon_index, horizon_us in enumerate(config.horizons_us):
                     for target_index, target_name in enumerate(TARGET_NAMES):
                         key = (int(horizon_us), target_name)
@@ -453,21 +578,16 @@ def summarize(args: argparse.Namespace, console: Console) -> tuple[dict[str, Any
                             horizon_values[:, horizon_index, target_index],
                             horizon_mask[:, horizon_index, target_index], decoded,
                         )
-                for view, values in block.autoregressive_targets.items():
-                    rows = _sample_indices(
-                        int(values.shape[0]), int(args.rows_per_view),
-                        seed=_stable_seed(args.seed, unit_key, session_index, block_index, view, "ar"),
+                for view, values in block.autoregressive_values.items():
+                    _update_autoregressive_distributions(
+                        view=view,
+                        values=values,
+                        mask=block.autoregressive_masks[view],
+                        distributions=autoregressive,
+                        target_meta=target_meta,
+                        capacity=capacity,
+                        seed=int(args.seed),
                     )
-                    mask = block.autoregressive_mask[view][rows]
-                    for target_index, target_name in enumerate(AUTOREGRESSIVE_TARGET_NAMES):
-                        key = (view, target_name)
-                        decoded, unit, transform, directional = _decode_target(target_name, values[rows, target_index])
-                        target_meta[target_name] = (unit, transform, directional)
-                        if key not in autoregressive:
-                            autoregressive[key] = FieldDistribution(
-                                capacity, _stable_seed(args.seed, "ar", *key), directional=directional
-                            )
-                        autoregressive[key].update(values[rows, target_index], mask[:, target_index], decoded)
             progress.advance(task)
             if not console.is_terminal and (shard_index + 1 == len(sample) or (shard_index + 1) % 25 == 0):
                 console.print(f"Sampled {shard_index + 1}/{len(sample)} shards; current {unit_key}")
@@ -534,6 +654,8 @@ def summarize(args: argparse.Namespace, console: Console) -> tuple[dict[str, Any
         "scope": {"tickers": list(_csv_values(args.tickers)), "start_date": args.start_date, "end_date": args.end_date},
         "sampling": {
             "seed": int(args.seed), "candidate_complete_shards": len(complete), "sampled_shards": len(sample),
+            "workers": min(max(1, int(args.workers)), max(1, len(sample))),
+            "torch_threads": int(args.torch_threads),
             "blocks_per_shard": int(args.blocks_per_shard), "sampled_blocks": sampled_blocks,
             "rows_per_view": int(args.rows_per_view), "origins_per_block": int(args.origins_per_block),
             "sampled_origins": sampled_origins, "reservoir_size_per_field": capacity,
@@ -573,7 +695,7 @@ def _render(report: dict[str, Any], output: Path, console: Console) -> None:
         f"{inventory['origins']:,} origins  •  {inventory['blocks']:,} blocks  •  "
         f"{inventory['bytes'] / 2**30:,.2f} GiB\n"
         f"Sample: {sampling['sampled_shards']:,} shards / {sampling['sampled_blocks']:,} blocks / "
-        f"{sampling['sampled_origins']:,} origins",
+        f"{sampling['sampled_origins']:,} origins  •  {sampling['workers']} workers",
         title="BarGPT v1 offline shards", border_style="cyan",
     ))
     context = Table(title="Sampled historical-context coverage", box=None, pad_edge=False)
@@ -625,10 +747,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rows-per-view", type=int, default=256)
     parser.add_argument("--origins-per-block", type=int, default=512)
     parser.add_argument("--reservoir-size", type=int, default=4096)
+    parser.add_argument("--workers", type=int, default=8, help="Concurrent bounded shard preparation workers.")
+    parser.add_argument("--torch-threads", type=int, default=1, help="Torch CPU threads shared by this process.")
     parser.add_argument("--batch-sizes", default="8,16,32")
     parser.add_argument("--seed", type=int, default=17)
     args = parser.parse_args(list(argv) if argv is not None else None)
-    if args.sample_shards < 0 or min(args.blocks_per_shard, args.rows_per_view, args.origins_per_block, args.reservoir_size) <= 0:
+    if args.sample_shards < 0 or min(
+        args.blocks_per_shard, args.rows_per_view, args.origins_per_block,
+        args.reservoir_size, args.workers, args.torch_threads,
+    ) <= 0:
         parser.error("sample-shards cannot be negative and all other sample sizes must be positive")
     try:
         args.batch_sizes = tuple(int(value) for value in str(args.batch_sizes).split(",") if int(value) > 0)
@@ -645,6 +772,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    torch.set_num_threads(int(args.torch_threads))
     console = Console()
     report, tables = summarize(args, console)
     run = Path(args.output_root) / f"summary-{dt.datetime.now():%Y%m%d-%H%M%S}-p{os.getpid()}"

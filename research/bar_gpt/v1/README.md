@@ -780,6 +780,11 @@ for microbatches 8, 16, and 32. Detailed summary/statistics JSON and CSV output 
 and W&B is not used. `--sample-shards 0` samples every complete shard, while
 `--sample-shards`, `--blocks-per-shard`, `--rows-per-view`, and
 `--origins-per-block` bound tensor I/O independently of the exact sidecar scan.
+Shard mmap loading, block materialization, integrity checks, and bounded tensor
+sampling use eight ordered workers by default; statistics are merged in stable
+shard order so output remains deterministic. Use `--workers 1` for sequential
+diagnosis or tune `--workers` after the compiler is idle. `--torch-threads 1`
+prevents each worker from multiplying Torch CPU parallelism.
 
 For manual review, open `audit_shard_sample.ipynb` on the workstation. It loads
 one deterministic random real shard block and one random origin, then displays
