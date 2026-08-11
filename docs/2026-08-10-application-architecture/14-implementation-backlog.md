@@ -216,15 +216,18 @@ budgets and invalid scope broadening fails configuration validation.
 - [ ] Implement HTTP snapshot plus sequenced delta streams.
 - [ ] Fill reconnect gaps or require resnapshot.
 - [ ] Isolate budgets for commands, discovery, charts, simulation, and offline work.
-- [ ] Bound and version caches.
+- [x] Bound and version caches.
   - [x] Replace backend service-table and News/SEC histogram dictionaries with
         bounded thread-safe TTL/LRU caches carrying explicit contract revisions.
   - [x] Key the bounded processed-artifact chart LRU by the relevant artifact
         build identities, schema/calculation versions, and presentation revision.
   - [x] Bound the canonical live account-state projection cache by account
         selector and an explicit projection contract revision.
-  - [ ] Audit remaining run-local caches and add source/calculation revision
+  - [x] Audit remaining run-local caches and add source/calculation revision
         invalidation where their immutable Run Plan does not already provide it.
+        Replay caches are controller-local and pinned by the immutable approved
+        configuration; Watchlist reference projections are bounded and keyed by
+        explicit causal `as_of` revision.
 - [ ] Enforce user, workspace, environment, mode, account, and command authority.
 - [ ] Resolve secrets and broker identifiers server-side.
 - [x] Aggregate service readiness separately from data readiness.

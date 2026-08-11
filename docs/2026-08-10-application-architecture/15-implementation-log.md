@@ -350,6 +350,13 @@ bounded direct ClickHouse paths remain documented in
     preserves durable run directories, and returns HTTP 429 instead of growing
     without bound when every slot is active. Three focused service/API tests,
     Python compile, and diff validation passed.
+56. Closed backend cache governance after the remaining causal audit. The
+    Watchlist full-universe reference cache no longer shares one value across
+    different `as_of` clocks; it is a four-entry bounded TTL/LRU projection
+    keyed by contract and causal source revision. Replay caches are run-local
+    and pinned by the immutable approved configuration, while other discovered
+    process caches are bounded and revision/signature keyed. Eighteen focused
+    Watchlist/cache tests, Python compile, and diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

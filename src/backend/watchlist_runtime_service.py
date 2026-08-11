@@ -4,7 +4,6 @@ import os
 import threading
 from collections import deque
 from datetime import UTC, datetime, time, timedelta
-from time import monotonic
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -15,6 +14,7 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
 )
 from src.backend.daily_session_bars import daily_session_trade_bars_relation_sql
+from src.backend.bounded_cache import BoundedTtlCache
 from src.backend.qmd_gateway_client import qmd_delete_json, qmd_put_json
 from src.request_context import causal_identity
 from src.trading_runtime.watchlist_resolver import (
@@ -27,9 +27,11 @@ from src.trading_runtime.watchlist_resolver import (
 REFERENCE_CACHE_SECONDS = 60.0
 MEMBERSHIP_HISTORY_LIMIT = 10_000
 NEW_YORK = ZoneInfo("America/New_York")
-_REFERENCE_LOCK = threading.RLock()
-_REFERENCE_CACHE: dict[str, dict[str, Any]] = {}
-_REFERENCE_CACHE_AT = 0.0
+_REFERENCE_CACHE = BoundedTtlCache[str, dict[str, dict[str, Any]]](
+    max_entries=4,
+    ttl_seconds=REFERENCE_CACHE_SECONDS,
+    contract_revision="watchlist-reference-projection.v1",
+)
 
 
 class WatchlistRuntime:
@@ -594,12 +596,15 @@ def strategy_target_contracts(
 def live_market_reference_projection(
     as_of: datetime | None = None,
 ) -> dict[str, dict[str, Any]]:
-    global _REFERENCE_CACHE, _REFERENCE_CACHE_AT
-    now = monotonic()
-    with _REFERENCE_LOCK:
-        if _REFERENCE_CACHE and now - _REFERENCE_CACHE_AT < REFERENCE_CACHE_SECONDS:
-            return _REFERENCE_CACHE
     cutoff = (as_of or datetime.now(UTC)).astimezone(UTC)
+    source_revision = (
+        cutoff.isoformat()
+        if as_of is not None
+        else cutoff.replace(second=0, microsecond=0).isoformat()
+    )
+    cached = _REFERENCE_CACHE.get("eligible-market", source_revision=source_revision)
+    if cached is not None:
+        return cached
     from src.backend.historical_scanner_service import historical_scanner_reference_projection
 
     projection = historical_scanner_reference_projection(cutoff)
@@ -643,9 +648,11 @@ def live_market_reference_projection(
                     "reference_available_at": cutoff.isoformat(),
                 }
             )
-    with _REFERENCE_LOCK:
-        _REFERENCE_CACHE = projection
-        _REFERENCE_CACHE_AT = now
+    _REFERENCE_CACHE.set(
+        "eligible-market",
+        projection,
+        source_revision=source_revision,
+    )
     return projection
 
 

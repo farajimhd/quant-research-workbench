@@ -13,6 +13,7 @@ from src.backend.trading_configuration_service import (
 from src.backend.watchlist_runtime_service import (
     WatchlistRuntime,
     focused_target_contract,
+    live_market_reference_projection,
     normalize_watchlist_candidate,
     publish_watchlist_target,
     publish_computation_target,
@@ -269,6 +270,33 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         self.assertEqual(
             lease["causation_id"], "event:watchlist:small:revision-19"
         )
+
+    @patch("src.backend.watchlist_runtime_service.ClickHouseHttpClient")
+    @patch(
+        "src.backend.historical_scanner_service.historical_scanner_reference_projection"
+    )
+    def test_reference_cache_isolated_by_explicit_as_of(
+        self,
+        historical_projection,
+        clickhouse_client,
+    ) -> None:
+        historical_projection.side_effect = lambda cutoff: {
+            "AAPL": {"reference_available_at": cutoff.isoformat()}
+        }
+        clickhouse_client.return_value.execute.return_value = ""
+        first_clock = datetime(2026, 8, 10, 15, tzinfo=UTC)
+        second_clock = datetime(2026, 8, 10, 15, 0, 30, tzinfo=UTC)
+
+        first = live_market_reference_projection(first_clock)
+        repeated = live_market_reference_projection(first_clock)
+        second = live_market_reference_projection(second_clock)
+
+        self.assertEqual(first, repeated)
+        self.assertNotEqual(
+            first["AAPL"]["reference_available_at"],
+            second["AAPL"]["reference_available_at"],
+        )
+        self.assertEqual(historical_projection.call_count, 2)
 
     def test_membership_journal_rehydrates_current_projection(self) -> None:
         with TemporaryDirectory() as directory:
