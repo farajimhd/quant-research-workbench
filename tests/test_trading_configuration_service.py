@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from src.backend.trading_configuration_service import (
     _default_draft,
+    _compiled_observation_dependencies,
     _migrate_draft,
     _qmd_family_capabilities,
     _qmd_runtime_capabilities,
@@ -46,6 +47,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 "stateful": True,
                 "implementation_version": 4,
                 "cadence": "bar_close",
+                "warm_up_bars": 50,
                 "persistence_policy": "if_signal_uses",
                 "inputs": ["bars"],
                 "outputs": ["rsi_14"],
@@ -68,14 +70,45 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(row["capability_id"], "qmd.family.momentum_core")
+        self.assertEqual(row["capability_key"], "momentum_core")
         self.assertEqual(row["execution_scope"], "watchlist")
         self.assertEqual(row["timeframes"], ["1m", "5m"])
         self.assertEqual(row["catalog_authority"], "qmd_runtime_catalog")
         self.assertEqual(row["owner"], "qmd")
         self.assertEqual(row["implementation_version"], 4)
         self.assertEqual(row["cadence"], "bar_close")
+        self.assertEqual(row["warm_up_bars"], 50)
         self.assertEqual(row["persistence_policy"], "if_signal_uses")
         self.assertEqual(row["consumers"], ["watchlist", "strategy_run", "request", "offline"])
+
+    @patch(
+        "src.backend.trading_configuration_service.get_strategy_definition",
+        return_value=long_momentum_strategy_definition(),
+    )
+    def test_compiled_qmd_dependencies_pin_catalog_warm_up_and_revision(
+        self, _definition
+    ) -> None:
+        profile = self._draft()["strategy"]["profiles"][0]
+
+        dependencies = _compiled_observation_dependencies(
+            profile,
+            [{
+                "capability_key": "momentum_core",
+                "implementation_version": 7,
+                "warm_up_bars": 50,
+            }],
+        )
+
+        by_key = {row["capability_key"]: row for row in dependencies}
+        self.assertEqual(
+            by_key["momentum_core"]["warm_up"],
+            {"bars": 50, "status": "required"},
+        )
+        self.assertEqual(by_key["momentum_core"]["capability_revision"], 7)
+        self.assertEqual(
+            by_key["vwap_transition"]["warm_up"],
+            {"bars": None, "status": "catalog_unavailable"},
+        )
 
     @patch("src.backend.trading_configuration_service.qmd_catalogs")
     def test_market_discovery_does_not_invent_qmd_rows_during_outage(self, catalogs) -> None:
@@ -206,7 +239,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["schema_version"], 18)
         self.assertTrue(migrated["market_discovery"]["core_scan"]["calculations"])
         self.assertTrue(migrated["market_discovery"]["watchlists"])
         capabilities = {
@@ -408,7 +441,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 17)
+        self.assertEqual(draft["schema_version"], 18)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(

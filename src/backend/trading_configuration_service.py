@@ -43,7 +43,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 17
+CONFIGURATION_SCHEMA_VERSION = 18
 CONFIGURATION_SECTIONS = {
     "strategy",
     "market_discovery",
@@ -1459,6 +1459,7 @@ def _qmd_runtime_capabilities() -> list[dict[str, Any]]:
         enabled = status in {"implemented", "reference_only"} and scope not in {"offline"}
         result.append({
             "capability_id": capability_id,
+            "capability_key": key,
             "name": str(row.get("label") or key),
             "description": description,
             "calculation": description,
@@ -1487,6 +1488,11 @@ def _qmd_runtime_capabilities() -> list[dict[str, Any]]:
             "stateful": bool(row.get("stateful")),
             "implementation_version": int(row.get("implementation_version") or 1),
             "cadence": str(row.get("cadence") or "service_owned"),
+            "warm_up_bars": (
+                int(row["warm_up_bars"])
+                if row.get("warm_up_bars") is not None
+                else None
+            ),
             "persistence_policy": str(row.get("persistence_policy") or "no_default"),
             "consumers": list(row.get("allowed_scopes") or []),
             "catalog_authority": "qmd_runtime_catalog",
@@ -2539,13 +2545,19 @@ def _compile_profile_run_plan(candidate: dict[str, Any], profile: dict[str, Any]
             "enabled": True,
             "allowed_environments": list(composition.get("allowed_environments") or []),
             "runtime_assignments": runtime_assignments,
-            "observation_dependencies": _compiled_observation_dependencies(profile),
+            "observation_dependencies": _compiled_observation_dependencies(
+                profile,
+                list(discovery.get("core_scan", {}).get("calculations") or []),
+            ),
             "compiled": True,
         }],
     }
 
 
-def _compiled_observation_dependencies(profile: dict[str, Any]) -> list[dict[str, Any]]:
+def _compiled_observation_dependencies(
+    profile: dict[str, Any],
+    capability_catalog_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     definition = get_strategy_definition(
         str(profile.get("definition_id") or ""),
         int(profile.get("definition_revision") or 0) or None,
@@ -2572,15 +2584,49 @@ def _compiled_observation_dependencies(profile: dict[str, Any]) -> list[dict[str
             if ref.timeframe:
                 row["timeframes"].add(ref.timeframe.lower())
             row["required"] = bool(row["required"] or ref.required)
-    return [
-        {
+    compiled: list[dict[str, Any]] = []
+    for _, row in sorted(grouped.items()):
+        compiled.append({
             **row,
             "input_kinds": sorted(row["input_kinds"]),
             "input_keys": sorted(row["input_keys"]),
             "timeframes": sorted(row["timeframes"]),
-        }
-        for _, row in sorted(grouped.items())
-    ]
+        })
+    return _with_qmd_dependency_metadata(compiled, capability_catalog_rows)
+
+
+def _with_qmd_dependency_metadata(
+    dependencies: list[dict[str, Any]],
+    capability_catalog_rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    capability_metadata = {
+        str(row.get("capability_key") or ""): row
+        for row in capability_catalog_rows or []
+        if str(row.get("capability_key") or "")
+    }
+    result: list[dict[str, Any]] = []
+    for dependency in dependencies:
+        output = deepcopy(dependency)
+        if str(output.get("producer") or "") == "qmd":
+            metadata = capability_metadata.get(str(output.get("capability_key") or ""))
+            warm_up_bars = metadata.get("warm_up_bars") if metadata else None
+            output["warm_up"] = {
+                "bars": int(warm_up_bars) if warm_up_bars is not None else None,
+                "status": (
+                    "required"
+                    if warm_up_bars is not None and int(warm_up_bars) > 0
+                    else "not_required"
+                    if metadata is not None
+                    else "catalog_unavailable"
+                ),
+            }
+            output["capability_revision"] = (
+                int(metadata.get("implementation_version") or 1)
+                if metadata is not None
+                else None
+            )
+        result.append(output)
+    return result
 
 
 def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True) -> None:
@@ -3293,10 +3339,23 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         for run_plan in result["run_plans"].get("plans") or []:
             run_plan.setdefault("universe_id", fallback_universe)
             run_plan.setdefault("book_id", "default")
+            calculations = list(
+                dict(result.get("market_discovery") or {})
+                .get("core_scan", {})
+                .get("calculations")
+                or []
+            )
             if "observation_dependencies" not in run_plan:
                 profile = profiles_by_id.get(str(run_plan.get("profile_id") or ""))
                 run_plan["observation_dependencies"] = (
-                    _compiled_observation_dependencies(profile) if profile else []
+                    _compiled_observation_dependencies(profile, calculations)
+                    if profile
+                    else []
+                )
+            else:
+                run_plan["observation_dependencies"] = _with_qmd_dependency_metadata(
+                    list(run_plan.get("observation_dependencies") or []),
+                    calculations,
                 )
         existing_oms = {
             str(row.get("profile_id"))

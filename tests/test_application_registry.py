@@ -77,6 +77,8 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["link_contracts"], len(LINK_CONTRACTS))
         self.assertEqual(payload["counts"]["configuration_schemas"], len(CONFIGURATION_SCHEMAS))
         self.assertEqual(payload["counts"]["compatibility_aliases"], len(COMPATIBILITY_ALIASES))
+        schemas = {row["schema_id"]: row for row in payload["configuration_schemas"]}
+        self.assertEqual(schemas["trading_configuration"]["version"], 18)
         self.assertEqual(
             payload["counts"]["market_discovery_fields"],
             len(DISCOVERY_FIELD_PRESENTATIONS),

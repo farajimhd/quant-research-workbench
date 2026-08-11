@@ -271,6 +271,19 @@ bounded direct ClickHouse paths remain documented in
     live lease identity, and warm state is not reclaimed; those gaps remain
     explicitly open. All 86 QMD Gateway tests and its all-target compile gate
     passed.
+47. Closed the compiled warm-up gap without creating a second formula
+    authority. QMD's capability catalog now projects its stable capability key
+    and recommended warm-up bars into configuration schema v18. Published Run
+    Plans pin those bars and the QMD implementation revision on each declared
+    observation dependency; migrated plans are enriched from their saved
+    catalog rows. If matching catalog evidence is absent, the dependency says
+    `catalog_unavailable` rather than silently assuming no warm-up. The same
+    Run Plan already carries allowed modes, account mandates, runtime
+    assignments, and validated action permissions, so the corresponding stale
+    backend backlog item is now closed. Sixty-seven focused registry,
+    configuration, and QMD-client tests passed. Four Watchlist runtime tests still fail when run
+    without live QMD catalog evidence; that pre-existing fail-closed behavior
+    was not weakened or counted as validation for this change.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

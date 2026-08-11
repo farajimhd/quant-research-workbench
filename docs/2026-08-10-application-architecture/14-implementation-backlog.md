@@ -191,7 +191,12 @@ budgets and invalid scope broadening fails configuration validation.
 - [ ] Bulk-load point-in-time enrichment and avoid per-row remote queries.
 - [ ] Maintain a compact feature projection with source, version,
       `available_at`, freshness, and null reasons.
-- [ ] Compile configuration dependencies, warm-up, modes, permissions, and accounts.
+- [x] Compile configuration dependencies, warm-up, modes, permissions, and
+      accounts. Configuration schema v18 carries QMD catalog capability keys,
+      warm-up bars, and implementation revisions into compiled observation
+      dependencies. Missing matching catalog evidence is preserved as
+      `catalog_unavailable`; environment/account bindings and action authority
+      remain backend-validated parts of the immutable Run Plan.
 - [x] Emit immutable Run Plans. Configuration publication compiles the selected
       Strategy, Watchlist universe, account mandates, action authority, OMS
       profile, runtime assignments, and observation dependencies into the
@@ -234,7 +239,7 @@ internal topology, or producer formula.
       a chosen New York clock and shows the append-only Watchlist event journal.
 - [x] Generate fields, columns, and filters from registry metadata. Application
       registry schema v4 supplies Market Discovery presentation policy;
-      configuration schema v17 resolves the complete application/QMD field
+      configuration schema v18 resolves the complete application/QMD field
       catalog, projects Watchlist columns, and validates filter sources and
       operators. The Watchlist editor creates filters only from eligible
       registry rows and supported comparators.

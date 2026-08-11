@@ -210,7 +210,7 @@ offline calculation is available in its proper scope.
   query plan, availability clock, and implementation status from the
   application field registry. Display guidance remains product copy, not an
   independent availability authority.
-- Market Discovery configuration schema v17 resolves every registered
+- Market Discovery configuration schema v18 resolves every registered
   application field and QMD capability into one backend-owned field catalog.
   Its visible Watchlist columns are projections of registered presentation
   metadata, and the custom Watchlist filter editor offers only fields and
@@ -219,7 +219,11 @@ offline calculation is available in its proper scope.
   Frontend code supplies interaction and explanatory copy but no independent
   field, column, comparator, source-path, or availability authority.
 - Published Run Plans now carry typed observation dependencies compiled from
-  Strategy taxonomy. Paper/Live plans bound to a resolved Watchlist publish a
+  Strategy taxonomy. Each QMD dependency also pins the catalog implementation
+  revision and its required warm-up bars. When the saved configuration cannot
+  supply matching QMD catalog evidence, the compiler records
+  `catalog_unavailable` instead of inventing a warm-up value. Paper/Live plans
+  bound to a resolved Watchlist publish a
   separate `strategy_run` lease for the exact current membership; overlapping
   Watchlist, Strategy and chart requests are unioned by QMD. Offline demand is
   still owned by QMD History build/query planning and is not yet represented in
