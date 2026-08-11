@@ -29,8 +29,12 @@ DEFAULT_ARGS: dict[str, str] = {
     # it from the launcher without rebuilding storage.
     "--batch-size": "32",
     "--loader-workers": "16",
-    "--ready-queue-blocks": "1024",
-    "--worker-prefetch-batches": "8",
+    # Four host batches plus two batches per worker bound memory while the
+    # device stager overlaps producer wait and H2D. Increase only when the
+    # offline benchmark reports cache starvation.
+    "--ready-queue-blocks": "128",
+    "--worker-prefetch-batches": "2",
+    "--offline-length-bucket-batches": "4",
     "--clickhouse-max-threads-per-worker": "1",
     "--clickhouse-query-days": "7",
     "--clickhouse-prefetch-pages": "4",

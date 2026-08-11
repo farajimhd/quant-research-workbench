@@ -19,7 +19,9 @@ from research.bar_gpt.v1.offline_shards import (
     OfflineShardUnit,
     discover_offline_units,
     load_shard,
+    hydrate_offline_runtime_config,
     shard_compatibility_hash,
+    verify_shard_catalog_lock,
 )
 
 
@@ -55,9 +57,10 @@ ARCHITECTURE_GRID: tuple[Architecture, ...] = (
 )
 
 
-def discovery_data_config() -> DataConfig:
-    """Return the exact model-ready block contract used by the v4 shards."""
-    return replace(DataConfig(), origin_bars_1s=DISCOVERY_ORIGIN_BARS_1S)
+def discovery_data_config(shard_root: Path | None = None) -> DataConfig:
+    """Return the manifest-authoritative model-ready discovery contract."""
+    runtime = replace(DataConfig(), origin_bars_1s=DISCOVERY_ORIGIN_BARS_1S)
+    return hydrate_offline_runtime_config(shard_root, runtime) if shard_root is not None else runtime
 
 
 def discovery_storage_config(config: DataConfig) -> DataConfig:
@@ -320,7 +323,8 @@ def build_discovery_manifest(
     locked_test_origins: int = 5_000_000,
     seed: int = 17,
 ) -> dict[str, Any]:
-    config = discovery_data_config()
+    verify_shard_catalog_lock(shard_root)
+    config = discovery_data_config(shard_root)
     training_units = discover_offline_units(
         shard_root,
         config,
@@ -589,6 +593,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
         print("Add --execute to build the certified panels and run pending models sequentially.", flush=True)
         return 0
+    verify_shard_catalog_lock(Path(args.shard_root))
     if not manifest_path.is_file():
         print("Building deterministic certified experiment panels...", flush=True)
         build_discovery_manifest(
@@ -600,7 +605,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         load_discovery_manifest(
             manifest_path,
             shard_root=Path(args.shard_root),
-            config=discovery_data_config(),
+            config=discovery_data_config(Path(args.shard_root)),
         )
         print(f"Reusing verified manifest: {manifest_path}", flush=True)
     state_path = output_root / "campaign_state_v5.json"

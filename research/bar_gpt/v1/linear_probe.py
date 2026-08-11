@@ -109,6 +109,7 @@ def collect_embeddings(
                 origin_indices=batch.origin_indices,
                 asof_indices=batch.asof_indices,
                 attention_windows=data_config.attention_window_by_name,
+                view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
             )
         if batch.horizon_targets is None or batch.horizon_mask is None:
             raise RuntimeError("probe batch did not materialize physical targets")

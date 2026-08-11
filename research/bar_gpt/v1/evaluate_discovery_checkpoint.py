@@ -20,7 +20,9 @@ from research.bar_gpt.v1.model_discovery import (
 from research.bar_gpt.v1.offline_shards import (
     OfflineShardDataset,
     make_offline_dataloader,
+    hydrate_offline_runtime_config,
     resolve_offline_units_for_refs,
+    verify_shard_catalog_lock,
 )
 from research.bar_gpt.v1.train import DISCOVERY_VALIDATION_WORKERS, _wandb_metric_key, validate
 from research.mlops.clickhouse import discover_clickhouse_env_files
@@ -66,14 +68,15 @@ def main(argv: Iterable[str] | None = None) -> int:
         worker_prefetch_batches=1,
         persistent_workers=False,
     )
-    data_config = DataConfig(**data_values)
+    shard_root = Path(args.offline_shard_root)
+    verify_shard_catalog_lock(shard_root)
+    data_config = hydrate_offline_runtime_config(shard_root, DataConfig(**data_values))
     train_values = dict(raw_config["train"])
     train_values["output_root"] = Path(train_values["output_root"])
     train_values.update(wandb_project=str(args.wandb_project), wandb_mode=str(args.wandb_mode))
     train_config = TrainConfig(**train_values)
     config = ExperimentConfig(model=model_config, data=data_config, train=train_config)
     storage_data_config = discovery_storage_config(data_config)
-    shard_root = Path(args.offline_shard_root)
     manifest = load_discovery_manifest(
         Path(args.experiment_manifest),
         shard_root=shard_root,

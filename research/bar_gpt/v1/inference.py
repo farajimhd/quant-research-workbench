@@ -88,5 +88,6 @@ class BarGPTEncoder(nn.Module):
             origin_indices=batch.origin_indices,
             asof_indices=batch.asof_indices,
             attention_windows=self.attention_windows,
+            view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
         )
         return embeddings, batch.origin_mask

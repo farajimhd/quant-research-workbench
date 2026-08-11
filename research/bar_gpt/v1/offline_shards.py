@@ -73,6 +73,7 @@ _STORAGE_IRRELEVANT_CONFIG_FIELDS = frozenset({
     "persistent_workers",
     "worker_prefetch_batches",
     "ready_queue_blocks",
+    "offline_length_bucket_batches",
     "balance_activity_regimes",
     "coverage_mode",
     "coverage_blocks_per_unit",
@@ -126,6 +127,7 @@ class OfflineShardUnit:
     origins: int
     stable_unit_index: int
     condition_positive_counts: tuple[int, int, int, int]
+    config_hash: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,6 +460,26 @@ def assert_shard_catalog_writable(root: Path) -> None:
         )
 
 
+def verify_shard_catalog_lock(root: Path) -> dict[str, Any]:
+    """Verify the immutable catalog marker and its current catalog digest."""
+    root = Path(root)
+    marker = shard_catalog_lock_path(root)
+    catalog = root / "manifest" / "catalog.json"
+    try:
+        value = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"offline training requires an audited immutable shard catalog: {marker}"
+        ) from exc
+    if value.get("state") != "immutable" or int(value.get("contract_version", -1)) != OFFLINE_SHARD_CONTRACT_VERSION:
+        raise RuntimeError(f"invalid offline shard catalog lock: {marker}")
+    if not catalog.is_file() or str(value.get("catalog_sha256", "")) != _sha256(catalog):
+        raise RuntimeError(
+            f"offline shard catalog changed after it was locked: catalog={catalog} marker={marker}"
+        )
+    return value
+
+
 def _canonical_config(config: DataConfig) -> dict[str, Any]:
     return dataclasses.asdict(config)
 
@@ -532,6 +554,24 @@ def load_shard_storage_config(root: Path) -> DataConfig:
             f"expected={expected_hash or 'missing'} observed={observed_hash} path={manifest_path}"
         )
     return config
+
+
+def hydrate_offline_runtime_config(root: Path, runtime: DataConfig) -> DataConfig:
+    """Overlay runtime-only settings onto the shard manifest's storage contract.
+
+    Offline tensors, targets, masks, and view geometry are immutable.  Their
+    configuration therefore always comes from ``build_plan.json``; callers may
+    vary only fields explicitly excluded from the storage hash.
+    """
+    storage = load_shard_storage_config(root)
+    storage_fields = {
+        field.name for field in dataclasses.fields(DataConfig)
+        if field.name not in _STORAGE_IRRELEVANT_CONFIG_FIELDS
+    }
+    return dataclasses.replace(
+        runtime,
+        **{name: getattr(storage, name) for name in storage_fields},
+    )
 
 
 def completed_units(root: Path, expected_hash: str) -> dict[str, dict[str, Any]]:
@@ -961,6 +1001,21 @@ def load_shard(path: Path, *, verify_sha256: str = "") -> dict[str, Any]:
     return value
 
 
+def load_certified_unit(unit: OfflineShardUnit) -> dict[str, Any]:
+    """Fail closed if a discovered path no longer contains its certified unit."""
+    value = load_shard(unit.path)
+    if unit.config_hash and str(value.get("unit_key", "")) != unit.unit_key:
+        raise RuntimeError(
+            f"offline shard unit identity mismatch: expected={unit.unit_key} "
+            f"observed={value.get('unit_key')} path={unit.path}"
+        )
+    if unit.config_hash and str(value.get("config_hash", "")) != unit.config_hash:
+        raise RuntimeError(
+            f"offline shard internal config hash mismatch: unit={unit.unit_key} path={unit.path}"
+        )
+    return value
+
+
 def materialize_block(shard: dict[str, Any], session_index: int, block_index: int) -> CompiledBlock:
     session = shard["sessions"][int(session_index)]
     block = session["blocks"][int(block_index)]
@@ -1072,6 +1127,7 @@ def discover_offline_units(
             origins=int(value["origins"]),
             stable_unit_index=stable_unit_index(key),
             condition_positive_counts=tuple(int(item) for item in raw_condition_counts),
+            config_hash=expected_hash,
         ))
     if missing or incompatible or missing_condition_counts:
         detail = []
@@ -1123,6 +1179,7 @@ def resolve_offline_units_for_refs(
             origins=int(value["origins"]),
             stable_unit_index=stable_unit_index(key),
             condition_positive_counts=tuple(int(item) for item in counts),
+            config_hash=expected_hash,
         ))
     if not units:
         raise RuntimeError("experiment panel contains no referenced offline units")
@@ -1142,6 +1199,8 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
         validation_slices: Sequence[tuple[str, str, str]] = (),
         blocks_per_validation_slice: int = 0,
         block_refs: Sequence[OfflineBlockRef] = (),
+        batch_size: int = 1,
+        length_bucket_batches: int = 0,
     ) -> None:
         super().__init__()
         self.units = tuple(units)
@@ -1151,7 +1210,36 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
         self.validation_slices = tuple(validation_slices)
         self.blocks_per_validation_slice = int(blocks_per_validation_slice)
         self.block_refs = tuple(block_refs)
+        self.batch_size = max(1, int(batch_size))
+        self.length_bucket_batches = max(0, int(length_bucket_batches))
         self.epoch = 0
+
+    def _bucket_order(
+        self, values: Sequence[Any], *, worker_id: int, sequence: int = 0,
+    ) -> tuple[Any, ...]:
+        """Group similar origin lengths in bounded deterministic windows."""
+        window = self.batch_size * self.length_bucket_batches
+        if window <= self.batch_size or len(values) <= self.batch_size:
+            return tuple(values)
+        ordered: list[Any] = []
+        generator = torch.Generator().manual_seed(
+            self.seed + self.epoch * 1_000_003 + worker_id * 97_409 + sequence * 65_537
+        )
+        for left in range(0, len(values), window):
+            segment = sorted(
+                values[left:left + window],
+                key=lambda item: int(
+                    item.origins if isinstance(item, OfflineBlockRef)
+                    else item.origin_indices.numel()
+                ),
+            )
+            chunks = [
+                segment[index:index + self.batch_size]
+                for index in range(0, len(segment), self.batch_size)
+            ]
+            for chunk_index in torch.randperm(len(chunks), generator=generator).tolist():
+                ordered.extend(chunks[chunk_index])
+        return tuple(ordered)
 
     def _ordered_block_ref_groups(self) -> list[tuple[OfflineBlockRef, ...]]:
         """Shuffle explicit panels without destroying ticker-month mmap locality."""
@@ -1172,7 +1260,15 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
 
     def _owned_block_refs(self, worker_id: int, workers: int) -> tuple[OfflineBlockRef, ...]:
         groups = self._ordered_block_ref_groups()[worker_id::workers]
-        return tuple(ref for group in groups for ref in group)
+        if not self.shuffle_units:
+            return tuple(ref for group in groups for ref in group)
+        # Preserve ticker-month mmap locality: bucket only within each already
+        # shuffled unit, never by interleaving references from separate files.
+        return tuple(
+            ref
+            for sequence, group in enumerate(groups)
+            for ref in self._bucket_order(group, worker_id=worker_id, sequence=sequence)
+        )
 
     def _iter_block_refs(self, worker_id: int, workers: int) -> Iterator[CompiledBlock]:
         units = {unit.unit_key: unit for unit in self.units}
@@ -1195,7 +1291,7 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
                 raise RuntimeError(f"experiment block references unknown shard unit {ref.unit_key}")
             if loaded_key != ref.unit_key:
                 loaded_key = ref.unit_key
-                shard = load_shard(unit.path)
+                shard = load_certified_unit(unit)
             assert shard is not None
             block = materialize_block(shard, ref.session_index, ref.block_index)
             observed = (
@@ -1245,7 +1341,7 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
         for ticker, start, end in owned_slices:
             candidates: list[tuple[bytes, OfflineShardUnit, int, int]] = []
             for unit in units_by_ticker.get(ticker, ()):
-                shard = load_shard(unit.path)
+                shard = load_certified_unit(unit)
                 for session_index, session in enumerate(shard["sessions"]):
                     local_date = str(session["local_date"])
                     if not start <= local_date < end:
@@ -1273,7 +1369,7 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
             for _score, unit, session_index, block_index in candidates[:requested]:
                 if loaded_path != unit.path:
                     loaded_path = unit.path
-                    loaded_shard = load_shard(unit.path)
+                    loaded_shard = load_certified_unit(unit)
                 assert loaded_shard is not None
                 block = materialize_block(loaded_shard, session_index, block_index)
                 block.worker_id = worker_id
@@ -1296,12 +1392,34 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
             ticker: (start, end)
             for ticker, start, end in self.validation_slices
         }
-        for unit in units:
+        pending: list[CompiledBlock] = []
+        bucket_sequence = 0
+        window = max(self.batch_size, self.batch_size * self.length_bucket_batches)
+
+        def flush_pending() -> Iterator[CompiledBlock]:
+            nonlocal pending, bucket_sequence
+            values = (
+                self._bucket_order(pending, worker_id=worker_id, sequence=bucket_sequence)
+                if self.shuffle_units else tuple(pending)
+            )
+            pending = []
+            bucket_sequence += 1
+            yield from values
+
+        def emit(block: CompiledBlock) -> Iterator[CompiledBlock]:
+            nonlocal resume_reached
             if not resume_reached:
-                if unit.stable_unit_index != int(resume.unit_index):
-                    continue
-                resume_reached = True
-            shard = load_shard(unit.path)
+                if (
+                    block.unit_index == int(resume.unit_index)
+                    and block.block_offset == int(resume.block_offset)
+                ):
+                    resume_reached = True
+                return
+            block.worker_id = worker_id
+            yield block
+
+        for unit in units:
+            shard = load_certified_unit(unit)
             selected: list[tuple[int, int]] = []
             ticker = unit.unit_key.partition(":")[0]
             validation_range = validation_ranges.get(ticker)
@@ -1314,11 +1432,12 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
                 selected.extend((session_index, block_index) for block_index in range(len(session["blocks"])))
             for session_index, block_index in selected:
                 block = materialize_block(shard, session_index, block_index)
-                if resume is not None and unit.stable_unit_index == int(resume.unit_index):
-                    if block.block_offset <= int(resume.block_offset):
-                        continue
-                block.worker_id = worker_id
-                yield block
+                pending.append(block)
+                if len(pending) >= window:
+                    for ordered in flush_pending():
+                        yield from emit(ordered)
+        for ordered in flush_pending():
+            yield from emit(ordered)
         if resume is not None and not resume_reached:
             raise RuntimeError(
                 f"offline resume cursor unit {resume.unit_index} is not owned by worker {worker_id}"
@@ -1332,6 +1451,8 @@ def make_offline_dataloader(
     drop_last: bool,
     persistent_workers: bool = False,
 ) -> DataLoader[CompiledBlock]:
+    dataset.batch_size = int(config.batch_size)
+    dataset.length_bucket_batches = int(config.offline_length_bucket_batches)
     kwargs: dict[str, Any] = {}
     if config.loader_workers > 0:
         kwargs["prefetch_factor"] = int(config.worker_prefetch_batches)
@@ -1422,6 +1543,7 @@ def collate_compiled_blocks(
         block_offsets=tuple(block.block_offset for block in blocks),
         session_phases=tuple(block.session_phase for block in blocks),
         condition_blocks=tuple(block.has_condition_target for block in blocks),
+        valid_origin_count=sum(int(block.origin_indices.numel()) for block in blocks),
     )
     return batch.pin_memory() if pin_memory else batch
 

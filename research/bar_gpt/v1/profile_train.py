@@ -21,7 +21,13 @@ from research.bar_gpt.v1.loader import (
     ClickHouseBarStreamConfig,
     make_dataloader,
 )
-from research.bar_gpt.v1.offline_shards import OfflineShardDataset, discover_offline_units, make_offline_dataloader
+from research.bar_gpt.v1.offline_shards import (
+    OfflineShardDataset,
+    discover_offline_units,
+    hydrate_offline_runtime_config,
+    make_offline_dataloader,
+    verify_shard_catalog_lock,
+)
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.objectives import compute_loss
@@ -117,6 +123,10 @@ class ProfileResult:
     forward_seconds: float = 0.0
     backward_seconds: float = 0.0
     optimizer_seconds: float = 0.0
+    h2d_seconds: float = 0.0
+    h2d_completed_batches: int = 0
+    host_cache_empty_reads: int = 0
+    device_stage_empty_waits: int = 0
     metric_seconds: float = 0.0
     projected_metric_overhead_fraction: float = 0.0
     sdpa_audit_state: str = "not_run"
@@ -291,8 +301,9 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument("--measured-steps", type=int, default=8)
-    parser.add_argument("--ready-queue-blocks", type=int, default=512)
-    parser.add_argument("--worker-prefetch-batches", type=int, default=4)
+    parser.add_argument("--ready-queue-blocks", type=int, default=128)
+    parser.add_argument("--worker-prefetch-batches", type=int, default=2)
+    parser.add_argument("--offline-length-bucket-batches", type=int, default=4)
     parser.add_argument("--target-effective-blocks", type=int, default=32)
     parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=1)
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
@@ -312,8 +323,7 @@ def _device(value: str) -> torch.device:
 
 def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
     tickers = tuple(item.strip().upper() for item in str(args.tickers).split(",") if item.strip())
-    return DataConfig(
-        loader_stream_contract_version=11,
+    runtime = DataConfig(
         tickers=tickers,
         start_date=str(args.start_date),
         end_date=str(args.end_date),
@@ -324,10 +334,20 @@ def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
         loader_workers=candidate.workers,
         ready_queue_blocks=int(args.ready_queue_blocks),
         worker_prefetch_batches=int(args.worker_prefetch_batches),
+        offline_length_bucket_batches=int(args.offline_length_bucket_batches),
         clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_worker),
         coverage_mode="sequential",
         coverage_blocks_per_unit=16,
     )
+    if str(args.data_source) != "offline":
+        return runtime
+    storage = hydrate_offline_runtime_config(Path(args.offline_shard_root), runtime)
+    if int(storage.origin_bars_1s) != int(candidate.origin_bars):
+        raise ValueError(
+            "profile candidate origin geometry conflicts with the immutable shard manifest: "
+            f"candidate={candidate.origin_bars} shard={storage.origin_bars_1s}"
+        )
+    return storage
 
 
 def _model_config(candidate: ProfileCandidate) -> BarGPTConfig:
@@ -707,6 +727,7 @@ def _profile_candidate(
                         origin_indices=batch.origin_indices,
                         asof_indices=batch.asof_indices,
                         attention_windows=data.attention_window_by_name,
+                        view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
                         horizon_ids=torch.arange(len(data.horizons_us), device=device),
                     )
                     loss_result = compute_loss(output, batch, train_config, model_config.quantiles)
@@ -804,6 +825,7 @@ def _profile_candidate(
             sdpa_audit_message = (
                 f"observed {observed_sdpa_calls} concrete SDPA calls; expected {sdpa_expected_calls}"
             )
+        prefetch_telemetry = prefetcher.telemetry()
     finally:
         prefetcher.close()
     elapsed = max(measured_finished - measured_started, 1e-9)
@@ -839,6 +861,10 @@ def _profile_candidate(
         forward_seconds=measured_forward,
         backward_seconds=measured_backward,
         optimizer_seconds=measured_optimizer,
+        h2d_seconds=float(prefetch_telemetry["h2d_seconds"]),
+        h2d_completed_batches=int(prefetch_telemetry["h2d_completed_batches"]),
+        host_cache_empty_reads=int(prefetch_telemetry["host_cache_empty_reads"]),
+        device_stage_empty_waits=int(prefetch_telemetry["device_stage_empty_waits"]),
         metric_seconds=measured_metric,
         projected_metric_overhead_fraction=projected_metric_overhead,
         sdpa_audit_state=sdpa_audit_state,
@@ -870,6 +896,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     # ClickHouse metadata cost for every batch-size candidate.
     first_data = _data(args, candidates[0])
     first_data.validate()
+    if args.data_source == "offline":
+        verify_shard_catalog_lock(Path(args.offline_shard_root))
     if args.data_source == "clickhouse":
         preflight(
             ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()),

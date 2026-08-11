@@ -45,7 +45,9 @@ from research.bar_gpt.v1.offline_shards import (
     OfflineShardDataset,
     OfflineShardUnit,
     discover_offline_units,
+    hydrate_offline_runtime_config,
     make_offline_dataloader,
+    verify_shard_catalog_lock,
 )
 from research.bar_gpt.v1.model_discovery import load_discovery_manifest, panel_refs
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
@@ -162,6 +164,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--loader-workers", type=int, default=data.loader_workers)
     parser.add_argument("--ready-queue-blocks", type=int, default=data.ready_queue_blocks)
     parser.add_argument("--worker-prefetch-batches", type=int, default=data.worker_prefetch_batches)
+    parser.add_argument(
+        "--offline-length-bucket-batches",
+        type=int,
+        default=data.offline_length_bucket_batches,
+    )
     parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=data.clickhouse_max_threads_per_worker)
     parser.add_argument("--clickhouse-max-memory-usage", type=int, default=data.clickhouse_max_memory_usage)
     parser.add_argument("--clickhouse-query-days", type=int, default=data.clickhouse_query_days)
@@ -250,7 +257,6 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
     horizons = _int_csv(args.horizons_us)
     data = DataConfig(
-        loader_stream_contract_version=11,
         database=str(args.database),
         one_second_table=str(args.one_second_table),
         manifest_table=str(args.manifest_table),
@@ -288,6 +294,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         loader_workers=int(args.loader_workers),
         ready_queue_blocks=int(args.ready_queue_blocks),
         worker_prefetch_batches=int(args.worker_prefetch_batches),
+        offline_length_bucket_batches=int(args.offline_length_bucket_batches),
         clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_worker),
         clickhouse_max_memory_usage=int(args.clickhouse_max_memory_usage),
         clickhouse_query_days=int(args.clickhouse_query_days),
@@ -298,6 +305,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         clickhouse_retry_max_seconds=float(args.clickhouse_retry_max_seconds),
         balance_activity_regimes=bool(args.balance_activity_regimes),
     )
+    if str(args.data_source) == "offline":
+        data = hydrate_offline_runtime_config(Path(args.offline_shard_root), data)
     if len(data.tickers) < 2:
         raise ValueError("training requires at least two tickers; single-ticker configurations are supported only for data and shard builds")
     data.validate()
@@ -1063,6 +1072,12 @@ def _wandb_metric_key(key: str) -> str:
         "host_cache_batches": "train_runtime/host_cache_batches",
         "host_cache_capacity": "train_runtime/host_cache_capacity",
         "origins_per_second": "train_runtime/origins_per_second",
+        "update_wall_seconds": "train_runtime/update_wall_seconds",
+        "host_cache_empty_reads": "train_runtime_loader/host_cache_empty_reads",
+        "device_stage_empty_waits": "train_runtime_loader/device_stage_empty_waits",
+        "device_staged_batches": "train_runtime_loader/device_staged_batches",
+        "h2d_completed_batches": "train_runtime_loader/h2d_completed_batches",
+        "h2d_seconds": "train_runtime_loader/h2d_seconds",
         "condition_positive_rate": "train_data/condition_positive_rate",
     }
     if key.startswith("train/"):
@@ -1461,6 +1476,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         evidence = {"mode": "dummy"}
     elif args.data_source == "offline":
         root = Path(args.offline_shard_root)
+        verify_shard_catalog_lock(root)
         validation_tickers = tuple(sorted({ticker for ticker, _start, _end in config.data.validation_slices}))
         offline_train_units = discover_offline_units(
             root,
@@ -1998,6 +2014,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 accumulated_blocks = 0
                 accumulated_units: set[str] = set()
                 accumulated_condition_blocks = 0
+                update_wall_started = time.perf_counter()
                 pending_cursors = dict(durable_cursors)
                 exhausted = False
                 periodic_training_metrics: ValidationAccumulator | None = None
@@ -2157,6 +2174,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 for start, end in gpu_event_pairs
                             )
                         if telemetry_due:
+                            update_wall_seconds = time.perf_counter() - update_wall_started
+                            prefetch_telemetry = iterator.telemetry()
                             metric_names = tuple(accumulated_metrics)
                             # Gradient norm is already computed for clipping. Include it
                             # in the existing batched device-to-host telemetry transfer,
@@ -2183,12 +2202,14 @@ def main(argv: Iterable[str] | None = None) -> int:
                                     "train/loader_wait_seconds": accumulated_loader_wait,
                                     "train/gpu_seconds": accumulated_gpu_seconds,
                                     "train/gpu_duty_cycle": accumulated_gpu_seconds
-                                    / max(accumulated_loader_wait + accumulated_gpu_seconds, 1e-9),
+                                    / max(update_wall_seconds, 1e-9),
                                     "train/host_cache_batches": float(iterator.cache_fill),
                                     "train/host_cache_capacity": float(iterator.cache_capacity),
-                                    "train/origins_per_second": accumulated_origins / max(accumulated_loader_wait + accumulated_gpu_seconds, 1e-9),
+                                    "train/origins_per_second": accumulated_origins / max(update_wall_seconds, 1e-9),
+                                    "train/update_wall_seconds": update_wall_seconds,
                                 }
                             )
+                            metrics.update({f"train/{key}": value for key, value in prefetch_telemetry.items()})
                             metrics.update({
                                 f"train/loader_stage_{name}": seconds
                                 for name, seconds in sorted(accumulated_loader_stages.items())
@@ -2339,6 +2360,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                         accumulated_blocks = 0
                         accumulated_units = set()
                         accumulated_condition_blocks = 0
+                        update_wall_started = time.perf_counter()
                         periodic_training_metrics = None
                     if exhausted or _INTERRUPTED or (training_limit > 0 and samples_seen >= training_limit):
                         if _INTERRUPTED and accumulation_count:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import dataclasses
+import hashlib
 import json
 import os
 import time
@@ -22,6 +23,7 @@ from research.bar_gpt.v1.offline_shards import (
     _sha256,
     condition_positive_counts,
     load_shard,
+    hydrate_offline_runtime_config,
 )
 from research.bar_gpt.v1.schema import FEATURE_VERSION
 from research.mlops.clickhouse import discover_clickhouse_env_files
@@ -68,6 +70,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start-date", default="", help="Optional inclusive YYYY-MM-DD month boundary.")
     parser.add_argument("--end-date", default="", help="Optional exclusive YYYY-MM-DD month boundary.")
     parser.add_argument("--max-shards", type=int, default=2)
+    parser.add_argument("--seed", type=int, default=17)
     parser.add_argument(
         "--verify-sha256",
         action=argparse.BooleanOptionalAction,
@@ -105,11 +108,12 @@ def discover_sidecars(
     start_date: str = "",
     end_date: str = "",
     limit: int = 2,
+    seed: int = 17,
 ) -> tuple[Path, ...]:
     allowed = {ticker.upper() for ticker in tickers}
     start = dt.date.fromisoformat(start_date) if start_date else None
     end = dt.date.fromisoformat(end_date) if end_date else None
-    selected: list[Path] = []
+    candidates: list[tuple[bytes, Path]] = []
     for path in sorted(root.glob("tickers/*/*/*.json")):
         value = json.loads(path.read_text(encoding="utf-8"))
         if value.get("status") != "complete":
@@ -124,12 +128,12 @@ def discover_sidecars(
             continue
         if start is not None and not (start <= month_date < end):
             continue
-        selected.append(path)
-        if len(selected) >= int(limit):
-            break
-    if not selected:
+        rank = hashlib.sha256(f"{int(seed)}|{unit_key}".encode("utf-8")).digest()
+        candidates.append((rank, path))
+    if not candidates:
         raise RuntimeError(f"no complete shard sidecars matched beneath {root}")
-    return tuple(selected)
+    candidates.sort(key=lambda item: item[0])
+    return tuple(path for _rank, path in candidates[: int(limit)])
 
 
 def _require(condition: bool, message: str) -> None:
@@ -516,7 +520,7 @@ def verify_direct_source(sidecar_path: Path) -> dict[str, Any]:
     start = dt.date.fromisoformat(dates[0])
     end = dt.date.fromisoformat(dates[-1]) + dt.timedelta(days=1)
     base_config = DataConfig()
-    config = dataclasses.replace(
+    runtime = dataclasses.replace(
         base_config,
         tickers=(ticker,),
         start_date=start.isoformat(),
@@ -528,6 +532,8 @@ def verify_direct_source(sidecar_path: Path) -> dict[str, Any]:
         # the bounded audit pool keeps aggregate ClickHouse load small.
         clickhouse_max_threads_per_worker=2,
     )
+    shard_root = sidecar_path.parents[3]
+    config = hydrate_offline_runtime_config(shard_root, runtime)
     config.validate()
     client = DirectEventArrowStreamClient(_stream_config(config), config)
     intervals = client.read_identity_intervals(
@@ -578,6 +584,7 @@ def run_audit(
     require_calendar_context: bool = False,
     output: Path | None = None,
     verify_direct_events: bool = False,
+    seed: int = 17,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -587,6 +594,7 @@ def run_audit(
         start_date=start_date,
         end_date=end_date,
         limit=limit,
+        seed=seed,
     )
     audited: list[dict[str, Any]] = []
     for index, path in enumerate(sidecars, start=1):
@@ -655,6 +663,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         require_calendar_context=bool(args.require_calendar_context),
         output=args.output.resolve() if args.output is not None else None,
         verify_direct_events=bool(args.verify_direct_source),
+        seed=int(args.seed),
         progress_callback=lambda message: print(message, flush=True),
     )
     for shard in report["shards"]:

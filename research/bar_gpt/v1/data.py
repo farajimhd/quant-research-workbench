@@ -170,13 +170,16 @@ class BarGPTBatch:
     block_offsets: tuple[int, ...]
     session_phases: tuple[str, ...]
     condition_blocks: tuple[bool, ...]
+    # Computed once by CPU collation. Keeping this scalar off-device avoids a
+    # CUDA synchronization from ``origin_mask.sum().item()`` every microbatch.
+    valid_origin_count: int
     # CPU-side loader timings are deliberately retained off-device.  They are
     # diagnostic evidence only and never participate in model computation.
     loader_stage_seconds: dict[str, float] = field(default_factory=dict)
 
     @property
     def origin_count(self) -> int:
-        return int(self.origin_mask.sum().item())
+        return int(self.valid_origin_count)
 
     def record_stream(self, stream: torch.Stream) -> None:
         """Keep asynchronously staged tensors alive on their consuming stream."""
@@ -245,6 +248,7 @@ class BarGPTBatch:
             block_offsets=self.block_offsets,
             session_phases=self.session_phases,
             condition_blocks=self.condition_blocks,
+            valid_origin_count=self.valid_origin_count,
             loader_stage_seconds=dict(self.loader_stage_seconds),
         )
     def to(self, device: torch.device | str, *, non_blocking: bool = True) -> "BarGPTBatch":
@@ -312,6 +316,7 @@ class BarGPTBatch:
             block_offsets=self.block_offsets,
             session_phases=self.session_phases,
             condition_blocks=self.condition_blocks,
+            valid_origin_count=self.valid_origin_count,
             loader_stage_seconds=dict(self.loader_stage_seconds),
         )
 
@@ -439,6 +444,7 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
         block_offsets=tuple(example.block_offset for example in examples),
         session_phases=tuple(example.session_phase for example in examples),
         condition_blocks=tuple(example.has_condition_target for example in examples),
+        valid_origin_count=sum(int(example.origin_indices.numel()) for example in examples),
         loader_stage_seconds=loader_stage_seconds,
     )
 

@@ -1541,9 +1541,11 @@ class LoaderTrainerContractTest(unittest.TestCase):
                     strict=True,
                 ):
                     prior = cursors[int(worker)]
-                    self.assertTrue(
-                        int(unit) != prior.unit_index or int(block) > prior.block_offset
-                    )
+                    # Length-aware ordering is deterministic but intentionally
+                    # non-monotonic within a worker. The next live block must
+                    # differ from the last durable cursor; exact reconstruction
+                    # is covered by the resume lifecycle test.
+                    self.assertNotEqual((int(unit), int(block)), (prior.unit_index, prior.block_offset))
                 optimizer.zero_grad(set_to_none=True)
                 _output, resumed_result = _forward(model, resumed_batch, experiment)
                 resumed_result.loss.backward()
@@ -2242,8 +2244,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--batch-size"], "32")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "1")
         self.assertEqual(training_launcher_args["--loader-workers"], "16")
-        self.assertEqual(training_launcher_args["--ready-queue-blocks"], "1024")
-        self.assertEqual(training_launcher_args["--worker-prefetch-batches"], "8")
+        self.assertEqual(training_launcher_args["--ready-queue-blocks"], "128")
+        self.assertEqual(training_launcher_args["--worker-prefetch-batches"], "2")
+        self.assertEqual(training_launcher_args["--offline-length-bucket-batches"], "4")
         self.assertEqual(training_launcher_args["--wandb-mode"], "online")
 
     def test_offline_training_loads_runtime_secrets_before_wandb_initialization(self) -> None:

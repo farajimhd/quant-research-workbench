@@ -20,6 +20,7 @@ from research.bar_gpt.v1.model_discovery import (
     discovery_data_config,
     load_discovery_manifest,
 )
+from research.bar_gpt.v1.offline_shards import verify_shard_catalog_lock
 
 
 FINAL_VALIDATION_CONTRACT_VERSION = 6
@@ -219,6 +220,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise ValueError("workers and batch size cannot be negative")
     discovery_root = Path(args.discovery_root)
     shard_root = Path(args.shard_root)
+    verify_shard_catalog_lock(shard_root)
     manifest_path = Path(args.manifest) if args.manifest else discovery_root / "fixed_panels_v5.json"
     campaign_state_path = discovery_root / "campaign_state_v5.json"
     if not campaign_state_path.is_file():
@@ -227,7 +229,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     manifest = load_discovery_manifest(
         manifest_path,
         shard_root=shard_root,
-        config=discovery_data_config(),
+        config=discovery_data_config(shard_root),
     )
     by_name = {item.name: item for item in ARCHITECTURE_GRID}
     architecture_names = tuple(by_name) if args.architectures == "all" else tuple(

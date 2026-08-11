@@ -132,6 +132,9 @@ class DataConfig:
     loader_workers: int = 8
     ready_queue_blocks: int = 64
     worker_prefetch_batches: int = 2
+    # Bounded deterministic look-ahead used only by the offline loader to
+    # group blocks with similar valid-origin lengths and reduce padding.
+    offline_length_bucket_batches: int = 4
     clickhouse_max_threads_per_worker: int = 1
     clickhouse_max_block_size: int = 65_536
     clickhouse_max_memory_usage: int = 8 * 1024**3
@@ -251,6 +254,8 @@ class DataConfig:
             raise ValueError("batch_size must be positive and loader_workers cannot be negative")
         if self.ready_queue_blocks <= 0 or self.worker_prefetch_batches <= 0:
             raise ValueError("ready queue blocks and worker prefetch batches must be positive")
+        if self.offline_length_bucket_batches < 0:
+            raise ValueError("offline_length_bucket_batches cannot be negative")
         if self.clickhouse_query_days <= 0 or self.clickhouse_prefetch_pages <= 0 or self.clickhouse_max_bytes_before_external_sort <= 0:
             raise ValueError("ClickHouse query days and external-sort threshold must be positive")
         if self.clickhouse_retry_attempts <= 0:
