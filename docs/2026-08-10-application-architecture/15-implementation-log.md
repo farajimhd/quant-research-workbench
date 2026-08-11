@@ -1006,6 +1006,12 @@ bounded direct ClickHouse paths remain documented in
      deltas, while periodic chart products remain explicit complete replacement
      snapshots and every lagging raw/product stream terminates with a resnapshot
      requirement.
+120. Registered the Live market-data schema-preview queries as
+     `market.schema_inventory.v1`. The plan owns the bounded `system.tables`
+     and `system.columns` reads for the current ClickHouse database; the Live
+     gateway now executes those builders rather than carrying service-local SQL.
+     Two focused plan/gateway tests and all nine application-registry tests
+     passed, and the changed Python modules compiled.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

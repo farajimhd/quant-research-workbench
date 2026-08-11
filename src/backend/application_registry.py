@@ -446,6 +446,16 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "q_live.market_reference_publication_coverage_v1",
         ),
         QueryPlanDefinition(
+            "market.schema_inventory.v1",
+            "backend",
+            "src.backend.query_plans.market_schema_inventory_v1:schema_inventory_queries",
+            ("system.tables", "system.columns"),
+            "current database plus table and column identity",
+            "ClickHouse catalog schema revision",
+            "query processing time",
+            "current ClickHouse system catalog",
+        ),
+        QueryPlanDefinition(
             "reference.schema_inventory.v1",
             "reference_gateway",
             "services.reference_gateway.table_groups:REFERENCE_TABLE_GROUPS",

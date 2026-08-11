@@ -432,36 +432,15 @@ def dedupe_signal_rows(rows: list[dict[str, Any]], limit: int) -> list[dict[str,
 
 
 def query_universe_preview_tables(client: ClickHouseHttpClient) -> list[dict[str, Any]]:
-    return client.query_json(
-        """
-        SELECT
-            database,
-            name,
-            engine,
-            total_rows,
-            total_bytes
-        FROM system.tables
-        WHERE database = currentDatabase()
-        ORDER BY name
-        """,
-        timeout=8,
-    )
+    from src.backend.query_plans.market_schema_inventory_v1 import table_inventory
+
+    return client.query_json(table_inventory(), timeout=8)
 
 
 def query_universe_preview_columns(client: ClickHouseHttpClient) -> list[dict[str, Any]]:
-    return client.query_json(
-        """
-        SELECT
-            table,
-            name,
-            type,
-            position
-        FROM system.columns
-        WHERE database = currentDatabase()
-        ORDER BY table, position
-        """,
-        timeout=8,
-    )
+    from src.backend.query_plans.market_schema_inventory_v1 import column_inventory
+
+    return client.query_json(column_inventory(), timeout=8)
 
 
 def resolve_preview_metadata(future: Any, scope: str) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
