@@ -14,8 +14,6 @@ from research.mlops.clickhouse import (
     default_clickhouse_password,
     default_clickhouse_url,
     default_clickhouse_user,
-    quote_ident,
-    sql_string,
 )
 from src.backend.query_plans.market_daily_bars_v1 import (
     DEFAULT_DAILY_SESSION_BARS_TABLE,
@@ -39,6 +37,11 @@ from src.backend.query_plans.reference_ticker_facts_v1 import (
     short_volume as short_volume_sql,
     short_volume_history as short_volume_history_sql,
     splits as splits_sql,
+)
+from src.backend.query_plans.sec_fundamentals_asof_v1 import (
+    fundamental_history as _fundamental_history_sql,
+    fundamentals as _fundamentals_sql,
+    fundamentals_history as _fundamentals_history_sql,
 )
 
 
@@ -479,53 +482,17 @@ def historical_database() -> str:
 
 
 def fundamentals_sql(cik: str, cutoff: datetime, database: str) -> str:
-    db = quote_ident(database)
     tags = sorted({tag for _, alternatives in FUNDAMENTAL_TAGS for tag in alternatives})
-    tag_clause = ", ".join(sql_string(tag) for tag in tags)
-    return f"""
-        SELECT tag, taxonomy, unit_code, value, fiscal_year, fiscal_period, period_end_date,
-               filed_at_utc, form_type, accession_number, recorded_at_utc
-        FROM {db}.sec_xbrl_company_fact_v3 FINAL
-        WHERE cik = {sql_string(cik)} AND tag IN ({tag_clause})
-          AND filed_at_utc >= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(XBRL_HISTORY_START))})
-          AND filed_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
-          AND recorded_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
-        ORDER BY tag ASC, period_end_date DESC, filed_at_utc DESC, recorded_at_utc DESC
-        LIMIT 1 BY tag, period_end_date, fiscal_period, unit_code
-        FORMAT JSONEachRow
-    """
+    return _fundamentals_sql(cik, tags, cutoff, database)
 
 
 def fundamental_history_sql(cik: str, tag: str, cutoff: datetime, database: str, *, limit: int = HISTORY_LIMIT) -> str:
-    db = quote_ident(database)
-    return f"""
-        SELECT tag, taxonomy, unit_code, value, fiscal_year, fiscal_period, period_end_date,
-               filed_at_utc, form_type, accession_number, recorded_at_utc
-        FROM {db}.sec_xbrl_company_fact_v3 FINAL
-        WHERE cik = {sql_string(cik)} AND tag = {sql_string(tag)}
-          AND filed_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
-          AND recorded_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
-        ORDER BY period_end_date DESC, filed_at_utc DESC, recorded_at_utc DESC
-        LIMIT 1 BY period_end_date, fiscal_period, unit_code
-        LIMIT {max(1, min(HISTORY_LIMIT, limit))}
-        FORMAT JSONEachRow
-    """
+    return _fundamental_history_sql(cik, tag, cutoff, database, limit=limit)
 
 
 def fundamentals_history_sql(cik: str, cutoff: datetime, database: str) -> str:
-    db = quote_ident(database)
     tags = sorted({tag for _, alternatives in FUNDAMENTAL_TAGS for tag in alternatives})
-    return f"""
-        SELECT tag, taxonomy, unit_code, value, fiscal_year, fiscal_period, period_end_date,
-               filed_at_utc, form_type, accession_number, recorded_at_utc, inserted_at
-        FROM {db}.sec_xbrl_company_fact_v3 FINAL
-        WHERE cik = {sql_string(cik)} AND tag IN ({", ".join(sql_string(tag) for tag in tags)})
-          AND filed_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
-          AND recorded_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
-        ORDER BY filed_at_utc DESC, period_end_date DESC, recorded_at_utc DESC
-        LIMIT 64 BY tag
-        FORMAT JSONEachRow
-    """
+    return _fundamentals_history_sql(cik, tags, cutoff, database)
 
 
 def select_fundamentals(rows: list[dict[str, Any]], as_of: datetime | None = None) -> list[dict[str, Any]]:

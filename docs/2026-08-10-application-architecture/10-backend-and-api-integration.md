@@ -165,7 +165,11 @@ FTD, Reg SHO, identifiers, classifications, splits/dividends, and causal daily
 volume. Each independent source remains separately degradable in composition.
 IPO fields resolve through `reference.scanner_asof.v1`, the implementation that
 actually loads point-in-time IPO data, rather than claiming Ticker Facts as a
-source it does not query. SEC/XBRL facts remain in `sec.fundamentals_asof.v1`.
+source it does not query. SEC/XBRL facts remain in
+`sec.fundamentals_asof.v1`; its versioned backend builder now owns both the
+bounded current-fact query and comparison-history query used by Ticker Facts.
+This extraction does not change SEC Gateway schemas, publication, or service
+behavior.
 
 ## 6. Configuration registry and compiler
 

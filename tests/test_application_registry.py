@@ -71,6 +71,13 @@ class ApplicationRegistryTests(unittest.TestCase):
             "market_sip_compact.daily_session_bars_by_symbol_time_v1",
             facts_plan.source_paths,
         )
+        fundamentals_plan = {
+            plan.plan_id: plan for plan in QUERY_PLANS
+        }["sec.fundamentals_asof.v1"]
+        self.assertEqual(
+            fundamentals_plan.implementation,
+            "src.backend.query_plans.sec_fundamentals_asof_v1:fundamental_fact_queries",
+        )
         self.assertTrue(
             {
                 "news.company_asof.v1",

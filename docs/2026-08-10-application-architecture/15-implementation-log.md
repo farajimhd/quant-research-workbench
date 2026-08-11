@@ -693,6 +693,14 @@ bounded direct ClickHouse paths remain documented in
     the path that actually loads IPO data, and keeps SEC/XBRL fundamentals in
     their distinct plan. Python compile and all 28 focused query-plan, registry,
     and Ticker Facts tests passed.
+92. Made the advertised SEC fundamentals plan executable without changing the
+    deferred SEC Gateway. The versioned backend builder now owns bounded current
+    XBRL facts, one-tag comparison history, and multi-tag causal history with
+    explicit filing and recording cutoffs. Ticker Facts retains its existing
+    function names as compatibility wrappers, while the application registry
+    points `sec.fundamentals_asof.v1` at the real query bundle instead of the
+    historical Scanner composition service. Python compile and all 28 focused
+    fundamentals-plan, registry, and Ticker Facts tests passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

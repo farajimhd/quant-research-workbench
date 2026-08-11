@@ -526,9 +526,9 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
         QueryPlanDefinition(
             "sec.fundamentals_asof.v1",
             "sec_gateway",
-            "src.backend.historical_scanner_service:historical_scanner_fundamental_projection",
-            ("q_live.sec_xbrl_company_fact_v3", "q_live.id_sec_market_bridge_v3"),
-            "event-valid CIK bridge to issuer/security/listing",
+            "src.backend.query_plans.sec_fundamentals_asof_v1:fundamental_fact_queries",
+            ("q_live.sec_xbrl_company_fact_v3",),
+            "causally resolved CIK supplied by the caller's identity plan",
             "period_end_date",
             "filed_at_utc and recorded_at_utc",
             "q_live.sec_coverage_manifest_v3",
