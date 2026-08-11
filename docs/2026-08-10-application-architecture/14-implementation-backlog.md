@@ -354,6 +354,8 @@ load progressively without false continuity.
   - [x] Create, monitor, and stop Backtest runs from the Backtest UI.
   - [ ] Apply causal Watchlist membership changes during the run rather than
         holding first-clock membership static.
+    - [x] Apply and journal causal activation/deactivation at every exchange-session boundary.
+    - [ ] Replay intraday membership events at the configured Watchlist refresh cadence.
   - [x] Build canonical Backtest performance, Portfolio, position, order,
         execution, and closed-trade result projections.
   - [x] Add strategy/run attribution and comparative analysis projections.

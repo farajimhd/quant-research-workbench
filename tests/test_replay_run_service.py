@@ -17,6 +17,7 @@ from src.backend.replay_run_service import (
     ReplayRunService,
     _attach_historical_signals,
     _canvas_profile_tickers,
+    _historical_watchlist_membership_timeline_for_configuration,
     _historical_signal_events,
     backtest_preflight,
     replay_preflight,
@@ -118,6 +119,71 @@ class ReplayRunDefinitionTests(unittest.TestCase):
                 start_time=time(3, 59),
                 configuration_revision=approved_configuration(),
             )
+
+
+class HistoricalWatchlistTimelineTests(unittest.TestCase):
+    def test_resolves_first_clock_and_each_later_weekday_session_boundary(self) -> None:
+        approved = approved_configuration()
+        with patch(
+            "src.backend.replay_run_service._historical_watchlist_members_for_configuration",
+            side_effect=lambda _approved, *, as_of: [{
+                "ticker": as_of.strftime("D%d"),
+                "ibkr_conid": as_of.day,
+            }],
+        ) as resolver:
+            timeline = _historical_watchlist_membership_timeline_for_configuration(
+                approved,
+                start=datetime(2026, 8, 7, 9, 45, tzinfo=NEW_YORK),
+                end=datetime(2026, 8, 11, 20, 0, tzinfo=NEW_YORK),
+            )
+
+        self.assertEqual(
+            [row["effective_at"].isoformat() for row in timeline],
+            [
+                "2026-08-07T09:45:00-04:00",
+                "2026-08-10T04:00:00-04:00",
+                "2026-08-11T04:00:00-04:00",
+            ],
+        )
+        self.assertEqual(resolver.call_count, 3)
+
+    def test_controller_applies_ordered_membership_changes_and_journals_them(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 10),
+            final_session_date=date(2026, 8, 11),
+            start_time=time(9, 45),
+            mode=RunMode.BACKTEST,
+            configuration_revision=approved_configuration(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller._historical_watchlist_timeline_cache = [
+                {
+                    "effective_at": datetime(2026, 8, 10, 9, 45, tzinfo=NEW_YORK),
+                    "members": [{"ticker": "AAPL", "ibkr_conid": 1}],
+                },
+                {
+                    "effective_at": datetime(2026, 8, 11, 4, 0, tzinfo=NEW_YORK),
+                    "members": [{"ticker": "MSFT", "ibkr_conid": 2}],
+                },
+            ]
+            controller._journal = TradingJournal(Path(directory) / "journal.sqlite3")
+
+            controller._apply_historical_watchlist_membership(
+                datetime(2026, 8, 10, 10, 0, tzinfo=NEW_YORK)
+            )
+            self.assertEqual(controller._active_historical_watchlist_tickers, {"AAPL"})
+            controller._apply_historical_watchlist_membership(
+                datetime(2026, 8, 11, 4, 1, tzinfo=NEW_YORK)
+            )
+
+            self.assertEqual(controller._active_historical_watchlist_tickers, {"MSFT"})
+            events = [
+                record.payload["event"]
+                for record in controller._journal.watchlist_membership_records()
+            ]
+            self.assertEqual(events, ["added", "added", "removed"])
+            controller._journal.close()
 
 
 class ReplayRunServiceCapacityTests(unittest.IsolatedAsyncioTestCase):

@@ -150,10 +150,13 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
   once per run window and groups it by assigned ticker. Ticker/timeframe derived
   streams use a bounded semaphore (default eight, maximum 32) rather than opening
   every QMD History request concurrently.
-- Backtest Watchlist membership is currently resolved at the first event clock.
-  Session-varying membership activation/deactivation and strategy attribution
-  remain incomplete; this is a disclosed partial implementation, not mode
-  parity. The Backtest page now projects canonical performance, Portfolio,
+- Backtest Watchlist membership is pinned at the requested first event clock
+  and re-resolved causally at every later 04:00 New York weekday-session
+  boundary. The shared controller journals additions/removals, prevents new
+  flat-position evaluations while a synthetic Watchlist assignment is inactive,
+  and continues managing an already-open position after removal. Intraday
+  membership-event replay at the configured Watchlist refresh cadence remains
+  incomplete; this is still disclosed partial parity. The Backtest page projects canonical performance, Portfolio,
   positions, orders, executions, and closed trades from the same run journal.
 - Live still has data/UI controller-parity work, but its dormant direct broker
   submit/reply/modify/cancel helpers now fail closed. Broker what-if preview

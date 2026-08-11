@@ -411,6 +411,16 @@ bounded direct ClickHouse paths remain documented in
     difference set changes. Dedicated external-runtime test directories avoid
     costly retries at the crowded runtime root. All 37 Portfolio/OMS tests,
     Python compile, and diff validation passed.
+63. Replaced Backtest's permanently frozen first-clock Watchlist population
+    with a bounded causal session timeline. The controller resolves the first
+    requested clock and every later 04:00 New York weekday boundary, builds the
+    historical stream from the safe union, journals additions and removals,
+    admits flat synthetic assignments only while active, and keeps evaluating
+    an open position after removal so risk management is not abandoned. A
+    ticker whose point-in-time conid changes across the run fails closed because
+    ticker-only assignment authority would be ambiguous. All 26 Replay/Backtest
+    service tests and Python compile passed. Intraday Watchlist-event replay is
+    still explicitly open and this phase does not claim full mode parity.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

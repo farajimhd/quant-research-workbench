@@ -213,6 +213,9 @@ class ReplayRunController:
         self._pace_wall_anchor = 0.0
         self._pace_reset = True
         self._historical_watchlist_cache: list[dict[str, Any]] | None = None
+        self._historical_watchlist_timeline_cache: list[dict[str, Any]] | None = None
+        self._historical_watchlist_timeline_index = 0
+        self._active_historical_watchlist_tickers: set[str] = set()
 
     async def start(self) -> None:
         if self._task is not None:
@@ -482,6 +485,11 @@ class ReplayRunController:
                 if self._strategy is not None
                 else []
             ),
+            "historical_watchlists": {
+                "active_tickers": sorted(self._active_historical_watchlist_tickers),
+                "timeline_index": self._historical_watchlist_timeline_index,
+                "timeline_count": len(self._historical_watchlist_timeline_cache or ()),
+            },
             **{
                 key: value
                 for key, value in self.definition.payload().items()
@@ -633,6 +641,7 @@ class ReplayRunController:
                         if frame.as_of < self.definition.requested_start:
                             self._remember_strategy_frame(frame)
                         else:
+                            self._apply_historical_watchlist_membership(frame.as_of)
                             await self._wait_until_active()
                             if self._stop_requested:
                                 await self._finish("stopped")
@@ -641,6 +650,7 @@ class ReplayRunController:
                             await self._after_event(frame.as_of)
                         frame_index += 1
                     if event.ts >= self.definition.requested_start:
+                        self._apply_historical_watchlist_membership(event.ts)
                         await self._wait_until_active()
                         if self._stop_requested:
                             await self._finish("stopped")
@@ -656,6 +666,7 @@ class ReplayRunController:
             while frame_index < len(frames):
                 frame = frames[frame_index]
                 if frame.as_of >= self.definition.requested_start:
+                    self._apply_historical_watchlist_membership(frame.as_of)
                     await self._wait_until_active()
                     await self._process_strategy_frame(frame)
                     await self._after_event(frame.as_of)
@@ -928,6 +939,12 @@ class ReplayRunController:
                 (row for row in positions if int(row.conid) == assignment.conid),
                 None,
             )
+            if (
+                "historical_watchlist" in assignment.source
+                and assignment.ticker not in self._active_historical_watchlist_tickers
+                and (position is None or float(position.quantity) == 0)
+            ):
+                continue
             observation = replace(
                 base,
                 position_quantity=float(position.quantity if position else 0),
@@ -1086,11 +1103,78 @@ class ReplayRunController:
     def _historical_watchlist_members(self) -> list[dict[str, Any]]:
         if self._historical_watchlist_cache is not None:
             return self._historical_watchlist_cache
-        self._historical_watchlist_cache = _historical_watchlist_members_for_configuration(
-            self.definition.configuration_revision,
-            as_of=self.definition.requested_start,
-        )
+        members: dict[str, dict[str, Any]] = {}
+        conids: dict[str, int] = {}
+        for snapshot in self._historical_watchlist_timeline():
+            for row in snapshot["members"]:
+                ticker = str(row.get("ticker") or "").upper()
+                conid = int(row.get("ibkr_conid") or 0)
+                if ticker in conids and conids[ticker] != conid:
+                    raise ValueError(
+                        f"Historical Watchlist identity changed for {ticker}: "
+                        f"{conids[ticker]} -> {conid}; ticker-only assignment authority is unsafe"
+                    )
+                conids[ticker] = conid
+                members[ticker] = dict(row)
+        self._historical_watchlist_cache = [members[ticker] for ticker in sorted(members)]
         return self._historical_watchlist_cache
+
+    def _historical_watchlist_timeline(self) -> list[dict[str, Any]]:
+        if self._historical_watchlist_timeline_cache is None:
+            self._historical_watchlist_timeline_cache = (
+                _historical_watchlist_membership_timeline_for_configuration(
+                    self.definition.configuration_revision,
+                    start=self.definition.requested_start,
+                    end=self.definition.session_end,
+                )
+            )
+        return self._historical_watchlist_timeline_cache
+
+    def _apply_historical_watchlist_membership(self, event_time: datetime) -> None:
+        timeline = self._historical_watchlist_timeline()
+        while self._historical_watchlist_timeline_index < len(timeline):
+            snapshot = timeline[self._historical_watchlist_timeline_index]
+            effective_at = snapshot["effective_at"]
+            if effective_at > event_time:
+                break
+            current = {
+                str(row.get("ticker") or "").upper()
+                for row in snapshot["members"]
+                if str(row.get("ticker") or "").strip()
+            }
+            added = sorted(current - self._active_historical_watchlist_tickers)
+            removed = sorted(self._active_historical_watchlist_tickers - current)
+            self._active_historical_watchlist_tickers = current
+            self._historical_watchlist_timeline_index += 1
+            if self._journal is not None:
+                for ticker in added:
+                    self._journal.append(
+                        run_id=self.run_id,
+                        category="watchlist_membership",
+                        entity_type="historical_watchlist_member",
+                        entity_id=ticker,
+                        event_time=effective_at,
+                        payload={
+                            "event": "added",
+                            "ticker": ticker,
+                            "effective_at": effective_at.isoformat(),
+                            "source": "causal_historical_watchlist",
+                        },
+                    )
+                for ticker in removed:
+                    self._journal.append(
+                        run_id=self.run_id,
+                        category="watchlist_membership",
+                        entity_type="historical_watchlist_member",
+                        entity_id=ticker,
+                        event_time=effective_at,
+                        payload={
+                            "event": "removed",
+                            "ticker": ticker,
+                            "effective_at": effective_at.isoformat(),
+                            "source": "causal_historical_watchlist",
+                        },
+                    )
 
     def _resolved_tickers(self) -> tuple[str, ...]:
         assignment_tickers = (
@@ -1326,6 +1410,46 @@ def _historical_watchlist_members_for_configuration(
     return [members[ticker] for ticker in sorted(members)]
 
 
+def _historical_watchlist_membership_timeline_for_configuration(
+    approved: dict[str, Any],
+    *,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    """Resolve a bounded causal Watchlist snapshot at every run session boundary.
+
+    Historical Scanner snapshots are full-market, minute-granularity products.
+    Replaying every configured live refresh (often one second) would rebuild the
+    full market thousands of times per session. The historical controller
+    therefore pins membership at the requested first clock and re-resolves it at
+    04:00 New York on every later exchange weekday. Intraday Scanner-membership
+    event replay remains a separate product requirement.
+    """
+    if start.tzinfo is None or end.tzinfo is None:
+        raise ValueError("Historical Watchlist timeline bounds must be timezone-aware")
+    if end < start:
+        raise ValueError("Historical Watchlist timeline end precedes start")
+    local_start = start.astimezone(NEW_YORK)
+    local_end = end.astimezone(NEW_YORK)
+    clocks: list[datetime] = [local_start]
+    cursor = local_start.date() + timedelta(days=1)
+    while cursor <= local_end.date():
+        if cursor.weekday() < 5:
+            clocks.append(datetime.combine(cursor, clock_time(4, 0), tzinfo=NEW_YORK))
+        cursor += timedelta(days=1)
+    return [
+        {
+            "effective_at": as_of,
+            "members": _historical_watchlist_members_for_configuration(
+                approved,
+                as_of=as_of,
+            ),
+        }
+        for as_of in clocks
+        if as_of <= local_end
+    ]
+
+
 def replay_preflight(
     *,
     session_date: date,
@@ -1549,12 +1673,23 @@ def backtest_preflight(
         if bool(row.get("enabled", True)) and str(row.get("source") or "") == "watchlist"
     ]
     watchlist_members: list[dict[str, Any]] = []
+    watchlist_snapshot_count = 0
     watchlist_error = ""
     if watchlists and sessions:
         try:
-            watchlist_members = _historical_watchlist_members_for_configuration(
+            timeline = _historical_watchlist_membership_timeline_for_configuration(
                 approved,
-                as_of=datetime.combine(sessions[0], clock_time(4, 0), tzinfo=NEW_YORK),
+                start=datetime.combine(sessions[0], clock_time(4, 0), tzinfo=NEW_YORK),
+                end=datetime.combine(sessions[-1], clock_time(20, 0), tzinfo=NEW_YORK),
+            )
+            watchlist_snapshot_count = len(timeline)
+            watchlist_members = list(
+                {
+                    str(row.get("ticker") or "").upper(): row
+                    for snapshot in timeline
+                    for row in snapshot["members"]
+                    if str(row.get("ticker") or "").strip()
+                }.values()
             )
         except Exception as exc:
             watchlist_error = str(exc)
@@ -1590,11 +1725,11 @@ def backtest_preflight(
             "label": "Historical strategy population",
             "status": "ready" if work_ready else "blocked",
             "summary": (
-                f"{len(assignments)} pinned assignment(s) and {len(watchlist_members)} first-clock Watchlist member(s) are configured."
+                f"{len(assignments)} pinned assignment(s) and {len(watchlist_members)} causal Watchlist member(s) across {watchlist_snapshot_count} session snapshot(s) are configured."
                 if work_ready
                 else watchlist_error or "Backtest needs an active assignment or a non-empty causal Watchlist universe."
             ),
-            "evidence": "Point-in-time membership is resolved at the first event clock; session-varying membership is tracked separately.",
+            "evidence": "Point-in-time membership is pinned at the first event clock and every later exchange-session boundary.",
             "required": True,
         }
     )
