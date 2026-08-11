@@ -609,24 +609,33 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
       versioned member rows at the runtime clock, distinguishes loading,
       dependency failure, first-resolution wait, missing snapshot, and an
       empty resolved Watchlist, and links to the dedicated Run Plan editor.
-- [ ] Create chart-originated manual and semi-automatic proposals.
+- [x] Create chart-originated manual and semi-automatic proposals.
   - [x] Create and confirm both proposal authorities in Replay Canvas.
-  - [ ] Add the same proposal lifecycle to Paper/Live after shared-controller
-        migration; broker execution still requires separate authorization.
+  - [x] Add the same non-executing proposal lifecycle to Paper/Live;
+        broker execution still requires separate authorization.
     - [x] Add the non-executing Paper/Live handoff: Canvas uses stable
           application account keys, and the backend revalidates the approved
           mode/account binding, current tradable-universe conid/revision, QMD
           ticker freshness and Scanner sequence, client chart clock/sequence,
           quantity, action, and directional protection before journaling the
           semantic proposal. It explicitly reports that broker submission is
-          false and Portfolio/OMS admission is still required.
+          false.
+    - [x] Refresh the complete mode-scoped canonical broker snapshot, synchronize
+          the configured Portfolio authority, obtain a fenced decision, compile
+          the OMS order/protection plan, and release the reservation before
+          returning because no broker runtime owns it.
 - [x] Attach snapshot, identity, price sequence, freshness, and requested protection.
   - [x] Attach and validate those fields for Replay chart proposals.
   - [x] Replace Paper/Live client claims with an authoritative QMD ticker-state
         snapshot and registered tradable-universe identity at handoff time.
-- [ ] Revalidate every proposal through Portfolio and OMS.
+- [x] Revalidate every currently executable or staged proposal through Portfolio
+      and OMS.
   - [x] Route confirmed Replay proposals through durable Portfolio admission
         and OMS planning; rejected/deferred proposals never reach the simulator.
+  - [x] Route Paper/Live manual, semi-automatic, and automatic origins through
+        Portfolio admission and non-executing OMS planning. Broker-dependent
+        risk validation remains explicitly pending the separately authorized
+        runtime.
 - [x] Keep Live, Paper, Replay, and Backtest visually and authoritatively isolated.
   - [x] Live and Paper now render explicit mode badges and use distinct
         account-scoped overlays while retaining canonical trading-state and
@@ -794,10 +803,13 @@ load progressively without false continuity.
         state before enabling historical restart resume. Persisted candidates
         remain discoverable after backend restart and mode-specific resume
         endpoints/UI controls never advertise legacy cursor-only checkpoints.
-- [ ] Route manual, semi-automatic, and automatic proposals through one control plane.
+- [x] Route manual, semi-automatic, and automatic proposals through one control plane.
   - [x] Journal validated Paper/Live manual and semi-automatic proposals under
         the mode/account control identity without calling a broker or creating
         an unowned Portfolio reservation.
+  - [x] Accept the typed automatic origin at the same boundary, refresh
+        canonical account/group state, run Portfolio and OMS validation, and
+        synchronously release validation-only reservations.
   - [ ] Deploy the shared Live/Paper runtime that repeats Portfolio admission
         and OMS validation immediately before authorized broker submission;
         this crosses the separately authorized broker/deployment boundary.

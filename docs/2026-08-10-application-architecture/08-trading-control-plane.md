@@ -36,7 +36,12 @@ flowchart TD
     K --> L
 ```
 
-Manual and semi-automatic proposals enter at `Order proposal`; they do not bypass Portfolio Management or OMS.
+Manual, semi-automatic, and automatic proposals enter at `Order proposal` or
+the equivalent typed `StrategyIntent`; they do not bypass Portfolio Management
+or OMS. A non-executing Live/Paper validation may acquire Portfolio admission
+only long enough to compile and validate the OMS plan. It must release that
+reservation before returning unless an authorized runtime has taken ownership
+of the corresponding broker submission.
 
 ## 2. Configuration objects
 

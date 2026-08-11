@@ -62,6 +62,18 @@ def canonical_live_state(account_type: str = "paper", account_keys: str = "", *,
     cached = None if refresh else _CACHE.get(cache_key)
     if cached is not None:
         return cached
+    snapshot = canonical_live_snapshot(account_type, account_keys)
+    payload = trading_state_payload(snapshot)
+    _CACHE.set(cache_key, payload)
+    return payload
+
+
+def canonical_live_snapshot(
+    account_type: str = "paper",
+    account_keys: str = "",
+) -> TradingStateSnapshot:
+    """Return the typed, fresh canonical authority used for admission checks."""
+
     raw = real_live_portfolio(account_type, account_keys=account_keys)
     mode = TradingMode.PAPER if all(str(row.get("trading_mode") or "").lower() == "paper" for row in raw.get("portfolios", [])) else TradingMode.LIVE
     projector = TradingStateProjector(mode, BrokerProvider.IBKR_CPAPI)
@@ -126,9 +138,7 @@ def canonical_live_state(account_type: str = "paper", account_keys: str = "", *,
     projector.complete = not errors and all(account.account_id in projector.last_complete_position_snapshot for account in accounts)
     projector.stale = bool(errors)
     projector.stale_reason = "; ".join(str(item.get("message") or item) for item in errors) if errors else ""
-    payload = trading_state_payload(projector.snapshot())
-    _CACHE.set(cache_key, payload)
-    return payload
+    return projector.snapshot()
 
 
 def trading_state_payload(snapshot: TradingStateSnapshot) -> dict[str, Any]:

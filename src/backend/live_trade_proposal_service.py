@@ -5,12 +5,20 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from src.backend.qmd_gateway_client import qmd_ticker_state
+from src.backend.canonical_trading_service import canonical_live_snapshot
 from src.backend.real_live_trading_service import (
     _approved_configuration_checks,
+    configured_real_live_accounts,
     require_tradable_symbol,
     resolve_real_live_accounts,
 )
+from src.backend.trading_configuration_service import approved_configuration
 from src.backend.trading_runtime_service import trading_journal
+from src.trading_runtime.domain import InstrumentContract
+from src.trading_runtime.portfolio import PortfolioDecisionStatus, PortfolioManagementEngine
+from src.trading_runtime.portfolio_config import configured_portfolio_profiles
+from src.trading_runtime.signals import StrategyIntent
+from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
 
 
 SUPPORTED_ACTIONS = {
@@ -27,7 +35,7 @@ SUPPORTED_ACTIONS = {
 MAX_LIVE_SNAPSHOT_AGE_MS = 2_500
 
 
-def stage_live_trade_proposal(
+async def stage_live_trade_proposal(
     mode: str,
     payload: dict[str, Any],
     *,
@@ -45,8 +53,10 @@ def stage_live_trade_proposal(
     if normalized_mode not in {"live", "paper"}:
         raise ValueError("Live trade proposals require live or paper mode")
     authority = str(payload.get("authority") or "manual").strip().lower()
-    if authority not in {"manual", "semi_automatic"}:
-        raise ValueError("Trade proposal authority must be manual or semi_automatic")
+    if authority not in {"manual", "semi_automatic", "automatic"}:
+        raise ValueError(
+            "Trade proposal authority must be manual, semi_automatic, or automatic"
+        )
     account_key = str(payload.get("account_id") or "").strip().lower()
     accounts = resolve_real_live_accounts([account_key], account_type=normalized_mode)
     account = accounts[0]
@@ -152,6 +162,39 @@ def stage_live_trade_proposal(
         "client_chart_observed_at": requested_observed_at.isoformat(),
         "client_chart_sequence": requested_sequence,
     }
+    intent = StrategyIntent(
+        intent_id=f"proposal:{proposal_id}",
+        ticker=ticker,
+        event_time=observed_at,
+        action=action,
+        quantity=quantity,
+        reference_price=reference_price,
+        invalidation_price=invalidation_price,
+        profit_target_price=profit_target_price,
+        trailing_amount=trailing_amount,
+        urgency=str(payload.get("urgency") or "aggressive_limit"),
+        reason=str(payload.get("reason") or "Canvas trade proposal"),
+        metadata={
+            "origin": "trade_proposal",
+            "proposal_id": proposal_id,
+            "proposal_authority": authority,
+            "identity_revision": identity_revision,
+            "market_snapshot": market_snapshot,
+            "bid": market_snapshot["bid"],
+            "ask": market_snapshot["ask"],
+            "tick_size": float(payload.get("tick_size") or 0.01),
+            "quote_observed_at": observed_at,
+            "security_type": "STK",
+            "currency": str(payload.get("currency") or "USD").upper(),
+        },
+    )
+    control = await _validate_control_plane(
+        mode=normalized_mode,
+        account=account,
+        intent=intent,
+        conid=conid,
+        exchange=str(payload.get("exchange") or "SMART"),
+    )
     result = {
         "schema_version": 1,
         "proposal_id": proposal_id,
@@ -169,11 +212,13 @@ def stage_live_trade_proposal(
             "profit_target_price": profit_target_price,
             "trailing_amount": trailing_amount,
         },
-        "status": "validated_pending_runtime",
+        "status": control["status"],
+        "portfolio": control["portfolio"],
+        "oms": control["oms"],
         "execution": {
             "broker_submission": False,
-            "portfolio_admission_required": True,
-            "oms_validation_required": True,
+            "portfolio_admission_required": False,
+            "oms_validation_required": False,
             "reason": "Shared Live/Paper runtime deployment requires separate broker authorization.",
         },
     }
@@ -187,6 +232,99 @@ def stage_live_trade_proposal(
         payload=result,
     )
     return result
+
+
+async def _validate_control_plane(
+    *,
+    mode: str,
+    account: Any,
+    intent: StrategyIntent,
+    conid: int,
+    exchange: str,
+) -> dict[str, Any]:
+    release = approved_configuration(required=True)
+    configuration = dict(release.get("payload") or {})
+    profiles, groups = configured_portfolio_profiles(
+        configured_real_live_accounts(),
+        configuration=configuration,
+    )
+    mode_profiles = tuple(profile for profile in profiles if profile.mode == mode)
+    profile = next(
+        (row for row in mode_profiles if row.account_key == account.account_key),
+        None,
+    )
+    if profile is None:
+        raise ValueError("Approved Portfolio configuration omitted this account and mode")
+    snapshot = canonical_live_snapshot(
+        mode,
+        ",".join(row.account_key for row in mode_profiles),
+    )
+    journal = trading_journal()
+    run_id = f"live-control:{mode}:{account.account_key}"
+    portfolio = PortfolioManagementEngine(
+        mode_profiles,
+        journal=journal,
+        run_id=run_id,
+        strategy_id="interactive-trade-proposal",
+        strategy_revision=1,
+        groups=groups,
+        allocation_identity="interactive-trade-proposal",
+    )
+    portfolio.synchronize_canonical(snapshot)
+    decision, approved_intent = await portfolio.approve(
+        intent,
+        account_id=profile.account_id,
+    )
+    decision_payload = decision.payload()
+    if decision.status == PortfolioDecisionStatus.REJECTED or approved_intent is None:
+        return {
+            "status": "rejected_by_portfolio",
+            "portfolio": {**decision_payload, "reservation_status": "not_created"},
+            "oms": {"status": "not_evaluated", "reason": "portfolio_rejected"},
+        }
+
+    try:
+        plan = IbkrStrategyOrderPlanner().plan(
+            account_id=profile.account_id,
+            instrument=InstrumentContract(
+                instrument_id=f"ibkr:{conid}",
+                conid=conid,
+                symbol=intent.ticker,
+                security_type="STK",
+                currency=str(intent.metadata.get("currency") or profile.base_currency),
+                exchange=exchange,
+            ),
+            intent=approved_intent,
+            strategy_id="interactive-trade-proposal",
+            strategy_revision=1,
+        )
+        if not plan.orders:
+            raise ValueError(f"Trade proposal produced no OMS order plan: {intent.action}")
+        oms = {
+            "status": "validated_not_submitted",
+            "order_count": len(plan.orders),
+            "batch_count": len(plan.broker_batches),
+            "order_types": sorted({row.orderType for row in plan.orders}),
+            "sides": sorted({row.side for row in plan.orders}),
+            "protection_order_count": sum(
+                1 for row in plan.orders if row.parentId or row.orderType in {"STP", "STP LMT", "TRAIL"}
+            ),
+            "broker_risk_validation": "pending_authorized_runtime",
+        }
+        status = "validated_pending_broker_runtime"
+    except (TypeError, ValueError) as exc:
+        oms = {"status": "rejected", "reason": str(exc)}
+        status = "rejected_by_oms"
+    finally:
+        portfolio.release_intent(
+            approved_intent.intent_id,
+            reason="proposal_validation_completed_without_broker_submission",
+        )
+    return {
+        "status": status,
+        "portfolio": {**decision_payload, "reservation_status": "released"},
+        "oms": oms,
+    }
 
 
 def _identity_revision(identity: dict[str, Any], ticker: str, conid: int) -> str:

@@ -862,7 +862,10 @@ class BacktestDebugRunCreateRequest(BaseModel):
 
 class ReplayTradeProposalSubmit(BaseModel):
     proposal_id: str = Field(default="", max_length=128)
-    authority: str = Field(default="manual", pattern="^(manual|semi_automatic)$")
+    authority: str = Field(
+        default="manual",
+        pattern="^(manual|semi_automatic|automatic)$",
+    )
     account_id: str = Field(min_length=1, max_length=128)
     ticker: str = Field(min_length=1, max_length=32)
     conid: int = Field(gt=0)
@@ -4988,12 +4991,12 @@ async def trading_replay_trade_proposal(
 
 
 @app.post("/api/trading/{mode}/trade-proposals")
-def trading_live_trade_proposal(
+async def trading_live_trade_proposal(
     mode: str,
     payload: ReplayTradeProposalSubmit,
 ) -> dict[str, Any]:
     try:
-        return stage_live_trade_proposal(mode, payload.model_dump())
+        return await stage_live_trade_proposal(mode, payload.model_dump())
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (RuntimeError, ValueError) as exc:

@@ -198,9 +198,14 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   Replay, but assignment commands and chart proposals are disabled because a
   completed or advancing Backtest is immutable evidence rather than an
   interactive execution authority.
-- Live/Paper proposal execution stays disabled until those modes adopt the
-  shared controller. This preserves the existing broker authorization boundary;
-  the UI does not fall back to the legacy direct-order helper.
+- Live/Paper proposals now enter the shared non-executing control plane. The
+  backend refreshes the complete mode-scoped canonical broker snapshot,
+  synchronizes Portfolio, obtains a fenced admission decision, compiles the
+  broker-neutral OMS order/protection plan, and releases the temporary
+  reservation before returning because no broker command owns it. Broker risk
+  validation and submission remain disabled until the separately authorized
+  Live/Paper runtime deployment; the UI never falls back to the legacy
+  direct-order helper.
 
 ---
 

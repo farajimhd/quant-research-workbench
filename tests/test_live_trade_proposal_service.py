@@ -5,7 +5,12 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.backend.live_trade_proposal_service import stage_live_trade_proposal
+from src.backend.live_trade_proposal_service import (
+    _validate_control_plane,
+    stage_live_trade_proposal,
+)
+from src.trading_runtime.portfolio import PortfolioDecisionStatus
+from src.trading_runtime.signals import StrategyIntent
 
 
 class FakeJournal:
@@ -20,7 +25,7 @@ class FakeJournal:
         self.appended.append(values)
 
 
-class LiveTradeProposalServiceTests(unittest.TestCase):
+class LiveTradeProposalServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.now = datetime.now(UTC)
         self.journal = FakeJournal()
@@ -69,7 +74,7 @@ class LiveTradeProposalServiceTests(unittest.TestCase):
             "is_tradable": True,
         }
 
-    def _stage(self, payload=None, *, ticker_state=None):
+    async def _stage(self, payload=None, *, ticker_state=None):
         with (
             patch(
                 "src.backend.live_trade_proposal_service.resolve_real_live_accounts",
@@ -83,18 +88,32 @@ class LiveTradeProposalServiceTests(unittest.TestCase):
                 "src.backend.live_trade_proposal_service.trading_journal",
                 return_value=self.journal,
             ),
+            patch(
+                "src.backend.live_trade_proposal_service._validate_control_plane",
+                return_value={
+                    "status": "validated_pending_broker_runtime",
+                    "portfolio": {
+                        "status": "approved",
+                        "reservation_status": "released",
+                    },
+                    "oms": {
+                        "status": "validated_not_submitted",
+                        "order_count": 2,
+                    },
+                },
+            ),
         ):
-            return stage_live_trade_proposal(
+            return await stage_live_trade_proposal(
                 "paper",
                 dict(payload or self.payload),
                 ticker_state=ticker_state or self._ticker_state,
                 tradable_symbol=self._identity,
             )
 
-    def test_validates_and_journals_without_broker_submission(self) -> None:
-        result = self._stage()
+    async def test_validates_and_journals_without_broker_submission(self) -> None:
+        result = await self._stage()
 
-        self.assertEqual(result["status"], "validated_pending_runtime")
+        self.assertEqual(result["status"], "validated_pending_broker_runtime")
         self.assertEqual(result["account_key"], "paper")
         self.assertEqual(result["market_snapshot"]["source_sequence"], 42)
         self.assertEqual(
@@ -102,45 +121,146 @@ class LiveTradeProposalServiceTests(unittest.TestCase):
             "tradable-universe:2026-08-11:AAPL:265598",
         )
         self.assertFalse(result["execution"]["broker_submission"])
-        self.assertTrue(result["execution"]["portfolio_admission_required"])
-        self.assertTrue(result["execution"]["oms_validation_required"])
+        self.assertFalse(result["execution"]["portfolio_admission_required"])
+        self.assertFalse(result["execution"]["oms_validation_required"])
+        self.assertEqual(result["portfolio"]["reservation_status"], "released")
+        self.assertEqual(result["oms"]["status"], "validated_not_submitted")
         self.assertEqual(len(self.journal.appended), 1)
         self.assertEqual(self.journal.appended[0]["account_id"], "paper")
 
-    def test_rejects_stale_authoritative_state(self) -> None:
+    async def test_rejects_stale_authoritative_state(self) -> None:
         def stale_state(ticker: str):
             result = self._ticker_state(ticker)
             result["age_ms"] = 10_000
             return result
 
         with self.assertRaisesRegex(ValueError, "ticker state is stale"):
-            self._stage(ticker_state=stale_state)
+            await self._stage(ticker_state=stale_state)
 
-    def test_rejects_client_snapshot_without_price_sequence(self) -> None:
+    async def test_rejects_client_snapshot_without_price_sequence(self) -> None:
         payload = dict(self.payload)
         payload["market_snapshot"] = {
             **self.payload["market_snapshot"],
             "source_sequence": "",
         }
         with self.assertRaisesRegex(ValueError, "price sequence"):
-            self._stage(payload)
+            await self._stage(payload)
 
-    def test_rejects_directionally_invalid_protection(self) -> None:
+    async def test_rejects_directionally_invalid_protection(self) -> None:
         with self.assertRaisesRegex(ValueError, "stop must be below"):
-            self._stage({**self.payload, "invalidation_price": 201})
+            await self._stage({**self.payload, "invalidation_price": 201})
 
-    def test_rejects_stale_identity_revision(self) -> None:
+    async def test_rejects_stale_identity_revision(self) -> None:
         with self.assertRaisesRegex(ValueError, "identity revision is stale"):
-            self._stage({**self.payload, "identity_revision": "old"})
+            await self._stage({**self.payload, "identity_revision": "old"})
 
-    def test_rejects_stale_chart_snapshot(self) -> None:
+    async def test_rejects_stale_chart_snapshot(self) -> None:
         payload = dict(self.payload)
         payload["market_snapshot"] = {
             **self.payload["market_snapshot"],
             "observed_at": (self.now - timedelta(seconds=10)).isoformat(),
         }
         with self.assertRaisesRegex(ValueError, "chart snapshot is stale"):
-            self._stage(payload)
+            await self._stage(payload)
+
+    async def test_accepts_automatic_proposal_origin(self) -> None:
+        result = await self._stage({**self.payload, "authority": "automatic"})
+
+        self.assertEqual(result["authority"], "automatic")
+
+    async def test_control_plane_releases_admission_after_oms_plan(self) -> None:
+        released = []
+        synchronized = []
+
+        class Decision:
+            status = PortfolioDecisionStatus.APPROVED
+
+            @staticmethod
+            def payload():
+                return {"status": "approved", "reservation_id": "reservation-1"}
+
+        class Portfolio:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def synchronize_canonical(self, snapshot):
+                synchronized.append(snapshot)
+
+            async def approve(self, intent, *, account_id):
+                return Decision(), intent
+
+            def release_intent(self, intent_id, *, reason):
+                released.append((intent_id, reason))
+
+        order = SimpleNamespace(
+            orderType="STP",
+            side="SELL",
+            parentId="entry-1",
+        )
+        planner = SimpleNamespace(
+            plan=lambda **kwargs: SimpleNamespace(
+                orders=(order,),
+                broker_batches=((order,),),
+            )
+        )
+        profile = SimpleNamespace(
+            account_key="paper",
+            account_id="DU123",
+            mode="paper",
+            base_currency="USD",
+        )
+        intent = StrategyIntent(
+            intent_id="proposal:proposal-1",
+            ticker="AAPL",
+            event_time=self.now,
+            action="enter_long",
+            quantity=10,
+            reference_price=200,
+            invalidation_price=195,
+        )
+        with (
+            patch(
+                "src.backend.live_trade_proposal_service.approved_configuration",
+                return_value={"payload": {}},
+            ),
+            patch(
+                "src.backend.live_trade_proposal_service.configured_real_live_accounts",
+                return_value=[self.account],
+            ),
+            patch(
+                "src.backend.live_trade_proposal_service.configured_portfolio_profiles",
+                return_value=((profile,), ()),
+            ),
+            patch(
+                "src.backend.live_trade_proposal_service.canonical_live_snapshot",
+                return_value="canonical-snapshot",
+            ),
+            patch(
+                "src.backend.live_trade_proposal_service.PortfolioManagementEngine",
+                Portfolio,
+            ),
+            patch(
+                "src.backend.live_trade_proposal_service.IbkrStrategyOrderPlanner",
+                return_value=planner,
+            ),
+            patch(
+                "src.backend.live_trade_proposal_service.trading_journal",
+                return_value=self.journal,
+            ),
+        ):
+            result = await _validate_control_plane(
+                mode="paper",
+                account=self.account,
+                intent=intent,
+                conid=265598,
+                exchange="SMART",
+            )
+
+        self.assertEqual(result["status"], "validated_pending_broker_runtime")
+        self.assertEqual(result["oms"]["status"], "validated_not_submitted")
+        self.assertEqual(result["portfolio"]["reservation_status"], "released")
+        self.assertEqual(synchronized, ["canonical-snapshot"])
+        self.assertEqual(released[0][0], intent.intent_id)
 
 
 if __name__ == "__main__":

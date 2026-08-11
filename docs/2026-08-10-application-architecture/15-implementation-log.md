@@ -1737,6 +1737,24 @@ it does not imply all application work is complete.
      also remains exact but all-market until its atomic activation barrier and
      checkpoint-to-barrier replay are implemented.
 
+164. Completed the non-executing Live/Paper proposal control plane requested in
+     the final design review. The endpoint now accepts manual,
+     semi-automatic, and automatic proposal origins; preserves the existing
+     approved release, account/mode, point-in-time conid, QMD freshness,
+     Scanner sequence, chart sequence, and protection checks; refreshes one
+     canonical broker snapshot for every configured account in the selected
+     mode; synchronizes the existing Portfolio authority; and obtains a fenced
+     admission decision. Accepted intent is compiled by the shared IBKR OMS
+     planner into a broker-neutral order/protection summary. The validation-only
+     reservation is always released before response because broker submission
+     is false and no runtime owns it. Portfolio rejection and OMS rejection are
+     distinct terminal proposal dispositions. Broker-dependent risk validation
+     and command submission remain pending the separately authorized
+     Live/Paper runtime deployment. Validation covered 41 focused proposal,
+     canonical-state, and OMS tests; the existing full Portfolio test module
+     was separately observed to hang in its admission-lease path and is not
+     represented as passing.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)
