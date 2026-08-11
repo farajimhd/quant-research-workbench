@@ -695,8 +695,10 @@ python -B -m research.bar_gpt.v1.run_pilot_offline_shards --execute --force-rebu
 ```
 
 The first command prints the exact build and audit plan. The execute form builds
-at most two 2026 ticker-month shards for `AAPL` and `GOOGL` beneath
-`offline_shards_v12_pilot`, then automatically
+at most two January 2021 ticker-month shards for `AMC` and `GME` beneath
+`offline_shards_v12_condition_pilot`. Both tickers have confirmed LULD-category
+authority rows on 2021-01-28, so the pilot tests positive condition propagation
+instead of only the all-zero condition path. It then automatically
 verifies all complete-file SHA-256 digests and fails unless shard/sidecar identities,
 counts, configured context, causal as-of indices, horizon tensors, condition
 positive-count metadata, and direct eligible-trade origin reconstruction agree.
@@ -712,7 +714,7 @@ Its JSON report is
 written beneath the pilot root's `manifest/audits` directory. The pilot root is
 never used by the default training or production-build launchers.
 Use `--force-rebuild` only when replacing pilot shards after a contract change.
-The 2026 audit requires every origin to expose complete 90/52/24
+This post-boundary audit requires every origin to expose complete 90/52/24
 daily/weekly/monthly calendar context; an incomplete calendar prefix fails the
 pilot.
 

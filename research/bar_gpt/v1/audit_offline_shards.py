@@ -36,7 +36,9 @@ from research.bar_gpt.v1.targets import (
 )
 
 
-DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12_pilot")
+DEFAULT_PILOT_ROOT = Path(
+    r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12_condition_pilot"
+)
 
 
 def _csv(value: str) -> tuple[str, ...]:

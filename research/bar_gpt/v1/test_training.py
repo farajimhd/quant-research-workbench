@@ -1181,7 +1181,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(build[build.index("--source-mode") + 1], "direct_events")
         self.assertIn("--execute", build)
         self.assertIn("--force-rebuild", build)
-        self.assertIn("offline_shards_v12_pilot", " ".join(build))
+        self.assertIn("offline_shards_v12_condition_pilot", " ".join(build))
         self.assertIn("research.bar_gpt.v1.audit_offline_shards", audit)
         self.assertIn("--verify-sha256", audit)
         self.assertNotIn("--require-calendar-context", audit)
@@ -1190,6 +1190,13 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(sampled_audit[sampled_audit.index("--clickhouse-samples") + 1], "2")
         self.assertEqual(sampled_audit[sampled_audit.index("--clickhouse-prefetch-pages") + 1], "16")
         self.assertIn("--verify-sha256", sampled_audit)
+
+    def test_pilot_defaults_exercise_confirmed_positive_conditions(self) -> None:
+        args = parse_pilot_args([])
+        self.assertEqual(args.tickers, ("AMC", "GME"))
+        self.assertEqual(args.start_date, "2021-01-25")
+        self.assertEqual(args.end_date, "2021-02-01")
+        self.assertIn("offline_shards_v12_condition_pilot", str(args.output_root))
 
     def test_complete_offline_dataset_launcher_owns_disjoint_ranges(self) -> None:
         args = parse_offline_dataset_args(["--execute", "--workers", "32"])
@@ -1580,11 +1587,39 @@ class LoaderTrainerContractTest(unittest.TestCase):
         output = io.StringIO()
         reporter._console = Console(file=output, width=140, height=40, force_terminal=False, color_system=None)
         reporter._console.print(reporter._render())
-        self.assertIn("8/? blocks", output.getvalue())
+        self.assertIn("Certified shards", output.getvalue())
+        self.assertIn("Fetched blocks discovered", output.getvalue())
+        self.assertIn("0/8", output.getvalue())
         self.assertNotIn("8/0 blocks", output.getvalue())
         reporter.event(("worker", 1, "completed", ""))
         self.assertEqual(reporter.worker_progress[1][3], 8)
         self.assertEqual(reporter.total_work_blocks, 16)
+
+    def test_offline_reporter_pipeline_does_not_reset_between_source_phases(self) -> None:
+        reporter = ShardBuildReporter(
+            total=1, completed=0, root=Path("D:/runtime"), workers=1,
+            layout="text", refresh=60.0, worker_totals=(1,), worker_block_totals=(0,),
+        )
+        reporter.event(("unit", 0, "starting ticker", "AMC"))
+        reporter.event(("source_page", 0, "AMC", {
+            "phase": "calendar warmup", "kind": "page", "completed": 2, "total": 2,
+        }))
+        reporter.event(("source_page", 0, "AMC", {
+            "phase": "intraday warmup", "kind": "page", "completed": 1, "total": 4,
+        }))
+        self.assertEqual(reporter.worker_pipeline[0]["completed"], 2)
+        reporter.event(("source_page", 0, "AMC", {
+            "phase": "calendar warmup", "kind": "page", "completed": 2, "total": 2,
+        }))
+        self.assertEqual(reporter.worker_pipeline[0]["completed"], 2)
+        reporter.event(("block", 0, "AMC:2021-01", "2021-01-28", 1, 1))
+        reporter.event(("session", 0, "AMC:2021-01", "2021-01-28", 1, 1))
+        reporter.event(("unit", 0, "writing", "AMC:2021-01"))
+        reporter.event(("complete", 0, "AMC:2021-01", {
+            "bytes": 1, "blocks": 1, "origins": 1,
+        }))
+        self.assertEqual(reporter.worker_pipeline[0]["completed"], 7)
+        self.assertEqual(reporter.worker_pipeline[0]["active"], 6)
 
     def test_sequential_coverage_explicitly_includes_holdout_and_derived_warmup(self) -> None:
         config = dataclasses.replace(

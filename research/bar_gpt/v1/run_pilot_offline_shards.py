@@ -18,9 +18,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--execute", action="store_true", help="Required to build; omit for a safe plan.")
     parser.add_argument("--force-rebuild", action="store_true")
     parser.add_argument("--output-root", type=Path, default=DEFAULT_PILOT_ROOT)
-    parser.add_argument("--tickers", default="AAPL,GOOGL")
-    parser.add_argument("--start-date", default="2026-01-01")
-    parser.add_argument("--end-date", default="2026-02-01")
+    # AMC and GME both have confirmed LULD-category authority rows on
+    # 2021-01-28.  These defaults therefore exercise positive conditions
+    # instead of merely proving the all-zero path.
+    parser.add_argument("--tickers", default="AMC,GME")
+    parser.add_argument("--start-date", default="2021-01-25")
+    parser.add_argument("--end-date", default="2021-02-01")
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
     parser.add_argument("--clickhouse-max-threads-per-query", type=int, default=2)

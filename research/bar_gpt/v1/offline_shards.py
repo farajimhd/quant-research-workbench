@@ -1773,6 +1773,28 @@ def _ticker_worker_main(
         fault_handle.close()
 
 
+_PIPELINE_STAGES = ("metadata", "calendar", "intraday", "source", "compile", "write", "certify")
+
+
+def _pipeline_stage(phase: str) -> str:
+    value = str(phase).lower()
+    if value in _PIPELINE_STAGES:
+        return value
+    if "identity" in value or "split metadata" in value or "starting ticker" in value:
+        return "metadata"
+    if "calendar" in value:
+        return "calendar"
+    if "intraday" in value or "authority boundary" in value:
+        return "intraday"
+    if value in {"compiled", "compiling"}:
+        return "compile"
+    if value in {"assembling", "writing"}:
+        return "write"
+    if value in {"ready", "certified", "completed"}:
+        return "certify"
+    return "source"
+
+
 class ShardBuildReporter:
     def __init__(
         self, *, total: int, completed: int, root: Path, workers: int, layout: str, refresh: float,
@@ -1801,6 +1823,10 @@ class ShardBuildReporter:
         self.worker_memory: dict[int, dict[str, int]] = {}
         self.worker_state: dict[int, tuple[str, str]] = {}
         self.worker_source_progress: dict[int, dict[str, Any]] = {}
+        self.worker_pipeline: dict[int, dict[str, Any]] = {
+            worker: {"ticker": "", "active": -1, "completed": 0}
+            for worker in range(workers)
+        }
         self.source_pages_completed = 0
         self.worker_progress: dict[int, list[int]] = {
             worker: [0, int(total), 0, int(worker_block_totals[worker]), 0, 0]
@@ -1810,6 +1836,22 @@ class ShardBuildReporter:
         self._live: Any | None = None
         self._console: Any | None = None
         self._last_text = 0.0
+
+    def _advance_pipeline(self, worker: int, phase: str, *, ticker: str = "", complete: bool = False) -> None:
+        state = self.worker_pipeline.setdefault(
+            worker, {"ticker": "", "active": -1, "completed": 0}
+        )
+        normalized_ticker = str(ticker).upper().strip()
+        if normalized_ticker and normalized_ticker != state["ticker"]:
+            state.update({"ticker": normalized_ticker, "active": -1, "completed": 0})
+            self.worker_source_progress.pop(worker, None)
+        index = _PIPELINE_STAGES.index(_pipeline_stage(phase))
+        if index > int(state["active"]):
+            state["active"] = index
+            state["completed"] = index
+        if complete:
+            state["active"] = len(_PIPELINE_STAGES) - 1
+            state["completed"] = len(_PIPELINE_STAGES)
 
     def __enter__(self) -> "ShardBuildReporter":
         use_rich = self.layout == "rich" or (self.layout == "auto" and sys.stdout.isatty())
@@ -1874,6 +1916,10 @@ class ShardBuildReporter:
                         )
         elif kind == "unit":
             self.worker_state[worker] = (str(value[2]), str(value[3]))
+            if str(value[2]) == "starting ticker":
+                self._advance_pipeline(worker, str(value[2]), ticker=str(value[3]))
+            else:
+                self._advance_pipeline(worker, str(value[2]))
         elif kind == "source_page":
             ticker = str(value[2])
             payload = dict(value[3])
@@ -1886,6 +1932,11 @@ class ShardBuildReporter:
             if previous is None or str(previous.get("phase")) != phase:
                 phase_started = time.perf_counter() - reported_elapsed
                 prior_completed = 0
+                if self.run_log is not None:
+                    self.run_log.record(
+                        "source_phase_started", worker=worker, ticker=ticker,
+                        phase=phase, kind=progress_kind, total=total,
+                    )
             else:
                 phase_started = min(
                     float(previous.get("phase_started", time.perf_counter())),
@@ -1900,13 +1951,14 @@ class ShardBuildReporter:
             payload["phase"] = phase
             payload["kind"] = progress_kind
             self.worker_source_progress[worker] = payload
+            self._advance_pipeline(worker, phase, ticker=ticker)
             page_range = ""
             if payload.get("left") and payload.get("right"):
                 page_range = f" {payload['left']}..{payload['right']}"
             detail = str(payload.get("detail", "")).strip()
             self.worker_state[worker] = (phase, detail or f"{ticker}{page_range}")
         elif kind == "block":
-            self.worker_source_progress.pop(worker, None)
+            self._advance_pipeline(worker, "source")
             progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0, 0, 0])
             progress[5] = int(value[5])
             if len(value) > 6:
@@ -1915,6 +1967,7 @@ class ShardBuildReporter:
                 }
             self.worker_state[worker] = ("fetching", f"{value[2]} {value[3]} block {value[4]}")
         elif kind == "session":
+            self._advance_pipeline(worker, "compile")
             progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0, 0, 0])
             new_compiled = int(value[5])
             self.compiled_work_blocks += max(0, new_compiled - progress[2])
@@ -1922,6 +1975,7 @@ class ShardBuildReporter:
             progress[4] += 1
             self.worker_state[worker] = ("compiled", f"{value[2]} {value[3]}")
         elif kind == "complete":
+            self._advance_pipeline(worker, "certify", complete=True)
             evidence = value[3]
             self.completed += 1
             self.bytes += int(evidence["bytes"])
@@ -1970,12 +2024,14 @@ class ShardBuildReporter:
             rate = self.compiled_work_blocks / elapsed
             eta = (self.total_work_blocks - self.compiled_work_blocks) / rate if rate > 0 else 0
             active = ", ".join(
-                f"w{worker}:{self.worker_progress.get(worker, [0, 0, 0, 0])[2]}/"
-                f"{self.worker_progress.get(worker, [0, 0, 0, 0])[3] or '?'}blocks:{state}:{focus}"
+                f"w{worker}:{self.worker_pipeline.get(worker, {}).get('ticker') or '-'}:"
+                f"{self.worker_pipeline.get(worker, {}).get('completed', 0)}/{len(_PIPELINE_STAGES)}milestones:"
+                f"{state}:{focus}"
                 for worker, (state, focus) in sorted(self.worker_state.items())
             )
+            fetched = sum(int(value[5]) for value in self.worker_progress.values())
             print(
-                f"state={self.state} compiled_blocks={self.compiled_work_blocks}/{self.total_work_blocks} "
+                f"state={self.state} fetched_blocks={fetched} compiled_blocks={self.compiled_work_blocks} "
                 f"source_pages={self.source_pages_completed} "
                 f"certified_shards={self.completed}/{self.total} rate={rate:.1f}_blocks/s "
                 f"eta={_duration(eta) if eta else '-'} written={self.bytes / 2**30:.2f}GiB "
@@ -1994,87 +2050,87 @@ class ShardBuildReporter:
         rate = max(0.0, self.compiled_work_blocks / elapsed)
         remaining = max(0, self.total_work_blocks - self.compiled_work_blocks)
         eta = remaining / rate if rate else 0
-        if self.total_work_blocks > 0:
-            progress: Any = Progress(
-                TextColumn("[bold cyan]Compiled training blocks[/]"),
-                BarColumn(complete_style="cyan", finished_style="green"),
-                TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
-                TextColumn("[bold]{task.percentage:>5.1f}%[/]"),
-                expand=True,
-            )
-            progress.add_task(
-                "compiled", total=self.total_work_blocks,
-                completed=min(self.compiled_work_blocks, self.total_work_blocks),
-            )
-        else:
-            progress = Table.grid(expand=True)
-            progress.add_column(ratio=1)
-            progress.add_column(justify="right")
-            progress.add_row(
-                "[bold cyan]Compiled training blocks[/] [dim](total available after source aggregation)[/]",
-                f"{self.compiled_work_blocks:,}/?",
-            )
+        progress: Any = Progress(
+            TextColumn("[bold cyan]Certified shards[/]"),
+            BarColumn(complete_style="cyan", finished_style="green"),
+            TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
+            TextColumn("[bold]{task.percentage:>5.1f}%[/]"),
+            expand=True,
+        )
+        progress.add_task(
+            "certified", total=max(1, self.total), completed=min(self.completed, self.total),
+        )
+        fetched_blocks = sum(int(value[5]) for value in self.worker_progress.values())
+        work = Table.grid(expand=True, padding=(0, 2))
+        work.add_column(style="bold")
+        work.add_column(justify="right")
+        work.add_column(style="bold")
+        work.add_column(justify="right")
+        work.add_row("Source pages completed", f"{self.source_pages_completed:,}", "Fetched blocks discovered", f"{fetched_blocks:,}")
+        work.add_row("Compiled blocks", f"{self.compiled_work_blocks:,}", "Compile backlog", f"{max(0, fetched_blocks - self.compiled_work_blocks):,}")
+        work.add_row("Certified blocks", f"{self.blocks:,}", "Certified origins", f"{self.origins:,}")
         summary = Table.grid(expand=True, padding=(0, 2))
         if width >= 90:
             summary.add_column(); summary.add_column(); summary.add_column()
-            summary.add_row(f"[bold]state[/] {self.state}", f"[bold]rate[/] {rate:.1f} blocks/s", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
+            summary.add_row(f"[bold]state[/] {self.state}", f"[bold]compile rate[/] {rate:.1f} blocks/s", f"[bold]elapsed[/] {_duration(elapsed)}")
             summary.add_row(f"[bold]certified[/] {self.completed:,}/{self.total:,} shards", f"[bold]source[/] {self.source_pages_completed:,} pages", f"[bold]origins[/] {self.origins:,}")
-            summary.add_row(f"[bold]written[/] {self.bytes / 2**30:.2f} GiB", f"[bold]workers[/] {self.workers}", f"[bold]elapsed[/] {_duration(elapsed)}")
+            summary.add_row(f"[bold]written[/] {self.bytes / 2**30:.2f} GiB", f"[bold]workers[/] {self.workers}", "[bold]block total[/] discovered during source aggregation")
             summary.add_row(f"[bold]failures[/] {self.failures}", "", "")
         else:
             summary.add_column(); summary.add_column()
-            summary.add_row(f"[bold]state[/] {self.state}", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
+            summary.add_row(f"[bold]state[/] {self.state}", f"[bold]elapsed[/] {_duration(elapsed)}")
             summary.add_row(f"[bold]rate[/] {rate:.1f} blocks/s", f"[bold]certified[/] {self.completed}/{self.total}")
             summary.add_row(f"[bold]failures[/] {self.failures}", f"[bold]elapsed[/] {_duration(elapsed)}")
         workers = Table(show_header=True, header_style="bold", expand=True)
-        workers.add_column("worker", no_wrap=True)
-        workers.add_column("assigned progress", ratio=1)
-        workers.add_column("stage", no_wrap=True)
-        workers.add_column("current ticker-month/session", ratio=2)
+        workers.add_column("worker/ticker", no_wrap=True)
+        workers.add_column("pipeline", ratio=1)
+        workers.add_column("source phase", ratio=2)
+        workers.add_column("blocks F/C", justify="right", no_wrap=True)
+        workers.add_column("shards", justify="right", no_wrap=True)
+        workers.add_column("current activity", ratio=2)
         worker_limit = self.workers if height >= 34 else min(self.workers, 4)
         for worker in range(worker_limit):
             state, focus = self.worker_state.get(worker, ("queued", ""))
             shards_done, shards_total, blocks_done, blocks_total, sessions, fetched = self.worker_progress.get(
                 worker, [0, 0, 0, 0, 0, 0]
             )
-            fraction = blocks_done / blocks_total if blocks_total else (
-                1.0 if shards_done == shards_total and shards_total else 0.0
+            pipeline = self.worker_pipeline.get(worker, {"ticker": "", "active": -1, "completed": 0})
+            ticker = str(pipeline.get("ticker", "")) or "-"
+            completed_stages = int(pipeline.get("completed", 0))
+            active_index = int(pipeline.get("active", -1))
+            active_stage = _PIPELINE_STAGES[active_index] if active_index >= 0 else "queued"
+            cells = len(_PIPELINE_STAGES)
+            pipeline_bar = (
+                f"[green]{'=' * completed_stages}[/][dim]{'-' * (cells - completed_stages)}[/] "
+                f"{completed_stages}/{cells} {active_stage}"
             )
-            cells = 10
-            filled = min(cells, int(fraction * cells))
-            total_label = f"{blocks_total:,}" if blocks_total else "?"
-            bar = f"[green]{'=' * filled}[/][dim]{'-' * (cells - filled)}[/] {blocks_done:,}/{total_label} blocks"
-            detail = f"{focus or '-'} | shards {shards_done}/{shards_total}"
+            source_label = "-"
             source = self.worker_source_progress.get(worker)
             if source is not None:
                 source_kind = str(source.get("kind", "page"))
                 source_done = int(source.get("completed", 0))
                 source_total = int(source.get("total", 0))
-                source_fraction = source_done / source_total if source_total else 0.0
-                source_filled = min(cells, int(source_fraction * cells))
                 phase_elapsed = max(0.0, time.perf_counter() - float(source.get("phase_started", time.perf_counter())))
                 source_rate = source_done / phase_elapsed if source_done and phase_elapsed > 0 else 0.0
                 source_eta = (source_total - source_done) / source_rate if source_rate else 0.0
                 if source_kind == "stage":
-                    bar = f"[yellow]active[/] {_duration(phase_elapsed)}"
-                    detail = focus or "-"
+                    source_label = f"{source.get('phase', 'source')} active {_duration(phase_elapsed)}"
                 else:
-                    bar = (
-                        f"[cyan]{'=' * source_filled}[/][dim]{'-' * (cells - source_filled)}[/] "
-                        f"{source_done:,}/{source_total:,} pages"
-                    )
-                    detail = (
-                        f"{focus or '-'} | {source_rate:.2f} pages/s | "
+                    source_label = (
+                        f"{source.get('phase', 'source')} {source_done:,}/{source_total:,} pages | "
                         f"ETA {_duration(source_eta) if source_eta else '-'}"
                     )
-            blocks = fetched
-            if sessions or blocks:
-                detail = f"{detail} · sessions {sessions} · blocks {blocks}"
-            workers.add_row(str(worker), bar, state, detail)
+            activity = f"{state}: {focus or '-'}"
+            if sessions:
+                activity += f" | {sessions} sessions"
+            workers.add_row(
+                f"{worker}/{ticker}", pipeline_bar, source_label,
+                f"{fetched:,}/{blocks_done:,}", f"{shards_done}/{shards_total}", activity,
+            )
         if worker_limit < self.workers:
-            workers.add_row("...", "-", "summary", f"{self.workers - worker_limit} additional workers")
+            workers.add_row("...", "-", "-", "-", "-", f"{self.workers - worker_limit} additional workers")
         recent = "\n".join(self.messages) if self.messages else "Waiting for first durable completion"
-        primary = Panel(Group(progress, summary), title="BarGPT offline tensor compiler", border_style="cyan")
+        primary = Panel(Group(progress, work, summary), title="BarGPT offline tensor compiler", border_style="cyan")
         message_limit = 1 if height < 22 else (3 if height < 32 else 6)
         recent_panel = Panel("\n".join(list(self.messages)[-message_limit:]) or "Waiting for first durable completion", title="Recent durable events", border_style="yellow")
         if height < 22:
@@ -2355,11 +2411,14 @@ def _run_main(args: argparse.Namespace, run_log: BuildRunLog | None) -> int:
                                 "worker_process_completed", worker=worker, ticker=ticker,
                                 pid=int(process.pid or -1), exit_code=0,
                             )
-                        # Weight estimates may be absent for an event-empty
-                        # ticker.  Its covered-empty units are still valid and
-                        # must not turn successful worker completion into a
-                        # controller failure.
-                        worker_block_offsets[worker] += int(ticker_weights.get(ticker, 0))
+                        # The direct-event scheduler weight is an event-count
+                        # estimate, not a compiled-block count.  Carry forward
+                        # the reporter's actual cumulative block count so a
+                        # worker assigned multiple tickers never publishes a
+                        # false or decreasing block offset.
+                        worker_block_offsets[worker] = int(
+                            reporter.worker_progress.get(worker, [0, 0, 0, 0, 0, 0])[2]
+                        )
                     if process.exitcode in {0, None} and ticker_queues[worker] and not stop.is_set():
                         launch_next_ticker(worker)
                     else:
