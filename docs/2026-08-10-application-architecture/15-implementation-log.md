@@ -1769,6 +1769,22 @@ it does not imply all application work is complete.
      passed. Remaining research-job producer migrations stay deferred with
      their owning intelligence services.
 
+166. Enabled compressed high-volume ClickHouse transport in QMD History. Both
+     streaming event queries and bounded scalar/JSON queries request ClickHouse
+     HTTP compression, and reqwest transparently decompresses before the
+     existing strict incremental TSV parser. The exact full-market
+     2026-08-07 13:30:00Z-to-13:30:02Z request returned the unchanged 683,497
+     events, two evaluation clocks, and 25 transitions. The already-running
+     uncompressed release required 47.917 seconds immediately before restart;
+     the compressed release required 27.030 and 39.402 seconds on two runs.
+     Service CPU was about 3.1 seconds per run, final working set stayed near
+     17.5 MB, and peak working set was 142.1 MB. This is useful transport
+     reduction but not active-session acceptance: ClickHouse latency remains
+     variable and the request still cannot keep pace with its two-second input
+     span. Evidence is
+     `D:\TradingML\runtimes\qmd_goal_load\acceptance_gzip_summary.json`.
+     Cargo formatting/checks and all 42 QMD History tests passed.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

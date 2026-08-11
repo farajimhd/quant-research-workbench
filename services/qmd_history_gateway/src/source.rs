@@ -666,13 +666,14 @@ impl HistoricalEventSource {
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
         let url = format!(
-            "{}/?database={}&max_query_size=2097152&max_ast_elements=200000&max_expanded_ast_elements=200000",
+            "{}/?database={}&enable_http_compression=1&max_query_size=2097152&max_ast_elements=200000&max_expanded_ast_elements=200000",
             self.config.clickhouse_url,
             urlencoding::encode(&self.config.clickhouse_database)
         );
         let mut request = self
             .client
             .post(url)
+            .header("Accept-Encoding", "gzip")
             .header("Content-Type", "text/plain; charset=utf-8")
             .header("X-ClickHouse-User", &self.config.clickhouse_user)
             .body(sql);
@@ -1363,13 +1364,14 @@ impl HistoricalEventSource {
 
     async fn query(&self, sql: &str) -> Result<String, String> {
         let url = format!(
-            "{}/?database={}",
+            "{}/?database={}&enable_http_compression=1",
             self.config.clickhouse_url,
             urlencoding::encode(&self.config.clickhouse_database)
         );
         let mut request = self
             .client
             .post(url)
+            .header("Accept-Encoding", "gzip")
             .header("Content-Type", "text/plain; charset=utf-8")
             .header("X-ClickHouse-User", &self.config.clickhouse_user)
             .body(sql.to_string());

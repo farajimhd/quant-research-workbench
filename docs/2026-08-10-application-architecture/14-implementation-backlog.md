@@ -737,8 +737,15 @@ load progressively without false continuity.
               burst. The internal ordered stream now avoids repeated JSON field
               names and JSON-object decoding; same-process TSV runs used about
               2.4-2.6 CPU seconds, but 14.205-18.095 second wall times show that
-              ClickHouse/query transport still dominates. Therefore the parent
-              gate stays open.
+              ClickHouse/query transport still dominates. QMD History now asks
+              ClickHouse for gzip HTTP responses and transparently streams the
+              decompressed TSV parser. Against the currently shared ClickHouse,
+              the exact request fell from 47.917 seconds immediately before
+              restart to 27.030 and 39.402 seconds after restart, with identical
+              results, about 3.1 service CPU seconds, 17.5 MB final working set,
+              and 142.1 MB peak. Variance remains high and throughput remains
+              far below the two-second input window. Therefore the parent gate
+              stays open.
       - [x] Persist/reuse the revisioned timeline product and replace Backtest's
             session-boundary membership fallback with its transition stream.
         - [x] Replace the active single-Watchlist Backtest path with QMD History
