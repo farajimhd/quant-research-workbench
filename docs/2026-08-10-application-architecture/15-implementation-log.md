@@ -80,8 +80,12 @@ bounded direct ClickHouse paths remain documented in
     containers and typed links, and versioned trading configuration schemas.
     The shared QMD live/history capability catalog now also declares version,
     cadence, timeframe, warm-up, state/persistence class and mode support. The
-    backend exposes each registry family; frontend catalog generation remains
-    open.
+    backend exposes each registry family for runtime consumers.
+17. Made the backend container registry authoritative for every shared trading
+    workspace. Frontend renderer adapters are admitted only when the backend
+    record is implemented and mode-compatible; failed verification is visible
+    and blocks new unverified container choices without destroying an existing
+    saved layout.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

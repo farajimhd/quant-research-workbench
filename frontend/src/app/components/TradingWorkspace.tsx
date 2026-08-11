@@ -24,6 +24,7 @@ import {
 import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
+import { api } from "../../api/client";
 import { migrateLegacyMicrostructureState, type CanvasWorkspaceState } from "../canvasWorkspace";
 import {
   addWorkspaceNodesToGroup,
@@ -93,6 +94,20 @@ type TradingWorkspaceProps = {
   managementContent?: ReactNode;
   managementOpen?: boolean;
   onManagementClose?: () => void;
+};
+
+type RegisteredContainer = {
+  container_id: string;
+  label: string;
+  modes: TradingWorkspaceMode[];
+  state_schema_version: number;
+  status: string;
+};
+
+type RegisteredContainerResponse = {
+  count: number;
+  rows: RegisteredContainer[];
+  schema_version: number;
 };
 
 class WorkspaceContainerErrorBoundary extends Component<
@@ -183,6 +198,26 @@ export function TradingWorkspace({
   onManagementClose,
 }: TradingWorkspaceProps) {
   const contentHostsRef = useRef(new Map<string, HTMLDivElement>());
+  const [registeredContainers, setRegisteredContainers] = useState<RegisteredContainer[] | null>(null);
+  const [registryError, setRegistryError] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setRegistryError("");
+    api<RegisteredContainerResponse>("/api/registries/containers", { signal: controller.signal, timeoutMs: 10000 })
+      .then((payload) => {
+        const ids = payload.rows.map((row) => row.container_id);
+        if (payload.schema_version < 2 || payload.count !== payload.rows.length || new Set(ids).size !== ids.length) {
+          throw new Error("The backend container registry failed schema, count, or unique-ID validation.");
+        }
+        setRegisteredContainers(payload.rows);
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setRegistryError(error instanceof Error ? error.message : String(error));
+      });
+    return () => controller.abort();
+  }, []);
 
   function contentHost(id: string) {
     let host = contentHostsRef.current.get(id);
@@ -194,8 +229,26 @@ export function TradingWorkspace({
     }
     return host;
   }
-  const definitions = useMemo(() => [...(definitionsOverride ?? containersForMode(mode))], [definitionsOverride, mode]);
+  const localDefinitions = useMemo(() => [...(definitionsOverride ?? containersForMode(mode))], [definitionsOverride, mode]);
+  const registryAdapterError = useMemo(() => {
+    if (!registeredContainers) return "";
+    const localIds = new Set(localDefinitions.map((definition) => definition.id));
+    const missing = registeredContainers
+      .filter((row) => row.status === "implemented" && row.modes.includes(mode) && !localIds.has(row.container_id as WorkspaceContainerId))
+      .map((row) => row.container_id);
+    return missing.length ? `No frontend renderer is registered for: ${missing.join(", ")}.` : "";
+  }, [localDefinitions, mode, registeredContainers]);
+  const definitions = useMemo(() => {
+    if (!registeredContainers) return localDefinitions;
+    const authority = new Map(registeredContainers.map((row) => [row.container_id, row]));
+    return localDefinitions.flatMap((definition) => {
+      const row = authority.get(definition.id);
+      if (!row || row.status !== "implemented" || !row.modes.includes(mode)) return [];
+      return [{ ...definition, modes: row.modes, title: row.label }];
+    });
+  }, [localDefinitions, mode, registeredContainers]);
   const definitionById = useMemo(() => new Map(definitions.map((definition) => [definition.id, definition])), [definitions]);
+  const selectableDefinitions = registeredContainers && !registryError && !registryAdapterError ? definitions : [];
   const storageKey = storageKeyOverride ?? `quant-research-workbench.trading-workspace.${mode}`;
   const initial = useMemo(
     () => initialStateOverride ? parseWorkspaceState(JSON.stringify(initialStateOverride), definitions) ?? initialStateOverride : readWorkspaceState(storageKey, mode, definitions, defaultOpenIds, layoutPreset),
@@ -653,6 +706,9 @@ export function TradingWorkspace({
           id,
         ) : null;
       })}
+      {!commandBarVisible && (registryError || registryAdapterError) ? <div className="workspace-registry-warning" role="alert">
+        <BadgeInfo aria-hidden="true" size={13} /> Container registry unverified. Existing layout remains visible; adding containers is blocked.
+      </div> : null}
       {commandBarVisible ? <section className="trading-workspace-command" aria-label="Workspace context and controls">
         <div className="trading-workspace-identity">
           <span className="trading-mode-badge" data-mode={mode}>{workspaceBadge ?? modeLabel(mode)}</span>
@@ -661,12 +717,15 @@ export function TradingWorkspace({
             <small>{clockLabel}</small>
           </div>
         </div>
-        {showHealth ? <div className="trading-workspace-health">
-          <span className="workspace-health-item" data-status={historicalSourceReady ? "ready" : "error"}>
+        {showHealth || registryError || registryAdapterError ? <div className="trading-workspace-health">
+          {showHealth ? <span className="workspace-health-item" data-status={historicalSourceReady ? "ready" : "error"}>
             <i aria-hidden="true" /> {sourceLabel} {historicalSourceReady ? "ready" : "offline"}
-          </span>
-          <span className="workspace-health-item" data-status={runStatus === "running" ? "ready" : "idle"}>
+          </span> : null}
+          {showHealth ? <span className="workspace-health-item" data-status={runStatus === "running" ? "ready" : "idle"}>
             <i aria-hidden="true" /> {statusLabel ?? (runStatus === "running" ? "Run active" : "No active run")}
+          </span> : null}
+          <span className="workspace-health-item" data-status={registryError || registryAdapterError ? "error" : registeredContainers ? "ready" : "idle"} title={registryError || registryAdapterError || "Backend registry controls visible container IDs, modes, and status."}>
+            <i aria-hidden="true" /> Containers {registryError || registryAdapterError ? "unverified" : registeredContainers ? "registered" : "verifying"}
           </span>
         </div> : null}
         <div className="trading-workspace-actions">
@@ -681,7 +740,7 @@ export function TradingWorkspace({
 
       {libraryOpen ? <>
         <button aria-label="Close container library" className="workspace-container-library-scrim" onClick={() => setLibraryOpen(false)} type="button" />
-        <WorkspaceContainerLibrary allowMultipleInstances={allowMultipleInstances} definitions={definitions} instances={instances} mode={mode} openIds={openIds} onAdd={addContainer} />
+        <WorkspaceContainerLibrary allowMultipleInstances={allowMultipleInstances} definitions={selectableDefinitions} instances={instances} mode={mode} openIds={openIds} onAdd={addContainer} />
       </> : null}
 
       {managementOpen ? <>
@@ -691,7 +750,7 @@ export function TradingWorkspace({
           <div className="workspace-management-body" ref={managementBodyRef}>
             {managementContent}
             <WorkspaceGroupManager groups={managedGroups} onClose={closeGroup} onRename={renameGroup} onShow={showGroup} />
-            <WorkspaceContainerLibrary allowMultipleInstances={allowMultipleInstances} definitions={definitions} instances={instances} mode={mode} openIds={openIds} onAdd={addContainer} />
+            <WorkspaceContainerLibrary allowMultipleInstances={allowMultipleInstances} definitions={selectableDefinitions} instances={instances} mode={mode} openIds={openIds} onAdd={addContainer} />
           </div>
           <footer><button className="button secondary compact workspace-management-reset" onClick={resetLayout} type="button"><RefreshCcw size={13} /> Reset current layout</button></footer>
         </aside>

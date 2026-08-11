@@ -25174,6 +25174,24 @@ button {
   .news-query-visible-wide { display: none; }
 }
 
+.workspace-registry-warning {
+  align-items: center;
+  background: color-mix(in srgb, var(--danger) 9%, var(--surface-raised));
+  border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--border));
+  border-radius: 8px;
+  color: var(--text-secondary);
+  display: flex;
+  font-size: 11px;
+  gap: 6px;
+  margin: 6px 8px 0;
+  padding: 6px 8px;
+}
+
+.workspace-registry-warning svg {
+  color: var(--danger);
+  flex: 0 0 auto;
+}
+
 .historical-results-card > header > small {
   color: var(--muted-foreground);
   font-size: 10px;

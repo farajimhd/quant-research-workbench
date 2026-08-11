@@ -41,7 +41,7 @@ separate explicit authorization.
 - [ ] Validate unique IDs, references, dependency cycles, clocks, scopes, modes,
       source paths, and retired compatibility aliases.
 - [x] Expose the registries through backend catalog APIs.
-- [ ] Generate frontend choices and statuses from the backend catalogs.
+- [x] Generate frontend choices and statuses from the backend catalogs.
 - [ ] Remove competing handwritten frontend/backend/QMD availability catalogs.
 - [x] Version approved configuration releases and compute deterministic hashes.
 - [x] Compile immutable Run Plans and preserve migration for saved configurations.
