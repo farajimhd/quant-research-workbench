@@ -56,6 +56,7 @@ from src.backend.market_data_service import (
     artifact_records,
     artifact_schema,
     chart_display_item_options,
+    chart_source_revision,
     catalog_preview_payload,
     chart_timestamp_seconds,
     chart_payload,
@@ -4313,6 +4314,7 @@ LIVE_CHART_FEATURE_GROUPS = ("core", "session", "momentum", "volume_liquidity", 
 @lru_cache(maxsize=256)
 def cached_chart_payload(
     processed_root: str,
+    source_revision: str,
     start_date_text: str,
     end_date_text: str,
     timeframe: str,
@@ -4324,6 +4326,7 @@ def cached_chart_payload(
     marker_limit: int,
     min_confidence: float,
 ) -> dict[str, Any]:
+    del source_revision  # The revision is an intentional part of the LRU key.
     return chart_payload(
         Path(processed_root),
         start_date=date.fromisoformat(start_date_text),
@@ -4365,6 +4368,12 @@ def market_chart(
     return json_safe(
         cached_chart_payload(
             str(processed_root_path),
+            chart_source_revision(
+                processed_root_path,
+                range_start,
+                range_end,
+                timeframe,
+            ),
             range_start.isoformat(),
             range_end.isoformat(),
             timeframe,
@@ -4399,6 +4408,12 @@ def live_trading_warm_charts(
             try:
                 cached_chart_payload(
                     str(Path(processed_root)),
+                    chart_source_revision(
+                        Path(processed_root),
+                        date.fromisoformat(start_text),
+                        session_date,
+                        timeframe,
+                    ),
                     start_text,
                     session_date.isoformat(),
                     timeframe,

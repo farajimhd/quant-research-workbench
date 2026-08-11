@@ -219,8 +219,10 @@ budgets and invalid scope broadening fails configuration validation.
 - [ ] Bound and version caches.
   - [x] Replace backend service-table and News/SEC histogram dictionaries with
         bounded thread-safe TTL/LRU caches carrying explicit contract revisions.
-  - [ ] Add source/calculation revision invalidation to chart and remaining
-        mode-specific caches before closing the application-wide item.
+  - [x] Key the bounded processed-artifact chart LRU by the relevant artifact
+        build identities, schema/calculation versions, and presentation revision.
+  - [ ] Add source/calculation revision invalidation to remaining mode-specific
+        caches before closing the application-wide item.
 - [ ] Enforce user, workspace, environment, mode, account, and command authority.
 - [ ] Resolve secrets and broker identifiers server-side.
 - [x] Aggregate service readiness separately from data readiness.

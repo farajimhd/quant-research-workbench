@@ -333,6 +333,12 @@ bounded direct ClickHouse paths remain documented in
     cache backlog remains open for chart and mode-specific source-revision
     invalidation. Four focused tests, including the real service-table helper,
     Python compile, and diff validation passed.
+53. Made the bounded processed-artifact chart LRU revision-aware. Its key now
+    carries a compact hash of every relevant date/timeframe artifact build,
+    path, size, schema/feature/supervision contract, provider catalog version,
+    and presentation override revision. Updated artifacts therefore miss the
+    old entry without a backend restart. Four focused revision/cache tests,
+    Python compile, and diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

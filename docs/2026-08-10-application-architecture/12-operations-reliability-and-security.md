@@ -131,8 +131,10 @@ used when present, and absent structured evidence remains visible as unknown.
 Backend service-table and News/SEC histogram projections use a shared
 thread-safe TTL/LRU cache contract with explicit entry limits and contract
 revisions. Source-revision-aware invalidation is available to callers; the
-remaining chart and mode-specific caches still need the same explicit source
-revision discipline before application-wide cache governance is complete.
+legacy processed-artifact chart LRU includes the bounded date/timeframe
+artifact-build and presentation-contract revision in every key. Remaining
+mode-specific caches still need the same explicit source revision discipline
+before application-wide cache governance is complete.
 
 QMD Gateway and QMD History now additionally publish/compose a bounded
 operational contract. QMD reports live-event lag, persistence and drop

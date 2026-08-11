@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 from dataclasses import asdict
@@ -15,6 +16,8 @@ import polars as pl
 from src.backend.json_utils import json_safe
 from src.data_provider.calendar import discover_raw_bounds, market_sessions, scan_market_source
 from src.data_provider.catalog import (
+    CATALOG_VERSION,
+    PRESENTATION_OVERRIDE_FILE,
     catalog_columns_by_column,
     catalog_display_items,
     catalog_item_by_id,
@@ -685,6 +688,49 @@ def live_scanner_artifact_signature(records: list[dict[str, Any]], session_date:
             mtime_ns = 0
         signature.append((group, str(path), mtime_ns))
     return tuple(signature)
+
+
+def chart_source_revision(
+    processed_root: Path,
+    start_date: date,
+    end_date: date,
+    timeframe: str,
+) -> str:
+    """Return a compact revision for every artifact contract a chart may read."""
+
+    records = []
+    for record in artifact_records(processed_root):
+        if str(record.get("timeframe") or "") != timeframe:
+            continue
+        session_text = str(record.get("session_date") or "")
+        if session_text and not start_date.isoformat() <= session_text <= end_date.isoformat():
+            continue
+        records.append(
+            (
+                str(record.get("key") or ""),
+                str(record.get("path") or ""),
+                int(record.get("size_bytes") or 0),
+                str(record.get("built_at") or ""),
+                str(record.get("build_id") or ""),
+                int(record.get("schema_version") or 0),
+                int(record.get("feature_version") or 0),
+                int(record.get("supervision_version") or 0),
+            )
+        )
+    override_path = processed_root / PRESENTATION_OVERRIDE_FILE
+    try:
+        override_stat = override_path.stat()
+        override_revision = (override_stat.st_mtime_ns, override_stat.st_size)
+    except OSError:
+        override_revision = (0, 0)
+    payload = {
+        "catalog_version": CATALOG_VERSION,
+        "override_revision": override_revision,
+        "records": sorted(records),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 @lru_cache(maxsize=16)
