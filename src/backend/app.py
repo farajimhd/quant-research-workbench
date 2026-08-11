@@ -3979,8 +3979,12 @@ def start_spread_backfill(payload: BuildSubmit) -> dict[str, Any]:
 
 
 @app.get("/api/market-data/build/jobs")
-def build_jobs(processed_root: str = str(DEFAULT_PROCESSED_ROOT)) -> dict[str, Any]:
-    return {"jobs": list_build_jobs(Path(processed_root))}
+def build_jobs(
+    processed_root: str = str(DEFAULT_PROCESSED_ROOT),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    rows = list_build_jobs(Path(processed_root), limit=limit)
+    return {"jobs": rows, "row_count": len(rows), "limit": limit}
 
 
 @app.get("/api/market-data/build/jobs/{job_id}")

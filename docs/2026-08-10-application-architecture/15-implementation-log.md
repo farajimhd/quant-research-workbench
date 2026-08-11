@@ -806,6 +806,14 @@ bounded direct ClickHouse paths remain documented in
      focused lifecycle and Replay controller tests passed. Live/Paper execution
      lifecycle and intelligence research-job adoption remain open because their
      controllers are outside this approved service-change phase.
+104. Bounded market-data build-job collection reads. The backend now validates
+     a caller limit of 1-500 (default 100), selects only the newest durable job
+     files before loading payloads and event summaries, and returns row-count
+     and limit evidence. Three focused lifecycle/job-list tests and Python
+     compilation passed. A managed localhost frontend was also started and
+     reached HTTP 200 for visual validation, but the in-app browser policy
+     blocked localhost reload; the exact processes were stopped and browser
+     acceptance remains open rather than being inferred from the build.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

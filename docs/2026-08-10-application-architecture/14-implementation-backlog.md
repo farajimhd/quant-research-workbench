@@ -375,6 +375,10 @@ internal topology, or producer formula.
       registry rows and supported comparators.
 - [ ] Preserve theme, global scale, responsive, and accessibility authorities.
 - [ ] Validate all affected states in real browsers.
+  - [ ] The managed frontend was HTTP-ready on `127.0.0.1:5173`, but the
+        in-app browser security policy blocked the localhost reload after its
+        prior connection-error page. The validation process was stopped and no
+        alternate browser surface was used; visual acceptance remains open.
 
 Acceptance gate: UI availability equals backend registry and runnable truth.
 
@@ -646,6 +650,9 @@ broker command outside OMS.
   - [x] Bound Historical Scanner and QMD materialization threads to four active
         builds per family; cap coordination registries at 256 terminal/active
         entries with terminal TTL eviction while preserving active work.
+  - [x] Bound the market-data background-job collection endpoint to an
+        explicitly validated 1-500 row window (100 by default) and select the
+        newest job files before reading their payload/event summaries.
 - [ ] Shed replaceable projections before authoritative events or journal writes.
 - [ ] Test QMD boundaries, retention, and live/history parity.
 - [ ] Test point-in-time identity and enrichment behavior.

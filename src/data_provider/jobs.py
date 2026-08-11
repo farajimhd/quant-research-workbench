@@ -481,13 +481,23 @@ def get_build_status(processed_root: Path, job_id: str) -> dict[str, Any]:
     return payload
 
 
-def list_build_jobs(processed_root: Path) -> list[dict[str, Any]]:
+def list_build_jobs(processed_root: Path, *, limit: int = 100) -> list[dict[str, Any]]:
+    if not 1 <= limit <= 500:
+        raise ValueError("Build job list limit must be between 1 and 500")
     root = jobs_root(processed_root)
     if not root.exists():
         return []
+    paths = sorted(
+        (
+            path
+            for path in root.iterdir()
+            if path.is_dir() and job_file(path).exists()
+        ),
+        key=lambda path: job_file(path).stat().st_mtime_ns,
+        reverse=True,
+    )[:limit]
     jobs = [
         attach_job_summary(settle_canceling_job(path, read_job(path)), read_events(path))
-        for path in root.iterdir()
-        if path.is_dir() and job_file(path).exists()
+        for path in paths
     ]
     return sorted(jobs, key=lambda item: str(item.get("created_at") or ""), reverse=True)

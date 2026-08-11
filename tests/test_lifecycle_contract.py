@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import unittest
+import json
+import tempfile
+from pathlib import Path
 
 from src.backend.lifecycle_contract import lifecycle_projection
-from src.data_provider.jobs import attach_job_summary
+from src.data_provider.jobs import attach_job_summary, list_build_jobs
 
 
 class LifecycleContractTests(unittest.TestCase):
@@ -49,6 +52,31 @@ class LifecycleContractTests(unittest.TestCase):
                 "enabled"
             ]
         )
+
+    def test_market_data_job_listing_is_bounded_before_payload_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            jobs_root = Path(directory) / "jobs"
+            for index in range(3):
+                path = jobs_root / f"job-{index}"
+                path.mkdir(parents=True)
+                (path / "job.json").write_text(
+                    json.dumps(
+                        {
+                            "job_id": f"job-{index}",
+                            "status": "complete",
+                            "created_at": f"2026-08-11T10:0{index}:00Z",
+                            "updated_at": f"2026-08-11T10:0{index}:00Z",
+                            "request": {"processed_root": directory},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            rows = list_build_jobs(Path(directory), limit=2)
+
+        self.assertEqual(len(rows), 2)
+        with self.assertRaisesRegex(ValueError, "between 1 and 500"):
+            list_build_jobs(Path(directory), limit=0)
 
 
 if __name__ == "__main__":
