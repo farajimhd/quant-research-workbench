@@ -663,7 +663,7 @@ impl SharedBarStore {
 
     pub async fn take_structure_checkpoints_since(
         &self,
-        watermarks: &HashMap<String, i64>,
+        watermarks: &HashMap<String, (i64, u64)>,
         limit: usize,
     ) -> Vec<(String, GenericStructureCheckpoint)> {
         let mut checkpoints = Vec::new();
@@ -683,8 +683,7 @@ impl SharedBarStore {
                 let Some(engine) = store.structure.get(&sym) else {
                     continue;
                 };
-                let updated_at_ms = engine.updated_at_ms();
-                if updated_at_ms <= watermarks.get(&sym).copied().unwrap_or_default() {
+                if engine.checkpoint_cursor() <= watermarks.get(&sym).copied().unwrap_or_default() {
                     continue;
                 }
                 checkpoints.push((sym, engine.checkpoint()));
@@ -1927,7 +1926,10 @@ mod tests {
         let mut watermarks = HashMap::new();
         watermarks.insert(
             "AAPL".to_string(),
-            checkpoints[0].1.updated_at.unwrap().timestamp_millis(),
+            (
+                checkpoints[0].1.updated_at.unwrap().timestamp_millis(),
+                checkpoints[0].1.last_arrival_sequence,
+            ),
         );
         bars.requeue_structure_checkpoints(["AAPL".to_string()])
             .await;

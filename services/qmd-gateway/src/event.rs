@@ -59,6 +59,16 @@ impl MarketEvent {
             MarketEvent::Quote(event) => event.ts,
         }
     }
+
+    pub fn arrival_sequence(&self) -> u64 {
+        let raw = match self {
+            MarketEvent::Trade(event) => &event.raw,
+            MarketEvent::Quote(event) => &event.raw,
+        };
+        raw.get("arrival_sequence")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+    }
 }
 
 pub fn parse_massive_payload(text: &str) -> Result<Vec<MarketEvent>, serde_json::Error> {

@@ -232,6 +232,14 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
       Indicator shards are focused, but `GenericStructureEngine` still runs
       inside the all-market bar store. Safe lease activation needs an atomic
       event-sequence barrier and exact replay since the restored checkpoint.
+  - [x] Persist a backward-compatible exact Generic Structure input cursor.
+        New checkpoints store canonical arrival sequence beside event time,
+        reject duplicate same-time replay, and use the composite cursor for
+        dirty-state persistence. Legacy checkpoints deserialize with cursor
+        zero and are not treated as exact-continuation evidence.
+  - [ ] Stage focus leases, replay from the exact checkpoint through a captured
+        canonical barrier, drain the bounded live handoff, and only then expose
+        the lease to focused computation.
 - [x] Implement dynamic Watchlist inclusion, exclusion, ranking, maximum size,
       TTL, manual override, and promotion/demotion reasons.
 - [x] Persist membership add/remove/expire events.

@@ -287,7 +287,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let restored = checkpoints.len();
             for (sym, checkpoint) in &checkpoints {
                 if let Some(updated_at) = checkpoint.updated_at {
-                    structure_watermarks.insert(sym.clone(), updated_at.timestamp_millis());
+                    structure_watermarks.insert(
+                        sym.clone(),
+                        (
+                            updated_at.timestamp_millis(),
+                            checkpoint.last_arrival_sequence,
+                        ),
+                    );
                 }
             }
             bars.seed_structure_checkpoints(checkpoints).await;

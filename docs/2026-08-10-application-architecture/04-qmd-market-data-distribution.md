@@ -39,6 +39,13 @@ repair admission waits rather than occupying that reserve. Compact-disabled
 diagnostic operation retains an explicit raw fallback and does not pretend to
 provide live/history compact parity.
 
+Event-native Generic Structure checkpoints carry the exact canonical
+`(updated_at, last_arrival_sequence)` cursor. Persistence watermarks compare the
+same tuple, so a later event at an identical SIP timestamp is neither skipped
+on flush nor double-applied on replay. Older checkpoint JSON remains readable
+with a zero cursor, but zero explicitly means it cannot prove an exact replay
+continuation.
+
 ## Three-source event distribution
 
 ```mermaid

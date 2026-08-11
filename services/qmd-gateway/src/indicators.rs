@@ -2516,7 +2516,7 @@ impl IndicatorClickHouseWriter {
         self,
         mut receiver: mpsc::Receiver<IndicatorRow>,
         bars: SharedBarStore,
-        mut structure_watermarks: HashMap<String, i64>,
+        mut structure_watermarks: HashMap<String, (i64, u64)>,
     ) {
         if !self.config.persist_indicators && !self.config.persist_structure_events {
             while receiver.recv().await.is_some() {}
@@ -2556,7 +2556,7 @@ impl IndicatorClickHouseWriter {
         &self,
         batch: &mut Vec<IndicatorRow>,
         bars: &SharedBarStore,
-        structure_watermarks: &mut HashMap<String, i64>,
+        structure_watermarks: &mut HashMap<String, (i64, u64)>,
     ) -> bool {
         let mut structure_events = batch
             .iter()
@@ -2622,7 +2622,13 @@ impl IndicatorClickHouseWriter {
             }
             for (sym, checkpoint) in &structure_states {
                 if let Some(updated_at) = checkpoint.updated_at {
-                    structure_watermarks.insert(sym.clone(), updated_at.timestamp_millis());
+                    structure_watermarks.insert(
+                        sym.clone(),
+                        (
+                            updated_at.timestamp_millis(),
+                            checkpoint.last_arrival_sequence,
+                        ),
+                    );
                 }
             }
         }

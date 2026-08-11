@@ -1895,6 +1895,25 @@ it does not imply all application work is complete.
      the representation drift required before an exact Generic Structure
      checkpoint cursor and activation barrier can be implemented.
 
+172. Added the exact Generic Structure checkpoint cursor made possible by the
+     canonical-event cutover. Each newly applied compact-decoded event advances
+     `(updated_at, last_arrival_sequence)`. The engine rejects a replayed event
+     when both its timestamp and canonical arrival identity are at or behind
+     the checkpoint, while still accepting a later arrival at the same SIP
+     timestamp. Structure persistence now compares the same composite cursor;
+     timestamp-equal updates can no longer disappear behind an `updated_at`
+     watermark.
+
+     The JSON extension is backward compatible: existing checkpoints restore
+     with arrival cursor zero and preserve their prior state, but zero is
+     explicitly insufficient evidence for exact focus activation. All 110 QMD
+     tests passed, including duplicate same-time replay and legacy checkpoint
+     coverage. The rebuilt real service processed 6,230 canonical events with
+     zero lane failures, and `q_live.qmd_structure_state_v2` persisted positive
+     cursors such as `28297895`. Staged lease replay and atomic barrier handoff
+     remain the next step; Generic Structure is not yet removed from the
+     all-market path.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)
