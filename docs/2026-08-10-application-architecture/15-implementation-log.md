@@ -1504,6 +1504,21 @@ it does not imply all application work is complete.
      application-registry tests passed, and all changed Python modules compiled
      with bytecode writes disabled.
 
+152. Registered Historical Scanner's revisioned materialized storage contract
+     as `market.historical_scanner_cache.v1`. The plan owns all five cache-table
+     schemas, exact snapshot/calculation/schema/source-revision reads, bounded
+     row/event projections, the complete-meta plus exact-indicator-count proof,
+     and a fail-closed whitelist for JSONEachRow insert targets. The orchestration
+     service now contains no SQL.
+
+     This closes the approved backend SQL migration inventory. SQL intentionally
+     left outside query plans is confined to authoritative persistence adapters
+     and shared `news_prior_context`; the latter has direct research/intelligence
+     callers and remains inside the explicitly deferred intelligence boundary.
+     Thirty-five focused cache/materialization-plan, Historical Scanner
+     technical/service, and application-registry tests passed, and all changed
+     Python modules compiled with bytecode writes disabled.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

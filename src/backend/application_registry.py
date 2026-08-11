@@ -431,6 +431,22 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "market_sip_compact.events_ordinal_continuity",
         ),
         QueryPlanDefinition(
+            "market.historical_scanner_cache.v1",
+            "backend",
+            "src.backend.query_plans.historical_scanner_cache_v1:snapshot_table_schema,qmd_snapshot_table_schemas,technical_snapshot_table_schema,qmd_snapshot_complete_queries,cached_qmd_rows_query,cached_qmd_signal_events_query,cached_technical_rows_query,cached_scanner_rows_query,latest_cached_scanner_snapshot_query,json_each_row_insert",
+            (
+                "q_live.canvas_historical_scanner_v1",
+                "q_live.canvas_scanner_technical_v3",
+                "q_live.canvas_historical_qmd_scanner_v1",
+                "q_live.canvas_historical_qmd_signal_event_v1",
+                "q_live.canvas_historical_qmd_snapshot_meta_v1",
+            ),
+            "snapshot clock, calculation/schema version, source revision, and ticker",
+            "requested historical snapshot clock",
+            "materialized_at_utc after complete cache commit",
+            "complete meta row plus exact stored indicator count",
+        ),
+        QueryPlanDefinition(
             "market.ticker_presentation.v1",
             "backend",
             "src.backend.query_plans.market_ticker_presentation_v1:ticker_presentation",

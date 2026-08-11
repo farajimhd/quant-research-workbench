@@ -244,7 +244,7 @@ budgets and invalid scope broadening fails configuration validation.
 - [x] Remove physical QMD source selection from route handlers.
 - [x] Implement shared QMD source and query planner boundaries.
 - [x] Expose capability, field, container, and configuration catalogs.
-- [ ] Move approved SQL into versioned query plans.
+- [x] Move approved SQL into versioned query plans.
   - [x] Move Canvas context company-News, SEC filing, Scanner summary, and
         bounded SEC identity SQL into registered `canvas_context_v1` builders.
   - [x] Move the causal daily-session-bar aggregation used by historical
@@ -302,9 +302,11 @@ budgets and invalid scope broadening fails configuration validation.
         `market.historical_scanner_materialization.v1` plan. The service retains
         bounded scheduling, cache persistence, optional enrichment, and response
         projection.
-  - [ ] Move remaining approved backend SQL domains without modifying deferred
-        producer services.
-- [ ] Remove duplicated route-level SQL as callers migrate.
+  - [x] Move remaining approved backend SQL domains without modifying deferred
+        producer services. The remaining SQL outside query plans is limited to
+        authoritative persistence adapters and shared `news_prior_context`,
+        whose research/intelligence callers keep it in the deferred boundary.
+- [x] Remove duplicated route-level SQL as callers migrate.
   - [x] Remove the migrated Canvas context SQL from its composition service.
   - [x] Replace daily-session-bar service imports with the registered plan;
         retain only a compatibility re-export for external callers.
@@ -347,8 +349,10 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Remove Historical Scanner calculation SQL from its orchestration path;
         the service executes registered core/technical/revision builders while
         retaining its explicitly separate materialized-cache storage boundary.
-  - [ ] Remove remaining route/service-local SQL only after its registered plan
-        and focused parity tests exist.
+  - [x] Remove remaining approved route/service-local SQL only after its
+        registered plan and focused parity tests exist. Storage DDL/writes stay
+        in registered storage plans or their authoritative persistence adapter;
+        deferred shared intelligence context is not silently migrated.
 - [x] Consume deferred producer services through unchanged bounded contracts.
       Backend News/SEC presentation reads are bounded by source identity and
       current producer version, registered as consumer-owned query plans, and
