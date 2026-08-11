@@ -1311,6 +1311,21 @@ bounded direct ClickHouse paths remain documented in
      transport remain the bottleneck. Evidence is under
      `D:\TradingML\runtimes\qmd_goal_load`; PID 42184 was stopped and port
      18801 was verified free.
+139. Corrected QMD History materialization error semantics. The single and
+     batch Watchlist endpoints previously mapped every replay failure to HTTP
+     400, including ClickHouse outages, corrupt upstream rows, pinned source
+     drift, resource ceilings, and internal worker failures. They now emit
+     stable codes and actions: invalid requests remain 400, bounded work that
+     exceeds an admitted ceiling is 413, source revision changes are retryable
+     409 restart conflicts, upstream data failures are retryable 502 responses,
+     internal failures are 500, and capacity contention is a typed retryable
+     429. Every response carries `error_code`, `retryable`, `retry_action`, and
+     `source` while retaining the existing human-readable `error` field.
+
+     Rust formatting and all 41 QMD History tests passed. The new regression
+     covers invalid request, resource-limit, source-conflict, and upstream
+     classifications so callers can distinguish request correction from retry
+     and full materialization restart.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

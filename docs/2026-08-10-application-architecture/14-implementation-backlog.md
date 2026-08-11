@@ -333,6 +333,11 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Negotiate versioned JSON success envelopes with completeness, warnings,
         data, and request lineage; make the sole browser fetch authority request
         and transparently unwrap the contract for every application API call.
+  - [x] Classify QMD History Watchlist materialization failures into invalid
+        request, resource limit, pinned-revision conflict, upstream source,
+        internal failure, and busy-capacity contracts with stable error codes,
+        retryability, retry action, and source instead of returning HTTP 400
+        for every failure.
 - [x] Implement HTTP snapshot plus sequenced delta streams. Scanner rows,
       compact events, and market signals share their respective snapshot
       watermark with monotonic deltas; periodic chart product streams publish

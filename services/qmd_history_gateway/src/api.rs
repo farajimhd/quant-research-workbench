@@ -287,14 +287,17 @@ async fn materialize_watchlist_timeline_plan(
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(json!({
                     "error": "historical Watchlist materialization capacity is busy",
+                    "error_code": "watchlist_capacity_busy",
                     "retryable": true,
+                    "retry_action": "retry_materialization",
+                    "source": "qmd_history_gateway",
                 })),
             )
         })?;
     materialize_watchlist_timeline(state.config.clone(), state.source.clone(), request)
         .await
         .map(Json)
-        .map_err(bad_request)
+        .map_err(watchlist_materialization_error)
 }
 
 async fn materialize_watchlist_timeline_batch(
@@ -310,14 +313,17 @@ async fn materialize_watchlist_timeline_batch(
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(json!({
                     "error": "historical Watchlist materialization capacity is busy",
+                    "error_code": "watchlist_capacity_busy",
                     "retryable": true,
+                    "retry_action": "retry_materialization",
+                    "source": "qmd_history_gateway",
                 })),
             )
         })?;
     materialize_watchlist_timelines(state.config.clone(), state.source.clone(), request)
         .await
         .map(Json)
-        .map_err(bad_request)
+        .map_err(watchlist_materialization_error)
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload>, ApiError> {
@@ -1520,6 +1526,91 @@ fn service_error(message: String) -> ApiError {
     )
 }
 
+fn watchlist_materialization_error(message: String) -> ApiError {
+    let normalized = message.to_ascii_lowercase();
+    let (status, error_code, retryable, retry_action, source) = if [
+        "source revision changed",
+        "complete pinned market-event window",
+        "source authority changed",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+    {
+        (
+            StatusCode::CONFLICT,
+            "watchlist_source_revision_conflict",
+            true,
+            "restart_materialization",
+            "qmd_source_revision",
+        )
+    } else if normalized.contains("event_limit=")
+        || (normalized.contains("exceeds") && normalized.contains("limit="))
+    {
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "watchlist_resource_limit",
+            false,
+            "reduce_request",
+            "qmd_history_gateway",
+        )
+    } else if [
+        "clickhouse http",
+        "daily references unavailable",
+        "error sending request for url",
+        "connection refused",
+        "invalid historical stream",
+        "historical source",
+        "live gateway",
+        "timed out",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+    {
+        (
+            StatusCode::BAD_GATEWAY,
+            "watchlist_source_unavailable",
+            true,
+            "retry_materialization",
+            "historical_clickhouse",
+        )
+    } else if [
+        "encoding failed",
+        "serialization failed",
+        "worker panicked",
+        "worker stopped early",
+        "reducer is unavailable",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+    {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "watchlist_internal_failure",
+            false,
+            "inspect_service",
+            "qmd_history_gateway",
+        )
+    } else {
+        (
+            StatusCode::BAD_REQUEST,
+            "invalid_watchlist_materialization",
+            false,
+            "correct_request",
+            "request",
+        )
+    };
+    (
+        status,
+        Json(json!({
+            "error": message,
+            "error_code": error_code,
+            "retryable": retryable,
+            "retry_action": retry_action,
+            "source": source,
+        })),
+    )
+}
+
 fn source_revision_conflict(
     expected_plan_hash: &str,
     expected_revision_token: &str,
@@ -1583,9 +1674,10 @@ mod tests {
     use super::{
         causal_product_window, event_revision_changed, expected_event_revision, parse_chart_stage,
         parse_indicator_projection, parse_timestamp, product_resolution, stream_gap_frame,
-        validate_timeframe, EventRevisionPolicy, ProductQuery,
+        validate_timeframe, watchlist_materialization_error, EventRevisionPolicy, ProductQuery,
     };
     use crate::source::SourceRevision;
+    use axum::http::StatusCode;
 
     #[test]
     fn timestamps_require_explicit_timezone() {
@@ -1609,6 +1701,43 @@ mod tests {
         assert_eq!(frame["retry_action"], "reconnect_with_original_window");
         assert_eq!(frame["terminal"], true);
         assert_eq!(frame["skipped"], 9);
+    }
+
+    #[test]
+    fn watchlist_failures_preserve_retry_and_restart_semantics() {
+        let conflict = watchlist_materialization_error(
+            "QMD History source revision changed while replaying".to_string(),
+        );
+        assert_eq!(conflict.0, StatusCode::CONFLICT);
+        assert_eq!(
+            conflict.1 .0["error_code"],
+            "watchlist_source_revision_conflict"
+        );
+        assert_eq!(conflict.1 .0["retryable"], true);
+        assert_eq!(conflict.1 .0["retry_action"], "restart_materialization");
+
+        let upstream = watchlist_materialization_error(
+            "historical Watchlist daily references unavailable: ClickHouse HTTP 503".to_string(),
+        );
+        assert_eq!(upstream.0, StatusCode::BAD_GATEWAY);
+        assert_eq!(upstream.1 .0["error_code"], "watchlist_source_unavailable");
+        assert_eq!(upstream.1 .0["retryable"], true);
+
+        let bounded = watchlist_materialization_error(
+            "historical Watchlist replay exceeded event_limit=100".to_string(),
+        );
+        assert_eq!(bounded.0, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(bounded.1 .0["error_code"], "watchlist_resource_limit");
+        assert_eq!(bounded.1 .0["retryable"], false);
+
+        let invalid = watchlist_materialization_error(
+            "historical Watchlist batch watchlist_id values must be unique".to_string(),
+        );
+        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            invalid.1 .0["error_code"],
+            "invalid_watchlist_materialization"
+        );
     }
 
     fn revision(plan: &str, token: &str) -> SourceRevision {
