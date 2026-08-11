@@ -737,11 +737,15 @@ def historical_preflight(
         _preflight_check(
             "run_controller",
             "Trading run controller",
-            "blocked",
-            "The shared strategy/broker run-controller API is not implemented.",
-            "Market replay can run; simulated orders, portfolio, fills, and strategy execution cannot be claimed yet.",
+            "ready",
+            "Replay and Backtest use the shared strategy, Portfolio, OMS, and simulated-broker runtime.",
+            "The historical controller preserves one journaled runtime across the selected event-time window.",
             required=mode != RunMode.REPLAY.value,
         )
+    )
+    strategy_run_ready = bool(
+        market_ready
+        and (mode == RunMode.REPLAY.value or automatic_strategies)
     )
     return {
         "mode": mode,
@@ -749,7 +753,7 @@ def historical_preflight(
         "gateway": gateway,
         "checks": checks,
         "market_ready": market_ready,
-        "strategy_run_ready": False,
+        "strategy_run_ready": strategy_run_ready,
         "automatic_strategy_count": len(automatic_strategies),
         "coverage": coverage,
     }

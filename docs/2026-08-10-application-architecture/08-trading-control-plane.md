@@ -126,9 +126,18 @@ On restart:
 
 Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliation mismatch and journal failure each have explicit policies. Intelligence loss may degrade a strategy that declares it optional; loss of authoritative journaling or uncertain broker state must fail closed for new execution.
 
-## 9. Current drift
+## 9. Current implementation
 
-- Replay has the strongest shared controller/runtime direction; Live and Backtest still contain legacy or incomplete paths.
+- Replay and Backtest now use the same historical controller, Strategy,
+  Portfolio, OMS, simulator, and journal. Backtest runs one continuous runtime
+  at maximum event speed across the selected exchange sessions and pins the
+  approved configuration revision. Its setup page can create, monitor, and
+  stop a run.
+- Backtest Watchlist membership is currently resolved at the first event clock.
+  Session-varying membership activation/deactivation and full result
+  projections remain incomplete; this is a disclosed partial implementation,
+  not mode parity.
+- Live still contains legacy paths and has not reached controller parity.
 - Portfolio admission is fenced across backend/run processes sharing the same authoritative trading journal. A multi-host deployment would still need to move the same lease/reservation contract to a networked transactional authority.
 - Several UI pages imply configuration objects without one backend compiler and immutable Run Plan contract.
 - Account bindings are partly environment-backed as desired, but broker/account readiness and generated deployment review are not yet one complete flow.

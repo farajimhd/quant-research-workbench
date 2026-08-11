@@ -14,6 +14,7 @@ from src.backend.replay_run_service import (
     ReplayRunDefinition,
     _attach_historical_signals,
     _canvas_profile_tickers,
+    backtest_preflight,
     replay_preflight,
 )
 from src.market_engine.historical_source import QmdHistoricalEventSource
@@ -31,6 +32,7 @@ from src.trading_runtime.strategy_engine import (
     default_long_momentum_parameters,
 )
 from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
+from src.trading_runtime.runtime import RunMode
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -77,7 +79,7 @@ def approved_configuration(*, assignments: list[dict] | None = None) -> dict:
                     "session_key": "replay",
                     "portfolio_policy_id": "default",
                     "enabled": True,
-                    "modes": ["replay"],
+                    "modes": ["replay", "backtest"],
                 }]
             },
             "canvas": {
@@ -110,6 +112,70 @@ class ReplayRunDefinitionTests(unittest.TestCase):
             ReplayRunDefinition(
                 session_date=date(2026, 7, 28),
                 start_time=time(3, 59),
+                configuration_revision=approved_configuration(),
+            )
+
+
+class BacktestPreflightTests(unittest.TestCase):
+    @patch("src.backend.replay_run_service.backtest_runtime_root")
+    @patch("src.backend.replay_run_service.historical_preflight")
+    def test_preflight_pins_configuration_accounts_and_external_storage(
+        self,
+        historical,
+        runtime_root,
+    ) -> None:
+        historical.return_value = {
+            "mode": "backtest",
+            "window": {
+                "sessions": ["2026-07-06", "2026-07-07"],
+                "session_count": 2,
+                "start": "2026-07-06T04:00:00-04:00",
+                "end": "2026-07-07T20:00:00-04:00",
+            },
+            "checks": [],
+            "strategy_run_ready": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            runtime_root.return_value = Path(directory)
+            approved = approved_configuration(assignments=[{
+                "assignment_id": "assignment-1",
+                "account_key": "primary",
+                "ticker": "AAPL",
+                "conid": 265598,
+                "status": "watching",
+            }])
+
+            payload = backtest_preflight(
+                anchor_date=date(2026, 7, 8),
+                session_count=2,
+                configuration_revision=approved,
+            )
+
+        self.assertTrue(payload["strategy_run_ready"])
+        self.assertEqual(payload["configuration_revision_id"], "configuration-test")
+        checks = {row["id"]: row for row in payload["checks"]}
+        self.assertEqual(checks["simulated_accounts"]["status"], "ready")
+        self.assertEqual(checks["runtime_storage"]["status"], "ready")
+
+    def test_backtest_definition_spans_sessions_with_one_runtime_window(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 7, 6),
+            final_session_date=date(2026, 7, 10),
+            start_time=time(4, 0),
+            configuration_revision=approved_configuration(),
+            mode=RunMode.BACKTEST,
+        )
+
+        self.assertEqual(definition.session_start.isoformat(), "2026-07-06T04:00:00-04:00")
+        self.assertEqual(definition.session_end.isoformat(), "2026-07-10T20:00:00-04:00")
+        self.assertEqual(definition.payload()["mode"], "backtest")
+
+    def test_replay_definition_rejects_multi_session_window(self) -> None:
+        with self.assertRaisesRegex(ValueError, "limited to one exchange session"):
+            ReplayRunDefinition(
+                session_date=date(2026, 7, 6),
+                final_session_date=date(2026, 7, 10),
+                start_time=time(9, 45),
                 configuration_revision=approved_configuration(),
             )
 

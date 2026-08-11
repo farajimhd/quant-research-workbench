@@ -37,6 +37,8 @@ from src.backend.portfolio_management_service import (
 from src.backend.replay_run_service import (
     ReplayRunDefinition,
     ReplayRunService,
+    backtest_preflight,
+    backtest_runtime_root,
     replay_preflight,
 )
 from src.backend.market_data_service import (
@@ -148,6 +150,7 @@ from src.backend.trading_configuration_service import (
     replay_configuration_snapshot,
 )
 from src.trading_runtime.strategy_engine import STRATEGY_ID, STRATEGY_REVISION
+from src.trading_runtime.runtime import RunMode
 from src.backend.ticker_presentation_service import ticker_presentation_payload
 from src.backend.ticker_facts_service import ticker_fact_history_payload, ticker_facts_payload
 from src.data_provider.calendar import market_sessions, scan_market_source
@@ -400,6 +403,7 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
 replay_run_service = ReplayRunService()
+backtest_run_service = ReplayRunService(runtime_root=backtest_runtime_root())
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -541,6 +545,13 @@ class ReplayPreflightRequest(BaseModel):
 
 class ReplayRunCreateRequest(ReplayPreflightRequest):
     pass
+
+
+class BacktestRunCreateRequest(BaseModel):
+    anchor_date: date
+    session_count: int = Field(default=20, ge=1, le=260)
+    initial_cash: float = Field(default=100_000.0, ge=1_000, le=1_000_000_000)
+    configuration_revision_id: str = Field(default="", max_length=128)
 
 
 class TradingConfigurationPublishSubmit(BaseModel):
@@ -4586,6 +4597,11 @@ def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[st
     if payload.mode not in {"replay", "backtest"}:
         raise HTTPException(status_code=400, detail="mode must be replay or backtest")
     try:
+        if payload.mode == "backtest":
+            return backtest_preflight(
+                anchor_date=payload.anchor_date,
+                session_count=payload.session_count,
+            )
         return historical_preflight(
             mode=payload.mode,
             anchor_date=payload.anchor_date,
@@ -4642,6 +4658,59 @@ async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str
             raise ValueError("Replay dependencies changed after approval; run preflight again")
         controller = await replay_run_service.create(definition)
         return controller.snapshot()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/backtest/runs")
+async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict[str, Any]:
+    try:
+        configuration_revision = replay_configuration_snapshot()
+        if payload.configuration_revision_id != configuration_revision["revision_id"]:
+            raise ValueError("The approved configuration changed; review Backtest preflight again")
+        preflight = backtest_preflight(
+            anchor_date=payload.anchor_date,
+            session_count=payload.session_count,
+            initial_cash=payload.initial_cash,
+            configuration_revision=configuration_revision,
+        )
+        if not preflight["strategy_run_ready"]:
+            raise ValueError("Backtest dependencies changed after preflight; check them again")
+        sessions = tuple(date.fromisoformat(value) for value in preflight["window"]["sessions"])
+        definition = ReplayRunDefinition(
+            session_date=sessions[0],
+            final_session_date=sessions[-1],
+            start_time=_replay_clock_time("04:00:00"),
+            initial_cash=payload.initial_cash,
+            configuration_revision=configuration_revision,
+            mode=RunMode.BACKTEST,
+        )
+        controller = await backtest_run_service.create(definition)
+        return controller.snapshot()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/backtest/runs")
+def trading_backtest_runs() -> dict[str, Any]:
+    rows = backtest_run_service.list()
+    return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
+
+
+@app.get("/api/trading/backtest/runs/{run_id}")
+def trading_backtest_run(run_id: str) -> dict[str, Any]:
+    try:
+        return backtest_run_service.get(run_id).snapshot()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest run not found") from exc
+
+
+@app.post("/api/trading/backtest/runs/{run_id}/stop")
+async def trading_backtest_run_stop(run_id: str) -> dict[str, Any]:
+    try:
+        return await backtest_run_service.get(run_id).command("stop")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest run not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

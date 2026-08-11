@@ -23,6 +23,7 @@ from src.backend.trading_runtime_service import (
     historical_day_coverage,
     historical_gateway_base_url,
     historical_gateway_snapshot,
+    historical_preflight,
 )
 from src.backend.trading_configuration_service import (
     merged_assignment_parameters,
@@ -56,6 +57,7 @@ from src.trading_runtime.strategy_campaign import campaign_state
 
 NEW_YORK = ZoneInfo("America/New_York")
 DEFAULT_REPLAY_ROOT = Path(r"D:\TradingML\runtimes\trading\replay")
+DEFAULT_BACKTEST_ROOT = Path(r"D:\TradingML\runtimes\trading\backtest")
 REPLAY_STATUSES = {
     "created",
     "warming",
@@ -79,8 +81,16 @@ class ReplayRunDefinition:
     assignment_ids: tuple[str, ...] = ()
     tickers: tuple[str, ...] = ()
     configuration_revision: dict[str, Any] = field(default_factory=dict)
+    mode: RunMode = RunMode.REPLAY
+    final_session_date: date | None = None
 
     def __post_init__(self) -> None:
+        if self.mode not in {RunMode.REPLAY, RunMode.BACKTEST}:
+            raise ValueError("Historical controller mode must be replay or backtest")
+        if self.mode == RunMode.REPLAY and self.final_session_date not in {None, self.session_date}:
+            raise ValueError("Replay is limited to one exchange session")
+        if self.final_session_date is not None and self.final_session_date < self.session_date:
+            raise ValueError("Historical final session cannot precede the first session")
         if not 4 <= self.start_time.hour <= 20:
             raise ValueError("Replay start time must be inside the 04:00-20:00 New York session")
         if self.start_time.hour == 20 and (
@@ -100,7 +110,11 @@ class ReplayRunDefinition:
 
     @property
     def session_end(self) -> datetime:
-        return datetime.combine(self.session_date, clock_time(20, 0), tzinfo=NEW_YORK)
+        return datetime.combine(
+            self.final_session_date or self.session_date,
+            clock_time(20, 0),
+            tzinfo=NEW_YORK,
+        )
 
     @property
     def requested_start(self) -> datetime:
@@ -111,6 +125,7 @@ class ReplayRunDefinition:
         configuration = dict(approved.get("payload") or {})
         canvas = dict(configuration.get("canvas") or {})
         return {
+            "mode": self.mode.value,
             "session_date": self.session_date.isoformat(),
             "start_time": self.start_time.isoformat(timespec="seconds"),
             "session_start": self.session_start.isoformat(),
@@ -161,6 +176,8 @@ class ReplayRunController:
         self.updated_at = self.created_at
         self.current_time: datetime | None = None
         self.speed = 30.0
+        if self.definition.mode == RunMode.BACKTEST:
+            self.speed = 0.0
         self.processed_events = 0
         self.warmup_events = 0
         self._task: asyncio.Task[None] | None = None
@@ -493,7 +510,11 @@ class ReplayRunController:
                         return
                     if event.ts >= self.definition.requested_start:
                         if self.status == "warming":
-                            self.status = "ready"
+                            self.status = (
+                                "running"
+                                if self.definition.mode == RunMode.BACKTEST
+                                else "ready"
+                            )
                             self.current_time = self.definition.requested_start
                             self.updated_at = datetime.now(UTC)
                             await self._publish(force=True)
@@ -550,7 +571,8 @@ class ReplayRunController:
         bindings = [
             dict(row)
             for row in configuration["accounts"]["bindings"]
-            if bool(row.get("enabled", True)) and "replay" in list(row.get("modes") or [])
+            if bool(row.get("enabled", True))
+            and self.definition.mode.value in list(row.get("modes") or [])
         ]
         simulated_by_key = {
             str(binding["account_key"]): f"SIM-{index + 1:02d}-{_slug(str(binding['account_key']))}"
@@ -567,7 +589,7 @@ class ReplayRunController:
             _assignment_from_payload(
                 row,
                 account_id=simulated_by_key[str(row["account_key"])],
-                source=f"replay:{row.get('source') or 'configured'}",
+                source=f"{self.definition.mode.value}:{row.get('source') or 'configured'}",
                 configuration=configuration,
             )
             for row in source_assignments
@@ -607,10 +629,10 @@ class ReplayRunController:
             PortfolioAccountProfile(
                 account_key=str(binding["account_key"]),
                 account_id=simulated_by_key[str(binding["account_key"])],
-                mode="replay",
+                mode=self.definition.mode.value,
                 account_class=str(binding.get("account_class") or "simulated"),
                 policy=policies[str(binding["portfolio_policy_id"])],
-                session_key=str(binding.get("session_key") or "replay"),
+                session_key=str(binding.get("session_key") or self.definition.mode.value),
                 enabled=bool(binding.get("enabled", True)),
                 base_currency=str(binding.get("base_currency") or "USD"),
                 strategy_allocations={
@@ -651,11 +673,11 @@ class ReplayRunController:
         broker = SimulatedBrokerAdapter(
             list(self.account_ids),
             SimulationConfig(initial_cash=self.definition.initial_cash),
-            mode=TradingMode.REPLAY,
+            mode=TradingMode(self.definition.mode.value),
         )
         self._runtime = TradingRuntime(
             RunConfig(
-                mode=RunMode.REPLAY,
+                mode=self.definition.mode,
                 strategy_id=str(strategy_configuration["strategy_id"]),
                 strategy_revision=int(strategy_configuration["revision"]),
                 account_ids=self.account_ids,
@@ -675,7 +697,7 @@ class ReplayRunController:
                             or {}
                         ).get("enabled_by_environment")
                         or {}
-                    ).get("replay", True)
+                    ).get(self.definition.mode.value, True)
                 ),
                 checkpoint_interval_events=1_000,
             ),
@@ -894,22 +916,25 @@ class ReplayRunController:
             queue.put_nowait(payload)
 
     def _selected_assignments(self) -> list[dict[str, Any]]:
+        configuration = self.definition.configuration_revision["payload"]
+        account_keys = [
+            str(row.get("account_key") or "")
+            for row in dict(configuration.get("accounts") or {}).get("bindings") or []
+            if bool(row.get("enabled", True))
+            and self.definition.mode.value in set(row.get("modes") or [])
+        ]
+        allowed_account_keys = set(account_keys)
         rows = [
             dict(row)
             for row in self.definition.configuration_revision["payload"]["assignments"]
             if str(row.get("status") or "") not in {"disabled", "completed", "error"}
+            and str(row.get("account_key") or "") in allowed_account_keys
         ]
-        configuration = self.definition.configuration_revision["payload"]
         historical_members = self._historical_watchlist_members()
         existing = {
             (str(row.get("account_key") or ""), str(row.get("ticker") or "").upper())
             for row in rows
         }
-        account_keys = [
-            str(row.get("account_key") or "")
-            for row in dict(configuration.get("accounts") or {}).get("bindings") or []
-            if bool(row.get("enabled", True)) and "replay" in set(row.get("modes") or [])
-        ]
         missing_identity = sorted(
             str(row.get("ticker") or "").upper()
             for row in historical_members
@@ -950,7 +975,7 @@ class ReplayRunController:
             missing = selected - {str(row.get("assignment_id")) for row in rows}
             if missing:
                 raise ValueError(
-                    f"Replay assignments are unavailable or inactive: {', '.join(sorted(missing))}"
+                    f"Historical assignments are unavailable or inactive: {', '.join(sorted(missing))}"
                 )
         return rows
 
@@ -997,7 +1022,7 @@ class ReplayRunController:
         )
         if not tickers:
             raise ValueError(
-                "Replay requires at least one configured Canvas symbol or strategy assignment"
+                "Historical run requires at least one configured Canvas symbol or strategy assignment"
             )
         return tickers
 
@@ -1109,6 +1134,16 @@ def replay_runtime_root() -> Path:
         os.environ.get("TRADING_RUNTIME_ROOT", str(DEFAULT_REPLAY_ROOT.parent))
     )
     return trading_root / "replay"
+
+
+def backtest_runtime_root() -> Path:
+    configured = os.environ.get("TRADING_BACKTEST_ROOT", "").strip()
+    if configured:
+        return Path(configured)
+    trading_root = Path(
+        os.environ.get("TRADING_RUNTIME_ROOT", str(DEFAULT_BACKTEST_ROOT.parent))
+    )
+    return trading_root / "backtest"
 
 
 def _historical_watchlist_members_for_configuration(
@@ -1345,6 +1380,134 @@ def replay_preflight(
         "configuration_content_hash": approved["content_hash"],
         "canvas_revision": canvas["revision"],
         "canvas_profile": canvas["profile"],
+    }
+
+
+def backtest_preflight(
+    *,
+    anchor_date: date,
+    session_count: int,
+    initial_cash: float = 100_000.0,
+    configuration_revision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    approved = configuration_revision or replay_configuration_snapshot()
+    base = historical_preflight(
+        mode=RunMode.BACKTEST.value,
+        anchor_date=anchor_date,
+        session_count=session_count,
+    )
+    configuration = dict(approved.get("payload") or {})
+    sessions = [date.fromisoformat(value) for value in base["window"]["sessions"]]
+    bindings = [
+        dict(row)
+        for row in dict(configuration.get("accounts") or {}).get("bindings") or []
+        if bool(row.get("enabled", True))
+        and RunMode.BACKTEST.value in set(row.get("modes") or [])
+    ]
+    binding_keys = {str(row.get("account_key") or "") for row in bindings}
+    assignments = [
+        dict(row)
+        for row in configuration.get("assignments") or []
+        if str(row.get("status") or "") not in {"disabled", "completed", "error"}
+        and str(row.get("account_key") or "") in binding_keys
+    ]
+    watchlists = [
+        dict(row)
+        for row in configuration.get("universes") or []
+        if bool(row.get("enabled", True)) and str(row.get("source") or "") == "watchlist"
+    ]
+    watchlist_members: list[dict[str, Any]] = []
+    watchlist_error = ""
+    if watchlists and sessions:
+        try:
+            watchlist_members = _historical_watchlist_members_for_configuration(
+                approved,
+                as_of=datetime.combine(sessions[0], clock_time(4, 0), tzinfo=NEW_YORK),
+            )
+        except Exception as exc:
+            watchlist_error = str(exc)
+    checks = list(base["checks"])
+    checks.append(
+        {
+            "id": "approved_configuration",
+            "label": "Approved application revision",
+            "status": "ready",
+            "summary": f"Revision {approved.get('revision')} is pinned for the complete run.",
+            "evidence": str(approved.get("content_hash") or approved.get("revision_id") or ""),
+            "required": True,
+        }
+    )
+    checks.append(
+        {
+            "id": "simulated_accounts",
+            "label": "Backtest account bindings",
+            "status": "ready" if bindings else "blocked",
+            "summary": (
+                f"{len(bindings)} account binding(s) map to isolated simulated ledgers."
+                if bindings
+                else "The approved revision has no enabled account binding for Backtest."
+            ),
+            "evidence": ", ".join(sorted(binding_keys)) or "No Backtest account authority",
+            "required": True,
+        }
+    )
+    work_ready = bool(assignments or watchlist_members) and not watchlist_error
+    checks.append(
+        {
+            "id": "strategy_assignments",
+            "label": "Historical strategy population",
+            "status": "ready" if work_ready else "blocked",
+            "summary": (
+                f"{len(assignments)} pinned assignment(s) and {len(watchlist_members)} first-clock Watchlist member(s) are configured."
+                if work_ready
+                else watchlist_error or "Backtest needs an active assignment or a non-empty causal Watchlist universe."
+            ),
+            "evidence": "Point-in-time membership is resolved at the first event clock; session-varying membership is tracked separately.",
+            "required": True,
+        }
+    )
+    storage_ready = False
+    storage_evidence = str(backtest_runtime_root())
+    try:
+        root = backtest_runtime_root()
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / f".backtest-preflight-{uuid4().hex}.tmp"
+        probe.write_text("ready", encoding="utf-8")
+        probe.unlink()
+        storage_ready = True
+    except OSError as exc:
+        storage_evidence = str(exc)
+    checks.append(
+        {
+            "id": "runtime_storage",
+            "label": "Backtest runtime storage",
+            "status": "ready" if storage_ready else "blocked",
+            "summary": (
+                "Journal and manifests use the external trading runtime root."
+                if storage_ready
+                else "The external Backtest runtime root is not writable."
+            ),
+            "evidence": storage_evidence,
+            "required": True,
+        }
+    )
+    ready = bool(
+        base["strategy_run_ready"]
+        and bindings
+        and work_ready
+        and storage_ready
+        and sessions
+        and 1_000 <= initial_cash <= 1_000_000_000
+    )
+    return {
+        **base,
+        "checks": checks,
+        "strategy_run_ready": ready,
+        "configuration_revision_id": approved.get("revision_id", ""),
+        "configuration_revision": approved.get("revision", 0),
+        "configuration_content_hash": approved.get("content_hash", ""),
+        "configuration_label": approved.get("label", ""),
+        "initial_cash": initial_cash,
     }
 
 

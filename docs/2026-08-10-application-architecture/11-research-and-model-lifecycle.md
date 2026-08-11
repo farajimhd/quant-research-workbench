@@ -101,7 +101,10 @@ Production observations, predictions, operator actions and realized outcomes are
 
 - Several research families have strong local manifests/evaluations, but there is no single application-wide artifact registry and promotion record.
 - Shared live/history computation exists in parts of QMD and trading, but parity is not yet enforced across every capability and mode.
-- Backtest UI/runtime integration is incomplete, so strategy research results do not yet flow through the full compiled Run Plan and Portfolio/OMS simulator path.
+- Backtest now executes a pinned approved configuration through the shared
+  Strategy, Portfolio, OMS, simulator, and journal path. Session-varying
+  Watchlist membership, comprehensive result projections, restart/resume, and
+  deterministic Replay/Backtest parity certification remain incomplete.
 
 ---
 

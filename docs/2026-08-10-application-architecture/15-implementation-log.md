@@ -1,0 +1,58 @@
+# Implementation decision and delivery log
+
+[Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)
+
+This log captures the final implementation instruction that followed the
+architecture review and prevents scope decisions from being lost in chat.
+
+## 2026-08-10 implementation goal
+
+Implement the accepted application architecture across QMD Gateway, QMD
+History, the application backend and frontend, Portfolio, and OMS. Add the
+conversation decisions to this documentation, validate durable phases, and
+leave explicitly deferred producer-service work unchanged.
+
+### Authorized implementation boundaries
+
+- QMD Gateway, shared `qmd_core`, and QMD History;
+- backend APIs, registries, run controllers, and projections;
+- frontend Market Discovery, Canvas, charts, Backtest, configuration, and
+  operational surfaces;
+- Portfolio and OMS runtime contracts;
+- focused tests, operations contracts, and this architecture package.
+
+### Deferred or separately authorized boundaries
+
+- Market AI intelligence work, including its QMD History client;
+- News Gateway, SEC Gateway, Reference Gateway, Text Intelligence, Text Embed,
+  and Model Gateway producer changes;
+- broker orders, deployment changes, and IBKR Gateway/Supervisor changes.
+
+Existing contracts from deferred services may be consumed, but this work must
+not modify those producers. Market AI's intended live QMD, QMD History, and
+bounded direct ClickHouse paths remain documented in
+[system context](02-system-context-and-services.md).
+
+## Delivered phases
+
+1. Defined computation scopes and centralized the QMD capability catalog.
+2. Added QMD History live/recent/archive source routing and retention handoff
+   verification.
+3. Registered application enrichment fields and query plans.
+4. Enforced the Universal/Core/Watchlist computation funnel and exposed the
+   causal Watchlist runtime in Market Discovery.
+5. Added durable cross-run Portfolio fencing and enforced Portfolio authority
+   at the OMS boundary.
+6. Streamed chart bars before request-scoped indicators and progressively
+   hydrated Canvas charts.
+7. Added Backtest creation, monitoring, and stop controls over one continuous
+   shared historical Strategy/Portfolio/OMS runtime.
+
+The authoritative remaining work and acceptance gates are maintained in the
+[complete implementation backlog](14-implementation-backlog.md). A checked
+item means its real runnable path was implemented and focused validation passed;
+it does not imply all application work is complete.
+
+---
+
+[Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

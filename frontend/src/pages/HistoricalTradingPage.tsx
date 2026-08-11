@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleStop, Gauge, RefreshCcw, TriangleAlert } from "lucide-react";
+import { CheckCircle2, CircleStop, Gauge, Play, RefreshCcw, Square, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
@@ -17,6 +17,9 @@ type HistoricalPreflight = {
   automatic_strategy_count: number;
   checks: HistoricalCheck[];
   strategy_run_ready: boolean;
+  configuration_revision_id: string;
+  configuration_revision: number;
+  configuration_content_hash: string;
   window: {
     end: string;
     session_count: number;
@@ -25,13 +28,29 @@ type HistoricalPreflight = {
   };
 };
 
+type BacktestRun = {
+  configuration_revision: number;
+  current_time: string;
+  error: string;
+  mode: "backtest";
+  processed_events: number;
+  progress: number;
+  run_id: string;
+  session_date: string;
+  session_end: string;
+  status: string;
+};
+
 export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [anchorDate, setAnchorDate] = useState(previousWeekdayIsoDate);
   const [sessionCount, setSessionCount] = useState(20);
+  const [initialCash, setInitialCash] = useState(100_000);
   const [preflight, setPreflight] = useState<HistoricalPreflight | null>(null);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const [run, setRun] = useState<BacktestRun | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -66,6 +85,48 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     };
   }, [anchorDate, mode, refreshKey, sessionCount]);
 
+  useEffect(() => {
+    if (!run || ["completed", "stopped", "failed"].includes(run.status)) return;
+    const timer = window.setInterval(() => {
+      api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}`, { timeoutMs: 20_000 })
+        .then(setRun)
+        .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [run]);
+
+  async function createRun() {
+    if (!preflight?.strategy_run_ready) return;
+    setCreating(true);
+    setError("");
+    try {
+      const created = await api<BacktestRun>("/api/trading/backtest/runs", {
+        body: JSON.stringify({
+          anchor_date: anchorDate,
+          configuration_revision_id: preflight.configuration_revision_id,
+          initial_cash: initialCash,
+          session_count: sessionCount,
+        }),
+        method: "POST",
+        timeoutMs: 60_000,
+      });
+      setRun(created);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function stopRun() {
+    if (!run) return;
+    try {
+      setRun(await api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/stop`, { method: "POST" }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
   return (
     <div className="historical-home">
       <header className="historical-goal-hero">
@@ -88,6 +149,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
             <div className="historical-large-fields">
               <label><span>Anchor date · exclusive</span><input onChange={(event) => setAnchorDate(event.target.value)} type="date" value={anchorDate} /><small>The selected date is never included in the result window.</small></label>
               <label><span>Prior exchange sessions</span><input max={260} min={1} onChange={(event) => setSessionCount(Math.max(1, Number(event.target.value) || 1))} type="number" value={sessionCount} /><small>Resolved backward from the exclusive anchor.</small></label>
+              <label><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to each isolated simulated account for the full run.</small></label>
             </div>
             <header className="historical-evidence-header"><div><span>Preflight</span><strong>Verified dependencies and data</strong></div>{checking ? <span className="historical-checking"><Gauge size={15} /> Checking</span> : null}</header>
             <div className="historical-check-list">
@@ -97,12 +159,17 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         </main>
 
         <aside className="historical-action-column">
-          <section className="historical-primary-action blocked">
-            <CircleStop size={24} />
-            <div><strong>Backtest execution is not ready</strong><p>{preflight?.automatic_strategy_count
-              ? "An automatic strategy exists, but the historical results workflow has not adopted the Replay run controller."
-              : "There are no enabled automatic strategy revisions in the central trading authority."}</p></div>
-            <button className="button primary" disabled type="button">Run backtest</button>
+          <section className={`historical-primary-action ${preflight?.strategy_run_ready ? "" : "blocked"}`}>
+            {preflight?.strategy_run_ready ? <Play size={24} /> : <CircleStop size={24} />}
+            <div><strong>{run ? `Backtest ${run.status.replaceAll("_", " ")}` : preflight?.strategy_run_ready ? "Backtest is ready" : "Backtest execution is blocked"}</strong><p>{run
+              ? `${Math.round(run.progress * 100)}% complete · ${new Intl.NumberFormat("en-US", { notation: "compact" }).format(run.processed_events)} events · ${run.current_time}`
+              : preflight?.strategy_run_ready
+                ? `Revision ${preflight.configuration_revision} will run through ${preflight.window.session_count} sessions using one simulated Portfolio/OMS state.`
+                : "Resolve every required preflight item before starting."}</p></div>
+            {run && !["completed", "stopped", "failed"].includes(run.status)
+              ? <button className="button secondary" onClick={stopRun} type="button"><Square size={15} /> Stop</button>
+              : <button className="button primary" disabled={checking || creating || !preflight?.strategy_run_ready} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating run…" : "Run backtest"}</button>}
+            {run?.error ? <small>{run.error}</small> : null}
           </section>
         </aside>
       </div>

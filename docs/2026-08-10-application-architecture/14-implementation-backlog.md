@@ -1,6 +1,6 @@
 # Complete implementation backlog
 
-[Top](README.md) · [Previous](13-current-drift-and-roadmap.md) · [First](01-product-and-principles.md)
+[Top](README.md) · [Previous](13-current-drift-and-roadmap.md) · [Next](15-implementation-log.md) · [First](01-product-and-principles.md)
 
 This checklist translates the accepted application direction into executable
 work. Items remain unchecked until the real runnable path has been implemented
@@ -217,6 +217,13 @@ load progressively without false continuity.
 - [ ] Use Replay as the parity benchmark.
 - [ ] Migrate remaining Live legacy paths.
 - [ ] Complete Backtest through shared runtime contracts.
+  - [x] Run a pinned approved revision through one continuous shared
+        Strategy/Portfolio/OMS/simulator runtime across multiple sessions.
+  - [x] Create, monitor, and stop Backtest runs from the Backtest UI.
+  - [ ] Apply causal Watchlist membership changes during the run rather than
+        holding first-clock membership static.
+  - [ ] Build complete Backtest result and attribution projections.
+  - [ ] Add durable resume/restart from checkpoints.
 - [ ] Add deterministic Debug fixtures.
 - [ ] Pin causal market/enrichment versions for historical decisions.
 - [ ] Standardize progress, pause, resume, cancel, failure, and completion.
@@ -236,10 +243,11 @@ Replay and Backtest decisions.
       account-group fencing plus durable reservations.
 - [x] Add lease epochs, bounded expiry, and stale-owner rejection.
 - [x] Reserve capital for accepted unfilled intent.
-- [ ] Release/resize reservations on fill, cancel, reject, or timeout.
+- [x] Release/resize reservations on fill, cancel, reject, or timeout.
 - [x] Enforce buying power, leverage, concentration, exposure, loss, and drawdown limits.
-- [ ] Implement portfolio-level flatten controls.
-- [ ] Return accept, resize, defer, queue, or reject dispositions.
+- [x] Implement portfolio-level entry kill and emergency-flatten controls.
+- [x] Return approve, resize, defer, or reject dispositions. Queueing remains a
+      scheduler concern and is not represented as Portfolio approval.
 - [ ] Treat run priority as an arbitration input, never authority.
 - [ ] Reconcile reservations, positions, cash, and broker truth after restart.
 - [x] Journal every Portfolio decision and reservation transition.

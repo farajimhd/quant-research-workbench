@@ -217,7 +217,7 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         return_value={"ready": True, "health": {"source": "market_sip_compact.events_YYYY"}},
     )
     @patch("src.backend.trading_runtime_service._historical_gateway_get", return_value=[])
-    def test_backtest_preflight_reports_strategy_and_controller_as_required_blockers(
+    def test_backtest_preflight_reports_strategy_blocker_and_ready_controller(
         self,
         _gateway_get,
         _gateway_snapshot,
@@ -233,7 +233,7 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         checks = {row["id"]: row for row in payload["checks"]}
         self.assertEqual(checks["strategy_authority"]["status"], "blocked")
         self.assertTrue(checks["strategy_authority"]["required"])
-        self.assertEqual(checks["run_controller"]["status"], "blocked")
+        self.assertEqual(checks["run_controller"]["status"], "ready")
         self.assertTrue(checks["run_controller"]["required"])
 
     def test_replay_chunks_are_bounded_to_one_day(self) -> None:

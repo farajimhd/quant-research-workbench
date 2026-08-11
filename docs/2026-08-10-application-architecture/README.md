@@ -37,6 +37,7 @@ Every detailed document uses these labels:
 12. [Operations, reliability, security, and validation](12-operations-reliability-and-security.md)
 13. [Current drift and implementation roadmap](13-current-drift-and-roadmap.md)
 14. [Complete implementation backlog](14-implementation-backlog.md)
+15. [Implementation decision and delivery log](15-implementation-log.md)
 
 ## Complete application at a glance
 
