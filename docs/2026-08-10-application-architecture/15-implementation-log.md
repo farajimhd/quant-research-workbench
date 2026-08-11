@@ -836,6 +836,16 @@ bounded direct ClickHouse paths remain documented in
      authority and response-contract tests passed, including actual HTTP and
      WebSocket origin rejection and secret-redaction coverage; Python
      compilation passed. Broker and deferred producer services were unchanged.
+107. Standardized operational evidence across every registered service. The
+     backend schema-v2 projection now always carries authority, freshness,
+     coverage, queue, cache, transition, checkpoint, and degradation fields,
+     while preserving missing producer evidence as `null`, empty, and unknown.
+     The Service Health detail page renders Coverage, Freshness, Queue,
+     Checkpoint, Degradation, and Authority uniformly with responsive layouts;
+     it never labels absent evidence clear. Three focused projection tests plus
+     the fifteen authority/response tests passed, Python compilation passed,
+     and the managed frontend production build passed. This is application-side
+     composition only; no deferred producer or broker service was changed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

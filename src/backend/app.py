@@ -3450,10 +3450,8 @@ def service_operational_evidence(
     health: dict[str, Any],
     metrics: dict[str, Any],
 ) -> dict[str, Any]:
-    """Normalize producer-declared QMD evidence without inventing readiness."""
+    """Normalize producer-declared evidence without inventing readiness."""
 
-    if service_id not in {"qmd", "qmd-history"}:
-        return {}
     runtime = snapshot.get("runtime") if isinstance(snapshot.get("runtime"), dict) else {}
     service_specific = (
         snapshot.get("service_specific")
@@ -3475,7 +3473,13 @@ def service_operational_evidence(
         if bool(row.get("enabled", True)) and str(row.get("state") or "").lower() == "failed"
     ]
     pending_rows = sum(int(row.get("pending_rows") or 0) for row in lanes)
-    queues = snapshot.get("queues") if isinstance(snapshot.get("queues"), dict) else {}
+    queues = (
+        snapshot.get("queues")
+        if isinstance(snapshot.get("queues"), dict)
+        else service_specific.get("queues")
+        if isinstance(service_specific.get("queues"), dict)
+        else {}
+    )
     queue_drops = queues.get("queue_drop_total")
     cache = (
         service_specific.get("cache")
@@ -3484,23 +3488,57 @@ def service_operational_evidence(
         if isinstance(health.get("cache"), dict)
         else {}
     )
-    coverage = snapshot.get("coverage") if isinstance(snapshot.get("coverage"), dict) else {}
+    coverage = (
+        snapshot.get("coverage")
+        if isinstance(snapshot.get("coverage"), dict)
+        else service_specific.get("coverage")
+        if isinstance(service_specific.get("coverage"), dict)
+        else {}
+    )
+    checkpoint = next(
+        (
+            value
+            for value in (
+                snapshot.get("checkpoint"),
+                runtime.get("checkpoint"),
+                service_specific.get("checkpoint"),
+                operational.get("checkpoint"),
+            )
+            if isinstance(value, dict)
+        ),
+        {},
+    )
+    attention = [row for row in snapshot.get("attention") or [] if isinstance(row, dict)]
+    error_state = snapshot.get("error_state") if isinstance(snapshot.get("error_state"), dict) else {}
+    degraded = bool(error_state.get("active")) or bool(failed_lanes) or any(
+        str(row.get("status") or row.get("severity") or "").lower()
+        in {"action_required", "blocked", "degraded", "error", "failed", "warning"}
+        for row in attention
+    )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "authority": {
             "service": service_id,
-            "source": str(service_specific.get("source") or health.get("source") or "producer_status_contract"),
+            "source": str(
+                service_specific.get("source")
+                or health.get("source")
+                or "producer_status_contract"
+            ),
+            "evidence_present": bool(snapshot or health or metrics),
         },
         "freshness": {
-            "last_event_utc": effective.get("last_event_ts"),
+            "last_event_utc": effective.get("last_event_ts") or effective.get("last_event_utc"),
             "last_event_lag_ms": effective.get("last_event_lag_ms"),
+            "observed_at_utc": snapshot.get("checked_at_utc") or health.get("checked_at_utc"),
         },
         "coverage": coverage,
         "queues": {
-            "drop_total": queue_drops,
+            "drop_total": queue_drops if queue_drops is not None else queues.get("drop_total"),
             "pending_rows": pending_rows if lanes else None,
             "active_builds": effective.get("active_builds", cache.get("active_builds")),
             "build_capacity": queues.get("build_capacity"),
+            "depth": queues.get("depth", queues.get("queue_size")),
+            "oldest_age_ms": queues.get("oldest_age_ms"),
         },
         "cache": {
             "entries": effective.get("cache_entries", cache.get("entries")),
@@ -3516,6 +3554,13 @@ def service_operational_evidence(
             "recent_recoveries": [
                 row for row in operational.get("recent_recoveries") or [] if isinstance(row, dict)
             ],
+        },
+        "checkpoint": checkpoint,
+        "degradation": {
+            "degraded": degraded,
+            "evidence_present": bool(error_state or attention or lanes or operational),
+            "error_state": error_state,
+            "attention": attention,
         },
     }
 

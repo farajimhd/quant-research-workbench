@@ -628,10 +628,13 @@ broker command outside OMS.
 ## 10. Operations, migration, and validation
 
 - [x] Separate liveness from dependency/data/execution readiness.
-- [ ] Report coverage, freshness, queues, checkpoints, degradation, and authority.
-      QMD live/history coverage, freshness, queue/cache, transition and source
-      authority evidence is delivered; uniform checkpoint evidence across the
-      remaining existing service contracts is still open.
+- [x] Report coverage, freshness, queues, checkpoints, degradation, and authority.
+      Every registered service receives one schema-v2 operational projection
+      and the Service Health detail page renders the six decision dimensions.
+      QMD retains its richer live/history evidence; unchanged services project
+      only fields their existing contract declares. Missing coverage, clock,
+      queue, checkpoint, degradation, or authority evidence remains explicitly
+      `Unknown` rather than being inferred as healthy.
   - [x] Report historical-run checkpoint status and clocks without claiming
         that an existing checkpoint is resumable.
 - [x] Build a central backend/frontend readiness view.

@@ -159,6 +159,15 @@ This is an application-side composition layer only. It does not change any
 producer service. Existing service status, coverage and database contracts are
 used when present, and absent structured evidence remains visible as unknown.
 
+Every registered service now also receives the same schema-v2 operational
+projection: authority, freshness, coverage, queue, cache, transition,
+checkpoint and degradation fields are always present. The composer projects
+only producer-declared values; an absent producer contract remains an empty
+object or `null` and is displayed as `Unknown`, never promoted to healthy. The
+Service Health detail page renders the six operational decision dimensions
+uniformly, so QMD's richer evidence and unchanged producer services share one
+review surface without pretending their contracts are equally complete.
+
 Backend service-table and News/SEC histogram projections use a shared
 thread-safe TTL/LRU cache contract with explicit entry limits and contract
 revisions. Source-revision-aware invalidation is available to callers; the

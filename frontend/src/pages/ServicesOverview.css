@@ -49,6 +49,43 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.service-operational-authority-panel {
+  margin-top: 12px;
+}
+
+.service-operational-authority-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  padding: 10px 12px;
+}
+
+.service-operational-authority-metric {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 12px;
+}
+
+.service-operational-authority-metric:first-child { padding-left: 0; }
+.service-operational-authority-metric + .service-operational-authority-metric { border-left: 1px solid var(--surface-border); }
+.service-operational-authority-metric > span { color: var(--muted-foreground); font-size: 8px; font-weight: 720; letter-spacing: .065em; text-transform: uppercase; }
+.service-operational-authority-metric > strong { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.service-operational-authority-metric > small { color: var(--muted-foreground); font-size: 8.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.service-operational-authority-metric.tone-good > strong { color: var(--badge-success-fg); }
+.service-operational-authority-metric.tone-warn > strong { color: var(--badge-warning-fg); }
+
+@media (max-width: 1180px) {
+  .service-operational-authority-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .service-operational-authority-metric:nth-child(4) { border-left: 0; padding-left: 0; }
+  .service-operational-authority-metric:nth-child(n + 4) { border-top: 1px solid var(--surface-border); margin-top: 8px; padding-top: 8px; }
+}
+
+@media (max-width: 720px) {
+  .service-operational-authority-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .service-operational-authority-metric:nth-child(odd) { border-left: 0; padding-left: 0; }
+  .service-operational-authority-metric:nth-child(n + 3) { border-top: 1px solid var(--surface-border); margin-top: 8px; padding-top: 8px; }
+}
+
 .service-fleet-card {
   --fleet-tone: var(--badge-muted-fg);
   background: transparent;
