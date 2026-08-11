@@ -294,6 +294,7 @@ def historical_scanner_technical_projection(
     return dict(projection), {
         "technical_materialized": materialized,
         "technical_schema_version": SCANNER_TECHNICAL_SCHEMA_VERSION,
+        "source_revision": source_revision,
         "technical_calculation_windows": requested,
         "technical_windows": windows,
     }

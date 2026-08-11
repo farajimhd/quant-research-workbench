@@ -723,6 +723,14 @@ def resolve_historical_watchlist(
         historical_scanner_snapshot,
         historical_scanner_technical_projection,
     )
+    from src.backend.query_plans.reference_scanner_asof_v1 import (
+        QUERY_PLAN_ID as REFERENCE_PLAN_ID,
+        QUERY_PLAN_VERSION as REFERENCE_PLAN_VERSION,
+    )
+    from src.backend.query_plans.sec_fundamentals_asof_v1 import (
+        QUERY_PLAN_ID as FUNDAMENTALS_PLAN_ID,
+        QUERY_PLAN_VERSION as FUNDAMENTALS_PLAN_VERSION,
+    )
 
     rows, scanner_meta = historical_scanner_snapshot(as_of, lookback_minutes=15)
     if not rows:
@@ -755,9 +763,12 @@ def resolve_historical_watchlist(
     technical, technical_meta = historical_scanner_technical_projection(
         as_of, calculation_windows=calculation_windows
     )
+    fundamentals_requested = any(
+        source.startswith("fundamental.") for source in sources
+    )
     fundamentals = (
         historical_scanner_fundamental_projection(as_of)
-        if any(source.startswith("fundamental.") for source in sources)
+        if fundamentals_requested
         else {}
     )
     candidates: list[dict[str, Any]] = []
@@ -793,6 +804,32 @@ def resolve_historical_watchlist(
         "status": "ready" if scanner_ready else str(scanner_meta.get("status") or "partial"),
         "scanner": scanner_meta,
         "technical": technical_meta,
+        "authority": {
+            "scanner": {
+                "schema_version": scanner_meta.get("schema_version"),
+                "source_revision": scanner_meta.get("source_revision"),
+                "snapshot_at_utc": scanner_meta.get("snapshot_at_utc"),
+            },
+            "technical": {
+                "schema_version": technical_meta.get("technical_schema_version"),
+                "source_revision": technical_meta.get("source_revision"),
+                "windows": technical_meta.get("technical_windows") or {},
+            },
+            "reference": {
+                "query_plan_id": REFERENCE_PLAN_ID,
+                "query_plan_version": REFERENCE_PLAN_VERSION,
+                "as_of": as_of.astimezone(UTC).isoformat(),
+            },
+            "fundamentals": (
+                {
+                    "query_plan_id": FUNDAMENTALS_PLAN_ID,
+                    "query_plan_version": FUNDAMENTALS_PLAN_VERSION,
+                    "as_of": as_of.astimezone(UTC).isoformat(),
+                }
+                if fundamentals_requested
+                else None
+            ),
+        },
     }
 
 

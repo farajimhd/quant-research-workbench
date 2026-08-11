@@ -723,6 +723,7 @@ class ReplayRunController:
             self.updated_at = datetime.now(UTC)
             await self._publish(force=True)
             await self._initialize_runtime()
+            self._record_historical_watchlist_authority()
             frames = await self._load_strategy_frames()
             frame_index = 0
             self._stream_tickers = self._resolved_tickers()
@@ -1327,6 +1328,20 @@ class ReplayRunController:
                         },
                     )
 
+    def _record_historical_watchlist_authority(self) -> None:
+        for snapshot in self._historical_watchlist_timeline():
+            authority = list(snapshot.get("authority") or ())
+            if not authority:
+                continue
+            effective_at = snapshot["effective_at"]
+            self._record_data_authority(
+                f"watchlist_membership:{effective_at.astimezone(UTC).isoformat()}",
+                {
+                    "authority": "historical_watchlist_resolution",
+                    "effective_at": effective_at.astimezone(UTC).isoformat(),
+                    "watchlists": authority,
+                },
+            )
     def _resolved_tickers(self) -> tuple[str, ...]:
         assignment_tickers = (
             [assignment.ticker for assignment in self._strategy.assignments()]
@@ -1655,11 +1670,11 @@ def _debug_time(value: Any) -> datetime:
     return parsed
 
 
-def _historical_watchlist_members_for_configuration(
+def _historical_watchlist_resolution_for_configuration(
     approved: dict[str, Any],
     *,
     as_of: datetime,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Resolve every enabled Watchlist universe at one causal event clock.
 
     Replay and Backtest must never interpret a partial scanner materialization as
@@ -1673,7 +1688,7 @@ def _historical_watchlist_members_for_configuration(
         and str(universe.get("source") or "") == "watchlist"
     ]
     if not universes:
-        return []
+        return [], []
     model = dict(approved.get("configuration_model") or {})
     if not model:
         raise ValueError(
@@ -1682,6 +1697,7 @@ def _historical_watchlist_members_for_configuration(
     from src.backend.watchlist_runtime_service import resolve_historical_watchlist
 
     members: dict[str, dict[str, Any]] = {}
+    authority: list[dict[str, Any]] = []
     for universe in universes:
         resolved = resolve_historical_watchlist(
             model,
@@ -1696,11 +1712,30 @@ def _historical_watchlist_members_for_configuration(
                 f"Historical Watchlist {universe.get('name')} requires a complete "
                 f"full-universe snapshot; current status is {detail}"
             )
+        authority.append(
+            {
+                "watchlist_id": str(universe.get("scanner_view_id") or ""),
+                "watchlist_name": str(universe.get("name") or ""),
+                **dict(resolved.get("authority") or {}),
+            }
+        )
         for row in resolved.get("members") or []:
             ticker = str(row.get("ticker") or "").strip().upper()
             if ticker:
                 members[ticker] = dict(row)
-    return [members[ticker] for ticker in sorted(members)]
+    return [members[ticker] for ticker in sorted(members)], authority
+
+
+def _historical_watchlist_members_for_configuration(
+    approved: dict[str, Any],
+    *,
+    as_of: datetime,
+) -> list[dict[str, Any]]:
+    members, _authority = _historical_watchlist_resolution_for_configuration(
+        approved,
+        as_of=as_of,
+    )
+    return members
 
 
 def _historical_watchlist_membership_timeline_for_configuration(
@@ -1730,17 +1765,22 @@ def _historical_watchlist_membership_timeline_for_configuration(
         if cursor.weekday() < 5:
             clocks.append(datetime.combine(cursor, clock_time(4, 0), tzinfo=NEW_YORK))
         cursor += timedelta(days=1)
-    return [
-        {
-            "effective_at": as_of,
-            "members": _historical_watchlist_members_for_configuration(
-                approved,
-                as_of=as_of,
-            ),
-        }
-        for as_of in clocks
-        if as_of <= local_end
-    ]
+    timeline: list[dict[str, Any]] = []
+    for as_of in clocks:
+        if as_of > local_end:
+            continue
+        members, authority = _historical_watchlist_resolution_for_configuration(
+            approved,
+            as_of=as_of,
+        )
+        timeline.append(
+            {
+                "effective_at": as_of,
+                "members": members,
+                "authority": authority,
+            }
+        )
+    return timeline
 
 
 def replay_preflight(

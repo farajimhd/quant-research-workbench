@@ -8,6 +8,8 @@ from research.mlops.clickhouse import quote_ident, sql_string
 
 HISTORY_LIMIT = 10_000
 XBRL_HISTORY_START = datetime(2019, 1, 1, tzinfo=UTC)
+QUERY_PLAN_ID = "sec.fundamentals_asof.v1"
+QUERY_PLAN_VERSION = 1
 
 
 def fundamental_fact_queries(

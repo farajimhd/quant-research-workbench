@@ -756,6 +756,16 @@ bounded direct ClickHouse paths remain documented in
     of superseded revisions and complete Watchlist-enrichment revision evidence
     remain explicit open work. Python compile and all 44 focused Replay,
     Backtest, Debug, source-continuation, and Canvas-contract tests passed.
+99. Completed causal historical enrichment authority for Watchlist decisions.
+    Every session-boundary membership resolution now returns and persists its
+    full-market Scanner archive revision, technical archive revision and exact
+    windows/schema, reference query-plan version and clock, and fundamentals
+    plan version/clock when a rule requests it. The fundamentals authority is
+    retained even when no facts exist, distinguishing causal absence from an
+    unrecorded dependency. Replay/Backtest journal this bundle before Strategy
+    evaluation and include it in the run manifest. Python compile and all 64
+    focused Replay, Watchlist, Scanner, reference-plan, and fundamentals-plan
+    tests passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

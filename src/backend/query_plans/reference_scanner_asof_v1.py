@@ -5,6 +5,10 @@ from datetime import UTC, datetime
 from research.mlops.clickhouse import quote_ident, sql_string
 
 
+QUERY_PLAN_ID = "reference.scanner_asof.v1"
+QUERY_PLAN_VERSION = 1
+
+
 def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> str:
     """Build the causal, set-based reference projection for Historical Scanner."""
     if cutoff.tzinfo is None:

@@ -402,12 +402,28 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         discovery["watchlists"] = [vwap]
         scanner.return_value = (
             [{"ticker": "AAPL", "last": 101.0, "change_pct": 1.0}],
-            {"complete_universe": True, "status": "ready"},
+            {
+                "complete_universe": True,
+                "schema_version": "canvas_historical_scanner_v1",
+                "snapshot_at_utc": "2026-08-10T16:00:00+00:00",
+                "source_revision": "archive:revision-17",
+                "status": "ready",
+            },
         )
         reference.return_value = {"AAPL": {"market_cap": 1_000_000_000}}
         technical.return_value = (
             {"AAPL": {"technical__vwap__1s__hlc3": 100.0}},
-            {"technical_calculation_windows": ["1s"]},
+            {
+                "technical_calculation_windows": ["1s"],
+                "technical_schema_version": "canvas_scanner_technical_v3",
+                "source_revision": "archive:revision-17",
+                "technical_windows": {
+                    "1s": {
+                        "window_start_utc": "2026-08-10T15:59:59+00:00",
+                        "window_end_utc": "2026-08-10T16:00:00+00:00",
+                    }
+                },
+            },
         )
         fundamentals.return_value = {}
         as_of = datetime(2026, 8, 10, 16, tzinfo=UTC)
@@ -418,6 +434,19 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
 
         self.assertEqual(result["members"][0]["ticker"], "AAPL")
         self.assertEqual(result["status"], "ready")
+        self.assertEqual(
+            result["authority"]["scanner"]["source_revision"],
+            "archive:revision-17",
+        )
+        self.assertEqual(
+            result["authority"]["technical"]["source_revision"],
+            "archive:revision-17",
+        )
+        self.assertEqual(
+            result["authority"]["reference"]["query_plan_id"],
+            "reference.scanner_asof.v1",
+        )
+        self.assertIsNone(result["authority"]["fundamentals"])
         technical.assert_called_once_with(as_of, calculation_windows=["1s"])
         fundamentals.assert_not_called()
 

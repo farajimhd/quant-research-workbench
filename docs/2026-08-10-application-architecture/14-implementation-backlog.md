@@ -502,12 +502,13 @@ load progressively without false continuity.
         persist exact fixture evidence, and expose mode-specific backend run
         and Canvas APIs without calling QMD History.
   - [x] Add the end-user fixture library/editor and Backtest Debug run page.
-- [ ] Pin causal market/enrichment versions for historical decisions.
+- [x] Pin causal market/enrichment versions for historical decisions.
   - [x] Pin QMD event, per-ticker/timeframe derived, and Scanner-signal revisions
         that feed historical Strategy decisions; use the fixture content hash
         as Backtest Debug authority.
-  - [ ] Persist equivalent revision evidence for every historical Watchlist
-        reference/technical/fundamental membership input.
+  - [x] Persist equivalent revision evidence for every historical Watchlist
+        reference/technical/fundamental membership input, including the plan
+        and clock when a causal query returns no facts.
 - [ ] Standardize progress, pause, resume, cancel, failure, and completion.
   - [x] Give Backtest and Backtest Debug a shared typed `pause`/`play`/`stop`
         command contract and user controls while rejecting Replay-only commands.

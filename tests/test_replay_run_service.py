@@ -333,11 +333,11 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
     def test_resolves_first_clock_and_each_later_weekday_session_boundary(self) -> None:
         approved = approved_configuration()
         with patch(
-            "src.backend.replay_run_service._historical_watchlist_members_for_configuration",
-            side_effect=lambda _approved, *, as_of: [{
+            "src.backend.replay_run_service._historical_watchlist_resolution_for_configuration",
+            side_effect=lambda _approved, *, as_of: ([{
                 "ticker": as_of.strftime("D%d"),
                 "ibkr_conid": as_of.day,
-            }],
+            }], [{"scanner": {"source_revision": f"revision-{as_of.day}"}}]),
         ) as resolver:
             timeline = _historical_watchlist_membership_timeline_for_configuration(
                 approved,
@@ -354,6 +354,10 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
             ],
         )
         self.assertEqual(resolver.call_count, 3)
+        self.assertEqual(
+            timeline[0]["authority"][0]["scanner"]["source_revision"],
+            "revision-7",
+        )
 
     def test_controller_applies_ordered_membership_changes_and_journals_them(self) -> None:
         definition = ReplayRunDefinition(
@@ -369,6 +373,10 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
                 {
                     "effective_at": datetime(2026, 8, 10, 9, 45, tzinfo=NEW_YORK),
                     "members": [{"ticker": "AAPL", "ibkr_conid": 1}],
+                    "authority": [{
+                        "watchlist_id": "small",
+                        "scanner": {"source_revision": "archive:revision-17"},
+                    }],
                 },
                 {
                     "effective_at": datetime(2026, 8, 11, 4, 0, tzinfo=NEW_YORK),
@@ -376,6 +384,7 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
                 },
             ]
             controller._journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            controller._record_historical_watchlist_authority()
 
             controller._apply_historical_watchlist_membership(
                 datetime(2026, 8, 10, 10, 0, tzinfo=NEW_YORK)
@@ -391,6 +400,16 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
                 for record in controller._journal.watchlist_membership_records()
             ]
             self.assertEqual(events, ["added", "added", "removed"])
+            authority = controller.snapshot()["data_authority"]["sources"]
+            self.assertTrue(
+                any(key.startswith("watchlist_membership:") for key in authority)
+            )
+            authority_records = controller._journal.recent_records(
+                controller.run_id,
+                categories=("data_authority",),
+                limit=10,
+            )
+            self.assertEqual(len(authority_records), 1)
             controller._journal.close()
 
 

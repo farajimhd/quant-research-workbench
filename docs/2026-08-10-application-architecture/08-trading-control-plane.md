@@ -176,6 +176,12 @@ implemented, but restart reconstruction is not yet authorized as safe resume.
   fails the run. Backtest Debug uses the exact fixture content hash as both its
   plan and revision authority. This proves what an active run consumed; it does
   not yet make superseded ClickHouse revisions rereadable after restart.
+- Each causal historical Watchlist membership snapshot adds its own authority
+  bundle before Strategy evaluation. It names the full-market Scanner and
+  technical archive revision, technical windows/schema, and the versioned
+  reference and (when requested) fundamentals plans at the exact membership
+  clock. A fundamental plan is recorded even when it returns no facts, so
+  causal absence remains reproducible decision evidence.
 - Backtest Watchlist membership is pinned at the requested first event clock
   and re-resolved causally at every later 04:00 New York weekday-session
   boundary. The shared controller journals additions/removals, prevents new
