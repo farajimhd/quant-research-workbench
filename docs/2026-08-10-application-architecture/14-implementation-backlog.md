@@ -348,23 +348,24 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
         overlays recorded by the current schema. Conflicting leaf paths are
         shown before the user applies the overlay-preferred merge or keeps the
         new approved default.
-- [ ] Instantiate published defaults in Live, Replay, Backtest, and research workspaces.
+- [x] Instantiate published defaults in Live, Replay, Backtest, and research workspaces.
   - [x] Standalone Canvas resolves the approved profile; Replay uses its pinned
         release profile.
   - [x] Migrate Live/Paper to the same resolver after the existing account and
-        service preflight. Backtest now also uses the resolver; only a future
-        research workspace remains open.
+        service preflight. Backtest and Research now also use the resolver.
   - [x] Migrate Backtest to the same resolver using its pinned run profile and
         causal run clock.
-  - [ ] Migrate a future research workspace to the same resolver.
-- [ ] Persist user/workspace overlays separately from defaults.
+  - [x] Add a dedicated Research workspace that resolves the approved profile
+        without acquiring a Replay run or executable account authority.
+- [x] Persist user/workspace overlays separately from defaults.
   - [x] Standalone Canvas and Replay overlays are isolated by workspace/run and approved revision
         and can be reset without changing Configuration defaults.
   - [x] Apply the same overlay contract to Live/Paper using separate
-        mode-and-account-set scopes. Backtest now has the same contract; only a
-        future research workspace remains open.
+        mode-and-account-set scopes. Backtest and Research use the same
+        revision-safe contract with their own scopes.
   - [x] Apply the same run-and-revision overlay contract to Backtest.
-  - [ ] Apply the same overlay contract to a future research workspace.
+  - [x] Apply the same overlay contract to Research through an isolated
+        `research.<workspace>` scope.
 - [x] Route intraday historical charts through QMD History source planning and
       its shared derived cache.
 - [x] Return base bars first and progressively add requested indicators,

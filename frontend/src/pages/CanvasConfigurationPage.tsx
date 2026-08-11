@@ -415,7 +415,7 @@ type ContainerSettings = {
 };
 
 type CanvasPreviewContext = { previewTime: string; sessionDate: string };
-type CanvasRuntimeMode = Extract<TradingWorkspaceMode, "backtest" | "backtest_debug" | "live" | "paper"> | "canvas" | "replay";
+type CanvasRuntimeMode = Extract<TradingWorkspaceMode, "backtest" | "backtest_debug" | "live" | "paper"> | "canvas" | "replay" | "research";
 type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; title: string };
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
@@ -1623,7 +1623,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const accountSignature = [...resolvedAccountKeys].sort().join(".") || runtimeMode;
   const runtimeBase = replayRun?.canvas_profile ?? approvedCanvas?.profile;
   const runtimeRevision = replayRun?.configuration_content_hash || replayRun?.canvas_revision || approvedCanvas?.content_hash || approvedCanvas?.canvas_revision || "draft";
-  const runtimeScope = replayRun ? `${runtimeMode}.${replayRun.run_id}.${runtimeWorkspaceId || "main"}` : liveMode ? `${runtimeMode}.${accountSignature}` : approvedCanvas ? "canvas" : "configuration";
+  const runtimeScope = replayRun ? `${runtimeMode}.${replayRun.run_id}.${runtimeWorkspaceId || "main"}` : liveMode ? `${runtimeMode}.${accountSignature}` : runtimeMode === "research" ? `research.${runtimeWorkspaceId || canvasId}` : approvedCanvas ? "canvas" : "configuration";
   const runtimeRegistryStorageKey = runtimeBase ? canvasRuntimeRegistryStorageKey(runtimeScope, runtimeRevision) : "";
   const workspaceStorageKey = runtimeBase
     ? canvasRuntimeWorkspaceStorageKey(runtimeScope, runtimeRevision, canvasId)
@@ -2229,11 +2229,11 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         managementContent={manager
           ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} />
           : runtimeBase
-            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={runtimeMode === "backtest_debug" ? "Backtest Debug" : runtimeMode === "backtest" ? "Backtest" : runtimeMode === "replay" ? "Replay" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : "Canvas"} onApplyRebase={applyRuntimeRebase} onKeepApproved={keepApprovedAfterRebase} onReset={resetRuntimeOverlay} onSaveAs={saveRuntimeWorkspace} rebase={runtimeRebase} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
+            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={runtimeMode === "backtest_debug" ? "Backtest Debug" : runtimeMode === "backtest" ? "Backtest" : runtimeMode === "replay" ? "Replay" : runtimeMode === "research" ? "Research" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : "Canvas"} onApplyRebase={applyRuntimeRebase} onKeepApproved={keepApprovedAfterRebase} onReset={resetRuntimeOverlay} onSaveAs={saveRuntimeWorkspace} rebase={runtimeRebase} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
             : null}
         managementOpen={managementEnabled && managementOpen}
         metaForContainer={metaForContainer}
-        mode={runtimeMode === "canvas" ? "replay" : runtimeMode}
+        mode={runtimeMode === "canvas" || runtimeMode === "research" ? "replay" : runtimeMode}
         onContainerAdded={registerContainerInstance}
         onMoveContainerToCanvas={runtimeBase ? undefined : moveContainer}
         onMoveGroupToCanvas={runtimeBase ? undefined : moveGroup}
@@ -2335,7 +2335,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
           </>;
         }}
         titleForContainer={(definition, instanceId) => containerInstanceTitle(definition.id, instanceId, workspaceState, registry)}
-        workspaceBadge={runtimeMode === "backtest_debug" ? "Backtest Debug" : runtimeMode === "backtest" ? "Backtest" : runtimeMode === "replay" ? "Replay" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : approvedCanvas ? "Canvas" : manager ? "Main" : "Focus"}
+        workspaceBadge={runtimeMode === "backtest_debug" ? "Backtest Debug" : runtimeMode === "backtest" ? "Backtest" : runtimeMode === "replay" ? "Replay" : runtimeMode === "research" ? "Research" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : approvedCanvas ? "Canvas" : manager ? "Main" : "Focus"}
       />
     </div>
   );
@@ -2357,7 +2357,7 @@ function CanvasManager({ availableCanvasIds, onCreate, onOpen, onRemove, registr
   </section>;
 }
 
-function RuntimeCanvasScope({ mode, onApplyRebase, onKeepApproved, onReset, onSaveAs, rebase, revision }: { mode: "Backtest" | "Backtest Debug" | "Canvas" | "Live" | "Paper" | "Replay"; onApplyRebase: () => void; onKeepApproved: () => void; onReset: () => void; onSaveAs: () => void; rebase: CanvasRuntimeRebase | null; revision: string }) {
+function RuntimeCanvasScope({ mode, onApplyRebase, onKeepApproved, onReset, onSaveAs, rebase, revision }: { mode: "Backtest" | "Backtest Debug" | "Canvas" | "Live" | "Paper" | "Replay" | "Research"; onApplyRebase: () => void; onKeepApproved: () => void; onReset: () => void; onSaveAs: () => void; rebase: CanvasRuntimeRebase | null; revision: string }) {
   return <section aria-label={`${mode} layout scope`} className="replay-layout-scope">
     <ShieldCheck aria-hidden="true" size={15} />
     <div><strong>{mode} workspace overlay</strong><small>{rebase ? `A newer approved Canvas is available. Three-way rebase found ${rebase.conflicts.length} conflict${rebase.conflicts.length === 1 ? "" : "s"}.` : `Starts from approved Canvas ${revision.slice(0, 10)}. Changes persist only for this revision and never rewrite Configuration defaults.`}</small>{rebase?.conflicts.length ? <span title={rebase.conflicts.join("\n")}>{rebase.conflicts.slice(0, 3).join(", ")}{rebase.conflicts.length > 3 ? ` +${rebase.conflicts.length - 3}` : ""}</span> : null}</div>

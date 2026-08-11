@@ -6,11 +6,12 @@ import { CanvasConfigurationPage, CanvasFocusPage } from "./pages/CanvasConfigur
 import { BacktestDebugPage } from "./pages/BacktestDebugPage";
 import { HistoricalTradingPage } from "./pages/HistoricalTradingPage";
 import { RealLiveTradingPage } from "./pages/RealLiveTradingPage";
+import { ResearchWorkspacePage } from "./pages/ResearchWorkspacePage";
 import { ReplayTradingPage } from "./pages/ReplayTradingPage";
 import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
 import { TradingConfigurationPage, type TradingConfigurationSection } from "./pages/TradingConfigurationPage";
 
-const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "canvas-configuration", "market-discovery-configuration", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
+const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "market-discovery-configuration", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -60,6 +61,9 @@ export function App() {
       </div>
       <div aria-hidden={page !== "backtest-debug"} className={page === "backtest-debug" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "backtest-debug" || visitedPages.has("backtest-debug") ? <BacktestDebugPage /> : null}
+      </div>
+      <div aria-hidden={page !== "research-workspace"} className={page === "research-workspace" ? "page-cache-panel active" : "page-cache-panel"}>
+        {page === "research-workspace" || visitedPages.has("research-workspace") ? <ResearchWorkspacePage /> : null}
       </div>
       <div aria-hidden={page !== "canvas-configuration"} className={page === "canvas-configuration" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "canvas-configuration" || visitedPages.has("canvas-configuration") ? <CanvasConfigurationPage /> : null}

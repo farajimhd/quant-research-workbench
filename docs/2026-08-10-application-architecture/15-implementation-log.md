@@ -635,6 +635,18 @@ bounded direct ClickHouse paths remain documented in
     Stale text claiming Backtest still lacked the shared resolver/overlay was
     corrected. Research workspace adoption, Live/Paper executable proposal
     migration, and durable historical resume remain explicitly open.
+86. Added the separate Research workspace without inventing a second Canvas
+    configuration authority. The route resolves the approved Canvas profile,
+    instantiates the shared request-mode container surface, and persists layout,
+    link, symbol, and display changes under an isolated
+    `research.<workspace>` revision scope. It neither creates a Replay run nor
+    acquires executable account authority; reset, rebase, and save-as cannot
+    rewrite Configuration defaults. Research is registered in navigation and
+    the managed visual-review page matrix. The managed TypeScript/Vite
+    production build passed. Targeted normal and compact route captures
+    reported zero objective issues; with the backend intentionally absent they
+    also verified the explicit `Research unavailable` fail-closed state. The
+    shared successful Canvas surface had already been validated separately.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

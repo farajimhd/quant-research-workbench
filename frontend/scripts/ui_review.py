@@ -29,6 +29,7 @@ PAGES = (
     "replay-trading",
     "backtest-trading",
     "backtest-debug",
+    "research-workspace",
     "canvas-configuration",
     "market-discovery-configuration",
     "strategy-configuration",
@@ -51,7 +52,7 @@ VIEWPORTS = {
     "normal": {"width": 1600, "height": 1000},
     "compact": {"width": 1280, "height": 720},
 }
-REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "canvas-configuration", "market-discovery-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard")
+REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "market-discovery-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard")
 REPRESENTATIVE_THEMES = ("light", "dark")
 TARGETED_SCALES = (0.8, 1.0, 1.25)
 

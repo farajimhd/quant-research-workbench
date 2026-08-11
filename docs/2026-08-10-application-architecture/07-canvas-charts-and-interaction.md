@@ -142,15 +142,19 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   reported, and a failed registry check leaves existing workspaces visible but
   blocks unverified additions.
 - The backend now exposes a Canvas-only projection of the approved release.
-  Standalone Canvas, Replay, Live, Paper, and Backtest instantiate that
-  published/pinned profile, while
+  Standalone Canvas, Replay, Live, Paper, Backtest, and Research instantiate
+  that published/pinned profile, while
   revision-scoped browser overlays persist layout, links, symbols and container
   settings without writing to Configuration storage. Each workspace can
   reset its overlay to the approved profile or clone its current state into a
   separate revision-scoped workspace. Live/Paper overlays are additionally
   isolated by mode and selected account set; Backtest overlays are isolated by
-  run and revision. A separate research workspace still needs this integration.
-  For overlays
+  run and revision; Research overlays use an independent `research.<workspace>`
+  scope. The Research route is a request-mode analysis workspace: it reuses the
+  historical Canvas container presentation, but does not pretend to be Replay
+  and does not acquire a trading runtime or account authority. Reset, rebase,
+  and save-as operations affect only the Research overlay and never the approved
+  Configuration default. For overlays
   saved under the current overlay-record schema, a newer approved revision is
   compared through a three-way base/overlay/new-base merge. The UI reports
   conflicting leaf paths and requires an explicit choice to apply the
@@ -167,8 +171,8 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   indicator snapshots by bar timestamp. This replaces a corrected current bar
   instead of drawing a duplicate, labels historical-to-live transition and
   partial/stale tail states, and retries from another complete snapshot. The
-  remaining workspace drift is research-workspace adoption and storage-version
-  invalidation for derived chart caches.
+  remaining chart-workspace drift is storage-version invalidation for derived
+  chart caches.
 - The existing Live/Paper account preflight and gateway-start boundary remains
   authoritative. After the gate, the route resolves the published Canvas,
   obtains scanner/chart/tape state from QMD Live, and obtains broker,

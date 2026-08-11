@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, BadgeCheck, BriefcaseBusiness, Bug, Check, ChevronLeft, ChevronRight, FlaskConical, GitBranch, History, PanelsTopLeft, Palette, ScanSearch, ServerCog, ShieldCheck, UsersRound, Wifi } from "lucide-react";
+import { Activity, BadgeCheck, BriefcaseBusiness, Bug, Check, ChevronLeft, ChevronRight, FlaskConical, GitBranch, History, Microscope, PanelsTopLeft, Palette, ScanSearch, ServerCog, ShieldCheck, UsersRound, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "backtest-debug" | "canvas-configuration" | "market-discovery-configuration" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
+export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "backtest-debug" | "research-workspace" | "canvas-configuration" | "market-discovery-configuration" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
@@ -25,7 +25,8 @@ const navGroups = [
       { key: "real-live-trading" as PageKey, label: "Live", icon: Wifi },
       { key: "replay-trading" as PageKey, label: "Replay", icon: History },
       { key: "backtest-trading" as PageKey, label: "Backtest", icon: FlaskConical },
-      { key: "backtest-debug" as PageKey, label: "Debug", icon: Bug }
+      { key: "backtest-debug" as PageKey, label: "Debug", icon: Bug },
+      { key: "research-workspace" as PageKey, label: "Research", icon: Microscope }
     ]
   },
   {
