@@ -55,8 +55,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--worker-prefetch", default="1,2,4")
     parser.add_argument("--host-cache-batches", default="2,4,8")
     parser.add_argument("--length-bucket-batches", default="0,2")
-    parser.add_argument("--warmup-batches", type=int, default=2)
-    parser.add_argument("--measured-batches", type=int, default=8)
+    parser.add_argument("--warmup-batches", type=int, default=4)
+    parser.add_argument("--measured-batches", type=int, default=32)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     return parser.parse_args(list(argv) if argv is not None else None)
@@ -99,12 +99,14 @@ def _run(
     data.validate()
     dataset = OfflineShardDataset(units, seed=17, shuffle_units=True)
     loader = make_offline_dataloader(dataset, data, drop_last=False)
+    cold_started = time.perf_counter()
     prefetcher = DeviceBatchPrefetcher(
         loader,
         device,
         enabled=device.type == "cuda",
         host_cache_batches=candidate.host_cache_batches,
     )
+    cold_start_seconds = time.perf_counter() - cold_started
     waits: list[float] = []
     origins = padded = blocks = 0
     started = 0.0
@@ -137,6 +139,7 @@ def _run(
         "padded_origin_slots": padded,
         "origin_slot_utilization": origins / max(1, padded),
         "elapsed_seconds": elapsed,
+        "cold_start_seconds": cold_start_seconds,
         "origins_per_second": origins / elapsed,
         "blocks_per_second": blocks / elapsed,
         "wait_p50_ms": statistics.median(waits) * 1_000 if waits else 0.0,
@@ -148,8 +151,8 @@ def _run(
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.batch_size <= 0 or args.warmup_batches < 0 or args.measured_batches <= 0:
-        raise ValueError("batch size and measured batches must be positive; warmup cannot be negative")
+    if args.batch_size <= 0 or args.warmup_batches <= 0 or args.measured_batches <= 0:
+        raise ValueError("batch size, warmup batches, and measured batches must be positive")
     root = Path(args.offline_shard_root)
     verify_shard_catalog_lock(root)
     runtime = DataConfig(
