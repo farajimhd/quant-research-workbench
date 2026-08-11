@@ -15,6 +15,7 @@ use qmd_core::indicators::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, OnceCell};
 
@@ -642,7 +643,7 @@ impl HistoricalEventSource {
         }
         if !selects.is_empty() {
             let sql = format!(
-                "SELECT * FROM ({}) ORDER BY sip_timestamp_us, ticker, ordinal FORMAT JSONEachRow",
+                "SELECT * FROM ({}) ORDER BY sip_timestamp_us, ticker, ordinal FORMAT TabSeparated",
                 selects.join(" UNION ALL ")
             );
             self.stream_query_rows(sql, batch_size, sender.clone())
@@ -708,8 +709,7 @@ impl HistoricalEventSource {
             {
                 let line_end = consumed + relative_end;
                 if line_end > consumed {
-                    let row = serde_json::from_slice::<HistoricalRow>(&buffer[consumed..line_end])
-                        .map_err(|error| format!("invalid historical stream row: {error}"))?;
+                    let row = parse_historical_tsv_row(&buffer[consumed..line_end])?;
                     batch.push(row_to_event(row));
                     if batch.len() >= batch_size {
                         sender
@@ -726,7 +726,7 @@ impl HistoricalEventSource {
             }
         }
         if !buffer.iter().all(|byte| byte.is_ascii_whitespace()) {
-            let row = serde_json::from_slice::<HistoricalRow>(&buffer)
+            let row = parse_historical_tsv_row(&buffer)
                 .map_err(|error| format!("invalid final historical stream row: {error}"))?;
             batch.push(row_to_event(row));
         }
@@ -1721,6 +1721,47 @@ fn row_to_event(row: HistoricalRow) -> LiveCompactEvent {
     }
 }
 
+fn parse_historical_tsv_row(bytes: &[u8]) -> Result<HistoricalRow, String> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| format!("invalid historical stream UTF-8: {error}"))?;
+    let fields = text.split('\t').collect::<Vec<_>>();
+    if fields.len() != 17 {
+        return Err(format!(
+            "invalid historical stream column count: expected 17, found {}",
+            fields.len()
+        ));
+    }
+    Ok(HistoricalRow {
+        ticker: fields[0].to_string(),
+        ordinal: parse_tsv_field(&fields, 1, "ordinal")?,
+        source_sequence: parse_tsv_field(&fields, 2, "source_sequence")?,
+        event_meta: parse_tsv_field(&fields, 3, "event_meta")?,
+        sip_timestamp_us: parse_tsv_field(&fields, 4, "sip_timestamp_us")?,
+        price_primary_int: parse_tsv_field(&fields, 5, "price_primary_int")?,
+        price_secondary_int: parse_tsv_field(&fields, 6, "price_secondary_int")?,
+        size_primary: parse_tsv_field(&fields, 7, "size_primary")?,
+        size_secondary: parse_tsv_field(&fields, 8, "size_secondary")?,
+        exchange_primary: parse_tsv_field(&fields, 9, "exchange_primary")?,
+        exchange_secondary: parse_tsv_field(&fields, 10, "exchange_secondary")?,
+        condition_token_1: parse_tsv_field(&fields, 11, "condition_token_1")?,
+        condition_token_2: parse_tsv_field(&fields, 12, "condition_token_2")?,
+        condition_token_3: parse_tsv_field(&fields, 13, "condition_token_3")?,
+        condition_token_4: parse_tsv_field(&fields, 14, "condition_token_4")?,
+        condition_token_5: parse_tsv_field(&fields, 15, "condition_token_5")?,
+        event_date: fields[16].to_string(),
+    })
+}
+
+fn parse_tsv_field<T>(fields: &[&str], index: usize, name: &str) -> Result<T, String>
+where
+    T: FromStr,
+    T::Err: std::fmt::Display,
+{
+    fields[index]
+        .parse()
+        .map_err(|error| format!("invalid historical stream {name}: {error}"))
+}
+
 fn event_follows_cursor(
     event: &LiveCompactEvent,
     cursor: &HistoricalCursor,
@@ -1771,8 +1812,8 @@ mod tests {
     use super::{
         archive_session_end_utc, build_source_plan, event_select, macro_bar_is_closed,
         materialize_confirmed_recent_coverage, merge_coverage_intervals, normalize_ticker,
-        row_to_event, CoverageInterval, EventWindow, HistoricalRow, MarketSourceTier,
-        RecentCoverageRow,
+        parse_historical_tsv_row, row_to_event, CoverageInterval, EventWindow, HistoricalRow,
+        MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{TimeZone, Utc};
@@ -1816,6 +1857,24 @@ mod tests {
             }
             MarketEvent::Trade(_) => panic!("expected quote"),
         }
+    }
+
+    #[test]
+    fn ordered_stream_tsv_parser_preserves_the_compact_wire_columns() {
+        let row = parse_historical_tsv_row(
+            b"AAPL\t42\t9001\t6\t1752415200000000\t1001234\t1001200\t20\t25\t11\t12\t3\t4\t5\t0\t0\t2026-07-13",
+        )
+        .unwrap();
+
+        assert_eq!(row.ticker, "AAPL");
+        assert_eq!(row.ordinal, 42);
+        assert_eq!(row.source_sequence, 9001);
+        assert_eq!(row.event_meta, 6);
+        assert_eq!(row.price_primary_int, 1_001_234);
+        assert_eq!(row.size_secondary, 25.0);
+        assert_eq!(row.condition_token_3, 5);
+        assert_eq!(row.event_date, "2026-07-13");
+        assert!(parse_historical_tsv_row(b"AAPL\t42").is_err());
     }
 
     #[test]

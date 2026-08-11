@@ -1293,6 +1293,24 @@ bounded direct ClickHouse paths remain documented in
      therefore does not pass representative active-session throughput. Evidence
      is under `D:\TradingML\runtimes\qmd_goal_load`; isolated PID 39452 was
      stopped and port 18801 was verified free.
+138. Reduced the internal QMD History full-market stream wire overhead without
+     changing public APIs. The ordered ClickHouse stream no longer repeats 17
+     JSON field names for every event. It uses one fixed tab-separated compact
+     row contract and a strict parser that rejects the wrong column count,
+     invalid UTF-8, or any incorrectly typed value before canonical compact
+     decoding. Public event pages, source revisions, materialization requests,
+     and responses remain unchanged JSON contracts.
+
+     Rust formatting and all 40 QMD History tests passed, including exact TSV
+     column preservation and malformed-row rejection. Two isolated real-data
+     runs returned the identical 683,497 events, two evaluation clocks, and 25
+     transitions. They consumed 2.609 and 2.406 QMD CPU seconds versus 3.453
+     seconds in the preceding JSON run, but wall times were 18.095 and 14.205
+     seconds versus 13.551 seconds. The result therefore proves lower service
+     decode cost but not lower end-to-end latency; ClickHouse/query variance and
+     transport remain the bottleneck. Evidence is under
+     `D:\TradingML\runtimes\qmd_goal_load`; PID 42184 was stopped and port
+     18801 was verified free.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

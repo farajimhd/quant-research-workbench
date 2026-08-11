@@ -610,7 +610,11 @@ load progressively without false continuity.
               is not a clean direct comparison. Stable ownership and a
               core-only engine are implemented, but roughly 50,000 events per
               second still cannot keep pace with this 683,497-event two-second
-              burst; therefore the parent gate stays open.
+              burst. The internal ordered stream now avoids repeated JSON field
+              names and JSON-object decoding; same-process TSV runs used about
+              2.4-2.6 CPU seconds, but 14.205-18.095 second wall times show that
+              ClickHouse/query transport still dominates. Therefore the parent
+              gate stays open.
       - [x] Persist/reuse the revisioned timeline product and replace Backtest's
             session-boundary membership fallback with its transition stream.
         - [x] Replace the active single-Watchlist Backtest path with QMD History

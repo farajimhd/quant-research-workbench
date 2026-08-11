@@ -1974,10 +1974,8 @@ mod tests {
     #[tokio::test]
     async fn market_only_profile_skips_all_bar_indicator_and_signal_state() {
         let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
-        let mut engine = CrossSectionEngine::new_market_only_with_trade_rules(
-            rules,
-            HashMap::new(),
-        );
+        let mut engine =
+            CrossSectionEngine::new_market_only_with_trade_rules(rules, HashMap::new());
         let start = Utc
             .with_ymd_and_hms(2026, 8, 7, 13, 30, 0)
             .single()
