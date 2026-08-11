@@ -947,6 +947,41 @@ bounded direct ClickHouse paths remain documented in
      History was stopped after validation. The separately authorized IBKR
      Supervisor still occupies 8800, so Live/recent/archive transition proof
      remains open.
+117. Reconciled every remaining unchecked implementation item against the
+     approved service boundary and current runtime evidence. The remaining
+     work is not one undifferentiated coding queue:
+
+     - QMD immutable revision continuation needs a version-retaining storage
+       authority; the current pin detects drift but cannot read an overwritten
+       old revision.
+     - The nullable ticker snapshot and compact-event array compatibility
+       endpoints still have production-source callers in Market AI and Text
+       Intelligence, so zero-caller retirement cannot be claimed while those
+       producer migrations are deferred.
+     - Generic Structure still executes in the all-market bar store. Safe
+       focused activation requires an atomic source-sequence barrier plus exact
+       event replay since the restored checkpoint; gating it without that
+       handoff would silently corrupt state.
+     - Enrichment-triggered recomputation depends on deferred News, SEC, Text,
+       and Reference producers publishing registered FeatureUpdate events.
+     - Paper/Live chart proposals, the shared mode controller, unified proposal
+       control, and Live/Paper lifecycle migration cross the separately
+       authorized broker/gateway/supervisor boundary. Replay and Backtest remain
+       the implemented broker-neutral proof path.
+     - Intraday causal Backtest Watchlist refresh needs a durable historical
+       membership-delta product; repeated all-market snapshots are not an
+       acceptable substitute.
+     - Representative active-session Scanner/load budgets and the complete
+       archive/recent/live QMD acceptance run require a correctly assigned QMD
+       Live endpoint. Port 8800 currently identifies IBKR Gateway Supervisor.
+     - Real visual acceptance remains environment-blocked because the available
+       in-app browser policy refuses localhost navigation; a successful build
+       and HTTP readiness are not recorded as visual proof.
+
+     No deferred producer, broker, gateway-supervisor, deployment, or unrelated
+     user file was modified to bypass these constraints. The unchecked items in
+     the backlog therefore remain honest gates rather than being administratively
+     marked complete.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
