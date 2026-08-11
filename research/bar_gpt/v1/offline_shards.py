@@ -327,6 +327,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-query-days", type=int, default=defaults.clickhouse_query_days)
     parser.add_argument("--clickhouse-prefetch-pages", type=int, default=defaults.clickhouse_prefetch_pages)
     parser.add_argument(
+        "--clickhouse-max-threads-per-worker",
+        type=int,
+        default=defaults.clickhouse_max_threads_per_worker,
+        help="ClickHouse execution threads per page query.",
+    )
+    parser.add_argument(
         "--clickhouse-max-concurrent-pages",
         type=int,
         default=0,
@@ -356,6 +362,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--max-shards cannot be negative")
     if args.clickhouse_max_concurrent_pages < 0:
         parser.error("--clickhouse-max-concurrent-pages cannot be negative")
+    if args.clickhouse_max_threads_per_worker <= 0:
+        parser.error("--clickhouse-max-threads-per-worker must be positive")
     return args
 
 
@@ -391,6 +399,7 @@ def build_data_config(args: argparse.Namespace) -> DataConfig:
         origin_bars_1s=int(args.origin_bars_1s),
         clickhouse_query_days=int(args.clickhouse_query_days),
         clickhouse_prefetch_pages=int(args.clickhouse_prefetch_pages),
+        clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_worker),
         loader_workers=0,
         persistent_workers=False,
         balance_activity_regimes=False,

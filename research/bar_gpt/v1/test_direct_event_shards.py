@@ -13,8 +13,10 @@ from research.bar_gpt.v1.direct_event_shards import (
     direct_trade_bar_query,
 )
 from research.bar_gpt.v1.loader import ClickHouseBarStreamConfig, TickerInterval
+from research.bar_gpt.v1.offline_shards import build_data_config, parse_args as parse_offline_args
 from research.bar_gpt.v1.run_build_offline_dataset import commands as full_commands
 from research.bar_gpt.v1.run_build_offline_dataset import parse_args as parse_full_args
+from research.bar_gpt.v1.run_build_offline_shards import parse_args as parse_build_launcher_args
 from research.bar_gpt.v1.run_pilot_offline_shards import commands as pilot_commands
 from research.bar_gpt.v1.run_pilot_offline_shards import parse_args as parse_pilot_args
 
@@ -96,6 +98,10 @@ class DirectEventShardContractTest(unittest.TestCase):
         self.assertEqual(build[build.index("--clickhouse-prefetch-pages") + 1], "16")
         self.assertEqual(build[build.index("--clickhouse-max-concurrent-pages") + 1], "32")
         self.assertEqual(build[build.index("--clickhouse-max-threads-per-worker") + 1], "2")
+        # Exercise the actual child parser, not only launcher construction.
+        _launcher_args, forwarded = parse_build_launcher_args(build[4:])
+        child_args = parse_offline_args(forwarded)
+        self.assertEqual(build_data_config(child_args).clickhouse_max_threads_per_worker, 2)
 
     def test_calendar_lookback_is_derived_from_configured_daily_warmup(self) -> None:
         self.assertEqual(calendar_lookback_days(DataConfig(calendar_warmup_daily_bars=500)), 750)
