@@ -174,6 +174,7 @@ def _materialize(example: BarGPTExample) -> BarGPTExample:
         ticker=example.ticker,
         local_date=example.local_date,
         raw_views={name: value.clone() for name, value in example.raw_views.items()},
+        raw_view_mask={name: value.clone() for name, value in example.raw_view_mask.items()},
         raw_view_start_us={name: value.clone() for name, value in example.raw_view_start_us.items()},
         raw_view_end_us={name: value.clone() for name, value in example.raw_view_end_us.items()},
         raw_view_available_at_us={name: value.clone() for name, value in example.raw_view_available_at_us.items()},

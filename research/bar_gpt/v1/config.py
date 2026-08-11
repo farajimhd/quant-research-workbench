@@ -84,7 +84,7 @@ class DataConfig:
     # Stream v11 compiles directly from compact events.  An eligible trade is
     # mandatory for every stored 1s token, origin, and intraday context row;
     # quotes may enrich a trade-bearing second but cannot create one.
-    loader_stream_contract_version: int = 11
+    loader_stream_contract_version: int = 12
     source_mode: str = "direct_events"
     events_table_base: str = "events"
     condition_reference_table: str = "event_condition_token_reference"
@@ -181,6 +181,7 @@ class DataConfig:
 
     @property
     def intraday_warmup_bars_1s(self) -> int:
+        """Maximum sparse 1s source-buffer capacity, never a context length."""
         contexts = self.intraday_context_by_name
         return max(int(contexts[name]) * (TIMEFRAME_US[name] // self.base_timeframe_us) for name in contexts)
 
@@ -190,8 +191,8 @@ class DataConfig:
         return tuple(ticker for ticker in self.tickers if ticker not in holdout)
 
     def validate(self) -> None:
-        if self.loader_stream_contract_version != 11:
-            raise ValueError("this BarGPT version requires loader_stream_contract_version 11")
+        if self.loader_stream_contract_version != 12:
+            raise ValueError("this BarGPT version requires loader_stream_contract_version 12")
         if self.source_mode not in {"direct_events", "materialized_bars"}:
             raise ValueError("source_mode must be direct_events or materialized_bars")
         if not self.events_table_base or not self.condition_reference_table:

@@ -111,6 +111,7 @@ class BarGPTExample:
     ticker: str
     local_date: str
     raw_views: dict[str, torch.Tensor]
+    raw_view_mask: dict[str, torch.Tensor]
     raw_view_start_us: dict[str, torch.Tensor]
     raw_view_end_us: dict[str, torch.Tensor]
     raw_view_available_at_us: dict[str, torch.Tensor]
@@ -140,6 +141,8 @@ class BarGPTExample:
 @dataclass(slots=True)
 class BarGPTBatch:
     views: dict[str, torch.Tensor]
+    view_mask: dict[str, torch.Tensor]
+    masked_context_views: tuple[str, ...]
     origin_indices: torch.Tensor
     origin_timestamps_us: torch.Tensor
     origin_mask: torch.Tensor
@@ -179,6 +182,7 @@ class BarGPTBatch:
         """Keep asynchronously staged tensors alive on their consuming stream."""
         for values in (
             self.views,
+            self.view_mask,
             self.asof_indices,
             self.autoregressive_targets,
             self.autoregressive_mask,
@@ -212,6 +216,8 @@ class BarGPTBatch:
 
         return BarGPTBatch(
             views=pin_map(self.views),
+            view_mask=pin_map(self.view_mask),
+            masked_context_views=self.masked_context_views,
             origin_indices=self.origin_indices.pin_memory(),
             origin_timestamps_us=self.origin_timestamps_us.pin_memory(),
             origin_mask=self.origin_mask.pin_memory(),
@@ -277,6 +283,8 @@ class BarGPTBatch:
             horizon_mask = self.horizon_mask.to(device, non_blocking=non_blocking)
         return BarGPTBatch(
             views=move_map(self.views),
+            view_mask=move_map(self.view_mask),
+            masked_context_views=self.masked_context_views,
             origin_indices=self.origin_indices.to(device, non_blocking=non_blocking),
             origin_timestamps_us=self.origin_timestamps_us.to(device, non_blocking=non_blocking),
             origin_mask=self.origin_mask.to(device, non_blocking=non_blocking),
@@ -326,12 +334,18 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
     if any(example.horizons_us != examples[0].horizons_us or example.base_timeframe_us != examples[0].base_timeframe_us for example in examples):
         raise ValueError("all examples in a batch must use the same physical target contract")
     raw_by_view = {name: [example.raw_views[name] for example in examples] for name in view_names}
+    masks_by_view = {name: [example.raw_view_mask[name] for example in examples] for name in view_names}
     views = {
         name: _pad_first_dimension([
             project_stationary_features(value, example.raw_view_start_us[name], timeframe_us=TIMEFRAME_US_BY_NAME[name])
+            * example.raw_view_mask[name].unsqueeze(-1)
             for value, example in zip(values, examples, strict=True)
         ])
         for name, values in raw_by_view.items()
+    }
+    view_mask = {
+        name: _pad_first_dimension(values, fill=False)
+        for name, values in masks_by_view.items()
     }
     ar_targets: dict[str, torch.Tensor] = {}
     ar_masks: dict[str, torch.Tensor] = {}
@@ -348,11 +362,13 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
             if available.shape != (value.shape[0],):
                 raise ValueError(f"{name} availability timestamps must align with raw rows")
             if item.mask.shape[0]:
+                item.mask &= (example.raw_view_mask[name][:-1] & example.raw_view_mask[name][1:])[:, None]
                 newly_available = (
                     (available[1:] >= int(example.origin_timestamps_us[0]))
                     & (available[1:] <= int(example.origin_timestamps_us[-1]))
                 )
                 item.mask &= newly_available[:, None]
+                item.values[~item.mask] = 0
             built.append(item)
         ar_targets[name] = _pad_first_dimension([item.values for item in built])
         ar_masks[name] = _pad_first_dimension([item.mask for item in built], fill=False)
@@ -381,6 +397,11 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
             loader_stage_seconds[name] = loader_stage_seconds.get(name, 0.0) + float(seconds)
     return BarGPTBatch(
         views=views,
+        view_mask=view_mask,
+        masked_context_views=tuple(
+            name for name, masks in masks_by_view.items()
+            if any(not bool(mask.all()) for mask in masks)
+        ),
         origin_indices=origin_indices,
         origin_timestamps_us=origin_timestamps_us,
         origin_mask=origin_mask,

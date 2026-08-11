@@ -44,11 +44,14 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 
 
-OFFLINE_SHARD_CONTRACT_VERSION = 9
-# Stream contract 11 derives trade-bearing sparse tokens and calendar context
+# Contract 10 adds explicit per-view validity masks for zero-filled historical
+# slots at the event-authority boundary.
+OFFLINE_SHARD_CONTRACT_VERSION = 10
+# Stream contract 12 derives trade-bearing sparse tokens and gradually exposes
+# real intraday/calendar history behind fixed zero-filled masked slots.
 # directly from compact events and persists only certified tensor shards.
-OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 11
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v9")
+OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 12
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v10")
 SHARD_CATALOG_LOCK_FILENAME = "SHARD_CATALOG_IMMUTABLE.json"
 
 
@@ -89,6 +92,7 @@ class CompiledBlock:
     ticker: str
     local_date: str
     views: dict[str, torch.Tensor]
+    view_mask: dict[str, torch.Tensor]
     view_start_us: dict[str, torch.Tensor]
     view_end_us: dict[str, torch.Tensor]
     view_available_at_us: dict[str, torch.Tensor]
@@ -556,11 +560,13 @@ def _merge_view(
     ends = torch.cat([example.raw_view_end_us[name].cpu() for example in examples])
     available = torch.cat([example.raw_view_available_at_us[name].cpu() for example in examples])
     raw = torch.cat([example.raw_views[name].cpu() for example in examples])
+    masks = torch.cat([example.raw_view_mask[name].cpu() for example in examples])
     order = torch.argsort(starts, stable=True)
     starts = starts[order]
     ends = ends[order]
     available = available[order]
     raw = raw[order]
+    masks = masks[order]
     keep = torch.ones(starts.shape[0], dtype=torch.bool)
     if starts.numel() > 1:
         keep[1:] = starts[1:] != starts[:-1]
@@ -568,6 +574,7 @@ def _merge_view(
     unique_ends = ends[keep].contiguous()
     unique_available = available[keep].contiguous()
     unique_raw = raw[keep].contiguous()
+    unique_mask = masks[keep].contiguous()
     slices: list[tuple[int, int]] = []
     for example in examples:
         local = example.raw_view_start_us[name].cpu()
@@ -581,8 +588,10 @@ def _merge_view(
         unique_starts,
         timeframe_us=TIMEFRAME_US_BY_NAME[name],
     ).contiguous()
+    projected[~unique_mask] = 0
     result: dict[str, torch.Tensor] = {
         "features": projected,
+        "mask": unique_mask,
         "start_us": unique_starts,
         "end_us": unique_ends,
         "available_at_us": unique_available,
@@ -593,6 +602,8 @@ def _merge_view(
             bar_start_us=unique_starts,
         )
         result["autoregressive_targets"] = targets.values.contiguous()
+        targets.mask &= (unique_mask[:-1] & unique_mask[1:])[:, None]
+        targets.values[~targets.mask] = 0
         result["autoregressive_base_mask"] = targets.mask.contiguous()
     # Stationary projection carries prior-valid state.  Store the shared
     # session projection once and only the usually tiny prefix corrections
@@ -607,6 +618,7 @@ def _merge_view(
         exact_batch = project_stationary_features(
             raw_batch, start_batch, timeframe_us=TIMEFRAME_US_BY_NAME[name]
         )
+        exact_batch *= torch.stack([examples[index].raw_view_mask[name].cpu() for index in indices]).unsqueeze(-1)
         for batch_row, example_index in enumerate(indices):
             start, length = slices[example_index]
             exact = exact_batch[batch_row]
@@ -686,10 +698,12 @@ def compile_session(examples: Sequence[BarGPTExample]) -> dict[str, Any]:
                 raise RuntimeError(f"failed to compile {name} autoregressive targets for block {row}")
             available = example.raw_view_available_at_us[name].cpu()
             if item.mask.shape[0]:
+                item.mask &= (example.raw_view_mask[name][:-1] & example.raw_view_mask[name][1:])[:, None]
                 item.mask &= (
                     (available[1:] >= int(example.origin_timestamps_us[0]))
                     & (available[1:] <= int(example.origin_timestamps_us[-1]))
                 )[:, None]
+                item.values[~item.mask] = 0
             ar_masks[name] = item.mask.contiguous()
             start, length = slices_by_view[name][row]
             shared_targets = views[name]["autoregressive_targets"][start : start + max(0, length - 1)]
@@ -729,32 +743,21 @@ def _compile_session_timed(examples: Sequence[BarGPTExample]) -> tuple[dict[str,
 
 
 def validate_origin_context(example: BarGPTExample, config: DataConfig) -> None:
-    """Require full intraday history and mask incomplete calendar history."""
-    if int(example.origin_indices.min()) < int(config.intraday_context_by_name["1s"]):
-        raise RuntimeError(
-            f"1s context underflow for {example.ticker} {example.local_date}: "
-            f"minimum origin index {int(example.origin_indices.min())}, "
-            f"requires {int(config.intraday_context_by_name['1s'])}"
-        )
-    for name, count in config.intraday_context_by_name.items():
-        if name == "1s":
-            continue
-        indices = example.asof_indices[name]
-        minimum = int(indices.min())
-        if minimum < int(count) - 1:
-            raise RuntimeError(
-                f"{name} context underflow for {example.ticker} {example.local_date}: "
-                f"first origin has {minimum + 1 if minimum >= 0 else 0} completed bars, "
-                f"requires {int(count)}"
-            )
-    for name, count in config.calendar_context_by_name.items():
-        indices = example.asof_indices[name]
-        partial = (indices >= 0) & (indices < int(count) - 1)
-        if bool(partial.any()):
-            raise RuntimeError(
-                f"{name} partial calendar context is exposed for "
-                f"{example.ticker} {example.local_date}"
-            )
+    """Certify fixed slots, explicit missing-history masks, and causal as-of indices."""
+    for name, raw in example.raw_views.items():
+        mask = example.raw_view_mask[name]
+        if mask.shape != raw.shape[:1] or mask.dtype != torch.bool:
+            raise RuntimeError(f"{name} context mask does not align with rows")
+        if bool(torch.any(raw[~mask] != 0)):
+            raise RuntimeError(f"{name} masked context rows must be zero")
+        if bool(torch.any(mask[:-1] & ~mask[1:])):
+            raise RuntimeError(f"{name} missing context must be one left prefix")
+    if int(example.origin_indices.min()) != int(config.intraday_context_by_name["1s"]):
+        raise RuntimeError(f"1s origins must follow exactly the configured fixed context slots")
+    for name, indices in example.asof_indices.items():
+        selected = indices >= 0
+        if bool(torch.any(selected)) and not bool(torch.all(example.raw_view_mask[name][indices[selected]])):
+            raise RuntimeError(f"{name} as-of index selects a masked context row")
 
 
 def compile_unit(examples: Sequence[BarGPTExample], config: DataConfig, key: str) -> dict[str, Any]:
@@ -810,7 +813,7 @@ def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig
             "intraday_context_bars": dict(config.intraday_context_bars),
             "calendar_context_bars": dict(config.calendar_context_bars),
             "attention_windows": config.attention_window_by_name,
-            "intraday_warmup_bars_1s": int(config.intraday_warmup_bars_1s),
+            "intraday_source_buffer_capacity": int(config.intraday_warmup_bars_1s),
             "source_authority": {
                 "database": config.database,
                 "mode": config.source_mode,
@@ -878,6 +881,7 @@ def materialize_block(shard: dict[str, Any], session_index: int, block_index: in
     view_start_us: dict[str, torch.Tensor] = {}
     view_end_us: dict[str, torch.Tensor] = {}
     view_available_at_us: dict[str, torch.Tensor] = {}
+    view_mask: dict[str, torch.Tensor] = {}
     ar_targets: dict[str, torch.Tensor] = {}
     for name, (start, length) in block["view_slices"].items():
         shared = session["views"][name]
@@ -889,6 +893,7 @@ def materialize_block(shard: dict[str, Any], session_index: int, block_index: in
             value = value.clone()
             value[patch["indices"].long()] = patch["values"]
         views[name] = value
+        view_mask[name] = shared["mask"][start : start + length]
         view_start_us[name] = shared["start_us"][start : start + length]
         view_end_us[name] = shared["end_us"][start : start + length]
         view_available_at_us[name] = shared["available_at_us"][start : start + length]
@@ -903,6 +908,7 @@ def materialize_block(shard: dict[str, Any], session_index: int, block_index: in
         ticker=str(session["ticker"]),
         local_date=str(session["local_date"]),
         views=views,
+        view_mask=view_mask,
         view_start_us=view_start_us,
         view_end_us=view_end_us,
         view_available_at_us=view_available_at_us,
@@ -1285,6 +1291,14 @@ def collate_compiled_blocks(
     feature_dim = int(blocks[0].views["1s"].shape[-1])
     batch = BarGPTBatch(
         views={name: _pad_first_dimension([block.views[name] for block in blocks]) for name in view_names},
+        view_mask={
+            name: _pad_first_dimension([block.view_mask[name] for block in blocks], fill=False)
+            for name in view_names
+        },
+        masked_context_views=tuple(
+            name for name in view_names
+            if any((not bool(block.view_mask[name].all())) for block in blocks)
+        ),
         origin_indices=_pad_first_dimension([block.origin_indices for block in blocks]),
         origin_timestamps_us=_pad_first_dimension([block.origin_timestamps_us for block in blocks]),
         origin_mask=origin_mask,

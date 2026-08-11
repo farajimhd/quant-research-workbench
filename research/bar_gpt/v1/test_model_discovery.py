@@ -149,7 +149,7 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         self.assertEqual(config.origin_bars_1s, DISCOVERY_ORIGIN_BARS_1S)
         self.assertEqual(
             shard_compatibility_hash(config),
-            "267c4583dffecd9350db381a15111304c795f236ab41ddc701c4069b0ed8089c",
+            "6427f84e1de35a6418b7f23790d3b0fe45535cb29548be6c58e75da0381f90a4",
         )
 
     def test_manifest_hash_survives_runtime_condition_target_masking(self) -> None:

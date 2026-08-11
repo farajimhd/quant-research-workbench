@@ -1,4 +1,4 @@
-# BarGPT direct-event trade-sparse and OHLC target contract (v9)
+# BarGPT direct-event trade-sparse and OHLC target contract (v10)
 
 ## Defects this contract replaces
 
@@ -29,8 +29,8 @@ authority's historical correction-pair limitation is accepted: its five
 condition-token slots do not preserve the separate NYSE correction field or
 pairing identity. The direct builder does not claim to reconstruct it.
 
-The old shard roots are immutable. Contract-v9 shards are rebuilt under
-`offline_shards_v9`; old shards, checkpoints, cursors, discovery panels, and
+The old shard roots are immutable. Contract-v10 shards are rebuilt under
+`offline_shards_v10`; old shards, checkpoints, cursors, discovery panels, and
 validation manifests are not compatible or repairable in place.
 
 ## Bar, context, and condition authority
@@ -68,6 +68,12 @@ validation manifests are not compatible or repairable in place.
 * Each origin is an active one-second bar. Context is the latest configured
   fixed number of nonempty, completed bars: 720/360/360/240/240/96/16/8 for
   1s through 1h and 90/52/24 for 1D/1W/1MO.
+* At the beginning of source authority, every view still has its fixed number
+  of context slots. A slot whose historical bar does not exist is stored as an
+  all-zero row with `view_mask=false`. Real completed sparse bars fill those
+  slots from the right as history accumulates. Intraday and calendar views use
+  the same rule; no origin is discarded merely because it is early in source
+  history, and a masked slot cannot participate in attention or AR loss.
 * Timestamp gaps remain explicit. Fixed token counts therefore span variable
   physical time for less-active instruments.
 * The builder derives its warm-up requirement from the configured timeframe
@@ -178,7 +184,8 @@ feature channels and are never inferred from padded values.
 |---|---|---|
 | `origin_indices` | `int64 [B,N]` | Position of every active 1s origin inside its input sequence. |
 | `origin_mask` | `bool [B,N]` | Distinguishes real origins from batch padding. |
-| `asof_indices[view]` | `int64 [B,N]` | Last token in each coarser/calendar view whose `available_at_us <= origin_available_at_us`; `-1` means unavailable calendar history. |
+| `view_mask` | `bool [B,T]` per view | False for zero-filled unavailable historical slots. Attention excludes masked keys and zeros masked query states. |
+| `asof_indices[view]` | `int64 [B,N]` | Last real token in each coarser/calendar view whose `available_at_us <= origin_available_at_us`; `-1` means that view has no completed real bar yet. |
 | `timeframe_us` / calendar pathway identity | integer IDs embedded as `float32` model vectors | Identifies duration and intraday versus calendar pathway. |
 | sequence position | RoPE position, not a stored scalar channel | Supplies ordered causal token position independently within each view. |
 | `horizon_ids` | `int64 [H]` | Selects learned physical-horizon queries for 5s, 30s, 60s, 300s, 900s, and 3600s. |

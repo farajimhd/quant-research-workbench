@@ -474,9 +474,9 @@ prepared host batches, then training restarts from consumed durable cursors.
 Unconsumed training blocks replay safely rather than being marked complete.
 
 Training refuses to start unless every requested ticker-month has a compatible
-contract-v9 complete or explicitly covered-empty sidecar and every complete
+contract-v10 complete or explicitly covered-empty sidecar and every complete
 sidecar has its tensor file. ClickHouse is not contacted by the offline training
-path. The v9 shard payload is pinned to direct-event trade-sparse loader-stream contract 11,
+path. The v10 shard payload is pinned to direct-event trade-sparse loader-stream contract 12,
 including nonempty origins/context, timestamped intervals, exact per-origin
 context geometry, signed family OHLC returns, and 12 direction tasks. Defaults are a
 384-wide eight-layer decoder, BF16,
@@ -592,7 +592,7 @@ python -B -m research.bar_gpt.v1.run_build_offline_shards --execute
 The first command is a read-only plan. The execute form balances whole tickers
 by their planned block counts across bounded logical worker slots and writes
 immutable ticker-month shards beneath
-`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v9`. The compiler reads
+`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v10`. The compiler reads
 monthly compact-event partitions directly and never fabricates unavailable
 intraday sessions or calendar history.
 
@@ -630,7 +630,7 @@ This prevents every worker from independently creating a workstation-sized CPU
 thread pool while leaving capacity for ClickHouse and the operating system.
 
 Every executing compiler invocation creates a unique diagnostic directory at
-`offline_shards_v9\manifest\build_runs\<run-id>`. Its parent-owned
+`offline_shards_v10\manifest\build_runs\<run-id>`. Its parent-owned
 `events.jsonl` records the resolved plan, worker PID/ticker launches, stages,
 bounded progress, certifications, complete caught tracebacks, process exit
 codes, last known work, and final catalog. `summary.json` records the final
@@ -639,7 +639,7 @@ to Python `faulthandler` inside that spawned process. An abrupt native exit may
 not produce a Python traceback, but the parent still records its nonzero exit
 code, PID, ticker, last stage and fatal-log path immediately and counts it as a
 failure in both Rich and text output. These operational files do not enter the
-v9 storage hash and do not change shard payloads or ticker/year/month layout.
+v10 storage hash and do not change shard payloads or ticker/year/month layout.
 
 Each month stores every session-level 1s, intraday-rollup, and calendar tensor
 once. Block records retain only slices, exact causal prefix corrections,
@@ -649,14 +649,17 @@ for every origin. Shards use uncompressed PyTorch tensor containers so `torch.lo
 memory-map their storage. The runtime reader performs only mmap slicing,
 padding into reusable pinned batches, and asynchronous CUDA handoff.
 
-The v9 storage identity contains only settings that can alter one ticker-month
+The v10 storage identity contains only settings that can alter one ticker-month
 tensor payload. GPU batch size, loader workers, pinning, prefetch depth,
 requested tickers, requested date range, validation ownership, query tuning,
 and progress/concurrency controls are excluded. A stable ticker-month hash
 replaces range-dependent unit numbering inside each shard. Consequently the
 same certified shard can be collated into any loader-time batch size and two
 disjoint build commands can safely accumulate compatible months in one root.
-The direct-event trade-sparse loader-stream contract 11 is part of the v9 identity, so older shards fail
+The direct-event trade-sparse loader-stream contract 12 is part of the v10 identity. It adds fixed
+per-view slots with zero-filled, explicitly masked unavailable history at the
+source boundary. Real sparse intraday and calendar bars replace those slots
+gradually; masked rows cannot enter attention or autoregressive loss. Older shards fail
 discovery instead of being silently interpreted under the corrected context
 contract.
 `origin_bars_1s` remains storage geometry—the number of sequential origins in
@@ -693,7 +696,7 @@ python -B -m research.bar_gpt.v1.run_pilot_offline_shards --execute --force-rebu
 
 The first command prints the exact build and audit plan. The execute form builds
 at most two 2026 ticker-month shards for `AAPL` and `GOOGL` beneath
-`offline_shards_v9_pilot`, then automatically
+`offline_shards_v10_pilot`, then automatically
 verifies all complete-file SHA-256 digests and fails unless shard/sidecar identities,
 counts, configured context, causal as-of indices, horizon tensors, condition
 positive-count metadata, and direct eligible-trade origin reconstruction agree.
@@ -785,7 +788,7 @@ sidecars are skipped. `--max-shards N` provides a bounded smoke. The optional
 substantial I/O to the 2.3 TB catalog; without it, the original certified digest
 is preserved while tensor structure and metadata are still checked.
 
-The completed `offline_shards_v9` authority can be permanently sealed after its
+The completed `offline_shards_v10` authority can be permanently sealed after its
 catalog has been certified:
 
 ```powershell

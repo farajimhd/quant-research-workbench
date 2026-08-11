@@ -84,8 +84,13 @@ class CausalSelfAttention(nn.Module):
         self.rope = RotaryEmbedding(self.head_dim, config.rope_base)
         self.dropout = float(config.dropout)
 
-    def forward(self, value: torch.Tensor, *, attention_window: int | None = None) -> torch.Tensor:
+    def forward(
+        self, value: torch.Tensor, *, attention_window: int | None = None,
+        token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         batch, length, _ = value.shape
+        if token_mask is not None and token_mask.shape != (batch, length):
+            raise ValueError("token_mask must have shape [B,T]")
         query = self.q_proj(value).view(batch, length, self.n_heads, self.head_dim).transpose(1, 2)
         key = self.k_proj(value).view(batch, length, self.n_kv_heads, self.head_dim).transpose(1, 2)
         val = self.v_proj(value).view(batch, length, self.n_kv_heads, self.head_dim).transpose(1, 2)
@@ -95,7 +100,7 @@ class CausalSelfAttention(nn.Module):
         query = query * cosine + _rotate_half(query) * sine
         key = key * cosine + _rotate_half(key) * sine
         grouped_query = self.n_kv_heads != self.n_heads
-        if attention_window is None or int(attention_window) >= length:
+        if token_mask is None and (attention_window is None or int(attention_window) >= length):
             enable_gqa = grouped_query and value.device.type == "cuda"
             if grouped_query and not enable_gqa:
                 repeats = self.n_heads // self.n_kv_heads
@@ -110,13 +115,20 @@ class CausalSelfAttention(nn.Module):
                 enable_gqa=enable_gqa,
             )
         else:
-            window = int(attention_window)
+            window = length if attention_window is None else int(attention_window)
             if window <= 0:
                 raise ValueError("attention_window must be positive")
             positions = torch.arange(length, device=value.device)
             query_positions = positions[:, None]
             key_positions = positions[None, :]
             allowed = (key_positions <= query_positions) & (key_positions > query_positions - window)
+            if token_mask is not None:
+                allowed = allowed.view(1, 1, length, length) & token_mask[:, None, None, :]
+                # Fully masked prefix queries are discarded below, but giving
+                # them a self edge avoids undefined all-masked SDPA rows.
+                invalid_query = ~token_mask
+                diagonal = torch.eye(length, dtype=torch.bool, device=value.device).view(1, 1, length, length)
+                allowed |= invalid_query[:, None, :, None] & diagonal
             # Native CUDA GQA currently supports Flash Attention or the math
             # kernel. Dense local masks can make Flash ineligible, which would
             # force an impractically slow quadratic math fallback. Expand K/V
@@ -135,7 +147,8 @@ class CausalSelfAttention(nn.Module):
                 is_causal=False,
             )
         attended = attended.transpose(1, 2).contiguous().view(batch, length, -1)
-        return self.out_proj(attended)
+        output = self.out_proj(attended)
+        return output if token_mask is None else output * token_mask.unsqueeze(-1)
 
 
 class SwiGLU(nn.Module):
@@ -159,9 +172,15 @@ class DecoderBlock(nn.Module):
         self.ffn_norm = RMSNorm(config.d_model)
         self.ffn = SwiGLU(config)
 
-    def forward(self, value: torch.Tensor, *, attention_window: int | None = None) -> torch.Tensor:
-        value = value + self.attention(self.attention_norm(value), attention_window=attention_window)
-        return value + self.ffn(self.ffn_norm(value))
+    def forward(
+        self, value: torch.Tensor, *, attention_window: int | None = None,
+        token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        value = value + self.attention(
+            self.attention_norm(value), attention_window=attention_window, token_mask=token_mask
+        )
+        value = value + self.ffn(self.ffn_norm(value))
+        return value if token_mask is None else value * token_mask.unsqueeze(-1)
 
 
 @dataclass(slots=True)
@@ -248,6 +267,7 @@ class BarGPTV1(nn.Module):
         pathway_id: int,
         *,
         attention_window: int | None = None,
+        token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if features.ndim != 3 or features.shape[-1] != self.config.feature_dim:
             raise ValueError(f"features must have shape [B,T,{self.config.feature_dim}]")
@@ -255,6 +275,8 @@ class BarGPTV1(nn.Module):
         scale = self.timeframe_embedding(timeframe_us, device=features.device, dtype=features.dtype).view(1, 1, -1)
         pathway = self.pathway_embedding.weight[int(pathway_id)].view(1, 1, -1)
         state = state + scale + pathway
+        if token_mask is not None:
+            state = state * token_mask.unsqueeze(-1)
         layer_windows: list[int | None]
         if attention_window is None:
             layer_windows = [None] * len(self.blocks)
@@ -268,8 +290,9 @@ class BarGPTV1(nn.Module):
             radius, extra = divmod(total_radius, max(1, len(self.blocks)))
             layer_windows = [radius + (1 if index < extra else 0) + 1 for index in range(len(self.blocks))]
         for block, layer_window in zip(self.blocks, layer_windows, strict=True):
-            state = block(state, attention_window=layer_window)
-        return self.output_norm(state)
+            state = block(state, attention_window=layer_window, token_mask=token_mask)
+        state = self.output_norm(state)
+        return state if token_mask is None else state * token_mask.unsqueeze(-1)
 
     @staticmethod
     def _gather_sequence(state: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
@@ -287,6 +310,7 @@ class BarGPTV1(nn.Module):
         base_view: str,
         origin_indices: torch.Tensor,
         asof_indices: Mapping[str, torch.Tensor] | None = None,
+        view_masks: Mapping[str, torch.Tensor] | None = None,
         attention_windows: Mapping[str, int] | None = None,
         horizon_ids: torch.Tensor | None = None,
     ) -> BarGPTOutput:
@@ -297,6 +321,7 @@ class BarGPTV1(nn.Module):
             base_view=base_view,
             origin_indices=origin_indices,
             asof_indices=asof_indices,
+            view_masks=view_masks,
             attention_windows=attention_windows,
         )
         autoregressive = {}
@@ -359,6 +384,7 @@ class BarGPTV1(nn.Module):
         base_view: str,
         origin_indices: torch.Tensor,
         asof_indices: Mapping[str, torch.Tensor] | None = None,
+        view_masks: Mapping[str, torch.Tensor] | None = None,
         attention_windows: Mapping[str, int] | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         if base_view not in views:
@@ -373,6 +399,7 @@ class BarGPTV1(nn.Module):
                 timeframe_us[name],
                 pathway_ids[name],
                 attention_window=None if attention_windows is None else int(attention_windows[name]),
+                token_mask=None if view_masks is None else view_masks.get(name),
             )
             for name, value in views.items()
         }

@@ -34,7 +34,7 @@ from research.bar_gpt.v1.targets import (
 )
 
 
-DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v9_pilot")
+DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v10_pilot")
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -204,8 +204,8 @@ def audit_shard(
         for name, count in intraday_context.items()
     )
     _require(
-        int(context_contract.get("intraday_warmup_bars_1s", -1)) == expected_warmup,
-        f"{unit_key}: derived warmup mismatch",
+        int(context_contract.get("intraday_source_buffer_capacity", -1)) == expected_warmup,
+        f"{unit_key}: derived source-buffer capacity mismatch",
     )
     horizon_count = len(tuple(shard.get("horizons_us", ())))
     origins = 0
@@ -238,6 +238,7 @@ def audit_shard(
             starts = view.get("start_us")
             ends = view.get("end_us")
             available = view.get("available_at_us")
+            validity = view.get("mask")
             _require(isinstance(features, torch.Tensor), f"{label}/{name}: features are absent")
             _require(
                 features.ndim == 2 and features.shape[1] == len(MODEL_FEATURE_NAMES),
@@ -249,23 +250,28 @@ def audit_shard(
                 and starts.shape == ends.shape == available.shape == (features.shape[0],),
                 f"{label}/{name}: timestamp shape mismatch",
             )
-            _require(_strictly_increasing(starts), f"{label}/{name}: starts are not strictly increasing")
-            _require(_strictly_increasing(available), f"{label}/{name}: availability is not strictly increasing")
-            unavailable_calendar_sentinel = (
-                name in calendar_context
-                and features.shape[0] == 1
-                and int(starts[0]) == int(ends[0]) == int(available[0]) == 0
-            )
             _require(
-                unavailable_calendar_sentinel or bool(torch.all(starts < ends)),
+                isinstance(validity, torch.Tensor) and validity.dtype == torch.bool
+                and validity.shape == (features.shape[0],),
+                f"{label}/{name}: validity mask mismatch",
+            )
+            _require(not bool(torch.any(validity[:-1] & ~validity[1:])), f"{label}/{name}: mask is not a left prefix")
+            _require(bool(torch.all(features[~validity] == 0)), f"{label}/{name}: masked rows are not zero")
+            valid_starts = starts[validity]
+            valid_ends = ends[validity]
+            valid_available = available[validity]
+            _require(_strictly_increasing(valid_starts), f"{label}/{name}: starts are not strictly increasing")
+            _require(_strictly_increasing(valid_available), f"{label}/{name}: availability is not strictly increasing")
+            _require(
+                bool(torch.all(valid_starts < valid_ends)),
                 f"{label}/{name}: non-positive bar interval",
             )
-            _require(bool(torch.all(available >= ends)), f"{label}/{name}: availability precedes bar end")
+            _require(bool(torch.all(valid_available >= valid_ends)), f"{label}/{name}: availability precedes bar end")
             for family in PRICE_FAMILIES:
                 present_index = MODEL_FEATURE_NAMES.index(f"{family}_present")
                 high_index = MODEL_FEATURE_NAMES.index(f"{family}_high_from_open_return")
                 low_index = MODEL_FEATURE_NAMES.index(f"{family}_low_from_open_return")
-                present = features[:, present_index] > 0
+                present = (features[:, present_index] > 0) & validity
                 _require(
                     not bool((present & (features[:, high_index] < -1e-6)).any()),
                     f"{label}/{name}/{family}: high return is below open",
@@ -276,15 +282,15 @@ def audit_shard(
                 )
             if name in intraday_context:
                 expected_duration = int(TIMEFRAME_US_BY_NAME[name])
-                _require(bool(torch.all(ends - starts == expected_duration)), f"{label}/{name}: bar duration mismatch")
+                _require(bool(torch.all(valid_ends - valid_starts == expected_duration)), f"{label}/{name}: bar duration mismatch")
                 source_index = MODEL_FEATURE_NAMES.index("log_source_event_count")
                 trade_present_index = MODEL_FEATURE_NAMES.index("trade_present")
                 _require(
-                    bool(torch.all(features[:, source_index] > 0)),
+                    bool(torch.all(features[validity, source_index] > 0)),
                     f"{label}/{name}: empty-event bar was stored as intraday context",
                 )
                 _require(
-                    bool(torch.all(features[:, trade_present_index] > 0)),
+                    bool(torch.all(features[validity, trade_present_index] > 0)),
                     f"{label}/{name}: context bar without an eligible trade",
                 )
                 for condition_name in ("halt_pause", "resume", "news_risk", "luld_limit_state"):
@@ -344,6 +350,7 @@ def audit_shard(
             for name, raw_slice in slices.items():
                 start, length = (int(raw_slice[0]), int(raw_slice[1]))
                 available = views[name]["available_at_us"]
+                local_validity = views[name]["mask"][start : start + length]
                 _require(start >= 0 and length > 0 and start + length <= available.shape[0], f"{block_label}/{name}: slice out of range")
                 if name == "1s":
                     _require(int(origin_indices.min()) >= intraday_context["1s"], f"{block_label}/1s: context underflow")
@@ -355,6 +362,10 @@ def audit_shard(
                     source_index = MODEL_FEATURE_NAMES.index("log_source_event_count")
                     trade_present_index = MODEL_FEATURE_NAMES.index("trade_present")
                     local_features = views[name]["features"][start : start + length]
+                    _require(
+                        bool(torch.all(local_validity[origin_indices.long()])),
+                        f"{block_label}/1s: origin selects missing history",
+                    )
                     _require(
                         bool(torch.all(local_features[origin_indices.long(), source_index] > 0)),
                         f"{block_label}/1s: zero-event origin detected",
@@ -372,28 +383,19 @@ def audit_shard(
                     continue
                 indices = asof[name]
                 _require(isinstance(indices, torch.Tensor) and indices.shape == origin_timestamps.shape, f"{block_label}/{name}: as-of shape mismatch")
-                if name in intraday_context:
-                    required = int(intraday_context[name])
-                    _require(int(indices.min()) >= required - 1, f"{block_label}/{name}: configured context underflow")
-                    _require(
-                        int(indices[0]) == required - 1,
-                        f"{block_label}/{name}: block does not begin with the exact configured context",
-                    )
-                elif name in calendar_context:
-                    required = int(calendar_context[name])
-                    partial = (indices >= 0) & (indices < required - 1)
-                    _require(
-                        not bool(partial.any()),
-                        f"{block_label}/{name}: partial calendar context is exposed",
-                    )
+                if name in calendar_context:
                     if require_calendar_context:
                         _require(
-                            int(indices.min()) >= required - 1,
+                            bool(local_validity.all()) and int(indices.min()) >= 0,
                             f"{block_label}/{name}: required calendar context is unavailable",
                         )
                 selected = indices >= 0
                 if bool(selected.any()):
                     _require(int(indices[selected].max()) < length, f"{block_label}/{name}: as-of index outside slice")
+                    _require(
+                        bool(torch.all(local_validity[indices[selected]])),
+                        f"{block_label}/{name}: as-of index selects missing history",
+                    )
                     local_available = available[start : start + length]
                     _require(
                         bool(torch.all(local_available[indices[selected]] <= origin_timestamps[selected])),

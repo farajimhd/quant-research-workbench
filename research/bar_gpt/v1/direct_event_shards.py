@@ -112,6 +112,11 @@ def calendar_lookback_days(config: DataConfig) -> int:
     return max(366, math.ceil(int(config.calendar_warmup_daily_bars) * 1.5))
 
 
+def _is_event_authority_boundary(config: DataConfig, unit_start_date: str) -> bool:
+    """Return whether no earlier source history can exist by contract."""
+    return str(unit_start_date) == str(config.daily_history_start_date)
+
+
 def direct_event_preflight(client: object, config: DataConfig, tickers: tuple[str, ...]) -> tuple[dict[str, object], dict[str, int]]:
     """Validate immutable event inputs and obtain non-scanning scheduler weights."""
     lookback_days = calendar_lookback_days(config)
@@ -685,23 +690,27 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                             ([day], daily_view),
                             max_rows=int(self.data_config.calendar_warmup_daily_bars) + 32,
                         )
-                required_intraday = max(
-                    int(self.data_config.intraday_warmup_bars_1s),
-                    int(self.data_config.context_bars_1s),
-                )
+                # Sparse context readiness is defined independently for every
+                # model view.  The 28,800-row value is only the worst-case
+                # source-buffer capacity needed to cover eight physical hours
+                # when every second contains an event; it is not a required
+                # count of sparse context tokens.
+                required_one_second = int(self.data_config.intraday_context_by_name["1s"])
                 accumulated = 0
                 intraday_warmup_start = warmup_start
-                self._stage_progress("intraday warmup planning", unit.ticker)
-                for day, eligible_seconds in reversed(eligible_seconds_by_day):
+                selected_day_index = len(eligible_seconds_by_day)
+                self._stage_progress(
+                    "intraday warmup planning",
+                    f"{unit.ticker}: resolving each configured view independently",
+                )
+                for index in range(len(eligible_seconds_by_day) - 1, -1, -1):
+                    day, eligible_seconds = eligible_seconds_by_day[index]
                     accumulated += int(eligible_seconds)
                     intraday_warmup_start = day
-                    if accumulated >= required_intraday:
+                    selected_day_index = index
+                    if accumulated >= required_one_second:
                         break
-                if accumulated < required_intraday:
-                    raise RuntimeError(
-                        f"{unit.ticker}: only {accumulated:,} eligible trade seconds are available before "
-                        f"{unit.start_date}; {required_intraday:,} are required for intraday warm-up"
-                    )
+                warmup_sessions: list[BarView] = []
                 self._stage_progress("intraday warmup", f"{unit.ticker} planning source partitions")
                 for day, session in client.iter_session_views(
                     ticker=unit.ticker, start_date=intraday_warmup_start, end_date=unit.start_date,
@@ -710,7 +719,60 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                         "intraday warmup", left, right, sessions, seconds, completed, total, elapsed
                     ),
                 ):
-                    history.append(session, materialize=False)
+                    warmup_sessions.append(session)
+
+                def rebuild_intraday_history() -> None:
+                    nonlocal history
+                    history = FixedBucketHistoryCache(max_rows=max(
+                        int(self.data_config.intraday_warmup_bars_1s),
+                        int(self.data_config.context_bars_1s),
+                    ))
+                    for warmup_session in warmup_sessions:
+                        history.append(warmup_session, materialize=False)
+
+                rebuild_intraday_history()
+                # Daily counts select a small initial range efficiently. If an
+                # illiquid/security-specific distribution still lacks one of
+                # the configured coarse views, expand backward in bounded
+                # monthly-sized session batches and certify the actual rollups.
+                while (
+                    not _history_satisfies_intraday_context(history.view, self.data_config)
+                    and selected_day_index > 0
+                ):
+                    previous_index = selected_day_index
+                    selected_day_index = max(0, selected_day_index - 22)
+                    extension_start = eligible_seconds_by_day[selected_day_index][0]
+                    extension_end = eligible_seconds_by_day[previous_index][0]
+                    older_sessions = [
+                        session for _day, session in client.iter_session_views(
+                            ticker=unit.ticker,
+                            start_date=extension_start,
+                            end_date=extension_end,
+                            source_intervals=intervals[unit.ticker],
+                            prefetch_pages=self.data_config.clickhouse_prefetch_pages,
+                            page_callback=lambda left, right, sessions, seconds, completed, total, elapsed: self._page_progress(
+                                "intraday warmup extension", left, right, sessions, seconds,
+                                completed, total, elapsed,
+                            ),
+                        )
+                    ]
+                    warmup_sessions = older_sessions + warmup_sessions
+                    rebuild_intraday_history()
+
+                if not _history_satisfies_intraday_context(history.view, self.data_config):
+                    if not _is_event_authority_boundary(self.data_config, unit.start_date):
+                        raise RuntimeError(
+                            f"{unit.ticker}: available sparse history before {unit.start_date} does not satisfy "
+                            f"configured intraday contexts {self.data_config.intraday_context_by_name}"
+                        )
+                    # The event authority begins at the requested first unit.
+                    # Fixed context slots are retained, but unavailable history
+                    # is zero-filled and masked while real sparse bars accrue.
+                    self._stage_progress(
+                        "authority boundary",
+                        f"{unit.ticker}: accumulating per-view context from {unit.start_date}; "
+                        "early origins will use explicit missing-history masks",
+                    )
                 loaded_through = unit.start_date
             fetch_start = loaded_through
             emitted = emitted_by_unit.get(f"{unit.ticker}:{unit.start_date[:7]}", 0)

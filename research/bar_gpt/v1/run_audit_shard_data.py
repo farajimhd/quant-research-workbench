@@ -24,7 +24,7 @@ from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.mlops.env import load_env_files
 
 
-DEFAULT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v9")
+DEFAULT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v10")
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\shard_data_audits")
 
 

@@ -11,6 +11,7 @@ from rich.console import Console
 from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS
 from research.bar_gpt.v1.config import DataConfig
 from research.bar_gpt.v1.direct_event_shards import (
+    _is_event_authority_boundary,
     _iter_prefetched_pages_in_order,
     calendar_lookback_days,
     direct_trade_bar_query,
@@ -158,6 +159,11 @@ class DirectEventShardContractTest(unittest.TestCase):
 
     def test_calendar_lookback_is_derived_from_configured_daily_warmup(self) -> None:
         self.assertEqual(calendar_lookback_days(DataConfig(calendar_warmup_daily_bars=500)), 750)
+
+    def test_direct_builder_documents_authority_boundary_without_weakening_context(self) -> None:
+        config = DataConfig(daily_history_start_date="2019-01-01")
+        self.assertTrue(_is_event_authority_boundary(config, "2019-01-01"))
+        self.assertFalse(_is_event_authority_boundary(config, "2019-02-01"))
 
     def test_full_launcher_uses_32_workers_and_resolvable_cohort(self) -> None:
         stages = full_commands(parse_full_args(["--workers", "32"]))

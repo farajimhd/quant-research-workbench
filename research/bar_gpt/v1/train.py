@@ -228,7 +228,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume-checkpoint", default="")
     parser.add_argument("--seed", type=int, default=train.seed)
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="clickhouse")
-    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v9")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v10")
     parser.add_argument("--offline-train-start-date", default="2019-01-01")
     parser.add_argument("--offline-train-end-date", default="2021-01-01")
     parser.add_argument("--offline-validation-start-date", default="2026-01-01")
@@ -938,6 +938,7 @@ def _forward(model: torch.nn.Module, batch: BarGPTBatch, config: ExperimentConfi
         base_view="1s",
         origin_indices=batch.origin_indices,
         asof_indices=batch.asof_indices,
+        view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
         attention_windows=config.data.attention_window_by_name,
         horizon_ids=torch.arange(len(config.data.horizons_us), device=batch.origin_indices.device),
     )
@@ -1486,7 +1487,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             for index in range(4)
         )
         evidence = {
-            "mode": "offline_shards_v9",
+            "mode": "offline_shards_v10",
             "offline_shard_root": str(root),
             "offline_training_units": str(len(offline_train_units)),
             "offline_training_blocks": str(sum(unit.blocks for unit in offline_train_units)),

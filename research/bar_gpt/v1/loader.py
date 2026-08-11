@@ -1613,20 +1613,11 @@ def build_session_examples(
     )
     combined = prepared.combined
     halo_count = prepared.halo_count
-    candidate_anchors = session.available_at_us
-    eligible = torch.arange(session.features.shape[0], dtype=torch.long) + halo_count >= context
-    for name in ("5s", "10s", "30s", "1m", "5m", "30m", "1h"):
-        completed = torch.searchsorted(
-            prepared.full_views[name].available_at_us,
-            candidate_anchors,
-            right=True,
-        )
-        eligible &= completed >= int(config.intraday_context_by_name[name])
-    eligible_rows = torch.nonzero(eligible, as_tuple=False).flatten()
-    if eligible_rows.numel() == 0:
-        return
-    first_eligible = int(eligible_rows[0])
-    first_origin = first_eligible if origin_start_index is None else max(first_eligible, int(origin_start_index))
+    # Every retained 1s row is a trade-bearing sparse token and is eligible as
+    # an origin. Missing history at the authority boundary is represented by
+    # left-padded zero rows with an explicit false mask; it never delays or
+    # removes an otherwise valid origin.
+    first_origin = 0 if origin_start_index is None else int(origin_start_index)
     if first_origin < 0 or first_origin >= session.features.shape[0]:
         raise ValueError("origin_start_index must identify a row in the current session")
     if origin_count_limit is not None:
@@ -1643,7 +1634,8 @@ def build_session_examples(
         if origin_count < int(config.min_origins_per_block):
             continue
         combined_origin_start = halo_count + origin_start
-        input_start = combined_origin_start - context
+        input_start = max(0, combined_origin_start - context)
+        missing_base = max(0, context - combined_origin_start)
         input_end = combined_origin_start + origin_count
         support_end = combined.features.shape[0]
         support = combined.features[input_start:support_end]
@@ -1651,14 +1643,33 @@ def build_session_examples(
         support_share_factors = cumulative_share_factors(
             combined.bar_start_us[input_start:support_end], split_actions
         ).to(combined.features.dtype)
-        base_raw = normalized_session.features[input_start:input_end]
+        support_origins = torch.arange(
+            combined_origin_start - input_start,
+            combined_origin_start - input_start + origin_count,
+            dtype=torch.long,
+        )
+        base_actual = normalized_session.features[input_start:input_end]
+        base_raw = torch.cat((torch.zeros(
+            (missing_base, base_actual.shape[-1]), dtype=base_actual.dtype, device=base_actual.device
+        ), base_actual), dim=0)
         origins = torch.arange(context, context + origin_count, dtype=torch.long)
-        anchors = combined.available_at_us[input_start:input_end][origins]
+        anchors = session.available_at_us[origin_start : origin_start + origin_count]
         last_anchor = int(anchors[-1])
         raw_views: dict[str, torch.Tensor] = {"1s": base_raw}
-        raw_view_start_us: dict[str, torch.Tensor] = {"1s": normalized_session.bar_start_us[input_start:input_end]}
-        raw_view_end_us: dict[str, torch.Tensor] = {"1s": normalized_session.bar_end_us[input_start:input_end]}
-        raw_view_available_at_us: dict[str, torch.Tensor] = {"1s": normalized_session.available_at_us[input_start:input_end]}
+        raw_view_mask: dict[str, torch.Tensor] = {"1s": torch.cat((
+            torch.zeros(missing_base, dtype=torch.bool),
+            torch.ones(base_actual.shape[0], dtype=torch.bool),
+        ))}
+        missing_base_times = torch.arange(1, missing_base + 1, dtype=torch.long)
+        raw_view_start_us: dict[str, torch.Tensor] = {"1s": torch.cat((
+            missing_base_times, normalized_session.bar_start_us[input_start:input_end]
+        ))}
+        raw_view_end_us: dict[str, torch.Tensor] = {"1s": torch.cat((
+            missing_base_times, normalized_session.bar_end_us[input_start:input_end]
+        ))}
+        raw_view_available_at_us: dict[str, torch.Tensor] = {"1s": torch.cat((
+            torch.zeros(missing_base, dtype=torch.long), normalized_session.available_at_us[input_start:input_end]
+        ))}
         asof: dict[str, torch.Tensor] = {}
         for name in ("5s", "10s", "30s", "1m", "5m", "30m", "1h"):
             view = full_views[name]
@@ -1678,67 +1689,69 @@ def build_session_examples(
                 anchors[-1].to(dtype=view.available_at_us.dtype),
                 right=True,
             ))
-            if first_count < context_rows:
-                raise RuntimeError(
-                    f"{name} context underflow for {ticker} {local_date}: "
-                    f"first origin has {first_count} completed bars, requires {context_rows}"
-                )
-            prefix_start = first_count - context_rows
+            prefix_start = max(0, first_count - context_rows)
+            missing = max(0, context_rows - first_count)
             prefix = BarView(
                 features=view.features[prefix_start:last_count],
                 bar_start_us=view.bar_start_us[prefix_start:last_count],
                 bar_end_us=view.bar_end_us[prefix_start:last_count],
                 available_at_us=view.available_at_us[prefix_start:last_count],
             )
-            raw_views[name] = prefix.features
-            raw_view_start_us[name] = prefix.bar_start_us
-            raw_view_end_us[name] = prefix.bar_end_us
-            raw_view_available_at_us[name] = prefix.available_at_us
-            asof[name] = causal_asof_indices(prefix.available_at_us, anchors)
-            if torch.any(asof[name] < context_rows - 1):
-                minimum = int(asof[name].min()) + 1
-                raise RuntimeError(
-                    f"{name} context underflow inside {ticker} {local_date}: "
-                    f"minimum {minimum}, requires {context_rows}"
-                )
-            selected_times = prefix.available_at_us[asof[name]]
-            if torch.any(selected_times > anchors):
+            raw_views[name] = torch.cat((torch.zeros(
+                (missing, prefix.features.shape[-1]), dtype=prefix.features.dtype
+            ), prefix.features), dim=0)
+            raw_view_mask[name] = torch.cat((
+                torch.zeros(missing, dtype=torch.bool), torch.ones(prefix.features.shape[0], dtype=torch.bool)
+            ))
+            missing_times = torch.arange(1, missing + 1, dtype=torch.long)
+            raw_view_start_us[name] = torch.cat((missing_times, prefix.bar_start_us))
+            raw_view_end_us[name] = torch.cat((missing_times, prefix.bar_end_us))
+            raw_view_available_at_us[name] = torch.cat((torch.zeros(missing, dtype=torch.long), prefix.available_at_us))
+            actual_asof = causal_asof_indices(prefix.available_at_us, anchors)
+            asof[name] = torch.where(actual_asof >= 0, actual_asof + missing, actual_asof)
+            selected = actual_asof >= 0
+            if torch.any(selected) and torch.any(prefix.available_at_us[actual_asof[selected]] > anchors[selected]):
                 raise RuntimeError(f"{name} context lookahead detected")
         for name in ("1D", "1W", "1MO"):
             view = calendar_views.get(name)
             max_rows = int(config.calendar_context_by_name[name])
             prefix = _view_prefix(view, last_available_us=last_anchor, max_rows=max_rows) if view is not None else None
             if prefix is None:
-                raw_views[name] = _dummy_raw()
-                raw_view_start_us[name] = torch.zeros(1, dtype=torch.long)
-                raw_view_end_us[name] = torch.zeros(1, dtype=torch.long)
-                raw_view_available_at_us[name] = torch.zeros(1, dtype=torch.long)
+                raw_views[name] = torch.zeros((max_rows, base_raw.shape[-1]), dtype=base_raw.dtype)
+                raw_view_mask[name] = torch.zeros(max_rows, dtype=torch.bool)
+                missing_times = torch.arange(1, max_rows + 1, dtype=torch.long)
+                raw_view_start_us[name] = missing_times
+                raw_view_end_us[name] = missing_times
+                raw_view_available_at_us[name] = torch.zeros(max_rows, dtype=torch.long)
                 asof[name] = torch.full((origin_count,), -1, dtype=torch.long)
             else:
-                raw_views[name] = prefix.features
-                raw_view_start_us[name] = prefix.bar_start_us
-                raw_view_end_us[name] = prefix.bar_end_us
-                raw_view_available_at_us[name] = prefix.available_at_us
+                missing = max(0, max_rows - prefix.features.shape[0])
+                raw_views[name] = torch.cat((torch.zeros(
+                    (missing, prefix.features.shape[-1]), dtype=prefix.features.dtype
+                ), prefix.features), dim=0)
+                raw_view_mask[name] = torch.cat((
+                    torch.zeros(missing, dtype=torch.bool), torch.ones(prefix.features.shape[0], dtype=torch.bool)
+                ))
+                missing_times = torch.arange(1, missing + 1, dtype=torch.long)
+                raw_view_start_us[name] = torch.cat((missing_times, prefix.bar_start_us))
+                raw_view_end_us[name] = torch.cat((missing_times, prefix.bar_end_us))
+                raw_view_available_at_us[name] = torch.cat((torch.zeros(missing, dtype=torch.long), prefix.available_at_us))
                 indices = causal_asof_indices(prefix.available_at_us, anchors)
                 selected = indices >= 0
                 if torch.any(selected):
                     selected_times = prefix.available_at_us[indices.clamp_min(0)]
                     if torch.any(selected_times[selected] > anchors[selected]):
                         raise RuntimeError(f"{name} calendar context lookahead detected")
-                # Keep the available calendar bars in the shard, but do not
-                # expose a partial history to the model.  The existing -1
-                # as-of value is the authoritative unavailable mask.
-                asof[name] = torch.where(
-                    indices >= max_rows - 1,
-                    indices,
-                    torch.full_like(indices, -1),
-                )
+                # Expose every causally available real calendar bar while the
+                # missing left history remains explicitly masked.
+                asof[name] = torch.where(indices >= 0, indices + missing, indices)
         activity = float(base_raw[origins, FEATURE_INDEX["source_event_count"]].float().mean())
         regime = 0 if activity < config.activity_regime_low else (2 if activity >= config.activity_regime_high else 1)
         yield BarGPTExample(
             ticker=ticker,
             local_date=local_date,
             raw_views=raw_views,
+            raw_view_mask=raw_view_mask,
             raw_view_start_us=raw_view_start_us,
             raw_view_end_us=raw_view_end_us,
             raw_view_available_at_us=raw_view_available_at_us,
@@ -1751,7 +1764,7 @@ def build_session_examples(
             target_share_factors=support_share_factors,
             target_condition_available_at_us=prepared.condition_available_at_us,
             target_condition_flags=prepared.condition_flags,
-            support_origin_indices=origins,
+            support_origin_indices=support_origins,
             horizon_targets=prepared.horizon_targets[origin_start : origin_start + origin_count],
             horizon_mask=prepared.horizon_mask[origin_start : origin_start + origin_count],
             horizons_us=config.horizons_us,
