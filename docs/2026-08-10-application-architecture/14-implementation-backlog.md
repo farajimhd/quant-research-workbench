@@ -537,6 +537,11 @@ load progressively without false continuity.
             bounded stateful chunks, transition-only output, and pinned market,
             calculation, configuration, and feature revisions. Repeated
             terminal Scanner snapshots are explicitly invalid.
+      - [x] Compile each approved historical Watchlist into a deterministic,
+            content-hashed schema-v1 plan that separates QMD fields from
+            registered point-in-time external features, rejects deferred or
+            noncausal sources, bounds chunk evaluations, and is persisted in
+            Backtest preflight and data-authority evidence.
   - [x] Build canonical Backtest performance, Portfolio, position, order,
         execution, and closed-trade result projections.
   - [x] Add strategy/run attribution and comparative analysis projections.

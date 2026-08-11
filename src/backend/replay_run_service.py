@@ -281,6 +281,11 @@ class ReplayRunController:
         self._pace_reset = True
         self._historical_watchlist_cache: list[dict[str, Any]] | None = None
         self._historical_watchlist_timeline_cache: list[dict[str, Any]] | None = None
+        self._historical_watchlist_plans = _historical_watchlist_plans_for_configuration(
+            self.definition.configuration_revision,
+            start=self.definition.requested_start,
+            end=self.definition.session_end,
+        )
         self._historical_watchlist_timeline_index = 0
         self._active_historical_watchlist_tickers: set[str] = set()
         self._data_authority: dict[str, dict[str, Any]] = {}
@@ -1584,6 +1589,19 @@ class ReplayRunController:
                     )
 
     def _record_historical_watchlist_authority(self) -> None:
+        for plan in self._historical_watchlist_plans:
+            self._record_data_authority(
+                f"watchlist_membership_plan:{plan['watchlist_id']}",
+                {
+                    "authority": "compiled_historical_watchlist_plan",
+                    "cadence_ms": plan["cadence_ms"],
+                    "external_features": plan["external_features"],
+                    "plan_hash": plan["plan_hash"],
+                    "qmd_sources": plan["qmd_sources"],
+                    "schema_version": plan["schema_version"],
+                    "watchlist_id": plan["watchlist_id"],
+                },
+            )
         for snapshot in self._historical_watchlist_timeline():
             authority = list(snapshot.get("authority") or ())
             if not authority:
@@ -2251,6 +2269,34 @@ def _historical_watchlist_membership_timeline_for_configuration(
     return timeline
 
 
+def _historical_watchlist_plans_for_configuration(
+    approved: dict[str, Any],
+    *,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    from src.backend.historical_watchlist_plan import compile_historical_watchlist_plan
+
+    configuration = dict(approved.get("payload") or {})
+    model = dict(approved.get("configuration_model") or {})
+    universes = [
+        dict(row)
+        for row in configuration.get("universes") or []
+        if bool(row.get("enabled", True)) and str(row.get("source") or "") == "watchlist"
+    ]
+    if universes and not model:
+        raise ValueError("Historical Watchlist plans require the approved configuration model")
+    return [
+        compile_historical_watchlist_plan(
+            model,
+            str(universe.get("scanner_view_id") or ""),
+            start=start,
+            end=end,
+        )
+        for universe in universes
+    ]
+
+
 def replay_preflight(
     *,
     session_date: date,
@@ -2474,10 +2520,16 @@ def backtest_preflight(
         if bool(row.get("enabled", True)) and str(row.get("source") or "") == "watchlist"
     ]
     watchlist_members: list[dict[str, Any]] = []
+    watchlist_plans: list[dict[str, Any]] = []
     watchlist_snapshot_count = 0
     watchlist_error = ""
     if watchlists and sessions:
         try:
+            watchlist_plans = _historical_watchlist_plans_for_configuration(
+                approved,
+                start=datetime.combine(sessions[0], clock_time(4, 0), tzinfo=NEW_YORK),
+                end=datetime.combine(sessions[-1], clock_time(20, 0), tzinfo=NEW_YORK),
+            )
             timeline = _historical_watchlist_membership_timeline_for_configuration(
                 approved,
                 start=datetime.combine(sessions[0], clock_time(4, 0), tzinfo=NEW_YORK),
@@ -2575,6 +2627,7 @@ def backtest_preflight(
         "configuration_revision": approved.get("revision", 0),
         "configuration_content_hash": approved.get("content_hash", ""),
         "configuration_label": approved.get("label", ""),
+        "historical_watchlist_plans": watchlist_plans,
         "initial_cash": initial_cash,
     }
 

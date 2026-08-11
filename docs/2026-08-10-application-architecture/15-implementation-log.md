@@ -1032,6 +1032,16 @@ bounded direct ClickHouse paths remain documented in
      snapshots and an unbounded cadence-by-symbol matrix. Backtest wiring stays
      open until this product is executable and validated; the session-boundary
      fallback is not relabeled as cadence parity.
+123. Implemented the backend compiler for the historical Watchlist timeline.
+     It accepts only an approved configuration model, validates rule references,
+     operators, comparators, time bounds and registered sources, separates
+     QMD-owned fields from point-in-time external feature plans, rejects deferred
+     intelligence/live-only evidence, bounds each state-carrying chunk to 1,800
+     evaluations, and produces a deterministic SHA-256 plan identity. Backtest
+     preflight exposes these plans and each controller journals their schema,
+     cadence, QMD fields, external feature contracts, and hash as data authority.
+     Four compiler/wiring tests and all 40 Replay/Backtest controller tests
+     passed; the changed modules compiled.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
