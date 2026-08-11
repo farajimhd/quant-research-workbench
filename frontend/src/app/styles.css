@@ -25216,6 +25216,80 @@ button {
 .historical-results-grid span { color: var(--muted-foreground); font-size: 10px; }
 .historical-results-grid strong { font-size: 15px; }
 
+.historical-analysis-section {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px 18px;
+}
+
+.historical-analysis-section > header {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+}
+
+.historical-analysis-section > header > div { display: grid; gap: 2px; }
+.historical-analysis-section > header span,
+.historical-analysis-section > header small,
+.historical-analysis-empty,
+.historical-analysis-warning { color: var(--muted-foreground); font-size: 10px; }
+.historical-analysis-section > header strong { font-size: 13px; }
+.historical-analysis-standalone { margin: 0; padding: 0 18px 18px; }
+
+.historical-attribution-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.historical-attribution-grid article {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+}
+
+.historical-attribution-grid article > div { display: flex; justify-content: space-between; gap: 8px; }
+.historical-attribution-grid article span,
+.historical-attribution-grid article small { color: var(--muted-foreground); font-size: 10px; }
+.historical-attribution-grid article b { font-size: 15px; }
+.historical-attribution-grid [data-tone="positive"],
+.historical-comparison-scroll [data-tone="positive"] { color: var(--success); }
+.historical-attribution-grid [data-tone="negative"],
+.historical-comparison-scroll [data-tone="negative"] { color: var(--danger); }
+
+.historical-comparison-scroll {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: auto;
+}
+
+.historical-comparison-scroll table {
+  border-collapse: collapse;
+  font-size: 11px;
+  min-width: 780px;
+  width: 100%;
+}
+
+.historical-comparison-scroll th,
+.historical-comparison-scroll td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.historical-comparison-scroll th:first-child,
+.historical-comparison-scroll td:first-child { text-align: left; }
+.historical-comparison-scroll th { color: var(--muted-foreground); font-size: 9px; font-weight: 600; text-transform: uppercase; }
+.historical-comparison-scroll td:first-child { display: grid; gap: 2px; }
+.historical-comparison-scroll td small { color: var(--muted-foreground); font-size: 9px; text-transform: capitalize; }
+.historical-comparison-scroll tr.is-current td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.historical-comparison-scroll tbody tr:last-child td { border-bottom: 0; }
+
 @container (max-width: 1050px) {
   .news-query-visible-medium,
   .news-query-primary > .inventory-filter-button,

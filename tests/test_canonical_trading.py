@@ -12,7 +12,10 @@ from unittest.mock import patch
 
 import polars as pl
 
-from src.backend.canonical_backtest_service import canonical_backtest_state
+from src.backend.canonical_backtest_service import (
+    backtest_comparison_projection,
+    canonical_backtest_state,
+)
 from src.backend.canonical_trading_service import performance_snapshot
 from src.backend.real_live_trading_service import RealLiveAccount, real_live_portfolio
 from src.trading_runtime.canonical_commands import intent_to_ibkr_request
@@ -306,6 +309,58 @@ class CanonicalAdapterTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CanonicalBacktestTests(unittest.TestCase):
+    def test_backtest_comparison_preserves_run_and_strategy_revision_identity(self) -> None:
+        projection = backtest_comparison_projection(
+            [
+                {
+                    "run": {
+                        "run_id": "run-2",
+                        "status": "completed",
+                        "created_at": "2026-07-18T14:00:00+00:00",
+                        "configuration_revision": 8,
+                        "processed_events": 400,
+                    },
+                    "performance_journal": {
+                        "summary": {"episode_count": 3, "net_pnl": "25.50"},
+                        "scope": {"attribution_coverage": "1"},
+                        "strategies": [
+                            {
+                                "strategy_id": "momentum",
+                                "strategy_revision": 4,
+                                "episode_count": 3,
+                                "net_pnl": "25.50",
+                            }
+                        ],
+                    },
+                },
+                {
+                    "run": {
+                        "run_id": "run-1",
+                        "status": "stopped",
+                        "created_at": "2026-07-17T14:00:00+00:00",
+                    },
+                    "performance_journal": {
+                        "summary": {"episode_count": 1, "net_pnl": "-5"},
+                        "scope": {"attribution_coverage": "0"},
+                        "strategies": [
+                            {
+                                "strategy_id": "Unattributed",
+                                "strategy_revision": 0,
+                                "episode_count": 1,
+                                "net_pnl": "-5",
+                            }
+                        ],
+                    },
+                },
+            ]
+        )
+
+        self.assertEqual(projection["authority"], "canonical_performance_journal")
+        self.assertEqual([row["run_id"] for row in projection["runs"]], ["run-2", "run-1"])
+        self.assertEqual(projection["runs"][0]["attribution_coverage"], "1")
+        self.assertEqual(projection["strategies"][0]["strategy_revision"], 4)
+        self.assertEqual(projection["strategies"][1]["strategy_id"], "Unattributed")
+
     def test_completed_backtest_adapts_to_v2_state_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run-1"

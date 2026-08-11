@@ -27,6 +27,67 @@ from src.trading_runtime.projector import TradingStateProjector
 from src.backend.canonical_trading_service import trading_state_payload
 
 
+def backtest_comparison_projection(
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Attach run identity to canonical performance-journal summaries."""
+    run_rows: list[dict[str, Any]] = []
+    strategy_rows: list[dict[str, Any]] = []
+    for result in results:
+        run = result.get("run") or {}
+        report = result.get("performance_journal") or {}
+        if not isinstance(run, dict) or not isinstance(report, dict):
+            continue
+        run_id = str(run.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        summary = report.get("summary") or {}
+        scope = report.get("scope") or {}
+        strategies = report.get("strategies") or []
+        identity = {
+            "run_id": run_id,
+            "status": str(run.get("status") or "unknown"),
+            "created_at": run.get("created_at"),
+            "session_date": run.get("session_date"),
+            "session_end": run.get("session_end"),
+            "configuration_revision": run.get("configuration_revision"),
+            "configuration_revision_id": run.get("configuration_revision_id"),
+            "processed_events": int(run.get("processed_events") or 0),
+        }
+        run_rows.append(
+            {
+                **identity,
+                **(dict(summary) if isinstance(summary, dict) else {}),
+                "attribution_coverage": (
+                    scope.get("attribution_coverage") if isinstance(scope, dict) else None
+                ),
+                "strategy_count": len(strategies) if isinstance(strategies, list) else 0,
+            }
+        )
+        for strategy in strategies if isinstance(strategies, list) else []:
+            if isinstance(strategy, dict):
+                strategy_rows.append({**identity, **strategy})
+    run_rows.sort(
+        key=lambda row: (str(row.get("created_at") or ""), row["run_id"]),
+        reverse=True,
+    )
+    strategy_rows.sort(
+        key=lambda row: (
+            float(row.get("net_pnl") or 0),
+            int(row.get("episode_count") or 0),
+        ),
+        reverse=True,
+    )
+    return {
+        "schema_version": 1,
+        "authority": "canonical_performance_journal",
+        "run_count": len(run_rows),
+        "strategy_row_count": len(strategy_rows),
+        "runs": run_rows,
+        "strategies": strategy_rows,
+    }
+
+
 def canonical_backtest_state(run_dir: Path) -> dict[str, Any]:
     """Adapt completed v1 run artifacts to the same v2 query model used by live trading."""
     metadata = read_run_metadata(run_dir) or {}

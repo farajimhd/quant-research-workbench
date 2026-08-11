@@ -198,6 +198,12 @@ bounded direct ClickHouse paths remain documented in
     account authority. Together with the existing epoch-expiry, stale-owner,
     state-recovery, and shared-account tests, the suite proves reservations
     cannot overallocate the available account capacity.
+39. Exposed canonical Backtest attribution and bounded comparative analysis.
+    Each result now includes the existing flat-to-flat performance journal,
+    preserving run, strategy, and strategy-revision identity. A backend-owned
+    comparison projection presents up to twenty terminal runs and their
+    strategy rows, while the Backtest UI shows current-run attribution and the
+    latest ten-run comparison without duplicating performance formulas.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

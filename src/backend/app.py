@@ -32,6 +32,7 @@ from src.backend.application_registry import (
     runtime_capability_registry_payload,
 )
 from src.backend.canvas_preview_service import canvas_preview_payload, scanner_snapshot_payload
+from src.backend.canonical_backtest_service import backtest_comparison_projection
 from src.backend.canonical_trading_service import canonical_trading_state
 from src.backend.portfolio_management_service import (
     portfolio_management_command,
@@ -5016,6 +5017,62 @@ def trading_backtest_runs() -> dict[str, Any]:
     return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
 
 
+async def _backtest_result_projection(
+    controller: Any,
+    *,
+    symbol: str = "AAPL",
+) -> dict[str, Any]:
+    payload = await controller.canvas_payload(symbol)
+    trading = dict(payload.get("trading") or {})
+    return {
+        "schema_version": 2,
+        "run": controller.snapshot(),
+        "as_of": payload.get("as_of"),
+        "performance_snapshot": trading.get("performance_snapshot") or {},
+        "performance_journal": trading.get("performance_journal") or {},
+        "portfolio": trading.get("portfolio") or {},
+        "positions": trading.get("positions") or [],
+        "orders": trading.get("orders") or [],
+        "executions": trading.get("executions") or [],
+        "closed_trades": trading.get("closed_trades") or [],
+        "activity": trading.get("activity") or [],
+        "strategy": payload.get("strategy") or {},
+    }
+
+
+@app.get("/api/trading/backtest/comparison")
+async def trading_backtest_comparison(
+    run_ids: str = "",
+    limit: int = Query(default=10, ge=1, le=20),
+) -> dict[str, Any]:
+    requested = list(dict.fromkeys(parse_csv_list(run_ids)))[:limit]
+    controllers: list[Any] = []
+    if requested:
+        try:
+            controllers = [backtest_run_service.get(run_id) for run_id in requested]
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Backtest run not found") from exc
+    else:
+        terminal = {"completed", "stopped", "failed"}
+        controllers = [
+            backtest_run_service.get(row["run_id"])
+            for row in backtest_run_service.list()
+            if row.get("status") in terminal
+        ][:limit]
+    results: list[dict[str, Any]] = []
+    warnings: list[dict[str, str]] = []
+    for controller in controllers:
+        try:
+            results.append(await _backtest_result_projection(controller))
+        except ValueError as exc:
+            if requested:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            warnings.append(
+                {"run_id": controller.run_id, "code": "RESULT_NOT_READY", "detail": str(exc)}
+            )
+    return {**backtest_comparison_projection(results), "warnings": warnings}
+
+
 @app.get("/api/trading/backtest/runs/{run_id}")
 def trading_backtest_run(run_id: str) -> dict[str, Any]:
     try:
@@ -5031,21 +5088,7 @@ async def trading_backtest_run_results(
 ) -> dict[str, Any]:
     try:
         controller = backtest_run_service.get(run_id)
-        payload = await controller.canvas_payload(symbol)
-        trading = dict(payload.get("trading") or {})
-        return {
-            "schema_version": 1,
-            "run": controller.snapshot(),
-            "as_of": payload.get("as_of"),
-            "performance_snapshot": trading.get("performance_snapshot") or {},
-            "portfolio": trading.get("portfolio") or {},
-            "positions": trading.get("positions") or [],
-            "orders": trading.get("orders") or [],
-            "executions": trading.get("executions") or [],
-            "closed_trades": trading.get("closed_trades") or [],
-            "activity": trading.get("activity") or [],
-            "strategy": payload.get("strategy") or {},
-        }
+        return await _backtest_result_projection(controller, symbol=symbol)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Backtest run not found") from exc
     except ValueError as exc:

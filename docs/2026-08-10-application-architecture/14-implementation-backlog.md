@@ -275,7 +275,11 @@ load progressively without false continuity.
         holding first-clock membership static.
   - [x] Build canonical Backtest performance, Portfolio, position, order,
         execution, and closed-trade result projections.
-  - [ ] Add strategy/run attribution and comparative analysis projections.
+  - [x] Add strategy/run attribution and comparative analysis projections.
+        Backtest results now expose the canonical flat-to-flat performance
+        journal, including strategy-revision attribution, and a bounded
+        comparison endpoint projects the latest terminal runs without
+        recalculating statistics in the browser.
   - [ ] Add durable resume/restart from checkpoints.
 - [ ] Add deterministic Debug fixtures.
 - [ ] Pin causal market/enrichment versions for historical decisions.

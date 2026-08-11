@@ -46,9 +46,22 @@ type BacktestResults = {
   closed_trades: Array<Record<string, unknown>>;
   executions: Array<Record<string, unknown>>;
   orders: Array<Record<string, unknown>>;
+  performance_journal: {
+    scope?: { attribution_coverage?: unknown };
+    strategies?: Array<Record<string, unknown>>;
+    summary?: Record<string, unknown>;
+  };
   performance_snapshot: Record<string, unknown>;
   portfolio: { metrics?: Record<string, unknown>; position_count?: number };
   positions: Array<Record<string, unknown>>;
+};
+
+type BacktestComparison = {
+  authority: "canonical_performance_journal";
+  run_count: number;
+  runs: Array<Record<string, unknown>>;
+  strategies: Array<Record<string, unknown>>;
+  warnings: Array<{ code: string; detail: string; run_id: string }>;
 };
 
 export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
@@ -62,6 +75,8 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [creating, setCreating] = useState(false);
   const [run, setRun] = useState<BacktestRun | null>(null);
   const [results, setResults] = useState<BacktestResults | null>(null);
+  const [comparison, setComparison] = useState<BacktestComparison | null>(null);
+  const [comparisonError, setComparisonError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -111,6 +126,13 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     api<BacktestResults>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/results`, { timeoutMs: 60_000 })
       .then(setResults)
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+    setComparisonError("");
+    api<BacktestComparison>("/api/trading/backtest/comparison?limit=10", { timeoutMs: 60_000 })
+      .then(setComparison)
+      .catch((reason) => {
+        setComparison(null);
+        setComparisonError(reason instanceof Error ? reason.message : String(reason));
+      });
   }, [run?.run_id, run?.status]);
 
   async function createRun() {
@@ -129,6 +151,8 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         timeoutMs: 60_000,
       });
       setResults(null);
+      setComparison(null);
+      setComparisonError("");
       setRun(created);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -184,6 +208,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <ResultMetric label="Executions" value={String(results.executions.length)} />
               <ResultMetric label="Closed trades" value={String(results.closed_trades.length)} />
             </div>
+            <BacktestAttribution report={results.performance_journal} />
+            {comparison ? <BacktestComparisonTable comparison={comparison} currentRunId={run?.run_id || ""} /> : null}
+            {comparisonError ? <p className="historical-analysis-warning historical-analysis-standalone">Run comparison unavailable: {comparisonError}</p> : null}
           </section> : null}
         </main>
 
@@ -212,6 +239,37 @@ function EvidenceCheck({ check }: { check: HistoricalCheck }) {
 
 function ResultMetric({ label, value }: { label: string; value: string }) {
   return <div><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function BacktestAttribution({ report }: { report: BacktestResults["performance_journal"] }) {
+  const rows = report.strategies || [];
+  const coverage = Number(report.scope?.attribution_coverage ?? 0);
+  return <section className="historical-analysis-section">
+    <header><div><span>Current run attribution</span><strong>Strategy revisions</strong></div><small>{formatPercent(coverage)} attributed</small></header>
+    {rows.length ? <div className="historical-attribution-grid">{rows.map((row) => <article key={`${row.strategy_id}-${row.strategy_revision}`}>
+      <div><strong>{String(row.strategy_id || "Unattributed")}</strong><span>revision {String(row.strategy_revision ?? 0)}</span></div>
+      <b data-tone={Number(row.net_pnl || 0) >= 0 ? "positive" : "negative"}>{formatResultValue(row.net_pnl)}</b>
+      <small>{String(row.episode_count || 0)} episodes · {formatPercent(Number(row.win_rate || 0))} win rate</small>
+    </article>)}</div> : <p className="historical-analysis-empty">No closed flat-to-flat episodes are available for attribution.</p>}
+  </section>;
+}
+
+function BacktestComparisonTable({ comparison, currentRunId }: { comparison: BacktestComparison; currentRunId: string }) {
+  return <section className="historical-analysis-section">
+    <header><div><span>Comparative analysis</span><strong>Last {comparison.run_count} terminal runs</strong></div><small>Canonical journal authority</small></header>
+    {comparison.runs.length ? <div className="historical-comparison-scroll"><table><thead><tr><th>Run</th><th>Revision</th><th>Episodes</th><th>Net P&amp;L</th><th>Win rate</th><th>Expectancy</th><th>Max drawdown</th><th>Attributed</th></tr></thead><tbody>{comparison.runs.map((row) => <tr className={row.run_id === currentRunId ? "is-current" : undefined} key={String(row.run_id)}><td><strong>{shortRunId(row.run_id)}</strong><small>{String(row.status || "unknown")}</small></td><td>{String(row.configuration_revision ?? "—")}</td><td>{String(row.episode_count || 0)}</td><td data-tone={Number(row.net_pnl || 0) >= 0 ? "positive" : "negative"}>{formatResultValue(row.net_pnl)}</td><td>{formatPercent(Number(row.win_rate || 0))}</td><td>{formatResultValue(row.expectancy)}</td><td>{formatResultValue(row.maximum_drawdown)}</td><td>{formatPercent(Number(row.attribution_coverage || 0))}</td></tr>)}</tbody></table></div> : <p className="historical-analysis-empty">Complete a Backtest run to create a comparison baseline.</p>}
+    {comparison.warnings.length ? <small className="historical-analysis-warning">{comparison.warnings.length} run result{comparison.warnings.length === 1 ? " was" : "s were"} unavailable and excluded.</small> : null}
+  </section>;
+}
+
+function formatPercent(value: number) {
+  if (!Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1, style: "percent" }).format(value);
+}
+
+function shortRunId(value: unknown) {
+  const text = String(value || "");
+  return text.length > 12 ? `${text.slice(0, 8)}…` : text;
 }
 
 function formatResultValue(value: unknown) {
