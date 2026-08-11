@@ -394,6 +394,14 @@ bounded direct ClickHouse paths remain documented in
     evidence instead of repeating product snapshots. All 88 QMD Gateway tests,
     all 26 QMD History tests, 74 backend/downstream tests, Rust formatting,
     Python compile, and diff validation passed.
+61. Isolated backend workload admission. Commands, discovery, charts/Canvas,
+    Replay/Backtest simulation, offline/build work, and general reads now have
+    independent environment-configurable concurrency limits at the browser API
+    boundary. Saturation waits for a bounded interval and returns a retryable,
+    correlated typed 429 without consuming another lane. A read-only system
+    endpoint reports active, available, completed, rejected, and wait-time
+    evidence. Two focused classification/concurrency tests, Python compile, and
+    diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

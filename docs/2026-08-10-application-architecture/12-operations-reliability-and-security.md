@@ -51,7 +51,7 @@ QMD retention additionally proves archive equivalence before deleting recent dat
 
 ## 4. Resource control
 
-All queues, concurrency, batches, subscriptions, result sets, caches and retries are bounded. Each workload class has a budget and admission policy. Long operations expose progress and cancellation, checkpoint frequently, and do not monopolize latency-critical trading or market-data threads.
+All queues, concurrency, batches, subscriptions, result sets, caches and retries are bounded. Each workload class has a budget and admission policy. The backend now isolates command, discovery, chart, simulation, offline, and general HTTP admission with separate environment-configurable semaphores and typed retryable 429 rejection; `/api/system/workload-budgets` exposes saturation and wait evidence. Long operations expose progress and cancellation, checkpoint frequently, and do not monopolize latency-critical trading or market-data threads.
 
 Load shedding is semantic:
 

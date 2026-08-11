@@ -149,6 +149,15 @@ Use separate resource budgets and queues for:
 - replay/backtest workloads;
 - offline export/research work.
 
+The HTTP composition boundary now enforces independent configurable admission
+budgets for `commands`, `discovery`, `charts`, `simulation`, `offline`, and
+`general` traffic. Defaults are 8, 8, 12, 6, 2, and 32 concurrent requests;
+`BACKEND_<LANE>_CONCURRENCY` changes a lane without sharing capacity with the
+others. Requests wait at most 250 ms, then receive a retryable typed HTTP 429
+carrying the lane, limit, and request correlation/causation IDs. Operators can
+inspect active, available, completed, rejected, and cumulative wait evidence at
+`GET /api/system/workload-budgets`.
+
 Cache keys include tenant/user scope where relevant, source versions, field/capability version, as-of semantics and adjustment/session policy. Commands and mutable trading state are never served from a generic response cache.
 
 ## 8. Security and authorization

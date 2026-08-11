@@ -221,7 +221,9 @@ budgets and invalid scope broadening fails configuration validation.
       contract before this broad item is closed.
 - [ ] Implement HTTP snapshot plus sequenced delta streams.
 - [ ] Fill reconnect gaps or require resnapshot.
-- [ ] Isolate budgets for commands, discovery, charts, simulation, and offline work.
+- [x] Isolate budgets for commands, discovery, charts, simulation, and offline work.
+  - [x] Enforce independent HTTP admission limits with typed retryable 429
+        rejection and expose per-lane active/completed/rejected/wait evidence.
   - [x] Give Replay/Backtest historical warm-up a configurable bounded fetch
         semaphore and deduplicate the cross-sectional Scanner signal request.
 - [x] Bound and version caches.

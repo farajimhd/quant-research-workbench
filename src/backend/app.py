@@ -22,7 +22,7 @@ import polars as pl
 import websockets
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,11 @@ from src.backend.application_registry import (
     runtime_capability_registry_payload,
 )
 from src.backend.bounded_cache import BoundedTtlCache
+from src.backend.workload_budget import (
+    WorkloadBudgetRejected,
+    classify_workload,
+    workload_budget_manager,
+)
 from src.backend.canvas_preview_service import canvas_preview_payload, scanner_snapshot_payload
 from src.backend.canonical_backtest_service import backtest_comparison_projection
 from src.backend.canonical_trading_service import canonical_trading_state
@@ -488,7 +493,29 @@ async def request_identity_middleware(request: Request, call_next: Any) -> Any:
         request.headers.get(CAUSATION_HEADER),
     )
     try:
-        response = await call_next(request)
+        lane = classify_workload(request.method, request.url.path)
+        try:
+            async with workload_budget_manager.lease(lane):
+                response = await call_next(request)
+        except WorkloadBudgetRejected as exc:
+            response = JSONResponse(
+                status_code=429,
+                content={
+                    "schema_version": 1,
+                    "complete": False,
+                    "data": None,
+                    "warnings": [],
+                    "error": {
+                        "code": "backend_workload_capacity_exhausted",
+                        "message": str(exc),
+                        "retryable": True,
+                        "lane": exc.lane,
+                        "limit": exc.limit,
+                        "correlation_id": correlation_id,
+                        "causation_id": causation_id,
+                    },
+                },
+            )
         response.headers[CORRELATION_HEADER] = correlation_id
         response.headers[CAUSATION_HEADER] = causation_id
         return response
@@ -3482,6 +3509,11 @@ def service_status_error_payload(service_id: str, exc: Exception) -> dict[str, A
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {"status": "ok", "app": "quant-research-workbench"}
+
+
+@app.get("/api/system/workload-budgets")
+def system_workload_budgets() -> dict[str, object]:
+    return workload_budget_manager.snapshot()
 
 
 @app.get("/api/services/status")
