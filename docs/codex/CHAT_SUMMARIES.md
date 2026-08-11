@@ -14,6 +14,12 @@
 - Summary written: 2026-08-07 14:05 PDT
 - Scope: complete and correct the 2,000-news authority, repair generic identity/polarity defects, remove stale certification/version/semantic abstractions, publish an integrity-bound full audit, and preserve only the policy-uncertain and live-cutover work.
 
+### [2026-08-06 16:03 - Rebuild BarGPT around a sparse-event v12 authority and align training, profiling, and evaluation](docs/codex/chat-summaries/2026/CHAT-20260806-1603-bargpt-sparse-event-v12-build-training.md)
+- Chat/task ID: `019fd950-f414-78d1-8c38-6bbc255d938a`
+- Related task: `TASK-0170`
+- Summary written: 2026-08-11 10:04 PDT
+- Scope: replace dense empty-second shards with an immutable 300-ticker direct-event sparse authority; revise contexts, OHLC/direction targets, conditions, audits, pilot/overfit, loader, training, profiling, discovery, and final validation; launch the 2019-2026 v12 build and preserve its remaining audit-and-lock gates.
+
 ### [2026-08-04 (UNKNOWN time) - Durable chat-independent history for this repository and News Synthesis lineage](docs/codex/chat-summaries/2026/CHAT-20260804-UNKNOWN-repository-task-history.md)
 - Chat/task ID: N/A (not provided in this stream)
 - Related tasks: `TASK-0183`, `TASK-0182`, `TASK-0180`, `TASK-0179`, `TASK-0178`, `TASK-0177`, `TASK-0164`, `TASK-0163`
