@@ -164,6 +164,15 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
   reservation-transition counts, active reserved notional/risk, reconciliation
   issues, OMS state counts, unknown outcomes, protection deficits, and
   reconciliation failures. Canvas renders the safety-critical subset.
+- Portfolio restart reconciliation is durable end to end. Runtime startup
+  refreshes authoritative cash, positions, and orders before enabling entry
+  authority; OMS restores nonterminal groups and reconciles stable client and
+  broker IDs, with callbacks resizing or releasing reservations. Portfolio now
+  also persists broker-versus-managed-attribution differences, restores them
+  after journal reopen, and writes a reconciliation record only when that
+  difference set changes. Legitimate external/manual positions remain explicit
+  differences and continue to count in account exposure rather than being
+  silently adopted as Strategy allocations.
 - Configuration publishing emits immutable compiled Run Plans. Live still has
   shared-controller migration work, but no current backend route or retained
   legacy order helper can issue a broker command outside OMS.

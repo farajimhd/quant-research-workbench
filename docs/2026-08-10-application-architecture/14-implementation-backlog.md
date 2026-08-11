@@ -399,7 +399,10 @@ Replay and Backtest decisions.
       allocation and concurrent admission are decided only by Portfolio policy,
       current broker/canonical state, durable reservations, and fenced account
       or group capacity.
-- [ ] Reconcile reservations, positions, cash, and broker truth after restart.
+- [x] Reconcile reservations, positions, cash, and broker truth after restart.
+      Runtime startup refreshes canonical broker state before entry authority,
+      OMS recovers nonterminal groups and updates Portfolio reservations, and
+      broker/allocation differences are now journaled and restored durably.
 - [x] Journal every Portfolio decision and reservation transition.
 - [x] Expose Portfolio configuration and operational UI/API, including distinct
       Run Plan allocations and aggregated Strategy allocation labels.

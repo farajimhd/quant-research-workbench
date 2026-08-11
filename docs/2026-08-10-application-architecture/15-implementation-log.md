@@ -402,6 +402,15 @@ bounded direct ClickHouse paths remain documented in
     endpoint reports active, available, completed, rejected, and wait-time
     evidence. Two focused classification/concurrency tests, Python compile, and
     diff validation passed.
+62. Closed Portfolio restart reconciliation evidence. The existing shared
+    runtime already refreshed canonical cash/positions/orders before admission
+    and then recovered OMS groups by stable broker/client IDs, whose callbacks
+    resize or release durable reservations. The missing seam was Portfolio's
+    broker-versus-managed attribution differences: they are now saved with
+    account state, restored after journal reopen, and journaled only when the
+    difference set changes. Dedicated external-runtime test directories avoid
+    costly retries at the crowded runtime root. All 37 Portfolio/OMS tests,
+    Python compile, and diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

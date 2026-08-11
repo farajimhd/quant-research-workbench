@@ -16,6 +16,7 @@ from src.backend.trading_runtime_service import trading_journal
 
 
 RUNTIME_ROOT = Path(r"D:\TradingML\runtimes")
+TEST_RUNTIME_ROOT = RUNTIME_ROOT / "portfolio_service_tests"
 
 
 def canonical_state() -> dict:
@@ -46,7 +47,8 @@ def canonical_state() -> dict:
 
 class PortfolioManagementServiceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory(dir=RUNTIME_ROOT)
+        TEST_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=TEST_RUNTIME_ROOT)
         accounts = [
             {"key": "cash", "account_id": "CASH1", "account_class": "cash", "trading_mode": "live"},
             {"key": "margin", "account_id": "MARGIN1", "account_class": "margin", "trading_mode": "live"},

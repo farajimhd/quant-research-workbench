@@ -1504,6 +1504,11 @@ class PortfolioManagementEngine:
 
     def _reconcile_account(self, state: PortfolioAccountState) -> None:
         account_key = state.profile.account_key
+        prior = {
+            key: value
+            for key, value in self.differences.items()
+            if key[0] == account_key
+        }
         existing_keys = [key for key in self.differences if key[0] == account_key]
         for key in existing_keys:
             del self.differences[key]
@@ -1524,6 +1529,24 @@ class PortfolioManagementEngine:
                 attributed_quantity=attributed_quantity,
                 unattributed_quantity=delta,
                 observed_at=state.observed_at or datetime.now(timezone.utc),
+            )
+        current = {
+            key: value
+            for key, value in self.differences.items()
+            if key[0] == account_key
+        }
+        if _reconciliation_signature(prior) != _reconciliation_signature(current):
+            rows = [asdict(current[key]) for key in sorted(current)]
+            self._record(
+                "portfolio_reconciliation",
+                account_key,
+                state.profile.account_id,
+                {
+                    "event": "portfolio_reconciliation_completed",
+                    "snapshot_id": state.snapshot_id,
+                    "difference_count": len(rows),
+                    "differences": rows,
+                },
             )
 
     def _apply_fill(
@@ -1647,6 +1670,11 @@ class PortfolioManagementEngine:
                     for row in self.allocations.values()
                     if row.account_id == state.profile.account_id
                 ],
+                "reconciliation": [
+                    asdict(row)
+                    for row in self.differences.values()
+                    if row.account_key == state.profile.account_key
+                ],
             },
         )
 
@@ -1695,6 +1723,14 @@ class PortfolioManagementEngine:
                         }
                     )
                     self.allocations[allocation.allocation_id] = allocation
+                for raw in payload.get("reconciliation") or []:
+                    difference = PortfolioReconciliationDifference(
+                        **{
+                            **raw,
+                            "observed_at": _timestamp(raw.get("observed_at")),
+                        }
+                    )
+                    self.differences[(difference.account_key, difference.ticker)] = difference
             except (TypeError, ValueError):
                 state.control_mode = PortfolioControlMode.ENTRIES_PAUSED
                 state.stale_reason = "Persisted portfolio state is invalid; entries are paused."
@@ -1724,6 +1760,21 @@ class PortfolioManagementEngine:
         except (TypeError, ValueError):
             state.control_mode = PortfolioControlMode.ENTRIES_PAUSED
             state.stale_reason = "Operational portfolio controls are invalid; entries are paused."
+
+
+def _reconciliation_signature(
+    rows: Mapping[tuple[str, str], PortfolioReconciliationDifference],
+) -> tuple[tuple[str, str, float, float, float], ...]:
+    return tuple(
+        (
+            row.account_key,
+            row.ticker,
+            row.broker_quantity,
+            row.attributed_quantity,
+            row.unattributed_quantity,
+        )
+        for row in sorted(rows.values(), key=lambda value: (value.account_key, value.ticker))
+    )
 
 
 def profiles_for_runtime(

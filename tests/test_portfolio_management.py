@@ -32,6 +32,7 @@ from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 
 NOW = datetime.now(timezone.utc)
 RUNTIME_ROOT = Path(r"D:\TradingML\runtimes")
+TEST_RUNTIME_ROOT = RUNTIME_ROOT / "portfolio_tests"
 
 
 def summary(account_id: str, *, equity: float = 100_000, available: float = 80_000, at: datetime = NOW) -> AccountSummary:
@@ -146,7 +147,8 @@ class PortfolioCausationTests(unittest.IsolatedAsyncioTestCase):
 
 class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory(dir=RUNTIME_ROOT)
+        TEST_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=TEST_RUNTIME_ROOT)
         self.journal = TradingJournal(Path(self.temp.name) / "portfolio.sqlite3")
 
     def tearDown(self) -> None:
@@ -460,6 +462,47 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         recovered = self.engine([profile])
         self.assertEqual(next(iter(recovered.allocations.values())).quantity, 20)
         self.assertEqual(recovered.reservations[decision.reservation_id].status, "filled")
+
+    async def test_reconciliation_differences_are_durable_and_change_journaled(self) -> None:
+        profile = PortfolioAccountProfile(
+            "cash", "C1", "live", "cash", PortfolioPolicy(policy_id="restart")
+        )
+        engine = self.engine([profile])
+        engine.synchronize_snapshot(
+            "C1",
+            summary=summary("C1"),
+            ledger=ledger("C1"),
+            positions=[position("C1", "AAPL", 25)],
+            snapshot_id="broker-snapshot-1",
+        )
+        first_records = [
+            row
+            for row in self.journal.portfolio_management_records(limit=100)
+            if row.entity_type == "portfolio_reconciliation"
+        ]
+        self.assertEqual(len(first_records), 1)
+        self.assertEqual(first_records[0].payload["difference_count"], 1)
+
+        self.journal.close()
+        self.journal = TradingJournal(Path(self.temp.name) / "portfolio.sqlite3")
+        recovered = self.engine([profile])
+        restored = recovered.account_payload("C1")["reconciliation"]
+        self.assertEqual(restored[0]["ticker"], "AAPL")
+        self.assertEqual(restored[0]["unattributed_quantity"], 25)
+
+        recovered.synchronize_snapshot(
+            "C1",
+            summary=summary("C1"),
+            ledger=ledger("C1"),
+            positions=[position("C1", "AAPL", 25)],
+            snapshot_id="broker-snapshot-2",
+        )
+        unchanged_records = [
+            row
+            for row in self.journal.portfolio_management_records(limit=100)
+            if row.entity_type == "portfolio_reconciliation"
+        ]
+        self.assertEqual(len(unchanged_records), 1)
 
     async def test_reduce_only_control_blocks_entries(self) -> None:
         profile = PortfolioAccountProfile("cash", "C1", "live", "cash", PortfolioPolicy(policy_id="control"))
