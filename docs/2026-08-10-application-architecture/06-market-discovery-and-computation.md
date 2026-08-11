@@ -174,8 +174,9 @@ offline calculation is available in its proper scope.
   retain full trade objects for Core Scan rate calculation.
 - `GET /snapshot/scanner` and `WS /stream/scanner` use the same monotonic
   sequence authority. The WebSocket sends a typed initial snapshot followed by
-  typed row deltas. A lag warning requires a new snapshot instead of silently
-  continuing across a sequence gap.
+  typed row deltas. Receiver lag or a non-contiguous sequence emits an explicit
+  warning and an immediate authoritative replacement snapshot. Deltas captured
+  by the receiver before that snapshot are discarded through its sequence.
 - Focused bar routing now admits only an explicitly leased timeframe plus the
   canonical 100 ms dependency stream used to aggregate event-native evidence.
   A one-minute chart or Watchlist lease no longer runs unrelated five-minute,

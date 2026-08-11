@@ -283,15 +283,35 @@ fn valid_shutdown_token(expected: &str, supplied: &str) -> bool {
     !expected.is_empty() && supplied == expected
 }
 
+fn scanner_sequence_gap(delivered_sequence: u64, received_sequence: u64) -> Option<u64> {
+    if received_sequence > delivered_sequence.saturating_add(1) {
+        Some(
+            received_sequence
+                .saturating_sub(delivered_sequence)
+                .saturating_sub(1),
+        )
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod shutdown_tests {
-    use super::valid_shutdown_token;
+    use super::{scanner_sequence_gap, valid_shutdown_token};
 
     #[test]
     fn shutdown_requires_the_configured_non_empty_token() {
         assert!(valid_shutdown_token("run-token", "run-token"));
         assert!(!valid_shutdown_token("run-token", "wrong"));
         assert!(!valid_shutdown_token("", ""));
+    }
+
+    #[test]
+    fn scanner_sequence_gap_requires_resnapshot_only_for_missing_deltas() {
+        assert_eq!(scanner_sequence_gap(10, 11), None);
+        assert_eq!(scanner_sequence_gap(10, 10), None);
+        assert_eq!(scanner_sequence_gap(10, 13), Some(2));
+        assert_eq!(scanner_sequence_gap(u64::MAX, u64::MAX), None);
     }
 }
 
@@ -991,9 +1011,10 @@ async fn indicator_snapshot(
 async fn scanner_stream(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
+    Query(query): Query<LimitQuery>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        stream_scanner(socket, state).await;
+        stream_scanner(socket, state, query.limit.unwrap_or(250).min(5_000)).await;
     })
 }
 
@@ -1389,32 +1410,76 @@ async fn stream_events(mut socket: WebSocket, state: Arc<AppState>) {
     }
 }
 
-async fn stream_scanner(mut socket: WebSocket, state: Arc<AppState>) {
+async fn send_scanner_snapshot(
+    socket: &mut WebSocket,
+    state: &AppState,
+    limit: usize,
+    reason: Option<&'static str>,
+    skipped: Option<u64>,
+) -> Result<u64, ()> {
+    let snapshot = state.market.scanner_snapshot(limit).await;
+    let sequence = snapshot.sequence;
+    let payload = json!({
+        "kind": "snapshot",
+        "reason": reason,
+        "skipped": skipped,
+        "snapshot": snapshot,
+    });
+    let text = serde_json::to_string(&payload).map_err(|_| ())?;
+    socket
+        .send(Message::Text(text.into()))
+        .await
+        .map_err(|_| ())?;
+    Ok(sequence)
+}
+
+async fn stream_scanner(mut socket: WebSocket, state: Arc<AppState>, limit: usize) {
     let mut receiver = state.scanner_deltas.subscribe();
-    let snapshot = state.market.scanner_snapshot(250).await;
-    let snapshot_sequence = snapshot.sequence;
-    match serde_json::to_string(&json!({"kind": "snapshot", "snapshot": snapshot})) {
-        Ok(text) => {
-            if socket.send(Message::Text(text.into())).await.is_err() {
-                return;
-            }
-        }
-        Err(error) => {
-            let _ = socket
-                .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
-                .await;
-            return;
-        }
-    }
+    let Ok(mut delivered_sequence) =
+        send_scanner_snapshot(&mut socket, &state, limit, None, None).await
+    else {
+        return;
+    };
     loop {
         match receiver.recv().await {
-            Ok(delta) if delta.sequence <= snapshot_sequence => continue,
+            Ok(delta) if delta.sequence <= delivered_sequence => continue,
+            Ok(delta) if scanner_sequence_gap(delivered_sequence, delta.sequence).is_some() => {
+                let skipped = scanner_sequence_gap(delivered_sequence, delta.sequence)
+                    .expect("guard requires a Scanner sequence gap");
+                let warning = json!({
+                    "warning": "scanner_delta_sequence_gap",
+                    "expected_sequence": delivered_sequence.saturating_add(1),
+                    "received_sequence": delta.sequence,
+                    "skipped": skipped,
+                    "action": "resnapshot",
+                });
+                if socket
+                    .send(Message::Text(warning.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                match send_scanner_snapshot(
+                    &mut socket,
+                    &state,
+                    limit,
+                    Some("sequence_gap"),
+                    Some(skipped),
+                )
+                .await
+                {
+                    Ok(sequence) => delivered_sequence = sequence,
+                    Err(()) => break,
+                }
+            }
             Ok(delta) => match serde_json::to_string(&json!({"kind": "row_delta", "delta": delta}))
             {
                 Ok(text) => {
                     if socket.send(Message::Text(text.into())).await.is_err() {
                         break;
                     }
+                    delivered_sequence = delta.sequence;
                 }
                 Err(error) => {
                     if socket
@@ -1432,6 +1497,18 @@ async fn stream_scanner(mut socket: WebSocket, state: Arc<AppState>) {
                 );
                 if socket.send(Message::Text(warning.into())).await.is_err() {
                     break;
+                }
+                match send_scanner_snapshot(
+                    &mut socket,
+                    &state,
+                    limit,
+                    Some("receiver_lag"),
+                    Some(count),
+                )
+                .await
+                {
+                    Ok(sequence) => delivered_sequence = sequence,
+                    Err(()) => break,
                 }
             }
             Err(broadcast::error::RecvError::Closed) => break,

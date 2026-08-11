@@ -208,8 +208,10 @@ flowchart TD
     F --> G
 ```
 
-QMD now provides stable live compact-event and ticker-state snapshots; stream
-reconnect and sequence-gap repair remain open. The historical request contract
+QMD now provides stable live compact-event and ticker-state snapshots. The
+Scanner stream reconnects through an authoritative snapshot and replaces client
+state immediately after receiver lag or a non-contiguous sequence. Equivalent
+repair contracts for the remaining raw event/product streams remain open. The historical request contract
 uses the same `qmd_core` encoding and source plan. Market AI chooses the
 requested product and causal cutoff; it does not choose `q_live` versus
 `market_sip_compact` or reproduce boundary logic.

@@ -161,7 +161,14 @@ bounded direct ClickHouse paths remain documented in
     captures the row and global Scanner sequence under one read lock, declares
     authority and schema version, reports `as_of` and event age, and represents
     a missing symbol explicitly. The older nullable-row endpoint remains only
-    for measured compatibility; reconnect sequence-gap repair remains open.
+    for measured compatibility. Stream recovery was handled separately in the
+    following phase.
+33. Made the QMD Scanner stream self-repairing. Each connection subscribes
+    before capturing its bounded initial snapshot; receiver lag or an observed
+    non-contiguous sequence now emits explicit gap evidence and immediately
+    sends a replacement snapshot from the same sequence authority. Queued
+    deltas through the replacement boundary are discarded. Other raw event and
+    product streams still require equivalent recovery contracts.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

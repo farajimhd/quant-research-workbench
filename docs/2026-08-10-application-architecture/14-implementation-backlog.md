@@ -86,6 +86,10 @@ one backend registry record and one executable implementation status.
   - [ ] Retire the nullable ticker-row and compact-event raw-array compatibility
         endpoints after zero production callers are proven.
 - [ ] Add reconnect continuation and sequence-gap repair.
+  - [x] Make Scanner reconnect start from an authoritative snapshot and
+        automatically replace client state after lag or a sequence gap.
+  - [ ] Add equivalent bounded continuation or resnapshot contracts to the
+        remaining raw event and product streams.
 - [x] Expose bounded historical events, bars, indicators, signals, and scanner products.
 - [x] Return source-plan hash, event schema, coverage, `as_of`, and continuation cursor.
 - [x] Provide a consumer-neutral historical contract suitable for future Market AI use.
