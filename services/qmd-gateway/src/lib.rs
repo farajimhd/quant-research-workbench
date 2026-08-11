@@ -29,6 +29,7 @@ pub mod market_signal;
 pub mod massive;
 pub mod metrics;
 pub mod microstructure_interval;
+pub mod request_identity;
 pub mod scanner;
 pub mod session;
 pub mod signal_catalog;

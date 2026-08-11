@@ -36,6 +36,7 @@ use crate::state::{
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -205,6 +206,9 @@ pub fn app(state: AppState) -> Router {
         .route("/stream/macro-bars/{ticker}", get(macro_bar_stream))
         .route("/stream/indicators/{ticker}", get(indicator_stream))
         .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn(
+            crate::request_identity::preserve_request_identity,
+        ))
         .with_state(Arc::new(state))
 }
 

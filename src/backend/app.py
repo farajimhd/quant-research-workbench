@@ -20,13 +20,19 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 import websockets
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.backend.json_utils import json_safe, parse_csv_list
+from src.request_context import (
+    CAUSATION_HEADER,
+    CORRELATION_HEADER,
+    begin_request_context,
+    end_request_context,
+)
 from src.backend.application_registry import (
     application_registry_payload,
     runtime_capability_registry_payload,
@@ -417,7 +423,23 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[CORRELATION_HEADER, CAUSATION_HEADER],
 )
+
+
+@app.middleware("http")
+async def request_identity_middleware(request: Request, call_next: Any) -> Any:
+    correlation_token, causation_token, correlation_id, causation_id = begin_request_context(
+        request.headers.get(CORRELATION_HEADER),
+        request.headers.get(CAUSATION_HEADER),
+    )
+    try:
+        response = await call_next(request)
+        response.headers[CORRELATION_HEADER] = correlation_id
+        response.headers[CAUSATION_HEADER] = causation_id
+        return response
+    finally:
+        end_request_context(correlation_token, causation_token)
 
 
 class ScopeUpdate(BaseModel):

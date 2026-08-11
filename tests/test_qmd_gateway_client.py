@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from src.backend.qmd_gateway_client import (
@@ -24,9 +25,48 @@ from src.backend.qmd_gateway_client import (
     qmd_scanner_indicators,
     qmd_websocket_url,
 )
+from src.request_context import begin_request_context, end_request_context
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
+    @patch("src.backend.qmd_gateway_client.qmd_enabled", return_value=True)
+    @patch("src.backend.qmd_gateway_client.qmd_base_url", return_value="http://127.0.0.1:8795")
+    def test_http_transport_propagates_request_identity(
+        self, _base_url, _enabled, urlopen
+    ) -> None:
+        response = MagicMock()
+        response.read.return_value = b"{}"
+        urlopen.return_value.__enter__.return_value = response
+        correlation_token, causation_token, _, _ = begin_request_context(
+            "web:request-17", "command:open-chart"
+        )
+        try:
+            from src.backend.qmd_gateway_client import qmd_get_json
+
+            qmd_get_json("/health")
+        finally:
+            end_request_context(correlation_token, causation_token)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("X-correlation-id"), "web:request-17")
+        self.assertEqual(request.get_header("X-causation-id"), "command:open-chart")
+
+    @patch("src.backend.qmd_gateway_client.qmd_enabled", return_value=True)
+    @patch("src.backend.qmd_gateway_client.qmd_base_url", return_value="http://127.0.0.1:8795")
+    def test_websocket_transport_propagates_request_identity_in_query(
+        self, _base_url, _enabled
+    ) -> None:
+        correlation_token, causation_token, _, _ = begin_request_context(
+            "web:request-18", None
+        )
+        try:
+            url = qmd_websocket_url("/stream/scanner", {"limit": 25})
+        finally:
+            end_request_context(correlation_token, causation_token)
+        self.assertIn("correlation_id=web%3Arequest-18", url)
+        self.assertIn("causation_id=web%3Arequest-18", url)
+
     @patch("src.backend.qmd_gateway_client.qmd_history_get_json")
     def test_historical_scanner_uses_qmd_history_full_market_contract(self, get_json) -> None:
         get_json.return_value = {"ticker_count": 2, "indicators": []}

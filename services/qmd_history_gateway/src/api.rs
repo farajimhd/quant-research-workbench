@@ -11,6 +11,7 @@ use crate::source::{
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -187,6 +188,9 @@ pub fn app(state: AppState) -> Router {
         .route("/stream/indicators/{ticker}", get(indicator_stream))
         .route("/stream/derived/{ticker}", get(derived_stream))
         .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn(
+            qmd_core::request_identity::preserve_request_identity,
+        ))
         .with_state(Arc::new(state))
 }
 

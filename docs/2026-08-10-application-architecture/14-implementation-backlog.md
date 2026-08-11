@@ -360,6 +360,13 @@ broker command outside OMS.
       remaining existing service contracts is still open.
 - [x] Build a central backend/frontend readiness view.
 - [ ] Propagate end-to-end correlation and causation IDs.
+  - [x] Generate/preserve bounded IDs from browser requests through backend
+        context, QMD HTTP headers and WebSocket query identity, QMD Live/History
+        response evidence, broker-event envelopes, and authoritative
+        Portfolio/OMS journal payloads.
+  - [ ] Give autonomous source events, computation leases, Strategy decisions,
+        and background continuations explicit causation lineage when no HTTP
+        request context exists.
 - [x] Add QMD transition/gap/lag/cache/queue metrics.
 - [x] Add discovery computation-cost metrics.
 - [x] Add Portfolio disposition/reservation and OMS reconciliation metrics.

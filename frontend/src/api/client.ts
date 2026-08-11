@@ -1,4 +1,4 @@
-export type ApiError = Error & { status?: number };
+export type ApiError = Error & { correlationId?: string; status?: number };
 export type ApiRequestInit = RequestInit & { timeoutMs?: number };
 
 export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
@@ -9,12 +9,12 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
   else requestInit.signal?.addEventListener("abort", abortFromCaller, { once: true });
   const timeout = timeoutMs ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
+    const headers = new Headers(requestInit.headers ?? {});
+    if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    if (!headers.has("X-Correlation-ID")) headers.set("X-Correlation-ID", requestIdentity());
     const response = await fetch(path, {
-      headers: {
-        "Content-Type": "application/json",
-        ...(requestInit.headers ?? {})
-      },
       ...requestInit,
+      headers,
       signal: controller.signal
     });
     const text = await response.text();
@@ -23,6 +23,7 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
       const detail = payload === undefined ? response.statusText : formatApiErrorDetail(payload);
       const error = new Error(detail) as ApiError;
       error.status = response.status;
+      error.correlationId = response.headers.get("X-Correlation-ID") ?? undefined;
       throw error;
     }
     if (payload === undefined) {
@@ -33,6 +34,11 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
     if (timeout !== null) window.clearTimeout(timeout);
     requestInit.signal?.removeEventListener("abort", abortFromCaller);
   }
+}
+
+function requestIdentity(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 function parseJsonPayload(text: string): unknown | undefined {

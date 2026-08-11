@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from src.request_context import current_request_identity
+
 
 @dataclass(frozen=True, slots=True)
 class JournalRecord:
@@ -57,6 +59,7 @@ class TradingJournal:
         event_time = (event_time or datetime.now(timezone.utc)).astimezone(timezone.utc)
         recorded_at = datetime.now(timezone.utc)
         record_id = str(uuid.uuid4())
+        payload = {**current_request_identity(), **payload}
         payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True, default=_json_default)
         with self._lock, self._connection:
             sequence = int(

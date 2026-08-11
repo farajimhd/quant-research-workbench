@@ -217,6 +217,14 @@ bounded direct ClickHouse paths remain documented in
     validation cross-checks every container, product, link direction, mode, and
     state schema. Shared trading workspaces consume the catalog and block new
     unverified container choices when registry or renderer evidence fails.
+42. Added bounded request correlation and causation propagation across the
+    active application path. Browser API calls originate correlation IDs; the
+    backend validates or creates both identities, returns them in exposed
+    response headers, and carries them through QMD HTTP/WebSocket transport.
+    QMD Live and History validate and echo the headers, while broker-event
+    envelopes and authoritative Portfolio/OMS journal payloads inherit the
+    active context. Autonomous source-event and computation-lease lineage is
+    still open and is not mislabeled complete.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

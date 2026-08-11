@@ -15,6 +15,8 @@ from typing import Any, Callable, Collection, Literal
 
 from dotenv import load_dotenv
 
+from src.request_context import current_request_headers, current_request_query
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_QMD_BASE_URL = "http://127.0.0.1:8795"
@@ -332,7 +334,11 @@ def _qmd_service_get_json(
     url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
     if query:
         url = f"{url}?{query}"
-    request = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
+    request = urllib.request.Request(
+        url,
+        method="GET",
+        headers={"Accept": "application/json", **current_request_headers()},
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             text = response.read().decode("utf-8")
@@ -357,7 +363,7 @@ def qmd_put_json(path: str, payload: dict[str, Any], *, timeout: int = 3) -> Any
         url,
         data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
         method="PUT",
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        headers={"Accept": "application/json", "Content-Type": "application/json", **current_request_headers()},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -379,7 +385,7 @@ def qmd_delete_json(path: str, *, timeout: int = 3) -> Any:
     request = urllib.request.Request(
         url,
         method="DELETE",
-        headers={"Accept": "application/json"},
+        headers={"Accept": "application/json", **current_request_headers()},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -416,7 +422,10 @@ def _qmd_service_websocket_url(
     parsed = urllib.parse.urlsplit(base_url.rstrip("/"))
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise RuntimeError(f"{service_label} gateway URL must use http or https.")
-    query = urllib.parse.urlencode({key: value for key, value in (params or {}).items() if value is not None})
+    query_values = {key: value for key, value in (params or {}).items() if value is not None}
+    for key, value in current_request_query().items():
+        query_values.setdefault(key, value)
+    query = urllib.parse.urlencode(query_values)
     target_path = f"{parsed.path.rstrip('/')}/{path.lstrip('/')}"
     return urllib.parse.urlunsplit(("wss" if parsed.scheme == "https" else "ws", parsed.netloc, target_path, query, ""))
 

@@ -76,7 +76,7 @@ Load shedding is semantic:
 
 ## 6. Observability
 
-Use correlation IDs from UI request or source event through backend, service, computation, proposal, Portfolio and OMS. Metrics include throughput, event/available/processing lag, coverage, source transitions, gaps, cache hit rate, queue age, rejected/deferred work, strategy latency, risk dispositions, order reconciliation and error budgets.
+Use correlation IDs from UI request or source event through backend, service, computation, proposal, Portfolio and OMS. Browser API calls create bounded transport-safe `X-Correlation-ID` values; the backend preserves or creates correlation and causation context, returns both headers, propagates them to QMD HTTP/WebSocket transport, and injects them into broker-event envelopes and authoritative Portfolio/OMS journal payloads. QMD Live and QMD History validate and echo the headers. Autonomous market-event causation and computation-target lineage still require explicit event/lease identity rather than borrowing an unrelated HTTP request. Metrics include throughput, event/available/processing lag, coverage, source transitions, gaps, cache hit rate, queue age, rejected/deferred work, strategy latency, risk dispositions, order reconciliation and error budgets.
 
 Portfolio/OMS operational counts are explicitly bounded to the newest 5,000
 journal records per authority and carry a truncation flag. Current managed-group

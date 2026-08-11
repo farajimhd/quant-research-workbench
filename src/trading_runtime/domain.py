@@ -9,6 +9,8 @@ from enum import StrEnum
 from typing import Any, Iterable
 from uuid import uuid4
 
+from src.request_context import current_request_identity
+
 
 class TradingMode(StrEnum):
     LIVE = "live"
@@ -331,6 +333,9 @@ class BrokerEventEnvelope:
     ) -> "BrokerEventEnvelope":
         now = utc_now()
         event_id = str(identity.pop("event_id", "") or uuid4())
+        for key, value in current_request_identity().items():
+            if value:
+                identity.setdefault(key, value)
         safe_payload = json_safe(payload)
         encoded = json.dumps(safe_payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
         return cls(
