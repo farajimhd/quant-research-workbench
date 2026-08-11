@@ -327,7 +327,9 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
       product, link, mode, or direction references.
 - [ ] Implement draft, validate, preview, publish, reset, and rebase.
   - [x] Draft, validate, preview, publish, and reset-to-approved are wired.
-  - [ ] Add explicit overlay rebase/conflict presentation and save-as-workspace.
+  - [x] Save a customized approved Canvas or Replay overlay as a separate
+        revision-scoped workspace without changing Configuration defaults.
+  - [ ] Add explicit three-way overlay rebase/conflict presentation.
 - [ ] Instantiate published defaults in Live, Replay, Backtest, and research workspaces.
   - [x] Standalone Canvas resolves the approved profile; Replay uses its pinned
         release profile.

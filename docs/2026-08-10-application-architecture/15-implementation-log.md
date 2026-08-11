@@ -520,6 +520,13 @@ bounded direct ClickHouse paths remain documented in
     Python historical source exposes the same policy and remains pinned by
     default. All 30 QMD History tests, four focused Python consumer tests,
     Python compile, and Rust formatting passed.
+75. Added runtime Canvas save-as-workspace without creating a second layout
+    authority. Approved Canvas and Replay users can clone the current normalized
+    overlay into a new workspace stored under the same mode/revision scope; the
+    clone carries its workspace state and current link/container settings but
+    never mutates the published Configuration default. Reset-to-approved remains
+    unchanged. Three-way rebase/conflict handling is still open. The managed
+    external-runtime frontend production build passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

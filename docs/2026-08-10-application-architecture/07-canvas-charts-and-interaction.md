@@ -145,8 +145,11 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   Standalone Canvas and Replay instantiate that published/pinned profile, while
   revision-scoped browser overlays persist layout, links, symbols and container
   settings without writing to Configuration storage. Each workspace can
-  reset its overlay to the approved profile. Live/Paper and Backtest still need
-  this same integration as part of their shared-controller migration.
+  reset its overlay to the approved profile or clone its current state into a
+  separate revision-scoped workspace. Live/Paper and Backtest still need this
+  same integration as part of their shared-controller migration, and rebasing
+  an overlay onto a newer approved revision still needs explicit three-way
+  conflict handling.
 - Intraday historical charts now request a QMD `bars` stage first and render it
   before requesting the `full` indicator, signal, and structure stage from the
   same single-flight cache entry. Archive/recent source selection remains owned

@@ -1976,6 +1976,37 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
     setOverlayEpoch((value) => value + 1);
   }
 
+  function saveRuntimeWorkspace() {
+    if (!runtimeBase || !workspaceState) return;
+    const created = createCanvasRecord(registry, `${currentCanvas.label} workspace`);
+    const state = snapshotCanvasWorkspaceState(workspaceState);
+    const nextRegistry: CanvasRegistry = {
+      ...created.registry,
+      workspaceStates: {
+        ...(created.registry.workspaceStates ?? {}),
+        [created.canvas.id]: state,
+      },
+    };
+    const targetStorageKey = canvasRuntimeWorkspaceStorageKey(
+      runtimeScope,
+      runtimeRevision,
+      created.canvas.id,
+    );
+    window.localStorage.setItem(targetStorageKey, JSON.stringify(state));
+    window.localStorage.setItem(runtimeRegistryStorageKey, JSON.stringify(nextRegistry));
+    setRegistry(nextRegistry);
+    if (replayRun) {
+      openReplayFocus(nextRegistry, state);
+      return;
+    }
+    const focusedWindow = window.open(
+      focusCanvasUrl(created.canvas.id),
+      "_blank",
+      "noopener,noreferrer",
+    );
+    if (focusedWindow) focusedWindow.opener = null;
+  }
+
   function saveDefaultLayout() {
     if (!workspaceState) return;
     const defaultState = snapshotCanvasWorkspaceState(workspaceState);
@@ -2024,7 +2055,7 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
         managementContent={manager
           ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} />
           : runtimeBase
-            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={replayRun ? "Replay" : "Canvas"} onReset={resetRuntimeOverlay} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
+            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={replayRun ? "Replay" : "Canvas"} onReset={resetRuntimeOverlay} onSaveAs={saveRuntimeWorkspace} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
             : null}
         managementOpen={managementEnabled && managementOpen}
         metaForContainer={metaForContainer}
@@ -2151,10 +2182,11 @@ function CanvasManager({ availableCanvasIds, onCreate, onOpen, onRemove, registr
   </section>;
 }
 
-function RuntimeCanvasScope({ mode, onReset, revision }: { mode: "Canvas" | "Replay"; onReset: () => void; revision: string }) {
+function RuntimeCanvasScope({ mode, onReset, onSaveAs, revision }: { mode: "Canvas" | "Replay"; onReset: () => void; onSaveAs: () => void; revision: string }) {
   return <section aria-label={`${mode} layout scope`} className="replay-layout-scope">
     <ShieldCheck aria-hidden="true" size={15} />
     <div><strong>{mode} workspace overlay</strong><small>Starts from approved Canvas {revision.slice(0, 10)}. Changes persist only for this revision and never rewrite Configuration defaults.</small></div>
+    <button className="button secondary compact" onClick={onSaveAs} type="button"><Save size={12} /> Save as workspace</button>
     <button className="button secondary compact" onClick={onReset} type="button"><RefreshCcw size={12} /> Reset to approved</button>
   </section>;
 }
