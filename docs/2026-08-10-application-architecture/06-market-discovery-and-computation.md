@@ -163,6 +163,10 @@ offline calculation is available in its proper scope.
 ## Current gaps
 
 - Core Scan now uses the compact QMD Scanner row; broad indicators are opt-in.
+- Drift remains below the indicator router: the live all-market bar store still
+  updates `GenericStructureEngine` for every observed symbol and embeds its
+  snapshot in every bar. That state must move behind focused computation leases
+  without changing QMD History's shared deterministic calculation path.
 - QMD's all-market state keeps one current row per observed symbol plus bounded
   per-second trade counters for the 10/60-second activity rates; it does not
   retain full trade objects for Core Scan rate calculation.
@@ -192,6 +196,8 @@ offline calculation is available in its proper scope.
   item can be closed.
 - Strategy-run and offline computation consumers do not yet publish their full
   target union into QMD's computation planner.
+- Expired or removed live leases stop new focused routing, but retained warm
+  indicator/structure state is not yet reclaimed.
 - The UI now separates implementation, execution scope, configuration policy,
   operation, and coverage, and reads Watchlist membership/history from the
   runtime projection. Scanner history and enrichment null-reason views remain.

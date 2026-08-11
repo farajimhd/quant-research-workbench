@@ -70,13 +70,15 @@ concepts are deliberately absent. Strategies compose the seven observations with
 QMD structure/level indicators, news, SEC, model, portfolio, and risk inputs.
 
 All seven methods are implemented. Live calculation and emission are limited to
-the union of current Watchlist, Strategy, and request-scoped computation target
-leases. Each lease declares its owner, execution scope, ticker population,
-capabilities, timeframes, and optional expiry. QMD validates requested
-capabilities against their allowed scopes, deduplicates the symbol union, and
-reference-counts overlapping targets. When the last lease for a symbol expires
-or is removed, QMD stops routing that symbol through the non-core indicator and
-signal engine.
+validated computation-target leases. Watchlist and chart/request producers are
+wired today; Strategy Run and offline producers are not yet wired into this
+lease authority. Each lease declares its owner, execution scope, ticker
+population, capabilities, timeframes, and optional expiry. QMD validates
+requested capabilities against their allowed scopes, unions overlapping symbol
+demand, and rejects unrelated finalized timeframes before indicator shards.
+When the last lease for a symbol expires or is removed, QMD stops routing that
+symbol through the non-core indicator and signal engine. Reclaiming its retained
+warm state is still pending and must not be described as implemented.
 
 The compact Core Scanner remains independent and does not fetch indicator or
 signal cross-sections during an ordinary refresh. Consumers that explicitly

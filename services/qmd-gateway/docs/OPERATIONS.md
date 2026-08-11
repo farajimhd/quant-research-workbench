@@ -126,7 +126,7 @@ screen.
 | `/stream/compact-events` | Unified compact event rows for live ML consumers. |
 | `/stream/intraday-bars` | Closed sparse family bars at the configured 100ms-through-1h grid. |
 | `/stream/events` | Raw normalized Massive events. |
-| `/stream/scanner` | Periodic scanner market-state snapshots. |
+| `/stream/scanner` | One typed Scanner snapshot followed by monotonic typed row deltas. A lag warning carries `action=resnapshot`. |
 | `/stream/scanner-primitives` | Primitive candidate events as they are emitted. |
 | `/stream/ticker/{ticker}` | Periodic latest ticker snapshot. |
 | `/stream/bars/{ticker}?timeframe=1m&limit=500` | Periodic bar snapshot. |

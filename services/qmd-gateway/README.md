@@ -645,3 +645,8 @@ ws://127.0.0.1:8795/stream/events
 ws://127.0.0.1:8795/stream/compact-events
 ws://127.0.0.1:8795/stream/intraday-bars
 ```
+
+`/stream/scanner` first sends `{"kind":"snapshot","snapshot":...}` and then
+`{"kind":"row_delta","delta":...}` messages from the same monotonic Scanner
+sequence. A `scanner_delta_stream_lagged` warning requires the consumer to fetch
+or reconnect for a new snapshot before applying further deltas.

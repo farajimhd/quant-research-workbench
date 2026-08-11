@@ -117,7 +117,9 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
       spread, halt/stale, basic liquidity, and rank inputs.
 - [x] Maintain one compact row per eligible security.
 - [x] Publish scanner snapshots plus row deltas.
-- [x] Remove broad expensive indicators from the default all-market path.
+- [ ] Remove broad expensive indicators from the default all-market path.
+      Indicator shards are focused, but `GenericStructureEngine` still runs
+      inside the all-market bar store and must be moved behind the lease gate.
 - [x] Implement dynamic Watchlist inclusion, exclusion, ranking, maximum size,
       TTL, manual override, and promotion/demotion reasons.
 - [x] Persist membership add/remove/expire events.
