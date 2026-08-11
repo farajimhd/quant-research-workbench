@@ -255,6 +255,29 @@ Cache keys include tenant/user scope where relevant, source versions, field/capa
 
 The backend enforces user, workspace, environment, mode, account and command permissions. It resolves secret-backed bindings server-side, validates CSRF/origin for browser commands, audits configuration publishes and trading actions, redacts secrets from logs, and provides time-limited access to large artifacts when needed.
 
+The implemented application boundary uses one system-configured authority
+policy. `local` mode is the safe laptop default: it accepts loopback clients
+only and assigns the configured local user, workspace, and environment rather
+than trusting browser identity claims. `proxy` mode requires
+`BACKEND_AUTHORITY_PROXY_TOKEN` from the secrets authority and accepts user and
+workspace identity only from the authenticated proxy headers. Both modes
+enforce configured mode, stable application-account-key, and command
+allowlists. Browser mutations additionally reject unapproved origins and
+cross-site fetches. Authorized and denied mutations emit structured audit
+events carrying correlation and causation identity; neither public review nor
+logs include the proxy token. All browser-facing application WebSockets pass
+through the same identity, scope, and Origin authority before the upstream
+connection or run subscription is opened.
+
+The policy is configured with `BACKEND_AUTHORITY_MODE`,
+`BACKEND_AUTHORITY_USER`, `BACKEND_AUTHORITY_WORKSPACE`,
+`BACKEND_AUTHORITY_ENVIRONMENT`, `BACKEND_AUTHORITY_ALLOWED_MODES`,
+`BACKEND_AUTHORITY_ALLOWED_ACCOUNTS`,
+`BACKEND_AUTHORITY_ALLOWED_COMMANDS`, and
+`BACKEND_AUTHORITY_BROWSER_ORIGINS`. `GET /api/system/authority` exposes the
+effective non-secret policy and the current request authority for operator
+review. It is intentionally not a user-editable configuration page.
+
 Service-to-service calls use scoped identities and explicit allowlists. Read access to a chart does not imply order authority; Paper authority does not imply Live authority.
 
 ## 9. Current drift
@@ -270,9 +293,10 @@ Service-to-service calls use scoped identities and explicit allowlists. Read acc
   fallback has been removed; saved releases retain embedded review evidence,
   while current choices require QMD authority. Remaining handwritten reference
   and deferred-intelligence projections still require registry generation.
-- Non-QMD endpoint envelopes and application-wide command authorization still
-  need standardization; QMD and scanner feature projections now preserve typed
-  completeness/provenance at their composition boundaries.
+- Non-QMD endpoint envelopes and the application-wide HTTP authority boundary
+  are standardized. QMD and scanner feature projections preserve typed
+  completeness/provenance at their composition boundaries. Service-specific
+  identities for deferred producer migrations remain outside this phase.
 - Replay, Live/Paper, Backtest, and Research resolve the same published Canvas.
   The trading modes also resolve canonical trading projections; Research stays
   request-scoped and does not acquire a trading runtime or account authority.

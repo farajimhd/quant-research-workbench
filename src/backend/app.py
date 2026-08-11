@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -46,6 +47,7 @@ from src.backend.application_registry import (
     application_registry_payload,
     runtime_capability_registry_payload,
 )
+from src.backend.application_authority import AuthorityDenied, AuthorityPolicy
 from src.backend.bounded_cache import BoundedTtlCache
 from src.backend.workload_budget import (
     WorkloadBudgetRejected,
@@ -217,6 +219,7 @@ NEWS_QUERY_TIMEOUT_SECONDS = 12.0
 NEWS_INTELLIGENCE_TIMEOUT_SECONDS = 1.5
 SERVICE_LOG_TAIL_LIMIT = 160
 SERVICE_DASHBOARD_LOG_LIMIT = 360
+AUTHORITY_LOG = logging.getLogger("quant_research_workbench.authority")
 
 SERVICE_DASHBOARD_LOG_EVENTS = {
     "background_article_enrichment_failed",
@@ -451,6 +454,7 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
 }
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
+authority_policy = AuthorityPolicy.from_environment()
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -518,7 +522,7 @@ backtest_run_service = ReplayRunService(runtime_root=backtest_runtime_root())
 backtest_debug_run_service = ReplayRunService(runtime_root=backtest_debug_runtime_root())
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=sorted(authority_policy.browser_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -533,6 +537,45 @@ async def request_identity_middleware(request: Request, call_next: Any) -> Any:
         request.headers.get(CAUSATION_HEADER),
     )
     try:
+        try:
+            authority = authority_policy.authorize(
+                method=request.method,
+                path=request.url.path,
+                headers=request.headers,
+                client_host=request.client.host if request.client else None,
+            )
+            request.state.authority = authority
+        except AuthorityDenied as exc:
+            AUTHORITY_LOG.warning(
+                json.dumps(
+                    {
+                        "event": "application_authority_denied",
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": exc.status_code,
+                        "code": exc.code,
+                        "correlation_id": correlation_id,
+                        "causation_id": causation_id,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            response = JSONResponse(
+                status_code=exc.status_code,
+                content=error_response_envelope(
+                    status_code=exc.status_code,
+                    detail={
+                        "code": exc.code,
+                        "message": str(exc),
+                        "retryable": False,
+                    },
+                    code=exc.code,
+                ),
+            )
+            response.headers[CORRELATION_HEADER] = correlation_id
+            response.headers[CAUSATION_HEADER] = causation_id
+            return response
         lane = classify_workload(request.method, request.url.path)
         try:
             async with workload_budget_manager.lease(lane):
@@ -564,6 +607,22 @@ async def request_identity_middleware(request: Request, call_next: Any) -> Any:
         )
         response.headers[CORRELATION_HEADER] = correlation_id
         response.headers[CAUSATION_HEADER] = causation_id
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            AUTHORITY_LOG.info(
+                json.dumps(
+                    {
+                        "event": "application_command_authorized",
+                        "authority": authority.public_payload(),
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": int(response.status_code),
+                        "correlation_id": correlation_id,
+                        "causation_id": causation_id,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
         return response
     finally:
         end_request_context(correlation_token, causation_token)
@@ -611,6 +670,33 @@ async def _negotiated_success_envelope(
         headers=headers,
         background=response.background,
     )
+
+
+async def _authorize_websocket(websocket: WebSocket) -> bool:
+    try:
+        authority = authority_policy.authorize(
+            method="WEBSOCKET",
+            path=websocket.url.path,
+            headers=websocket.headers,
+            client_host=websocket.client.host if websocket.client else None,
+        )
+    except AuthorityDenied as exc:
+        AUTHORITY_LOG.warning(
+            json.dumps(
+                {
+                    "event": "application_websocket_authority_denied",
+                    "path": websocket.url.path,
+                    "code": exc.code,
+                    "correlation_id": websocket.headers.get(CORRELATION_HEADER, ""),
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        await websocket.close(code=4401 if exc.status_code == 401 else 4403, reason=str(exc))
+        return False
+    websocket.state.authority = authority
+    return True
 
 
 class ScopeUpdate(BaseModel):
@@ -3619,6 +3705,15 @@ def system_workload_budgets() -> dict[str, object]:
     return workload_budget_manager.snapshot()
 
 
+@app.get("/api/system/authority")
+def system_authority(request: Request) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "policy": authority_policy.public_payload(),
+        "request_authority": request.state.authority.public_payload(),
+    }
+
+
 @app.get("/api/services/status")
 def services_status(include_recent: bool = False, include_database_tables: bool = False, include_logs: bool = False) -> dict[str, Any]:
     service_ids = list(SERVICE_REGISTRY)
@@ -3704,6 +3799,8 @@ def trading_news(
 
 @app.websocket("/api/trading/news/stream")
 async def trading_news_stream(websocket: WebSocket) -> None:
+    if not await _authorize_websocket(websocket):
+        return
     await websocket.accept()
     ticker = websocket.query_params.get("ticker", "").strip().upper()
     if ticker and not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,15}", ticker):
@@ -5630,6 +5727,8 @@ async def trading_replay_assignment_command(
 
 @app.websocket("/api/trading/replay/runs/{run_id}/events")
 async def trading_replay_run_events(websocket: WebSocket, run_id: str) -> None:
+    if not await _authorize_websocket(websocket):
+        return
     try:
         controller = replay_run_service.get(run_id)
     except KeyError:
@@ -5910,6 +6009,8 @@ def _canvas_live_chart_history(
 
 @app.websocket("/api/trading/canvas-live-chart/stream/{stream}/{symbol}")
 async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, symbol: str) -> None:
+    if not await _authorize_websocket(websocket):
+        return
     await websocket.accept()
     ticker = symbol.strip().upper()
     timeframe = websocket.query_params.get("timeframe", "1m")
@@ -5970,6 +6071,8 @@ async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, sy
 
 @app.websocket("/api/trading/canvas-market-events/stream/{symbol}")
 async def trading_canvas_market_events_stream(websocket: WebSocket, symbol: str) -> None:
+    if not await _authorize_websocket(websocket):
+        return
     await websocket.accept()
     ticker = symbol.strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
@@ -6024,6 +6127,8 @@ def _qmd_stream_payload_matches_ticker(payload: Any, ticker: str) -> bool:
 
 @app.websocket("/api/trading/canvas-market-signals/stream/{symbol}")
 async def trading_canvas_market_signals_stream(websocket: WebSocket, symbol: str) -> None:
+    if not await _authorize_websocket(websocket):
+        return
     await websocket.accept()
     ticker = symbol.strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
@@ -6057,6 +6162,8 @@ async def trading_canvas_market_signals_stream(websocket: WebSocket, symbol: str
 
 @app.websocket("/api/trading/historical-stream/{symbol}")
 async def trading_historical_stream(websocket: WebSocket, symbol: str) -> None:
+    if not await _authorize_websocket(websocket):
+        return
     await websocket.accept()
     ticker = symbol.strip().upper()
     timeframe = websocket.query_params.get("timeframe", "1m")

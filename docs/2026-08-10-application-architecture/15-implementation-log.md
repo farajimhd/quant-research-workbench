@@ -823,6 +823,19 @@ bounded direct ClickHouse paths remain documented in
      semantics for appearance controls. The production build passed; the
      separate real-browser acceptance gate remains open because localhost
      navigation is policy-blocked in the available in-app browser.
+106. Added the application HTTP authority boundary. A system-configured policy
+     now binds user, workspace, environment, mode, stable account key, and
+     command permissions before route dispatch. Local mode is loopback-only;
+     proxy mode requires a secret-backed trusted token and injected identity.
+     Browser mutations validate origin and cross-site fetch context. Authorized
+     and denied mutations emit structured correlation/causation-aware audit
+     events. All application WebSockets apply the same authority before opening
+     an upstream connection or run subscription, while
+     `/api/system/authority` exposes non-secret policy and request authority for
+     review without creating a user-editable deployment screen. Fifteen
+     authority and response-contract tests passed, including actual HTTP and
+     WebSocket origin rejection and secret-redaction coverage; Python
+     compilation passed. Broker and deferred producer services were unchanged.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

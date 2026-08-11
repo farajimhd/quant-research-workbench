@@ -333,7 +333,16 @@ budgets and invalid scope broadening fails configuration validation.
         Replay caches are controller-local and pinned by the immutable approved
         configuration; Watchlist reference projections are bounded and keyed by
         explicit causal `as_of` revision.
-- [ ] Enforce user, workspace, environment, mode, account, and command authority.
+- [x] Enforce user, workspace, environment, mode, account, and command authority.
+      The backend has one environment-configured application policy. Local
+      authority is loopback-only and system-owned; trusted-proxy authority
+      requires a secret token and injected identity. Every request is checked
+      against environment, mode, stable application account key, and command
+      allowlists. Browser mutations reject unapproved origins and cross-site
+      requests, authorized and denied commands emit correlation-aware audit
+      events, all application WebSockets enforce the same identity/scope/origin
+      policy before subscription, and a read-only system endpoint exposes only
+      non-secret review.
 - [x] Resolve secrets and broker identifiers server-side. Schema v19 requires
       Paper/Live bindings to name a backend environment key, rejects stored
       broker IDs, migrates older releases, and keeps resolved values out of
