@@ -1848,6 +1848,27 @@ it does not imply all application work is complete.
      gap-prone approximation was introduced; that larger non-deferred task
      remains open.
 
+170. Proved the remaining QMD History cold-materialization wall time is a
+     physical archive-layout constraint rather than shared-engine CPU. The
+     authoritative `market_sip_compact.events_2026` table is partitioned by
+     month and ordered by `(ticker, ordinal)`, whereas causal cross-sectional
+     replay filters and orders by `sip_timestamp_us`. A read-only
+     `EXPLAIN indexes=1` for the exact 2026-08-07 two-second pattern selected
+     ten parts and all 240,923 date-matched granules; the primary-key condition
+     was `true`, followed by an explicit global sort. This explains why the
+     service uses roughly three CPU seconds but waits 27-48 seconds on the
+     shared ClickHouse path.
+
+     QMD History already uses projection pushdown, the exact date/timestamp
+     predicate, incremental TSV decoding, gzip transport, and bounded ticker
+     shards. No further query-only change can make the existing primary key
+     skip on time. The correct options are a Market-SIP-owned time-order
+     projection/skipping index or a separately approved QMD History-owned
+     archive cache with backfill, equivalence, revision, and retention rules.
+     Because the user prohibited Market SIP changes and did not authorize a
+     second archive copy, neither mutation was made. The performance gate stays
+     open with the precise authority decision now recorded.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

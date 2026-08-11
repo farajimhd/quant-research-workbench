@@ -744,8 +744,16 @@ load progressively without false continuity.
               restart to 27.030 and 39.402 seconds after restart, with identical
               results, about 3.1 service CPU seconds, 17.5 MB final working set,
               and 142.1 MB peak. Variance remains high and throughput remains
-              far below the two-second input window. Therefore the parent gate
-              stays open.
+              far below the two-second input window. `EXPLAIN indexes=1` now
+              proves the archive authority is the limiting physical contract:
+              `events_2026` is monthly-partitioned and ordered by
+              `(ticker, ordinal)`, so a two-second full-market timestamp window
+              reads all 240,923 granules in the selected date's ten parts and
+              performs a separate global sort. QMD History cannot repair that
+              with a query rewrite. A source-owned time-order projection/index
+              or an explicitly approved QMD History archive cache is required;
+              neither is introduced while Market SIP changes are prohibited.
+              Therefore the parent gate stays open.
       - [x] Persist/reuse the revisioned timeline product and replace Backtest's
             session-boundary membership fallback with its transition stream.
         - [x] Replace the active single-Watchlist Backtest path with QMD History
