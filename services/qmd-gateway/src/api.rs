@@ -329,6 +329,7 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
     let market_metrics = state.market.metrics().await;
     let market_calendar = state.market_calendar.snapshot(chrono::Utc::now());
     let operational = state.metrics.operational_snapshot();
+    let computation_demand = state.computation_targets.snapshot();
     let status = qmd_status(&market_calendar, &maintenance, &operational);
     let queue_drops = metrics.events_broadcast_dropped
         + metrics.bar_events_dropped
@@ -419,6 +420,7 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
             "last_error": "",
         }),
         service_specific: json!({
+            "computation_demand": computation_demand,
             "market": market_metrics,
             "maintenance": maintenance,
             "operational": operational,

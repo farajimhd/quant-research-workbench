@@ -462,6 +462,14 @@ def qmd_ticker_state(ticker: str) -> dict[str, Any]:
     return payload
 
 
+def qmd_computation_demand() -> dict[str, Any]:
+    """Return QMD's active focused-computation leases and demand estimate."""
+    payload = qmd_get_json("/computation-targets", timeout=3)
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD computation demand returned an invalid envelope")
+    return payload
+
+
 def qmd_scanner_snapshot(
     row_limit: int = 250,
     *,

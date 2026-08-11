@@ -188,6 +188,11 @@ bounded direct ClickHouse paths remain documented in
     reservation transitions from the newest 5,000 journal records, reports
     truncation, and combines them with current active reservations, managed OMS
     states, unknown outcomes, reconciliation failures, and protection deficits.
+37. Added QMD focused-computation demand metrics. Active leases now expose
+    per-scope target, unique-symbol and unique-capability counts plus weighted
+    demand units derived from registered cost class, ticker count, and effective
+    timeframe dependencies. QMD Service Core and Market Discovery consume the
+    same snapshot; the UI labels absence rather than inventing zero cost.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

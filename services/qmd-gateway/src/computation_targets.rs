@@ -1,4 +1,4 @@
-use crate::capability_catalog::{computation_capability_catalog, ExecutionScope};
+use crate::capability_catalog::{computation_capability_catalog, CostClass, ExecutionScope};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -36,6 +36,12 @@ pub struct ComputationTargetSnapshot {
     pub targets: Vec<ComputationTargetLease>,
     pub symbol_ref_counts: BTreeMap<String, usize>,
     pub capability_ref_counts: BTreeMap<String, usize>,
+    pub estimated_demand_units: u64,
+    pub scope_capability_counts: BTreeMap<String, usize>,
+    pub scope_estimated_demand_units: BTreeMap<String, u64>,
+    pub scope_symbol_counts: BTreeMap<String, usize>,
+    pub scope_target_counts: BTreeMap<String, usize>,
+    pub target_estimated_demand_units: BTreeMap<String, u64>,
 }
 
 #[derive(Default)]
@@ -161,14 +167,60 @@ impl SharedComputationTargets {
         targets.sort_by(|left, right| left.target_id.cmp(&right.target_id));
         let mut symbol_ref_counts = BTreeMap::new();
         let mut capability_ref_counts = BTreeMap::new();
+        let mut scope_symbols = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut scope_capabilities = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut scope_target_counts = BTreeMap::new();
+        let mut scope_estimated_demand_units = BTreeMap::new();
+        let mut target_estimated_demand_units = BTreeMap::new();
+        let catalog = computation_capability_catalog();
         for target in &targets {
+            let scope = scope_key(target.scope).to_string();
+            *scope_target_counts.entry(scope.clone()).or_insert(0) += 1;
             for ticker in &target.tickers {
                 *symbol_ref_counts.entry(ticker.clone()).or_insert(0) += 1;
+                scope_symbols
+                    .entry(scope.clone())
+                    .or_default()
+                    .insert(ticker.clone());
             }
             for capability in &target.capabilities {
                 *capability_ref_counts.entry(capability.clone()).or_insert(0) += 1;
+                scope_capabilities
+                    .entry(scope.clone())
+                    .or_default()
+                    .insert(capability.clone());
             }
+            let timeframe_count = if target.timeframes.is_empty() {
+                1
+            } else {
+                target.timeframes.len()
+                    + usize::from(!target.timeframes.iter().any(|value| value == "100ms"))
+            };
+            let capability_weight = target
+                .capabilities
+                .iter()
+                .filter_map(|key| catalog.iter().find(|row| row.key == key))
+                .map(|row| cost_weight(row.cost_class))
+                .fold(0_u64, u64::saturating_add);
+            let demand = (target.tickers.len() as u64)
+                .saturating_mul(timeframe_count as u64)
+                .saturating_mul(capability_weight);
+            target_estimated_demand_units.insert(target.target_id.clone(), demand);
+            let scope_demand = scope_estimated_demand_units.entry(scope).or_insert(0_u64);
+            *scope_demand = (*scope_demand).saturating_add(demand);
         }
+        let scope_symbol_counts = scope_symbols
+            .into_iter()
+            .map(|(scope, symbols)| (scope, symbols.len()))
+            .collect();
+        let scope_capability_counts = scope_capabilities
+            .into_iter()
+            .map(|(scope, capabilities)| (scope, capabilities.len()))
+            .collect();
+        let estimated_demand_units = target_estimated_demand_units
+            .values()
+            .copied()
+            .fold(0_u64, u64::saturating_add);
         ComputationTargetSnapshot {
             as_of: now,
             active_target_count: targets.len(),
@@ -176,7 +228,34 @@ impl SharedComputationTargets {
             targets,
             symbol_ref_counts,
             capability_ref_counts,
+            estimated_demand_units,
+            scope_capability_counts,
+            scope_estimated_demand_units,
+            scope_symbol_counts,
+            scope_target_counts,
+            target_estimated_demand_units,
         }
+    }
+}
+
+fn scope_key(scope: ExecutionScope) -> &'static str {
+    match scope {
+        ExecutionScope::UniversalIngest => "universal_ingest",
+        ExecutionScope::CoreScan => "core_scan",
+        ExecutionScope::Watchlist => "watchlist",
+        ExecutionScope::StrategyRun => "strategy_run",
+        ExecutionScope::Request => "request",
+        ExecutionScope::Offline => "offline",
+    }
+}
+
+fn cost_weight(cost: CostClass) -> u64 {
+    match cost {
+        CostClass::Minimal => 1,
+        CostClass::Low => 2,
+        CostClass::Medium => 4,
+        CostClass::High => 8,
+        CostClass::Offline => 16,
     }
 }
 
@@ -246,6 +325,18 @@ mod tests {
         assert_eq!(snapshot.active_target_count, 2);
         assert_eq!(snapshot.active_symbol_count, 2);
         assert_eq!(snapshot.symbol_ref_counts.get("AAPL"), Some(&2));
+        assert_eq!(snapshot.scope_target_counts.get("watchlist"), Some(&1));
+        assert_eq!(snapshot.scope_target_counts.get("request"), Some(&1));
+        assert_eq!(snapshot.scope_symbol_counts.get("watchlist"), Some(&2));
+        assert!(snapshot.estimated_demand_units > 0);
+        assert_eq!(
+            snapshot.estimated_demand_units,
+            snapshot
+                .target_estimated_demand_units
+                .values()
+                .copied()
+                .sum::<u64>()
+        );
         assert!(targets.requires_focused_computation("aapl"));
         assert!(targets.remove("request:chart"));
         assert_eq!(targets.snapshot().symbol_ref_counts.get("AAPL"), Some(&1));

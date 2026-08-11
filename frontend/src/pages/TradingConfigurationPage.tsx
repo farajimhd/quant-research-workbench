@@ -460,6 +460,14 @@ type WatchlistRuntimeSnapshot = {
   status: "awaiting_first_resolution" | "ready";
   watchlist_count: number;
   watchlists: Array<{ member_count: number; members: Array<Record<string, unknown>>; watchlist_id: string }>;
+  computation_demand?: {
+    active_symbol_count: number;
+    active_target_count: number;
+    estimated_demand_units: number;
+    scope_estimated_demand_units: Record<string, number>;
+    scope_symbol_counts: Record<string, number>;
+  };
+  computation_demand_error?: string;
 };
 type HistoricalScannerSnapshot = {
   as_of: string;
@@ -2160,7 +2168,8 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
             <header><span>Available Watchlists</span><h2>Choose a Watchlist to configure</h2><p>Open an existing Watchlist or create one above. Configuration starts after you choose.</p></header>
             <div>{section.watchlists.map((watchlist) => <article key={watchlist.watchlist_id}><span className="discovery-watchlist-card-icon"><ScanSearch size={17} /></span><span><span className="discovery-watchlist-card-title"><strong>{watchlist.name}</strong>{watchlist.template ? <em>System template</em> : null}{watchlist.availability === "integration_pending" ? <em>Integration pending</em> : !watchlist.enabled ? <em>Disabled</em> : null}</span><small>{watchlist.description || "No description yet."}</small>{watchlist.availability_detail ? <small className="discovery-watchlist-availability">{watchlist.availability_detail}</small> : null}<WatchlistRuleSummary capabilities={discoveryCapabilities} compact ruleSets={section.rule_sets} watchlist={watchlist} /><em>Top {watchlist.maximum_size} · {watchlist.columns?.length ?? 0} columns</em></span><button className="button compact" onClick={() => configureWatchlist(watchlist.watchlist_id)} type="button">Configure <ArrowRight size={13} /></button></article>)}{section.watchlists.length === 0 ? <EmptyState title="No Watchlists configured" detail="Create a Watchlist to define how QMD narrows Core Scan candidates for strategies." /> : null}</div>
           </section>
-          <p className="configuration-safety-note discovery-runtime-notice" data-ready={watchlistRuntime?.status === "ready" ? "true" : "false"}>{watchlistRuntime?.status === "ready" ? <BadgeCheck size={15} /> : <TriangleAlert size={15} />}{watchlistRuntimeError ? `Runtime status unavailable: ${watchlistRuntimeError}` : watchlistRuntime?.status === "ready" ? `Causal membership resolver ready at ${new Date(watchlistRuntime.as_of).toLocaleTimeString()}: ${watchlistRuntime.member_count} members across ${watchlistRuntime.watchlist_count} Watchlists.` : "The resolver is waiting for its first Core Scan snapshot. Live and Paper remain fail closed; configured Watchlists and manual overrides are retained."}</p>
+          <p className="configuration-safety-note discovery-runtime-notice" data-ready={watchlistRuntime?.status === "ready" ? "true" : "false"}>{watchlistRuntime?.status === "ready" ? <BadgeCheck size={15} /> : <TriangleAlert size={15} />}{watchlistRuntimeError ? `Runtime status unavailable: ${watchlistRuntimeError}` : watchlistRuntime?.status === "ready" ? `Causal membership resolver ready at ${new Date(watchlistRuntime.as_of).toLocaleTimeString()}: ${watchlistRuntime.member_count} members across ${watchlistRuntime.watchlist_count} Watchlists.${watchlistRuntime.computation_demand ? ` QMD focused demand: ${watchlistRuntime.computation_demand.active_symbol_count} symbols, ${watchlistRuntime.computation_demand.active_target_count} leases, ${watchlistRuntime.computation_demand.estimated_demand_units} weighted units.` : ""}` : "The resolver is waiting for its first Core Scan snapshot. Live and Paper remain fail closed; configured Watchlists and manual overrides are retained."}</p>
+          {watchlistRuntime?.computation_demand_error ? <p className="configuration-safety-note discovery-runtime-notice" data-ready="false"><TriangleAlert size={15} />QMD computation-cost evidence unavailable: {watchlistRuntime.computation_demand_error}</p> : null}
         </div> : selectedWatchlist ? <div className="discovery-watchlist-guide">
           <header className="discovery-watchlist-editor-toolbar"><button className="button compact" onClick={() => setWatchlistView("select")} type="button"><ArrowLeft size={14} /> All Watchlists</button><span><strong>{selectedWatchlist.name}</strong><small>Guided configuration</small></span></header>
           <div className="discovery-watchlist-step-navigation">

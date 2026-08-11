@@ -10,6 +10,7 @@ from src.backend.qmd_gateway_client import (
     normalize_qmd_market_signal,
     qmd_compact_events,
     qmd_compact_event_page,
+    qmd_computation_demand,
     qmd_history_base_url,
     qmd_history_websocket_url,
     qmd_historical_scanner_snapshot,
@@ -422,6 +423,17 @@ class QmdGatewayClientTests(unittest.TestCase):
 
         self.assertEqual(qmd_ticker_state("aapl"), get_json.return_value)
         get_json.assert_called_once_with("/snapshot/ticker-state/AAPL", timeout=3)
+
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_computation_demand_uses_qmd_target_authority(self, get_json) -> None:
+        get_json.return_value = {
+            "active_target_count": 2,
+            "active_symbol_count": 11,
+            "estimated_demand_units": 176,
+        }
+
+        self.assertEqual(qmd_computation_demand(), get_json.return_value)
+        get_json.assert_called_once_with("/computation-targets", timeout=3)
 
     @patch("src.backend.qmd_gateway_client.qmd_put_json")
     @patch("src.backend.qmd_gateway_client.qmd_get_json")

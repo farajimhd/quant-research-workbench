@@ -95,6 +95,7 @@ from src.backend.qmd_gateway_client import (
     qmd_catalogs,
     qmd_chart_bars,
     qmd_compact_events,
+    qmd_computation_demand,
     qmd_indicators,
     qmd_historical_scanner_snapshot,
     qmd_live_market_state,
@@ -4373,7 +4374,12 @@ def real_live_trading_scanner(row_limit: int = Query(default=250, ge=1, le=1000)
 def market_discovery_watchlist_runtime() -> dict[str, Any]:
     from src.backend.watchlist_runtime_service import WATCHLIST_RUNTIME
 
-    return WATCHLIST_RUNTIME.snapshot()
+    payload = WATCHLIST_RUNTIME.snapshot()
+    try:
+        payload["computation_demand"] = qmd_computation_demand()
+    except Exception as exc:
+        payload["computation_demand_error"] = str(exc)
+    return payload
 
 
 @app.get("/api/market-discovery/scanner/history")

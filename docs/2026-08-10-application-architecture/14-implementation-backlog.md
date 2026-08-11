@@ -344,7 +344,7 @@ broker command outside OMS.
 - [x] Build a central backend/frontend readiness view.
 - [ ] Propagate end-to-end correlation and causation IDs.
 - [x] Add QMD transition/gap/lag/cache/queue metrics.
-- [ ] Add discovery computation-cost metrics.
+- [x] Add discovery computation-cost metrics.
 - [x] Add Portfolio disposition/reservation and OMS reconciliation metrics.
 - [ ] Bound queues, caches, subscriptions, retries, concurrency, and result sets.
 - [ ] Shed replaceable projections before authoritative events or journal writes.

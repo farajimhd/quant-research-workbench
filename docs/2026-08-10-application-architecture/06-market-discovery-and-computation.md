@@ -206,6 +206,12 @@ offline calculation is available in its proper scope.
   Watchlist, Strategy and chart requests are unioned by QMD. Offline demand is
   still owned by QMD History build/query planning and is not yet represented in
   the same requirement identity.
+- QMD's active target snapshot now reports unique symbols and capabilities by
+  Watchlist, Strategy Run, Request, and Offline scope plus weighted demand
+  units. The weight combines registered cost class, ticker count, and requested
+  timeframe count including the canonical 100 ms dependency. It is a demand
+  estimate for comparing funnel pressure, not a claim about measured CPU time.
+  Market Discovery displays the live totals and exposes missing evidence.
 - Expired or removed live leases stop new focused routing, but retained warm
   indicator/structure state is not yet reclaimed.
 - The UI now separates implementation, execution scope, configuration policy,
