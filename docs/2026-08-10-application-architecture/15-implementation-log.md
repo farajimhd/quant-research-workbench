@@ -911,6 +911,21 @@ bounded direct ClickHouse paths remain documented in
      passed. Runtime parity evidence remains open because port 8800 currently
      identifies the separately authorized IBKR Gateway Supervisor and QMD
      History is unavailable on 8801.
+115. Completed the in-scope trading authority regression gate in the required
+     external runtime. Two hundred one Portfolio, OMS, canonical projection,
+     Replay/Backtest, Strategy campaign, configuration, adaptive-risk, and
+     runtime service tests passed. Coverage includes cross-process fenced
+     admission, lease expiry, reservation recovery, uncertain broker outcomes,
+     partial fills/protection, restart, deterministic clocks and simulator
+     state, and fail-closed direct-order authority. No broker gateway or
+     supervisor code was changed or used as execution authority.
+
+     The active point-in-time contract audit also passed 55 Reference,
+     fundamentals, Watchlist, ticker-facts, Scanner, and feature-projection
+     tests. One pre-existing News Synthesis assertion still expects
+     `provider_tags` although the current v48 query no longer selects it. That
+     intelligence test drift remains deferred rather than being silently
+     rewritten during this phase.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -703,6 +703,13 @@ broker command outside OMS.
         boundary windows and attach passing runtime evidence. The harness alone
         does not satisfy the production parity gate.
 - [ ] Test point-in-time identity and enrichment behavior.
+  - [x] Validate the active Reference, fundamentals, ticker-facts, Watchlist,
+        feature-projection, and Scanner query contracts for explicit as-of and
+        availability cutoffs, stable identity, bulk joins, missing evidence,
+        publication time, and cache isolation. Fifty-five in-scope tests passed.
+  - [ ] Capture representative database-backed PIT results and resolve the
+        deferred News Synthesis v48 `provider_tags` test drift when intelligence
+        work resumes; it is not changed by this active implementation goal.
 - [ ] Test scanner population, cost, and performance.
 - [x] Test streaming reconnect and resnapshot. QMD unit coverage proves typed
       terminal lag/sequence-gap frames; an actual backend WebSocket route test
@@ -711,7 +718,12 @@ broker command outside OMS.
       with bounded backoff, and replaces state from the next snapshot. Real
       browser validation remains the separate open visual gate below.
 - [ ] Run real browser/visual validation for frontend changes.
-- [ ] Test trading races, restart, protection, and deterministic mode parity.
+- [x] Test trading races, restart, protection, and deterministic mode parity.
+      Two hundred one focused tests passed in the required external runtime,
+      covering Portfolio fencing/lease expiry/reservations, OMS idempotency,
+      uncertain outcomes, partial fills and protection, durable recovery,
+      Replay/Backtest clocks and state, configuration authority, and rejection
+      of direct order paths.
 - [ ] Run representative end-to-end load tests.
 - [ ] Migrate one authority domain at a time with compatibility measurement.
 - [ ] Remove duplicate paths only after zero production callers are proven.
