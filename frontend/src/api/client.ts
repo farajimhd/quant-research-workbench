@@ -1,4 +1,10 @@
-export type ApiError = Error & { correlationId?: string; status?: number };
+export type ApiError = Error & {
+  causationId?: string;
+  code?: string;
+  correlationId?: string;
+  retryable?: boolean;
+  status?: number;
+};
 export type ApiRequestInit = RequestInit & { timeoutMs?: number };
 
 export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
@@ -23,7 +29,11 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
       const detail = payload === undefined ? response.statusText : formatApiErrorDetail(payload);
       const error = new Error(detail) as ApiError;
       error.status = response.status;
-      error.correlationId = response.headers.get("X-Correlation-ID") ?? undefined;
+      const typed = typedApiError(payload);
+      error.code = typed?.code;
+      error.retryable = typed?.retryable;
+      error.correlationId = typed?.correlation_id || response.headers.get("X-Correlation-ID") || undefined;
+      error.causationId = typed?.causation_id || response.headers.get("X-Causation-ID") || undefined;
       throw error;
     }
     if (payload === undefined) {
@@ -34,6 +44,24 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
     if (timeout !== null) window.clearTimeout(timeout);
     requestInit.signal?.removeEventListener("abort", abortFromCaller);
   }
+}
+
+function typedApiError(payload: unknown): {
+  causation_id?: string;
+  code?: string;
+  correlation_id?: string;
+  retryable?: boolean;
+} | undefined {
+  if (!payload || typeof payload !== "object" || !("error" in payload)) return undefined;
+  const error = (payload as { error?: unknown }).error;
+  if (!error || typeof error !== "object") return undefined;
+  const record = error as Record<string, unknown>;
+  return {
+    causation_id: typeof record.causation_id === "string" ? record.causation_id : undefined,
+    code: typeof record.code === "string" ? record.code : undefined,
+    correlation_id: typeof record.correlation_id === "string" ? record.correlation_id : undefined,
+    retryable: typeof record.retryable === "boolean" ? record.retryable : undefined,
+  };
 }
 
 function requestIdentity(): string {

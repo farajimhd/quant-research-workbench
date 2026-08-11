@@ -301,6 +301,9 @@ budgets and invalid scope broadening fails configuration validation.
       error frames while retaining the compatible `error` string. Non-QMD
       clients and application-wide success envelopes still need the same
       contract before this broad item is closed.
+  - [x] Standardize every backend HTTP and request-validation failure behind a
+        typed compatibility envelope and expose code, retryability, correlation,
+        and causation through the shared frontend `ApiError` client.
 - [ ] Implement HTTP snapshot plus sequenced delta streams.
   - [x] Give the live Canvas compact-event path a versioned ticker snapshot
         with snapshot ID/last sequence and establish its QMD delta subscription

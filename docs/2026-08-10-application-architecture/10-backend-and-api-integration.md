@@ -181,6 +181,14 @@ snapshot, float, short interest, IPO, and split inputs all apply the workspace
 availability cutoff before projection. Historical Scanner retains row shaping
 and logo-URL presentation only.
 
+All backend HTTP and request-validation failures cross one typed error boundary.
+The schema carries `complete=false`, `data=null`, warnings, stable error code,
+message, retryability, HTTP status, and correlation/causation identity. The
+legacy FastAPI `detail` field remains present during client migration. The
+shared frontend client reads the typed fields into `ApiError` while retaining
+the existing human-readable exception message. Success-envelope migration is
+separate because existing route payloads remain intentionally compatible.
+
 ## 6. Configuration registry and compiler
 
 The catalog contains capability, field, container, strategy, policy, mode and service descriptors. Configuration records reference stable IDs and versions. The compiler:

@@ -22,12 +22,15 @@ from zoneinfo import ZoneInfo
 import polars as pl
 import websockets
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.backend.json_utils import json_safe, parse_csv_list
+from src.backend.response_contract import error_response_envelope
 from src.request_context import (
     CAUSATION_HEADER,
     CORRELATION_HEADER,
@@ -443,6 +446,33 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
 }
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def typed_http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_response_envelope(
+            status_code=exc.status_code,
+            detail=exc.detail,
+        ),
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def typed_validation_error(
+    _request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content=error_response_envelope(
+            status_code=422,
+            detail=exc.errors(),
+            code="validation_failed",
+        ),
+    )
 
 
 def _qmd_http_exception(error: QmdServiceError) -> HTTPException:

@@ -728,6 +728,14 @@ bounded direct ClickHouse paths remain documented in
     universe, identity, presentation, and reference sources. Python compile and
     all 31 focused plan, registry, Historical Scanner, and Watchlist tests
     passed.
+96. Standardized backend HTTP failures without breaking route success payloads.
+    HTTP exceptions and request-validation errors now emit one schema-v1
+    envelope with compatibility `detail`, `complete=false`, warnings, stable
+    code, message, retryability, status, and correlation/causation IDs. The
+    shared frontend API client projects those typed fields onto `ApiError` and
+    still produces the same readable message for existing callers. Python
+    compile, 43 focused response/request/QMD/workload tests, a real ASGI 404
+    contract check, and the managed TypeScript/Vite production build passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
