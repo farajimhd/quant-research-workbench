@@ -211,6 +211,12 @@ bounded direct ClickHouse paths remain documented in
     confirmation showing population, cost class, cadence, owner/version, and
     allowed scopes before it changes the draft; configuration publication
     remains the immutable approval record.
+41. Reconciled two stale Canvas backlog entries with the already shipped
+    schema-v3 application registry. The backend publishes a versioned container
+    catalog and typed link contracts with mode, identity, and clock policies;
+    validation cross-checks every container, product, link direction, mode, and
+    state schema. Shared trading workspaces consume the catalog and block new
+    unverified container choices when registry or renderer evidence fails.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

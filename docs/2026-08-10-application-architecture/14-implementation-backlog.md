@@ -220,8 +220,15 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
 
 ## 6. Canvas and smooth charts
 
-- [ ] Publish a versioned Canvas container catalog.
-- [ ] Define typed input/output links and mode compatibility.
+- [x] Publish a versioned Canvas container catalog. The schema-v3 application
+      registry exposes container IDs, implementations, products, modes, state
+      schema versions, and status through `/api/registries/containers`; shared
+      trading workspaces fail closed when the registry or renderer adapter is
+      invalid.
+- [x] Define typed input/output links and mode compatibility. Link contracts
+      declare value type, producers, consumers, clock and identity policies,
+      modes, and schema version; registry validation rejects broken container,
+      product, link, mode, or direction references.
 - [ ] Implement draft, validate, preview, publish, reset, and rebase.
   - [x] Draft, validate, preview, publish, and reset-to-approved are wired.
   - [ ] Add explicit overlay rebase/conflict presentation and save-as-workspace.
