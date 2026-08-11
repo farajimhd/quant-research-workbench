@@ -6,7 +6,7 @@ use crate::config::HistoricalGatewayConfig;
 use crate::scanner::{HistoricalScannerDerivedCache, HistoricalScannerDerivedSnapshot};
 use crate::source::{
     EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource, LatestEventCoverage,
-    MarketSourcePlan,
+    MarketSourcePlan, SourceRevision,
 };
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -112,6 +112,8 @@ struct EventPageQuery {
     cursor_sip_timestamp_us: Option<u64>,
     cursor_ticker: Option<String>,
     end: String,
+    expected_revision_token: Option<String>,
+    expected_source_plan_hash: Option<String>,
     limit: Option<usize>,
     start: String,
     tickers: Option<String>,
@@ -145,6 +147,7 @@ struct MarketEventPage {
     complete: bool,
     events: Vec<MarketEvent>,
     next_cursor: Option<HistoricalCursor>,
+    source_revision: SourceRevision,
 }
 
 type ApiError = (StatusCode, Json<Value>);
@@ -448,6 +451,33 @@ async fn event_page_snapshot(
         .map(str::to_string)
         .collect();
     let window = window(&query.start, &query.end, tickers)?;
+    let expected_revision =
+        match (
+            query.expected_source_plan_hash.as_deref(),
+            query.expected_revision_token.as_deref(),
+        ) {
+            (None, None) => None,
+            (Some(plan_hash), Some(revision_token)) => Some((plan_hash, revision_token)),
+            _ => return Err(bad_request(
+                "expected_source_plan_hash and expected_revision_token must be supplied together",
+            )),
+        };
+    let source_revision = state
+        .source
+        .source_revision(&window)
+        .await
+        .map_err(service_error)?;
+    if let Some((expected_plan_hash, expected_revision_token)) = expected_revision {
+        if source_revision.source_plan_hash != expected_plan_hash
+            || source_revision.token != expected_revision_token
+        {
+            return Err(source_revision_conflict(
+                expected_plan_hash,
+                expected_revision_token,
+                &source_revision,
+            ));
+        }
+    }
     let limit = query
         .limit
         .unwrap_or(state.config.batch_size)
@@ -480,6 +510,7 @@ async fn event_page_snapshot(
             .map(|event| state.source.market_event(event))
             .collect(),
         next_cursor,
+        source_revision,
     }))
 }
 
@@ -1325,6 +1356,29 @@ fn service_error(message: String) -> ApiError {
     (
         StatusCode::BAD_GATEWAY,
         Json(json!({"error": message, "source": "historical_clickhouse"})),
+    )
+}
+
+fn source_revision_conflict(
+    expected_plan_hash: &str,
+    expected_revision_token: &str,
+    actual: &SourceRevision,
+) -> ApiError {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": "historical source revision changed during paged read; restart from the first page",
+            "error_code": "source_revision_conflict",
+            "expected": {
+                "source_plan_hash": expected_plan_hash,
+                "revision_token": expected_revision_token,
+            },
+            "actual": {
+                "source_plan_hash": actual.source_plan_hash,
+                "revision_token": actual.token,
+            },
+            "retry_action": "restart_snapshot",
+        })),
     )
 }
 

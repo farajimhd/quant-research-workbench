@@ -69,6 +69,10 @@ one backend registry record and one executable implementation status.
 - [x] Preserve event-time, source-sequence, event-identity ordering.
 - [x] Return explicit missing and live-continuation segments.
 - [ ] Pin source plans/revisions for Replay and Backtest.
+  - [x] Pin the first event page's source-plan hash and revision token across
+        every continuation; reject drift with a typed restart conflict.
+  - [ ] Add storage-level immutable revision reads so a changed source can
+        continue from the pinned old revision instead of restarting.
 - [ ] Permit advancing tail watermarks for Live consumers.
 - [x] Put routing behind one QMD client contract.
 - [x] Make QMD History read recent and archive tiers.

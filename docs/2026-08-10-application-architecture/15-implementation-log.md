@@ -145,6 +145,12 @@ bounded direct ClickHouse paths remain documented in
     embedded and reviewable through migration without being promoted to current
     runtime evidence. The remaining reference and deferred-intelligence
     projections are explicitly still open for registry generation.
+30. Version-fenced QMD History's paged event snapshot contract. The first page
+    returns its source-plan hash and revision token; Replay/Backtest echo both
+    on every continuation. QMD History returns a typed HTTP 409 with
+    `restart_snapshot` if the plan or revision drifts, and the Python source
+    independently verifies every response. Storage-level old-revision reads
+    remain open, so this detects drift rather than claiming immutable snapshots.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

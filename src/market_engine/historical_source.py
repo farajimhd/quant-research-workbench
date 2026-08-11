@@ -4,6 +4,7 @@ import asyncio
 import json
 import urllib.parse
 import urllib.request
+from urllib.error import HTTPError
 from datetime import datetime
 from typing import Any
 
@@ -34,6 +35,7 @@ class QmdHistoricalEventSource:
         self.end = end
         self.tickers = list(tickers or [])
         self.batch_size = batch_size
+        self.source_revision: dict[str, Any] | None = None
 
     async def health(self) -> dict[str, object]:
         import asyncio
@@ -49,8 +51,20 @@ class QmdHistoricalEventSource:
         if cursor and cursor.token:
             raise ValueError("Reconnect historical events using a source-owned page boundary")
         page_cursor: dict[str, Any] | None = None
+        pinned_revision: dict[str, Any] | None = None
         while True:
-            payload = await asyncio.to_thread(self._read_page, page_cursor)
+            payload = await asyncio.to_thread(
+                self._read_page, page_cursor, pinned_revision
+            )
+            revision = _source_revision(payload)
+            if pinned_revision is None:
+                pinned_revision = revision
+                self.source_revision = dict(revision)
+            elif revision != pinned_revision:
+                raise RuntimeError(
+                    "QMD historical source revision changed during paged read; "
+                    "restart from the first page"
+                )
             events = [
                 event_from_qmd_payload(dict(item))
                 for item in payload.get("events") or []
@@ -64,7 +78,11 @@ class QmdHistoricalEventSource:
                 raise RuntimeError("QMD historical event page omitted its continuation cursor")
             page_cursor = next_cursor
 
-    def _read_page(self, cursor: dict[str, Any] | None) -> dict[str, Any]:
+    def _read_page(
+        self,
+        cursor: dict[str, Any] | None,
+        pinned_revision: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         parameters: dict[str, Any] = {
             "start": self.start.isoformat(),
             "end": self.end.isoformat(),
@@ -79,17 +97,55 @@ class QmdHistoricalEventSource:
                     "cursor_ordinal": int(cursor["ordinal"]),
                 }
             )
+        if pinned_revision:
+            parameters.update(
+                {
+                    "expected_source_plan_hash": str(
+                        pinned_revision["source_plan_hash"]
+                    ),
+                    "expected_revision_token": str(
+                        pinned_revision["revision_token"]
+                    ),
+                }
+            )
         query = urllib.parse.urlencode(parameters)
-        with urllib.request.urlopen(
-            f"{self.base_url}/snapshot/events?{query}",
-            timeout=60,
-        ) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(
+                f"{self.base_url}/snapshot/events?{query}",
+                timeout=60,
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            try:
+                error_payload = json.loads(detail)
+            except json.JSONDecodeError:
+                error_payload = {"error": detail or str(exc)}
+            raise RuntimeError(
+                f"QMD historical event page failed ({exc.code}): "
+                f"{error_payload.get('error') or str(exc)}"
+            ) from exc
         if payload.get("error"):
             raise RuntimeError(
                 f"QMD historical event page failed ({payload.get('source', 'unknown')}): {payload['error']}"
             )
         return payload
+
+
+def _source_revision(payload: dict[str, Any]) -> dict[str, Any]:
+    revision = payload.get("source_revision")
+    if not isinstance(revision, dict):
+        raise RuntimeError("QMD historical event page omitted source_revision")
+    plan_hash = str(revision.get("source_plan_hash") or "").strip()
+    revision_token = str(revision.get("token") or "").strip()
+    if not plan_hash or not revision_token:
+        raise RuntimeError(
+            "QMD historical event page returned an incomplete source_revision"
+        )
+    return {
+        "source_plan_hash": plan_hash,
+        "revision_token": revision_token,
+    }
 
 
 def event_from_qmd_payload(payload: dict[str, Any]) -> MarketEvent:

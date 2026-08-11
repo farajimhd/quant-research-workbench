@@ -180,6 +180,13 @@ The same source plan supports:
 Each response includes the source plan hash, source revisions, product schema,
 calculation versions, coverage, `as_of`, and continuation cursor.
 
+Paged event snapshots now pin the first page's source-plan hash and revision
+token at the consumer. Every continuation echoes both values; QMD History
+returns a typed 409/restart instruction if either changed. This prevents a
+Replay or Backtest from silently blending pages across revisions. It detects
+revision drift but does not yet provide an old-revision physical snapshot, so a
+conflict restarts instead of continuing against historical table state.
+
 ## Market AI delivery contract
 
 ```mermaid
