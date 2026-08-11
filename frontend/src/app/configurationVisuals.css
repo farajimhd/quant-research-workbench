@@ -449,6 +449,15 @@
 .discovery-capability-dialog-service-clock strong { font-size: 12px; }
 .discovery-capability-dialog-service-clock p { color: var(--muted-foreground); font-size: 11px; line-height: 1.45; margin: 3px 0 0; }
 .discovery-capability-dialog-actions { align-items: center; border-top: 1px solid var(--configuration-rule); display: flex; gap: 8px; justify-content: flex-end; padding: 14px 22px; }
+.discovery-core-approval-dialog { width: min(700px, calc(var(--app-zoomed-viewport-width, 100vw) - 48px)); }
+.discovery-broadening-facts { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.discovery-broadening-facts > div { background: var(--surface-alt); border: 1px solid var(--configuration-rule); border-radius: 8px; display: grid; gap: 4px; padding: 11px 12px; }
+.discovery-broadening-facts dt { color: var(--muted-foreground); font-size: 9.5px; font-weight: 720; letter-spacing: .06em; text-transform: uppercase; }
+.discovery-broadening-facts dd { font-size: 11.5px; line-height: 1.45; margin: 0; }
+.discovery-core-approval-check { align-items: start; border: 1px solid color-mix(in oklab, var(--warning) 38%, var(--configuration-rule)); border-radius: 9px; cursor: pointer; display: grid; gap: 10px; grid-template-columns: auto minmax(0, 1fr); padding: 13px 14px; }
+.discovery-core-approval-check span { display: grid; gap: 3px; }
+.discovery-core-approval-check strong { font-size: 12px; }
+.discovery-core-approval-check small { color: var(--muted-foreground); font-size: 10.5px; line-height: 1.45; }
 
 @media (max-width: 760px) {
   .discovery-capability-heading { grid-template-columns: minmax(0, 1fr); }
@@ -462,6 +471,7 @@
   .discovery-capability-dialog-backdrop { padding: 10px; }
   .discovery-capability-dialog { max-height: calc(var(--app-zoomed-viewport-height, 100vh) - 20px); max-width: calc(var(--app-zoomed-viewport-width, 100vw) - 20px); width: calc(var(--app-zoomed-viewport-width, 100vw) - 20px); }
   .discovery-capability-dialog-definition dl,
+  .discovery-broadening-facts,
   .discovery-capability-dialog-cadences > div { grid-template-columns: 1fr; }
 }
 

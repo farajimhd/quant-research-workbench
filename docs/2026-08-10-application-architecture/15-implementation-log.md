@@ -204,6 +204,13 @@ bounded direct ClickHouse paths remain documented in
     comparison projection presents up to twenty terminal runs and their
     strategy rows, while the Backtest UI shows current-run attribution and the
     latest ten-run comparison without duplicating performance formulas.
+40. Closed the Market Discovery Core Scan catalog and approval UX gap. Core
+    choices were confirmed to already come from registry rows whose execution
+    scope is `core_scan`, while QMD and backend validation reject unregistered
+    scope broadening. Optional all-market activation now requires a focused
+    confirmation showing population, cost class, cadence, owner/version, and
+    allowed scopes before it changes the draft; configuration publication
+    remains the immutable approval record.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

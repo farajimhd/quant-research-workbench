@@ -192,8 +192,14 @@ internal topology, or producer formula.
 
 - [x] Make Universal Ingest the first, normally locked configuration page.
 - [x] Show primitive reason, owner, version, cost, coverage, and consumers.
-- [ ] Generate Core Scan choices from eligible registry capabilities.
-- [ ] Show cost and broadening approval for all-market changes.
+- [x] Generate Core Scan choices from eligible registry capabilities. The UI
+      filters the backend/QMD capability contract by `core_scan`; capabilities
+      registered only for narrower scopes cannot enter the chooser.
+- [x] Show cost and broadening approval for all-market changes. Activating an
+      optional Core Scan capability now requires an explicit population, cost,
+      cadence, authority, and allowed-scope confirmation before the change can
+      enter the draft; publishing the versioned configuration remains the
+      durable approval event.
 - [x] Configure Watchlist rules, rank, size, TTL, overrides, and focused calculations.
 - [x] Expose Strategy/request/offline availability without calling it unavailable.
 - [x] Separate implementation, execution scope, configuration authority,

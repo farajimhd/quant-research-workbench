@@ -1909,6 +1909,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
   const [capabilityStatusFilter, setCapabilityStatusFilter] = useState("all");
   const [capabilityToAddId, setCapabilityToAddId] = useState("");
   const [editingCapabilityId, setEditingCapabilityId] = useState<string | null>(null);
+  const [pendingCoreCapabilityId, setPendingCoreCapabilityId] = useState<string | null>(null);
   const [selectedCapabilityId, setSelectedCapabilityId] = useState(section.core_scan.calculations[0]?.capability_id ?? "");
   const [selectedWatchlistId, setSelectedWatchlistId] = useState(section.watchlists[0]?.watchlist_id ?? "");
   const [watchlistView, setWatchlistView] = useState<"select" | "guided">("select");
@@ -1928,6 +1929,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
   const coreCapabilities = useMemo(() => discoveryCapabilities.filter((row) => row.execution_scope === "core_scan"), [discoveryCapabilities]);
   const selectedCapability = discoveryCapabilities.find((row) => row.capability_id === selectedCapabilityId) ?? discoveryCapabilities[0];
   const editingCapability = discoveryCapabilities.find((row) => row.capability_id === editingCapabilityId) ?? null;
+  const pendingCoreCapability = discoveryCapabilities.find((row) => row.capability_id === pendingCoreCapabilityId) ?? null;
   const selectedWatchlist = section.watchlists.find((row) => row.watchlist_id === selectedWatchlistId) ?? section.watchlists[0];
   const selectedRuntimeWatchlist = watchlistRuntime?.watchlists.find((row) => row.watchlist_id === selectedWatchlist?.watchlist_id);
   const watchlistQuestion = WATCHLIST_GUIDED_STEPS[watchlistQuestionIndex] as WatchlistGuidedStep;
@@ -2068,7 +2070,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
 
   function addDiscoveryCapability() {
     if (!capabilityToAddId) return;
-    setDiscoveryCapabilityEnabled(capabilityToAddId, true);
+    setPendingCoreCapabilityId(capabilityToAddId);
   }
 
   function loadScannerHistory() {
@@ -2192,6 +2194,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
       </section>
     </article>}
     {editingCapability ? <DiscoveryCapabilityDialog capability={editingCapability} key={editingCapability.capability_id} onCancel={() => setEditingCapabilityId(null)} onSave={(next) => { replaceDiscoveryCapability(next); setEditingCapabilityId(null); }} /> : null}
+    {pendingCoreCapability ? <CoreScanApprovalDialog capability={pendingCoreCapability} key={pendingCoreCapability.capability_id} onApprove={() => { setDiscoveryCapabilityEnabled(pendingCoreCapability.capability_id, true); setPendingCoreCapabilityId(null); }} onCancel={() => setPendingCoreCapabilityId(null)} /> : null}
   </div>;
 }
 
@@ -2228,6 +2231,42 @@ function defaultScannerHistoryDate(): string {
   const value = new Date(Date.now() - 24 * 60 * 60 * 1_000);
   while (value.getUTCDay() === 0 || value.getUTCDay() === 6) value.setUTCDate(value.getUTCDate() - 1);
   return value.toISOString().slice(0, 10);
+}
+
+function CoreScanApprovalDialog({ capability, onApprove, onCancel }: { capability: DiscoveryCapability; onApprove: () => void; onCancel: () => void }) {
+  const titleId = `${useId()}-title`;
+  const descriptionId = `${useId()}-description`;
+  const firstControl = useRef<HTMLInputElement>(null);
+  const onCancelRef = useRef(onCancel);
+  const [acknowledged, setAcknowledged] = useState(false);
+  onCancelRef.current = onCancel;
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    firstControl.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onCancelRef.current(); };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+      previouslyFocused?.focus();
+    };
+  }, []);
+  return createPortal(
+    <div className="modal-backdrop discovery-capability-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+      <section aria-describedby={descriptionId} aria-labelledby={titleId} aria-modal="true" className="modal-panel discovery-capability-dialog discovery-core-approval-dialog" role="dialog">
+        <header className="discovery-capability-dialog-header"><div><span>All-market computation approval</span><h2 id={titleId}>Add {capability.name} to Core Scan?</h2><p id={descriptionId}>This activates the registered capability for every eligible security. It does not move any Watchlist, Strategy, request, or offline capability into a broader scope.</p></div><button aria-label="Close Core Scan approval" onClick={onCancel} type="button"><X size={18} /></button></header>
+        <div className="discovery-capability-dialog-body">
+          <section className="discovery-capability-dialog-definition"><div className="discovery-capability-title"><span data-type={capability.capability_type}>{capabilityTypeLabel(capability.capability_type)}</span><span>{readableLabel(capability.cost_class)} cost</span><span>{capability.priority.toUpperCase()}</span></div><p>{capability.calculation || capability.description}</p></section>
+          <dl className="discovery-broadening-facts"><div><dt>Population</dt><dd>Every security admitted to the QMD Core Scan universe</dd></div><div><dt>Cadence</dt><dd>{capability.selected_timeframes.join(", ") || capability.timeframes.join(", ") || readableLabel(capability.cadence)}</dd></div><div><dt>Authority</dt><dd>{capability.owner} · implementation v{capability.implementation_version}</dd></div><div><dt>Scope policy</dt><dd>{capability.allowed_scopes.map(capabilityScopeLabel).join(", ")}</dd></div></dl>
+          <label className="discovery-core-approval-check"><input checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} ref={firstControl} type="checkbox" /><span><strong>I approve this all-market cost</strong><small>The enabled capability and cadence will be frozen into the next published configuration release. Runtime demand remains visible in Market Discovery.</small></span></label>
+        </div>
+        <footer className="discovery-capability-dialog-actions"><button className="button secondary" onClick={onCancel} type="button">Cancel</button><button className="button" disabled={!acknowledged} onClick={onApprove} type="button"><BadgeCheck size={15} /> Approve and add</button></footer>
+      </section>
+    </div>,
+    document.body,
+  );
 }
 
 function DiscoveryCapabilityDialog({ capability, onCancel, onSave }: { capability: DiscoveryCapability; onCancel: () => void; onSave: (value: DiscoveryCapability) => void }) {
