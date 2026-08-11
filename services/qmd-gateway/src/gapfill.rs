@@ -1,4 +1,4 @@
-use crate::compact_event::SharedCompactEventStore;
+use crate::compact_event::{SharedCompactEventStore, LIVE_COMPACT_EVENT_SCHEMA_VERSION};
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::flatfile::FlatfileDiscovery;
@@ -133,6 +133,18 @@ struct FlatfileCoverageState {
     remote_key: String,
     remote_last_modified: String,
     updated_at_utc: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct EventCoverageFingerprint {
+    event_count: u64,
+    first_sip_timestamp_us: u64,
+    identity_hash_sum: u64,
+    identity_hash_xor: u64,
+    last_sip_timestamp_us: u64,
+    schema_version_max: u64,
+    schema_version_min: u64,
+    ticker_count: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -1691,6 +1703,106 @@ impl GapFillService {
         .await
     }
 
+    async fn event_coverage_fingerprint(
+        &self,
+        date: NaiveDate,
+        historical: bool,
+    ) -> Result<EventCoverageFingerprint, String> {
+        let table = if historical {
+            format!(
+                "{}.events_{}",
+                self.config.historical_clickhouse_database.replace('`', ""),
+                date.year()
+            )
+        } else {
+            self.config.compact_event_table.clone()
+        };
+        let schema_version = if historical {
+            LIVE_COMPACT_EVENT_SCHEMA_VERSION.to_string()
+        } else {
+            "schema_version".to_string()
+        };
+        let sql = format!(
+            r#"SELECT
+                count() AS event_count,
+                uniqExact(ticker) AS ticker_count,
+                min(sip_timestamp_us) AS first_sip_timestamp_us,
+                max(sip_timestamp_us) AS last_sip_timestamp_us,
+                min({schema_version}) AS schema_version_min,
+                max({schema_version}) AS schema_version_max,
+                sumWithOverflow(cityHash64(
+                    ticker, sip_timestamp_us, source_sequence, bitAnd(event_meta, 1),
+                    event_meta, price_primary_int, price_secondary_int,
+                    size_primary, size_secondary, exchange_primary, exchange_secondary,
+                    condition_token_1, condition_token_2, condition_token_3,
+                    condition_token_4, condition_token_5
+                )) AS identity_hash_sum,
+                groupBitXor(cityHash64(
+                    ticker, sip_timestamp_us, source_sequence, bitAnd(event_meta, 1),
+                    event_meta, price_primary_int, price_secondary_int,
+                    size_primary, size_secondary, exchange_primary, exchange_secondary,
+                    condition_token_1, condition_token_2, condition_token_3,
+                    condition_token_4, condition_token_5
+                )) AS identity_hash_xor
+            FROM {table} FINAL
+            WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)),
+                'America/New_York')) = toDate('{date}')
+            FORMAT JSONEachRow"#,
+        );
+        let body = if historical {
+            self.query_historical(&sql).await?
+        } else {
+            self.query(&sql, true).await?
+        };
+        parse_event_coverage_fingerprint(&body)
+    }
+
+    async fn verified_archive_handoff(&self, date: NaiveDate) -> Result<(bool, Value), String> {
+        let flatfile_states = futures_util::future::join_all(
+            ["quote", "trade"]
+                .into_iter()
+                .map(|kind| self.flatfile_coverage_state(date, kind)),
+        )
+        .await;
+        let mut flatfile_evidence = serde_json::Map::new();
+        let mut flatfile_confirmed = true;
+        for (kind, state) in ["quote", "trade"].into_iter().zip(flatfile_states) {
+            let state = state?;
+            let confirmed = state
+                .as_ref()
+                .is_some_and(|row| row.historical_status == "confirmed");
+            flatfile_confirmed &= confirmed;
+            flatfile_evidence.insert(
+                kind.to_string(),
+                json!({
+                    "confirmed": confirmed,
+                    "historical_rows": state.as_ref().map(|row| row.historical_rows).unwrap_or(0),
+                    "remote_key": state.as_ref().map(|row| row.remote_key.as_str()).unwrap_or(""),
+                }),
+            );
+        }
+        if !flatfile_confirmed {
+            return Ok((
+                false,
+                json!({"reason": "flatfile_handoff_unconfirmed", "flatfiles": flatfile_evidence}),
+            ));
+        }
+        let (live, archive) = tokio::try_join!(
+            self.event_coverage_fingerprint(date, false),
+            self.event_coverage_fingerprint(date, true),
+        )?;
+        let equivalent = live.event_count > 0 && live == archive;
+        Ok((
+            equivalent,
+            json!({
+                "reason": if equivalent { "equivalent" } else { "event_fingerprint_mismatch" },
+                "flatfiles": flatfile_evidence,
+                "live": event_coverage_fingerprint_json(&live),
+                "archive": event_coverage_fingerprint_json(&archive),
+            }),
+        ))
+    }
+
     async fn enforce_live_retention(&self, started_at: DateTime<Utc>) -> Result<(), String> {
         if !self.config.compact_events_enabled {
             return Ok(());
@@ -1759,19 +1871,11 @@ impl GapFillService {
         let mut blocked_rows = 0u64;
         let mut blocked_sessions = Vec::new();
         for (date, count) in &session_rows {
-            let continuity_rows = self
-                .query_historical(&format!(
-                    "SELECT count() FROM {}.events_ordinal_continuity FINAL WHERE source_date = toDate('{}') FORMAT TSV",
-                    self.config.historical_clickhouse_database.replace('`', ""),
-                    date,
-                ))
-                .await?
-                .trim()
-                .parse::<u64>()
-                .unwrap_or(0);
-            if continuity_rows == 0 {
+            let (verified, evidence) = self.verified_archive_handoff(*date).await?;
+            if !verified {
                 blocked_rows = blocked_rows.saturating_add(*count);
-                blocked_sessions.push(date.to_string());
+                blocked_sessions
+                    .push(json!({"session_date": date.to_string(), "evidence": evidence}));
             }
         }
         if blocked_rows > 0 {
@@ -2404,6 +2508,43 @@ fn parse_clickhouse_datetime64(value: &str) -> Option<DateTime<Utc>> {
         })
 }
 
+fn parse_event_coverage_fingerprint(body: &str) -> Result<EventCoverageFingerprint, String> {
+    let line = body
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| "missing event coverage fingerprint row".to_string())?;
+    let row: Value = serde_json::from_str(line)
+        .map_err(|error| format!("invalid event coverage fingerprint row: {error}"))?;
+    let value = |key: &str| {
+        row.get(key)
+            .and_then(json_u64)
+            .ok_or_else(|| format!("event coverage fingerprint is missing {key}"))
+    };
+    Ok(EventCoverageFingerprint {
+        event_count: value("event_count")?,
+        ticker_count: value("ticker_count")?,
+        first_sip_timestamp_us: value("first_sip_timestamp_us")?,
+        last_sip_timestamp_us: value("last_sip_timestamp_us")?,
+        schema_version_min: value("schema_version_min")?,
+        schema_version_max: value("schema_version_max")?,
+        identity_hash_sum: value("identity_hash_sum")?,
+        identity_hash_xor: value("identity_hash_xor")?,
+    })
+}
+
+fn event_coverage_fingerprint_json(value: &EventCoverageFingerprint) -> Value {
+    json!({
+        "event_count": value.event_count,
+        "ticker_count": value.ticker_count,
+        "first_sip_timestamp_us": value.first_sip_timestamp_us,
+        "last_sip_timestamp_us": value.last_sip_timestamp_us,
+        "schema_version_min": value.schema_version_min,
+        "schema_version_max": value.schema_version_max,
+        "identity_hash_sum": value.identity_hash_sum,
+        "identity_hash_xor": value.identity_hash_xor,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2432,6 +2573,33 @@ mod tests {
         assert!(!remote_object_changed(&coverage_state(), &current));
         current.etag = "etag-b".to_string();
         assert!(remote_object_changed(&coverage_state(), &current));
+    }
+
+    #[test]
+    fn event_fingerprint_parser_preserves_uint64_identity_aggregates() {
+        let row = r#"{"event_count":"12","ticker_count":2,"first_sip_timestamp_us":"100","last_sip_timestamp_us":"200","schema_version_min":1,"schema_version_max":1,"identity_hash_sum":"18446744073709551615","identity_hash_xor":"99"}"#;
+        let parsed = parse_event_coverage_fingerprint(row).unwrap();
+        assert_eq!(parsed.event_count, 12);
+        assert_eq!(parsed.ticker_count, 2);
+        assert_eq!(parsed.identity_hash_sum, u64::MAX);
+        assert_eq!(parsed.identity_hash_xor, 99);
+    }
+
+    #[test]
+    fn event_fingerprint_equality_rejects_count_bound_or_identity_drift() {
+        let expected = EventCoverageFingerprint {
+            event_count: 10,
+            ticker_count: 2,
+            first_sip_timestamp_us: 100,
+            last_sip_timestamp_us: 200,
+            schema_version_min: 1,
+            schema_version_max: 1,
+            identity_hash_sum: 300,
+            identity_hash_xor: 400,
+        };
+        let mut drifted = expected.clone();
+        drifted.identity_hash_xor += 1;
+        assert_ne!(expected, drifted);
     }
 }
 

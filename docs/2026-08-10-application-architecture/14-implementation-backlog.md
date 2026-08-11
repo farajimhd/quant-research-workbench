@@ -83,10 +83,13 @@ duplicate-free, gap-explicit stream.
 - [ ] Persist recent live events and family bars in QMD-owned `q_live` tables.
 - [ ] Record recent coverage by session and partition.
 - [ ] Read existing archive publication coverage from Market SIP outputs.
-- [ ] Compare counts, bounds, identities, ordering, and schema versions.
+- [x] Compare counts, bounds, stable identities, and schema versions before
+      retention. Ordering remains preserved by the source contracts rather
+      than accepted through an order-insensitive comparison.
 - [ ] Advance the archive handoff watermark only after equivalence passes.
-- [ ] Block retention when archive coverage is incomplete or inconsistent.
-- [ ] Delete only QMD-owned partitions beyond the configured recent window.
+- [x] Block retention when archive coverage is incomplete or inconsistent.
+- [x] Delete only QMD-owned event and intraday-bar partitions beyond the
+      configured recent market-session window.
 - [ ] Preserve distinct `trade`, `quote_bid`, and `quote_ask` bar families.
 - [ ] Derive higher intraday resolutions algebraically.
 - [ ] Use completed daily-session bars as historical daily authority.

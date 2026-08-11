@@ -267,6 +267,16 @@ The singular `q_live.events` cutover is non-destructive. Legacy
 for audit until rolling live coverage is verified; QMD does not query or drop
 them.
 
+Retention is fail-closed per market session. Before QMD deletes either the
+singular recent event partition or its derived intraday-family bars, both quote
+and trade flatfile handoffs must be `confirmed`. QMD then compares the live and
+archive event sets using exact row and ticker counts, SIP timestamp bounds, the
+compact schema version, and independent sum/XOR aggregates of the complete
+stable event identity. A missing handoff, empty live event set, count/bound
+drift, schema drift, or identity drift records
+`retention_blocked_historical_gap` with both fingerprints and preserves all
+QMD-owned rows for that session.
+
 ## Historical runtime
 
 Do not feed historical rows into the live process. Start the separate Rust
