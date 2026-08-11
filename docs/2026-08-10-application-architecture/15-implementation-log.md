@@ -169,6 +169,13 @@ bounded direct ClickHouse paths remain documented in
     sends a replacement snapshot from the same sequence authority. Queued
     deltas through the replacement boundary are discarded. Other raw event and
     product streams still require equivalent recovery contracts.
+34. Closed the compact-event current-tail routing gap at the typed QMD client
+    boundary. QMD History remains the archive/recent source planner; when its
+    plan declares a current-live segment, the client filters QMD Gateway's
+    bounded live page to that exact interval, deduplicates and orders the union,
+    and preserves head/tail limits. An evicted forward cursor fails closed.
+    Equivalent live continuation for current-window charts and historical
+    Scanner products remains open.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

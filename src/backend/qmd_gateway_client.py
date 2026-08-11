@@ -63,12 +63,110 @@ def qmd_product_request(
     timeout = request.timeout_seconds or (3 if authority == "live" else 90)
     resolved_live_get = live_get or qmd_get_json
     resolved_history_get = history_get or qmd_history_get_json
-    payload = (
-        resolved_live_get(endpoint, params, timeout=int(timeout))
-        if authority == "live"
-        else resolved_history_get(endpoint, params, timeout=timeout)
-    )
+    if authority == "history" and request.product == "compact_events":
+        payload = _qmd_compact_event_window(
+            request,
+            endpoint=endpoint,
+            params=params,
+            history_get=resolved_history_get,
+            live_get=resolved_live_get,
+            timeout=timeout,
+        )
+    else:
+        payload = (
+            resolved_live_get(endpoint, params, timeout=int(timeout))
+            if authority == "live"
+            else resolved_history_get(endpoint, params, timeout=timeout)
+        )
     return QmdProductResponse(1, request.product, authority, endpoint, payload)
+
+
+def _qmd_compact_event_window(
+    request: QmdProductRequest,
+    *,
+    endpoint: str,
+    params: dict[str, Any],
+    history_get: Callable[..., Any],
+    live_get: Callable[..., Any],
+    timeout: float,
+) -> list[dict[str, Any]]:
+    historical = history_get(endpoint, params, timeout=timeout)
+    if not isinstance(historical, list):
+        raise RuntimeError("QMD History compact-event response must be an array")
+    rows = [dict(row) for row in historical if isinstance(row, dict)]
+    plan = history_get(
+        "/source-plan",
+        {"start": request.start, "end": request.end, "tickers": request.ticker.strip().upper()},
+        timeout=timeout,
+    )
+    if not isinstance(plan, dict):
+        raise RuntimeError("QMD History source plan must be an object")
+    live_segments = [
+        segment
+        for segment in plan.get("segments") or []
+        if isinstance(segment, dict) and segment.get("tier") == "current_live"
+    ]
+    if live_segments:
+        live_params: dict[str, Any] = {"limit": max(1, min(int(request.limit), 50_000))}
+        if not request.tail:
+            live_params["after_arrival_sequence"] = 0
+        live_page = live_get(
+            f"/snapshot/compact-event-page/{urllib.parse.quote(request.ticker.strip().upper())}",
+            live_params,
+            timeout=int(min(timeout, 10)),
+        )
+        if not isinstance(live_page, dict):
+            raise RuntimeError("QMD Live compact-event continuation must be an object")
+        if not request.tail and live_page.get("cursor_expired"):
+            raise RuntimeError(
+                "QMD Live compact-event continuation was evicted; restart from durable QMD history"
+            )
+        intervals = [
+            (_timestamp_us(segment.get("start")), _timestamp_us(segment.get("end")))
+            for segment in live_segments
+        ]
+        rows.extend(
+            dict(row)
+            for row in live_page.get("events") or []
+            if isinstance(row, dict)
+            and any(
+                start_us <= int(row.get("sip_timestamp_us") or 0) < end_us
+                for start_us, end_us in intervals
+            )
+        )
+    deduplicated = {
+        _compact_event_identity(row): row
+        for row in rows
+    }
+    ordered = sorted(deduplicated.values(), key=_compact_event_order)
+    limit = max(1, min(int(request.limit), 50_000))
+    return ordered[-limit:] if request.tail else ordered[:limit]
+
+
+def _timestamp_us(value: Any) -> int:
+    parsed = _validate_window_timestamp("source segment boundary", str(value))
+    return int(parsed.astimezone(timezone.utc).timestamp() * 1_000_000)
+
+
+def _compact_event_identity(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(row.get("ticker") or "").upper(),
+        int(row.get("sip_timestamp_us") or 0),
+        int(row.get("source_sequence") or 0),
+        int(row.get("event_meta") or 0),
+        int(row.get("exchange_primary") or 0),
+        int(row.get("exchange_secondary") or 0),
+    )
+
+
+def _compact_event_order(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        int(row.get("sip_timestamp_us") or 0),
+        str(row.get("ticker") or "").upper(),
+        int(row.get("source_sequence") or 0),
+        int(row.get("event_meta") or 0),
+        int(row.get("arrival_sequence") or 0),
+    )
 
 
 def _qmd_product_route(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from src.backend.qmd_gateway_client import (
@@ -79,6 +80,80 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(params["stage"], "bars")
         self.assertEqual(params["as_of"], "2026-08-08T12:00:00-04:00")
         self.assertEqual(get_json.call_args.kwargs["timeout"], 12)
+
+    def test_compact_event_window_composes_history_with_filtered_live_tail(self) -> None:
+        boundary_us = int(datetime.fromisoformat("2026-08-08T20:00:00+00:00").timestamp() * 1_000_000)
+        historical = [
+            {
+                "ticker": "AAPL",
+                "sip_timestamp_us": boundary_us - 1_000_000,
+                "source_sequence": 1,
+                "event_meta": 1,
+                "arrival_sequence": 8,
+            }
+        ]
+        plan = {
+            "segments": [
+                {
+                    "tier": "recent",
+                    "start": "2026-08-08T19:59:00+00:00",
+                    "end": "2026-08-08T20:00:00+00:00",
+                },
+                {
+                    "tier": "current_live",
+                    "start": "2026-08-08T20:00:00+00:00",
+                    "end": "2026-08-08T20:01:00+00:00",
+                },
+            ]
+        }
+        live_page = {
+            "cursor_expired": False,
+            "events": [
+                {
+                    "ticker": "AAPL",
+                    "sip_timestamp_us": boundary_us - 500_000,
+                    "source_sequence": 2,
+                    "event_meta": 1,
+                    "arrival_sequence": 9,
+                },
+                {
+                    "ticker": "AAPL",
+                    "sip_timestamp_us": boundary_us + 20_000_000,
+                    "source_sequence": 3,
+                    "event_meta": 1,
+                    "arrival_sequence": 10,
+                },
+            ],
+        }
+
+        def history_get(path, params, *, timeout):
+            return plan if path == "/source-plan" else historical
+
+        live_calls = []
+
+        def live_get(path, params, *, timeout):
+            live_calls.append((path, params, timeout))
+            return live_page
+
+        response = qmd_product_request(
+            QmdProductRequest(
+                "compact_events",
+                authority="history",
+                ticker="aapl",
+                start="2026-08-08T19:59:00+00:00",
+                end="2026-08-08T20:01:00+00:00",
+                limit=10,
+                tail=True,
+            ),
+            history_get=history_get,
+            live_get=live_get,
+        )
+
+        self.assertEqual([row["source_sequence"] for row in response.payload], [1, 3])
+        self.assertEqual(
+            live_calls,
+            [("/snapshot/compact-event-page/AAPL", {"limit": 10}, 10)],
+        )
 
     def test_typed_product_request_rejects_ambiguous_or_naive_windows(self) -> None:
         with self.assertRaisesRegex(ValueError, "cannot carry a historical window"):

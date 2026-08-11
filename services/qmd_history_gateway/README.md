@@ -17,6 +17,10 @@ an assumed UTC-midnight boundary. Every emitted event is globally ordered by
 original `source_sequence` remains part of the shared compact-event contract.
 Any uncovered interval is explicit, and the current live tail remains a QMD
 Gateway continuation rather than a hidden physical-table read.
+The application typed QMD client composes that continuation for compact-event
+windows, using this service's exact current-live segment bounds and QMD
+Gateway's versioned bounded page. Chart and historical Scanner continuation are
+not yet composed.
 
 Live trading must use `services/qmd-gateway`. This service is deliberately
 read-only: it cannot connect to Massive, run live gap repair, or write live QMD

@@ -81,10 +81,12 @@ QMD distribution facade composes a live QMD continuation. Long-running Replay
 pins a source plan and revision at creation, while Live charts may advance their
 tail watermark.
 
-**Current:** Live QMD already describes composition of closed historical
-sessions, recent `q_live.events`, and the Massive tail. QMD History currently
-configures only `market_sip_compact.events_YYYY`; full three-tier routing is not
-implemented behind one client contract.
+**Current:** QMD History plans and reads archive plus verified recent
+`q_live.events` segments. For compact-event windows, the typed backend QMD
+client now consumes the plan's current-live segment from QMD Gateway, filters it
+to the exact segment, orders and deduplicates the combined rows, and applies the
+requested head/tail limit. Current-window chart and historical Scanner products
+still need equivalent live-continuation composition.
 
 ## Retention and archive handoff
 
@@ -163,6 +165,13 @@ The planner owns the approved endpoint and rejects ambiguous live-plus-history
 requests, so route handlers do not select `q_live` or archive tables. QMD
 History remains the owner of archive/recent source planning inside the
 historical service.
+
+When that plan contains `current_live`, compact-event reads are composed only
+at the typed QMD client boundary. Non-tail forward reads fail closed if QMD
+Gateway reports that their live arrival cursor was evicted; callers are not
+given a silently truncated result. The existing array response remains a
+compatibility projection, so a future envelope still needs to return the
+combined plan and continuation evidence directly.
 
 Live compact-event consumers now use a versioned, bounded per-ticker page. Its
 arrival cursor, exact per-ticker eviction watermark, buffer bounds, `has_more`,
