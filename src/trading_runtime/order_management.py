@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from uuid import uuid4
 
 from src.market_engine.events import MarketEvent
+from src.request_context import causal_identity, normalize_request_identity
 from src.trading_runtime.broker import BrokerAdapter
 from src.trading_runtime.control_plane import TradingControlPlane
 from src.trading_runtime.domain import OrderLifecycleState, OrderState
@@ -2103,6 +2104,31 @@ class OrderManagementEngine:
             enriched.setdefault("ticker", group.intent.ticker)
             enriched.setdefault("action", group.intent.action)
             enriched.setdefault("intent_id", group.intent.intent_id)
+            lineage = causal_identity(
+                correlation_seed=(
+                    self.run_id
+                    or group.intent.metadata.get("assignment_id")
+                    or group.intent.intent_id
+                ),
+                causation_seed=(
+                    group.intent.metadata.get("causation_id")
+                    or group.intent.intent_id
+                ),
+            )
+            enriched.setdefault(
+                "correlation_id",
+                normalize_request_identity(
+                    str(group.intent.metadata.get("correlation_id") or "")
+                )
+                or lineage["correlation_id"],
+            )
+            enriched.setdefault(
+                "causation_id",
+                normalize_request_identity(
+                    str(group.intent.metadata.get("causation_id") or "")
+                )
+                or lineage["causation_id"],
+            )
         self.journal.append(
             run_id=self.run_id,
             category=category,

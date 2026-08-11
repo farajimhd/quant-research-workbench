@@ -175,7 +175,10 @@ budgets and invalid scope broadening fails configuration validation.
 - [ ] Maintain a compact feature projection with source, version,
       `available_at`, freshness, and null reasons.
 - [ ] Compile configuration dependencies, warm-up, modes, permissions, and accounts.
-- [ ] Emit immutable Run Plans.
+- [x] Emit immutable Run Plans. Configuration publication compiles the selected
+      Strategy, Watchlist universe, account mandates, action authority, OMS
+      profile, runtime assignments, and observation dependencies into the
+      content-hashed approved release consumed by mode-specific resolvers.
 - [ ] Standardize response envelopes, warnings, partial coverage, and typed errors.
 - [ ] Implement HTTP snapshot plus sequenced delta streams.
 - [ ] Fill reconnect gaps or require resnapshot.
@@ -274,7 +277,10 @@ load progressively without false continuity.
 
 ## 7. Shared mode controller
 
-- [ ] Compile approved configuration into an immutable Run Plan.
+- [x] Compile approved configuration into an immutable Run Plan. Published
+      releases are content hashed, idempotent, append-only revisions; Replay,
+      Backtest, Live, and Paper resolve runtime projections from that pinned
+      approved payload rather than mutable UI session state.
 - [ ] Implement one lifecycle for Live, Paper, Replay, Backtest, and Debug.
 - [ ] Inject mode-specific clock, observation source, latency, and fill/broker adapter.
 - [ ] Share Strategy, Portfolio, OMS, and journal state machines.
@@ -364,8 +370,11 @@ broker command outside OMS.
         context, QMD HTTP headers and WebSocket query identity, QMD Live/History
         response evidence, broker-event envelopes, and authoritative
         Portfolio/OMS journal payloads.
-  - [ ] Give autonomous source events, computation leases, Strategy decisions,
-        and background continuations explicit causation lineage when no HTTP
+  - [x] Give autonomous Strategy evaluations, Portfolio decisions/reservations,
+        and OMS lifecycle records explicit causal predecessors when no HTTP
+        request context exists.
+  - [ ] Give autonomous source events, computation leases, and generic
+        background continuations explicit causation lineage when no HTTP
         request context exists.
 - [x] Add QMD transition/gap/lag/cache/queue metrics.
 - [x] Add discovery computation-cost metrics.

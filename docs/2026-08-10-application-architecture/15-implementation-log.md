@@ -225,6 +225,15 @@ bounded direct ClickHouse paths remain documented in
     envelopes and authoritative Portfolio/OMS journal payloads inherit the
     active context. Autonomous source-event and computation-lease lineage is
     still open and is not mislabeled complete.
+43. Extended causal lineage across autonomous trading work. Strategy
+    evaluations now derive bounded correlation from assignment identity and
+    causation from the newest QMD/source signal or observation clock. Portfolio
+    decisions cite the Strategy intent, reservations cite the durable decision,
+    and the approved intent carries that decision into OMS lifecycle records.
+    The implementation also reconciles two stale backlog entries: publication
+    already compiles and content-hashes immutable Run Plans that mode-specific
+    runtime resolvers consume. Autonomous market-source, computation-lease, and
+    generic continuation lineage remains open.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

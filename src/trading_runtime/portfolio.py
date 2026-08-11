@@ -9,6 +9,8 @@ from time import monotonic
 from typing import Any, Mapping
 from uuid import uuid4
 
+from src.request_context import causal_identity, normalize_request_identity
+
 from src.trading_runtime.broker import BrokerAdapter
 from src.trading_runtime.control_plane import TradingControlPlane
 from src.trading_runtime.domain import OrderState, TradingStateSnapshot
@@ -1113,13 +1115,20 @@ class PortfolioManagementEngine:
                 "portfolio_reservation_id": reservation_id,
                 "requested_quantity": requested,
                 "portfolio_fx_to_base": fx_to_base,
+                "correlation_id": _intent_correlation(self.run_id, intent),
+                "causation_id": decision.decision_id,
             },
         )
         self._record(
             "portfolio_reservation",
             reservation_id,
             state.profile.account_id,
-            {"event": "reservation_created", **asdict(reservation)},
+            {
+                "event": "reservation_created",
+                **asdict(reservation),
+                "correlation_id": approved_intent.metadata["correlation_id"],
+                "causation_id": decision.decision_id,
+            },
         )
         self._persist_state(state)
         return decision, approved_intent
@@ -1428,7 +1437,22 @@ class PortfolioManagementEngine:
             "portfolio_decision",
             decision.decision_id,
             state.profile.account_id,
-            {"event": "portfolio_decision", "ticker": intent.ticker, "action": intent.action, **decision.payload()},
+            {
+                "event": "portfolio_decision",
+                "ticker": intent.ticker,
+                "action": intent.action,
+                **decision.payload(),
+                **causal_identity(
+                    correlation_seed=(
+                        self.run_id
+                        or intent.metadata.get("assignment_id")
+                        or intent.intent_id
+                    ),
+                    causation_seed=intent.intent_id,
+                ),
+                "correlation_id": _intent_correlation(self.run_id, intent),
+                "causation_id": intent.intent_id,
+            },
         )
         return decision
 
@@ -1752,6 +1776,20 @@ def narrow_policy_for_account_class(
             maximum_net_short_exposure=0.0,
         )
     return policy
+
+
+def _intent_correlation(run_id: str, intent: StrategyIntent) -> str:
+    inherited = normalize_request_identity(
+        str(intent.metadata.get("correlation_id") or "")
+    )
+    if inherited:
+        return inherited
+    return causal_identity(
+        correlation_seed=(
+            run_id or intent.metadata.get("assignment_id") or intent.intent_id
+        ),
+        causation_seed=intent.intent_id,
+    )["correlation_id"]
 
 
 def _planned_loss(intent: StrategyIntent, quantity: float) -> float:

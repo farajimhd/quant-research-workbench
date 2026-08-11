@@ -4,6 +4,7 @@ import asyncio
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -94,6 +95,53 @@ def intent(
         invalidation_price=invalidation,
         metadata={"assignment_id": f"assignment-{ticker}"},
     )
+
+
+class PortfolioCausationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_background_decision_links_strategy_intent_to_oms(self) -> None:
+        journal = TradingJournal(Path(":memory:"))
+        try:
+            profile = PortfolioAccountProfile(
+                "cash", "CASH1", "live", "cash", PortfolioPolicy()
+            )
+            engine = PortfolioManagementEngine(
+                [profile],
+                journal=journal,
+                run_id="portfolio-test",
+                strategy_id="strategy-a",
+                strategy_revision=2,
+            )
+            engine.synchronize_snapshot(
+                "CASH1",
+                summary=summary("CASH1"),
+                ledger=ledger("CASH1"),
+                positions=[],
+            )
+            request = replace(
+                intent("causal-request", quantity=10),
+                metadata={
+                    "assignment_id": "assignment-AAPL",
+                    "correlation_id": "run:assignment-AAPL",
+                    "causation_id": "event:qmd-signal-41",
+                },
+            )
+
+            decision, approved = await engine.approve(request, account_id="CASH1")
+
+            assert approved is not None
+            self.assertEqual(approved.metadata["correlation_id"], "run:assignment-AAPL")
+            self.assertEqual(approved.metadata["causation_id"], decision.decision_id)
+            records = journal.records("portfolio-test")
+            decision_record = next(
+                row for row in records if row.entity_id == decision.decision_id
+            )
+            reservation_record = next(
+                row for row in records if row.entity_id == decision.reservation_id
+            )
+            self.assertEqual(decision_record.payload["causation_id"], request.intent_id)
+            self.assertEqual(reservation_record.payload["causation_id"], decision.decision_id)
+        finally:
+            journal.close()
 
 
 class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):

@@ -6,6 +6,8 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
+from src.request_context import causal_identity
+
 from src.trading_runtime.execution_policies import (
     AddProtectionPolicy,
     ExecutionEnvelope,
@@ -1197,6 +1199,15 @@ class LongMomentumStrategyEngine:
         metadata: dict[str, Any] | None = None,
     ) -> StrategyEngineResult:
         event_id = str(uuid4())
+        source_cause = (
+            observation.source_signal_ids[-1]
+            if observation.source_signal_ids
+            else f"{observation.ticker.upper()}:{observation.observed_at.isoformat()}"
+        )
+        lineage = causal_identity(
+            correlation_seed=assignment.assignment_id,
+            causation_seed=source_cause,
+        )
         signal = StrategySignal(
             signal_id=event_id,
             signal_type=reason,
@@ -1221,6 +1232,7 @@ class LongMomentumStrategyEngine:
                 "assignment_id": assignment.assignment_id,
                 "reference_price": observation.price,
                 "status": status.value,
+                **lineage,
             },
         )
         intents: tuple[StrategyIntent, ...] = ()
@@ -1288,6 +1300,7 @@ class LongMomentumStrategyEngine:
                             or ["regular"]
                         ),
                         **(metadata or {}),
+                        **lineage,
                     },
                 ),
             )
@@ -1308,6 +1321,7 @@ class LongMomentumStrategyEngine:
             "status": status.value,
             "state": state,
             "evidence": metadata or {},
+            **lineage,
         }
         return StrategyEngineResult(StrategyEvaluation(signals=(signal,), intents=intents), state, status, payload)
 

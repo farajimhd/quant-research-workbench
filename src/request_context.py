@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
+import hashlib
 import re
 from uuid import uuid4
 
@@ -15,6 +16,33 @@ _causation_id: ContextVar[str] = ContextVar("request_causation_id", default="")
 def normalize_request_identity(value: str | None) -> str:
     candidate = str(value or "").strip()
     return candidate if _IDENTITY_PATTERN.fullmatch(candidate) else ""
+
+
+def stable_causal_identity(prefix: str, value: object) -> str:
+    """Return a bounded, transport-safe identity for autonomous work."""
+
+    safe_prefix = normalize_request_identity(prefix) or "event"
+    candidate = normalize_request_identity(str(value or ""))
+    if candidate and len(safe_prefix) + len(candidate) + 1 <= 128:
+        return f"{safe_prefix}:{candidate}"
+    digest = hashlib.sha256(str(value or "unknown").encode("utf-8")).hexdigest()
+    return f"{safe_prefix}:{digest}"
+
+
+def causal_identity(
+    *,
+    correlation_seed: object,
+    causation_seed: object,
+) -> dict[str, str]:
+    """Resolve request lineage or create explicit autonomous lineage."""
+
+    active = current_request_identity()
+    return {
+        "correlation_id": active.get("correlation_id")
+        or stable_causal_identity("run", correlation_seed),
+        "causation_id": active.get("causation_id")
+        or stable_causal_identity("event", causation_seed),
+    }
 
 
 def begin_request_context(

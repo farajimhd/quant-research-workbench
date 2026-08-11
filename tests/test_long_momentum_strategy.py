@@ -84,6 +84,22 @@ def confirmed_observation(**overrides) -> StrategyObservation:
 
 
 class LongMomentumStrategyTests(unittest.TestCase):
+    def test_background_evaluation_emits_autonomous_causal_lineage(self) -> None:
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(),
+            confirmed_observation(source_signal_ids=("qmd-signal-41",)),
+        )
+
+        signal = result.evaluation.signals[0]
+        self.assertEqual(signal.metadata["correlation_id"], "run:assignment-1")
+        self.assertEqual(signal.metadata["causation_id"], "event:qmd-signal-41")
+        self.assertEqual(result.evaluation_payload["correlation_id"], "run:assignment-1")
+        self.assertEqual(result.evaluation_payload["causation_id"], "event:qmd-signal-41")
+        if result.evaluation.intents:
+            intent_metadata = result.evaluation.intents[0].metadata
+            self.assertEqual(intent_metadata["correlation_id"], "run:assignment-1")
+            self.assertEqual(intent_metadata["causation_id"], "event:qmd-signal-41")
+
     def test_definition_is_long_only_timeframe_aware_and_searchable(self) -> None:
         definition = long_momentum_strategy_definition()
         config = definition["config"]

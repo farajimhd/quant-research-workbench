@@ -308,6 +308,45 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             await manager.close()
             journal.close()
 
+    async def test_oms_records_preserve_portfolio_causal_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+            )
+            try:
+                request = replace(
+                    intent(quantity=10),
+                    metadata={
+                        **intent(quantity=10).metadata,
+                        "correlation_id": "run:assignment-TEST",
+                        "causation_id": "portfolio-decision-7",
+                    },
+                )
+                await manager.submit_intent(
+                    portfolio_approved(journal, request),
+                    account_id="DU1",
+                    event=None,
+                )
+                records = [
+                    row
+                    for row in journal.order_management_records(limit=100)
+                    if row.payload.get("intent_id") == request.intent_id
+                    and row.payload.get("correlation_id")
+                ]
+                self.assertTrue(records)
+                self.assertTrue(
+                    all(row.payload["correlation_id"] == "run:assignment-TEST" for row in records)
+                )
+                self.assertTrue(
+                    all(row.payload["causation_id"] == "portfolio-decision-7" for row in records)
+                )
+            finally:
+                await manager.close()
+                journal.close()
+
     async def test_allowlisted_warning_is_confirmed_and_complete_transcript_is_saved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = WarningBroker(["o163"])

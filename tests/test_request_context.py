@@ -13,6 +13,8 @@ from src.request_context import (
     current_request_query,
     end_request_context,
     normalize_request_identity,
+    causal_identity,
+    stable_causal_identity,
 )
 from src.trading_runtime.domain import (
     BrokerEventEnvelope,
@@ -49,6 +51,24 @@ class RequestContextTests(unittest.TestCase):
         self.assertEqual(normalize_request_identity("unsafe value"), "")
         self.assertEqual(normalize_request_identity("a" * 129), "")
         self.assertEqual(normalize_request_identity("safe.id_1:child"), "safe.id_1:child")
+
+    def test_autonomous_identity_is_bounded_and_stable(self) -> None:
+        first = causal_identity(
+            correlation_seed="assignment-7",
+            causation_seed="AAPL:2026-08-10T14:30:00+00:00",
+        )
+        second = causal_identity(
+            correlation_seed="assignment-7",
+            causation_seed="AAPL:2026-08-10T14:30:00+00:00",
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first["correlation_id"], "run:assignment-7")
+        self.assertTrue(first["causation_id"].startswith("event:"))
+        self.assertLessEqual(len(first["causation_id"]), 128)
+        self.assertEqual(
+            stable_causal_identity("event", "source-1"),
+            "event:source-1",
+        )
 
     def test_context_flows_into_broker_events_and_authoritative_journal_records(self) -> None:
         correlation_token, causation_token, _, _ = begin_request_context(
