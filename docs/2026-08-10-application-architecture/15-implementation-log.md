@@ -123,6 +123,11 @@ bounded direct ClickHouse paths remain documented in
     configuration contract. Market Discovery now presents that evidence with
     reason, cost, operational state, and coverage for locked Universal Ingest
     primitives and the Core Scan inventory.
+26. Added bounded Canvas chart adjacent-window prefetch. The client preloads
+    only the exact next earlier cursor after the visible page completes,
+    consumes it without another request when the user loads earlier history,
+    and aborts/discards it whenever symbol, timeframe, projection, or workspace
+    navigation supersedes the request.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

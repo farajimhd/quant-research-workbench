@@ -207,8 +207,9 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
 - [ ] Merge archive, recent, and live tail by watermark.
 - [x] Deduplicate identical historical derived requests with QMD History
       single-flight execution.
-- [ ] Cancel superseded navigation requests and prefetch adjacent windows.
-      Superseded requests are cancelled; adjacent-window prefetch remains.
+- [x] Cancel superseded navigation requests and prefetch adjacent windows.
+      Canvas keeps one bounded exact-cursor earlier-page prefetch, consumes it
+      only for the matching chart request, and aborts/discards it on navigation.
 - [ ] Bound caches and invalidate by source/corporate-action/calculation revision.
 - [ ] Recover live sequence gaps or resnapshot.
 - [ ] Expose partial, stale, corrected, and source-transition states.
