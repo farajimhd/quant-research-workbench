@@ -81,11 +81,12 @@ class QmdGatewayClientTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["ticker_count"], 2)
-        path, params = get_json.call_args.args
+        path, params = get_json.call_args_list[0].args
         self.assertEqual(path, "/snapshot/scanner-derived")
         self.assertEqual(params["as_of"], "2026-08-07T14:15:00+00:00")
         self.assertEqual(params["start"], "2026-08-07T13:30:00+00:00")
         self.assertEqual(params["end"], "2026-08-07T14:15:00+00:00")
+        self.assertEqual(get_json.call_args_list[1].args[0], "/source-plan")
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_typed_product_request_routes_windowless_chart_to_live(self, get_json) -> None:
@@ -122,10 +123,11 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(response.authority, "history")
         self.assertEqual(response.schema_version, 2)
         self.assertEqual(response.endpoint, "/snapshot/chart-bars/AAPL")
-        params = get_json.call_args.args[1]
+        params = get_json.call_args_list[0].args[1]
         self.assertEqual(params["stage"], "bars")
         self.assertEqual(params["as_of"], "2026-08-08T12:00:00-04:00")
-        self.assertEqual(get_json.call_args.kwargs["timeout"], 12)
+        self.assertEqual(get_json.call_args_list[0].kwargs["timeout"], 12)
+        self.assertEqual(get_json.call_args_list[1].args[0], "/source-plan")
 
     @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
     @patch("src.backend.qmd_gateway_client.qmd_enabled", return_value=True)
@@ -272,6 +274,121 @@ class QmdGatewayClientTests(unittest.TestCase):
             live_calls,
             [("/snapshot/compact-event-page/AAPL", {"limit": 10}, 10)],
         )
+
+    def test_chart_window_composes_filtered_live_bars_and_indicators(self) -> None:
+        plan = {
+            "plan_hash": "plan-1",
+            "segments": [
+                {
+                    "tier": "current_live",
+                    "start": "2026-08-08T20:00:00+00:00",
+                    "end": "2026-08-08T20:02:00+00:00",
+                }
+            ],
+        }
+        historical = {
+            "bars": [
+                {"bar_start": "2026-08-08T19:59:00+00:00", "sym": "AAPL", "timeframe": "1m"}
+            ],
+            "indicators": [],
+            "ticker": "AAPL",
+            "timeframe": "1m",
+        }
+
+        def history_get(path, params, *, timeout):
+            return plan if path == "/source-plan" else historical
+
+        def live_get(path, params, *, timeout):
+            if path == "/snapshot/bars/AAPL":
+                return {
+                    "history": [
+                        {"bar_start": "2026-08-08T19:59:00+00:00", "sym": "AAPL", "timeframe": "1m"},
+                        {"bar_start": "2026-08-08T20:00:00+00:00", "sym": "AAPL", "timeframe": "1m"},
+                    ],
+                    "current": {"bar_start": "2026-08-08T20:01:00+00:00", "sym": "AAPL", "timeframe": "1m"},
+                }
+            self.assertEqual(path, "/snapshot/indicators/AAPL")
+            return {
+                "history": [
+                    {"bar_start": "2026-08-08T20:00:00+00:00", "sym": "AAPL", "timeframe": "1m"}
+                ],
+                "current": None,
+            }
+
+        response = qmd_product_request(
+            QmdProductRequest(
+                "chart",
+                authority="history",
+                ticker="AAPL",
+                timeframe="1m",
+                start="2026-08-08T19:59:00+00:00",
+                end="2026-08-08T20:02:00+00:00",
+            ),
+            history_get=history_get,
+            live_get=live_get,
+        )
+
+        self.assertEqual(
+            [row["bar_start"] for row in response.payload["bars"]],
+            [
+                "2026-08-08T19:59:00+00:00",
+                "2026-08-08T20:00:00+00:00",
+                "2026-08-08T20:01:00+00:00",
+            ],
+        )
+        self.assertEqual(len(response.payload["indicators"]), 1)
+        self.assertFalse(response.complete)
+        self.assertEqual(response.coverage_status, "live_snapshot_continuation")
+
+    def test_scanner_window_composes_latest_live_derived_state(self) -> None:
+        plan = {
+            "segments": [
+                {
+                    "tier": "current_live",
+                    "start": "2026-08-08T20:00:00+00:00",
+                    "end": "2026-08-08T20:02:00+00:00",
+                }
+            ]
+        }
+        historical = {
+            "indicator_timeframe": "100ms",
+            "indicators": [
+                {"bar_start": "2026-08-08T19:59:59+00:00", "sym": "AAPL", "timeframe": "100ms"}
+            ],
+            "active_signals": [],
+            "recent_signal_events": [],
+        }
+
+        def history_get(path, params, *, timeout):
+            return plan if path == "/source-plan" else historical
+
+        def live_get(path, params, *, timeout):
+            if path == "/snapshot/scanner-indicators":
+                return {"rows": [
+                    {"bar_start": "2026-08-08T20:01:00+00:00", "sym": "AAPL", "timeframe": "100ms"},
+                    {"bar_start": "2026-08-08T20:03:00+00:00", "sym": "MSFT", "timeframe": "100ms"},
+                ]}
+            if path == "/snapshot/signals":
+                return {"rows": [{"event_id": "active-1", "detected_at": "2026-08-08T20:01:10+00:00"}]}
+            self.assertEqual(path, "/snapshot/signal-events")
+            return {"rows": [{"event_id": "event-1", "detected_at": "2026-08-08T20:01:20+00:00"}]}
+
+        response = qmd_product_request(
+            QmdProductRequest(
+                "scanner",
+                authority="history",
+                start="2026-08-08T19:59:00+00:00",
+                end="2026-08-08T20:02:00+00:00",
+            ),
+            history_get=history_get,
+            live_get=live_get,
+        )
+
+        self.assertEqual(response.payload["ticker_count"], 1)
+        self.assertEqual(response.payload["indicators"][0]["bar_start"], "2026-08-08T20:01:00+00:00")
+        self.assertEqual(response.payload["active_signals"][0]["event_id"], "active-1")
+        self.assertEqual(response.payload["recent_signal_events"][0]["event_id"], "event-1")
+        self.assertFalse(response.complete)
 
     def test_typed_product_request_rejects_ambiguous_or_naive_windows(self) -> None:
         with self.assertRaisesRegex(ValueError, "cannot carry a historical window"):

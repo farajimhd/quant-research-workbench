@@ -85,8 +85,15 @@ tail watermark.
 `q_live.events` segments. For compact-event windows, the typed backend QMD
 client now consumes the plan's current-live segment from QMD Gateway, filters it
 to the exact segment, orders and deduplicates the combined rows, and applies the
-requested head/tail limit. Current-window chart and historical Scanner products
-still need equivalent live-continuation composition.
+requested head/tail limit. Current-window chart bars/indicators and historical
+Scanner derived snapshots now also merge segment-filtered QMD Gateway live
+snapshots. Because those live product snapshots are bounded and expose no
+replay cursor or eviction proof, the composite response is explicitly
+`complete=false` with `coverage_status=live_snapshot_continuation`. It is valid
+for progressive current UI state, not as a pinned Replay/Backtest source. The
+remaining target is a paged, eviction-evidenced cross-market live event
+continuation owned by QMD; that input can then be replayed through the shared
+QMD computation library and certified complete.
 
 ## Retention and archive handoff
 

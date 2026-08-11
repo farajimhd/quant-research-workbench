@@ -103,8 +103,8 @@ def qmd_product_request(
     timeout = request.timeout_seconds or (3 if authority == "live" else 90)
     resolved_live_get = live_get or qmd_get_json
     resolved_history_get = history_get or qmd_history_get_json
-    if authority == "history" and request.product == "compact_events":
-        payload = _qmd_compact_event_window(
+    if authority == "history" and request.product in {"chart", "compact_events", "scanner"}:
+        payload = _qmd_composed_history_product(
             request,
             endpoint=endpoint,
             params=params,
@@ -130,6 +130,249 @@ def qmd_product_request(
         coverage_status=coverage_status,
         source_revision=source_revision,
     )
+
+
+def _qmd_composed_history_product(
+    request: QmdProductRequest,
+    *,
+    endpoint: str,
+    params: dict[str, Any],
+    history_get: Callable[..., Any],
+    live_get: Callable[..., Any],
+    timeout: float,
+) -> Any:
+    if request.product == "compact_events":
+        return _qmd_compact_event_window(
+            request,
+            endpoint=endpoint,
+            params=params,
+            history_get=history_get,
+            live_get=live_get,
+            timeout=timeout,
+        )
+    historical = history_get(endpoint, params, timeout=timeout)
+    if not isinstance(historical, dict):
+        raise RuntimeError(f"QMD History {request.product} response must be an object")
+    plan = _qmd_source_plan(request, history_get=history_get, timeout=timeout)
+    intervals = _qmd_live_intervals(plan)
+    if not intervals:
+        return historical
+    if request.product == "chart":
+        return _qmd_chart_live_continuation(
+            request,
+            historical=historical,
+            intervals=intervals,
+            plan=plan,
+            live_get=live_get,
+            timeout=timeout,
+        )
+    return _qmd_scanner_live_continuation(
+        request,
+        historical=historical,
+        intervals=intervals,
+        plan=plan,
+        live_get=live_get,
+        timeout=timeout,
+    )
+
+
+def _qmd_source_plan(
+    request: QmdProductRequest,
+    *,
+    history_get: Callable[..., Any],
+    timeout: float,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"start": request.start, "end": request.end}
+    ticker = request.ticker.strip().upper()
+    if ticker:
+        params["tickers"] = ticker
+    plan = history_get("/source-plan", params, timeout=timeout)
+    if not isinstance(plan, dict):
+        raise RuntimeError("QMD History source plan must be an object")
+    return plan
+
+
+def _qmd_live_intervals(plan: dict[str, Any]) -> list[tuple[datetime, datetime]]:
+    return [
+        (
+            _validate_window_timestamp("source segment start", str(segment.get("start"))),
+            _validate_window_timestamp("source segment end", str(segment.get("end"))),
+        )
+        for segment in plan.get("segments") or []
+        if isinstance(segment, dict) and segment.get("tier") == "current_live"
+    ]
+
+
+def _qmd_row_in_intervals(
+    row: dict[str, Any],
+    intervals: Collection[tuple[datetime, datetime]],
+    *keys: str,
+) -> bool:
+    raw = next((row.get(key) for key in keys if row.get(key)), None)
+    if raw is None:
+        return False
+    try:
+        timestamp = _validate_window_timestamp("live continuation row", str(raw))
+    except ValueError:
+        return False
+    return any(start <= timestamp < end for start, end in intervals)
+
+
+def _qmd_merge_timestamp_rows(
+    historical: Collection[Any],
+    live: Collection[Any],
+    *,
+    identity_keys: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, ...], dict[str, Any]] = {}
+    for source in (historical, live):
+        for row in source:
+            if not isinstance(row, dict):
+                continue
+            identity = tuple(str(row.get(key) or "").upper() for key in identity_keys)
+            if all(identity):
+                merged[identity] = dict(row)
+    return sorted(
+        merged.values(),
+        key=lambda row: tuple(str(row.get(key) or "") for key in identity_keys),
+    )
+
+
+def _qmd_continuation_metadata(payload: dict[str, Any], plan: dict[str, Any]) -> None:
+    warnings = list(payload.get("warnings") or [])
+    warnings.append(
+        {
+            "code": "live_snapshot_continuation",
+            "message": (
+                "Current-live rows were composed from bounded QMD Live snapshots; "
+                "the response is not a pinned replay source."
+            ),
+        }
+    )
+    payload["complete"] = False
+    payload["coverage_status"] = "live_snapshot_continuation"
+    payload["source_plan"] = plan
+    payload["warnings"] = warnings
+
+
+def _qmd_chart_live_continuation(
+    request: QmdProductRequest,
+    *,
+    historical: dict[str, Any],
+    intervals: list[tuple[datetime, datetime]],
+    plan: dict[str, Any],
+    live_get: Callable[..., Any],
+    timeout: float,
+) -> dict[str, Any]:
+    payload = dict(historical)
+    ticker = request.ticker.strip().upper()
+    timeframe = request.timeframe.strip().lower() or "1m"
+    live_timeout = int(min(timeout, 10))
+    limit = max(1, min(int(request.limit), 50_000))
+    if timeframe in MACRO_QMD_TIMEFRAMES:
+        live = live_get(
+            f"/snapshot/macro-bars/{urllib.parse.quote(ticker)}",
+            {"limit": limit, "timeframe": timeframe},
+            timeout=live_timeout,
+        )
+        live_rows = live.get("rows") or [] if isinstance(live, dict) else []
+        filtered = [
+            row for row in live_rows
+            if isinstance(row, dict) and _qmd_row_in_intervals(row, intervals, "bar_start")
+        ]
+        payload["bars"] = _qmd_merge_timestamp_rows(
+            payload.get("bars") or [], filtered, identity_keys=("bar_start", "ticker", "timeframe")
+        )[-limit:]
+    else:
+        live_bars = live_get(
+            f"/snapshot/bars/{urllib.parse.quote(ticker)}",
+            {"limit": limit, "timeframe": timeframe},
+            timeout=live_timeout,
+        )
+        bar_rows = []
+        if isinstance(live_bars, dict):
+            bar_rows.extend(live_bars.get("history") or [])
+            if isinstance(live_bars.get("current"), dict):
+                bar_rows.append(live_bars["current"])
+        filtered_bars = [
+            row for row in bar_rows
+            if isinstance(row, dict) and _qmd_row_in_intervals(row, intervals, "bar_start")
+        ]
+        payload["bars"] = _qmd_merge_timestamp_rows(
+            payload.get("bars") or [], filtered_bars, identity_keys=("bar_start", "sym", "timeframe")
+        )[-limit:]
+        if request.stage == "full":
+            live_indicators = live_get(
+                f"/snapshot/indicators/{urllib.parse.quote(ticker)}",
+                {"limit": limit, "timeframe": timeframe},
+                timeout=live_timeout,
+            )
+            indicator_rows = []
+            if isinstance(live_indicators, dict):
+                indicator_rows.extend(live_indicators.get("history") or [])
+                if isinstance(live_indicators.get("current"), dict):
+                    indicator_rows.append(live_indicators["current"])
+            filtered_indicators = [
+                row for row in indicator_rows
+                if isinstance(row, dict) and _qmd_row_in_intervals(row, intervals, "bar_start")
+            ]
+            payload["indicators"] = _qmd_merge_timestamp_rows(
+                payload.get("indicators") or [],
+                filtered_indicators,
+                identity_keys=("bar_start", "sym", "timeframe"),
+            )[-limit:]
+            payload["indicators_available"] = bool(payload["indicators"])
+    _qmd_continuation_metadata(payload, plan)
+    return payload
+
+
+def _qmd_scanner_live_continuation(
+    request: QmdProductRequest,
+    *,
+    historical: dict[str, Any],
+    intervals: list[tuple[datetime, datetime]],
+    plan: dict[str, Any],
+    live_get: Callable[..., Any],
+    timeout: float,
+) -> dict[str, Any]:
+    payload = dict(historical)
+    live_timeout = int(min(timeout, 10))
+    timeframe = str(payload.get("indicator_timeframe") or "100ms")
+    indicator_snapshot = live_get(
+        "/snapshot/scanner-indicators",
+        {"limit": 5_000, "timeframe": timeframe},
+        timeout=live_timeout,
+    )
+    live_indicators = indicator_snapshot.get("rows") or [] if isinstance(indicator_snapshot, dict) else []
+    filtered_indicators = [
+        row for row in live_indicators
+        if isinstance(row, dict) and _qmd_row_in_intervals(row, intervals, "bar_start")
+    ]
+    payload["indicators"] = _qmd_merge_timestamp_rows(
+        payload.get("indicators") or [], filtered_indicators, identity_keys=("sym", "timeframe")
+    )
+    active_snapshot = live_get("/snapshot/signals", {"limit": 5_000}, timeout=live_timeout)
+    active_rows = active_snapshot.get("rows") or [] if isinstance(active_snapshot, dict) else []
+    payload["active_signals"] = [
+        dict(row) for row in active_rows
+        if isinstance(row, dict) and _qmd_row_in_intervals(row, intervals, "detected_at", "updated_at")
+    ]
+    event_snapshot = live_get("/snapshot/signal-events", {"limit": 10_000}, timeout=live_timeout)
+    event_rows = event_snapshot.get("rows") or [] if isinstance(event_snapshot, dict) else []
+    filtered_events = [
+        row for row in event_rows
+        if isinstance(row, dict) and _qmd_row_in_intervals(row, intervals, "detected_at", "updated_at")
+    ]
+    payload["recent_signal_events"] = _qmd_merge_timestamp_rows(
+        payload.get("recent_signal_events") or [],
+        filtered_events,
+        identity_keys=("event_id",),
+    )
+    payload["ticker_count"] = len(
+        {str(row.get("sym") or "").upper() for row in payload["indicators"] if row.get("sym")}
+    )
+    _qmd_continuation_metadata(payload, plan)
+    return payload
 
 
 def _qmd_response_metadata(
@@ -177,13 +420,7 @@ def _qmd_compact_event_window(
     if not isinstance(historical, list):
         raise RuntimeError("QMD History compact-event response must be an array")
     rows = [dict(row) for row in historical if isinstance(row, dict)]
-    plan = history_get(
-        "/source-plan",
-        {"start": request.start, "end": request.end, "tickers": request.ticker.strip().upper()},
-        timeout=timeout,
-    )
-    if not isinstance(plan, dict):
-        raise RuntimeError("QMD History source plan must be an object")
+    plan = _qmd_source_plan(request, history_get=history_get, timeout=timeout)
     live_segments = [
         segment
         for segment in plan.get("segments") or []

@@ -373,6 +373,15 @@ bounded direct ClickHouse paths remain documented in
     configuration tests, Python compile, the managed frontend production build,
     and four Account Configuration browser scenarios passed with zero objective
     issues.
+59. Added honest current-live continuation for historical chart and Scanner
+    product requests. The typed backend QMD client now reads the QMD History
+    source plan, filters QMD Gateway bars, indicators, active signals, and
+    signal events to the exact current-live interval, and deterministically
+    replaces older derived rows. Because these bounded product snapshots do not
+    provide a replay cursor or eviction proof, composite responses explicitly
+    report `complete=false` and `live_snapshot_continuation`; pinned Replay is
+    not allowed to infer completeness. Thirty-one focused QMD client tests,
+    Python compile, and downstream Scanner/Replay/trading-runtime tests passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
