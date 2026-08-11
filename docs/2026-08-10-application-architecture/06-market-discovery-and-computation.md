@@ -170,6 +170,11 @@ offline calculation is available in its proper scope.
   sequence authority. The WebSocket sends a typed initial snapshot followed by
   typed row deltas. A lag warning requires a new snapshot instead of silently
   continuing across a sequence gap.
+- Focused bar routing now admits only an explicitly leased timeframe plus the
+  canonical 100 ms dependency stream used to aggregate event-native evidence.
+  A one-minute chart or Watchlist lease no longer runs unrelated five-minute,
+  hourly, or other finalized timeframe rows for that ticker. Legacy leases
+  with no timeframe declaration retain all-timeframe behavior.
 - Live/Paper scheduling resolves configured Watchlists, journals membership,
   and publishes bounded focused QMD leases. Replay resolves the same rules
   against its point-in-time Scanner and enrichment clock.

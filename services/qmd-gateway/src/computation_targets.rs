@@ -80,7 +80,12 @@ impl SharedComputationTargets {
             return Err("at least one capability is required".to_string());
         }
         validate_capabilities(&capabilities, request.scope)?;
-        let timeframes = normalize_values(request.timeframes, false);
+        let timeframes = normalize_values(request.timeframes, false)
+            .into_iter()
+            .map(|value| value.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         let expires_at = match request.ttl_seconds {
             Some(0) => return Err("ttl_seconds must be positive when provided".to_string()),
             Some(seconds) => Some(
@@ -125,6 +130,23 @@ impl SharedComputationTargets {
         state.targets.values().any(|target| {
             target.expires_at.map(|expiry| expiry > now).unwrap_or(true)
                 && target.tickers.binary_search(&normalized).is_ok()
+        })
+    }
+
+    pub fn requires_bar_computation(&self, ticker: &str, timeframe: &str) -> bool {
+        let now = Utc::now();
+        let normalized_ticker = ticker.trim().to_ascii_uppercase();
+        let normalized_timeframe = timeframe.trim().to_ascii_lowercase();
+        let state = self.inner.read().expect("computation target lock poisoned");
+        state.targets.values().any(|target| {
+            target.expires_at.map(|expiry| expiry > now).unwrap_or(true)
+                && target.tickers.binary_search(&normalized_ticker).is_ok()
+                && (target.timeframes.is_empty()
+                    || normalized_timeframe == "100ms"
+                    || target
+                        .timeframes
+                        .binary_search(&normalized_timeframe)
+                        .is_ok())
         })
     }
 
@@ -247,5 +269,19 @@ mod tests {
         let mut invalid = request("expired", ExecutionScope::Watchlist);
         invalid.ttl_seconds = Some(0);
         assert!(targets.replace(invalid).unwrap_err().contains("positive"));
+    }
+
+    #[test]
+    fn focused_bar_routing_honors_timeframes_and_keeps_canonical_base_dependency() {
+        let targets = SharedComputationTargets::default();
+        let mut focused = request("chart", ExecutionScope::Request);
+        focused.tickers = vec!["aapl".to_string()];
+        focused.timeframes = vec!["1M".to_string()];
+        targets.replace(focused).unwrap();
+
+        assert!(targets.requires_bar_computation("AAPL", "1m"));
+        assert!(targets.requires_bar_computation("aapl", "100ms"));
+        assert!(!targets.requires_bar_computation("AAPL", "5m"));
+        assert!(!targets.requires_bar_computation("MSFT", "1m"));
     }
 }

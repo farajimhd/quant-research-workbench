@@ -1932,7 +1932,7 @@ async fn route_indicator_bars(
     computation_targets: SharedComputationTargets,
 ) {
     while let Some(row) = receiver.recv().await {
-        if !computation_targets.requires_focused_computation(&row.sym) {
+        if !computation_targets.requires_bar_computation(&row.sym, &row.timeframe) {
             continue;
         }
         let index = shard_index(&row.sym, shard_senders.len());

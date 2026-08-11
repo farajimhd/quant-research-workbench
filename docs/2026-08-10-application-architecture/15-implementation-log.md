@@ -100,6 +100,9 @@ bounded direct ClickHouse paths remain documented in
     monotonic sequence. WebSocket clients subscribe before snapshot capture,
     discard already-covered deltas, and receive an explicit resnapshot action
     if their delta subscription lags.
+21. Enforced timeframe-aware focused QMD routing. A lease computes its declared
+    finalized timeframes plus the canonical 100 ms dependency stream, while
+    unrelated timeframe rows are rejected before entering indicator shards.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
