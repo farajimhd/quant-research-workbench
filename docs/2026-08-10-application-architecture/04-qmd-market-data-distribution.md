@@ -164,6 +164,13 @@ requests, so route handlers do not select `q_live` or archive tables. QMD
 History remains the owner of archive/recent source planning inside the
 historical service.
 
+Live compact-event consumers now use a versioned, bounded per-ticker page. Its
+arrival cursor, exact per-ticker eviction watermark, buffer bounds, `has_more`,
+and delivery-order declaration make truncation explicit. The backend typed QMD
+client uses this contract; the old raw-array endpoint remains only as a measured
+compatibility surface. The latest ticker-state snapshot still needs the same
+versioned envelope before the whole live snapshot item is complete.
+
 The same source plan supports:
 
 - compact events and Tape/Quotes;
@@ -199,10 +206,11 @@ flowchart TD
     F --> G
 ```
 
-QMD work must provide stable live compact-event/snapshot contracts and a
-historical request contract that uses the same `qmd_core` encoding and source
-plan. Market AI chooses the requested product and causal cutoff; it does not
-choose `q_live` versus `market_sip_compact` or reproduce boundary logic.
+QMD now provides the stable live compact-event page; the broader live ticker
+snapshot and reconnect contract remains open. The historical request contract
+uses the same `qmd_core` encoding and source plan. Market AI chooses the
+requested product and causal cutoff; it does not choose `q_live` versus
+`market_sip_compact` or reproduce boundary logic.
 
 Direct ClickHouse access remains valid for registered contextual joins and
 approved bulk/offline reads. If a direct read contains canonical market events,

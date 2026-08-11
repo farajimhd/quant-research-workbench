@@ -45,7 +45,13 @@ This is the durable live ML-serving event surface. It mirrors the historical
 can build the same `header_uint8 + events_uint8` chunks from either historical
 or live rows. The gateway emits compact rows immediately on
 `/stream/compact-events` and keeps a bounded per-ticker memory buffer exposed by
-`/snapshot/compact-events/{ticker}?limit=128`. The historical
+the legacy `/snapshot/compact-events/{ticker}?limit=128` array and the versioned
+`/snapshot/compact-event-page/{ticker}?after_arrival_sequence=...&limit=128`
+envelope. The page reports schema version, ascending delivery order, buffer
+start/end, precise cursor expiry from the per-ticker eviction watermark,
+`truncated_before`, `has_more`, and the next arrival-sequence cursor. Omitting
+the cursor returns the latest bounded tail; supplying it, including zero,
+requests forward pagination. The historical
 `market_sip_compact.events_YYYY` tables remain flatfile-only; QMD live events are
 not merged into it.
 

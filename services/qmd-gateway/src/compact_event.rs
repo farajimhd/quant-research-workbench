@@ -174,7 +174,28 @@ impl CompactEventDecoder {
 #[derive(Clone)]
 pub struct SharedCompactEventStore {
     capacity_per_ticker: usize,
-    inner: Arc<RwLock<HashMap<String, VecDeque<LiveCompactEvent>>>>,
+    inner: Arc<RwLock<HashMap<String, TickerCompactEvents>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TickerCompactEvents {
+    events: VecDeque<LiveCompactEvent>,
+    evicted_through_arrival_sequence: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CompactEventPage {
+    pub buffer_end_arrival_sequence: u64,
+    pub buffer_start_arrival_sequence: u64,
+    pub cursor_expired: bool,
+    pub delivery_order: &'static str,
+    pub events: Vec<LiveCompactEvent>,
+    pub has_more: bool,
+    pub next_after_arrival_sequence: u64,
+    pub requested_after_arrival_sequence: u64,
+    pub schema_version: u16,
+    pub ticker: String,
+    pub truncated_before: bool,
 }
 
 impl SharedCompactEventStore {
@@ -190,24 +211,129 @@ impl SharedCompactEventStore {
             return;
         }
         let mut guard = self.inner.write().await;
-        let events = guard.entry(event.ticker.clone()).or_default();
-        events.push_back(event);
-        while events.len() > self.capacity_per_ticker {
-            events.pop_front();
+        let state = guard.entry(event.ticker.clone()).or_default();
+        state.events.push_back(event);
+        while state.events.len() > self.capacity_per_ticker {
+            if let Some(evicted) = state.events.pop_front() {
+                state.evicted_through_arrival_sequence = state
+                    .evicted_through_arrival_sequence
+                    .max(evicted.arrival_sequence);
+            }
         }
     }
 
     pub async fn latest_sorted(&self, ticker: &str, limit: usize) -> Vec<LiveCompactEvent> {
         let guard = self.inner.read().await;
-        let Some(events) = guard.get(&ticker.to_ascii_uppercase()) else {
+        let Some(state) = guard.get(&ticker.to_ascii_uppercase()) else {
             return Vec::new();
         };
-        let mut out = events.iter().cloned().collect::<Vec<_>>();
+        let mut out = state.events.iter().cloned().collect::<Vec<_>>();
         out.sort_by_key(EventSortKey::from_event);
         if out.len() > limit {
             out.split_off(out.len() - limit)
         } else {
             out
+        }
+    }
+
+    pub async fn page_after(
+        &self,
+        ticker: &str,
+        after_arrival_sequence: u64,
+        limit: usize,
+    ) -> CompactEventPage {
+        let normalized_ticker = ticker.trim().to_ascii_uppercase();
+        let guard = self.inner.read().await;
+        let state = guard.get(&normalized_ticker);
+        let buffer_start = state
+            .and_then(|value| value.events.front())
+            .map(|event| event.arrival_sequence)
+            .unwrap_or(0);
+        let buffer_end = state
+            .and_then(|value| value.events.back())
+            .map(|event| event.arrival_sequence)
+            .unwrap_or(0);
+        let evicted_through = state
+            .map(|value| value.evicted_through_arrival_sequence)
+            .unwrap_or(0);
+        let mut available = state
+            .map(|value| {
+                value
+                    .events
+                    .iter()
+                    .filter(|event| event.arrival_sequence > after_arrival_sequence)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        available.sort_by_key(|event| event.arrival_sequence);
+        let bounded_limit = limit.max(1).min(self.capacity_per_ticker.max(1));
+        let has_more = available.len() > bounded_limit;
+        available.truncate(bounded_limit);
+        let next_after = available
+            .last()
+            .map(|event| event.arrival_sequence)
+            .unwrap_or(after_arrival_sequence);
+        CompactEventPage {
+            buffer_end_arrival_sequence: buffer_end,
+            buffer_start_arrival_sequence: buffer_start,
+            cursor_expired: after_arrival_sequence > 0 && after_arrival_sequence < evicted_through,
+            delivery_order: "arrival_sequence_ascending",
+            events: available,
+            has_more,
+            next_after_arrival_sequence: next_after,
+            requested_after_arrival_sequence: after_arrival_sequence,
+            schema_version: LIVE_COMPACT_EVENT_SCHEMA_VERSION,
+            ticker: normalized_ticker,
+            truncated_before: evicted_through > 0,
+        }
+    }
+
+    pub async fn latest_page(&self, ticker: &str, limit: usize) -> CompactEventPage {
+        let normalized_ticker = ticker.trim().to_ascii_uppercase();
+        let guard = self.inner.read().await;
+        let state = guard.get(&normalized_ticker);
+        let buffer_start = state
+            .and_then(|value| value.events.front())
+            .map(|event| event.arrival_sequence)
+            .unwrap_or(0);
+        let buffer_end = state
+            .and_then(|value| value.events.back())
+            .map(|event| event.arrival_sequence)
+            .unwrap_or(0);
+        let bounded_limit = limit.max(1).min(self.capacity_per_ticker.max(1));
+        let retained_count = state.map(|value| value.events.len()).unwrap_or(0);
+        let mut events = state
+            .map(|value| {
+                value
+                    .events
+                    .iter()
+                    .rev()
+                    .take(bounded_limit)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        events.reverse();
+        let next_after = events
+            .last()
+            .map(|event| event.arrival_sequence)
+            .unwrap_or(0);
+        CompactEventPage {
+            buffer_end_arrival_sequence: buffer_end,
+            buffer_start_arrival_sequence: buffer_start,
+            cursor_expired: false,
+            delivery_order: "arrival_sequence_ascending",
+            events,
+            has_more: false,
+            next_after_arrival_sequence: next_after,
+            requested_after_arrival_sequence: 0,
+            schema_version: LIVE_COMPACT_EVENT_SCHEMA_VERSION,
+            ticker: normalized_ticker,
+            truncated_before: state
+                .map(|value| value.evicted_through_arrival_sequence > 0)
+                .unwrap_or(false)
+                || retained_count > bounded_limit,
         }
     }
 
@@ -1530,5 +1656,58 @@ mod tests {
     #[test]
     fn price_encoding_uses_historical_ties_to_even_rounding() {
         assert_eq!(encoded_price(0.00025), (2, 1, true));
+    }
+
+    #[tokio::test]
+    async fn bounded_page_reports_exact_cursor_eviction_and_forward_progress() {
+        let store = SharedCompactEventStore::new(2);
+        for arrival_sequence in [10, 20, 30] {
+            let trade = TradeEvent {
+                conditions: vec![],
+                exchange: 4,
+                ingest_ts: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+                participant_ts: None,
+                price: 10.0,
+                raw: serde_json::Value::Null,
+                sequence: arrival_sequence,
+                size: 100.0,
+                tape: 1,
+                ticker: "TEST".to_string(),
+                trade_id: arrival_sequence.to_string(),
+                trf_id: 0,
+                trf_ts: None,
+                ts: Utc
+                    .timestamp_millis_opt(1_700_000_000_000 + arrival_sequence as i64)
+                    .unwrap(),
+            };
+            let mut event = compact_trade_event(&trade, &references()).unwrap().event;
+            event.arrival_sequence = arrival_sequence;
+            store.push(event).await;
+        }
+
+        let expired = store.page_after("test", 5, 10).await;
+        assert!(expired.cursor_expired);
+        assert_eq!(expired.buffer_start_arrival_sequence, 20);
+        assert_eq!(expired.buffer_end_arrival_sequence, 30);
+        assert_eq!(
+            expired
+                .events
+                .iter()
+                .map(|event| event.arrival_sequence)
+                .collect::<Vec<_>>(),
+            vec![20, 30]
+        );
+        assert_eq!(expired.next_after_arrival_sequence, 30);
+
+        let continued = store.page_after("TEST", 20, 1).await;
+        assert!(!continued.cursor_expired);
+        assert!(!continued.has_more);
+        assert_eq!(continued.events[0].arrival_sequence, 30);
+        assert_eq!(continued.delivery_order, "arrival_sequence_ascending");
+
+        let latest = store.latest_page("TEST", 1).await;
+        assert_eq!(latest.events[0].arrival_sequence, 30);
+        assert!(latest.truncated_before);
+        assert!(!latest.has_more);
     }
 }

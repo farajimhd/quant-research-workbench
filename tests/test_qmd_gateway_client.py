@@ -8,6 +8,7 @@ from src.backend.qmd_gateway_client import (
     normalize_qmd_macro_bar_snapshot,
     normalize_qmd_market_signal,
     qmd_compact_events,
+    qmd_compact_event_page,
     qmd_history_base_url,
     qmd_history_websocket_url,
     qmd_historical_scanner_snapshot,
@@ -361,10 +362,40 @@ class QmdGatewayClientTests(unittest.TestCase):
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_compact_events_preserve_only_object_rows(self, get_json) -> None:
-        get_json.return_value = [{"ticker": "AAPL", "arrival_sequence": 7}, "invalid", None]
+        get_json.return_value = {
+            "schema_version": 4,
+            "ticker": "AAPL",
+            "events": [{"ticker": "AAPL", "arrival_sequence": 7}, "invalid", None],
+        }
 
         self.assertEqual(qmd_compact_events("aapl", row_limit=50), [{"ticker": "AAPL", "arrival_sequence": 7}])
-        get_json.assert_called_once_with("/snapshot/compact-events/AAPL", {"limit": 50}, timeout=3)
+        get_json.assert_called_once_with(
+            "/snapshot/compact-event-page/AAPL",
+            {"limit": 50, "after_arrival_sequence": None},
+            timeout=3,
+        )
+
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_compact_event_page_preserves_cursor_and_eviction_evidence(self, get_json) -> None:
+        get_json.return_value = {
+            "schema_version": 4,
+            "ticker": "AAPL",
+            "cursor_expired": True,
+            "next_after_arrival_sequence": 42,
+            "events": [{"ticker": "AAPL", "arrival_sequence": 42}],
+        }
+
+        page = qmd_compact_event_page(
+            "aapl", after_arrival_sequence=17, row_limit=25
+        )
+
+        self.assertTrue(page["cursor_expired"])
+        self.assertEqual(page["next_after_arrival_sequence"], 42)
+        get_json.assert_called_once_with(
+            "/snapshot/compact-event-page/AAPL",
+            {"limit": 25, "after_arrival_sequence": 17},
+            timeout=3,
+        )
 
     def test_macro_snapshot_projects_trade_family_and_current_bar(self) -> None:
         result = normalize_qmd_macro_bar_snapshot(

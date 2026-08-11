@@ -2,7 +2,9 @@ use crate::bars::TradeAggregationRules;
 use crate::bars::{BarSnapshot, SharedBarStore};
 use crate::capability_catalog::ExecutionScope;
 use crate::capability_catalog::{computation_capability_catalog, ComputationCapability};
-use crate::compact_event::{CompactEventDecoder, LiveCompactEvent, SharedCompactEventStore};
+use crate::compact_event::{
+    CompactEventDecoder, CompactEventPage, LiveCompactEvent, SharedCompactEventStore,
+};
 use crate::computation_targets::{
     ComputationTargetLease, ComputationTargetRequest, ComputationTargetSnapshot,
     SharedComputationTargets,
@@ -71,6 +73,12 @@ pub struct AppState {
 
 #[derive(Debug, Deserialize)]
 struct LimitQuery {
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompactEventPageQuery {
+    after_arrival_sequence: Option<u64>,
     limit: Option<usize>,
 }
 
@@ -162,6 +170,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/snapshot/compact-events/{ticker}",
             get(compact_event_snapshot),
+        )
+        .route(
+            "/snapshot/compact-event-page/{ticker}",
+            get(compact_event_page_snapshot),
         )
         .route("/snapshot/indicators/{ticker}", get(indicator_snapshot))
         .route(
@@ -922,6 +934,26 @@ async fn compact_event_snapshot(
             )
             .await,
     )
+}
+
+async fn compact_event_page_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<CompactEventPageQuery>,
+) -> Json<CompactEventPage> {
+    let limit = query
+        .limit
+        .unwrap_or(128)
+        .min(state.config.compact_event_live_buffer_events_per_ticker);
+    Json(match query.after_arrival_sequence {
+        Some(sequence) => {
+            state
+                .compact_event_store
+                .page_after(&ticker, sequence, limit)
+                .await
+        }
+        None => state.compact_event_store.latest_page(&ticker, limit).await,
+    })
 }
 
 async fn indicator_snapshot(

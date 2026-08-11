@@ -94,7 +94,9 @@ low-latency path:
     -> compact LiveCompactEvent with arrival_sequence
     -> /stream/compact-events
     -> per-ticker in-memory ring buffer
-    -> /snapshot/compact-events/{ticker}?limit=128
+    -> /snapshot/compact-event-page/{ticker}?after_arrival_sequence=...&limit=128
+       with cursor expiry and buffer watermarks
+    -> compatibility /snapshot/compact-events/{ticker}?limit=128
 
 persistence path:
   same compact LiveCompactEvent
@@ -106,8 +108,10 @@ persistence path:
 
 The live ML/app path does not wait for the persistence reorder watermark.
 Readers that need a model context should request a recent window from the
-in-memory buffer and sort by `sip_timestamp_us, source_sequence, event_type,
-arrival_sequence` before taking the latest 128 events. Live storage has no
+in-memory buffer. Cursor-driven consumers use the versioned page's
+`arrival_sequence_ascending` delivery order; consumers constructing a canonical
+event-time model context sort by `sip_timestamp_us, source_sequence, event_type,
+arrival_sequence`. Live storage has no
 durable ordinal; historical ordinals remain local to `events_YYYY`.
 
 ## Bar Flows

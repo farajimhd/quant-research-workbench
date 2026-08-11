@@ -40,6 +40,7 @@ class QmdProductRequest:
     stage: str = "full"
     limit: int = 500
     tail: bool = False
+    after_sequence: int | None = None
     timeout_seconds: float | None = None
 
 
@@ -107,8 +108,21 @@ def _qmd_product_route(
             "start": request.start,
         }
     if request.product == "compact_events":
-        return authority, f"/snapshot/compact-events/{quoted_ticker}", (
-            {"limit": limit}
+        if authority == "history" and request.after_sequence:
+            raise ValueError("Historical compact-event pages use their source-owned cursor")
+        return authority, (
+            f"/snapshot/compact-event-page/{quoted_ticker}"
+            if authority == "live"
+            else f"/snapshot/compact-events/{quoted_ticker}"
+        ), (
+            {
+                "limit": limit,
+                "after_arrival_sequence": (
+                    max(0, int(request.after_sequence))
+                    if request.after_sequence is not None
+                    else None
+                ),
+            }
             if authority == "live"
             else {"start": request.start, "end": request.end, "limit": limit, "tail": str(request.tail).lower()}
         )
@@ -522,15 +536,41 @@ def qmd_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dic
     return payload if isinstance(payload, dict) else {"ticker": symbol.upper(), "timeframe": timeframe, "history": [], "current": None}
 
 
+def qmd_compact_event_page(
+    symbol: str,
+    *,
+    after_arrival_sequence: int = 0,
+    row_limit: int = 250,
+) -> dict[str, Any]:
+    """Return one bounded, versioned live compact-event continuation page."""
+    ticker = symbol.strip().upper()
+    if not ticker:
+        raise ValueError("symbol is required for QMD compact events.")
+    payload = qmd_product_request(
+        QmdProductRequest(
+            "compact_events",
+            ticker=ticker,
+            limit=row_limit,
+            after_sequence=max(0, int(after_arrival_sequence)),
+        )
+    ).payload
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD live compact-event page returned an invalid envelope")
+    rows = [row for row in payload.get("events") or [] if isinstance(row, dict)]
+    return {**payload, "events": rows}
+
+
 def qmd_compact_events(symbol: str, *, row_limit: int = 250) -> list[dict[str, Any]]:
-    """Return the live canonical compact-event buffer without changing its wire semantics."""
+    """Compatibility projection of the stable live compact-event page."""
     ticker = symbol.strip().upper()
     if not ticker:
         raise ValueError("symbol is required for QMD compact events.")
     payload = qmd_product_request(
         QmdProductRequest("compact_events", ticker=ticker, limit=row_limit)
     ).payload
-    return [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
+    if not isinstance(payload, dict):
+        return []
+    return [row for row in payload.get("events") or [] if isinstance(row, dict)]
 
 
 def qmd_chart_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:

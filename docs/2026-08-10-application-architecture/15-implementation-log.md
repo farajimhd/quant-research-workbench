@@ -151,6 +151,12 @@ bounded direct ClickHouse paths remain documented in
     `restart_snapshot` if the plan or revision drifts, and the Python source
     independently verifies every response. Storage-level old-revision reads
     remain open, so this detects drift rather than claiming immutable snapshots.
+31. Added a stable QMD Live per-ticker compact-event page and migrated the typed
+    backend client. The versioned envelope delivers ascending arrival-sequence
+    pages with exact per-ticker eviction evidence, buffer start/end,
+    `has_more`, and a next cursor. The legacy raw-array endpoint remains for
+    compatibility; latest ticker-state versioning and stream gap repair remain
+    open and are not implied by this snapshot contract.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
