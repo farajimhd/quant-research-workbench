@@ -29,6 +29,14 @@ from research.bar_gpt.v1.schema import (  # noqa: E402
     SESSION_TIMEZONE,
     table_columns,
 )
+from research.bar_gpt.v1.cohort import (  # noqa: E402
+    BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
+    BAR_GPT_COHORT_2TB_TABLE,
+)
+from pipelines.market_sip.events.clickhouse_build_intraday_base_bars import (  # noqa: E402
+    condition_event_select_sql,
+    condition_token_array_aliases_sql,
+)
 from research.mlops.clickhouse import (  # noqa: E402
     ClickHouseHttpClient,
     default_clickhouse_password,
@@ -42,15 +50,19 @@ from research.mlops.clickhouse import (  # noqa: E402
 from research.mlops.env import load_env_files, secret_status  # noqa: E402
 
 
-BUILD_VERSION = "bar_gpt_1s_condition_eligibility_v2"
+BUILD_VERSION = "bar_gpt_1s_condition_eligibility_state_counts_v2"
 DEFAULT_DATABASE = "market_sip_compact"
 DEFAULT_EVENTS_TABLE_BASE = "events"
 DEFAULT_INDEX_TABLE = "events_ticker_day_index"
+DEFAULT_SOURCE_DAY_STATS_TABLE = "events_source_day_stats"
 DEFAULT_CONDITION_REFERENCE_TABLE = "event_condition_token_reference"
 DEFAULT_TARGET_TABLE = "bar_gpt_1s_bars_v2"
 DEFAULT_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v2"
 DEFAULT_MAX_QUOTE_SPREAD_BPS = 1_000.0
 DEFAULT_RUNTIME_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\build_1s")
+LEGACY_COHORT_TABLE = "bar_gpt_1s_bars_v1_cohort_2tb"
+LEGACY_COHORT_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v1_cohort_2tb"
+LEGACY_ALIAS_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v1_identity_aliases"
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +241,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database", default=DEFAULT_DATABASE)
     parser.add_argument("--events-table-base", default=DEFAULT_EVENTS_TABLE_BASE)
     parser.add_argument("--index-table", default=DEFAULT_INDEX_TABLE)
+    parser.add_argument("--source-day-stats-table", default=DEFAULT_SOURCE_DAY_STATS_TABLE)
     parser.add_argument("--condition-reference-table", default=DEFAULT_CONDITION_REFERENCE_TABLE)
     parser.add_argument("--target-table", default=DEFAULT_TARGET_TABLE)
     parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE)
@@ -237,6 +250,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-password", default=default_clickhouse_password())
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY", ""))
     parser.add_argument("--allow-empty-storage-policy", action="store_true")
+    parser.add_argument(
+        "--drop-v1-cohort-first-run",
+        action="store_true",
+        help="Drop only the canonical v1 cohort 1s table/manifests before the first canonical v2 write.",
+    )
+    parser.add_argument(
+        "--confirm-drop-v1-table",
+        default="",
+        help=f"Required exact confirmation value with --drop-v1-cohort-first-run: {LEGACY_COHORT_TABLE}",
+    )
     parser.add_argument("--ticker-batch-max-events", type=int, default=40_000_000)
     parser.add_argument("--ticker-batch-max-tickers", type=int, default=256)
     parser.add_argument(
@@ -379,7 +402,7 @@ def insert_one_second_sql(args: argparse.Namespace, day: dt.date, tickers: tuple
     source = _event_source(args, day)
     ticker_filter = ""
     if tickers:
-        ticker_filter = "\n      AND ticker IN (" + ", ".join(sql_string(ticker) for ticker in tickers) + ")"
+        ticker_filter = "\n      AND e.ticker IN (" + ", ".join(sql_string(ticker) for ticker in tickers) + ")"
     pair_valid = "quote_origin_eligible"
     aggregates = [
         *_trade_aggregates(),
@@ -391,17 +414,36 @@ def insert_one_second_sql(args: argparse.Namespace, day: dt.date, tickers: tuple
         *_relation_aggregates("midpoint", "midpoint", pair_valid),
         *_relation_aggregates("microprice", "microprice", pair_valid),
         *_relation_aggregates("queue_imbalance", "queue_imbalance", pair_valid),
-        "toUInt64(countIf(event_type = 0 AND bid_price = ask_price AND bid_price > 0)) AS locked_quote_count",
-        "toUInt64(countIf(event_type = 0 AND bid_price > ask_price AND ask_price > 0)) AS crossed_quote_count",
+        "toUInt64(countIf(quote_origin_eligible AND bid_price = ask_price)) AS locked_quote_count",
+        "toUInt64(countIf(quote_origin_eligible AND bid_price > ask_price)) AS crossed_quote_count",
         "toUInt64(sumIf(toUInt8(condition_token_1 > 0) + toUInt8(condition_token_2 > 0) + toUInt8(condition_token_3 > 0) + toUInt8(condition_token_4 > 0) + toUInt8(condition_token_5 > 0), event_retained)) AS condition_nonzero_count",
-        "toUInt64(countIf(origin_event_eligible)) AS source_event_count",
+        "toUInt64(countIf(event_retained)) AS source_event_count",
         "toFloat64(sumIf(trade_size, trade_volume_eligible AND trade_origin_eligible)) AS trade_price_eligible_size_sum",
+        "toUInt8(countIf(origin_event_eligible) > 0) AS context_eligible",
+        "toUInt8(countIf(origin_event_eligible) > 0) AS origin_eligible",
+        "toUInt64(countIf(origin_event_eligible)) AS origin_event_count",
+        "toUInt64(countIf(trade_origin_eligible)) AS eligible_trade_event_count",
+        "toUInt64(countIf(quote_origin_eligible)) AS eligible_quote_event_count",
+        "toUInt64(countIf(event_type = 1 AND NOT event_retained)) AS rejected_trade_event_count",
+        "toUInt64(countIf(event_type = 0 AND NOT quote_origin_eligible)) AS rejected_quote_event_count",
+        "toUInt64(countIf(trade_condition_unknown OR quote_condition_unknown)) AS unknown_condition_event_count",
+        "toUInt64(countIf(event_retained AND condition_halt_pause_flag_event > 0)) AS condition_halt_pause_count",
+        "toUInt64(countIf(event_retained AND condition_resume_flag_event > 0)) AS condition_resume_count",
+        "toUInt64(countIf(event_retained AND condition_news_risk_flag_event > 0)) AS condition_news_risk_count",
+        "toUInt64(countIf(event_retained AND condition_luld_limit_state_flag_event > 0)) AS condition_luld_limit_state_count",
+        "toUInt64(countIf(event_retained AND (condition_halt_pause_flag_event > 0 OR condition_resume_flag_event > 0 OR condition_news_risk_flag_event > 0 OR condition_luld_limit_state_flag_event > 0))) AS condition_event_count",
     ]
     aggregate_sql = ",\n    ".join(aggregates)
     insert_columns = ",\n    ".join(quote_ident(name) for name, _ in table_columns())
     first_event_date = day.isoformat()
     last_event_date = (day + dt.timedelta(days=1)).isoformat()
     condition_reference_table = str(getattr(args, "condition_reference_table", DEFAULT_CONDITION_REFERENCE_TABLE))
+    condition_args = argparse.Namespace(
+        database=args.database,
+        condition_token_reference_table=condition_reference_table,
+    )
+    future_condition_token_aliases = condition_token_array_aliases_sql(condition_args)
+    future_condition_event_aliases = condition_event_select_sql()
     max_quote_spread_bps = float(getattr(args, "max_quote_spread_bps", DEFAULT_MAX_QUOTE_SPREAD_BPS))
     return f"""
 INSERT INTO {target}
@@ -412,7 +454,10 @@ WITH
     (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_last = 1) AS update_last_tokens,
     (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_high_low = 1) AS update_high_low_tokens,
     (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_volume = 1) AS update_volume_tokens,
+    (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1) AS all_trade_tokens,
+    (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(condition_reference_table)} WHERE source_family = 'quote_conditions' AND is_join_canonical = 1) AS all_quote_tokens,
     (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(condition_reference_table)} WHERE source_family = 'quote_conditions' AND is_join_canonical = 1 AND modifier_int IN (-1, 15, 19, 20, 80, 83, 84)) AS quote_origin_ineligible_tokens,
+    {future_condition_token_aliases},
     toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
     toDate(ts_local) AS local_date_value,
     dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
@@ -431,15 +476,18 @@ WITH
     if(ask_size + bid_size > 0, (ask_price * bid_size + bid_price * ask_size) / (ask_size + bid_size), 0.0) AS microprice,
     if(ask_size + bid_size > 0, (bid_size - ask_size) / (bid_size + ask_size), 0.0) AS queue_imbalance,
     arrayFilter(token -> token != 0, [condition_token_1, condition_token_2, condition_token_3, condition_token_4, condition_token_5]) AS condition_tokens,
+    {future_condition_event_aliases},
     arrayFilter(token -> token != 0, [condition_token_1, condition_token_2, condition_token_3, condition_token_4]) AS quote_condition_tokens,
     event_type = 1 AND trade_price > 0 AND trade_size > 0 AS trade_structurally_valid,
     trade_structurally_valid AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_last_tokens, token), condition_tokens) AS trade_last_eligible,
     trade_structurally_valid AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_high_low_tokens, token), condition_tokens) AS trade_high_low_eligible,
     trade_structurally_valid AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_volume_tokens, token), condition_tokens) AS trade_volume_eligible,
+    trade_structurally_valid AND (empty(condition_tokens) OR arrayExists(token -> NOT has(all_trade_tokens, token), condition_tokens)) AS trade_condition_unknown,
     trade_last_eligible OR trade_high_low_eligible AS trade_origin_eligible,
     event_type = 0 AND bid_price > 0 AND ask_price > 0 AND bid_size > 0 AND ask_size > 0 AND bid_price <= ask_price AS quote_structurally_valid,
     if(quote_structurally_valid, (ask_price - bid_price) / ((ask_price + bid_price) / 2.0) * 10000.0, 1e100) AS quote_spread_bps,
     quote_structurally_valid AND notEmpty(quote_condition_tokens) AND quote_spread_bps <= {max_quote_spread_bps:.12g} AND arrayAll(token -> NOT has(quote_origin_ineligible_tokens, token), quote_condition_tokens) AS quote_origin_eligible,
+    quote_structurally_valid AND (empty(quote_condition_tokens) OR arrayExists(token -> NOT has(all_quote_tokens, token), quote_condition_tokens)) AS quote_condition_unknown,
     trade_origin_eligible OR quote_origin_eligible AS origin_event_eligible,
     trade_origin_eligible OR trade_volume_eligible OR quote_origin_eligible AS event_retained,
     intDiv(toUInt64(local_session_us), toUInt64({ONE_SECOND_US})) AS second_bucket_index,
@@ -459,9 +507,9 @@ SELECT
     maxIf(toUInt64(sip_timestamp_us), event_retained) AS source_last_timestamp_us,
     {aggregate_sql},
     now64(3, 'UTC') AS built_at
-FROM {source}
-PREWHERE event_date >= toDate({sql_string(first_event_date)})
-  AND event_date < toDate({sql_string(last_event_date)})
+FROM {source} AS e
+PREWHERE e.event_date >= toDate({sql_string(first_event_date)})
+  AND e.event_date < toDate({sql_string(last_event_date)})
   {ticker_filter}
 WHERE local_date_value = toDate({sql_string(day.isoformat())})
   AND local_second >= {SESSION_START_SECOND}
@@ -471,7 +519,7 @@ GROUP BY
     ticker,
     second_bucket_index,
     second_start_us
-HAVING source_event_count > 0
+HAVING origin_event_count > 0
 {query_settings(args)}
 """
 
@@ -664,13 +712,18 @@ def certify_month(
     rows = _query_tsv(
         client,
         f"""
-SELECT count(), uniqExact(tuple(ticker, local_date, bucket_index)), countIf(available_at_us != bar_end_us), min(schema_version), max(schema_version), sum(source_event_count)
+SELECT count(), uniqExact(tuple(ticker, local_date, bucket_index)),
+       countIf(available_at_us != bar_end_us),
+       countIf(origin_eligible != 1 OR context_eligible != 1 OR origin_event_count = 0 OR source_event_count = 0),
+       min(schema_version), max(schema_version), countIf(feature_version != {sql_string(FEATURE_VERSION)}), sum(source_event_count)
 FROM {quote_ident(args.database)}.{quote_ident(args.target_table)}
 WHERE local_date >= toDate({sql_string(audit_start.isoformat())})
   AND local_date < toDate({sql_string(audit_end.isoformat())}){ticker_filter}
 """,
     )
-    total, unique, bad_availability, min_schema, max_schema, source_events = (int(value) for value in rows[0])
+    total, unique, bad_availability, bad_eligibility, min_schema, max_schema, bad_feature_version, source_events = (
+        int(value) for value in rows[0]
+    )
     if not planned_units:
         insert_manifest(
             client,
@@ -701,9 +754,18 @@ WHERE artifact_name = {sql_string(args.target_table)}
 """,
     )
     expected_rows, expected_source_events = (int(value) for value in manifest_rows[0])
-    if total != unique or bad_availability or min_schema != SCHEMA_VERSION or max_schema != SCHEMA_VERSION:
+    if (
+        total != unique
+        or bad_availability
+        or bad_eligibility
+        or min_schema != SCHEMA_VERSION
+        or max_schema != SCHEMA_VERSION
+        or bad_feature_version
+    ):
         raise RuntimeError(
-            f"month certification failed {month}: rows={total} unique={unique} bad_availability={bad_availability} schema={min_schema}..{max_schema}"
+            f"month certification failed {month}: rows={total} unique={unique} "
+            f"bad_availability={bad_availability} bad_eligibility={bad_eligibility} "
+            f"schema={min_schema}..{max_schema} bad_feature_version={bad_feature_version}"
         )
     if total != expected_rows or source_events != expected_source_events:
         raise RuntimeError(
@@ -737,6 +799,102 @@ def validate_storage_policy(client: ClickHouseHttpClient, args: argparse.Namespa
         rows = _query_tsv(client, f"SELECT count() FROM system.storage_policies WHERE policy_name = {sql_string(args.storage_policy)}")
         if not rows or int(rows[0][0]) != 1:
             raise RuntimeError(f"ClickHouse storage policy {args.storage_policy!r} does not exist")
+
+
+def _table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:
+    rows = _query_tsv(
+        client,
+        f"SELECT count() FROM system.tables WHERE database={sql_string(database)} AND name={sql_string(table)}",
+    )
+    return bool(rows and int(rows[0][0]) == 1)
+
+
+def validate_source_authorities(client: ClickHouseHttpClient, args: argparse.Namespace, start: dt.date, end: dt.date) -> None:
+    required = (
+        args.index_table,
+        args.source_day_stats_table,
+        args.condition_reference_table,
+        *(f"{args.events_table_base}_{year}" for year in range(start.year, (end - dt.timedelta(days=1)).year + 1)),
+    )
+    missing = [table for table in required if not _table_exists(client, args.database, table)]
+    if missing:
+        raise RuntimeError(f"BarGPT 1s source authorities are missing: {missing}")
+    required_filter = "drop_trade_correction_codes=07,08,10,11,12|condition_slots=5"
+    rows = _query_tsv(
+        client,
+        f"""
+SELECT count(), countIf(source_filter_key NOT LIKE {sql_string('%' + required_filter + '%')}),
+       groupUniqArrayIf(source_filter_key, source_filter_key NOT LIKE {sql_string('%' + required_filter + '%')})
+FROM
+(
+    SELECT DISTINCT source_date
+    FROM {quote_ident(args.database)}.{quote_ident(args.index_table)}
+    WHERE source_date >= toDate({sql_string(start.isoformat())})
+      AND source_date < toDate({sql_string(end.isoformat())})
+) AS indexed
+LEFT JOIN
+(
+    SELECT source_date, argMax(source_filter_key, updated_at) AS source_filter_key
+    FROM {quote_ident(args.database)}.{quote_ident(args.source_day_stats_table)}
+    WHERE source_date >= toDate({sql_string(start.isoformat())})
+      AND source_date < toDate({sql_string(end.isoformat())})
+    GROUP BY source_date
+) AS provenance USING source_date
+""",
+    )
+    if not rows or int(rows[0][0]) == 0 or int(rows[0][1]) > 0:
+        observed = rows[0][2] if rows and len(rows[0]) > 2 else "[]"
+        raise RuntimeError(
+            "yearly compact events are not certified with trade correction 12 excluded; "
+            f"required source filter contains {required_filter!r}, observed incompatible filters={observed}. "
+            "The compact event schema does not retain the original correction code, so the 1s builder "
+            "cannot repair this downstream. Rebuild/replace the affected database event authority first."
+        )
+
+
+def drop_legacy_cohort_tables_first_run(client: ClickHouseHttpClient, args: argparse.Namespace) -> tuple[str, ...]:
+    if not args.drop_v1_cohort_first_run:
+        return ()
+    if args.confirm_drop_v1_table != LEGACY_COHORT_TABLE:
+        raise RuntimeError(
+            "--drop-v1-cohort-first-run requires the exact confirmation "
+            f"--confirm-drop-v1-table {LEGACY_COHORT_TABLE}"
+        )
+    if args.target_table != BAR_GPT_COHORT_2TB_TABLE or args.manifest_table != BAR_GPT_COHORT_2TB_MANIFEST_TABLE:
+        raise RuntimeError("legacy v1 retirement is permitted only for the canonical v2 cohort target and manifest")
+    legacy_tables = (LEGACY_COHORT_TABLE, LEGACY_COHORT_MANIFEST_TABLE, LEGACY_ALIAS_MANIFEST_TABLE)
+    existing_legacy = tuple(table for table in legacy_tables if _table_exists(client, args.database, table))
+    if not existing_legacy:
+        return ()
+    if _table_exists(client, args.database, args.target_table):
+        rows = _query_tsv(
+            client,
+            f"SELECT count() FROM {quote_ident(args.database)}.{quote_ident(args.target_table)}",
+        )
+        if rows and int(rows[0][0]) > 0:
+            raise RuntimeError("refusing first-run v1 retirement after canonical v2 rows already exist")
+    for table in existing_legacy:
+        if table != LEGACY_COHORT_TABLE:
+            continue
+        policy_rows = _query_tsv(
+            client,
+            f"SELECT storage_policy FROM system.tables WHERE database={sql_string(args.database)} AND name={sql_string(table)}",
+        )
+        actual_policy = policy_rows[0][0] if policy_rows else ""
+        if actual_policy != args.storage_policy:
+            raise RuntimeError(
+                f"refusing to drop {args.database}.{table}: storage policy {actual_policy!r} "
+                f"does not match requested replacement policy {args.storage_policy!r}"
+            )
+    dropped: list[str] = []
+    for table in existing_legacy:
+        _execute(
+            client,
+            f"DROP TABLE {quote_ident(args.database)}.{quote_ident(table)} SYNC\n"
+            "SETTINGS max_table_size_to_drop=0, max_partition_size_to_drop=0",
+        )
+        dropped.append(table)
+    return tuple(dropped)
 
 
 def validate_created_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
@@ -789,6 +947,7 @@ def main(argv: list[str] | None = None) -> int:
     client = ClickHouseHttpClient(args.clickhouse_url, args.clickhouse_user, args.clickhouse_password, persistent=True)
     validate_storage_policy(client, args)
     start, end = resolve_date_range(client, args)
+    validate_source_authorities(client, args, start, end)
     days = list(date_range(start, end))
     run_id = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = args.runtime_root / run_id
@@ -822,6 +981,14 @@ def main(argv: list[str] | None = None) -> int:
             reporter.update(stage="dry-run complete", day=sample_day.isoformat(), unit="sample", message="No ClickHouse writes executed")
             reporter.event("dry_run_complete", sample_day=sample_day, sample_ticker_count=len(sample_tickers))
             return 0
+        dropped = drop_legacy_cohort_tables_first_run(client, args)
+        if dropped:
+            reporter.event(
+                "legacy_v1_tables_dropped",
+                message="Canonical v1 1s authority retired before first v2 write",
+                tables=dropped,
+                storage_policy=args.storage_policy,
+            )
         _execute(client, create_target_table_sql(args))
         _execute(client, create_manifest_table_sql(args))
         validate_created_tables(client, args)

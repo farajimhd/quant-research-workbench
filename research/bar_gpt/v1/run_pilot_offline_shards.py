@@ -9,14 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from research.bar_gpt.v1.audit_offline_shards import DEFAULT_PILOT_ROOT
-from research.bar_gpt.v1.cohort import (
-    BAR_GPT_EVENTS_CONTINUITY_TABLE,
-    BAR_GPT_EVENTS_MANIFEST_TABLE,
-    BAR_GPT_EVENTS_TABLE,
-    BAR_GPT_EVENTS_TRAIN_INDEX_TABLE,
-    BAR_GPT_EVENTS_VALIDATION_INDEX_TABLE,
-    BAR_GPT_SOURCE_ALIAS_TICKERS,
-)
+from research.bar_gpt.v1.cohort import BAR_GPT_SOURCE_ALIAS_TICKERS
 
 
 PILOT_ONE_SECOND_TABLE = "bar_gpt_1s_bars_v2_pilot"
@@ -28,7 +21,7 @@ PILOT_SOURCE_ALIAS_MANIFEST_TABLE = "bar_gpt_1s_source_alias_manifest_v2_pilot"
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build bounded condition-eligible v6 pilot, 2026-context, and split-boundary shards."
+        description="Build bounded embedded-condition v7 pilot, 2026-context, and split-boundary shards."
     )
     parser.add_argument("--execute", action="store_true", help="Required to build; omit for a read-only plan.")
     parser.add_argument(
@@ -48,7 +41,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
     parser.add_argument("--clickhouse-max-concurrent-pages", type=int, default=0)
-    parser.add_argument("--condition-max-threads", type=int, default=8)
     args = parser.parse_args(list(argv) if argv is not None else None)
     tickers = tuple(item.strip().upper() for item in str(args.tickers).split(",") if item.strip())
     if len(tickers) != 2:
@@ -57,8 +49,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("the pilot tickers must be distinct")
     if args.workers <= 0:
         parser.error("--workers must be positive")
-    if args.condition_max_threads <= 0:
-        parser.error("--condition-max-threads must be positive")
     args.context_check_ticker = str(args.context_check_ticker).strip().upper()
     if args.context_check_ticker not in tickers:
         parser.error("--context-check-ticker must be one of the two pilot tickers")
@@ -75,26 +65,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
     requested_tickers = ",".join(args.tickers)
     source_tickers = ",".join(dict.fromkeys((*args.tickers, *BAR_GPT_SOURCE_ALIAS_TICKERS)))
-    unified = [
-        sys.executable, "-B", "-m", "pipelines.market_sip.events.run_build_unified_events",
-        "--events-table", BAR_GPT_EVENTS_TABLE,
-        "--manifest-table", BAR_GPT_EVENTS_MANIFEST_TABLE,
-        "--continuity-table", BAR_GPT_EVENTS_CONTINUITY_TABLE,
-        "--train-index-table", BAR_GPT_EVENTS_TRAIN_INDEX_TABLE,
-        "--validation-index-table", BAR_GPT_EVENTS_VALIDATION_INDEX_TABLE,
-        "--source-start-date", "2019-01-01",
-        "--source-end-date", "2026-08-01",
-        "--tickers", source_tickers,
-    ]
-    if not args.execute:
-        unified.append("--dry-run")
-
     def one_second(start_date: str, end_date: str, tickers: tuple[str, ...]) -> list[str]:
         command = [
             sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_1s",
             "--start-date", start_date, "--end-date", end_date,
             "--tickers", ",".join(tickers),
-            "--events-table-base", BAR_GPT_EVENTS_TABLE,
+            "--events-table-base", "events",
             "--target-table", PILOT_ONE_SECOND_TABLE,
             "--manifest-table", PILOT_ONE_SECOND_MANIFEST_TABLE,
         ]
@@ -106,7 +82,7 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
         sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_daily",
         "--start-date", "2019-01-01", "--end-date", "2026-08-01",
         "--tickers", source_tickers,
-        "--events-table-base", BAR_GPT_EVENTS_TABLE,
+        "--events-table-base", "events",
         "--target-table", PILOT_DAILY_TABLE,
         "--manifest-table", PILOT_DAILY_MANIFEST_TABLE,
     ]
@@ -116,23 +92,13 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
     aliases = [
         sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_1s_aliases",
         "--start-date", "2019-01-01", "--end-date", "2026-08-01",
-        "--events-table-base", BAR_GPT_EVENTS_TABLE,
+        "--events-table-base", "events",
         "--target-table", PILOT_ONE_SECOND_TABLE,
         "--manifest-table", PILOT_SOURCE_ALIAS_MANIFEST_TABLE,
     ]
     if args.execute:
         aliases.append("--execute")
 
-    def condition(start_date: str, end_date: str, tickers: tuple[str, ...]) -> list[str]:
-        return [
-            sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_conditions_1s",
-            "--tickers", ",".join(tickers),
-            "--start-date", start_date,
-            "--end-date", end_date,
-            "--max-threads", str(args.condition_max_threads),
-        ]
-
-    pilot_condition = condition(str(args.start_date), str(args.end_date), args.tickers)
     build = [
         sys.executable,
         "-B",
@@ -231,11 +197,6 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
         "--verify-sha256",
         "--require-calendar-context",
     ]
-    context_condition = condition(
-        str(args.context_check_start_date),
-        str(args.context_check_end_date),
-        (str(args.context_check_ticker),),
-    )
     split_build = [
         sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_offline_shards",
         "--output-root", str(args.output_root), "--selection", "all", "--tickers", "AAPL",
@@ -253,13 +214,11 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
         "--start-date", "2020-08-01", "--end-date", "2020-10-01", "--max-shards", "1", "--verify-sha256",
     ]
     return (
-        ("condition-filtered pilot events", unified),
         ("continuous pilot one-second context authority", one_second("2019-01-01", "2026-08-01", args.tickers)),
         ("point-in-time source alias pilot authority", aliases),
         ("pilot daily/calendar authority", daily),
-        ("pilot conditions", pilot_condition), ("pilot shards", build), ("pilot audit", audit),
-        ("2026 conditions", context_condition), ("2026 shard", context_build), ("2026 audit", context_audit),
-        ("split-boundary conditions", condition(str(args.split_check_start_date), str(args.split_check_end_date), ("AAPL",))),
+        ("pilot shards", build), ("pilot audit", audit),
+        ("2026 shard", context_build), ("2026 audit", context_audit),
         ("split-boundary shard", split_build), ("split-boundary audit", split_audit),
     )
 

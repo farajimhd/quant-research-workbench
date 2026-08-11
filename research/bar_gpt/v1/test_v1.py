@@ -13,9 +13,11 @@ from rich.console import Console
 
 from research.bar_gpt.v1.build_1s import (
     BuildReporter,
+    LEGACY_COHORT_TABLE,
     _query_tsv,
     _show_create_raw,
     create_target_table_sql,
+    drop_legacy_cohort_tables_first_run,
     insert_one_second_sql,
     ticker_fingerprint,
 )
@@ -211,6 +213,42 @@ class BuilderSqlTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "Custom --tickers require custom"):
             launcher_main(["--tickers", "AAPL"])
 
+    def test_first_run_legacy_drop_is_exactly_guarded(self) -> None:
+        class FakeClient:
+            def __init__(self) -> None:
+                self.drops: list[str] = []
+
+            def execute(self, query: str, **_kwargs) -> str:
+                if query.startswith("DROP TABLE"):
+                    self.drops.append(query)
+                    return ""
+                if "FROM system.tables" in query and "count()" in query:
+                    if f"name='{LEGACY_COHORT_TABLE}'" in query:
+                        return "1\n"
+                    return "0\n"
+                if "SELECT storage_policy" in query:
+                    return "live_market_ssd\n"
+                return "0\n"
+
+        args = argparse.Namespace(
+            drop_v1_cohort_first_run=True,
+            confirm_drop_v1_table=LEGACY_COHORT_TABLE,
+            target_table=BAR_GPT_COHORT_2TB_TABLE,
+            manifest_table=BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
+            database="market_sip_compact",
+            storage_policy="live_market_ssd",
+        )
+        client = FakeClient()
+        self.assertEqual(
+            drop_legacy_cohort_tables_first_run(client, args),  # type: ignore[arg-type]
+            (LEGACY_COHORT_TABLE,),
+        )
+        self.assertEqual(len(client.drops), 1)
+        self.assertIn(f"`{LEGACY_COHORT_TABLE}` SYNC", client.drops[0])
+        args.confirm_drop_v1_table = "wrong"
+        with self.assertRaisesRegex(RuntimeError, "exact confirmation"):
+            drop_legacy_cohort_tables_first_run(client, args)  # type: ignore[arg-type]
+
     def test_alias_builder_has_separate_manifest_and_raw_source_tickers(self) -> None:
         args, extra = parse_alias_launcher_args([])
         self.assertFalse(extra)
@@ -256,14 +294,17 @@ class BuilderSqlTest(unittest.TestCase):
 
         sql = insert_one_second_sql(builder_args(), dt.date(2026, 7, 24), ("AAPL", "MSFT"))
         self.assertNotIn("arrayJoin", sql)
-        self.assertNotIn("label_resolution_us", sql)
         self.assertEqual(sql.count("FROM `market_sip_compact`.`events_2026`"), 1)
+        self.assertNotIn("intraday_condition_bars_by_time_ticker", sql)
+        self.assertNotIn("label_resolution_us", sql)
         self.assertIn("microprice", sql)
         self.assertIn("queue_imbalance", sql)
         self.assertIn("ticker IN ('AAPL', 'MSFT')", sql)
         self.assertIn("arrayAll(token -> has(update_last_tokens, token)", sql)
         self.assertIn("countIf(origin_event_eligible)", sql)
-        self.assertIn("HAVING source_event_count > 0", sql)
+        self.assertIn("HAVING origin_event_count > 0", sql)
+        self.assertIn("condition_halt_pause_count", sql)
+        self.assertIn("unknown_condition_event_count", sql)
         self.assertIn("quote_spread_bps <= 1000", sql)
 
     def test_unified_event_authority_excludes_original_incorrect_correction_12(self) -> None:

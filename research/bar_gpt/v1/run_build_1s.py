@@ -11,6 +11,7 @@ from research.bar_gpt.v1.cohort import (
     BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
     BAR_GPT_COHORT_2TB_TABLE,
 )
+from research.bar_gpt.v1.build_1s import LEGACY_COHORT_TABLE
 
 
 sys.dont_write_bytecode = True
@@ -43,6 +44,11 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     parser.add_argument("--target-table", default=DEFAULTS["target_table"])
     parser.add_argument("--manifest-table", default=DEFAULTS["manifest_table"])
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
+    parser.add_argument(
+        "--keep-v1",
+        action="store_true",
+        help="Do not retire the canonical v1 cohort table before the first canonical v2 write.",
+    )
     args, extra = parser.parse_known_args(argv)
     return args, extra
 
@@ -89,6 +95,12 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if args.execute:
         command.append("--execute")
+        if (
+            not args.keep_v1
+            and args.target_table == BAR_GPT_COHORT_2TB_TABLE
+            and args.manifest_table == BAR_GPT_COHORT_2TB_MANIFEST_TABLE
+        ):
+            command.extend(("--drop-v1-cohort-first-run", "--confirm-drop-v1-table", LEGACY_COHORT_TABLE))
     if args.validate_sql:
         command.append("--validate-sql")
     if args.no_print_sql:

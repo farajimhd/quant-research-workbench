@@ -11,11 +11,6 @@ from research.bar_gpt.v1.cohort import (
     BAR_GPT_COHORT_2TB,
     BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
     BAR_GPT_COHORT_2TB_TABLE,
-    BAR_GPT_EVENTS_CONTINUITY_TABLE,
-    BAR_GPT_EVENTS_MANIFEST_TABLE,
-    BAR_GPT_EVENTS_TABLE,
-    BAR_GPT_EVENTS_TRAIN_INDEX_TABLE,
-    BAR_GPT_EVENTS_VALIDATION_INDEX_TABLE,
     BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE,
     BAR_GPT_SIP_DAILY_SESSION_TABLE,
     BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE,
@@ -27,13 +22,13 @@ TRAIN_START_DATE = "2019-01-01"
 TRAIN_END_DATE = "2022-01-01"
 VALIDATION_START_DATE = "2026-01-01"
 VALIDATION_END_DATE = "2026-08-01"
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v6")
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Build the condition-filtered BarGPT event, one-second, daily, condition, and offline-shard "
+            "Build the condition-filtered BarGPT one-second, daily, and offline-shard "
             "authorities for 2019-2021 plus the available January-July 2026 validation range."
         )
     )
@@ -42,7 +37,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=32)
     parser.add_argument("--cpu-threads-per-worker", type=int, default=0)
     parser.add_argument("--clickhouse-max-concurrent-pages", type=int, default=0)
-    parser.add_argument("--condition-max-threads", type=int, default=8)
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
     parser.add_argument(
         "--force-rebuild",
@@ -52,8 +46,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.workers <= 0:
         parser.error("--workers must be positive")
-    if args.condition_max_threads <= 0:
-        parser.error("--condition-max-threads must be positive")
     return args
 
 
@@ -63,27 +55,13 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
     tickers = ",".join(BAR_GPT_COHORT_2TB)
     source_tickers = ",".join(dict.fromkeys((*BAR_GPT_COHORT_2TB, *BAR_GPT_SOURCE_ALIAS_TICKERS)))
 
-    unified = [
-        sys.executable, "-B", "-m", "pipelines.market_sip.events.run_build_unified_events",
-        "--events-table", BAR_GPT_EVENTS_TABLE,
-        "--manifest-table", BAR_GPT_EVENTS_MANIFEST_TABLE,
-        "--continuity-table", BAR_GPT_EVENTS_CONTINUITY_TABLE,
-        "--train-index-table", BAR_GPT_EVENTS_TRAIN_INDEX_TABLE,
-        "--validation-index-table", BAR_GPT_EVENTS_VALIDATION_INDEX_TABLE,
-        "--source-start-date", TRAIN_START_DATE,
-        "--source-end-date", VALIDATION_END_DATE,
-        "--tickers", source_tickers,
-    ]
-    if not args.execute:
-        unified.append("--dry-run")
-
     def one_second_command(start_date: str, end_date: str) -> list[str]:
         command = [
             sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_1s",
             "--start-date", start_date,
             "--end-date", end_date,
             "--tickers", tickers,
-            "--events-table-base", BAR_GPT_EVENTS_TABLE,
+            "--events-table-base", "events",
             "--target-table", BAR_GPT_COHORT_2TB_TABLE,
             "--manifest-table", BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
             "--progress-layout", str(args.progress_layout),
@@ -97,7 +75,7 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
         "--start-date", TRAIN_START_DATE,
         "--end-date", VALIDATION_END_DATE,
         "--tickers", source_tickers,
-        "--events-table-base", BAR_GPT_EVENTS_TABLE,
+        "--events-table-base", "events",
         "--target-table", BAR_GPT_SIP_DAILY_SESSION_TABLE,
         "--manifest-table", BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE,
         "--progress-layout", str(args.progress_layout),
@@ -108,31 +86,13 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
     aliases = [
         sys.executable, "-B", "-m", "research.bar_gpt.v1.run_build_1s_aliases",
         "--start-date", TRAIN_START_DATE, "--end-date", VALIDATION_END_DATE,
-        "--events-table-base", BAR_GPT_EVENTS_TABLE,
+        "--events-table-base", "events",
         "--target-table", BAR_GPT_COHORT_2TB_TABLE,
         "--manifest-table", BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE,
         "--progress-layout", str(args.progress_layout),
     ]
     if args.execute:
         aliases.append("--execute")
-
-    def condition_command(start_date: str, end_date: str) -> list[str]:
-        return [
-            sys.executable,
-            "-B",
-            "-m",
-            "research.bar_gpt.v1.run_build_conditions_1s",
-            "--start-date",
-            start_date,
-            "--end-date",
-            end_date,
-            "--tickers",
-            tickers,
-            "--max-threads",
-            str(args.condition_max_threads),
-            "--progress-layout",
-            str(args.progress_layout),
-        ]
 
     def shard_command(selection: str, start_date: str, end_date: str) -> list[str]:
         command = [
@@ -170,13 +130,10 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
         return command
 
     return (
-        ("condition-filtered unified event authority", unified),
         ("continuous eligible one-second context authority", one_second_command(TRAIN_START_DATE, VALIDATION_END_DATE)),
         ("point-in-time source alias one-second authority", aliases),
         ("condition-eligible daily/calendar authority", daily),
-        ("2019-2021 condition authority", condition_command(TRAIN_START_DATE, TRAIN_END_DATE)),
         ("2019-2021 training shards", shard_command("train", TRAIN_START_DATE, TRAIN_END_DATE)),
-        ("2026 condition authority", condition_command(VALIDATION_START_DATE, VALIDATION_END_DATE)),
         ("2026 validation shards", shard_command("validation", VALIDATION_START_DATE, VALIDATION_END_DATE)),
     )
 
@@ -201,7 +158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Stage failed with exit code {status}: {label}", flush=True)
             return int(status)
     print(
-        "All requested condition ranges and certified offline shards completed; "
+        "All requested embedded-condition one-second ranges and certified offline shards completed; "
         "the validated pilot was not rebuilt.",
         flush=True,
     )

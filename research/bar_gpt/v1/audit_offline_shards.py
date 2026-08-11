@@ -20,6 +20,7 @@ from research.bar_gpt.v1.offline_shards import (
     condition_positive_counts,
     load_shard,
 )
+from research.bar_gpt.v1.schema import FEATURE_VERSION
 from research.bar_gpt.v1.targets import (
     AUTOREGRESSIVE_TARGET_NAMES,
     OHLC_FIELDS,
@@ -28,7 +29,7 @@ from research.bar_gpt.v1.targets import (
 )
 
 
-DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v6_pilot")
+DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7_pilot")
 DEFAULT_MAX_ABSOLUTE_RETURN_BPS = 2_000.0
 
 
@@ -185,7 +186,9 @@ def audit_shard(
     source_authority = context_contract.get("source_authority")
     _require(isinstance(source_authority, dict), f"{unit_key}: source authority is absent")
     _require(
-        all(str(source_authority.get(name, "")).strip() for name in ("database", "one_second_table", "daily_table", "condition_table")),
+        all(str(source_authority.get(name, "")).strip() for name in ("database", "one_second_table", "daily_table"))
+        and source_authority.get("condition_authority") == "embedded_1s"
+        and source_authority.get("one_second_feature_version") == FEATURE_VERSION,
         f"{unit_key}: source authority is incomplete",
     )
     intraday_context = {
@@ -287,6 +290,13 @@ def audit_shard(
                     bool(torch.all(features[:, source_index] > 0)),
                     f"{label}/{name}: empty-event bar was stored as intraday context",
                 )
+                for condition_name in ("halt_pause", "resume", "news_risk", "luld_limit_state"):
+                    present = features[:, MODEL_FEATURE_NAMES.index(f"{condition_name}_present")] > 0
+                    counted = features[:, MODEL_FEATURE_NAMES.index(f"log_{condition_name}_count")] > 0
+                    _require(
+                        torch.equal(present, counted),
+                        f"{label}/{name}: {condition_name} presence/count disagreement",
+                    )
                 ar_targets = view.get("autoregressive_targets")
                 ar_mask = view.get("autoregressive_base_mask")
                 expected_ar_shape = (max(0, features.shape[0] - 1), len(AUTOREGRESSIVE_TARGET_NAMES))

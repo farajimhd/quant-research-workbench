@@ -7,7 +7,7 @@ from pipelines.market_sip.events.session_bar_contract import (
 
 
 SCHEMA_VERSION = 2
-FEATURE_VERSION = "bar_gpt_1s_condition_eligible_sufficient_stats_v2"
+FEATURE_VERSION = "bar_gpt_1s_condition_eligible_state_counts_v2"
 ONE_SECOND_US = 1_000_000
 SESSION_TIMEZONE = "America/New_York"
 SESSION_START_SECOND = 4 * 60 * 60
@@ -43,6 +43,19 @@ FEATURE_SPECS: tuple[FeatureSpec, ...] = (
     # remain in total volume/count without leaking their non-price-authoritative
     # prints into the VWAP input at any rollup level.
     FeatureSpec("trade_price_eligible_size_sum", "Float64", "sum"),
+    FeatureSpec("context_eligible", "UInt8", "max"),
+    FeatureSpec("origin_eligible", "UInt8", "max"),
+    FeatureSpec("origin_event_count", "UInt64", "sum"),
+    FeatureSpec("eligible_trade_event_count", "UInt64", "sum"),
+    FeatureSpec("eligible_quote_event_count", "UInt64", "sum"),
+    FeatureSpec("rejected_trade_event_count", "UInt64", "sum"),
+    FeatureSpec("rejected_quote_event_count", "UInt64", "sum"),
+    FeatureSpec("unknown_condition_event_count", "UInt64", "sum"),
+    FeatureSpec("condition_halt_pause_count", "UInt64", "sum"),
+    FeatureSpec("condition_resume_count", "UInt64", "sum"),
+    FeatureSpec("condition_news_risk_count", "UInt64", "sum"),
+    FeatureSpec("condition_luld_limit_state_count", "UInt64", "sum"),
+    FeatureSpec("condition_event_count", "UInt64", "sum"),
 )
 FEATURE_NAMES: tuple[str, ...] = tuple(spec.name for spec in FEATURE_SPECS)
 FEATURE_INDEX: dict[str, int] = {name: index for index, name in enumerate(FEATURE_NAMES)}

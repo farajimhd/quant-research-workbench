@@ -228,7 +228,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume-checkpoint", default="")
     parser.add_argument("--seed", type=int, default=train.seed)
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="clickhouse")
-    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v6")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7")
     parser.add_argument("--offline-train-start-date", default="2019-01-01")
     parser.add_argument("--offline-train-end-date", default="2021-01-01")
     parser.add_argument("--offline-validation-start-date", default="2026-01-01")
@@ -362,8 +362,6 @@ def preflight(client: ClickHouseHttpClient, config: DataConfig) -> dict[str, str
         config.manifest_table,
         config.daily_table,
         config.daily_manifest_table,
-        config.condition_table,
-        config.condition_status_table,
     }
     missing = sorted(required - tables)
     if missing:
@@ -503,36 +501,13 @@ FORMAT TSVRaw
             f"requested daily-session range [{config.daily_history_start_date},{config.end_date}) is not continuously certified; "
             f"certified coverage reaches only {daily_cursor}"
         )
-    expected_condition_days = (dt.date.fromisoformat(config.end_date) - dt.date.fromisoformat(config.start_date)).days
-    condition_sql = f"""
-SELECT artifact_name, count(), countIf(status = 'complete')
-FROM {quote_ident(config.database)}.{quote_ident(config.condition_status_table)} FINAL
-WHERE startsWith(artifact_name, {sql_string(config.condition_table + ':tickers=')})
-  AND local_date>=toDate({sql_string(config.start_date)})
-  AND local_date<toDate({sql_string(config.end_date)})
-GROUP BY artifact_name
-FORMAT TSVRaw
-"""
-    certified_condition_tickers, certified_condition_artifacts = _condition_certification_coverage(
-        client.query_tsv(condition_sql),
-        condition_table=config.condition_table,
-        expected_days=expected_condition_days,
-    )
-    missing_condition_tickers = sorted(set(config.tickers) - certified_condition_tickers)
-    if missing_condition_tickers:
-        raise RuntimeError(
-            "exact condition-label sidecar is not certified for the requested range and tickers: "
-            f"missing={missing_condition_tickers}; run python -B -m "
-            "research.bar_gpt.v1.run_build_conditions_1s --tickers "
-            + ",".join(missing_condition_tickers)
-        )
     condition_positive_sql = f"""
 SELECT count(),
-       countIf(condition_halt_pause_flag=1),
-       countIf(condition_resume_flag=1),
-       countIf(condition_news_risk_flag=1),
-       countIf(condition_luld_limit_state_flag=1)
-FROM {quote_ident(config.database)}.{quote_ident(config.condition_table)}
+       countIf(condition_halt_pause_count>0),
+       countIf(condition_resume_count>0),
+       countIf(condition_news_risk_count>0),
+       countIf(condition_luld_limit_state_count>0)
+FROM {quote_ident(config.database)}.{quote_ident(config.one_second_table)}
 WHERE ticker IN ({', '.join(sql_string(ticker) for ticker in config.tickers)})
   AND local_date>=toDate({sql_string(config.start_date)})
   AND local_date<toDate({sql_string(config.validation_start_date)})
@@ -540,7 +515,7 @@ FORMAT TSVRaw
 """
     positive_values = [int(value) for value in client.query_tsv(condition_positive_sql).strip().split("\t") if value]
     if len(positive_values) != 5:
-        raise RuntimeError("condition sidecar positive-row audit returned an invalid schema")
+        raise RuntimeError("embedded one-second condition audit returned an invalid schema")
     return {
         "certified_start": config.start_date,
         "certified_end": cursor,
@@ -550,8 +525,7 @@ FORMAT TSVRaw
         "alias_identity_ranges_checked": str(alias_checks),
         "daily_certified_end": daily_cursor,
         "daily_certified_ranges": str(daily_ranges),
-        "condition_certified_days": str(expected_condition_days),
-        "condition_certified_artifacts": str(certified_condition_artifacts),
+        "condition_authority": "embedded_1s",
         "condition_positive_rows": str(positive_values[0]),
         "condition_halt_rows": str(positive_values[1]),
         "condition_resume_rows": str(positive_values[2]),
@@ -1512,7 +1486,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             for index in range(4)
         )
         evidence = {
-            "mode": "offline_shards_v6",
+            "mode": "offline_shards_v7",
             "offline_shard_root": str(root),
             "offline_training_units": str(len(offline_train_units)),
             "offline_training_blocks": str(sum(unit.blocks for unit in offline_train_units)),

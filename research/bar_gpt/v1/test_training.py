@@ -659,9 +659,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(first.origin_indices.numel(), 3)
         self.assertEqual(fake.fetches, 1)
         # The initial read ends at the requested session, not the end of its
-        # ticker-month; conditions are bounded to the predecessor/current pair.
+        # ticker-month; condition state is embedded in the fetched 1s rows.
         self.assertEqual(fake.session_ranges, [("2024-12-20", "2025-01-04")])
-        self.assertEqual(fake.condition_ranges, [("2025-01-02", "2025-01-04")])
+        self.assertEqual(fake.condition_ranges, [])
 
     def test_validation_plan_uses_bounded_sequential_blocks(self) -> None:
         config = self.data_config()
@@ -1170,18 +1170,15 @@ class LoaderTrainerContractTest(unittest.TestCase):
             "--start-date", "2019-01-01", "--end-date", "2019-02-01",
         ])
         stages = dict(pilot_commands(args))
-        pilot_condition = stages["pilot conditions"]
         build = stages["pilot shards"]
         audit = stages["pilot audit"]
-        context_condition = stages["2026 conditions"]
         context_build = stages["2026 shard"]
         context_audit = stages["2026 audit"]
-        self.assertIn("research.bar_gpt.v1.run_build_conditions_1s", pilot_condition)
-        self.assertIn("research.bar_gpt.v1.run_build_conditions_1s", context_condition)
+        self.assertNotIn("run_build_conditions_1s", " ".join(item for command in stages.values() for item in command))
         self.assertEqual(build[build.index("--max-shards") + 1], "2")
         self.assertIn("--execute", build)
         self.assertIn("--force-rebuild", build)
-        self.assertIn("offline_shards_v6_pilot", " ".join(build))
+        self.assertIn("offline_shards_v7_pilot", " ".join(build))
         self.assertIn("research.bar_gpt.v1.audit_offline_shards", audit)
         self.assertIn("--verify-sha256", audit)
         self.assertEqual(context_build[context_build.index("--tickers") + 1], "AAPL")
@@ -1190,29 +1187,24 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(context_build[context_build.index("--max-shards") + 1], "1")
         self.assertIn("--require-calendar-context", context_audit)
         self.assertIn("split-boundary audit", stages)
-        self.assertIn("bar_gpt_events_v2", " ".join(stages["condition-filtered pilot events"]))
+        self.assertIn("--events-table-base events", " ".join(stages["continuous pilot one-second context authority"]))
 
     def test_complete_offline_dataset_launcher_owns_disjoint_ranges(self) -> None:
         args = parse_offline_dataset_args(["--execute", "--workers", "32"])
         stages = offline_dataset_commands(args)
         by_label = dict(stages)
-        self.assertEqual(len(stages), 8)
-        self.assertIn("condition-filtered unified event authority", by_label)
+        self.assertEqual(len(stages), 5)
+        self.assertIn("continuous eligible one-second context authority", by_label)
         self.assertIn("point-in-time source alias one-second authority", by_label)
         self.assertIn("condition-eligible daily/calendar authority", by_label)
-        train_conditions = by_label["2019-2021 condition authority"]
         train_shards = by_label["2019-2021 training shards"]
-        validation_conditions = by_label["2026 condition authority"]
         validation_shards = by_label["2026 validation shards"]
-        self.assertEqual(train_conditions[train_conditions.index("--start-date") + 1], "2019-01-01")
-        self.assertEqual(train_conditions[train_conditions.index("--end-date") + 1], "2022-01-01")
         self.assertEqual(train_shards[train_shards.index("--selection") + 1], "all")
         self.assertEqual(train_shards[train_shards.index("--workers") + 1], "32")
         self.assertIn("--execute", train_shards)
-        self.assertEqual(validation_conditions[validation_conditions.index("--start-date") + 1], "2026-01-01")
-        self.assertEqual(validation_conditions[validation_conditions.index("--end-date") + 1], "2026-08-01")
         self.assertEqual(validation_shards[validation_shards.index("--selection") + 1], "all")
         self.assertIn("--execute", validation_shards)
+        self.assertNotIn("run_build_conditions_1s", " ".join(item for _label, command in stages for item in command))
         self.assertNotIn("run_pilot_offline_shards", " ".join(item for _label, command in stages for item in command))
 
     def test_immutable_catalog_blocks_execute_before_build_diagnostics(self) -> None:
@@ -1260,18 +1252,20 @@ class LoaderTrainerContractTest(unittest.TestCase):
         geometry_variant = dataclasses.replace(base, origin_bars_1s=base.origin_bars_1s + 1)
         stream_variant = dataclasses.replace(base, loader_stream_contract_version=5)
         fetch_variant = dataclasses.replace(base, clickhouse_query_days=3, clickhouse_prefetch_pages=2)
+        legacy_condition_variant = dataclasses.replace(base, condition_table="retired_sidecar")
         self.assertEqual(config_hash(base), config_hash(loader_variant))
         self.assertNotEqual(config_hash(base), config_hash(stream_variant))
         self.assertEqual(config_hash(base), config_hash(fetch_variant))
+        self.assertEqual(config_hash(base), config_hash(legacy_condition_variant))
         self.assertNotEqual(config_hash(base), config_hash(geometry_variant))
         production = dataclasses.replace(DataConfig(), origin_bars_1s=4096)
         production_hash = config_hash(production)
         self.assertEqual(len(production_hash), 64)
         self.assertNotEqual(production_hash, "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619")
         self.assertEqual(shard_compatibility_hash(production), production_hash)
-        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 8)
-        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 6)
-        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v6"))
+        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 9)
+        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 7)
+        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7"))
         self.assertEqual(
             shard_path(DEFAULT_OUTPUT_ROOT, "AAA:2019-01"),
             DEFAULT_OUTPUT_ROOT / "tickers" / "AAA" / "2019" / "2019-01.pt",
@@ -1413,7 +1407,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
     def test_offline_training_preserves_prefetch_across_validation(self) -> None:
         runtime_data = dataclasses.replace(
             self.data_config(),
-            loader_stream_contract_version=8,
+            loader_stream_contract_version=9,
             tickers=("AAA", "BBB", "CCC"),
             start_date="2026-01-01",
             end_date="2026-03-01",
@@ -1769,7 +1763,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
         self.assertEqual(training_launcher_args["--data-source"], "offline")
-        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v6"))
+        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v7"))
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--offline-train-end-date"], "2022-01-01")
@@ -2345,7 +2339,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
                     return ""
                 if "intraday_base_bars_build_status" in query and "GROUP BY artifact_name" in query:
                     return "intraday_condition_bars_by_time_ticker:tickers=AAA,BBB,CCC\t60\t60\n"
-                if "intraday_condition_bars_by_time_ticker" in query and "countIf" in query:
+                if "bar_gpt_1s_bars_v2_cohort_2tb" in query and "condition_halt_pause_count" in query:
                     return "10\t2\t2\t3\t3\n"
                 return self.messages
 

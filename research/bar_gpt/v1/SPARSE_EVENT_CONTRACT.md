@@ -1,4 +1,4 @@
-# BarGPT condition-eligible sparse event and OHLC target contract (v6)
+# BarGPT embedded-condition sparse event and OHLC target contract (v7)
 
 ## Defects this contract replaces
 
@@ -27,14 +27,16 @@ trade (177.89 versus a market near 142.60) contaminated context and targets,
 and an implausibly wide quote contaminated quote extrema. Historical trade
 correction code 12 (the original incorrect data) was also retained upstream.
 
-The old shard roots are immutable. Contract-v6 shards are rebuilt under
-`offline_shards_v6`; old shards, checkpoints, cursors, discovery panels, and
+The old shard roots are immutable. Contract-v7 shards are rebuilt under
+`offline_shards_v7`; old shards, checkpoints, cursors, discovery panels, and
 validation manifests are not compatible or repairable in place.
 
 ## Bar, context, and condition authority
 
-* A one-second model bar exists only when `source_event_count > 0`, where that
-  count contains eligible prediction events rather than every raw SIP record.
+* A one-second model bar exists only when `origin_event_count > 0`.
+  `origin_eligible=1` and `context_eligible=1` are stored explicitly and are
+  required by the loader. `source_event_count` counts retained eligible events,
+  including volume-only contributions in a second that already has an origin.
 * Trade conditions are combined fail-closed. An event may update each stored
   sufficient statistic only when every condition token authorizes that field.
   `update_high_low`, `update_last`, and `update_volume` therefore produce
@@ -43,7 +45,10 @@ validation manifests are not compatible or repairable in place.
   volume to an already-active second but cannot create a bar or origin.
 * Correction 00 and corrected-data 01 remain eligible upstream. Correction
   codes 07, 08, 10, 11, and 12 are excluded before compact event encoding;
-  unknown condition/correction metadata fails closed.
+  unknown condition/correction metadata fails closed. Because the compact
+  event schema does not retain the original correction field, the 1s preflight
+  also requires database source-day provenance containing the complete
+  `07,08,10,11,12` exclusion policy and refuses an older event authority.
 * A quote is eligible only as a complete positive bid/ask pair with bid <= ask,
   no Invalid/Closed/MarketMakerQuotesClosed/NonFirm/Cancel/Unknown/Crossed
   modifier, and midpoint-relative spread no wider than 1,000 bps. The bound is
@@ -62,10 +67,12 @@ validation manifests are not compatible or repairable in place.
   durations and context counts, traverses prior sessions, performs vectorized
   fixed-bucket aggregation, and slices the latest configured count for each
   origin block. It does not advance through the month one second at a time.
-* Condition rows are a separate timestamped target authority. They never
-  manufacture origins or context bars. Zero condition values are valid
-  negative labels when the condition authority is certified; a condition head
-  with no certified positive evidence remains inactive under training preflight.
+* Halt/pause, resume, news-risk, and LULD state are classified from the retained
+  events in the same vectorized SQL scan and stored as per-second counts. They
+  never manufacture a row or an origin. Coarser rollups sum these counts, and
+  training reads both inputs and condition targets from the certified 1s
+  authority; neither the 1s build nor shard build reads a second condition-bar
+  table.
 
 The authoritative trade-condition categories observed in
 `event_condition_token_reference` are:
@@ -87,7 +94,7 @@ latter is excluded upstream as original incorrect data.
 
 ## Model input tensor contract
 
-Every view is a `float32` tensor with shape `[batch, tokens, 46]`. Intraday
+Every view is a `float32` tensor with shape `[batch, tokens, 54]`. Intraday
 views are `1s`, `5s`, `10s`, `30s`, `1m`, `5m`, `30m`, and `1h`; calendar
 views are `1D`, `1W`, and `1MO`. The same feature order and preprocessing are
 used in every view. Raw price and size aggregates are first expressed in the
@@ -141,6 +148,14 @@ can be converted to log-return basis points as `sinh(z) * 100`.
 | `locked_quote_fraction` | `float32`, `[0,1]` | `locked_quote_count / max(quote_pair_count, 1)`. |
 | `crossed_quote_fraction` | `float32`, `[0,1]` | `crossed_quote_count / max(quote_pair_count, 1)`. |
 | `log_condition_count` | `float32` | `log1p(condition_nonzero_count)` from source-event condition codes represented in the bar. This is distinct from the four future condition targets. |
+| `halt_pause_present` | `float32`, 0/1 | One when `condition_halt_pause_count > 0` in the completed bar. |
+| `log_halt_pause_count` | `float32` | `log1p(condition_halt_pause_count)`; coarser bars sum active one-second counts. |
+| `resume_present` | `float32`, 0/1 | One when `condition_resume_count > 0`. |
+| `log_resume_count` | `float32` | `log1p(condition_resume_count)`. |
+| `news_risk_present` | `float32`, 0/1 | One when `condition_news_risk_count > 0`. |
+| `log_news_risk_count` | `float32` | `log1p(condition_news_risk_count)`. |
+| `luld_limit_state_present` | `float32`, 0/1 | One when `condition_luld_limit_state_count > 0`. |
+| `log_luld_limit_state_count` | `float32` | `log1p(condition_luld_limit_state_count)`. |
 | `log_source_event_count` | `float32` | `log1p(source_event_count)`; every stored intraday token has a strictly positive raw count. |
 | `log_elapsed_wall_ratio` | `float32` | `log1p((bar_start - prior_bar_start) / configured_timeframe_duration)`; preserves physical gaps in sparse token sequences. |
 | `sequence_boundary` | `float32`, 0/1 | One when elapsed wall time exceeds `1.5` configured timeframe durations. |
@@ -289,7 +304,7 @@ to at most 16 metrics.
 
 ## Builder, shard, and certification contract
 
-Contract-v6 uses shard contract 6 and loader stream contract 8. Shards persist
+Contract-v7 uses shard contract 7 and loader stream contract 9. Shards persist
 view interval metadata, nonempty context, active origins, per-origin causal
 as-of indices, 18-channel autoregressive tensors, 23-channel physical tensors,
 condition provenance, and SHA-256-certified sidecars. Discovery fails closed
@@ -312,7 +327,7 @@ only bounds ticker/month scope. Automated audit must verify:
   ClickHouse reconstruction;
 * target and direction support by family, OHLC field, horizon, and AR view.
 
-Before the full cohort build, the v6 overfit runner must pass the total-loss
+Before the full cohort build, the v7 overfit runner must pass the total-loss
 improvement gate and direction gates for every physical task with sufficient
 two-class support, and demonstrate each of the 12 autoregressive direction
 tasks on the configured minimum number of eligible views. It reports direct

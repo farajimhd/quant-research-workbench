@@ -300,7 +300,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
     parser.add_argument("--sdpa-audit", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="offline")
-    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v6")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 

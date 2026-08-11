@@ -32,6 +32,7 @@ from research.bar_gpt.v1.data import (
 )
 from research.bar_gpt.v1.features import project_stationary_features
 from research.bar_gpt.v1.loader import BarGPTIterableDataset, month_units
+from research.bar_gpt.v1.schema import FEATURE_VERSION
 from research.bar_gpt.v1.targets import HorizonTargets, build_next_bar_targets, build_physical_horizon_targets
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
@@ -43,11 +44,11 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 
 
-OFFLINE_SHARD_CONTRACT_VERSION = 6
-# Stream contract 8 adds field-specific condition eligibility to the sparse
-# event/OHLC contract while retaining physical horizons and direction heads.
-OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 8
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v6")
+OFFLINE_SHARD_CONTRACT_VERSION = 7
+# Stream contract 9 consumes only origin/context-eligible 1s rows and embeds
+# condition state in that certified one-second authority.
+OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 9
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7")
 SHARD_CATALOG_LOCK_FILENAME = "SHARD_CATALOG_IMMUTABLE.json"
 
 
@@ -69,6 +70,8 @@ _STORAGE_IRRELEVANT_CONFIG_FIELDS = frozenset({
     "validation_blocks_per_slice",
     "origin_fetch_candidate_blocks",
     "origin_emit_blocks_per_chunk",
+    "condition_table",
+    "condition_status_table",
     "clickhouse_query_days",
     "clickhouse_prefetch_pages",
     "clickhouse_max_block_size",
@@ -795,8 +798,8 @@ def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig
                 "database": config.database,
                 "one_second_table": config.one_second_table,
                 "daily_table": config.daily_table,
-                "condition_table": config.condition_table,
-                "condition_status_table": config.condition_status_table,
+                "condition_authority": "embedded_1s",
+                "one_second_feature_version": FEATURE_VERSION,
             },
         },
         "horizons_us": tuple(config.horizons_us),

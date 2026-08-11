@@ -8,7 +8,6 @@ from pathlib import Path
 
 from research.bar_gpt.v1.cohort import (
     BAR_GPT_COHORT_2TB,
-    BAR_GPT_EVENTS_TABLE,
     BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE,
     BAR_GPT_SIP_DAILY_SESSION_TABLE,
 )
@@ -26,7 +25,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="2026-08-01")
     parser.add_argument("--tickers", default=",".join(BAR_GPT_COHORT_2TB))
-    parser.add_argument("--events-table-base", default=BAR_GPT_EVENTS_TABLE)
+    parser.add_argument("--events-table-base", default="events")
     parser.add_argument("--target-table", default=BAR_GPT_SIP_DAILY_SESSION_TABLE)
     parser.add_argument("--manifest-table", default=BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE)
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")

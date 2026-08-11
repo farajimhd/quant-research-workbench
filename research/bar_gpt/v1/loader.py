@@ -57,6 +57,12 @@ CONDITION_COLUMNS: tuple[str, ...] = (
     "condition_news_risk_flag",
     "condition_luld_limit_state_flag",
 )
+CONDITION_COUNT_COLUMNS: tuple[str, ...] = (
+    "condition_halt_pause_count",
+    "condition_resume_count",
+    "condition_news_risk_count",
+    "condition_luld_limit_state_count",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1230,6 +1236,11 @@ def frame_to_sparse_view(frame: pl.DataFrame, *, device: torch.device | str = "c
     if frame["ticker"].n_unique() != 1 or frame["local_date"].n_unique() != 1:
         raise ValueError("frame_to_sparse_view requires one ticker/session")
     frame = frame.sort("bar_start_us")
+    for eligibility_column in ("context_eligible", "origin_eligible"):
+        if eligibility_column not in frame.columns:
+            raise RuntimeError(f"authoritative 1s input is missing {eligibility_column}")
+        if bool((frame[eligibility_column] != 1).any()):
+            raise RuntimeError(f"authoritative 1s input contains an ineligible {eligibility_column} row")
     feature_array = np.array(frame.select(list(FEATURE_NAMES)).to_numpy(), dtype=np.float32, copy=True)
     sparse = BarView(
         features=torch.as_tensor(feature_array, device=device),
@@ -1490,7 +1501,22 @@ def prepare_session_context(
     )
     condition_rows = SESSION_END_SECOND - SESSION_START_SECOND
     if session_conditions is None:
-        session_conditions = torch.zeros((condition_rows, 4), dtype=torch.float32)
+        session_conditions = torch.zeros(
+            (condition_rows, len(CONDITION_COUNT_COLUMNS)),
+            dtype=torch.float32,
+            device=session.features.device,
+        )
+        day = dt.date.fromisoformat(local_date)
+        midnight = dt.datetime.combine(day, dt.time(), tzinfo=ZoneInfo(SESSION_TIMEZONE))
+        session_start_us = int((midnight + dt.timedelta(seconds=SESSION_START_SECOND)).timestamp() * 1_000_000)
+        indices = torch.div(session.bar_start_us - session_start_us, 1_000_000, rounding_mode="floor")
+        valid = (indices >= 0) & (indices < condition_rows)
+        if bool(torch.any(valid)):
+            values = torch.stack(
+                tuple(session.features[:, FEATURE_INDEX[name]] for name in CONDITION_COUNT_COLUMNS),
+                dim=-1,
+            )
+            session_conditions[indices[valid].long()] = (values[valid] > 0).to(session_conditions.dtype)
     if session_conditions.shape == (condition_rows, 4):
         day = dt.date.fromisoformat(local_date)
         midnight = dt.datetime.combine(day, dt.time(), tzinfo=ZoneInfo(SESSION_TIMEZONE))
@@ -1843,8 +1869,6 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
                 "intervals": {},
                 "actions": {},
                 "daily": {},
-                "condition_key": None,
-                "conditions": {},
                 "session_state_key": None,
                 "session_history": None,
                 "session_loaded_through": None,
@@ -1897,33 +1921,6 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
             actions_cache[ticker] = actions
             daily_cache[ticker] = daily
         return intervals_cache[ticker], actions_cache[ticker], daily_cache[ticker]
-
-    def _session_conditions(
-        self,
-        session: SequentialSessionPlan,
-        intervals: tuple[TickerInterval, ...],
-    ) -> dict[str, torch.Tensor]:
-        runtime = self._worker_runtime()
-        # Only the current session and its actual predecessor can affect this
-        # block.  Loading the whole ticker-month here was both redundant and
-        # the dominant source of slow first-batch latency.
-        key = (session.ticker, session.prior_date, session.local_date)
-        if runtime["condition_key"] != key:
-            client = runtime["client"]
-            assert isinstance(client, ArrowStreamClient)
-            fetch_start = session.prior_date or session.local_date
-            fetch_end = (dt.date.fromisoformat(session.local_date) + dt.timedelta(days=1)).isoformat()
-            runtime["conditions"] = client.read_condition_views(
-                ticker=session.ticker,
-                start_date=fetch_start,
-                end_date=fetch_end,
-                condition_table=self.data_config.condition_table,
-                source_intervals=intervals,
-            )
-            runtime["condition_key"] = key
-        conditions = runtime["conditions"]
-        assert isinstance(conditions, dict)
-        return conditions
 
     def _session_views(
         self,
@@ -2038,25 +2035,6 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
             )
             metadata.append((session, session_block, unit_block, origin_count))
         session_view, prior_view = self._session_views(first_session, intervals)
-        conditions = self._session_conditions(first_session, intervals)
-        dense_conditions = conditions.get(first_session.local_date)
-        session_conditions = (
-            dense_conditions
-            if dense_conditions is not None
-            else torch.zeros(
-                (SESSION_END_SECOND - SESSION_START_SECOND, len(CONDITION_COLUMNS)), dtype=torch.float32
-            )
-        )
-        prior_conditions = None
-        if prior_view is not None:
-            prior_dense = conditions.get(first_session.prior_date or "")
-            prior_conditions = (
-                prior_dense
-                if prior_dense is not None
-                else torch.zeros(
-                    (SESSION_END_SECOND - SESSION_START_SECOND, len(CONDITION_COLUMNS)), dtype=torch.float32
-                )
-            )
         prepared_key = (first_session.ticker, first_session.local_date, int(session_view.available_at_us[-1]))
         prepared = runtime.get("prepared") if runtime.get("prepared_key") == prepared_key else None
         if not isinstance(prepared, PreparedSessionContext):
@@ -2064,8 +2042,8 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
                 local_date=first_session.local_date,
                 session=session_view,
                 prior_session=prior_view,
-                session_conditions=session_conditions,
-                prior_conditions=prior_conditions,
+                session_conditions=None,
+                prior_conditions=None,
                 daily=daily,
                 split_actions=actions,
                 config=self.data_config,
@@ -2080,8 +2058,8 @@ class BarGPTSequentialDataset(Dataset[BarGPTExample]):
                     local_date=session.local_date,
                     session=session_view,
                     prior_session=prior_view,
-                    session_conditions=session_conditions,
-                    prior_conditions=prior_conditions,
+                    session_conditions=None,
+                    prior_conditions=None,
                     daily=daily,
                     split_actions=actions,
                     config=self.data_config,
@@ -2284,7 +2262,6 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
             # largest physical intraday lookback and daily history by the
             # calendar warmup contract.
             history_by_ticker: dict[str, FixedBucketHistoryCache] = {}
-            prior_conditions_by_ticker: dict[str, torch.Tensor | None] = {}
             loaded_through_by_ticker: dict[str, str] = {}
             daily_by_ticker: dict[str, tuple[list[str], BarView] | None] = {}
             active_ticker = ""
@@ -2296,7 +2273,6 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                     # Units are sorted by ticker and month, so no later unit
                     # can consume the completed ticker's causal caches.
                     history_by_ticker.clear()
-                    prior_conditions_by_ticker.clear()
                     loaded_through_by_ticker.clear()
                     daily_by_ticker.clear()
                 active_ticker = ticker
@@ -2364,8 +2340,6 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                             if _history_satisfies_intraday_context(history_cache.view, self.data_config):
                                 break
                             warmup_right = warmup_left
-                    previous_conditions = prior_conditions_by_ticker.get(ticker)
-                    history_rows = history_cache.max_rows
                     # Daily bars are context-only.  The first month warms a
                     # bounded history; later months read only their new dates
                     # and merge them into the same bounded cache.  This avoids
@@ -2376,28 +2350,13 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                         if existing_daily is not None
                         else (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=lookback_days)).isoformat()
                     )
-                    # Independent unit metadata reads run concurrently before
-                    # the ordered intraday stream begins.  They are bounded to
-                    # this unit and do not materialize its one-second rows.
-                    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="bar-gpt-unit") as unit_executor:
-                        condition_future = unit_executor.submit(
-                            client.read_condition_views,
-                            ticker=ticker,
-                            start_date=fetch_start,
-                            end_date=unit.end_date,
-                            condition_table=self.data_config.condition_table,
-                            source_intervals=intervals_by_ticker[ticker],
-                        )
-                        daily_future = unit_executor.submit(
-                            client.read_daily_views,
-                            tickers=(ticker,),
-                            start_date=daily_window_start,
-                            end_date=unit.end_date,
-                            daily_table=self.data_config.daily_table,
-                            intervals_by_ticker={ticker: intervals_by_ticker[ticker]},
-                        )
-                        conditions_by_date = condition_future.result()
-                        incoming_daily = daily_future.result().get(ticker)
+                    incoming_daily = client.read_daily_views(
+                        tickers=(ticker,),
+                        start_date=daily_window_start,
+                        end_date=unit.end_date,
+                        daily_table=self.data_config.daily_table,
+                        intervals_by_ticker={ticker: intervals_by_ticker[ticker]},
+                    ).get(ticker)
                     daily_value = _merge_rolling_daily_view(
                         existing_daily,
                         incoming_daily,
@@ -2412,22 +2371,16 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                         source_intervals=intervals_by_ticker[ticker],
                         prefetch_pages=self.data_config.clickhouse_prefetch_pages,
                     ):
-                        dense_conditions = conditions_by_date.get(local_date)
-                        if dense_conditions is None:
-                            dense_conditions = torch.zeros(
-                                (SESSION_END_SECOND - SESSION_START_SECOND, 4), dtype=torch.float32
-                            )
                         if local_date < unit.start_date:
                             previous_session = history_cache.append(session)
-                            previous_conditions = torch.cat((previous_conditions, dense_conditions), dim=0)[-history_rows:] if previous_conditions is not None else dense_conditions[-history_rows:]
                             continue
                         for example in build_session_examples(
                             ticker=ticker,
                             local_date=local_date,
                             session=session,
                             prior_session=history_cache.view,
-                            session_conditions=dense_conditions,
-                            prior_conditions=previous_conditions,
+                            session_conditions=None,
+                            prior_conditions=None,
                             daily=daily_value,
                             split_actions=split_actions,
                             config=self.data_config,
@@ -2453,10 +2406,9 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                             example.has_condition_target = has_condition_target(example)
                             yield example
                         previous_session = history_cache.append(session)
-                        previous_conditions = torch.cat((previous_conditions, dense_conditions), dim=0)[-history_rows:] if previous_conditions is not None else dense_conditions[-history_rows:]
-                    prior_conditions_by_ticker[ticker] = previous_conditions
                     loaded_through_by_ticker[ticker] = unit.end_date
                     continue
+                conditions_by_date: dict[str, torch.Tensor] = {}
                 limit = (
                     self.data_config.validation_blocks_per_slice
                     if self.split == "validation"
@@ -2517,31 +2469,14 @@ class BarGPTIterableDataset(IterableDataset[BarGPTExample]):
                             + int(self.data_config.origin_bars_1s)
                             + int(self.data_config.right_support_bars_1s)
                         )
-                        dense_conditions = conditions_by_date.get(window.local_date)
-                        session_conditions = (
-                            dense_conditions[
-                                target_start - SESSION_START_SECOND : target_end - SESSION_START_SECOND
-                            ]
-                            if dense_conditions is not None
-                            else torch.zeros((target_end - target_start, 4), dtype=torch.float32)
-                        )
-                        prior_conditions = None
-                        if prior_session is not None and window.prior_date is not None:
-                            dense_prior = conditions_by_date.get(window.prior_date)
-                            prior_rows = int(prior_session.features.shape[0])
-                            prior_conditions = (
-                                dense_prior[-prior_rows:]
-                                if dense_prior is not None
-                                else torch.zeros((prior_rows, 4), dtype=torch.float32)
-                            )
                         built = list(
                             build_session_examples(
                                 ticker=ticker,
                                 local_date=window.local_date,
                                 session=session,
                                 prior_session=prior_session,
-                                session_conditions=session_conditions,
-                                prior_conditions=prior_conditions,
+                                session_conditions=None,
+                                prior_conditions=None,
                                 daily=daily_value,
                                 split_actions=split_actions,
                                 config=self.data_config,
