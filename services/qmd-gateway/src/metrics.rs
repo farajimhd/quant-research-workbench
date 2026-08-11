@@ -53,6 +53,8 @@ struct MetricsInner {
     massive_disconnects: AtomicU64,
     parse_failures: AtomicU64,
     scanner_candidates_emitted: AtomicU64,
+    core_scan_stage: StageTiming,
+    all_market_bar_stage: StageTiming,
     service_start_unix_ms: AtomicI64,
     operational: RwLock<OperationalState>,
 }
@@ -141,6 +143,26 @@ pub struct MetricsSnapshot {
     pub parse_failures: u64,
     pub process_uptime_ms: i64,
     pub scanner_candidates_emitted: u64,
+    pub stage_profiles: BTreeMap<String, StageProfileSnapshot>,
+}
+
+#[derive(Debug, Default)]
+struct StageTiming {
+    seen: AtomicU64,
+    sample_every: AtomicU64,
+    samples: AtomicU64,
+    total_us: AtomicU64,
+    max_us: AtomicU64,
+    last_us: AtomicU64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StageProfileSnapshot {
+    pub sample_every: u64,
+    pub samples: u64,
+    pub average_us: u64,
+    pub max_us: u64,
+    pub last_us: u64,
 }
 
 #[derive(Clone)]
@@ -153,6 +175,8 @@ pub struct TimingGuard {
 #[derive(Clone, Copy)]
 pub enum TimingTarget {
     GapFillRun,
+    CoreScanEvent,
+    AllMarketBarEvent,
 }
 
 impl SharedMetrics {
@@ -201,6 +225,8 @@ impl SharedMetrics {
                 massive_disconnects: AtomicU64::new(0),
                 parse_failures: AtomicU64::new(0),
                 scanner_candidates_emitted: AtomicU64::new(0),
+                core_scan_stage: StageTiming::default(),
+                all_market_bar_stage: StageTiming::default(),
                 service_start_unix_ms: AtomicI64::new(Utc::now().timestamp_millis()),
                 operational: RwLock::new(OperationalState::default()),
             }),
@@ -336,6 +362,16 @@ impl SharedMetrics {
         let now_ms = Utc::now().timestamp_millis();
         let last_event_ms = self.inner.last_event_unix_ms.load(Ordering::Relaxed);
         let start_ms = self.inner.service_start_unix_ms.load(Ordering::Relaxed);
+        let stage_profiles = BTreeMap::from([
+            (
+                "core_scan_event".to_string(),
+                self.stage_profile(&self.inner.core_scan_stage),
+            ),
+            (
+                "all_market_bar_event".to_string(),
+                self.stage_profile(&self.inner.all_market_bar_stage),
+            ),
+        ]);
         MetricsSnapshot {
             bar_rows_emitted: self.get(&self.inner.bar_rows_emitted),
             bar_events_dropped: self.get(&self.inner.bar_events_dropped),
@@ -398,6 +434,7 @@ impl SharedMetrics {
             parse_failures: self.get(&self.inner.parse_failures),
             process_uptime_ms: now_ms - start_ms,
             scanner_candidates_emitted: self.get(&self.inner.scanner_candidates_emitted),
+            stage_profiles,
         }
     }
 
@@ -568,6 +605,47 @@ impl SharedMetrics {
         }
     }
 
+    pub fn sampled_timing(&self, target: TimingTarget, sample_every: u64) -> Option<TimingGuard> {
+        let stage = self.stage_timing(target)?;
+        let sample_every = sample_every.max(1);
+        stage.sample_every.store(sample_every, Ordering::Relaxed);
+        let seen = stage.seen.fetch_add(1, Ordering::Relaxed);
+        if seen % sample_every != 0 {
+            return None;
+        }
+        Some(self.timing(target))
+    }
+
+    fn stage_timing(&self, target: TimingTarget) -> Option<&StageTiming> {
+        match target {
+            TimingTarget::CoreScanEvent => Some(&self.inner.core_scan_stage),
+            TimingTarget::AllMarketBarEvent => Some(&self.inner.all_market_bar_stage),
+            TimingTarget::GapFillRun => None,
+        }
+    }
+
+    fn stage_profile(&self, stage: &StageTiming) -> StageProfileSnapshot {
+        let samples = stage.samples.load(Ordering::Relaxed);
+        let total_us = stage.total_us.load(Ordering::Relaxed);
+        StageProfileSnapshot {
+            sample_every: stage.sample_every.load(Ordering::Relaxed),
+            samples,
+            average_us: if samples == 0 { 0 } else { total_us / samples },
+            max_us: stage.max_us.load(Ordering::Relaxed),
+            last_us: stage.last_us.load(Ordering::Relaxed),
+        }
+    }
+
+    fn record_stage_timing(&self, target: TimingTarget, elapsed_us: u64) {
+        let Some(stage) = self.stage_timing(target) else {
+            return;
+        };
+        stage.samples.fetch_add(1, Ordering::Relaxed);
+        stage.total_us.fetch_add(elapsed_us, Ordering::Relaxed);
+        stage.max_us.fetch_max(elapsed_us, Ordering::Relaxed);
+        stage.last_us.store(elapsed_us, Ordering::Relaxed);
+    }
+
     fn get(&self, value: &AtomicU64) -> u64 {
         value.load(Ordering::Relaxed)
     }
@@ -592,7 +670,7 @@ fn truncate_error(value: &str) -> String {
 
 #[cfg(test)]
 mod operational_tests {
-    use super::SharedMetrics;
+    use super::{SharedMetrics, TimingTarget};
 
     #[test]
     fn operational_lane_records_failure_and_recovery() {
@@ -612,6 +690,19 @@ mod operational_tests {
         assert_eq!(recovered.lanes[0].successful_rows, 25);
         assert_eq!(recovered.recent_recoveries.len(), 1);
     }
+
+    #[test]
+    fn sampled_stage_profile_reports_bounded_hot_path_evidence() {
+        let metrics = SharedMetrics::new();
+        {
+            let _timing = metrics.sampled_timing(TimingTarget::CoreScanEvent, 1);
+        }
+        let snapshot = metrics.snapshot();
+        let profile = &snapshot.stage_profiles["core_scan_event"];
+        assert_eq!(profile.samples, 1);
+        assert_eq!(profile.sample_every, 1);
+        assert!(profile.max_us >= profile.last_us);
+    }
 }
 
 impl Drop for TimingGuard {
@@ -627,6 +718,15 @@ impl Drop for TimingGuard {
                     .set(&self.metrics.inner.gap_fill_last_duration_ms, elapsed_ms);
                 self.metrics
                     .inc(&self.metrics.inner.gap_fill_total_duration_ms, elapsed_ms);
+            }
+            TimingTarget::CoreScanEvent | TimingTarget::AllMarketBarEvent => {
+                let elapsed_us = self
+                    .started_at
+                    .elapsed()
+                    .as_micros()
+                    .min(u128::from(u64::MAX)) as u64;
+                self.metrics
+                    .record_stage_timing(self.target, elapsed_us.max(1));
             }
         }
     }

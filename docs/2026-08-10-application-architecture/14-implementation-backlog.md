@@ -153,6 +153,10 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
       sequencing, NBBO/trade state, freshness/quality, and compact persistence
       fanout. The exact six-family set is catalog-tested.
 - [ ] Profile all-market computations before Core Scan approval.
+  - [x] Instrument sampled Core Scan and all-market bar/structure stage latency
+        in the QMD operational snapshot without adding per-event histogram cost.
+  - [ ] Capture representative active-session throughput, latency, queue, CPU,
+        and memory evidence and approve explicit budgets.
 - [x] Limit default Core Scan to last/change, volume/dollar volume, activity,
       spread, halt/stale, basic liquidity, reference context, and rank inputs.
       Its exact five low-cost runtime families are catalog-tested; optional

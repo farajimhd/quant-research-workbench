@@ -3,7 +3,7 @@ use crate::config::GatewayConfig;
 use crate::event::{massive_status_message, parse_massive_payload, MarketEvent};
 use crate::indicators::IndicatorEventRouter;
 use crate::live_market_state::LiveMarketStateRouter;
-use crate::metrics::SharedMetrics;
+use crate::metrics::{SharedMetrics, TimingTarget};
 use crate::state::{ScannerRowDelta, SharedMarketState};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -132,7 +132,12 @@ pub async fn fanout_market_event(event: MarketEvent, fanout: &MarketEventFanout)
         MarketEvent::Quote(_) => "quote",
     };
     fanout.metrics.observe_event(kind, event.ts());
-    let scanner_delta = fanout.state.apply_event(&event).await;
+    let scanner_delta = {
+        let _core_scan_profile = fanout
+            .metrics
+            .sampled_timing(TimingTarget::CoreScanEvent, 1_024);
+        fanout.state.apply_event(&event).await
+    };
     if fanout.scanner_delta_sender.send(scanner_delta).is_err() {
         fanout.metrics.inc_event_broadcast_dropped();
     }

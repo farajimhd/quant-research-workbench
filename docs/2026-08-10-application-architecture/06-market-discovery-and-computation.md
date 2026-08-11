@@ -182,6 +182,12 @@ offline calculation is available in its proper scope.
 - QMD's all-market state keeps one current row per observed symbol plus bounded
   per-second trade counters for the 10/60-second activity rates; it does not
   retain full trade objects for Core Scan rate calculation.
+- QMD operational metrics now sample one of every 1,024 events independently
+  around the compact Core Scan state update and the all-market bar/structure
+  update. Each stage reports sample count, sampling rate, last, mean, and maximum
+  microseconds. This supplies low-overhead production evidence for the profiling
+  gate; the gate remains open until representative active-session results are
+  captured and compared with explicit latency and memory budgets.
 - `GET /snapshot/scanner` and `WS /stream/scanner` use the same monotonic
   sequence authority. The WebSocket sends a typed initial snapshot followed by
   typed row deltas. Receiver lag or a non-contiguous sequence emits an explicit

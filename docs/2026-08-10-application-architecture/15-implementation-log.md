@@ -436,6 +436,13 @@ bounded direct ClickHouse paths remain documented in
     catalog capability with event-driven cadence. Market Discovery displays the
     effective requirement count and duplicate cost removed. All 89 QMD Gateway
     tests and the managed external-runtime frontend production build passed.
+66. Added low-overhead evidence for the Core Scan performance gate. QMD samples
+    one of every 1,024 events around the compact all-market Scanner-state update
+    and, independently, the all-market bar/structure update. The existing
+    metrics/status payload now reports each stage's sampling rate, sample count,
+    last, mean, and maximum microseconds. Two focused metric tests passed. This
+    instruments the real runnable path but does not claim the profiling gate is
+    complete until an active-session run is captured against explicit budgets.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

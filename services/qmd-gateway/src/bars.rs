@@ -5,7 +5,7 @@ use crate::generic_structure::{
 };
 use crate::live_market_state::LiveMarketStateRouter;
 use crate::market_products::FamilyBarRow;
-use crate::metrics::SharedMetrics;
+use crate::metrics::{SharedMetrics, TimingTarget};
 use chrono::{DateTime, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
 use serde::Serialize;
@@ -1416,7 +1416,13 @@ async fn run_bar_engine(
             event = receiver.recv() => {
                 match event {
                     Some(event) => {
-                        let finalized = shard.apply_event(&event).await;
+                        let finalized = {
+                            let _profile = metrics.sampled_timing(
+                                TimingTarget::AllMarketBarEvent,
+                                1_024,
+                            );
+                            shard.apply_event(&event).await
+                        };
                         send_finalized_bars(shard_id, indicator_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
                     }
                     None => {
