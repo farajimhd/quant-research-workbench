@@ -7,7 +7,6 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,7 +14,12 @@ from typing import Any, Callable, Collection, Literal
 
 from dotenv import load_dotenv
 
-from src.request_context import causal_identity, current_request_headers, current_request_query
+from src.request_context import (
+    ContextThreadPoolExecutor as ThreadPoolExecutor,
+    causal_identity,
+    current_request_headers,
+    current_request_query,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

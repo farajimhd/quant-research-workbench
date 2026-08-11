@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
+
+from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,

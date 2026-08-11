@@ -9,12 +9,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from dotenv import load_dotenv
 

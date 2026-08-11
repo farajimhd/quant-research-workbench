@@ -193,6 +193,13 @@ external callers retain their exact payload. The shared frontend client is the
 only browser fetch authority, requests this envelope on all 127 API call sites,
 and transparently returns the inner payload to existing page code.
 
+Backend composition uses a context-preserving thread-pool authority. Python
+request context identity does not cross ordinary executor threads, so all
+backend fan-out pools copy the submitting context independently for each job.
+Concurrent QMD catalog/status calls, Canvas composition, account projections,
+and database evidence queries therefore retain the originating correlation and
+causation IDs without leaking one request into the next worker submission.
+
 ## 6. Configuration registry and compiler
 
 The catalog contains capability, field, container, strategy, policy, mode and service descriptors. Configuration records reference stable IDs and versions. The compiler:

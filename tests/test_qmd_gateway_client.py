@@ -30,7 +30,7 @@ from src.backend.qmd_gateway_client import (
     qmd_scanner_indicators,
     qmd_websocket_url,
 )
-from src.request_context import begin_request_context, end_request_context
+from src.request_context import begin_request_context, current_request_identity, end_request_context
 
 
 class QmdGatewayClientTests(unittest.TestCase):
@@ -389,6 +389,31 @@ class QmdGatewayClientTests(unittest.TestCase):
             {"/capability-catalog", "/indicator-catalog", "/signal-catalog"},
         )
         self.assertTrue(all(call.kwargs["timeout"] == 3 for call in get_json.call_args_list))
+
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_catalog_fanout_preserves_request_lineage_in_workers(self, get_json) -> None:
+        observed: list[dict[str, str]] = []
+
+        def response(path, *, timeout):
+            observed.append(current_request_identity())
+            return [{"key": path.strip("/")}]
+
+        get_json.side_effect = response
+        tokens = begin_request_context("web:catalog-9", "view:discovery")
+        try:
+            qmd_catalogs()
+        finally:
+            end_request_context(tokens[0], tokens[1])
+        self.assertEqual(len(observed), 3)
+        self.assertTrue(
+            all(
+                identity == {
+                    "correlation_id": "web:catalog-9",
+                    "causation_id": "view:discovery",
+                }
+                for identity in observed
+            )
+        )
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_market_signal_snapshot_filters_symbol_without_recomputing_signals(

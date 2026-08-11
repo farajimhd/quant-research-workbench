@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
@@ -9,6 +9,8 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import polars as pl
+
+from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient, ensure_replay_tables
 from src.backend.real_live_market_data.config import MarketGatewayConfig

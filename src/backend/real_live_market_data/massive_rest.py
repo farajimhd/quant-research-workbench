@@ -4,10 +4,11 @@ import json
 import ssl
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import polars as pl
+
+from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from src.backend.real_live_market_data.config import MarketGatewayConfig, env_first, load_real_live_market_env
 

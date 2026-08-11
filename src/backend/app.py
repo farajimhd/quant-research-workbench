@@ -12,7 +12,6 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
@@ -41,6 +40,7 @@ from src.request_context import (
     CAUSATION_HEADER,
     CORRELATION_HEADER,
     begin_request_context,
+    ContextThreadPoolExecutor as ThreadPoolExecutor,
     end_request_context,
 )
 from src.backend.application_registry import (

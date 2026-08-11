@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -9,6 +8,8 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import polars as pl
+
+from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from src.backend.real_live_market_data.bars import current_bar_row, rotate_minute_bar_if_needed
 from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient

@@ -643,6 +643,10 @@ broker command outside OMS.
         context, QMD HTTP headers and WebSocket query identity, QMD Live/History
         response evidence, broker-event envelopes, and authoritative
         Portfolio/OMS journal payloads.
+  - [x] Preserve request correlation and causation through every backend
+        thread-pool fan-out. One shared executor copies context independently
+        per submission; QMD composition has explicit worker-level regression
+        coverage and sequential submissions cannot leak identity.
   - [x] Give autonomous Strategy evaluations, Portfolio decisions/reservations,
         and OMS lifecycle records explicit causal predecessors when no HTTP
         request context exists.

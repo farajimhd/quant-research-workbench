@@ -846,6 +846,16 @@ bounded direct ClickHouse paths remain documented in
      the fifteen authority/response tests passed, Python compilation passed,
      and the managed frontend production build passed. This is application-side
      composition only; no deferred producer or broker service was changed.
+108. Closed a hidden correlation-lineage break in concurrent backend
+     composition. Ordinary Python thread pools do not propagate request context,
+     so downstream QMD and other fan-out calls could lose the request IDs even
+     though direct calls preserved them. A shared context-preserving executor
+     now copies the submitting context separately for every backend worker
+     across QMD, Canvas, account, facts/reference, SEC composition, and live
+     market-data helpers. Forty request-context and QMD client tests passed,
+     including actual three-worker QMD catalog lineage and sequential
+     no-leakage tests; all migrated modules compiled. Deferred producer and
+     broker services were unchanged.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,

@@ -5,9 +5,11 @@ import logging
 import math
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from datetime import UTC, date, datetime
 from typing import Any, Callable
+
+from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,

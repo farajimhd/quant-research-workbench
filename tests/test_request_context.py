@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src.request_context import (
     CAUSATION_HEADER,
+    ContextThreadPoolExecutor,
     CORRELATION_HEADER,
     begin_request_context,
     current_request_headers,
@@ -101,6 +102,38 @@ class RequestContextTests(unittest.TestCase):
         self.assertEqual(event.causation_id, "proposal:chart-7")
         self.assertEqual(record.payload["correlation_id"], "web:request-19")
         self.assertEqual(record.payload["causation_id"], "proposal:chart-7")
+
+    def test_context_flows_into_concurrent_backend_composition(self) -> None:
+        correlation_token, causation_token, _, _ = begin_request_context(
+            "web:request-27", "chart:AAPL"
+        )
+        try:
+            with ContextThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(current_request_identity)
+                second = executor.submit(current_request_headers)
+                identity = first.result(timeout=2)
+                headers = second.result(timeout=2)
+        finally:
+            end_request_context(correlation_token, causation_token)
+        self.assertEqual(identity["correlation_id"], "web:request-27")
+        self.assertEqual(identity["causation_id"], "chart:AAPL")
+        self.assertEqual(headers[CORRELATION_HEADER], "web:request-27")
+        self.assertEqual(headers[CAUSATION_HEADER], "chart:AAPL")
+
+    def test_concurrent_backend_context_does_not_leak_between_submissions(self) -> None:
+        with ContextThreadPoolExecutor(max_workers=1) as executor:
+            first_tokens = begin_request_context("web:first", "event:first")
+            try:
+                first = executor.submit(current_request_identity)
+            finally:
+                end_request_context(first_tokens[0], first_tokens[1])
+            second_tokens = begin_request_context("web:second", "event:second")
+            try:
+                second = executor.submit(current_request_identity)
+            finally:
+                end_request_context(second_tokens[0], second_tokens[1])
+            self.assertEqual(first.result(timeout=2)["correlation_id"], "web:first")
+            self.assertEqual(second.result(timeout=2)["correlation_id"], "web:second")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from contextvars import ContextVar
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar, copy_context
 import hashlib
 import re
+from typing import Any, Callable
 from uuid import uuid4
 
 
@@ -11,6 +13,14 @@ CAUSATION_HEADER = "X-Causation-ID"
 _IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _correlation_id: ContextVar[str] = ContextVar("request_correlation_id", default="")
 _causation_id: ContextVar[str] = ContextVar("request_causation_id", default="")
+
+
+class ContextThreadPoolExecutor(ThreadPoolExecutor):
+    """Thread pool that preserves the submitting request's causal context."""
+
+    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any):  # type: ignore[override]
+        context = copy_context()
+        return super().submit(context.run, fn, *args, **kwargs)
 
 
 def normalize_request_identity(value: str | None) -> str:
