@@ -146,6 +146,15 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
   at maximum event speed across the selected exchange sessions and pins the
   approved configuration revision. Its setup page can create, monitor, and
   stop a run.
+- Backtest Debug injects a bounded, content-hashed fixture into that same
+  historical controller. Canonical quote/trade events and normalized derived
+  frames use the same controlled clock, Strategy, Portfolio, OMS simulator,
+  journal, and Canvas projection as Backtest; they do not call QMD History.
+  The exact fixture records and hash are stored beside the run manifest under
+  the external runtime root so a Debug result names reproducible input rather
+  than an opaque test mock. The Backtest Debug workspace provides a bounded
+  JSON fixture editor, browser-local reusable case library, preflight, run
+  controls, hash evidence, and the shared read-only Canvas projection.
 - Historical Strategy warm-up fetches the cross-sectional Scanner signal product
   once per run window and groups it by assigned ticker. Ticker/timeframe derived
   streams use a bounded semaphore (default eight, maximum 32) rather than opening

@@ -212,6 +212,12 @@ Service-to-service calls use scoped identities and explicit allowlists. Read acc
 - Replay, Live/Paper, and Backtest resolve the same published Canvas and
   canonical trading projections. A future research workspace and the remaining
   legacy rollback code still require migration evidence before removal.
+- `POST /api/trading/backtest_debug/runs` accepts one bounded deterministic
+  fixture and pins it to the approved configuration release. Its list, status,
+  stop, and Canvas endpoints are mode-specific projections over the shared
+  historical controller. Fixture records require explicit timezone-aware
+  event clocks and causal ordering; the backend persists their SHA-256 identity
+  with the run. QMD is deliberately not a dependency of this injected source.
 
 ---
 

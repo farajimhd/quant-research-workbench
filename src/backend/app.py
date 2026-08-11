@@ -52,9 +52,12 @@ from src.backend.portfolio_management_service import (
     portfolio_management_snapshot,
 )
 from src.backend.replay_run_service import (
+    HistoricalDebugFixture,
     ReplayRunDefinition,
     ReplayRunCapacityError,
     ReplayRunService,
+    backtest_debug_runtime_root,
+    backtest_debug_preflight,
     backtest_preflight,
     backtest_runtime_root,
     replay_preflight,
@@ -477,6 +480,7 @@ def _qmd_stream_error(error: Exception, *, stream: str) -> dict[str, Any]:
 
 replay_run_service = ReplayRunService()
 backtest_run_service = ReplayRunService(runtime_root=backtest_runtime_root())
+backtest_debug_run_service = ReplayRunService(runtime_root=backtest_debug_runtime_root())
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -663,6 +667,18 @@ class BacktestRunCreateRequest(BaseModel):
     session_count: int = Field(default=20, ge=1, le=260)
     initial_cash: float = Field(default=100_000.0, ge=1_000, le=1_000_000_000)
     configuration_revision_id: str = Field(default="", max_length=128)
+
+
+class BacktestDebugRunCreateRequest(BaseModel):
+    session_date: date
+    start_time: str = "09:45:00"
+    initial_cash: float = Field(default=100_000.0, ge=1_000, le=1_000_000_000)
+    assignment_ids: list[str] = Field(default_factory=list, max_length=100)
+    tickers: list[str] = Field(default_factory=list, max_length=100)
+    configuration_revision_id: str = Field(default="", max_length=128)
+    fixture_id: str = Field(min_length=1, max_length=128)
+    market_events: list[dict[str, Any]] = Field(default_factory=list, max_length=20_000)
+    derived_frames: list[dict[str, Any]] = Field(default_factory=list, max_length=20_000)
 
 
 class ReplayTradeProposalSubmit(BaseModel):
@@ -5158,6 +5174,99 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
         return controller.snapshot()
     except ReplayRunCapacityError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/backtest_debug/runs")
+async def trading_backtest_debug_run_create(
+    payload: BacktestDebugRunCreateRequest,
+) -> dict[str, Any]:
+    try:
+        configuration_revision = replay_configuration_snapshot()
+        if payload.configuration_revision_id != configuration_revision["revision_id"]:
+            raise ValueError(
+                "The approved configuration changed; review Backtest Debug again"
+            )
+        fixture = HistoricalDebugFixture(
+            fixture_id=payload.fixture_id,
+            market_events=tuple(dict(row) for row in payload.market_events),
+            derived_frames=tuple(dict(row) for row in payload.derived_frames),
+        )
+        definition = ReplayRunDefinition(
+            session_date=payload.session_date,
+            start_time=_replay_clock_time(payload.start_time),
+            initial_cash=payload.initial_cash,
+            assignment_ids=tuple(payload.assignment_ids),
+            tickers=tuple(payload.tickers),
+            configuration_revision=configuration_revision,
+            mode=RunMode.BACKTEST_DEBUG,
+            debug_fixture=fixture,
+        )
+        controller = await backtest_debug_run_service.create(definition)
+        return controller.snapshot()
+    except ReplayRunCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/backtest_debug/preflight")
+def trading_backtest_debug_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
+    try:
+        configuration_revision = replay_configuration_snapshot()
+        if (
+            payload.configuration_revision_id
+            and payload.configuration_revision_id != configuration_revision["revision_id"]
+        ):
+            raise ValueError(
+                "The approved configuration changed; review Backtest Debug again"
+            )
+        return backtest_debug_preflight(
+            session_date=payload.session_date,
+            start_time=_replay_clock_time(payload.start_time),
+            initial_cash=payload.initial_cash,
+            assignment_ids=tuple(payload.assignment_ids),
+            tickers=tuple(payload.tickers),
+            configuration_revision=configuration_revision,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/backtest_debug/runs")
+def trading_backtest_debug_runs() -> dict[str, Any]:
+    rows = backtest_debug_run_service.list()
+    return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
+
+
+@app.get("/api/trading/backtest_debug/runs/{run_id}")
+def trading_backtest_debug_run(run_id: str) -> dict[str, Any]:
+    try:
+        return backtest_debug_run_service.get(run_id).snapshot()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest Debug run not found") from exc
+
+
+@app.get("/api/trading/backtest_debug/runs/{run_id}/canvas")
+async def trading_backtest_debug_run_canvas(
+    run_id: str,
+    symbol: str = "AAPL",
+) -> dict[str, Any]:
+    try:
+        return await backtest_debug_run_service.get(run_id).canvas_payload(symbol)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest Debug run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/backtest_debug/runs/{run_id}/stop")
+async def trading_backtest_debug_run_stop(run_id: str) -> dict[str, Any]:
+    try:
+        return await backtest_debug_run_service.get(run_id).command("stop")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest Debug run not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

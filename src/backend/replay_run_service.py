@@ -33,7 +33,7 @@ from src.backend.trading_configuration_service import (
     merged_assignment_parameters,
     replay_configuration_snapshot,
 )
-from src.market_engine.events import MarketEvent, QuoteEvent
+from src.market_engine.events import MarketEvent, QuoteEvent, TradeEvent
 from src.market_engine.historical_source import QmdHistoricalEventSource
 from src.trading_runtime.domain import InstrumentContract, TradingMode
 from src.trading_runtime.journal import TradingJournal
@@ -63,6 +63,7 @@ from src.trading_runtime.strategy_campaign import campaign_state
 NEW_YORK = ZoneInfo("America/New_York")
 DEFAULT_REPLAY_ROOT = Path(r"D:\TradingML\runtimes\trading\replay")
 DEFAULT_BACKTEST_ROOT = Path(r"D:\TradingML\runtimes\trading\backtest")
+DEFAULT_BACKTEST_DEBUG_ROOT = Path(r"D:\TradingML\runtimes\trading\backtest_debug")
 REPLAY_STATUSES = {
     "created",
     "warming",
@@ -78,10 +79,54 @@ TERMINAL_REPLAY_STATUSES = {"completed", "stopped", "failed"}
 PLAYBACK_SPEEDS = (1.0, 5.0, 30.0, 120.0, 0.0)
 DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 8
+MAX_DEBUG_FIXTURE_EVENTS = 20_000
 
 
 class ReplayRunCapacityError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalDebugFixture:
+    fixture_id: str
+    market_events: tuple[dict[str, Any], ...] = ()
+    derived_frames: tuple[dict[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", self.fixture_id):
+            raise ValueError("Debug fixture_id must be a stable 1-128 character identifier")
+        if not self.market_events and not self.derived_frames:
+            raise ValueError("Debug fixture requires market_events or derived_frames")
+        if len(self.market_events) + len(self.derived_frames) > MAX_DEBUG_FIXTURE_EVENTS:
+            raise ValueError(
+                f"Debug fixture supports at most {MAX_DEBUG_FIXTURE_EVENTS:,} records"
+            )
+
+    @property
+    def content_hash(self) -> str:
+        canonical = json.dumps(
+            {
+                "fixture_id": self.fixture_id,
+                "market_events": self.market_events,
+                "derived_frames": self.derived_frames,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def payload(self, *, include_records: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "fixture_id": self.fixture_id,
+            "content_hash": self.content_hash,
+            "market_event_count": len(self.market_events),
+            "derived_frame_count": len(self.derived_frames),
+        }
+        if include_records:
+            payload["market_events"] = [dict(row) for row in self.market_events]
+            payload["derived_frames"] = [dict(row) for row in self.derived_frames]
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,10 +139,15 @@ class ReplayRunDefinition:
     configuration_revision: dict[str, Any] = field(default_factory=dict)
     mode: RunMode = RunMode.REPLAY
     final_session_date: date | None = None
+    debug_fixture: HistoricalDebugFixture | None = None
 
     def __post_init__(self) -> None:
-        if self.mode not in {RunMode.REPLAY, RunMode.BACKTEST}:
-            raise ValueError("Historical controller mode must be replay or backtest")
+        if self.mode not in {RunMode.REPLAY, RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}:
+            raise ValueError("Historical controller mode must be replay, backtest, or backtest_debug")
+        if self.mode == RunMode.BACKTEST_DEBUG and self.debug_fixture is None:
+            raise ValueError("Backtest Debug requires a deterministic fixture")
+        if self.mode != RunMode.BACKTEST_DEBUG and self.debug_fixture is not None:
+            raise ValueError("Debug fixtures may only be used by Backtest Debug")
         if self.mode == RunMode.REPLAY and self.final_session_date not in {None, self.session_date}:
             raise ValueError("Replay is limited to one exchange session")
         if self.final_session_date is not None and self.final_session_date < self.session_date:
@@ -114,6 +164,16 @@ class ReplayRunDefinition:
             raise ValueError("Replay supports at most 100 explicitly configured symbols")
         if not self.configuration_revision.get("revision_id"):
             raise ValueError("Replay requires an approved trading configuration revision")
+        if self.debug_fixture is not None:
+            fixture_times = [
+                *(_debug_time(row.get("ts")) for row in self.debug_fixture.market_events),
+                *(_debug_time(row.get("as_of")) for row in self.debug_fixture.derived_frames),
+            ]
+            if any(
+                event_time < self.session_start or event_time > self.session_end
+                for event_time in fixture_times
+            ):
+                raise ValueError("Debug fixture records must stay inside the configured session")
 
     @property
     def session_start(self) -> datetime:
@@ -151,6 +211,9 @@ class ReplayRunDefinition:
             "configuration_content_hash": approved.get("content_hash", ""),
             "canvas_revision": canvas.get("revision", ""),
             "canvas_profile": canvas.get("profile") or {},
+            "debug_fixture": (
+                self.debug_fixture.payload() if self.debug_fixture is not None else None
+            ),
         }
 
 
@@ -187,7 +250,7 @@ class ReplayRunController:
         self.updated_at = self.created_at
         self.current_time: datetime | None = None
         self.speed = 30.0
-        if self.definition.mode == RunMode.BACKTEST:
+        if self.definition.mode in {RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}:
             self.speed = 0.0
         self.processed_events = 0
         self.warmup_events = 0
@@ -497,6 +560,11 @@ class ReplayRunController:
                 if key.startswith("configuration_") or key.startswith("canvas_")
             },
             "tickers": list(self.definition.tickers),
+            "debug_fixture": (
+                self.definition.debug_fixture.payload()
+                if self.definition.debug_fixture is not None
+                else None
+            ),
         }
 
     async def canvas_payload(self, symbol: str = "AAPL") -> dict[str, Any]:
@@ -609,16 +677,8 @@ class ReplayRunController:
             frames = await self._load_strategy_frames()
             frame_index = 0
             self._stream_tickers = self._resolved_tickers()
-            source = QmdHistoricalEventSource(
-                historical_gateway_base_url(),
-                start=self.definition.session_start,
-                end=self.definition.session_end,
-                tickers=list(self._stream_tickers),
-                batch_size=1_000,
-            )
-            await source.health()
-            async for batch in source.stream():
-                for event_index, event in enumerate(batch.events, start=1):
+            async for events in self._market_event_batches():
+                for event_index, event in enumerate(events, start=1):
                     if self._stop_requested:
                         await self._finish("stopped")
                         return
@@ -626,7 +686,8 @@ class ReplayRunController:
                         if self.status == "warming":
                             self.status = (
                                 "running"
-                                if self.definition.mode == RunMode.BACKTEST
+                                if self.definition.mode
+                                in {RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}
                                 else "ready"
                             )
                             self.current_time = self.definition.requested_start
@@ -665,6 +726,16 @@ class ReplayRunController:
                         await self._after_event(event.ts)
                     if event_index % 100 == 0:
                         await asyncio.sleep(0)
+            if (
+                frame_index < len(frames)
+                and self.status == "warming"
+                and self.definition.mode == RunMode.BACKTEST_DEBUG
+            ):
+                self.status = "running"
+                self.current_time = self.definition.requested_start
+                self.updated_at = datetime.now(UTC)
+                await self._publish(force=True)
+                self._write_manifest()
             while frame_index < len(frames):
                 frame = frames[frame_index]
                 if frame.as_of >= self.definition.requested_start:
@@ -680,6 +751,26 @@ class ReplayRunController:
         except Exception as exc:
             self.error = str(exc)
             await self._finish("failed")
+
+    async def _market_event_batches(self):
+        if self.definition.mode == RunMode.BACKTEST_DEBUG:
+            fixture = self.definition.debug_fixture
+            if fixture is None:
+                raise RuntimeError("Backtest Debug fixture disappeared before execution")
+            events = _debug_market_events(fixture.market_events)
+            for offset in range(0, len(events), 1_000):
+                yield events[offset : offset + 1_000]
+            return
+        source = QmdHistoricalEventSource(
+            historical_gateway_base_url(),
+            start=self.definition.session_start,
+            end=self.definition.session_end,
+            tickers=list(self._stream_tickers),
+            batch_size=1_000,
+        )
+        await source.health()
+        async for batch in source.stream():
+            yield batch.events
 
     async def _initialize_runtime(self) -> None:
         configuration = self.definition.configuration_revision["payload"]
@@ -1217,6 +1308,11 @@ class ReplayRunController:
         return tickers
 
     async def _load_strategy_frames(self) -> list[ReplayDerivedFrame]:
+        if self.definition.mode == RunMode.BACKTEST_DEBUG:
+            fixture = self.definition.debug_fixture
+            if fixture is None:
+                raise RuntimeError("Backtest Debug fixture disappeared before execution")
+            return _debug_derived_frames(fixture.derived_frames)
         if self._strategy is None:
             return []
         requests = {
@@ -1268,6 +1364,20 @@ class ReplayRunController:
             "runtime_root": str(self.runtime_root),
             "journal_path": str(self.run_dir / "journal.sqlite3"),
         }
+        if self.definition.debug_fixture is not None:
+            fixture_target = self.run_dir / "debug-fixture.json"
+            fixture_temporary = self.run_dir / "debug-fixture.json.tmp"
+            fixture_temporary.write_text(
+                json.dumps(
+                    self.definition.debug_fixture.payload(include_records=True),
+                    indent=2,
+                    sort_keys=True,
+                    default=str,
+                ),
+                encoding="utf-8",
+            )
+            fixture_temporary.replace(fixture_target)
+            payload["debug_fixture_path"] = str(fixture_target)
         target = self.run_dir / "manifest.json"
         temporary = self.run_dir / "manifest.json.tmp"
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -1362,6 +1472,106 @@ def backtest_runtime_root() -> Path:
         os.environ.get("TRADING_RUNTIME_ROOT", str(DEFAULT_BACKTEST_ROOT.parent))
     )
     return trading_root / "backtest"
+
+
+def backtest_debug_runtime_root() -> Path:
+    configured = os.environ.get("TRADING_BACKTEST_DEBUG_ROOT", "").strip()
+    if configured:
+        return Path(configured)
+    trading_root = Path(
+        os.environ.get("TRADING_RUNTIME_ROOT", str(DEFAULT_BACKTEST_DEBUG_ROOT.parent))
+    )
+    return trading_root / "backtest_debug"
+
+
+def _debug_market_events(rows: tuple[dict[str, Any], ...]) -> list[MarketEvent]:
+    events: list[MarketEvent] = []
+    for index, source in enumerate(rows, start=1):
+        row = dict(source)
+        kind = str(row.get("kind") or "").strip().lower()
+        ticker = _ticker(row.get("ticker"))
+        event_time = _debug_time(row.get("ts"))
+        ingest_time = _debug_time(row.get("ingest_ts") or event_time)
+        common = {
+            "conditions": tuple(int(value) for value in row.get("conditions") or ()),
+            "ingest_ts": ingest_time,
+            "raw": dict(row.get("raw") or {}),
+            "sequence": int(row.get("sequence") or index),
+            "source": f"debug_fixture:{str(row.get('source') or 'deterministic')}",
+            "tape": int(row.get("tape") or 0),
+            "ticker": ticker,
+            "ts": event_time,
+        }
+        if kind == "quote":
+            event = QuoteEvent(
+                ask_exchange=int(row.get("ask_exchange") or 0),
+                ask_price=float(row.get("ask_price") or 0),
+                ask_size=float(row.get("ask_size") or 0),
+                bid_exchange=int(row.get("bid_exchange") or 0),
+                bid_price=float(row.get("bid_price") or 0),
+                bid_size=float(row.get("bid_size") or 0),
+                indicators=tuple(int(value) for value in row.get("indicators") or ()),
+                **common,
+            )
+        elif kind == "trade":
+            event = TradeEvent(
+                event_id=str(row.get("event_id") or f"debug-{index}"),
+                exchange=int(row.get("exchange") or 0),
+                participant_ts=(
+                    _debug_time(row["participant_ts"])
+                    if row.get("participant_ts")
+                    else None
+                ),
+                price=float(row.get("price") or 0),
+                size=float(row.get("size") or 0),
+                trf_id=int(row.get("trf_id") or 0),
+                trf_ts=(
+                    _debug_time(row["trf_ts"]) if row.get("trf_ts") else None
+                ),
+                **common,
+            )
+        else:
+            raise ValueError(f"Debug fixture record {index} has unsupported kind {kind!r}")
+        events.append(event)
+    ordered = sorted(events, key=lambda event: (event.ts, event.sequence, event.kind))
+    if events != ordered:
+        raise ValueError("Debug fixture market_events must already be causally ordered")
+    return events
+
+
+def _debug_derived_frames(rows: tuple[dict[str, Any], ...]) -> list[ReplayDerivedFrame]:
+    frames = [
+        ReplayDerivedFrame(
+            as_of=_debug_time(row.get("as_of")),
+            bar=dict(row.get("bar") or {}),
+            indicator=dict(row.get("indicator") or {}),
+            sequence=int(row.get("sequence") or index),
+            ticker=_ticker(row.get("ticker")),
+            timeframe=str(row.get("timeframe") or "1m"),
+            signals={str(key): float(value) for key, value in dict(row.get("signals") or {}).items()},
+        )
+        for index, row in enumerate(rows, start=1)
+    ]
+    ordered = sorted(
+        frames,
+        key=lambda frame: (frame.as_of, frame.ticker, frame.timeframe, frame.sequence),
+    )
+    if frames != ordered:
+        raise ValueError("Debug fixture derived_frames must already be causally ordered")
+    return frames
+
+
+def _debug_time(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("Debug fixture timestamps are required")
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Debug fixture timestamps must include an explicit timezone")
+    return parsed
 
 
 def _historical_watchlist_members_for_configuration(
@@ -1777,6 +1987,109 @@ def backtest_preflight(
         "configuration_content_hash": approved.get("content_hash", ""),
         "configuration_label": approved.get("label", ""),
         "initial_cash": initial_cash,
+    }
+
+
+def backtest_debug_preflight(
+    *,
+    session_date: date,
+    start_time: clock_time,
+    initial_cash: float = 100_000.0,
+    assignment_ids: tuple[str, ...] = (),
+    tickers: tuple[str, ...] = (),
+    configuration_revision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    approved = configuration_revision or replay_configuration_snapshot()
+    configuration = dict(approved.get("payload") or {})
+    bindings = [
+        dict(row)
+        for row in dict(configuration.get("accounts") or {}).get("bindings") or []
+        if bool(row.get("enabled", True))
+        and RunMode.BACKTEST_DEBUG.value in set(row.get("modes") or [])
+    ]
+    binding_keys = {str(row.get("account_key") or "") for row in bindings}
+    assignments = [
+        dict(row)
+        for row in configuration.get("assignments") or []
+        if str(row.get("status") or "") not in {"disabled", "completed", "error"}
+        and str(row.get("account_key") or "") in binding_keys
+        and (not assignment_ids or str(row.get("assignment_id") or "") in assignment_ids)
+    ]
+    configured_tickers = tuple(
+        dict.fromkeys(
+            [
+                *(_ticker(row.get("ticker")) for row in assignments),
+                *(_ticker(value) for value in tickers),
+                *_canvas_profile_tickers(
+                    dict(
+                        dict(configuration.get("canvas") or {}).get("profile") or {}
+                    )
+                ),
+            ]
+        )
+    )
+    storage_ready = False
+    storage_evidence = str(backtest_debug_runtime_root())
+    try:
+        root = backtest_debug_runtime_root()
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / f".backtest-debug-preflight-{uuid4().hex}.tmp"
+        probe.write_text("ready", encoding="utf-8")
+        probe.unlink()
+        storage_ready = True
+    except OSError as exc:
+        storage_evidence = str(exc)
+    checks = [
+        _check(
+            "approved_configuration",
+            "Approved application revision",
+            bool(approved.get("revision_id")),
+            f"Revision {approved.get('revision')} is pinned to every fixture run.",
+            str(approved.get("content_hash") or approved.get("revision_id") or ""),
+        ),
+        _check(
+            "simulated_accounts",
+            "Backtest Debug account bindings",
+            bool(bindings),
+            f"{len(bindings)} isolated simulated account binding(s) are enabled."
+            if bindings
+            else "The approved revision has no Backtest Debug account binding.",
+            ", ".join(sorted(binding_keys)) or "No Backtest Debug account authority",
+        ),
+        _check(
+            "configured_symbols",
+            "Fixture symbols",
+            bool(configured_tickers),
+            f"{len(configured_tickers)} configured symbol(s) can be used by fixtures."
+            if configured_tickers
+            else "No Canvas, assignment, or explicit fixture symbol is configured.",
+            ", ".join(configured_tickers[:12]) or "No symbol scope",
+        ),
+        _check(
+            "runtime_storage",
+            "Backtest Debug runtime storage",
+            storage_ready,
+            "Exact fixtures, manifests, and journals use the external runtime root."
+            if storage_ready
+            else "The external Backtest Debug runtime root is not writable.",
+            storage_evidence,
+        ),
+    ]
+    ready = all(row["status"] == "ready" for row in checks if row["required"])
+    return {
+        "schema_version": 1,
+        "ready": ready,
+        "strategy_run_ready": ready,
+        "checks": checks,
+        "session_date": session_date.isoformat(),
+        "start_time": start_time.isoformat(timespec="seconds"),
+        "initial_cash": initial_cash,
+        "assignments": assignments,
+        "tickers": list(configured_tickers),
+        "configuration_revision_id": approved.get("revision_id", ""),
+        "configuration_revision": approved.get("revision", 0),
+        "configuration_content_hash": approved.get("content_hash", ""),
+        "configuration_label": approved.get("label", ""),
     }
 
 

@@ -437,7 +437,12 @@ load progressively without false continuity.
         canonical Strategy/Portfolio/OMS state while keeping all interactive
         assignment/proposal commands read-only.
   - [ ] Add durable resume/restart from checkpoints.
-- [ ] Add deterministic Debug fixtures.
+- [x] Add deterministic Debug fixtures.
+  - [x] Inject bounded, causally ordered, content-hashed market-event and
+        derived-frame fixtures through the shared historical controller,
+        persist exact fixture evidence, and expose mode-specific backend run
+        and Canvas APIs without calling QMD History.
+  - [x] Add the end-user fixture library/editor and Backtest Debug run page.
 - [ ] Pin causal market/enrichment versions for historical decisions.
 - [ ] Standardize progress, pause, resume, cancel, failure, and completion.
 - [ ] Add restart-safe checkpoints.

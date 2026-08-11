@@ -581,6 +581,23 @@ bounded direct ClickHouse paths remain documented in
     strings. This is a backend consumer migration only and changes no News, SEC,
     Reference, or Text Intelligence producer. All 15 focused query-plan,
     Canvas, and registry tests plus Python compile and diff validation passed.
+81. Added deterministic Backtest Debug source injection to the shared
+    historical controller. A bounded fixture can carry canonical quote/trade
+    events and normalized derived frames with explicit causal clocks. The run
+    uses the same approved configuration, Strategy, Portfolio, OMS simulator,
+    journal, lifecycle, and Canvas projection as Backtest while making no QMD
+    History request. The fixture is content hashed and its exact records are
+    persisted beside the run manifest under the external runtime root. Dedicated
+    create/list/status/stop/Canvas APIs expose the mode without conflating it
+    with production Backtest evidence. The application now has a dedicated
+    Backtest Debug page with a bounded JSON editor, browser-local saved-case
+    library, preflight, run controls, fixture-hash evidence, and the shared
+    read-only Canvas. Python compile, 39 focused historical-controller/API tests
+    including an end-to-end no-QMD fixture run,
+    and the managed frontend production build passed. A targeted Playwright
+    review captured the page at 1600x1000 and 1280x720 with zero objective
+    issues; because no backend was running, the screenshots correctly showed
+    the typed preflight failure state rather than ready/run-state evidence.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

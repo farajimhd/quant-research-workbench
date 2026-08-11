@@ -20478,6 +20478,56 @@ button {
   line-height: 1.45;
 }
 
+.debug-fixture-actions {
+  display: flex !important;
+  flex-direction: row !important;
+  gap: 8px !important;
+}
+
+.debug-fixture-editors {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 18px;
+}
+
+.debug-fixture-editors label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.debug-fixture-editors label > span {
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.debug-fixture-editors textarea {
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  min-height: 280px;
+  padding: 12px;
+  resize: vertical;
+  width: 100%;
+}
+
+.debug-fixture-editors textarea:focus {
+  border-color: var(--primary);
+  outline: 2px solid color-mix(in oklab, var(--primary) 20%, transparent);
+}
+
+.debug-fixture-editors small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .historical-checking {
   align-items: center;
   color: var(--primary) !important;
@@ -20917,6 +20967,7 @@ button {
 }
 
 @media (max-width: 900px) {
+  .debug-fixture-editors,
   .historical-goal-hero,
   .historical-home-grid,
   .replay-player-header,

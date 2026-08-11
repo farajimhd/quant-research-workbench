@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from dataclasses import asdict
@@ -10,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from src.backend.replay_run_service import (
+    HistoricalDebugFixture,
     ReplayDerivedFrame,
     ReplayRunController,
     ReplayRunCapacityError,
@@ -19,6 +21,9 @@ from src.backend.replay_run_service import (
     _canvas_profile_tickers,
     _historical_watchlist_membership_timeline_for_configuration,
     _historical_signal_events,
+    _debug_derived_frames,
+    _debug_market_events,
+    backtest_debug_preflight,
     backtest_preflight,
     replay_preflight,
 )
@@ -84,7 +89,7 @@ def approved_configuration(*, assignments: list[dict] | None = None) -> dict:
                     "session_key": "replay",
                     "portfolio_policy_id": "default",
                     "enabled": True,
-                    "modes": ["replay", "backtest"],
+                    "modes": ["replay", "backtest", "backtest_debug"],
                 }]
             },
             "canvas": {
@@ -133,6 +138,182 @@ class ReplayRunDefinitionTests(unittest.TestCase):
         self.assertEqual(snapshot["mode"], "backtest")
         self.assertEqual(snapshot["canvas_revision"], "canvas-test")
         self.assertEqual(snapshot["canvas_profile"]["defaultState"]["openIds"], ["chart"])
+
+    def test_debug_definition_requires_a_bounded_deterministic_fixture(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires a deterministic fixture"):
+            ReplayRunDefinition(
+                session_date=date(2026, 7, 28),
+                start_time=time(9, 45),
+                mode=RunMode.BACKTEST_DEBUG,
+                configuration_revision=approved_configuration(),
+            )
+        fixture = HistoricalDebugFixture(
+            fixture_id="opening-range-case-1",
+            market_events=({
+                "kind": "trade",
+                "ticker": "AAPL",
+                "ts": "2026-07-28T09:45:00-04:00",
+                "price": 101.25,
+                "size": 100,
+            },),
+        )
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 7, 28),
+            start_time=time(9, 45),
+            mode=RunMode.BACKTEST_DEBUG,
+            debug_fixture=fixture,
+            configuration_revision=approved_configuration(),
+        )
+
+        self.assertEqual(definition.payload()["mode"], "backtest_debug")
+        self.assertEqual(definition.payload()["debug_fixture"]["market_event_count"], 1)
+        self.assertEqual(len(definition.payload()["debug_fixture"]["content_hash"]), 64)
+        snapshot = ReplayRunController(
+            definition, runtime_root=Path(tempfile.gettempdir())
+        ).snapshot()
+        self.assertEqual(snapshot["debug_fixture"]["fixture_id"], "opening-range-case-1")
+
+    def test_debug_fixture_rejects_records_outside_the_session(self) -> None:
+        fixture = HistoricalDebugFixture(
+            fixture_id="wrong-day",
+            market_events=({
+                "kind": "trade",
+                "ticker": "AAPL",
+                "ts": "2026-07-29T09:45:00-04:00",
+                "price": 101.25,
+            },),
+        )
+        with self.assertRaisesRegex(ValueError, "inside the configured session"):
+            ReplayRunDefinition(
+                session_date=date(2026, 7, 28),
+                start_time=time(9, 45),
+                mode=RunMode.BACKTEST_DEBUG,
+                debug_fixture=fixture,
+                configuration_revision=approved_configuration(),
+            )
+
+
+class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
+    def fixture(self) -> HistoricalDebugFixture:
+        return HistoricalDebugFixture(
+            fixture_id="deterministic-aapl",
+            market_events=(
+                {
+                    "kind": "quote",
+                    "ticker": "AAPL",
+                    "ts": "2026-07-28T09:45:00-04:00",
+                    "sequence": 1,
+                    "bid_price": 101.2,
+                    "ask_price": 101.3,
+                    "bid_size": 20,
+                    "ask_size": 30,
+                },
+                {
+                    "kind": "trade",
+                    "ticker": "AAPL",
+                    "ts": "2026-07-28T09:45:01-04:00",
+                    "sequence": 2,
+                    "price": 101.25,
+                    "size": 100,
+                },
+            ),
+            derived_frames=({
+                "ticker": "AAPL",
+                "timeframe": "1m",
+                "as_of": "2026-07-28T09:45:01-04:00",
+                "sequence": 3,
+                "bar": {"close": 101.25},
+                "indicator": {"vwap": 101.1},
+            },),
+        )
+
+    def test_parses_canonical_events_and_frames_without_qmd(self) -> None:
+        fixture = self.fixture()
+        events = _debug_market_events(fixture.market_events)
+        frames = _debug_derived_frames(fixture.derived_frames)
+
+        self.assertEqual([event.kind for event in events], ["quote", "trade"])
+        self.assertEqual(events[0].source, "debug_fixture:deterministic")
+        self.assertEqual(frames[0].indicator["vwap"], 101.1)
+
+    async def test_controller_injects_fixture_batches_instead_of_qmd(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 7, 28),
+            start_time=time(9, 45),
+            mode=RunMode.BACKTEST_DEBUG,
+            debug_fixture=self.fixture(),
+            configuration_revision=approved_configuration(),
+        )
+        controller = ReplayRunController(definition, runtime_root=Path(tempfile.gettempdir()))
+        batches = [batch async for batch in controller._market_event_batches()]
+
+        self.assertEqual(len(batches), 1)
+        self.assertEqual([event.sequence for event in batches[0]], [1, 2])
+
+    async def test_manifest_persists_exact_fixture_records_and_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            definition = ReplayRunDefinition(
+                session_date=date(2026, 7, 28),
+                start_time=time(9, 45),
+                mode=RunMode.BACKTEST_DEBUG,
+                tickers=("AAPL",),
+                debug_fixture=self.fixture(),
+                configuration_revision=approved_configuration(),
+            )
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller.run_dir.mkdir(parents=True)
+            controller._write_manifest()
+            fixture_payload = json.loads(
+                (controller.run_dir / "debug-fixture.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(fixture_payload["fixture_id"], "deterministic-aapl")
+        self.assertEqual(fixture_payload["market_event_count"], 2)
+        self.assertEqual(fixture_payload["content_hash"], self.fixture().content_hash)
+
+    async def test_debug_fixture_completes_through_shared_runtime_without_qmd(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "src.backend.replay_run_service.QmdHistoricalEventSource"
+        ) as qmd_source:
+            definition = ReplayRunDefinition(
+                session_date=date(2026, 7, 28),
+                start_time=time(9, 45),
+                mode=RunMode.BACKTEST_DEBUG,
+                tickers=("AAPL",),
+                debug_fixture=self.fixture(),
+                configuration_revision=approved_configuration(),
+            )
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            await controller.start()
+            assert controller._task is not None
+            await controller._task
+            try:
+                self.assertEqual(controller.status, "completed", controller.error)
+                self.assertEqual(controller.processed_events, 2)
+                self.assertEqual(controller.current_time.isoformat(), "2026-07-28T09:45:01-04:00")
+                self.assertIsNotNone(controller._journal.load_checkpoint(controller.run_id))
+                qmd_source.assert_not_called()
+            finally:
+                if controller._journal is not None:
+                    controller._journal.close()
+
+    def test_debug_preflight_uses_configuration_and_external_storage_not_qmd(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "src.backend.replay_run_service.backtest_debug_runtime_root",
+            return_value=Path(directory),
+        ), patch(
+            "src.backend.replay_run_service.historical_preflight"
+        ) as historical:
+            payload = backtest_debug_preflight(
+                session_date=date(2026, 7, 28),
+                start_time=time(9, 45),
+                tickers=("AAPL",),
+                configuration_revision=approved_configuration(),
+            )
+
+        self.assertTrue(payload["ready"])
+        self.assertEqual(payload["configuration_revision_id"], "configuration-test")
+        historical.assert_not_called()
 
 
 class HistoricalWatchlistTimelineTests(unittest.TestCase):

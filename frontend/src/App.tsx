@@ -3,13 +3,14 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Layout, type PageKey } from "./app/components/Layout";
 import { MarketStatusBadge, liveMarketStatus, type MarketStatus } from "./app/components/MarketStatusBadge";
 import { CanvasConfigurationPage, CanvasFocusPage } from "./pages/CanvasConfigurationPage";
+import { BacktestDebugPage } from "./pages/BacktestDebugPage";
 import { HistoricalTradingPage } from "./pages/HistoricalTradingPage";
 import { RealLiveTradingPage } from "./pages/RealLiveTradingPage";
 import { ReplayTradingPage } from "./pages/ReplayTradingPage";
 import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
 import { TradingConfigurationPage, type TradingConfigurationSection } from "./pages/TradingConfigurationPage";
 
-const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "market-discovery-configuration", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
+const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "canvas-configuration", "market-discovery-configuration", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -56,6 +57,9 @@ export function App() {
       </div>
       <div aria-hidden={page !== "backtest-trading"} className={page === "backtest-trading" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "backtest-trading" || visitedPages.has("backtest-trading") ? <HistoricalTradingPage mode="backtest" /> : null}
+      </div>
+      <div aria-hidden={page !== "backtest-debug"} className={page === "backtest-debug" ? "page-cache-panel active" : "page-cache-panel"}>
+        {page === "backtest-debug" || visitedPages.has("backtest-debug") ? <BacktestDebugPage /> : null}
       </div>
       <div aria-hidden={page !== "canvas-configuration"} className={page === "canvas-configuration" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "canvas-configuration" || visitedPages.has("canvas-configuration") ? <CanvasConfigurationPage /> : null}
