@@ -1038,6 +1038,11 @@ broker command outside OMS.
         longer transports the full per-symbol requirement graph: the backend
         response fell from about 62-78 MB during diagnosis to 1.3 KB while
         still reporting 74,096 active requirements.
+    - [x] Cache QMD's bounded summary projection for one second and invalidate
+          it synchronously on target replace/remove. With 81,816 active
+          requirements, the real release returned the cold/expired rebuild in
+          246-253 ms and repeated reads in 2.6-3.5 ms without changing the
+          summary `as_of` or target counts.
   - [ ] Repeat the active-session soak with the live-reserved repair fan-in and
         record websocket freshness, repair progress, compact queue depth/waits,
         Scanner latency, CPU, and memory through catch-up and steady state.

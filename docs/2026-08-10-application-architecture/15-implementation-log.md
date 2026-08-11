@@ -1831,6 +1831,23 @@ it does not imply all application work is complete.
      representative active-session soak and every deferred producer/broker
      item remain open.
 
+169. Removed repeated internal expansion from QMD's bounded computation-summary
+     route. The summary projection now has a one-second QMD-owned cache and is
+     invalidated synchronously whenever a computation target is replaced or
+     removed; expiry still rebuilds from the authoritative lease set so lease
+     expiration is not hidden indefinitely. The detailed target endpoint is
+     unchanged. With 81,816 active requirements, the rebuilt release measured
+     252.52 ms cold, 2.64-3.54 ms for repeated reads, and 245.7 ms after cache
+     expiry. All 109 QMD tests passed, including mutation-invalidation coverage.
+
+     The accompanying Generic Structure review confirmed that it cannot simply
+     be gated by the current focus predicate. Its state is event-native, so an
+     unfocused interval makes the persisted checkpoint stale. The safe target
+     remains a staged lease activation: checkpoint-to-ClickHouse ordered replay,
+     an atomic live-event barrier/handoff, and only then visible focus. No
+     gap-prone approximation was introduced; that larger non-deferred task
+     remains open.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

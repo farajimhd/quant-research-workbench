@@ -3,6 +3,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration as StdDuration, Instant};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ComputationTargetRequest {
@@ -104,9 +105,16 @@ struct ComputationTargets {
     targets: HashMap<String, ComputationTargetLease>,
 }
 
+#[derive(Clone)]
+struct CachedComputationTargetSummary {
+    expires_at: Instant,
+    value: ComputationTargetSummary,
+}
+
 #[derive(Clone, Default)]
 pub struct SharedComputationTargets {
     inner: Arc<RwLock<ComputationTargets>>,
+    summary_cache: Arc<RwLock<Option<CachedComputationTargetSummary>>>,
 }
 
 impl SharedComputationTargets {
@@ -190,16 +198,28 @@ impl SharedComputationTargets {
             .expect("computation target lock poisoned");
         prune_expired(&mut state.targets, now);
         state.targets.insert(target_id, lease.clone());
+        *self
+            .summary_cache
+            .write()
+            .expect("computation summary cache lock poisoned") = None;
         Ok(lease)
     }
 
     pub fn remove(&self, target_id: &str) -> bool {
-        self.inner
+        let removed = self
+            .inner
             .write()
             .expect("computation target lock poisoned")
             .targets
             .remove(target_id.trim())
-            .is_some()
+            .is_some();
+        if removed {
+            *self
+                .summary_cache
+                .write()
+                .expect("computation summary cache lock poisoned") = None;
+        }
+        removed
     }
 
     pub fn requires_focused_computation(&self, ticker: &str) -> bool {
@@ -387,8 +407,18 @@ impl SharedComputationTargets {
     }
 
     pub fn summary(&self) -> ComputationTargetSummary {
+        let now = Instant::now();
+        if let Some(cached) = self
+            .summary_cache
+            .read()
+            .expect("computation summary cache lock poisoned")
+            .as_ref()
+            .filter(|cached| cached.expires_at > now)
+        {
+            return cached.value.clone();
+        }
         let snapshot = self.snapshot();
-        ComputationTargetSummary {
+        let summary = ComputationTargetSummary {
             schema_version: snapshot.schema_version,
             as_of: snapshot.as_of,
             active_target_count: snapshot.active_target_count,
@@ -403,7 +433,16 @@ impl SharedComputationTargets {
             scope_symbol_counts: snapshot.scope_symbol_counts,
             scope_target_counts: snapshot.scope_target_counts,
             target_estimated_demand_units: snapshot.target_estimated_demand_units,
-        }
+        };
+        *self
+            .summary_cache
+            .write()
+            .expect("computation summary cache lock poisoned") =
+            Some(CachedComputationTargetSummary {
+                expires_at: now + StdDuration::from_secs(1),
+                value: summary.clone(),
+            });
+        summary
     }
 }
 
@@ -596,6 +635,30 @@ mod tests {
         assert_eq!(aapl.source_revision, "advancing_live");
         assert!(targets.remove("request:chart"));
         assert_eq!(targets.snapshot().symbol_ref_counts.get("AAPL"), Some(&1));
+    }
+
+    #[test]
+    fn summary_cache_is_invalidated_by_target_mutations() {
+        let targets = SharedComputationTargets::default();
+        targets
+            .replace(request("watchlist:one", ExecutionScope::Watchlist))
+            .unwrap();
+        let first = targets.summary();
+        let cached = targets.summary();
+        assert_eq!(first.active_target_count, 1);
+        assert_eq!(cached.as_of, first.as_of);
+
+        let mut second = request("request:chart", ExecutionScope::Request);
+        second.tickers = vec!["NVDA".to_string()];
+        targets.replace(second).unwrap();
+        let after_replace = targets.summary();
+        assert_eq!(after_replace.active_target_count, 2);
+        assert_eq!(after_replace.active_symbol_count, 3);
+
+        assert!(targets.remove("request:chart"));
+        let after_remove = targets.summary();
+        assert_eq!(after_remove.active_target_count, 1);
+        assert_eq!(after_remove.active_symbol_count, 2);
     }
 
     #[test]
