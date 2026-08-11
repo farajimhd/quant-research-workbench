@@ -1,5 +1,6 @@
 use crate::cache::{
     CacheEvidence, CacheMetrics, ChartSnapshot, DerivedSnapshot, HistoricalDerivedCache,
+    HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
     HISTORICAL_ENGINE_VERSION,
 };
 use crate::config::HistoricalGatewayConfig;
@@ -710,6 +711,8 @@ fn chart_indicator_provenance(
         "schema_version": 1,
         "capability_id": "qmd.family.core_momentum_and_structure",
         "calculation_scope": "request",
+        "calculation_revision": snapshot.cache.calculation_revision,
+        "corporate_action_revision": snapshot.cache.corporate_action_revision,
         "engine_version": snapshot.cache.engine_version,
         "indicator_schema_version": INDICATOR_SCHEMA_VERSION,
         "effective_parameters": {
@@ -1205,6 +1208,8 @@ async fn stream_derived(
             as_of,
             bars: visible.iter().map(|frame| frame.bar.clone()).collect(),
             cache: CacheEvidence {
+                calculation_revision: HISTORICAL_CALCULATION_REVISION,
+                corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION,
                 engine_version: HISTORICAL_ENGINE_VERSION,
                 event_count: events_processed,
                 hit: lease.hit,

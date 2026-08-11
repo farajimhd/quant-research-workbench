@@ -24,6 +24,8 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v28";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v28";
+pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +69,8 @@ pub struct DerivedSnapshot {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CacheEvidence {
+    pub calculation_revision: &'static str,
+    pub corporate_action_revision: &'static str,
     pub engine_version: &'static str,
     pub event_count: u64,
     pub hit: bool,
@@ -95,6 +99,8 @@ pub struct HistoricalComputationRequirement {
     pub ticker: String,
     pub timeframe: Option<String>,
     pub parameter_hash: String,
+    pub calculation_revision: String,
+    pub corporate_action_revision: String,
     pub anchor_start: DateTime<Utc>,
     pub anchor_end: DateTime<Utc>,
     pub source_revision: String,
@@ -409,6 +415,8 @@ impl HistoricalDerivedCache {
         Ok(DerivedSnapshot {
             bars,
             cache: CacheEvidence {
+                calculation_revision: HISTORICAL_CALCULATION_REVISION,
+                corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION,
                 engine_version: HISTORICAL_ENGINE_VERSION,
                 event_count,
                 hit: lease.hit,
@@ -445,6 +453,8 @@ impl HistoricalDerivedCache {
             lease.entry.wait_ready().await?
         };
         let cache = CacheEvidence {
+            calculation_revision: HISTORICAL_CALCULATION_REVISION,
+            corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION,
             engine_version: HISTORICAL_ENGINE_VERSION,
             event_count,
             hit: lease.hit,
@@ -1565,12 +1575,14 @@ fn cache_key(
     profile: &CacheProfile,
 ) -> String {
     format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         ticker.to_ascii_uppercase(),
         window.start.timestamp_micros(),
         window.end.timestamp_micros(),
         revision.token,
         HISTORICAL_ENGINE_VERSION,
+        HISTORICAL_CALCULATION_REVISION,
+        HISTORICAL_CORPORATE_ACTION_REVISION,
         BAR_SCHEMA_VERSION,
         INDICATOR_SCHEMA_VERSION,
         MARKET_PRODUCT_SCHEMA_VERSION,
@@ -1586,8 +1598,10 @@ fn historical_requirement(
     revision: &SourceRevision,
 ) -> HistoricalComputationRequirement {
     let parameter_contract = format!(
-        "{}|bar:{}|indicator:{}|product:{}|{}",
+        "{}|calculation:{}|corporate_action:{}|bar:{}|indicator:{}|product:{}|{}",
         HISTORICAL_ENGINE_VERSION,
+        HISTORICAL_CALCULATION_REVISION,
+        HISTORICAL_CORPORATE_ACTION_REVISION,
         BAR_SCHEMA_VERSION,
         INDICATOR_SCHEMA_VERSION,
         MARKET_PRODUCT_SCHEMA_VERSION,
@@ -1604,6 +1618,8 @@ fn historical_requirement(
             CacheProfile::Products => None,
         },
         parameter_hash: stable_hash_hex(&parameter_contract),
+        calculation_revision: HISTORICAL_CALCULATION_REVISION.to_string(),
+        corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION.to_string(),
         anchor_start: window.start,
         anchor_end: window.end,
         source_revision: revision.token.clone(),
@@ -1645,6 +1661,7 @@ mod tests {
         bounded_encountered_structure_levels, cache_key, encountered_structure_levels_for_session,
         ensure_monotonic_bar_start, historical_requirement, split_event_window, stable_hash_hex,
         structure_events_overlapping, CacheEntry, CacheProfile, EntryState, SourceRevision,
+        HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
         HISTORICAL_ENGINE_VERSION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
     };
     use crate::source::EventWindow;
@@ -1732,6 +1749,14 @@ mod tests {
         assert_eq!(requirement.anchor_end, window.end);
         assert_eq!(requirement.source_revision, "revision-17");
         assert_eq!(requirement.source_plan_hash, "plan-17");
+        assert_eq!(
+            requirement.calculation_revision,
+            HISTORICAL_CALCULATION_REVISION
+        );
+        assert_eq!(
+            requirement.corporate_action_revision,
+            HISTORICAL_CORPORATE_ACTION_REVISION
+        );
         assert_eq!(
             requirement.requirement_id,
             stable_hash_hex("exact-cache-key")

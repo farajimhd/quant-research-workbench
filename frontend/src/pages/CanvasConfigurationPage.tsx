@@ -305,6 +305,8 @@ type QmdBarHistory = {
 type QmdIndicatorProvenance = {
   as_of?: string;
   complete?: boolean;
+  calculation_revision?: string;
+  corporate_action_revision?: string;
   engine_version?: string;
   indicator_schema_version?: number;
   source?: { source_plan_hash?: string; tiers?: string[] };
@@ -1079,7 +1081,8 @@ function chartHistoryLimitNotice(rowBudget: number): string {
 
 function indicatorProvenanceNotice(provenance?: QmdIndicatorProvenance): string {
   if (!provenance?.engine_version) return "";
-  const source = provenance.source?.tiers?.length ? provenance.source.tiers.join(" + ") : "QMD source plan";
+  const sourceTier = provenance.source?.tiers?.length ? provenance.source.tiers.join(" + ") : "QMD source plan";
+  const source = `${sourceTier}; price basis ${provenance.corporate_action_revision ?? "unknown"}; calculation ${provenance.calculation_revision ?? provenance.engine_version}`;
   const warmUp = provenance.warm_up?.status === "partial_in_response"
     ? `warm-up ${provenance.warm_up.returned_bars ?? 0}/${provenance.warm_up.recommended_minimum_bars ?? 50} bars`
     : "warm-up satisfied";

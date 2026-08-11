@@ -775,6 +775,15 @@ bounded direct ClickHouse paths remain documented in
      durable ClickHouse snapshots remain authoritative and are unaffected by
      coordination eviction. Python compile and all 60 focused Scanner,
      Watchlist, Replay, and capacity tests passed.
+101. Completed revision-safe, bounded historical chart caching. QMD History's
+     existing entry, byte, row/update, concurrency, and broadcast bounds remain
+     the enforced cache limits. Cache keys and offline computation requirements
+     now explicitly include event-source, calculation, and corporate-action
+     revisions; the current price authority is declared as
+     `raw-unadjusted-v1`, so a future adjusted-price policy cannot reuse stale
+     entries. Chart provenance exposes both revisions and Canvas presents them
+     to manual and semi-automatic users. All 12 focused Rust cache tests and the
+     managed TypeScript/Vite production build passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

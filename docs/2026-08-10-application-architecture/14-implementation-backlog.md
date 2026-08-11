@@ -431,7 +431,11 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
 - [x] Cancel superseded navigation requests and prefetch adjacent windows.
       Canvas keeps one bounded exact-cursor earlier-page prefetch, consumes it
       only for the matching chart request, and aborts/discards it on navigation.
-- [ ] Bound caches and invalidate by source/corporate-action/calculation revision.
+- [x] Bound caches and invalidate by source/corporate-action/calculation revision.
+  - [x] QMD History bounds entries, total bytes, rows/updates per entry, build and
+        fetch concurrency, and broadcast capacity. Cache identity and returned
+        provenance include the event-source revision, calculation revision, and
+        explicit `raw-unadjusted-v1` corporate-action/price basis.
 - [x] Recover live sequence gaps or resnapshot.
   - [x] Resnapshot the active live compact-event Canvas after a typed QMD gap.
   - [x] Resnapshot the merged chart-bar tail from complete bounded QMD Live
