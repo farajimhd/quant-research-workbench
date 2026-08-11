@@ -58,7 +58,7 @@ import { TRADING_WORKSPACE_CONTAINERS, containerSupportsCanvasLink, containerSup
 import type { TradingWorkspaceMode } from "../app/tradingWorkspace";
 import { DEFAULT_STRATEGY_CHART_PRESENTATION, strategyInvalidationZones, strategyPresentationMarkers, type StrategyAction, type StrategyChartPresentation, type StrategyDecisionEvent } from "../app/strategyPresentation";
 
-type HistoricalBar = { bar_end?: string; bar_start: string; close: number; high: number; is_closed?: boolean; low: number; open: number; volume: number };
+type HistoricalBar = { bar_end?: string; bar_start: string; close: number; high: number; is_closed?: boolean; last_event_ts?: string; low: number; open: number; volume: number };
 const EMPTY_STRATEGY_DECISIONS: StrategyDecisionEvent[] = [];
 type QmdStructureLevelCandidate = {
   level_id: number;
@@ -2525,9 +2525,9 @@ function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, liveM
   const proposalBar = main.bars.at(-1);
   const proposalMarketSnapshot = proposalBar ? {
     freshness: main.error || main.loading ? "unavailable" : "ready",
-    observed_at: proposalBar.bar_end || proposalBar.bar_start,
+    observed_at: proposalBar.last_event_ts || proposalBar.bar_end || proposalBar.bar_start,
     reference_price: proposalBar.close,
-    source_sequence: proposalBar.bar_start,
+    source_sequence: proposalBar.last_event_ts || proposalBar.bar_start,
     source: liveMode ? "qmd_live_chart_bar" : "qmd_history_chart_bar",
     tick_size: 0.01,
   } : null;
@@ -2542,7 +2542,7 @@ function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, liveM
     onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined}
     start={liveMode ? undefined : dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()}
     symbol={linkContext.symbol}
-    reservedPanel={<StrategyOrderEntry marketSnapshot={proposalMarketSnapshot} strategy={strategy} symbol={linkContext.symbol} trading={trading} />}
+    reservedPanel={<StrategyOrderEntry marketSnapshot={proposalMarketSnapshot} runtimeMode={liveMode ? String(trading?.mode || "") : undefined} strategy={strategy} symbol={linkContext.symbol} trading={trading} />}
   />;
 }
 
@@ -4163,10 +4163,10 @@ function nestedValue(row: PreviewRow, container: string, ...keys: string[]) {
 function signedMoney(value: unknown) { const number = Number(value || 0); return `${number > 0 ? "+" : ""}${money(number)}`; }
 function numberTone(value: unknown): "negative" | "positive" | "neutral" { const number = Number(value || 0); return number > 0 ? "positive" : number < 0 ? "negative" : "neutral"; }
 
-function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { marketSnapshot?: Record<string, unknown> | null; strategy?: CanvasPreview["strategy"]; symbol: string; trading?: CanonicalTradingPreview }) {
+function StrategyOrderEntry({ marketSnapshot, runtimeMode, strategy, symbol, trading }: { marketSnapshot?: Record<string, unknown> | null; runtimeMode?: string; strategy?: CanvasPreview["strategy"]; symbol: string; trading?: CanonicalTradingPreview }) {
   const initialAssignment = strategy?.assignment ?? null;
   const [assignment, setAssignment] = useState<PreviewRow | null>(initialAssignment);
-  const [accountId, setAccountId] = useState(String(initialAssignment?.account_id || trading?.accounts[0]?.account_id || ""));
+  const [accountId, setAccountId] = useState(String(initialAssignment?.account_id || trading?.accounts[0]?.alias || trading?.accounts[0]?.account_id || ""));
   const linkedPosition = trading?.positions.find((row) => String(nestedValue(row, "instrument", "symbol") || row.ticker || "").toUpperCase() === symbol);
   const [conid, setConid] = useState(String(initialAssignment?.conid || nestedValue(linkedPosition ?? {}, "instrument", "conid") || linkedPosition?.conid || ""));
   const [mode, setMode] = useState<"manage" | "request" | "automatic">("request");
@@ -4181,6 +4181,7 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
   const readOnlyBacktest = strategy?.runtime_mode === "backtest" || strategy?.runtime_mode === "backtest_debug";
   const runId = strategy?.run_id || "";
   const interactiveReplay = Boolean(runId && !readOnlyBacktest);
+  const interactiveLive = runtimeMode === "live" || runtimeMode === "paper";
 
   useEffect(() => {
     setAssignment(strategy?.assignment ?? null);
@@ -4256,8 +4257,8 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
   }
 
   async function submitTradeProposal() {
-    if (!interactiveReplay) {
-      setMessage(readOnlyBacktest ? "Backtest proposals are immutable run evidence and cannot be submitted after the fact." : "Live/Paper proposals remain review-only until those modes use the shared runtime controller.");
+    if (!interactiveReplay && !interactiveLive) {
+      setMessage(readOnlyBacktest ? "Backtest proposals are immutable run evidence and cannot be submitted after the fact." : "Trade proposals require a Replay, Paper, or Live runtime workspace.");
       return;
     }
     if (!accountId.trim() || !Number(conid) || !marketSnapshot || marketSnapshot.freshness !== "ready") {
@@ -4267,7 +4268,10 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
     setBusy(true);
     setMessage("");
     try {
-      const result = await api<{ decision: { status: string }; proposal_id: string }>(`/api/trading/replay/runs/${encodeURIComponent(runId)}/trade-proposals`, {
+      const proposalEndpoint = interactiveReplay
+        ? `/api/trading/replay/runs/${encodeURIComponent(runId)}/trade-proposals`
+        : `/api/trading/${runtimeMode}/trade-proposals`;
+      const result = await api<{ decision?: { status: string }; proposal_id: string; status?: string }>(proposalEndpoint, {
         body: JSON.stringify({
           account_id: accountId.trim(),
           action: "enter_long",
@@ -4282,7 +4286,9 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
         }),
         method: "POST",
       });
-      setMessage(`Proposal ${result.proposal_id.slice(0, 8)} · Portfolio ${result.decision.status}`);
+      setMessage(result.decision
+        ? `Proposal ${result.proposal_id.slice(0, 8)} · Portfolio ${result.decision.status}`
+        : `Proposal ${result.proposal_id.slice(0, 8)} · ${String(result.status || "validated").replaceAll("_", " ")}`);
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -4317,7 +4323,7 @@ function StrategyOrderEntry({ marketSnapshot, strategy, symbol, trading }: { mar
         <label><span>Quantity</span><input min={1} onChange={(event) => setProposalQuantity(Math.max(1, Number(event.target.value) || 1))} type="number" value={proposalQuantity} /></label>
         <label><span>Stop price</span><input min={0.01} onChange={(event) => setProposalStop(event.target.value)} placeholder="Optional" step="0.01" type="number" value={proposalStop} /></label>
         <label><span>Target price</span><input min={0.01} onChange={(event) => setProposalTarget(event.target.value)} placeholder="Optional" step="0.01" type="number" value={proposalTarget} /></label>
-        <button disabled={busy || !interactiveReplay || !marketSnapshot || marketSnapshot.freshness !== "ready"} onClick={submitTradeProposal} type="button">Confirm proposal</button>
+        <button disabled={busy || (!interactiveReplay && !interactiveLive) || !marketSnapshot || marketSnapshot.freshness !== "ready"} onClick={submitTradeProposal} type="button">Confirm proposal</button>
       </div>
       <small className="strategy-order-disclosure">Commands are persisted here. Orders are placed only by the shared runtime after causal evaluation and risk validation.</small>
     </>}

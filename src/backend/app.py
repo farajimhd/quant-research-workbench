@@ -61,6 +61,7 @@ from src.backend.portfolio_management_service import (
     portfolio_management_command,
     portfolio_management_snapshot,
 )
+from src.backend.live_trade_proposal_service import stage_live_trade_proposal
 from src.backend.replay_run_service import (
     HistoricalDebugFixture,
     ReplayRunDefinition,
@@ -5683,6 +5684,19 @@ async def trading_replay_trade_proposal(
         raise HTTPException(status_code=404, detail="Replay run not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/{mode}/trade-proposals")
+def trading_live_trade_proposal(
+    mode: str,
+    payload: ReplayTradeProposalSubmit,
+) -> dict[str, Any]:
+    try:
+        return stage_live_trade_proposal(mode, payload.model_dump())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/api/trading/replay/runs/{run_id}/assignments/{assignment_id}/commands")

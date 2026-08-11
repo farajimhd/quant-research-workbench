@@ -28,6 +28,10 @@ class ApplicationAuthorityTests(unittest.TestCase):
         self.assertEqual(authority.mode, "replay")
         self.assertEqual(authority.command, "trading.proposal")
 
+    def test_live_and_paper_proposals_infer_their_runtime_mode(self) -> None:
+        self.assertEqual(infer_mode("/api/trading/live/trade-proposals"), "live")
+        self.assertEqual(infer_mode("/api/trading/paper/trade-proposals"), "paper")
+
     def test_local_policy_rejects_remote_clients_and_bad_browser_origins(self) -> None:
         policy = AuthorityPolicy.from_environment({})
         with self.assertRaisesRegex(AuthorityDenied, "loopback"):

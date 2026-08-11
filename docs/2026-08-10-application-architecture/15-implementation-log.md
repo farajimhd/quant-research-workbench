@@ -1209,6 +1209,31 @@ bounded direct ClickHouse paths remain documented in
      service was stopped. Ticker sharding currently bounds state ownership but
      does not yet parallelize shard finalization or eliminate full-stream
      memory pressure, so no throughput or memory approval is claimed.
+134. Added the non-executing Live/Paper Canvas proposal handoff without
+     crossing the broker-deployment boundary. The Canvas order-entry panel now
+     uses the stable application account key rather than treating a masked
+     broker account ID as authority, enables manual and semi-automatic
+     proposals in Paper/Live workspaces, and carries the chart's last causal
+     event clock as its client price sequence.
+
+     The backend resolves the real account only server-side, verifies the
+     approved Run Plan binds that account and mode, resolves current registered
+     tradable-universe identity, requires an exact conid, replaces client price
+     claims with the current QMD ticker-state snapshot and Scanner sequence,
+     enforces both client and authoritative freshness, validates quantity,
+     action, and directional stop/target placement, and journals an idempotent
+     semantic proposal. Its response explicitly states that broker submission
+     is false and that the shared Live/Paper runtime must repeat Portfolio and
+     OMS validation before execution. This avoids creating a stranded capital
+     reservation while broker deployment remains separately unauthorized.
+
+     Eighty-three focused backend/runtime tests passed, including six new
+     proposal-validation cases and Live/Paper authority-mode routing. The
+     managed external-runtime frontend TypeScript and production Vite build
+     passed. The in-app browser still blocked navigation away from its prior
+     localhost connection-error document despite both managed services being
+     HTTP-ready; the exact validation processes were stopped, and visual
+     acceptance remains open rather than being inferred from the build.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -497,8 +497,17 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
   - [x] Create and confirm both proposal authorities in Replay Canvas.
   - [ ] Add the same proposal lifecycle to Paper/Live after shared-controller
         migration; broker execution still requires separate authorization.
-- [ ] Attach snapshot, identity, price sequence, freshness, and requested protection.
+    - [x] Add the non-executing Paper/Live handoff: Canvas uses stable
+          application account keys, and the backend revalidates the approved
+          mode/account binding, current tradable-universe conid/revision, QMD
+          ticker freshness and Scanner sequence, client chart clock/sequence,
+          quantity, action, and directional protection before journaling the
+          semantic proposal. It explicitly reports that broker submission is
+          false and Portfolio/OMS admission is still required.
+- [x] Attach snapshot, identity, price sequence, freshness, and requested protection.
   - [x] Attach and validate those fields for Replay chart proposals.
+  - [x] Replace Paper/Live client claims with an authoritative QMD ticker-state
+        snapshot and registered tradable-universe identity at handoff time.
 - [ ] Revalidate every proposal through Portfolio and OMS.
   - [x] Route confirmed Replay proposals through durable Portfolio admission
         and OMS planning; rejected/deferred proposals never reach the simulator.
@@ -660,6 +669,12 @@ load progressively without false continuity.
         remain discoverable after backend restart and mode-specific resume
         endpoints/UI controls never advertise legacy cursor-only checkpoints.
 - [ ] Route manual, semi-automatic, and automatic proposals through one control plane.
+  - [x] Journal validated Paper/Live manual and semi-automatic proposals under
+        the mode/account control identity without calling a broker or creating
+        an unowned Portfolio reservation.
+  - [ ] Deploy the shared Live/Paper runtime that repeats Portfolio admission
+        and OMS validation immediately before authorized broker submission;
+        this crosses the separately authorized broker/deployment boundary.
 
 Acceptance gate: identical Run Plan and recorded inputs produce deterministic
 Replay and Backtest decisions.

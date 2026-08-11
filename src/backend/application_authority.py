@@ -190,6 +190,10 @@ def infer_mode(path: str) -> str:
         return "backtest"
     if "/replay/" in path:
         return "replay"
+    if "/trading/paper/" in path:
+        return "paper"
+    if "/trading/live/" in path:
+        return "live"
     if path.startswith("/api/real-live-trading/"):
         return "live"
     if path.startswith("/api/research/"):
