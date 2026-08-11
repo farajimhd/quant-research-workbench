@@ -157,6 +157,12 @@ class DirectEventShardContractTest(unittest.TestCase):
         child_args = parse_offline_args(forwarded)
         self.assertEqual(build_data_config(child_args).clickhouse_max_threads_per_worker, 2)
 
+        boundary = dict(pilot_commands(parse_pilot_args([
+            "--start-date", "2019-01-01", "--end-date", "2019-02-01",
+        ])))["automatic complete pilot audit"]
+        self.assertNotIn("--require-calendar-context", boundary)
+        self.assertIn("--require-calendar-context", audit)
+
     def test_calendar_lookback_is_derived_from_configured_daily_warmup(self) -> None:
         self.assertEqual(calendar_lookback_days(DataConfig(calendar_warmup_daily_bars=500)), 750)
 

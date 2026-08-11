@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from research.bar_gpt.v1.audit_offline_shards import DEFAULT_PILOT_ROOT
+from research.bar_gpt.v1.config import DataConfig
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -69,9 +70,12 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
         "--end-date", str(args.end_date),
         "--max-shards", str(args.max_shards),
         "--verify-sha256",
-        "--require-calendar-context",
         "--verify-direct-source",
     ]
+    # The first authority month intentionally contains zero-filled masked
+    # calendar prefixes. Later pilots must prove complete calendar warm-up.
+    if str(args.start_date) != str(DataConfig().daily_history_start_date):
+        audit.append("--require-calendar-context")
     return (("direct event-to-shard pilot", build), ("automatic complete pilot audit", audit))
 
 
