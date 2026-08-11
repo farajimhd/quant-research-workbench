@@ -629,9 +629,18 @@ GET http://127.0.0.1:8795/snapshot/scanner-primitives?limit=250
 GET http://127.0.0.1:8795/snapshot/ticker/AAPL
 GET http://127.0.0.1:8795/snapshot/bars/AAPL?timeframe=1m&limit=500
 GET http://127.0.0.1:8795/snapshot/indicators/AAPL?timeframe=1m&limit=500
+GET http://127.0.0.1:8795/snapshot/compact-event-market-page?start_sip_timestamp_us=...&end_sip_timestamp_us=...&after_arrival_sequence=0&tickers=AAPL,MSFT&limit=10000
 GET http://127.0.0.1:8795/indicator-catalog
 GET http://127.0.0.1:8795/signal-catalog
 ```
+
+The cross-market compact-event page is the QMD History current-tail contract.
+It is globally ordered by `arrival_sequence`, bounded to 100,000 rows per page,
+and reports `cursor_expired` when any selected retained shard evicted an event
+inside the requested SIP-time window. Consumers must fail closed and restart
+from durable coverage when that flag is true. The first page returns
+`through_arrival_sequence`; continuations repeat it so late arrivals cannot
+change the contents of an in-flight request.
 
 Local websocket endpoints:
 

@@ -320,8 +320,11 @@ impl HistoricalDerivedCache {
         self.stats.builds.fetch_add(1, Ordering::Relaxed);
         let builder = self.clone();
         let build_entry = entry.clone();
+        let build_revision = source_revision.clone();
         tokio::spawn(async move {
-            builder.build(build_entry, window, ticker, profile).await;
+            builder
+                .build(build_entry, window, ticker, profile, build_revision)
+                .await;
         });
         Ok(CacheLease {
             entry,
@@ -656,6 +659,7 @@ impl HistoricalDerivedCache {
         window: EventWindow,
         ticker: String,
         profile: CacheProfile,
+        source_revision: SourceRevision,
     ) {
         let permit = match self.build_permits.acquire().await {
             Ok(permit) => permit,
@@ -669,7 +673,7 @@ impl HistoricalDerivedCache {
             }
         };
         let result = self
-            .build_inner(entry.clone(), window, ticker, profile)
+            .build_inner(entry.clone(), window, ticker, profile, source_revision)
             .await;
         drop(permit);
         let mut state = entry.state.lock().await;
@@ -695,6 +699,7 @@ impl HistoricalDerivedCache {
         window: EventWindow,
         ticker: String,
         profile: CacheProfile,
+        source_revision: SourceRevision,
     ) -> Result<u64, String> {
         let builds_products = matches!(&profile, CacheProfile::Products);
         let resolutions = self
@@ -864,7 +869,10 @@ impl HistoricalDerivedCache {
         let mut next_chunk = 0usize;
         let mut active = VecDeque::new();
         while next_chunk < chunks.len() && active.len() < per_build_fetches {
-            active.push_back(self.spawn_chunk_fetch(chunks[next_chunk].clone()));
+            active.push_back(self.spawn_chunk_fetch(
+                chunks[next_chunk].clone(),
+                source_revision.live_continuation_sequence,
+            ));
             next_chunk += 1;
         }
         while let Some(mut receiver) = active.pop_front() {
@@ -919,7 +927,10 @@ impl HistoricalDerivedCache {
                 state.events_processed = events_processed;
             }
             if next_chunk < chunks.len() {
-                active.push_back(self.spawn_chunk_fetch(chunks[next_chunk].clone()));
+                active.push_back(self.spawn_chunk_fetch(
+                    chunks[next_chunk].clone(),
+                    source_revision.live_continuation_sequence,
+                ));
                 next_chunk += 1;
             }
         }
@@ -984,6 +995,7 @@ impl HistoricalDerivedCache {
     fn spawn_chunk_fetch(
         &self,
         window: EventWindow,
+        live_continuation_sequence: Option<u64>,
     ) -> mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>> {
         let (sender, receiver) = mpsc::channel(2);
         let source = self.source.clone();
@@ -1002,7 +1014,12 @@ impl HistoricalDerivedCache {
             let mut cursor: Option<HistoricalCursor> = None;
             loop {
                 match source
-                    .fetch_batch(&window, cursor.as_ref(), batch_size)
+                    .fetch_batch_at_revision(
+                        &window,
+                        cursor.as_ref(),
+                        batch_size,
+                        live_continuation_sequence,
+                    )
                     .await
                 {
                     Ok((events, next)) => {
@@ -1554,8 +1571,10 @@ mod tests {
         let first = SourceRevision {
             complete_for_history: true,
             event_count: 10,
+            live_continuation_sequence: None,
             max_build_step: 1,
             max_updated_at: "2026-07-10 01:00:00".to_string(),
+            request_complete: true,
             source_plan_hash: "plan-1".to_string(),
             source_tiers: vec!["archive".to_string()],
             token: "1:10:2026-07-10 01:00:00".to_string(),
@@ -1597,8 +1616,10 @@ mod tests {
         let revision = SourceRevision {
             complete_for_history: true,
             event_count: 10,
+            live_continuation_sequence: None,
             max_build_step: 1,
             max_updated_at: "2026-07-10 13:45:00".to_string(),
+            request_complete: true,
             source_plan_hash: "plan-1".to_string(),
             source_tiers: vec!["archive".to_string()],
             token: "1:10:2026-07-10 13:45:00".to_string(),

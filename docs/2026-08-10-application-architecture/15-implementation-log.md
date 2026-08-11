@@ -382,6 +382,18 @@ bounded direct ClickHouse paths remain documented in
     report `complete=false` and `live_snapshot_continuation`; pinned Replay is
     not allowed to infer completeness. Thirty-one focused QMD client tests,
     Python compile, and downstream Scanner/Replay/trading-runtime tests passed.
+60. Moved current-live product continuity into QMD authority. QMD Gateway now
+    exposes a bounded cross-market compact-event page with exact SIP-time and
+    ticker filters, global arrival continuation, and conservative eviction
+    detection. QMD History consumes and canonically orders every page for both
+    bounded reads and Scanner streams, fails closed on eviction, page overflow,
+    or a stalled cursor, pins every page to the revision's live arrival
+    watermark, and includes that sequence in its source revision and cache key.
+    Intraday charts and Scanner now run once through the shared
+    QMD computation library; the backend trusts QMD request-completeness
+    evidence instead of repeating product snapshots. All 88 QMD Gateway tests,
+    all 26 QMD History tests, 74 backend/downstream tests, Rust formatting,
+    Python compile, and diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

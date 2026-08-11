@@ -158,7 +158,16 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
 - `WS /stream/events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/bars/{ticker}?start=...&end=...&timeframe=1m`
 - `WS /stream/indicators/{ticker}?start=...&end=...&timeframe=1m`
+
 - `WS /stream/derived/{ticker}?start=...&end=...&timeframe=1m&emit=updates`
+
+For `current_live` plan segments, QMD History pages the QMD Gateway
+cross-market compact-event contract, fails closed if the requested window was
+evicted, restores canonical event-time order, and then uses the same shared QMD
+decoder and computation engines as archive/recent inputs. `SourceRevision`
+therefore exposes `live_continuation_sequence` and `request_complete` separately
+from `complete_for_history`: a request may be complete while still not being an
+immutable durable revision suitable for a paused Replay.
 
 Bars and indicators have separate ordered streams. A cold derived build emits
 each finalized bar before the bounded indicator worker calculates its evidence,

@@ -57,16 +57,17 @@ one backend registry record and one executable implementation status.
 
 - [x] Define the shared source-plan, coverage, provenance, continuation, and
       explicit-gap contracts used by QMD History and its consumers.
-- [ ] Route current requests to QMD memory/live tail.
+- [x] Route current requests to QMD memory/live tail.
   - [x] Compose compact-event windows across QMD History archive/recent rows and
         the exact QMD Gateway current-live source-plan segment.
   - [x] Compose current-window chart bars/indicators and historical Scanner
         derived snapshots with segment-filtered QMD Gateway live snapshots.
         These bounded snapshot continuations are explicitly marked incomplete
         for pinned Replay rather than being misrepresented as replayable input.
-  - [ ] Replace bounded snapshot continuation with a paged, eviction-evidenced
-        cross-market QMD event continuation before treating current-live
-        Scanner or chart composition as complete/pinnable Replay input.
+  - [x] Replace bounded product-snapshot continuation with a paged,
+        eviction-evidenced cross-market QMD event continuation. QMD History
+        now replays that event input through shared computation and certifies
+        request completeness separately from immutable Replay eligibility.
 - [x] Route recent historical requests to `q_live.events` under verified
       coverage intervals.
 - [x] Route older requests to `market_sip_compact.events_YYYY` and completed bars.

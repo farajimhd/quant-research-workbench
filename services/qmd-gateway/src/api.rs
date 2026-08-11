@@ -3,7 +3,8 @@ use crate::bars::{BarSnapshot, SharedBarStore};
 use crate::capability_catalog::ExecutionScope;
 use crate::capability_catalog::{computation_capability_catalog, ComputationCapability};
 use crate::compact_event::{
-    CompactEventDecoder, CompactEventPage, LiveCompactEvent, SharedCompactEventStore,
+    CompactEventDecoder, CompactEventMarketPage, CompactEventPage, LiveCompactEvent,
+    SharedCompactEventStore,
 };
 use crate::computation_targets::{
     ComputationTargetLease, ComputationTargetRequest, ComputationTargetSnapshot,
@@ -82,6 +83,16 @@ struct LimitQuery {
 struct CompactEventPageQuery {
     after_arrival_sequence: Option<u64>,
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompactEventMarketPageQuery {
+    after_arrival_sequence: Option<u64>,
+    end_sip_timestamp_us: u64,
+    limit: Option<usize>,
+    start_sip_timestamp_us: u64,
+    tickers: Option<String>,
+    through_arrival_sequence: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +191,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/snapshot/compact-event-page/{ticker}",
             get(compact_event_page_snapshot),
+        )
+        .route(
+            "/snapshot/compact-event-market-page",
+            get(compact_event_market_page_snapshot),
         )
         .route("/snapshot/indicators/{ticker}", get(indicator_snapshot))
         .route(
@@ -992,6 +1007,40 @@ async fn compact_event_page_snapshot(
         }
         None => state.compact_event_store.latest_page(&ticker, limit).await,
     })
+}
+
+async fn compact_event_market_page_snapshot(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<CompactEventMarketPageQuery>,
+) -> Result<Json<CompactEventMarketPage>, (StatusCode, String)> {
+    if query.start_sip_timestamp_us >= query.end_sip_timestamp_us {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "start_sip_timestamp_us must precede end_sip_timestamp_us".to_string(),
+        ));
+    }
+    let tickers = query
+        .tickers
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|ticker| !ticker.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    Ok(Json(
+        state
+            .compact_event_store
+            .market_page_after(
+                query.after_arrival_sequence.unwrap_or(0),
+                query.start_sip_timestamp_us,
+                query.end_sip_timestamp_us,
+                &tickers,
+                query.limit.unwrap_or(10_000),
+                query.through_arrival_sequence,
+            )
+            .await,
+    ))
 }
 
 async fn indicator_snapshot(

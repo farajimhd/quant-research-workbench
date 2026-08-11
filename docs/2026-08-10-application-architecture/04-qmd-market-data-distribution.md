@@ -75,25 +75,27 @@ Rules:
 
 ## Physical process interaction
 
-**Target:** the backend has one QMD client. The QMD History source resolver can
-query recent and archive ClickHouse tiers; for the current tail, the backend or
-QMD distribution facade composes a live QMD continuation. Long-running Replay
+**Target:** the backend has one QMD client. The QMD History source resolver
+queries recent and archive ClickHouse tiers and consumes the QMD Gateway-owned
+current event tail through a bounded continuation contract. Long-running Replay
 pins a source plan and revision at creation, while Live charts may advance their
 tail watermark.
 
 **Current:** QMD History plans and reads archive plus verified recent
-`q_live.events` segments. For compact-event windows, the typed backend QMD
-client now consumes the plan's current-live segment from QMD Gateway, filters it
-to the exact segment, orders and deduplicates the combined rows, and applies the
-requested head/tail limit. Current-window chart bars/indicators and historical
-Scanner derived snapshots now also merge segment-filtered QMD Gateway live
-snapshots. Because those live product snapshots are bounded and expose no
-replay cursor or eviction proof, the composite response is explicitly
-`complete=false` with `coverage_status=live_snapshot_continuation`. It is valid
-for progressive current UI state, not as a pinned Replay/Backtest source. The
-remaining target is a paged, eviction-evidenced cross-market live event
-continuation owned by QMD; that input can then be replayed through the shared
-QMD computation library and certified complete.
+`q_live.events` segments. QMD Gateway now publishes a bounded cross-market
+compact-event page filtered by exact SIP-time range and optional ticker set,
+with an arrival cursor and conservative eviction proof. QMD History consumes
+all pages through the source revision's pinned live arrival watermark, fails
+closed on eviction or cursor stalls, restores canonical event-time order, and
+feeds those events
+through the shared decoder, chart, indicator, structure, and Scanner engines.
+Its source revision includes the live arrival sequence and separately reports
+durable-history completeness from request completeness. The backend therefore
+does not repeat live intraday or Scanner calculations. Historical macro bars
+continue to use completed daily-bar authority and append the explicitly partial
+current QMD macro snapshot. A current request can be complete; it is not an
+immutable Replay/Backtest revision until storage-level old-revision reads are
+implemented.
 
 ## Retention and archive handoff
 

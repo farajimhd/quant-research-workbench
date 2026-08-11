@@ -78,6 +78,15 @@ struct CoverageInterval {
     start: DateTime<Utc>,
 }
 
+#[derive(Debug, Deserialize)]
+struct LiveCompactEventMarketPage {
+    cursor_expired: bool,
+    events: Vec<LiveCompactEvent>,
+    has_more: bool,
+    next_after_arrival_sequence: u64,
+    through_arrival_sequence: u64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct LatestEventCoverage {
     pub coverage_table: String,
@@ -90,8 +99,10 @@ pub struct LatestEventCoverage {
 pub struct SourceRevision {
     pub complete_for_history: bool,
     pub event_count: u64,
+    pub live_continuation_sequence: Option<u64>,
     pub max_build_step: u64,
     pub max_updated_at: String,
+    pub request_complete: bool,
     pub source_plan_hash: String,
     pub source_tiers: Vec<String>,
     pub token: String,
@@ -386,6 +397,7 @@ impl HistoricalEventSource {
         let mut event_count = archive_row.event_count;
         let mut max_build_step = archive_row.max_build_step;
         let mut max_updated_at = archive_row.max_updated_at;
+        let mut live_continuation_sequence: Option<u64> = None;
         for segment in plan
             .segments
             .iter()
@@ -414,6 +426,20 @@ impl HistoricalEventSource {
             max_build_step = max_build_step.max(row.max_build_step);
             max_updated_at = max_updated_at.max(row.max_updated_at);
         }
+        for segment in plan
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.tier, MarketSourceTier::CurrentLive))
+        {
+            let live_sequence = self.live_segment_revision(segment, &window.tickers).await?;
+            live_continuation_sequence = Some(
+                live_continuation_sequence
+                    .unwrap_or_default()
+                    .max(live_sequence),
+            );
+            max_build_step = max_build_step.max(live_sequence);
+            max_updated_at = max_updated_at.max(segment.end.to_rfc3339());
+        }
         let plan_token = plan
             .segments
             .iter()
@@ -430,8 +456,13 @@ impl HistoricalEventSource {
         Ok(SourceRevision {
             complete_for_history: plan.complete_for_history,
             event_count,
+            live_continuation_sequence,
             max_build_step,
             max_updated_at: max_updated_at.clone(),
+            request_complete: !plan
+                .segments
+                .iter()
+                .any(|segment| matches!(segment.tier, MarketSourceTier::Gap)),
             source_plan_hash: plan.plan_hash.clone(),
             source_tiers: plan
                 .segments
@@ -439,8 +470,12 @@ impl HistoricalEventSource {
                 .map(|segment| format!("{:?}", segment.tier).to_ascii_lowercase())
                 .collect(),
             token: format!(
-                "{}:{}:{}:{}",
-                max_build_step, event_count, max_updated_at, plan_token
+                "{}:{}:{}:{}:{}",
+                max_build_step,
+                event_count,
+                live_continuation_sequence.unwrap_or_default(),
+                max_updated_at,
+                plan_token
             ),
         })
     }
@@ -451,7 +486,18 @@ impl HistoricalEventSource {
         cursor: Option<&HistoricalCursor>,
         limit: usize,
     ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
-        self.fetch_ordered(window, cursor, limit, false).await
+        self.fetch_ordered(window, cursor, limit, false, None).await
+    }
+
+    pub async fn fetch_batch_at_revision(
+        &self,
+        window: &EventWindow,
+        cursor: Option<&HistoricalCursor>,
+        limit: usize,
+        live_continuation_sequence: Option<u64>,
+    ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
+        self.fetch_ordered(window, cursor, limit, false, live_continuation_sequence)
+            .await
     }
 
     pub async fn fetch_latest(
@@ -459,7 +505,7 @@ impl HistoricalEventSource {
         window: &EventWindow,
         limit: usize,
     ) -> Result<Vec<LiveCompactEvent>, String> {
-        let (mut events, _) = self.fetch_ordered(window, None, limit, true).await?;
+        let (mut events, _) = self.fetch_ordered(window, None, limit, true, None).await?;
         events.reverse();
         Ok(events)
     }
@@ -468,6 +514,7 @@ impl HistoricalEventSource {
         &self,
         window: EventWindow,
         batch_size: usize,
+        live_continuation_sequence: Option<u64>,
     ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
         validate_window(&window)?;
         let batch_size = batch_size.clamp(1, 100_000);
@@ -475,7 +522,12 @@ impl HistoricalEventSource {
         let source = self.clone();
         tokio::spawn(async move {
             if let Err(error) = source
-                .stream_scanner_window(window, batch_size, sender.clone())
+                .stream_scanner_window(
+                    window,
+                    batch_size,
+                    live_continuation_sequence,
+                    sender.clone(),
+                )
                 .await
             {
                 let _ = sender.send(Err(error)).await;
@@ -488,6 +540,7 @@ impl HistoricalEventSource {
         &self,
         window: EventWindow,
         batch_size: usize,
+        live_continuation_sequence: Option<u64>,
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
         let plan = self.source_plan(&window).await?;
@@ -542,14 +595,37 @@ impl HistoricalEventSource {
                 MarketSourceTier::CurrentLive | MarketSourceTier::Gap => {}
             }
         }
-        if selects.is_empty() {
-            return Ok(());
+        if !selects.is_empty() {
+            let sql = format!(
+                "SELECT * FROM ({}) ORDER BY sip_timestamp_us, ticker, ordinal FORMAT JSONEachRow",
+                selects.join(" UNION ALL ")
+            );
+            self.stream_query_rows(sql, batch_size, sender.clone())
+                .await?;
         }
-        let sql = format!(
-            "SELECT * FROM ({}) ORDER BY sip_timestamp_us, ticker, ordinal FORMAT JSONEachRow",
-            selects.join(" UNION ALL ")
-        );
-        self.stream_query_rows(sql, batch_size, sender).await
+        for segment in plan
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.tier, MarketSourceTier::CurrentLive))
+        {
+            let mut events = self
+                .fetch_live_segment(segment, &window.tickers, live_continuation_sequence)
+                .await?;
+            events.sort_by_key(|event| {
+                (
+                    event.sip_timestamp_us,
+                    event.ticker.clone(),
+                    event.arrival_sequence,
+                )
+            });
+            for batch in events.chunks(batch_size) {
+                sender
+                    .send(Ok(batch.to_vec()))
+                    .await
+                    .map_err(|_| "historical stream consumer closed".to_string())?;
+            }
+        }
+        Ok(())
     }
 
     async fn stream_query_rows(
@@ -624,6 +700,7 @@ impl HistoricalEventSource {
         cursor: Option<&HistoricalCursor>,
         limit: usize,
         descending: bool,
+        live_continuation_sequence: Option<u64>,
     ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
@@ -679,30 +756,186 @@ impl HistoricalEventSource {
                 MarketSourceTier::CurrentLive | MarketSourceTier::Gap => {}
             }
         }
-        if selects.is_empty() {
-            return Ok((Vec::new(), None));
+        let mut events = if selects.is_empty() {
+            Vec::new()
+        } else {
+            let direction = if descending { "DESC" } else { "ASC" };
+            let sql = format!(
+                "SELECT * FROM ({}) ORDER BY sip_timestamp_us {direction}, ticker {direction}, ordinal {direction} LIMIT {} FORMAT JSONEachRow",
+                selects.join(" UNION ALL "),
+                limit
+            );
+            let text = self.query(&sql).await?;
+            text.lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| {
+                    serde_json::from_str::<HistoricalRow>(line).map_err(|error| error.to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(row_to_event)
+                .collect::<Vec<_>>()
+        };
+        for segment in plan
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.tier, MarketSourceTier::CurrentLive))
+        {
+            events.extend(
+                self.fetch_live_segment(segment, &window.tickers, live_continuation_sequence)
+                    .await?,
+            );
         }
-        let direction = if descending { "DESC" } else { "ASC" };
-        let sql = format!(
-            "SELECT * FROM ({}) ORDER BY sip_timestamp_us {direction}, ticker {direction}, ordinal {direction} LIMIT {} FORMAT JSONEachRow",
-            selects.join(" UNION ALL "),
-            limit
-        );
-        let text = self.query(&sql).await?;
-        let rows = text
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                serde_json::from_str::<HistoricalRow>(line).map_err(|error| error.to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let events = rows.into_iter().map(row_to_event).collect::<Vec<_>>();
+        if let Some(cursor) = cursor {
+            events.retain(|event| event_follows_cursor(event, cursor, descending));
+        }
+        events.sort_by_key(|event| {
+            (
+                event.sip_timestamp_us,
+                event.ticker.clone(),
+                event.arrival_sequence,
+            )
+        });
+        if descending {
+            events.reverse();
+        }
+        events.truncate(limit);
         let next_cursor = events.last().map(|event| HistoricalCursor {
             ordinal: event.arrival_sequence,
             sip_timestamp_us: event.sip_timestamp_us,
             ticker: event.ticker.clone(),
         });
         Ok((events, next_cursor))
+    }
+
+    async fn fetch_live_segment(
+        &self,
+        segment: &MarketSourceSegment,
+        tickers: &[String],
+        through_arrival_sequence: Option<u64>,
+    ) -> Result<Vec<LiveCompactEvent>, String> {
+        let url = format!(
+            "{}/snapshot/compact-event-market-page",
+            self.config.live_gateway_url.trim_end_matches('/')
+        );
+        let ticker_filter = tickers
+            .iter()
+            .map(|ticker| normalize_ticker(ticker))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(",");
+        let mut after_arrival_sequence = 0_u64;
+        let mut pinned_through_arrival_sequence = through_arrival_sequence;
+        let mut events = Vec::new();
+        loop {
+            let mut request = self.client.get(&url).query(&[
+                ("after_arrival_sequence", after_arrival_sequence.to_string()),
+                (
+                    "start_sip_timestamp_us",
+                    segment.start.timestamp_micros().to_string(),
+                ),
+                (
+                    "end_sip_timestamp_us",
+                    segment.end.timestamp_micros().to_string(),
+                ),
+                ("limit", "100000".to_string()),
+            ]);
+            if !ticker_filter.is_empty() {
+                request = request.query(&[("tickers", ticker_filter.as_str())]);
+            }
+            if let Some(sequence) = pinned_through_arrival_sequence {
+                request = request.query(&[("through_arrival_sequence", sequence.to_string())]);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|error| format!("QMD Live continuation request failed: {error}"))?;
+            let status = response.status();
+            if !status.is_success() {
+                let detail = response.text().await.unwrap_or_default();
+                return Err(format!(
+                    "QMD Live continuation returned HTTP {status}: {detail}"
+                ));
+            }
+            let page = response
+                .json::<LiveCompactEventMarketPage>()
+                .await
+                .map_err(|error| format!("invalid QMD Live continuation page: {error}"))?;
+            if page.cursor_expired {
+                return Err(
+                    "QMD Live continuation was evicted before the requested source segment; restart after durable coverage advances"
+                        .to_string(),
+                );
+            }
+            pinned_through_arrival_sequence.get_or_insert(page.through_arrival_sequence);
+            if events.len().saturating_add(page.events.len()) > self.config.max_events_per_request {
+                return Err(format!(
+                    "QMD Live continuation exceeds QMD_HISTORY_MAX_EVENTS_PER_REQUEST ({})",
+                    self.config.max_events_per_request
+                ));
+            }
+            events.extend(page.events);
+            if !page.has_more {
+                break;
+            }
+            if page.next_after_arrival_sequence <= after_arrival_sequence {
+                return Err("QMD Live continuation cursor made no forward progress".to_string());
+            }
+            after_arrival_sequence = page.next_after_arrival_sequence;
+        }
+        Ok(events)
+    }
+
+    async fn live_segment_revision(
+        &self,
+        segment: &MarketSourceSegment,
+        tickers: &[String],
+    ) -> Result<u64, String> {
+        let url = format!(
+            "{}/snapshot/compact-event-market-page",
+            self.config.live_gateway_url.trim_end_matches('/')
+        );
+        let ticker_filter = tickers
+            .iter()
+            .map(|ticker| normalize_ticker(ticker))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(",");
+        let mut request = self.client.get(&url).query(&[
+            ("after_arrival_sequence", "0".to_string()),
+            (
+                "start_sip_timestamp_us",
+                segment.start.timestamp_micros().to_string(),
+            ),
+            (
+                "end_sip_timestamp_us",
+                segment.end.timestamp_micros().to_string(),
+            ),
+            ("limit", "1".to_string()),
+        ]);
+        if !ticker_filter.is_empty() {
+            request = request.query(&[("tickers", ticker_filter.as_str())]);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| format!("QMD Live revision request failed: {error}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let detail = response.text().await.unwrap_or_default();
+            return Err(format!(
+                "QMD Live revision returned HTTP {status}: {detail}"
+            ));
+        }
+        let page = response
+            .json::<LiveCompactEventMarketPage>()
+            .await
+            .map_err(|error| format!("invalid QMD Live revision page: {error}"))?;
+        if page.cursor_expired {
+            return Err(
+                "QMD Live source revision cannot cover the requested segment because retained events were evicted"
+                    .to_string(),
+            );
+        }
+        Ok(page.through_arrival_sequence)
     }
 
     pub async fn coverage(&self, window: &EventWindow) -> Result<EventCoverage, String> {
@@ -1433,6 +1666,28 @@ fn row_to_event(row: HistoricalRow) -> LiveCompactEvent {
         size_secondary: row.size_secondary,
         source_sequence: row.source_sequence,
         ticker: row.ticker,
+    }
+}
+
+fn event_follows_cursor(
+    event: &LiveCompactEvent,
+    cursor: &HistoricalCursor,
+    descending: bool,
+) -> bool {
+    let event_key = (
+        event.sip_timestamp_us,
+        event.ticker.as_str(),
+        event.arrival_sequence,
+    );
+    let cursor_key = (
+        cursor.sip_timestamp_us,
+        cursor.ticker.as_str(),
+        cursor.ordinal,
+    );
+    if descending {
+        event_key < cursor_key
+    } else {
+        event_key > cursor_key
     }
 }
 

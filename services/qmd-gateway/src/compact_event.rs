@@ -8,7 +8,7 @@ use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
@@ -21,7 +21,7 @@ pub const TRADE_EVENT_TYPE: u8 = 1;
 const CONDITION_TOKEN_SLOTS: usize = 5;
 const MAX_PRECISE_PRICE: f64 = 429_496.7295;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LiveCompactEvent {
     pub arrival_sequence: u64,
     pub condition_token_1: u8,
@@ -182,6 +182,7 @@ pub struct SharedCompactEventStore {
 struct TickerCompactEvents {
     events: VecDeque<LiveCompactEvent>,
     evicted_through_arrival_sequence: u64,
+    evicted_through_sip_timestamp_us: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -196,6 +197,24 @@ pub struct CompactEventPage {
     pub requested_after_arrival_sequence: u64,
     pub schema_version: u16,
     pub ticker: String,
+    pub truncated_before: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CompactEventMarketPage {
+    pub buffer_end_arrival_sequence: u64,
+    pub buffer_start_arrival_sequence: u64,
+    pub cursor_expired: bool,
+    pub delivery_order: &'static str,
+    pub end_sip_timestamp_us: u64,
+    pub events: Vec<LiveCompactEvent>,
+    pub has_more: bool,
+    pub next_after_arrival_sequence: u64,
+    pub requested_after_arrival_sequence: u64,
+    pub schema_version: u16,
+    pub start_sip_timestamp_us: u64,
+    pub ticker_count: usize,
+    pub through_arrival_sequence: u64,
     pub truncated_before: bool,
 }
 
@@ -219,6 +238,9 @@ impl SharedCompactEventStore {
                 state.evicted_through_arrival_sequence = state
                     .evicted_through_arrival_sequence
                     .max(evicted.arrival_sequence);
+                state.evicted_through_sip_timestamp_us = state
+                    .evicted_through_sip_timestamp_us
+                    .max(evicted.sip_timestamp_us);
             }
         }
     }
@@ -343,6 +365,91 @@ impl SharedCompactEventStore {
         let mut out = guard.keys().cloned().collect::<Vec<_>>();
         out.sort();
         out
+    }
+
+    pub async fn market_page_after(
+        &self,
+        after_arrival_sequence: u64,
+        start_sip_timestamp_us: u64,
+        end_sip_timestamp_us: u64,
+        tickers: &[String],
+        limit: usize,
+        through_arrival_sequence: Option<u64>,
+    ) -> CompactEventMarketPage {
+        let requested = tickers
+            .iter()
+            .map(|ticker| ticker.trim().to_ascii_uppercase())
+            .filter(|ticker| !ticker.is_empty())
+            .collect::<std::collections::HashSet<_>>();
+        let guard = self.inner.read().await;
+        let selected = guard
+            .iter()
+            .filter(|(ticker, _)| requested.is_empty() || requested.contains(*ticker))
+            .collect::<Vec<_>>();
+        let buffer_start = selected
+            .iter()
+            .filter_map(|(_, state)| state.events.front())
+            .map(|event| event.arrival_sequence)
+            .min()
+            .unwrap_or(0);
+        let buffer_end = selected
+            .iter()
+            .filter_map(|(_, state)| state.events.back())
+            .map(|event| event.arrival_sequence)
+            .max()
+            .unwrap_or(0);
+        let window_end_arrival_sequence = selected
+            .iter()
+            .flat_map(|(_, state)| state.events.iter())
+            .filter(|event| {
+                event.sip_timestamp_us >= start_sip_timestamp_us
+                    && event.sip_timestamp_us < end_sip_timestamp_us
+            })
+            .map(|event| event.arrival_sequence)
+            .max()
+            .unwrap_or(0);
+        let through_arrival_sequence =
+            through_arrival_sequence.unwrap_or(window_end_arrival_sequence);
+        let cursor_expired = selected.iter().any(|(_, state)| {
+            state.evicted_through_sip_timestamp_us >= start_sip_timestamp_us
+                && (after_arrival_sequence == 0
+                    || after_arrival_sequence < state.evicted_through_arrival_sequence)
+        });
+        let mut available = selected
+            .iter()
+            .flat_map(|(_, state)| state.events.iter())
+            .filter(|event| {
+                event.arrival_sequence > after_arrival_sequence
+                    && event.arrival_sequence <= through_arrival_sequence
+                    && event.sip_timestamp_us >= start_sip_timestamp_us
+                    && event.sip_timestamp_us < end_sip_timestamp_us
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        available.sort_by_key(|event| event.arrival_sequence);
+        let bounded_limit = limit.max(1).min(100_000);
+        let has_more = available.len() > bounded_limit;
+        available.truncate(bounded_limit);
+        let next_after = available
+            .last()
+            .map(|event| event.arrival_sequence)
+            .unwrap_or(after_arrival_sequence);
+        CompactEventMarketPage {
+            buffer_end_arrival_sequence: buffer_end,
+            buffer_start_arrival_sequence: buffer_start,
+            cursor_expired,
+            delivery_order: "arrival_sequence_ascending",
+            end_sip_timestamp_us,
+            events: available,
+            has_more,
+            next_after_arrival_sequence: next_after,
+            requested_after_arrival_sequence: after_arrival_sequence,
+            schema_version: LIVE_COMPACT_EVENT_SCHEMA_VERSION,
+            start_sip_timestamp_us,
+            ticker_count: selected.len(),
+            through_arrival_sequence,
+            truncated_before: cursor_expired,
+        }
     }
 }
 
@@ -1795,5 +1902,91 @@ mod tests {
         assert_eq!(latest.events[0].arrival_sequence, 30);
         assert!(latest.truncated_before);
         assert!(!latest.has_more);
+    }
+
+    #[tokio::test]
+    async fn market_page_is_bounded_filterable_and_reports_evicted_window_rows() {
+        let store = SharedCompactEventStore::new(2);
+        for (ticker, arrival_sequence, offset_ms) in [
+            ("AAPL", 10, 10),
+            ("MSFT", 20, 20),
+            ("AAPL", 30, 30),
+            ("AAPL", 40, 40),
+        ] {
+            let trade = TradeEvent {
+                conditions: vec![],
+                exchange: 4,
+                ingest_ts: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+                participant_ts: None,
+                price: 10.0,
+                raw: serde_json::Value::Null,
+                sequence: arrival_sequence,
+                size: 100.0,
+                tape: 1,
+                ticker: ticker.to_string(),
+                trade_id: arrival_sequence.to_string(),
+                trf_id: 0,
+                trf_ts: None,
+                ts: Utc
+                    .timestamp_millis_opt(1_700_000_000_000 + offset_ms)
+                    .unwrap(),
+            };
+            let mut event = compact_trade_event(&trade, &references()).unwrap().event;
+            event.arrival_sequence = arrival_sequence;
+            store.push(event).await;
+        }
+
+        let start_us = 1_700_000_000_000_000;
+        let page = store
+            .market_page_after(0, start_us, start_us + 100_000, &[], 2, None)
+            .await;
+        assert!(page.cursor_expired);
+        assert!(page.has_more);
+        assert_eq!(page.ticker_count, 2);
+        assert_eq!(
+            page.events
+                .iter()
+                .map(|event| event.arrival_sequence)
+                .collect::<Vec<_>>(),
+            vec![20, 30]
+        );
+
+        let late_trade = TradeEvent {
+            conditions: vec![],
+            exchange: 4,
+            ingest_ts: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+            participant_ts: None,
+            price: 10.0,
+            raw: serde_json::Value::Null,
+            sequence: 50,
+            size: 100.0,
+            tape: 1,
+            ticker: "AAPL".to_string(),
+            trade_id: "50".to_string(),
+            trf_id: 0,
+            trf_ts: None,
+            ts: Utc.timestamp_millis_opt(1_700_000_000_050).unwrap(),
+        };
+        let mut late_event = compact_trade_event(&late_trade, &references())
+            .unwrap()
+            .event;
+        late_event.arrival_sequence = 50;
+        store.push(late_event).await;
+
+        let continued = store
+            .market_page_after(
+                page.next_after_arrival_sequence,
+                start_us,
+                start_us + 100_000,
+                &["AAPL".to_string()],
+                2,
+                Some(page.through_arrival_sequence),
+            )
+            .await;
+        assert!(!continued.cursor_expired);
+        assert_eq!(continued.ticker_count, 1);
+        assert_eq!(continued.events[0].arrival_sequence, 40);
+        assert_eq!(continued.through_arrival_sequence, 40);
+        assert!(!continued.has_more);
     }
 }

@@ -135,10 +135,7 @@ class HistoricalTradingServiceTests(unittest.TestCase):
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_compact_events_request_latest_rows_before_canvas_clock(self, gateway_get) -> None:
-        gateway_get.side_effect = [
-            [{"ticker": "AAPL", "arrival_sequence": 9}, "invalid"],
-            {"segments": []},
-        ]
+        gateway_get.return_value = [{"ticker": "AAPL", "arrival_sequence": 9}, "invalid"]
 
         payload = historical_compact_events(
             "aapl",
@@ -148,22 +145,13 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(payload, [{"ticker": "AAPL", "arrival_sequence": 9}])
-        gateway_get.assert_any_call(
+        gateway_get.assert_called_once_with(
             "/snapshot/compact-events/AAPL",
             {
                 "start": "2026-07-14T04:00:00-04:00",
                 "end": "2026-07-14T09:45:00-04:00",
                 "limit": 500,
                 "tail": "true",
-            },
-            timeout=15,
-        )
-        gateway_get.assert_any_call(
-            "/source-plan",
-            {
-                "start": "2026-07-14T04:00:00-04:00",
-                "end": "2026-07-14T09:45:00-04:00",
-                "tickers": "AAPL",
             },
             timeout=15,
         )

@@ -377,7 +377,11 @@ async fn build_snapshot(
         senders.push(sender);
     }
     let mut event_count = 0_u64;
-    let mut batches = source.stream_ordered(window, config.batch_size.max(100_000))?;
+    let mut batches = source.stream_ordered(
+        window,
+        config.batch_size.max(100_000),
+        source_revision.live_continuation_sequence,
+    )?;
     while let Some(events) = batches.recv().await {
         let events = events?;
         event_count = event_count.saturating_add(events.len() as u64);
@@ -479,8 +483,10 @@ fn empty_source_revision() -> SourceRevision {
     SourceRevision {
         complete_for_history: false,
         event_count: 0,
+        live_continuation_sequence: None,
         max_build_step: 0,
         max_updated_at: String::new(),
+        request_complete: false,
         source_plan_hash: String::new(),
         source_tiers: Vec::new(),
         token: String::new(),

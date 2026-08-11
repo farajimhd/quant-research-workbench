@@ -141,23 +141,19 @@ def _qmd_composed_history_product(
     live_get: Callable[..., Any],
     timeout: float,
 ) -> Any:
-    if request.product == "compact_events":
-        return _qmd_compact_event_window(
-            request,
-            endpoint=endpoint,
-            params=params,
-            history_get=history_get,
-            live_get=live_get,
-            timeout=timeout,
-        )
     historical = history_get(endpoint, params, timeout=timeout)
+    if request.product == "compact_events":
+        if not isinstance(historical, list):
+            raise RuntimeError("QMD History compact-event response must be an array")
+        return historical
     if not isinstance(historical, dict):
         raise RuntimeError(f"QMD History {request.product} response must be an object")
     plan = _qmd_source_plan(request, history_get=history_get, timeout=timeout)
     intervals = _qmd_live_intervals(plan)
     if not intervals:
         return historical
-    if request.product == "chart":
+    timeframe = request.timeframe.strip().lower() or "1m"
+    if request.product == "chart" and timeframe in MACRO_QMD_TIMEFRAMES:
         return _qmd_chart_live_continuation(
             request,
             historical=historical,
@@ -166,14 +162,39 @@ def _qmd_composed_history_product(
             live_get=live_get,
             timeout=timeout,
         )
-    return _qmd_scanner_live_continuation(
-        request,
-        historical=historical,
-        intervals=intervals,
-        plan=plan,
-        live_get=live_get,
-        timeout=timeout,
+    return _qmd_native_continuation_metadata(historical, plan)
+
+
+def _qmd_native_continuation_metadata(
+    historical: dict[str, Any], plan: dict[str, Any]
+) -> dict[str, Any]:
+    payload = dict(historical)
+    revision = payload.get("source_revision")
+    if not isinstance(revision, dict):
+        cache = payload.get("cache")
+        revision = cache.get("source_revision") if isinstance(cache, dict) else None
+    request_complete = bool(
+        isinstance(revision, dict)
+        and revision.get("request_complete")
+        and revision.get("live_continuation_sequence") is not None
     )
+    payload["complete"] = request_complete
+    payload["coverage_status"] = (
+        "complete_with_live_continuation" if request_complete else "incomplete"
+    )
+    payload["source_plan"] = plan
+    if isinstance(revision, dict):
+        payload["source_revision"] = revision
+    if not request_complete:
+        warnings = list(payload.get("warnings") or [])
+        warnings.append(
+            {
+                "code": "qmd_native_continuation_incomplete",
+                "message": "QMD History did not certify the current-live source segment as complete.",
+            }
+        )
+        payload["warnings"] = warnings
+    return payload
 
 
 def _qmd_source_plan(
@@ -326,55 +347,6 @@ def _qmd_chart_live_continuation(
     return payload
 
 
-def _qmd_scanner_live_continuation(
-    request: QmdProductRequest,
-    *,
-    historical: dict[str, Any],
-    intervals: list[tuple[datetime, datetime]],
-    plan: dict[str, Any],
-    live_get: Callable[..., Any],
-    timeout: float,
-) -> dict[str, Any]:
-    payload = dict(historical)
-    live_timeout = int(min(timeout, 10))
-    timeframe = str(payload.get("indicator_timeframe") or "100ms")
-    indicator_snapshot = live_get(
-        "/snapshot/scanner-indicators",
-        {"limit": 5_000, "timeframe": timeframe},
-        timeout=live_timeout,
-    )
-    live_indicators = indicator_snapshot.get("rows") or [] if isinstance(indicator_snapshot, dict) else []
-    filtered_indicators = [
-        row for row in live_indicators
-        if isinstance(row, dict) and _qmd_row_in_intervals(row, intervals, "bar_start")
-    ]
-    payload["indicators"] = _qmd_merge_timestamp_rows(
-        payload.get("indicators") or [], filtered_indicators, identity_keys=("sym", "timeframe")
-    )
-    active_snapshot = live_get("/snapshot/signals", {"limit": 5_000}, timeout=live_timeout)
-    active_rows = active_snapshot.get("rows") or [] if isinstance(active_snapshot, dict) else []
-    payload["active_signals"] = [
-        dict(row) for row in active_rows
-        if isinstance(row, dict) and _qmd_row_in_intervals(row, intervals, "detected_at", "updated_at")
-    ]
-    event_snapshot = live_get("/snapshot/signal-events", {"limit": 10_000}, timeout=live_timeout)
-    event_rows = event_snapshot.get("rows") or [] if isinstance(event_snapshot, dict) else []
-    filtered_events = [
-        row for row in event_rows
-        if isinstance(row, dict) and _qmd_row_in_intervals(row, intervals, "detected_at", "updated_at")
-    ]
-    payload["recent_signal_events"] = _qmd_merge_timestamp_rows(
-        payload.get("recent_signal_events") or [],
-        filtered_events,
-        identity_keys=("event_id",),
-    )
-    payload["ticker_count"] = len(
-        {str(row.get("sym") or "").upper() for row in payload["indicators"] if row.get("sym")}
-    )
-    _qmd_continuation_metadata(payload, plan)
-    return payload
-
-
 def _qmd_response_metadata(
     payload: Any,
 ) -> tuple[bool | None, tuple[str, ...], str, str]:
@@ -405,88 +377,6 @@ def _qmd_response_metadata(
         revision.get("token") if isinstance(revision, dict) else revision or ""
     )
     return complete, tuple(value for value in warnings if value), coverage_status, source_revision
-
-
-def _qmd_compact_event_window(
-    request: QmdProductRequest,
-    *,
-    endpoint: str,
-    params: dict[str, Any],
-    history_get: Callable[..., Any],
-    live_get: Callable[..., Any],
-    timeout: float,
-) -> list[dict[str, Any]]:
-    historical = history_get(endpoint, params, timeout=timeout)
-    if not isinstance(historical, list):
-        raise RuntimeError("QMD History compact-event response must be an array")
-    rows = [dict(row) for row in historical if isinstance(row, dict)]
-    plan = _qmd_source_plan(request, history_get=history_get, timeout=timeout)
-    live_segments = [
-        segment
-        for segment in plan.get("segments") or []
-        if isinstance(segment, dict) and segment.get("tier") == "current_live"
-    ]
-    if live_segments:
-        live_params: dict[str, Any] = {"limit": max(1, min(int(request.limit), 50_000))}
-        if not request.tail:
-            live_params["after_arrival_sequence"] = 0
-        live_page = live_get(
-            f"/snapshot/compact-event-page/{urllib.parse.quote(request.ticker.strip().upper())}",
-            live_params,
-            timeout=int(min(timeout, 10)),
-        )
-        if not isinstance(live_page, dict):
-            raise RuntimeError("QMD Live compact-event continuation must be an object")
-        if not request.tail and live_page.get("cursor_expired"):
-            raise RuntimeError(
-                "QMD Live compact-event continuation was evicted; restart from durable QMD history"
-            )
-        intervals = [
-            (_timestamp_us(segment.get("start")), _timestamp_us(segment.get("end")))
-            for segment in live_segments
-        ]
-        rows.extend(
-            dict(row)
-            for row in live_page.get("events") or []
-            if isinstance(row, dict)
-            and any(
-                start_us <= int(row.get("sip_timestamp_us") or 0) < end_us
-                for start_us, end_us in intervals
-            )
-        )
-    deduplicated = {
-        _compact_event_identity(row): row
-        for row in rows
-    }
-    ordered = sorted(deduplicated.values(), key=_compact_event_order)
-    limit = max(1, min(int(request.limit), 50_000))
-    return ordered[-limit:] if request.tail else ordered[:limit]
-
-
-def _timestamp_us(value: Any) -> int:
-    parsed = _validate_window_timestamp("source segment boundary", str(value))
-    return int(parsed.astimezone(timezone.utc).timestamp() * 1_000_000)
-
-
-def _compact_event_identity(row: dict[str, Any]) -> tuple[Any, ...]:
-    return (
-        str(row.get("ticker") or "").upper(),
-        int(row.get("sip_timestamp_us") or 0),
-        int(row.get("source_sequence") or 0),
-        int(row.get("event_meta") or 0),
-        int(row.get("exchange_primary") or 0),
-        int(row.get("exchange_secondary") or 0),
-    )
-
-
-def _compact_event_order(row: dict[str, Any]) -> tuple[Any, ...]:
-    return (
-        int(row.get("sip_timestamp_us") or 0),
-        str(row.get("ticker") or "").upper(),
-        int(row.get("source_sequence") or 0),
-        int(row.get("event_meta") or 0),
-        int(row.get("arrival_sequence") or 0),
-    )
 
 
 def _qmd_product_route(

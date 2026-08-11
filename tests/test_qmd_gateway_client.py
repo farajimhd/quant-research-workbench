@@ -201,7 +201,7 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(response.source_revision, "rev-17")
         self.assertEqual(response.warnings, ("Archive segment is pending.",))
 
-    def test_compact_event_window_composes_history_with_filtered_live_tail(self) -> None:
+    def test_compact_event_window_trusts_qmd_history_native_live_continuation(self) -> None:
         boundary_us = int(datetime.fromisoformat("2026-08-08T20:00:00+00:00").timestamp() * 1_000_000)
         historical = [
             {
@@ -210,50 +210,24 @@ class QmdGatewayClientTests(unittest.TestCase):
                 "source_sequence": 1,
                 "event_meta": 1,
                 "arrival_sequence": 8,
-            }
+            },
+            {
+                "ticker": "AAPL",
+                "sip_timestamp_us": boundary_us + 20_000_000,
+                "source_sequence": 3,
+                "event_meta": 1,
+                "arrival_sequence": 10,
+            },
         ]
-        plan = {
-            "segments": [
-                {
-                    "tier": "recent",
-                    "start": "2026-08-08T19:59:00+00:00",
-                    "end": "2026-08-08T20:00:00+00:00",
-                },
-                {
-                    "tier": "current_live",
-                    "start": "2026-08-08T20:00:00+00:00",
-                    "end": "2026-08-08T20:01:00+00:00",
-                },
-            ]
-        }
-        live_page = {
-            "cursor_expired": False,
-            "events": [
-                {
-                    "ticker": "AAPL",
-                    "sip_timestamp_us": boundary_us - 500_000,
-                    "source_sequence": 2,
-                    "event_meta": 1,
-                    "arrival_sequence": 9,
-                },
-                {
-                    "ticker": "AAPL",
-                    "sip_timestamp_us": boundary_us + 20_000_000,
-                    "source_sequence": 3,
-                    "event_meta": 1,
-                    "arrival_sequence": 10,
-                },
-            ],
-        }
 
         def history_get(path, params, *, timeout):
-            return plan if path == "/source-plan" else historical
+            return historical
 
         live_calls = []
 
         def live_get(path, params, *, timeout):
             live_calls.append((path, params, timeout))
-            return live_page
+            raise AssertionError("backend must not re-read a QMD-native live continuation")
 
         response = qmd_product_request(
             QmdProductRequest(
@@ -270,12 +244,9 @@ class QmdGatewayClientTests(unittest.TestCase):
         )
 
         self.assertEqual([row["source_sequence"] for row in response.payload], [1, 3])
-        self.assertEqual(
-            live_calls,
-            [("/snapshot/compact-event-page/AAPL", {"limit": 10}, 10)],
-        )
+        self.assertEqual(live_calls, [])
 
-    def test_chart_window_composes_filtered_live_bars_and_indicators(self) -> None:
+    def test_chart_window_trusts_qmd_history_native_live_continuation(self) -> None:
         plan = {
             "plan_hash": "plan-1",
             "segments": [
@@ -288,9 +259,16 @@ class QmdGatewayClientTests(unittest.TestCase):
         }
         historical = {
             "bars": [
-                {"bar_start": "2026-08-08T19:59:00+00:00", "sym": "AAPL", "timeframe": "1m"}
+                {"bar_start": "2026-08-08T19:59:00+00:00", "sym": "AAPL", "timeframe": "1m"},
+                {"bar_start": "2026-08-08T20:00:00+00:00", "sym": "AAPL", "timeframe": "1m"},
+                {"bar_start": "2026-08-08T20:01:00+00:00", "sym": "AAPL", "timeframe": "1m"},
             ],
             "indicators": [],
+            "cache": {"source_revision": {
+                "live_continuation_sequence": 42,
+                "request_complete": True,
+                "token": "rev-live-42",
+            }},
             "ticker": "AAPL",
             "timeframe": "1m",
         }
@@ -299,21 +277,7 @@ class QmdGatewayClientTests(unittest.TestCase):
             return plan if path == "/source-plan" else historical
 
         def live_get(path, params, *, timeout):
-            if path == "/snapshot/bars/AAPL":
-                return {
-                    "history": [
-                        {"bar_start": "2026-08-08T19:59:00+00:00", "sym": "AAPL", "timeframe": "1m"},
-                        {"bar_start": "2026-08-08T20:00:00+00:00", "sym": "AAPL", "timeframe": "1m"},
-                    ],
-                    "current": {"bar_start": "2026-08-08T20:01:00+00:00", "sym": "AAPL", "timeframe": "1m"},
-                }
-            self.assertEqual(path, "/snapshot/indicators/AAPL")
-            return {
-                "history": [
-                    {"bar_start": "2026-08-08T20:00:00+00:00", "sym": "AAPL", "timeframe": "1m"}
-                ],
-                "current": None,
-            }
+            raise AssertionError("backend must not duplicate QMD History computation")
 
         response = qmd_product_request(
             QmdProductRequest(
@@ -336,11 +300,11 @@ class QmdGatewayClientTests(unittest.TestCase):
                 "2026-08-08T20:01:00+00:00",
             ],
         )
-        self.assertEqual(len(response.payload["indicators"]), 1)
-        self.assertFalse(response.complete)
-        self.assertEqual(response.coverage_status, "live_snapshot_continuation")
+        self.assertEqual(len(response.payload["indicators"]), 0)
+        self.assertTrue(response.complete)
+        self.assertEqual(response.coverage_status, "complete_with_live_continuation")
 
-    def test_scanner_window_composes_latest_live_derived_state(self) -> None:
+    def test_scanner_window_trusts_qmd_history_native_live_continuation(self) -> None:
         plan = {
             "segments": [
                 {
@@ -353,25 +317,23 @@ class QmdGatewayClientTests(unittest.TestCase):
         historical = {
             "indicator_timeframe": "100ms",
             "indicators": [
-                {"bar_start": "2026-08-08T19:59:59+00:00", "sym": "AAPL", "timeframe": "100ms"}
+                {"bar_start": "2026-08-08T20:01:00+00:00", "sym": "AAPL", "timeframe": "100ms"}
             ],
-            "active_signals": [],
-            "recent_signal_events": [],
+            "active_signals": [{"event_id": "active-1", "detected_at": "2026-08-08T20:01:10+00:00"}],
+            "recent_signal_events": [{"event_id": "event-1", "detected_at": "2026-08-08T20:01:20+00:00"}],
+            "source_revision": {
+                "live_continuation_sequence": 44,
+                "request_complete": True,
+                "token": "rev-live-44",
+            },
+            "ticker_count": 1,
         }
 
         def history_get(path, params, *, timeout):
             return plan if path == "/source-plan" else historical
 
         def live_get(path, params, *, timeout):
-            if path == "/snapshot/scanner-indicators":
-                return {"rows": [
-                    {"bar_start": "2026-08-08T20:01:00+00:00", "sym": "AAPL", "timeframe": "100ms"},
-                    {"bar_start": "2026-08-08T20:03:00+00:00", "sym": "MSFT", "timeframe": "100ms"},
-                ]}
-            if path == "/snapshot/signals":
-                return {"rows": [{"event_id": "active-1", "detected_at": "2026-08-08T20:01:10+00:00"}]}
-            self.assertEqual(path, "/snapshot/signal-events")
-            return {"rows": [{"event_id": "event-1", "detected_at": "2026-08-08T20:01:20+00:00"}]}
+            raise AssertionError("backend must not duplicate QMD History computation")
 
         response = qmd_product_request(
             QmdProductRequest(
@@ -388,7 +350,7 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(response.payload["indicators"][0]["bar_start"], "2026-08-08T20:01:00+00:00")
         self.assertEqual(response.payload["active_signals"][0]["event_id"], "active-1")
         self.assertEqual(response.payload["recent_signal_events"][0]["event_id"], "event-1")
-        self.assertFalse(response.complete)
+        self.assertTrue(response.complete)
 
     def test_typed_product_request_rejects_ambiguous_or_naive_windows(self) -> None:
         with self.assertRaisesRegex(ValueError, "cannot carry a historical window"):
