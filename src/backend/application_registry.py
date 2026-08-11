@@ -417,6 +417,20 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "market_sip_compact.daily_session_bars_by_symbol_time_v1",
         ),
         QueryPlanDefinition(
+            "market.historical_scanner_materialization.v1",
+            "backend",
+            "src.backend.query_plans.historical_scanner_materialization_v1:scanner_snapshot_materialization,technical_snapshot_materialization,source_revision_query",
+            (
+                "market_sip_compact.events_YYYY",
+                "market_sip_compact.events_ordinal_continuity",
+                "market_sip_compact.daily_session_bars_by_symbol_time_v1",
+            ),
+            "all-universe canonical ticker from the selected compact-event revision",
+            "bounded SIP event window and New York session clock",
+            "ordinal-continuity updated_at and daily-bar available_at_us",
+            "market_sip_compact.events_ordinal_continuity",
+        ),
+        QueryPlanDefinition(
             "market.ticker_presentation.v1",
             "backend",
             "src.backend.query_plans.market_ticker_presentation_v1:ticker_presentation",

@@ -1490,6 +1490,20 @@ it does not imply all application work is complete.
      The separate representative active-session performance gate remains open
      and is not represented as passed by this contract correction.
 
+151. Registered Historical Scanner's all-universe calculations as
+     `market.historical_scanner_materialization.v1`. The plan now owns the
+     compact yearly-event union, canonical continuity revision read, bounded
+     core Scanner aggregation, minute evidence reduction, VWAP variants, and
+     causal 20-session average-volume baseline. Its source declaration covers
+     compact events, ordinal continuity, and completed daily session bars.
+
+     `historical_scanner_service` retains bounded background scheduling,
+     revisioned materialized-cache storage, enrichment composition, fallback
+     status, and response projection; it no longer embeds the calculation SQL.
+     Thirty focused query-plan, Historical Scanner technical/service, and
+     application-registry tests passed, and all changed Python modules compiled
+     with bytecode writes disabled.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

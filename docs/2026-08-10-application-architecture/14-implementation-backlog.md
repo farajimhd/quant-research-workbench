@@ -297,6 +297,11 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Move Canvas News page and ticker-facet SQL into the registered
         `news.canvas_asof.v1` plan while retaining validation, query sessions,
         optional intelligence degradation, and presentation in the route.
+  - [x] Move Historical Scanner all-universe core/technical materialization and
+        compact-event source-revision SQL into the registered
+        `market.historical_scanner_materialization.v1` plan. The service retains
+        bounded scheduling, cache persistence, optional enrichment, and response
+        projection.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -339,6 +344,9 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Remove Canvas News page and facet SQL from `app.py`; the route now
         executes the registered plan and owns only request/session orchestration,
         error mapping, optional synthesis composition, and response projection.
+  - [x] Remove Historical Scanner calculation SQL from its orchestration path;
+        the service executes registered core/technical/revision builders while
+        retaining its explicitly separate materialized-cache storage boundary.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [x] Consume deferred producer services through unchanged bounded contracts.
