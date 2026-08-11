@@ -10,7 +10,7 @@ from research.bar_gpt.v1.train import main
 
 DEFAULT_ARGS: dict[str, str] = {
     "--data-source": "offline",
-    "--offline-shard-root": r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v10",
+    "--offline-shard-root": r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v11",
     "--offline-train-start-date": "2019-01-01",
     "--offline-train-end-date": "2022-01-01",
     "--offline-validation-start-date": "2026-01-01",

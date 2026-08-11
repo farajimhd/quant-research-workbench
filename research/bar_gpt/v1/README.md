@@ -592,7 +592,7 @@ python -B -m research.bar_gpt.v1.run_build_offline_shards --execute
 The first command is a read-only plan. The execute form balances whole tickers
 by their planned block counts across bounded logical worker slots and writes
 immutable ticker-month shards beneath
-`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v10`. The compiler reads
+`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v11`. The compiler reads
 monthly compact-event partitions directly and never fabricates unavailable
 intraday sessions or calendar history.
 
@@ -630,7 +630,7 @@ This prevents every worker from independently creating a workstation-sized CPU
 thread pool while leaving capacity for ClickHouse and the operating system.
 
 Every executing compiler invocation creates a unique diagnostic directory at
-`offline_shards_v10\manifest\build_runs\<run-id>`. Its parent-owned
+`offline_shards_v11\manifest\build_runs\<run-id>`. Its parent-owned
 `events.jsonl` records the resolved plan, worker PID/ticker launches, stages,
 bounded progress, certifications, complete caught tracebacks, process exit
 codes, last known work, and final catalog. `summary.json` records the final
@@ -696,10 +696,14 @@ python -B -m research.bar_gpt.v1.run_pilot_offline_shards --execute --force-rebu
 
 The first command prints the exact build and audit plan. The execute form builds
 at most two 2026 ticker-month shards for `AAPL` and `GOOGL` beneath
-`offline_shards_v10_pilot`, then automatically
+`offline_shards_v11_pilot`, then automatically
 verifies all complete-file SHA-256 digests and fails unless shard/sidecar identities,
 counts, configured context, causal as-of indices, horizon tensors, condition
 positive-count metadata, and direct eligible-trade origin reconstruction agree.
+It then selects deterministic random blocks and reconstructs their model inputs,
+input masks, origin/as-of indices, autoregressive targets/masks, and physical
+targets/masks through the production ClickHouse loader. Any mismatch outside
+the documented float tolerance fails the pilot.
 The audit also scans every stored value in all model feature columns of every
 view for finiteness and records per-feature
 nonzero fractions, standard deviations, minima, and maxima. It also validates
@@ -712,12 +716,13 @@ The 2026 audit requires every origin to expose complete 90/52/24
 daily/weekly/monthly calendar context; an incomplete calendar prefix fails the
 pilot.
 
-The offline compiler fails closed before writing a shard when any origin lacks
-the configured 720/360/360/240/240/96/16/8 intraday histories. Calendar rows
-are stored from the history actually available at the 2019 authority boundary,
-but the model-facing as-of index remains `-1` until the complete 90/52/24
-daily/weekly/monthly context exists. The audit rejects any partially populated
-calendar view that is accidentally exposed as available.
+At the 2019 authority boundary, unavailable intraday or calendar history is
+represented only by left-prefix tensor slots whose values and timestamps are
+zero and whose `view_mask` is false. Real sparse bars fill the fixed context
+from the right. A model-facing as-of index may select the latest available real
+bar even while older slots remain masked; it is `-1` only when no real completed
+bar exists. Contract 11 stores padding separately from timestamp-keyed bars, so
+partial history cannot affect real-bar deduplication or block continuity.
 
 Two complementary read-only data audits cover the stored training contract.
 The automatic audit selects two deterministic pseudo-random certified shards,
@@ -788,7 +793,7 @@ sidecars are skipped. `--max-shards N` provides a bounded smoke. The optional
 substantial I/O to the 2.3 TB catalog; without it, the original certified digest
 is preserved while tensor structure and metadata are still checked.
 
-The completed `offline_shards_v10` authority can be permanently sealed after its
+The completed `offline_shards_v11` authority can be permanently sealed after its
 catalog has been certified:
 
 ```powershell

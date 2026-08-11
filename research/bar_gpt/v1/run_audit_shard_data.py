@@ -24,7 +24,7 @@ from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.mlops.env import load_env_files
 
 
-DEFAULT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v10")
+DEFAULT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v11")
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\shard_data_audits")
 
 
@@ -42,10 +42,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-shards", type=int, default=2)
     parser.add_argument("--samples-per-shard", type=int, default=1)
     parser.add_argument("--clickhouse-samples", type=int, default=2)
+    parser.add_argument("--clickhouse-prefetch-pages", type=int, default=16)
+    parser.add_argument("--clickhouse-max-threads-per-query", type=int, default=2)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--verify-sha256", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args(list(argv) if argv is not None else None)
-    if args.max_shards <= 0 or args.samples_per_shard <= 0 or args.clickhouse_samples < 0:
+    if (
+        args.max_shards <= 0
+        or args.samples_per_shard <= 0
+        or args.clickhouse_samples < 0
+        or args.clickhouse_prefetch_pages <= 0
+        or args.clickhouse_max_threads_per_query <= 0
+    ):
         parser.error("shard/sample counts must be positive and ClickHouse samples cannot be negative")
     return args
 
@@ -103,6 +111,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sample,
                 data_config=data_config,
                 stream_config=_stream_config(data_config),
+                clickhouse_prefetch_pages=int(args.clickhouse_prefetch_pages),
+                clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_query),
             )
             comparison = compare_loaded_to_clickhouse(sample, rebuilt, data_config=data_config)
             row["clickhouse_reconstruction"] = comparison

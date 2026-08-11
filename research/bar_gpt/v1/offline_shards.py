@@ -33,7 +33,12 @@ from research.bar_gpt.v1.data import (
 from research.bar_gpt.v1.features import project_stationary_features
 from research.bar_gpt.v1.loader import BarGPTIterableDataset, month_units
 from research.bar_gpt.v1.schema import FEATURE_VERSION
-from research.bar_gpt.v1.targets import HorizonTargets, build_next_bar_targets, build_physical_horizon_targets
+from research.bar_gpt.v1.targets import (
+    AUTOREGRESSIVE_TARGET_NAMES,
+    HorizonTargets,
+    build_next_bar_targets,
+    build_physical_horizon_targets,
+)
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
     default_clickhouse_password,
@@ -44,14 +49,15 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 
 
-# Contract 10 adds explicit per-view validity masks for zero-filled historical
-# slots at the event-authority boundary.
-OFFLINE_SHARD_CONTRACT_VERSION = 10
+# Contract 11 stores unavailable-history padding independently from real,
+# timestamp-keyed sparse bars so changing prefix availability across blocks
+# cannot distort context identity or shared slices.
+OFFLINE_SHARD_CONTRACT_VERSION = 11
 # Stream contract 12 derives trade-bearing sparse tokens and gradually exposes
 # real intraday/calendar history behind fixed zero-filled masked slots.
 # directly from compact events and persists only certified tensor shards.
 OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 12
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v10")
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v11")
 SHARD_CATALOG_LOCK_FILENAME = "SHARD_CATALOG_IMMUTABLE.json"
 
 
@@ -458,11 +464,21 @@ def _canonical_config(config: DataConfig) -> dict[str, Any]:
 
 def _storage_contract_config(config: DataConfig) -> dict[str, Any]:
     """Return only fields capable of changing one ticker-month tensor payload."""
-    return {
+    result = {
         key: value
         for key, value in _canonical_config(config).items()
         if key not in _STORAGE_IRRELEVANT_CONFIG_FIELDS
     }
+    if config.source_mode == "direct_events":
+        for key in (
+            "one_second_table",
+            "manifest_table",
+            "alias_manifest_table",
+            "daily_table",
+            "daily_manifest_table",
+        ):
+            result.pop(key, None)
+    return result
 
 
 def config_hash(config: DataConfig) -> str:
@@ -556,33 +572,83 @@ def _sha256(path: Path) -> str:
 def _merge_view(
     examples: Sequence[BarGPTExample], name: str,
 ) -> tuple[dict[str, torch.Tensor], list[tuple[int, int]], list[dict[str, torch.Tensor]]]:
-    starts = torch.cat([example.raw_view_start_us[name].cpu() for example in examples])
-    ends = torch.cat([example.raw_view_end_us[name].cpu() for example in examples])
-    available = torch.cat([example.raw_view_available_at_us[name].cpu() for example in examples])
-    raw = torch.cat([example.raw_views[name].cpu() for example in examples])
-    masks = torch.cat([example.raw_view_mask[name].cpu() for example in examples])
-    order = torch.argsort(starts, stable=True)
-    starts = starts[order]
-    ends = ends[order]
-    available = available[order]
-    raw = raw[order]
-    masks = masks[order]
-    keep = torch.ones(starts.shape[0], dtype=torch.bool)
-    if starts.numel() > 1:
-        keep[1:] = starts[1:] != starts[:-1]
-    unique_starts = starts[keep].contiguous()
-    unique_ends = ends[keep].contiguous()
-    unique_available = available[keep].contiguous()
-    unique_raw = raw[keep].contiguous()
-    unique_mask = masks[keep].contiguous()
+    local_masks = [example.raw_view_mask[name].cpu() for example in examples]
+    missing_counts: list[int] = []
+    real_starts_parts: list[torch.Tensor] = []
+    real_ends_parts: list[torch.Tensor] = []
+    real_available_parts: list[torch.Tensor] = []
+    real_raw_parts: list[torch.Tensor] = []
+    for example, mask in zip(examples, local_masks, strict=True):
+        if mask.dtype != torch.bool or mask.shape != example.raw_views[name].shape[:1]:
+            raise RuntimeError(f"{example.ticker} {example.local_date} {name} has an invalid context mask")
+        if bool(torch.any(mask[:-1] & ~mask[1:])):
+            raise RuntimeError(f"{example.ticker} {example.local_date} {name} padding is not one left prefix")
+        missing = int((~mask).sum())
+        missing_counts.append(missing)
+        real_starts_parts.append(example.raw_view_start_us[name].cpu()[missing:])
+        real_ends_parts.append(example.raw_view_end_us[name].cpu()[missing:])
+        real_available_parts.append(example.raw_view_available_at_us[name].cpu()[missing:])
+        real_raw_parts.append(example.raw_views[name].cpu()[missing:])
+
+    # Padding represents unavailable authority history, not timestamped bars.
+    # Store one canonical padding prefix and deduplicate only actual bars by
+    # timestamp.  A block with less history takes a suffix of the padding
+    # prefix; once its fixed context is full it takes only its real-bar slice.
+    maximum_missing = max(missing_counts, default=0)
+    raw_template = examples[0].raw_views[name].cpu()
+    real_starts = torch.cat(real_starts_parts)
+    real_ends = torch.cat(real_ends_parts)
+    real_available = torch.cat(real_available_parts)
+    real_raw = torch.cat(real_raw_parts)
+    order = torch.argsort(real_starts, stable=True)
+    real_starts = real_starts[order]
+    real_ends = real_ends[order]
+    real_available = real_available[order]
+    real_raw = real_raw[order]
+    keep = torch.ones(real_starts.shape[0], dtype=torch.bool)
+    if real_starts.numel() > 1:
+        duplicate = real_starts[1:] == real_starts[:-1]
+        conflict = duplicate & (
+            (real_ends[1:] != real_ends[:-1])
+            | (real_available[1:] != real_available[:-1])
+            | torch.any(real_raw[1:] != real_raw[:-1], dim=-1)
+        )
+        if bool(torch.any(conflict)):
+            raise RuntimeError(f"{examples[0].ticker} {examples[0].local_date} {name} has inconsistent duplicate bars")
+        keep[1:] = ~duplicate
+    unique_real_starts = real_starts[keep].contiguous()
+    unique_real_ends = real_ends[keep].contiguous()
+    unique_real_available = real_available[keep].contiguous()
+    unique_real_raw = real_raw[keep].contiguous()
+    padding_times = torch.zeros(maximum_missing, dtype=torch.long)
+    unique_starts = torch.cat((padding_times, unique_real_starts)).contiguous()
+    unique_ends = torch.cat((padding_times, unique_real_ends)).contiguous()
+    unique_available = torch.cat((padding_times, unique_real_available)).contiguous()
+    unique_raw = torch.cat((
+        torch.zeros((maximum_missing, raw_template.shape[-1]), dtype=raw_template.dtype),
+        unique_real_raw,
+    )).contiguous()
+    unique_mask = torch.cat((
+        torch.zeros(maximum_missing, dtype=torch.bool),
+        torch.ones(unique_real_starts.shape[0], dtype=torch.bool),
+    )).contiguous()
     slices: list[tuple[int, int]] = []
-    for example in examples:
-        local = example.raw_view_start_us[name].cpu()
-        indices = torch.searchsorted(unique_starts, local)
-        expected = torch.arange(indices[0], indices[0] + indices.numel(), dtype=indices.dtype)
-        if not torch.equal(indices, expected) or not torch.equal(unique_starts[indices], local):
-            raise RuntimeError(f"{example.ticker} {example.local_date} {name} is not a contiguous shared slice")
-        slices.append((int(indices[0]), int(indices.numel())))
+    for example, missing, local_real in zip(examples, missing_counts, real_starts_parts, strict=True):
+        if local_real.numel():
+            indices = torch.searchsorted(unique_real_starts, local_real)
+            expected = torch.arange(indices[0], indices[0] + indices.numel(), dtype=indices.dtype)
+            if not torch.equal(indices, expected) or not torch.equal(unique_real_starts[indices], local_real):
+                raise RuntimeError(f"{example.ticker} {example.local_date} {name} real bars are not contiguous")
+            real_start = int(indices[0])
+            if missing and real_start:
+                raise RuntimeError(
+                    f"{example.ticker} {example.local_date} {name} exposes a history gap after padding"
+                )
+        else:
+            real_start = 0
+        start = maximum_missing - missing if missing else maximum_missing + real_start
+        length = int(example.raw_views[name].shape[0])
+        slices.append((start, length))
     projected = project_stationary_features(
         unique_raw,
         unique_starts,
@@ -597,10 +663,7 @@ def _merge_view(
         "available_at_us": unique_available,
     }
     if name in AUTOREGRESSIVE_VIEW_NAMES:
-        targets = build_next_bar_targets(
-            unique_raw,
-            bar_start_us=unique_starts,
-        )
+        targets = _build_masked_next_bar_targets(unique_raw, unique_starts, unique_mask)
         result["autoregressive_targets"] = targets.values.contiguous()
         targets.mask &= (unique_mask[:-1] & unique_mask[1:])[:, None]
         targets.values[~targets.mask] = 0
@@ -633,6 +696,30 @@ def _merge_view(
     return result, slices, [patch for patch in patches if patch is not None]
 
 
+def _build_masked_next_bar_targets(
+    raw: torch.Tensor,
+    starts: torch.Tensor,
+    mask: torch.Tensor,
+) -> HorizonTargets:
+    """Build sparse next-bar targets without interpreting padding as bars."""
+    if raw.ndim != 2 or starts.shape != raw.shape[:1] or mask.shape != raw.shape[:1]:
+        raise ValueError("masked AR inputs must align as [time, feature]")
+    if bool(torch.any(mask[:-1] & ~mask[1:])):
+        raise ValueError("masked AR padding must be one left prefix")
+    missing = int((~mask).sum())
+    result_values = torch.zeros(
+        (max(0, raw.shape[0] - 1), len(AUTOREGRESSIVE_TARGET_NAMES)),
+        dtype=raw.dtype,
+    )
+    result_mask = torch.zeros_like(result_values, dtype=torch.bool)
+    real_raw = raw[missing:]
+    if real_raw.shape[0] >= 2:
+        real = build_next_bar_targets(real_raw, bar_start_us=starts[missing:])
+        result_values[missing : missing + real.values.shape[0]] = real.values
+        result_mask[missing : missing + real.mask.shape[0]] = real.mask
+    return HorizonTargets(result_values.contiguous(), result_mask.contiguous())
+
+
 def compile_session(examples: Sequence[BarGPTExample]) -> dict[str, Any]:
     if not examples:
         raise ValueError("cannot compile an empty session")
@@ -649,21 +736,14 @@ def compile_session(examples: Sequence[BarGPTExample]) -> dict[str, Any]:
         views[name], slices_by_view[name], patches_by_view[name] = _merge_view(examples, name)
     exact_ar_by_view: dict[str, list[HorizonTargets | None]] = {}
     for name in AUTOREGRESSIVE_VIEW_NAMES:
-        exact_items: list[HorizonTargets | None] = [None] * len(examples)
-        shape_groups: dict[tuple[int, ...], list[int]] = {}
-        for index, example in enumerate(examples):
-            shape_groups.setdefault(tuple(example.raw_views[name].shape), []).append(index)
-        for indices in shape_groups.values():
-            raw_batch = torch.stack([examples[index].raw_views[name].cpu() for index in indices])
-            start_batch = torch.stack([examples[index].raw_view_start_us[name].cpu() for index in indices])
-            batch = build_next_bar_targets(
-                raw_batch,
-                bar_start_us=start_batch,
+        exact_items: list[HorizonTargets | None] = [
+            _build_masked_next_bar_targets(
+                example.raw_views[name].cpu(),
+                example.raw_view_start_us[name].cpu(),
+                example.raw_view_mask[name].cpu(),
             )
-            for batch_row, example_index in enumerate(indices):
-                exact_items[example_index] = HorizonTargets(
-                    batch.values[batch_row].contiguous(), batch.mask[batch_row].contiguous()
-                )
+            for example in examples
+        ]
         exact_ar_by_view[name] = exact_items
     horizon_ids = torch.as_tensor(examples[0].horizons_us, dtype=torch.long)
     exact_horizons: list[HorizonTargets | None] = []
@@ -810,6 +890,7 @@ def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig
         "config_hash": config_hash(config),
         "unit_key": key,
         "context_contract": {
+            "origin_bars_1s": int(config.origin_bars_1s),
             "intraday_context_bars": dict(config.intraday_context_bars),
             "calendar_context_bars": dict(config.calendar_context_bars),
             "attention_windows": config.attention_window_by_name,
@@ -818,10 +899,16 @@ def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig
                 "database": config.database,
                 "mode": config.source_mode,
                 "events_table_base": config.events_table_base,
-                "one_second_table": config.one_second_table,
-                "daily_table": config.daily_table,
                 "condition_authority": "embedded_1s",
                 "one_second_feature_version": FEATURE_VERSION,
+                **(
+                    {}
+                    if config.source_mode == "direct_events"
+                    else {
+                        "one_second_table": config.one_second_table,
+                        "daily_table": config.daily_table,
+                    }
+                ),
             },
         },
         "horizons_us": tuple(config.horizons_us),

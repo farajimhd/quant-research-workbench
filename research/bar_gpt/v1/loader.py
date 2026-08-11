@@ -1660,7 +1660,10 @@ def build_session_examples(
             torch.zeros(missing_base, dtype=torch.bool),
             torch.ones(base_actual.shape[0], dtype=torch.bool),
         ))}
-        missing_base_times = torch.arange(1, missing_base + 1, dtype=torch.long)
+        # Missing authority history is tensor padding, not a market bar.  Keep
+        # every padding timestamp at the null sentinel; the offline compiler
+        # stores padding slots separately from timestamp-keyed real bars.
+        missing_base_times = torch.zeros(missing_base, dtype=torch.long)
         raw_view_start_us: dict[str, torch.Tensor] = {"1s": torch.cat((
             missing_base_times, normalized_session.bar_start_us[input_start:input_end]
         ))}
@@ -1703,7 +1706,7 @@ def build_session_examples(
             raw_view_mask[name] = torch.cat((
                 torch.zeros(missing, dtype=torch.bool), torch.ones(prefix.features.shape[0], dtype=torch.bool)
             ))
-            missing_times = torch.arange(1, missing + 1, dtype=torch.long)
+            missing_times = torch.zeros(missing, dtype=torch.long)
             raw_view_start_us[name] = torch.cat((missing_times, prefix.bar_start_us))
             raw_view_end_us[name] = torch.cat((missing_times, prefix.bar_end_us))
             raw_view_available_at_us[name] = torch.cat((torch.zeros(missing, dtype=torch.long), prefix.available_at_us))
@@ -1719,7 +1722,7 @@ def build_session_examples(
             if prefix is None:
                 raw_views[name] = torch.zeros((max_rows, base_raw.shape[-1]), dtype=base_raw.dtype)
                 raw_view_mask[name] = torch.zeros(max_rows, dtype=torch.bool)
-                missing_times = torch.arange(1, max_rows + 1, dtype=torch.long)
+                missing_times = torch.zeros(max_rows, dtype=torch.long)
                 raw_view_start_us[name] = missing_times
                 raw_view_end_us[name] = missing_times
                 raw_view_available_at_us[name] = torch.zeros(max_rows, dtype=torch.long)
@@ -1732,7 +1735,7 @@ def build_session_examples(
                 raw_view_mask[name] = torch.cat((
                     torch.zeros(missing, dtype=torch.bool), torch.ones(prefix.features.shape[0], dtype=torch.bool)
                 ))
-                missing_times = torch.arange(1, missing + 1, dtype=torch.long)
+                missing_times = torch.zeros(missing, dtype=torch.long)
                 raw_view_start_us[name] = torch.cat((missing_times, prefix.bar_start_us))
                 raw_view_end_us[name] = torch.cat((missing_times, prefix.bar_end_us))
                 raw_view_available_at_us[name] = torch.cat((torch.zeros(missing, dtype=torch.long), prefix.available_at_us))

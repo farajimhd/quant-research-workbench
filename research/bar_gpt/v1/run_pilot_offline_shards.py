@@ -27,13 +27,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-prefetch-pages", type=int, default=16)
     parser.add_argument("--clickhouse-max-concurrent-pages", type=int, default=32)
     parser.add_argument("--max-shards", type=int, default=2)
+    parser.add_argument("--samples-per-shard", type=int, default=1)
+    parser.add_argument("--clickhouse-audit-samples", type=int, default=2)
+    parser.add_argument("--audit-seed", type=int, default=17)
     parser.add_argument("--progress-layout", choices=("rich", "text"), default="rich")
     args = parser.parse_args(list(argv) if argv is not None else None)
     tickers = tuple(dict.fromkeys(item.strip().upper() for item in str(args.tickers).split(",") if item.strip()))
     if not tickers:
         parser.error("--tickers cannot be empty")
-    if args.workers <= 0 or args.max_shards <= 0 or args.clickhouse_max_threads_per_query <= 0:
-        parser.error("--workers, --max-shards, and --clickhouse-max-threads-per-query must be positive")
+    if (
+        args.workers <= 0
+        or args.max_shards <= 0
+        or args.samples_per_shard <= 0
+        or args.clickhouse_audit_samples <= 0
+        or args.clickhouse_max_threads_per_query <= 0
+    ):
+        parser.error("worker, shard, sample, and ClickHouse thread counts must be positive")
     args.tickers = tickers
     return args
 
@@ -76,7 +85,24 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
     # calendar prefixes. Later pilots must prove complete calendar warm-up.
     if str(args.start_date) != str(DataConfig().daily_history_start_date):
         audit.append("--require-calendar-context")
-    return (("direct event-to-shard pilot", build), ("automatic complete pilot audit", audit))
+    sampled_audit = [
+        sys.executable, "-B", "-m", "research.bar_gpt.v1.run_audit_shard_data",
+        "--root", str(args.output_root),
+        "--output-root", str(args.output_root / "manifest" / "sample_audits"),
+        "--tickers", ",".join(args.tickers),
+        "--max-shards", str(args.max_shards),
+        "--samples-per-shard", str(args.samples_per_shard),
+        "--clickhouse-samples", str(args.clickhouse_audit_samples),
+        "--clickhouse-prefetch-pages", str(args.clickhouse_prefetch_pages),
+        "--clickhouse-max-threads-per-query", str(args.clickhouse_max_threads_per_query),
+        "--seed", str(args.audit_seed),
+        "--verify-sha256",
+    ]
+    return (
+        ("direct event-to-shard pilot", build),
+        ("automatic complete pilot audit", audit),
+        ("sampled ClickHouse tensor reconstruction audit", sampled_audit),
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

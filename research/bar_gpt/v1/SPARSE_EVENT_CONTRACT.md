@@ -30,7 +30,7 @@ condition-token slots do not preserve the separate NYSE correction field or
 pairing identity. The direct builder does not claim to reconstruct it.
 
 The old shard roots are immutable. Contract-v10 shards are rebuilt under
-`offline_shards_v10`; old shards, checkpoints, cursors, discovery panels, and
+`offline_shards_v11`; old shards, checkpoints, cursors, discovery panels, and
 validation manifests are not compatible or repairable in place.
 
 ## Bar, context, and condition authority
@@ -320,7 +320,11 @@ to at most 16 metrics.
 
 ## Builder, shard, and certification contract
 
-Contract-v9 uses shard contract 9 and loader stream contract 11. Shards persist
+The current sparse-event authority uses shard contract 11 and loader stream
+contract 12. Contract 11 stores one canonical masked-prefix region per compiled
+view and deduplicates only real bars by timestamp. A block consumes a suffix of
+that prefix while history is unavailable, so changing availability cannot
+create a synthetic bar or disturb real-bar identity. Shards persist
 view interval metadata, nonempty context, active origins, per-origin causal
 as-of indices, 18-channel autoregressive tensors, 23-channel physical tensors,
 condition provenance, and SHA-256-certified sidecars. Discovery fails closed
@@ -343,7 +347,7 @@ only bounds ticker/month scope. Automated audit must verify:
   ClickHouse reconstruction;
 * target and direction support by family, OHLC field, horizon, and AR view.
 
-Before the full cohort build, the v9 overfit runner must pass the total-loss
+Before the full cohort build, the current overfit runner must pass the total-loss
 improvement gate and direction gates for every physical task with sufficient
 two-class support, and demonstrate each of the 12 autoregressive direction
 tasks on the configured minimum number of eligible views. It reports direct

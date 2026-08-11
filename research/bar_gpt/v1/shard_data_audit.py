@@ -12,6 +12,7 @@ import torch
 
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig
 from research.bar_gpt.v1.data import AUTOREGRESSIVE_VIEW_NAMES, collate_examples
+from research.bar_gpt.v1.direct_event_shards import DirectEventShardDataset
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.loader import (
     BarGPTIterableDataset,
@@ -174,22 +175,19 @@ def data_config_for_sample(sample: LoadedAuditSample) -> DataConfig:
         (name, int(value))
         for name, value in dict(contract.get("calendar_context_bars", {})).items()
     )
-    maximum_origins = max(
-        int(block["origin_indices"].numel())
-        for session in sample.shard["sessions"]
-        for block in session["blocks"]
-    )
-    if not intraday or not calendar or maximum_origins <= 0:
+    configured_origins = int(contract.get("origin_bars_1s", 0))
+    if not intraday or not calendar or configured_origins <= 0:
         raise RuntimeError(f"incomplete stored context contract for {sample.ref.unit_key}")
     config = replace(
         DataConfig(),
         base_timeframe_us=int(sample.shard["base_timeframe_us"]),
         horizons_us=tuple(int(value) for value in sample.shard["horizons_us"]),
         context_bars_1s=int(dict(intraday)["1s"]),
-        origin_bars_1s=maximum_origins,
+        origin_bars_1s=configured_origins,
         intraday_context_bars=intraday,
         calendar_context_bars=calendar,
         daily_context_bars=int(dict(calendar)["1D"]),
+        source_mode=str(source.get("mode", DataConfig().source_mode)),
         database=str(source.get("database", DataConfig().database)),
         one_second_table=str(source.get("one_second_table", DataConfig().one_second_table)),
         daily_table=str(source.get("daily_table", DataConfig().daily_table)),
@@ -211,6 +209,8 @@ def reconstruct_clickhouse_example(
     *,
     data_config: DataConfig,
     stream_config: ClickHouseBarStreamConfig,
+    clickhouse_prefetch_pages: int | None = None,
+    clickhouse_max_threads_per_worker: int | None = None,
 ):
     """Rebuild one exact shard block through the production bounded CH loader."""
     if int(sample.ref.session_index) <= 0:
@@ -233,8 +233,23 @@ def reconstruct_clickhouse_example(
         validation_slices=((sample.ref.ticker, month_start, month_end),),
         loader_workers=0,
         persistent_workers=False,
+        clickhouse_prefetch_pages=(
+            int(clickhouse_prefetch_pages)
+            if clickhouse_prefetch_pages is not None
+            else int(data_config.clickhouse_prefetch_pages)
+        ),
+        clickhouse_max_threads_per_worker=(
+            int(clickhouse_max_threads_per_worker)
+            if clickhouse_max_threads_per_worker is not None
+            else int(data_config.clickhouse_max_threads_per_worker)
+        ),
     )
-    dataset = BarGPTIterableDataset(
+    dataset_class = (
+        DirectEventShardDataset
+        if resolved.source_mode == "direct_events"
+        else BarGPTIterableDataset
+    )
+    dataset = dataset_class(
         data_config=resolved,
         stream_config=stream_config,
         split="cache",
@@ -389,6 +404,7 @@ def compare_loaded_to_clickhouse(
 
     for name in stored.views:
         add(f"input/{name}", stored.views[name], rebuilt.views[name], MODEL_FEATURE_NAMES)
+        add(f"input_mask/{name}", stored.view_mask[name], rebuilt.view_mask[name])
     add("origin_indices", stored.origin_indices, rebuilt.origin_indices)
     add("origin_timestamps_us", stored.origin_timestamps_us, rebuilt.origin_timestamps_us)
     add("origin_mask", stored.origin_mask, rebuilt.origin_mask)

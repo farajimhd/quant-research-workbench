@@ -720,8 +720,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 config=config,
             )
         )
-        self.assertEqual(example.raw_views["1D"].shape[0], 3)
-        self.assertTrue(bool(torch.all(example.asof_indices["1D"] == -1)))
+        self.assertEqual(example.raw_views["1D"].shape[0], config.calendar_context_by_name["1D"])
+        self.assertEqual(int(example.raw_view_mask["1D"].sum()), 3)
+        self.assertTrue(bool(torch.all(example.asof_indices["1D"] >= 0)))
         batch = collate_examples([example])
         self.assertNotIn("1D", batch.autoregressive_mask)
         metrics = _batch_eligibility_metrics(batch)
@@ -742,15 +743,16 @@ class LoaderTrainerContractTest(unittest.TestCase):
             daily=None, split_actions=(), config=config,
         ))
         for name in ("1D", "1W", "1MO"):
-            self.assertEqual(empty.raw_views[name].shape[0], 1)
+            self.assertEqual(empty.raw_views[name].shape[0], config.calendar_context_by_name[name])
             self.assertTrue(torch.all(empty.raw_views[name] == 0))
+            self.assertFalse(bool(empty.raw_view_mask[name].any()))
             self.assertTrue(torch.all(empty.asof_indices[name] == -1))
         validate_origin_context(empty, config)
         exposed_partial = dataclasses.replace(
             empty,
             asof_indices={**empty.asof_indices, "1D": torch.zeros_like(empty.asof_indices["1D"])},
         )
-        with self.assertRaisesRegex(RuntimeError, "partial calendar context"):
+        with self.assertRaisesRegex(RuntimeError, "masked context row"):
             validate_origin_context(exposed_partial, config)
 
         daily_raw = session_view(3)
@@ -767,8 +769,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
             split_actions=(), config=config,
         ))
         for name in ("1D", "1W", "1MO"):
-            self.assertEqual(partial.raw_views[name].shape[0], 1)
-            self.assertTrue(torch.all(partial.asof_indices[name] == -1))
+            self.assertEqual(partial.raw_views[name].shape[0], config.calendar_context_by_name[name])
+            self.assertTrue(bool(partial.raw_view_mask[name].any()))
+            self.assertTrue(torch.all(partial.asof_indices[name] >= 0))
         complete_config = dataclasses.replace(
             config,
             calendar_context_bars=(("1D", 1), ("1W", 1), ("1MO", 1)),
@@ -1030,6 +1033,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             example.unit_index = 7
             example.block_offset = offset
         payload = compile_unit(examples, config, "AAA:2026-01")
+        self.assertEqual(payload["context_contract"]["origin_bars_1s"], config.origin_bars_1s)
         pipelined = compile_prepared_unit([compile_session(examples)], config, "AAA:2026-01")
         self.assertEqual(pipelined["counts"], payload["counts"])
         self.assertTrue(torch.equal(
@@ -1164,48 +1168,45 @@ class LoaderTrainerContractTest(unittest.TestCase):
                     max_absolute_return_bps=1e9,
                 )
 
-    def test_pilot_launcher_builds_two_2019_shards_and_one_2026_context_shard(self) -> None:
+    def test_pilot_launcher_builds_direct_shards_then_audits_automatically(self) -> None:
         args = parse_pilot_args([
             "--execute", "--force-rebuild", "--tickers", "AAPL,GOOGL",
             "--start-date", "2019-01-01", "--end-date", "2019-02-01",
         ])
         stages = dict(pilot_commands(args))
-        build = stages["pilot shards"]
-        audit = stages["pilot audit"]
-        context_build = stages["2026 shard"]
-        context_audit = stages["2026 audit"]
-        self.assertNotIn("run_build_conditions_1s", " ".join(item for command in stages.values() for item in command))
+        build = stages["direct event-to-shard pilot"]
+        audit = stages["automatic complete pilot audit"]
+        sampled_audit = stages["sampled ClickHouse tensor reconstruction audit"]
         self.assertEqual(build[build.index("--max-shards") + 1], "2")
+        self.assertEqual(build[build.index("--source-mode") + 1], "direct_events")
         self.assertIn("--execute", build)
         self.assertIn("--force-rebuild", build)
-        self.assertIn("offline_shards_v7_pilot", " ".join(build))
+        self.assertIn("offline_shards_v11_pilot", " ".join(build))
         self.assertIn("research.bar_gpt.v1.audit_offline_shards", audit)
         self.assertIn("--verify-sha256", audit)
-        self.assertEqual(context_build[context_build.index("--tickers") + 1], "AAPL")
-        self.assertEqual(context_build[context_build.index("--start-date") + 1], "2026-01-02")
-        self.assertEqual(context_build[context_build.index("--end-date") + 1], "2026-01-03")
-        self.assertEqual(context_build[context_build.index("--max-shards") + 1], "1")
-        self.assertIn("--require-calendar-context", context_audit)
-        self.assertIn("split-boundary audit", stages)
-        self.assertIn("--events-table-base events", " ".join(stages["continuous pilot one-second context authority"]))
+        self.assertNotIn("--require-calendar-context", audit)
+        self.assertIn("--verify-direct-source", audit)
+        self.assertIn("research.bar_gpt.v1.run_audit_shard_data", sampled_audit)
+        self.assertEqual(sampled_audit[sampled_audit.index("--clickhouse-samples") + 1], "2")
+        self.assertEqual(sampled_audit[sampled_audit.index("--clickhouse-prefetch-pages") + 1], "16")
+        self.assertIn("--verify-sha256", sampled_audit)
 
     def test_complete_offline_dataset_launcher_owns_disjoint_ranges(self) -> None:
         args = parse_offline_dataset_args(["--execute", "--workers", "32"])
         stages = offline_dataset_commands(args)
         by_label = dict(stages)
-        self.assertEqual(len(stages), 5)
-        self.assertIn("continuous eligible one-second context authority", by_label)
-        self.assertIn("point-in-time source alias one-second authority", by_label)
-        self.assertIn("condition-eligible daily/calendar authority", by_label)
-        train_shards = by_label["2019-2021 training shards"]
-        validation_shards = by_label["2026 validation shards"]
+        self.assertEqual(len(stages), 2)
+        train_shards = by_label["2019-2021 direct-event training shards"]
+        validation_shards = by_label["2026 direct-event validation shards"]
         self.assertEqual(train_shards[train_shards.index("--selection") + 1], "all")
         self.assertEqual(train_shards[train_shards.index("--workers") + 1], "32")
+        self.assertEqual(train_shards[train_shards.index("--source-mode") + 1], "direct_events")
         self.assertIn("--execute", train_shards)
         self.assertEqual(validation_shards[validation_shards.index("--selection") + 1], "all")
         self.assertIn("--execute", validation_shards)
-        self.assertNotIn("run_build_conditions_1s", " ".join(item for _label, command in stages for item in command))
-        self.assertNotIn("run_pilot_offline_shards", " ".join(item for _label, command in stages for item in command))
+        joined = " ".join(item for _label, command in stages for item in command)
+        self.assertNotIn("run_build_1s", joined)
+        self.assertNotIn("run_build_daily", joined)
 
     def test_immutable_catalog_blocks_execute_before_build_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1253,19 +1254,31 @@ class LoaderTrainerContractTest(unittest.TestCase):
         stream_variant = dataclasses.replace(base, loader_stream_contract_version=5)
         fetch_variant = dataclasses.replace(base, clickhouse_query_days=3, clickhouse_prefetch_pages=2)
         legacy_condition_variant = dataclasses.replace(base, condition_table="retired_sidecar")
+        unused_table_variant = dataclasses.replace(
+            base,
+            one_second_table="unused_1s",
+            manifest_table="unused_manifest",
+            alias_manifest_table="unused_aliases",
+            daily_table="unused_daily",
+            daily_manifest_table="unused_daily_manifest",
+        )
+        materialized = dataclasses.replace(base, source_mode="materialized_bars")
+        materialized_table_variant = dataclasses.replace(materialized, one_second_table="different_1s")
         self.assertEqual(config_hash(base), config_hash(loader_variant))
         self.assertNotEqual(config_hash(base), config_hash(stream_variant))
         self.assertEqual(config_hash(base), config_hash(fetch_variant))
         self.assertEqual(config_hash(base), config_hash(legacy_condition_variant))
+        self.assertEqual(config_hash(base), config_hash(unused_table_variant))
+        self.assertNotEqual(config_hash(materialized), config_hash(materialized_table_variant))
         self.assertNotEqual(config_hash(base), config_hash(geometry_variant))
         production = dataclasses.replace(DataConfig(), origin_bars_1s=4096)
         production_hash = config_hash(production)
         self.assertEqual(len(production_hash), 64)
         self.assertNotEqual(production_hash, "8851851ee01c20414c44c665e8f94ccf79d8e3aaa197fc4c4184eb377b97f619")
         self.assertEqual(shard_compatibility_hash(production), production_hash)
-        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 9)
-        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 7)
-        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7"))
+        self.assertEqual(OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION, 12)
+        self.assertEqual(OFFLINE_SHARD_CONTRACT_VERSION, 11)
+        self.assertEqual(DEFAULT_OUTPUT_ROOT, Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v11"))
         self.assertEqual(
             shard_path(DEFAULT_OUTPUT_ROOT, "AAA:2019-01"),
             DEFAULT_OUTPUT_ROOT / "tickers" / "AAA" / "2019" / "2019-01.pt",
@@ -1407,7 +1420,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
     def test_offline_training_preserves_prefetch_across_validation(self) -> None:
         runtime_data = dataclasses.replace(
             self.data_config(),
-            loader_stream_contract_version=9,
+            loader_stream_contract_version=12,
             tickers=("AAA", "BBB", "CCC"),
             start_date="2026-01-01",
             end_date="2026-03-01",
@@ -1763,7 +1776,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_long_run_defaults_use_profiled_shape_and_fractional_warmup(self) -> None:
         self.assertEqual(training_launcher_args["--data-source"], "offline")
-        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v7"))
+        self.assertTrue(training_launcher_args["--offline-shard-root"].endswith("offline_shards_v11"))
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--offline-train-end-date"], "2022-01-01")
@@ -2311,6 +2324,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(len(flattened), len(set(flattened)))
 
     def test_preflight_requires_continuous_certified_source_coverage(self) -> None:
+        authority = DataConfig()
+
         class FakeClient:
             def __init__(self, messages: str) -> None:
                 self.messages = messages
@@ -2322,24 +2337,25 @@ class LoaderTrainerContractTest(unittest.TestCase):
                             "id_symbol_interval_v1\nmarket_ticker_event_entity_v1\nmarket_ticker_event_v1\n"
                             "market_stock_split_v1\n"
                         )
-                    return (
-                        "bar_gpt_1s_bars_v2_cohort_2tb\n"
-                        "bar_gpt_1s_build_manifest_v2_cohort_2tb\n"
-                        "bar_gpt_1s_build_manifest_v2_identity_aliases\n"
-                        "bar_gpt_daily_session_bars_v2\n"
-                        "bar_gpt_daily_session_bars_manifest_v2\n"
-                        "intraday_condition_bars_by_time_ticker\n"
-                        "intraday_base_bars_build_status\n"
-                    )
+                    return "\n".join((
+                        authority.one_second_table,
+                        authority.manifest_table,
+                        authority.alias_manifest_table,
+                        authority.daily_table,
+                        authority.daily_manifest_table,
+                        authority.condition_table,
+                        authority.condition_status_table,
+                        "",
+                    ))
                 if "system.columns" in query:
                     return "local_date\n"
-                if "bar_gpt_daily_session_bars_manifest_v2" in query:
+                if authority.daily_manifest_table in query:
                     return "2019-01-01\t2020-03-01\n"
                 if "current_ticker" in query:
                     return ""
                 if "intraday_base_bars_build_status" in query and "GROUP BY artifact_name" in query:
                     return "intraday_condition_bars_by_time_ticker:tickers=AAA,BBB,CCC\t60\t60\n"
-                if "bar_gpt_1s_bars_v2_cohort_2tb" in query and "condition_halt_pause_count" in query:
+                if authority.one_second_table in query and "condition_halt_pause_count" in query:
                     return "10\t2\t2\t3\t3\n"
                 return self.messages
 
