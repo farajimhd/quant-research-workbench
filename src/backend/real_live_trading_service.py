@@ -20,7 +20,8 @@ from dotenv import load_dotenv
 
 from src.backend.qmd_gateway_client import qmd_scanner_snapshot
 from src.backend.feature_projection import compact_feature_projection
-from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient, quote_identifier
+from src.backend.query_plans.market_tradable_universe_v1 import tradable_symbol_lookup
+from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient
 from src.backend.real_live_market_data.config import market_gateway_config
 from src.market_engine.broker import AccountSnapshot, ExecutionFill, OrderSnapshot, PortfolioPosition
 from src.trading_runtime.ibkr_schema import OrderRequest as IbkrOrderRequest
@@ -1182,25 +1183,8 @@ def tradable_symbol_map(symbols: list[str]) -> dict[str, dict[str, Any]]:
     config = market_gateway_config()
     client = ClickHouseHttpClient(config.read_clickhouse)
     feature_database = os.environ.get("REAL_LIVE_TRADABLE_UNIVERSE_DATABASE", "").strip() or config.write_clickhouse.database or config.read_clickhouse.database or "q_live"
-    database = quote_identifier(feature_database)
-    symbol_list = ", ".join(sql_literal(symbol) for symbol in normalized)
     rows = client.query_json(
-        f"""
-        WITH latest AS
-        (
-            SELECT max(universe_date) AS universe_date
-            FROM {database}.feature_tradable_universe_v1 FINAL
-        )
-        SELECT
-            toString(universe_date) AS universe_date_text,
-            upper(ticker) AS ticker,
-            toUInt8(is_tradable) AS is_tradable,
-            ifNull(exclusion_reason, '') AS exclusion_reason,
-            toUInt64OrZero(ifNull(ibkr_conid, '')) AS ibkr_conid
-        FROM {database}.feature_tradable_universe_v1 FINAL
-        WHERE universe_date = (SELECT universe_date FROM latest)
-          AND upper(ticker) IN ({symbol_list})
-        """,
+        tradable_symbol_lookup(database=feature_database, symbols=normalized),
         timeout=10,
     )
     return {
@@ -1218,10 +1202,6 @@ def tradable_symbol_map(symbols: list[str]) -> dict[str, dict[str, Any]]:
 
 def scanner_row_symbol(row: dict[str, Any]) -> str:
     return str(row.get("ticker") or row.get("symbol") or "").strip().upper()
-
-
-def sql_literal(value: str) -> str:
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def response_requires_reply(response: Any) -> bool:

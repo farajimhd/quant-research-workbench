@@ -655,6 +655,15 @@ bounded direct ClickHouse paths remain documented in
     branding degradation, response projection, and a compatibility re-export
     for existing callers. Python compile and all 15 focused application-registry
     and ticker-presentation tests passed.
+88. Unified current Live universe selection and command-time tradability lookup
+    under the registered `market.tradable_universe.v1` query plan. The full
+    projection preserves latest universe/scanner selection and joins issuer and
+    presentation facts; the bounded lookup preserves the universe date,
+    tradability decision, exclusion reason, and IBKR conid used by Live/Paper
+    preflight. The market-data loader and trading service now resolve only the
+    server-owned database and call the shared builders. Python compile and all
+    22 focused registry, plan, compatibility-caller, market-data configuration,
+    Live preflight, and order-authority tests passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

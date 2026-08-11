@@ -226,6 +226,8 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Move bounded ticker branding and issuer-name lookup into the registered
         `market.ticker_presentation.v1` plan while retaining the existing
         service import as a compatibility re-export.
+  - [x] Move the Live market-data universe and bounded Live/Paper tradability
+        lookup into the shared registered `market.tradable_universe.v1` plan.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -234,6 +236,8 @@ budgets and invalid scope broadening fails configuration validation.
         retain only a compatibility re-export for external callers.
   - [x] Remove ticker-presentation SQL from its service; the service now owns
         only request normalization, optional-data degradation, and projection.
+  - [x] Remove duplicate Live universe SQL from the market-data loader and
+        trading command preflight while preserving their distinct consumers.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [ ] Consume deferred producer services through unchanged bounded contracts.

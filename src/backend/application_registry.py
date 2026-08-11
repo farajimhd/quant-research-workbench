@@ -431,6 +431,21 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "q_live.market_reference_publication_coverage_v1",
         ),
         QueryPlanDefinition(
+            "market.tradable_universe.v1",
+            "backend",
+            "src.backend.query_plans.market_tradable_universe_v1:full_tradable_universe",
+            (
+                "q_live.feature_tradable_universe_v1",
+                "q_live.feature_scanner_static_v1",
+                "q_live.id_issuer_v1",
+                "q_live.market_presentation_asset_v1",
+            ),
+            "latest canonical symbol, listing, security, and broker conid identity",
+            "latest universe_date and feature_date",
+            "Reference Gateway inserted_at",
+            "q_live.market_reference_publication_coverage_v1",
+        ),
+        QueryPlanDefinition(
             "reference.schema_inventory.v1",
             "reference_gateway",
             "services.reference_gateway.table_groups:REFERENCE_TABLE_GROUPS",

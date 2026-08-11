@@ -5,7 +5,8 @@ from typing import Any
 
 import polars as pl
 
-from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient, quote_identifier
+from src.backend.query_plans.market_tradable_universe_v1 import full_tradable_universe
+from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient
 from src.backend.real_live_market_data.config import MarketGatewayConfig
 from src.backend.real_live_market_data.models import UniverseRecord
 
@@ -32,64 +33,7 @@ def load_universe_frame(client: ClickHouseHttpClient, config: MarketGatewayConfi
 
 def default_universe_sql(config: MarketGatewayConfig) -> str:
     feature_database = os.environ.get("REAL_LIVE_TRADABLE_UNIVERSE_DATABASE", "").strip() or config.write_clickhouse.database or config.read_clickhouse.database or "q_live"
-    database = quote_identifier(feature_database)
-    return f"""
-    WITH
-        latest_universe AS
-        (
-            SELECT max(universe_date) AS universe_date
-            FROM {database}.feature_tradable_universe_v1 FINAL
-        ),
-        latest_scanner AS
-        (
-            SELECT max(feature_date) AS feature_date
-            FROM {database}.feature_scanner_static_v1 FINAL
-        )
-    SELECT
-        u.ticker AS candidate_massive_ticker,
-        u.symbol_id AS symbol_id,
-        u.symbol_status AS symbol_status,
-        1 AS primary_symbol_flag,
-        '' AS ticker_type_id,
-        'CS' AS ticker_type_provider_code,
-        'Common Stock' AS ticker_type_name,
-        '' AS ticker_type_description,
-        u.product_type AS security_product_type,
-        u.asset_class AS security_asset_class,
-        u.product_type AS security_instrument_type,
-        u.product_type AS security_type,
-        u.listing_id AS listing_id,
-        u.listing_status AS listing_status,
-        u.ibkr_conid AS ibkr_conid,
-        u.exchange_code AS exchange_code,
-        u.currency_code AS currency_code,
-        u.issuer_id AS issuer_id,
-        issuer.issuer_name AS issuer_name,
-        asset.asset_id AS logo_asset_id,
-        asset.relative_path AS logo_relative_path,
-        asset.mime_type AS logo_mime_type,
-        asset.source_reference AS logo_source_reference,
-        scanner.free_float AS massive_float,
-        scanner.short_interest AS massive_short_interest,
-        scanner.days_to_cover AS massive_days_to_cover,
-        scanner.short_volume_ratio AS massive_short_volume_ratio,
-        scanner.float_bucket AS float_profile,
-        scanner.short_pressure_label AS short_setup,
-        u.is_tradable AS is_tradable,
-        u.exclusion_reason AS exclusion_reason
-    FROM (SELECT * FROM {database}.feature_tradable_universe_v1 FINAL) AS u
-    LEFT JOIN (SELECT * FROM {database}.id_issuer_v1 FINAL) AS issuer
-        ON issuer.issuer_id = u.issuer_id
-    LEFT JOIN (SELECT * FROM {database}.feature_scanner_static_v1 FINAL) AS scanner
-        ON scanner.feature_date = (SELECT feature_date FROM latest_scanner)
-       AND scanner.symbol_id = u.symbol_id
-       AND scanner.listing_id = u.listing_id
-    LEFT JOIN (SELECT * FROM {database}.market_presentation_asset_v1 FINAL) AS asset
-        ON asset.asset_id = coalesce(scanner.logo_asset_id, issuer.logo_asset_id)
-    WHERE u.universe_date = (SELECT universe_date FROM latest_universe)
-      AND u.is_tradable = 1
-    ORDER BY upper(candidate_massive_ticker)
-    """
+    return full_tradable_universe(database=feature_database)
 
 
 def normalize_universe_frame(frame: pl.DataFrame) -> pl.DataFrame:

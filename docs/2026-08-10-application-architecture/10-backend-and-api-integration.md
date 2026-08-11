@@ -144,6 +144,13 @@ one-row-per-ticker reduction. `ticker_presentation_service.py` retains only the
 request bound, optional-data degradation policy, row projection, and a
 compatibility re-export of the registered builder.
 
+The current Live market-data population and the Live/Paper tradability gate
+share `market.tradable_universe.v1`. Its full projection joins the latest
+published universe, scanner-static, issuer, and presentation sources; its
+bounded symbol lookup returns the same universe date, tradability decision,
+exclusion reason, and broker conid used by command preflight. Database selection
+remains server-side and neither caller carries route-local SQL.
+
 ## 6. Configuration registry and compiler
 
 The catalog contains capability, field, container, strategy, policy, mode and service descriptors. Configuration records reference stable IDs and versions. The compiler:

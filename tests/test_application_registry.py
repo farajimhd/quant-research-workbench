@@ -46,6 +46,13 @@ class ApplicationRegistryTests(unittest.TestCase):
             "q_live.market_presentation_asset_v1",
             presentation_plan.source_paths,
         )
+        universe_plan = {
+            plan.plan_id: plan for plan in QUERY_PLANS
+        }["market.tradable_universe.v1"]
+        self.assertEqual(
+            universe_plan.implementation,
+            "src.backend.query_plans.market_tradable_universe_v1:full_tradable_universe",
+        )
         self.assertTrue(
             {
                 "news.company_asof.v1",
