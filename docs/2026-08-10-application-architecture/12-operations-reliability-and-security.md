@@ -190,6 +190,24 @@ The report is written atomically under
 does not replace a passing report across representative archive, recent, and
 current-live segments.
 
+Point-in-time enrichment has a separate database-backed acceptance. It compares
+two causal cutoffs, rejects any identity, reference, borrow, fundamental, or
+freshness timestamp later than its requested cutoff, and requires a selected
+source path to advance between the two snapshots:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python scripts\validate_point_in_time_enrichment.py `
+  --ticker AAPL `
+  --before 2026-08-07T14:00:00Z `
+  --after 2026-08-07T15:00:00Z
+```
+
+Its atomic JSON report is also stored under
+`D:\TradingML\runtimes\qmd_validation`. Missing evidence, an unchanged required
+change path, an inexact response clock, a non-ready snapshot, or future evidence
+returns a nonzero exit.
+
 Direct parity is permitted only for a fully durable source plan. The validator
 expands QMD's archive `events_YYYY` declaration by the requested years and
 accepts only the registered archive and `q_live.events` authorities; a gap,

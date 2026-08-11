@@ -1002,14 +1002,19 @@ broker command outside OMS.
         its canonical port 8795 and QMD History on 8801. QMD History and the
         acceptance runner now default to 8795; port 8800 remains solely IBKR
         Supervisor authority.
-- [ ] Test point-in-time identity and enrichment behavior.
+- [x] Test in-scope point-in-time identity and enrichment behavior.
   - [x] Validate the active Reference, fundamentals, ticker-facts, Watchlist,
         feature-projection, and Scanner query contracts for explicit as-of and
         availability cutoffs, stable identity, bulk joins, missing evidence,
         publication time, and cache isolation. Fifty-five in-scope tests passed.
-  - [ ] Capture representative database-backed PIT results and resolve the
-        deferred News Synthesis v48 `provider_tags` test drift when intelligence
-        work resumes; it is not changed by this active implementation goal.
+  - [x] Capture representative database-backed PIT results. The acceptance
+        command checked 56 temporal fields at each of two AAPL cutoffs, rejected
+        future evidence, and proved the borrow snapshot advances from the
+        2026-08-05 authority at 14:00 UTC to the newly available
+        2026-08-07 14:32:39 authority at 15:00 UTC. Evidence is
+        `D:\TradingML\runtimes\qmd_validation\point_in_time_enrichment_20260811T205450Z.json`.
+  - [ ] Resolve the deferred News Synthesis v48 `provider_tags` test drift when
+        intelligence work resumes; it is not changed by this active goal.
 - [ ] Test scanner population, cost, and performance.
   - [x] Measure and reduce interactive projection amplification under active
         traffic. The 5,000-row focused-indicator response fell from about

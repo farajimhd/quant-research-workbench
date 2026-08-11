@@ -1785,6 +1785,20 @@ it does not imply all application work is complete.
      `D:\TradingML\runtimes\qmd_goal_load\acceptance_gzip_summary.json`.
      Cargo formatting/checks and all 42 QMD History tests passed.
 
+167. Added and ran a database-backed point-in-time enrichment acceptance
+     command. It requests one ticker at two explicit UTC cutoffs, requires exact
+     response clocks and ready state, traverses identity, market, float, borrow,
+     short-interest, fundamental, freshness, and identifier availability
+     fields, and fails if any evidence is later than its cutoff. A configurable
+     change path must also advance so two superficially identical cached
+     responses cannot pass. The real AAPL run checked 56 fields at each cutoff:
+     14:00 UTC returned the 2026-08-05 borrow authority and 15:00 UTC returned
+     the borrow snapshot observed at 14:32:39, with no future evidence. The
+     command writes atomically outside the repository, has compact human and
+     explicit JSON output, and returns nonzero on failure. Two focused tests,
+     Python compilation, help rendering, and the real acceptance passed. The
+     deferred News Synthesis assertion remains unchanged.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)
