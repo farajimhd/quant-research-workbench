@@ -892,6 +892,15 @@ bounded direct ClickHouse paths remain documented in
      Scanner and bar events remain lossless rather than being dropped. A new
      bounded-channel regression test proved compact admission while the raw
      lane was saturated; all 98 QMD tests and formatting validation passed.
+113. Closed the streaming reconnect/resnapshot protocol test gap. A backend
+     WebSocket route test now proves the upstream QMD subscription is active
+     before the bounded ticker snapshot is captured, then verifies a typed
+     `resnapshot_required` gap frame bypasses ticker filtering and reaches the
+     client. The existing Canvas consumer closes, reconnects with bounded
+     backoff, and replaces state from the new snapshot. Forty-seven focused
+     QMD client, stream, and application-authority tests passed. Real-browser
+     visual acceptance remains separately open because localhost navigation is
+     policy-blocked.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -697,7 +697,12 @@ broker command outside OMS.
         does not satisfy the production parity gate.
 - [ ] Test point-in-time identity and enrichment behavior.
 - [ ] Test scanner population, cost, and performance.
-- [ ] Test streaming reconnect and resnapshot.
+- [x] Test streaming reconnect and resnapshot. QMD unit coverage proves typed
+      terminal lag/sequence-gap frames; an actual backend WebSocket route test
+      proves upstream subscription precedes snapshot capture and forwards the
+      gap control frame. The Canvas consumer closes on that frame, reconnects
+      with bounded backoff, and replaces state from the next snapshot. Real
+      browser validation remains the separate open visual gate below.
 - [ ] Run real browser/visual validation for frontend changes.
 - [ ] Test trading races, restart, protection, and deterministic mode parity.
 - [ ] Run representative end-to-end load tests.
