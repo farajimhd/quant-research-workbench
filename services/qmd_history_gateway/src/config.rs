@@ -65,7 +65,7 @@ impl HistoricalGatewayConfig {
             clickhouse_password: source.password,
             clickhouse_url: source.url,
             clickhouse_user: source.user,
-            live_gateway_url: env_string("QMD_HISTORY_LIVE_GATEWAY_URL", "http://127.0.0.1:8800"),
+            live_gateway_url: env_string("QMD_HISTORY_LIVE_GATEWAY_URL", "http://127.0.0.1:8795"),
             max_events_per_request: env_usize("QMD_HISTORY_MAX_EVENTS_PER_REQUEST", 10_000_000)
                 .max(1),
             recent_database: env_string("QMD_HISTORY_RECENT_DATABASE", "q_live"),

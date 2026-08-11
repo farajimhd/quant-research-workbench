@@ -197,8 +197,8 @@ struct SourceRevisionRow {
 #[derive(Debug, Deserialize)]
 struct CoverageIntervalRow {
     coverage_id: String,
-    coverage_end_utc: String,
-    coverage_start_utc: String,
+    coverage_end_text: String,
+    coverage_start_text: String,
     status: String,
 }
 
@@ -306,22 +306,7 @@ impl HistoricalEventSource {
             "{}.{}",
             self.config.recent_database, self.config.recent_event_coverage_table
         );
-        let sql = format!(
-            r#"SELECT
-                coverage_id,
-                status,
-                formatDateTime(coverage_start_utc, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS coverage_start_utc,
-                formatDateTime(coverage_end_utc, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS coverage_end_utc
-            FROM {table} FINAL
-            WHERE coverage_kind = 'q_live_events'
-              AND status IN ('repair_completed', 'coverage_bootstrap', 'compact_persisted', 'intraday_bars_persisted')
-              AND coverage_end_utc > parseDateTime64BestEffort({start})
-              AND coverage_start_utc < parseDateTime64BestEffort({end})
-            ORDER BY coverage_start_utc, coverage_end_utc
-            FORMAT JSONEachRow"#,
-            start = sql_literal(&window.start.to_rfc3339()),
-            end = sql_literal(&window.end.to_rfc3339()),
-        );
+        let sql = recent_coverage_sql(&table, window);
         let text = self.query(&sql).await?;
         let rows = text
             .lines()
@@ -331,8 +316,8 @@ impl HistoricalEventSource {
                     .map_err(|error| format!("invalid recent coverage row: {error}"))?;
                 Ok(RecentCoverageRow {
                     coverage_id: row.coverage_id,
-                    end: parse_clickhouse_datetime(&row.coverage_end_utc)?,
-                    start: parse_clickhouse_datetime(&row.coverage_start_utc)?,
+                    end: parse_clickhouse_datetime(&row.coverage_end_text)?,
+                    start: parse_clickhouse_datetime(&row.coverage_start_text)?,
                     status: row.status,
                 })
             })
@@ -1807,13 +1792,32 @@ fn sql_literal(value: &str) -> String {
     format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
+fn recent_coverage_sql(table: &str, window: &EventWindow) -> String {
+    format!(
+        r#"SELECT
+                coverage_id,
+                status,
+                formatDateTime(coverage_start_utc, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS coverage_start_text,
+                formatDateTime(coverage_end_utc, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS coverage_end_text
+            FROM {table} FINAL
+            WHERE coverage_kind = 'q_live_events'
+              AND status IN ('repair_completed', 'coverage_bootstrap', 'compact_persisted', 'intraday_bars_persisted')
+              AND coverage_end_utc > parseDateTime64BestEffort({start})
+              AND coverage_start_utc < parseDateTime64BestEffort({end})
+            ORDER BY coverage_start_utc, coverage_end_utc
+            FORMAT JSONEachRow"#,
+        start = sql_literal(&window.start.to_rfc3339()),
+        end = sql_literal(&window.end.to_rfc3339()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         archive_session_end_utc, build_source_plan, event_select, macro_bar_is_closed,
         materialize_confirmed_recent_coverage, merge_coverage_intervals, normalize_ticker,
-        parse_historical_tsv_row, row_to_event, CoverageInterval, EventWindow, HistoricalRow,
-        MarketSourceTier, RecentCoverageRow,
+        parse_historical_tsv_row, recent_coverage_sql, row_to_event, CoverageInterval, EventWindow,
+        HistoricalRow, MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{TimeZone, Utc};
@@ -1928,6 +1932,22 @@ mod tests {
             Utc.with_ymd_and_hms(2026, 8, 12, 14, 0, 0).unwrap(),
         )
         .unwrap());
+    }
+
+    #[test]
+    fn recent_coverage_query_does_not_shadow_datetime_predicates_with_text_aliases() {
+        let window = EventWindow {
+            start: Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 8, 11, 18, 20, 0).unwrap(),
+            tickers: vec!["AAPL".to_string()],
+        };
+        let sql = recent_coverage_sql("q_live.qmd_live_event_coverage_v1", &window);
+        assert!(sql.contains("AS coverage_start_text"));
+        assert!(sql.contains("AS coverage_end_text"));
+        assert!(!sql.contains("AS coverage_start_utc"));
+        assert!(!sql.contains("AS coverage_end_utc"));
+        assert!(sql.contains("AND coverage_end_utc > parseDateTime64BestEffort"));
+        assert!(sql.contains("AND coverage_start_utc < parseDateTime64BestEffort"));
     }
 
     #[test]

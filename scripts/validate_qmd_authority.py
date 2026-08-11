@@ -471,7 +471,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start", required=True, help="Inclusive RFC3339 window start")
     parser.add_argument("--end", required=True, help="Exclusive RFC3339 window end")
     parser.add_argument("--tickers", required=True, help="Comma-separated ticker population")
-    parser.add_argument("--live-url", default="http://127.0.0.1:8800")
+    parser.add_argument("--live-url", default="http://127.0.0.1:8795")
     parser.add_argument("--history-url", default="http://127.0.0.1:8801")
     parser.add_argument("--page-size", type=int, default=25_000)
     parser.add_argument("--max-events", type=int, default=250_000)

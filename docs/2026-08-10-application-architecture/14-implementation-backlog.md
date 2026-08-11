@@ -181,7 +181,11 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
   - [x] Instrument sampled Core Scan and all-market bar/structure stage latency
         in the QMD operational snapshot without adding per-event histogram cost.
   - [ ] Capture representative active-session throughput, latency, queue, CPU,
-        and memory evidence and approve explicit budgets.
+        and memory evidence and approve explicit budgets. The passing
+        recent/live authority run sampled 348 all-market and Core Scan events
+        at 40/47 microseconds average and 312/363 microseconds maximum, but the
+        service was still catching up with a large compact-writer backlog, so
+        this is evidence rather than budget approval.
 - [x] Limit default Core Scan to last/change, volume/dollar volume, activity,
       spread, halt/stale, basic liquidity, reference context, and rank inputs.
       Its exact five low-cost runtime families are catalog-tested; optional
@@ -907,11 +911,19 @@ broker command outside OMS.
         `D:\TradingML\runtimes\qmd_validation`.
   - [ ] Run the acceptance runner across representative archive/recent/live
         boundary windows and attach passing runtime evidence. The harness alone
-        does not satisfy the production parity gate.
+        does not satisfy the production parity gate. Archive authority passed
+        in the report below and the repaired recent-to-live continuation passed
+        in `qmd_authority_validation_20260811T182103Z.json`; a contiguous
+        archive-to-recent transition remains blocked by the current declared
+        q_live coverage gap while startup repair is incomplete.
   - [x] Run the durable archive portion against real services/data. Report
         `qmd_authority_validation_20260811T143323Z.json` passed for plan
-        `fnv1a64:24bdd17a110cb65f`; the 8800 IBKR/QMD collision still blocks the
-        Live/recent portion and is not hidden by history-only mode.
+        `fnv1a64:24bdd17a110cb65f`.
+  - [x] Run the recent-to-live continuation against real services/data. Report
+        `qmd_authority_validation_20260811T182103Z.json` passed with QMD Live on
+        its canonical port 8795 and QMD History on 8801. QMD History and the
+        acceptance runner now default to 8795; port 8800 remains solely IBKR
+        Supervisor authority.
 - [ ] Test point-in-time identity and enrichment behavior.
   - [x] Validate the active Reference, fundamentals, ticker-facts, Watchlist,
         feature-projection, and Scanner query contracts for explicit as-of and

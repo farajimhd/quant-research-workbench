@@ -70,7 +70,7 @@ class QmdAuthorityValidationTests(unittest.TestCase):
 
     def test_direct_parity_rejects_live_or_unapproved_sources(self) -> None:
         for source, tier, queryable in (
-            ("http://127.0.0.1:8800", "current_live", False),
+            ("http://127.0.0.1:8795", "current_live", False),
             ("other.events_2026", "archive", True),
         ):
             with self.subTest(source=source), self.assertRaisesRegex(
@@ -203,7 +203,7 @@ class QmdAuthorityValidationTests(unittest.TestCase):
                         "start": "2026-08-01T00:00:00Z",
                         "end": "2026-08-02T00:00:00Z",
                         "queryable_by_history": False,
-                        "source": "http://127.0.0.1:8800",
+                        "source": "http://127.0.0.1:8795",
                         "tier": "current_live",
                     }
                 ],

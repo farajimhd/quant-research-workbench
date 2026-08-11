@@ -86,7 +86,8 @@ Defaults:
 - yearly-table prefix: `events_`
 - recent source: `q_live.events`, gated by
   `q_live.qmd_live_event_coverage_v1`
-- current continuation: `http://127.0.0.1:8800`
+- current continuation: `http://127.0.0.1:8795`; port `8800` belongs to the
+  IBKR Supervisor and is never a QMD fallback
 - durable daily-session table: `daily_session_bars_by_symbol_time_v1`
   (`QMD_HISTORY_DAILY_SESSION_BARS_TABLE`); QMD derives closed 1-day and
   weekly, monthly, and yearly trade bars only from causally available completed

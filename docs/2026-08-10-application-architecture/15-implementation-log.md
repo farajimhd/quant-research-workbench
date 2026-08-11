@@ -1542,6 +1542,27 @@ it does not imply all application work is complete.
      new Watch Universe container during browser review; existing Canvas state
      was preserved.
 
+154. Repaired QMD History source planning against the production ClickHouse
+     version. The recent-coverage query previously reused
+     `coverage_start_utc` and `coverage_end_utc` as formatted String aliases;
+     ClickHouse 26.3 resolved those aliases in `WHERE` and rejected the
+     resulting String-to-DateTime64 comparison. The projection now uses
+     distinct `coverage_start_text` and `coverage_end_text` names, leaving the
+     predicate bound to the typed source columns. A focused regression test
+     locks that non-shadowing contract, and all 42 QMD History Rust tests
+     passed with Cargo output under the external runtime target.
+
+     The same acceptance run confirmed and corrected the stale live-port
+     default. QMD History and `validate_qmd_authority.py` now use QMD Live at
+     `127.0.0.1:8795`; `127.0.0.1:8800` remains the IBKR Supervisor and is not
+     a QMD fallback. Eight validator tests passed. With QMD Live and History
+     running on 8795/8801, the read-only recent-to-live report
+     `qmd_authority_validation_20260811T182103Z.json` passed for IBM and F.
+     The earlier durable archive report remains valid. A multi-day plan still
+     truthfully exposes an archive-to-recent coverage gap while QMD startup
+     repair is incomplete, so the combined production boundary gate remains
+     open rather than being inferred from the two passing scopes.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)
