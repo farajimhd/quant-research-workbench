@@ -176,7 +176,11 @@ internal topology, or producer formula.
 - [x] Expose Strategy/request/offline availability without calling it unavailable.
 - [x] Separate implementation, execution scope, configuration authority,
       operational readiness, and coverage status.
-- [ ] Show enrichment provenance, freshness, gaps, and null reasons.
+- [x] Show enrichment provenance, freshness, gaps, and null reasons. Market
+      Discovery reads the backend application-field registry and presents each
+      field's owner/source, point-in-time query plan, `available_at`, freshness,
+      coverage path, null reasons, provenance, historical support, cadence, and
+      implementation status. Deferred producer fields remain visibly pending.
 - [x] Add scanner and membership history views. Market Discovery rebuilds a
       bounded full-market historical Scanner snapshot through QMD History for
       a chosen New York clock and shows the append-only Watchlist event journal.

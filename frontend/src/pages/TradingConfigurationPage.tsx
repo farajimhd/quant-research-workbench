@@ -470,6 +470,22 @@ type HistoricalScannerSnapshot = {
   source_revision: { complete_for_history?: boolean; source_tiers?: string[]; token?: string };
   ticker_count: number;
 };
+type EnrichmentFieldDefinition = {
+  available_at: string;
+  coverage_query_plan: string;
+  field_id: string;
+  freshness_policy: string;
+  group: string;
+  historical_support: string;
+  label: string;
+  null_reasons: string[];
+  owner: string;
+  provenance: string;
+  publication_cadence: string;
+  query_plan_id: string;
+  source_path: string;
+  status: string;
+};
 type WatchlistColumn = { column_id: string; name: string; description: string; source: string; value_type: string; default_visible: boolean };
 type MarketClassification = { classification_id: string; group: string; name: string; description: string; minimum: number; maximum: number | null; unit: string; source_id: string };
 const WATCHLIST_GUIDED_STEPS = ["identity", "rules", "ranking", "columns", "timing", "overrides", "calculations", "review"] as const;
@@ -1878,7 +1894,7 @@ function GuidedEmpty({ onSwitchToExpert }: { onSwitchToExpert: () => void }) {
 }
 
 function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: MarketDiscoverySection) => void; section: MarketDiscoverySection }) {
-  const [mode, setMode] = useState<"catalog" | "guided">("guided");
+  const [mode, setMode] = useState<"catalog" | "enrichments" | "guided">("guided");
   const [guidedStep, setGuidedStep] = useState<"universal" | "core" | "watchlists" | "history">("universal");
   const [capabilityQuery, setCapabilityQuery] = useState("");
   const [capabilityTypeFilter, setCapabilityTypeFilter] = useState("all");
@@ -1896,6 +1912,9 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
   const [scannerHistory, setScannerHistory] = useState<HistoricalScannerSnapshot | null>(null);
   const [scannerHistoryError, setScannerHistoryError] = useState("");
   const [scannerHistoryLoading, setScannerHistoryLoading] = useState(false);
+  const [enrichmentFields, setEnrichmentFields] = useState<EnrichmentFieldDefinition[]>([]);
+  const [enrichmentError, setEnrichmentError] = useState("");
+  const [enrichmentQuery, setEnrichmentQuery] = useState("");
   const discoveryCapabilities = useMemo(() => section.core_scan.calculations.map(normalizedDiscoveryCapability), [section.core_scan.calculations]);
   const universalCapabilities = useMemo(() => discoveryCapabilities.filter((row) => row.execution_scope === "universal_ingest"), [discoveryCapabilities]);
   const coreCapabilities = useMemo(() => discoveryCapabilities.filter((row) => row.execution_scope === "core_scan"), [discoveryCapabilities]);
@@ -1961,6 +1980,25 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
       window.clearInterval(interval);
     };
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api<{ rows?: EnrichmentFieldDefinition[] }>("/api/registries/fields", { signal: controller.signal, timeoutMs: 20_000 })
+      .then((payload) => {
+        setEnrichmentFields(payload.rows ?? []);
+        setEnrichmentError("");
+      })
+      .catch((reason) => {
+        if (!controller.signal.aborted) setEnrichmentError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => controller.abort();
+  }, []);
+
+  const visibleEnrichmentFields = useMemo(() => {
+    const search = enrichmentQuery.trim().toLowerCase();
+    if (!search) return enrichmentFields;
+    return enrichmentFields.filter((field) => [field.field_id, field.label, field.group, field.owner, field.source_path, field.query_plan_id, field.status].some((value) => value.toLowerCase().includes(search)));
+  }, [enrichmentFields, enrichmentQuery]);
 
   function replaceWatchlist(next: WatchlistConfig) {
     onChange({ ...section, watchlists: section.watchlists.map((row) => row.watchlist_id === next.watchlist_id ? next : row) });
@@ -2041,9 +2079,10 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
 
   return <div className="strategy-studio-workspace market-discovery-studio">
     <nav className="strategy-editor-toolbar" aria-label="Market Discovery navigation">
-      <span><strong>QMD MARKET DISCOVERY</strong><small>{mode === "catalog" ? "Capability Catalog" : "Guided Configuration"}</small></span>
+      <span><strong>QMD MARKET DISCOVERY</strong><small>{mode === "catalog" ? "Capability Catalog" : mode === "enrichments" ? "Enrichment Field Registry" : "Guided Configuration"}</small></span>
       <div className="strategy-editor-modes" role="tablist" aria-label="Market Discovery views">
         <button aria-selected={mode === "catalog"} onClick={() => setMode("catalog")} role="tab" type="button"><Search size={14} /> Capability Catalog</button>
+        <button aria-selected={mode === "enrichments"} onClick={() => setMode("enrichments")} role="tab" type="button"><FileInput size={14} /> Enrichment Fields</button>
         <button aria-selected={mode === "guided"} onClick={() => setMode("guided")} role="tab" type="button"><BookOpenCheck size={14} /> Guided Configuration</button>
       </div>
     </nav>
@@ -2062,6 +2101,9 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
           <ParameterDocumentation documentation={{ role: [`${selectedCapability.provider} publishes ${selectedCapability.fields.join(", ") || selectedCapability.output_type} from ${selectedCapability.inputs.join(", ") || "service-owned inputs"}.`], timing: [selectedCapability.timeframes.length ? `Available calculation clocks: ${selectedCapability.timeframes.join(", ")}.` : "The service owns its publication clock and causal availability."], impact: [selectedCapability.calculation || selectedCapability.description], caution: [["planned_realtime", "integration_pending"].includes(selectedCapability.implementation_status) ? `This family is ${readableLabel(selectedCapability.implementation_status)} and is not selectable until that implementation state changes.` : selectedCapability.execution_scope !== "core_scan" ? `This capability belongs to ${capabilityScopeLabel(selectedCapability.execution_scope)}, not the all-market Core Scan.` : selectedCapability.configurable ? "Changing it affects future Core Scan and Watchlist resolution after publication." : "The control is intentionally read-only because QMD owns this required behavior."], cautionTone: "information" }} group={selectedCapability.category} path={selectedCapability.capability_id} value={selectedCapability.enabled} />
         </> : null}
       </main>
+    </div> : mode === "enrichments" ? <div className="configuration-workbench strategy-editor-catalog discovery-capability-workbench">
+      <aside className="strategy-parameter-catalog"><header><div><span>Application field registry</span><strong>{visibleEnrichmentFields.length} of {enrichmentFields.length}</strong></div><p>Every Scanner, Watchlist, Strategy, chart, and research enrichment must resolve through one registered causal path.</p></header><label className="strategy-parameter-search"><Search aria-hidden="true" size={15} /><input aria-label="Search enrichment fields" onChange={(event) => setEnrichmentQuery(event.target.value)} placeholder="Search field, owner, source or plan" type="search" value={enrichmentQuery} /></label><div className="strategy-parameter-list">{[...new Set(visibleEnrichmentFields.map((field) => field.group))].map((group) => <section className="strategy-parameter-group" key={group}><header><strong>{readableLabel(group)}</strong><span>{visibleEnrichmentFields.filter((field) => field.group === group).length}</span></header>{visibleEnrichmentFields.filter((field) => field.group === group).slice(0, 12).map((field) => <span key={field.field_id}><span><strong>{field.label}</strong><small>{field.owner} · {readableLabel(field.status)}</small></span></span>)}</section>)}{enrichmentError ? <div className="strategy-parameter-empty-list"><TriangleAlert size={18} /><span>{enrichmentError}</span></div> : null}</div></aside>
+      <main className="strategy-parameter-detail-page discovery-capability-detail"><header><span>Registry-driven integration contract</span><h2>Enrichment provenance and causal availability</h2><p>These records identify where each value comes from, when it becomes legal to use, how freshness and coverage are evaluated, and why a value may be null.</p></header><div className="discovery-capability-matrix">{visibleEnrichmentFields.slice(0, 100).map((field, index) => <article data-status={field.status.replaceAll("_", "-")} key={field.field_id}><span aria-label={`Enrichment field ${index + 1} of ${visibleEnrichmentFields.length}`} className="discovery-capability-index">{index + 1}</span><div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{field.label}</strong><span data-type="reference">{readableLabel(field.group)}</span><span>{readableLabel(field.status)}</span></div><small>{field.field_id}</small><dl><div><dt>Owner / source</dt><dd>{field.owner} · {field.source_path}</dd></div><div><dt>Point-in-time plan</dt><dd>{field.query_plan_id}</dd></div><div><dt>Available at</dt><dd>{field.available_at}</dd></div><div><dt>Freshness</dt><dd>{field.freshness_policy}</dd></div><div><dt>Coverage</dt><dd>{field.coverage_query_plan}</dd></div><div><dt>Null reasons</dt><dd>{field.null_reasons.map(readableLabel).join(", ")}</dd></div></dl></div><div className="discovery-capability-actions"><em>{readableLabel(field.provenance)}</em><small>{readableLabel(field.historical_support)} · {readableLabel(field.publication_cadence)}</small></div></article>)}</div>{visibleEnrichmentFields.length > 100 ? <p className="configuration-safety-note"><CircleHelp size={15} />Showing the first 100 matching fields. Narrow the registry search to inspect another field family.</p> : null}</main>
     </div> : <article className="strategy-authoring discovery-guided-authoring">
       <div className="strategy-authoring-step-navigation discovery-step-navigation">
         <nav className="strategy-authoring-steps" aria-label="Market Discovery configuration steps">

@@ -133,6 +133,12 @@ bounded direct ClickHouse paths remain documented in
     full-market Scanner replay contract, and returns source revision, engine,
     event, ticker, and indicator evidence. The UI presents that snapshot beside
     the existing append-only Watchlist membership history.
+28. Added a registry-driven Market Discovery Enrichment Fields view. It exposes
+    owner/source, point-in-time query plan and `available_at`, freshness,
+    coverage, null reasons, provenance, historical support, cadence, and status
+    without embedding database paths or producer formulas in browser code.
+    Deferred intelligence producer fields remain visible as integration pending
+    and are not mislabeled runnable.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
