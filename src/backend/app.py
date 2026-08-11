@@ -142,6 +142,7 @@ from src.backend.trading_runtime_service import (
     trading_taxonomy_catalog,
 )
 from src.backend.trading_configuration_service import (
+    approved_canvas_profile,
     approved_configuration,
     configuration_base,
     configuration_revisions,
@@ -4680,6 +4681,11 @@ def trading_configuration_revision_list() -> dict[str, Any]:
 def trading_configuration_approved() -> dict[str, Any]:
     result = approved_configuration()
     return {"schema_version": 1, "approved": result}
+
+
+@app.get("/api/trading/configuration/canvas-profile")
+def trading_configuration_canvas_profile() -> dict[str, Any]:
+    return approved_canvas_profile()
 
 
 @app.get("/api/trading/configuration/effective")

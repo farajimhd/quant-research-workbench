@@ -134,13 +134,18 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
 ## 7. Current drift
 
 - The configuration surfaces already draft many containers, but they are not yet backed by one complete, versioned container registry.
-- Existing trading pages do not all instantiate one published Canvas plus user overlay.
+- The backend now exposes a Canvas-only projection of the approved release.
+  Standalone Canvas and Replay instantiate that published/pinned profile, while
+  revision-scoped browser overlays persist layout, links, symbols and container
+  settings without writing to Configuration storage. Each workspace can
+  reset its overlay to the approved profile. Live/Paper and Backtest still need
+  this same integration as part of their shared-controller migration.
 - Intraday historical charts now request a QMD `bars` stage first and render it
   before requesting the `full` indicator, signal, and structure stage from the
   same single-flight cache entry. Archive/recent source selection remains owned
   by QMD History. The remaining chart drift is the explicit watermark merge with
   the live tail, adjacent-window prefetch, correction/provenance presentation,
-  and published Canvas defaults across every workspace.
+  and published Canvas defaults in the remaining mode workspaces.
 - Replay Canvas now creates manual or semi-automatic semantic proposals from
   the visible closed-bar snapshot, point-in-time conid, price/source sequence,
   freshness, quantity, and optional stop/target. The Replay controller rejects

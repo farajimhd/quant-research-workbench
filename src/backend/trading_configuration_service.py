@@ -188,6 +188,33 @@ def approved_configuration(*, required: bool = False) -> dict[str, Any] | None:
     return result
 
 
+def approved_canvas_profile() -> dict[str, Any]:
+    """Project the published Canvas default without exposing the full release."""
+
+    approved = approved_configuration()
+    if approved is None:
+        return {
+            "schema_version": 1,
+            "available": False,
+            "revision_id": "",
+            "configuration_revision": 0,
+            "content_hash": "",
+            "canvas_revision": "",
+            "profile": {},
+        }
+    canvas = dict(dict(approved.get("payload") or {}).get("canvas") or {})
+    profile = deepcopy(dict(canvas.get("profile") or {}))
+    return {
+        "schema_version": 1,
+        "available": bool(profile),
+        "revision_id": str(approved.get("revision_id") or ""),
+        "configuration_revision": int(approved.get("revision") or 0),
+        "content_hash": str(approved.get("content_hash") or ""),
+        "canvas_revision": str(canvas.get("revision") or ""),
+        "profile": profile,
+    }
+
+
 def publish_configuration(
     *,
     label: str,

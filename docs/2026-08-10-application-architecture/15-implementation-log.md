@@ -63,6 +63,10 @@ bounded direct ClickHouse paths remain documented in
 12. Versioned the broker-neutral Strategy execution-intent contract, included
     the version in durable payloads, rejected unsupported future versions, and
     retained explicit version-1 recovery for pre-versioned OMS journal rows.
+13. Added a Canvas-only approved-release API and separated runtime workspace
+    overlays from editable Configuration storage. Standalone Canvas and Replay now
+    start from the approved/pinned profile, persist revision-scoped changes, and
+    can reset to approved without rewriting application defaults.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

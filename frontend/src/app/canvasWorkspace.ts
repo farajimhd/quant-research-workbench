@@ -49,6 +49,7 @@ export const CANVAS_REGISTRY_STORAGE_KEY = "quant-research-workbench.canvas.regi
 export const CANVAS_PREVIEW_CONTEXT_STORAGE_KEY = "quant-research-workbench.canvas.preview-context.v1";
 export const CANVAS_SETTINGS_STORAGE_KEY = "quant-research-workbench.canvas.container-settings.v1";
 export const MAIN_CANVAS_STORAGE_KEY = "quant-research-workbench.trading-workspace.global.v1";
+const CANVAS_RUNTIME_OVERLAY_PREFIX = "quant-research-workbench.canvas.runtime-overlay.v1";
 const REPLAY_FOCUS_HANDOFF_PREFIX = "quant-research-workbench.replay-focus.";
 const REPLAY_FOCUS_HANDOFF_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -80,6 +81,48 @@ export function canvasWorkspaceStorageKey(canvasId: string) {
   return canvasId === MAIN_CANVAS_ID
     ? MAIN_CANVAS_STORAGE_KEY
     : `quant-research-workbench.trading-workspace.canvas.${canvasId}.v1`;
+}
+
+export function canvasRuntimeRegistryStorageKey(scope: string, revision: string) {
+  return `${CANVAS_RUNTIME_OVERLAY_PREFIX}.registry.${storageToken(scope)}.${storageToken(revision)}`;
+}
+
+export function canvasRuntimeWorkspaceStorageKey(scope: string, revision: string, canvasId: string) {
+  return `${CANVAS_RUNTIME_OVERLAY_PREFIX}.workspace.${storageToken(scope)}.${storageToken(revision)}.${storageToken(canvasId)}`;
+}
+
+export function readCanvasRuntimeRegistry(base: CanvasRegistry, storageKey: string): CanvasRegistry {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || "null") as Partial<CanvasRegistry> | null;
+    if (!parsed || Number(parsed.version) !== 3) return base;
+    const linkAssignments = normalizeLinkAssignments(parsed.linkAssignments ?? base.linkAssignments);
+    return {
+      ...base,
+      instanceSettings: normalizeInstanceSettings(parsed.instanceSettings ?? base.instanceSettings),
+      linkAssignments,
+      linkContexts: {
+        A: normalizeLinkContext(parsed.linkContexts?.A, base.linkContexts.A),
+        B: normalizeLinkContext(parsed.linkContexts?.B, base.linkContexts.B),
+        C: normalizeLinkContext(parsed.linkContexts?.C, base.linkContexts.C),
+        D: normalizeLinkContext(parsed.linkContexts?.D, base.linkContexts.D),
+        E: normalizeLinkContext(parsed.linkContexts?.E, base.linkContexts.E),
+        F: normalizeLinkContext(parsed.linkContexts?.F, base.linkContexts.F),
+        G: normalizeLinkContext(parsed.linkContexts?.G, base.linkContexts.G),
+      },
+      linkOwners: normalizeLinkOwners(linkAssignments, parsed.linkOwners ?? base.linkOwners),
+      version: 3,
+    };
+  } catch {
+    return base;
+  }
+}
+
+export function readCanvasWorkspaceStateByStorageKey(storageKey: string): CanvasWorkspaceState | null {
+  try {
+    return normalizeWorkspaceState(JSON.parse(window.localStorage.getItem(storageKey) || "null") as CanvasWorkspaceState | null);
+  } catch {
+    return null;
+  }
 }
 
 export function readCanvasRegistry(): CanvasRegistry {
@@ -389,4 +432,8 @@ function normalizeInstanceSettings(value: unknown): CanvasRegistry["instanceSett
 
 function isCanvasLinkGroupId(value: unknown): value is CanvasLinkGroupId {
   return value === "none" || CANVAS_LINK_GROUPS.some((group) => group.id === value);
+}
+
+function storageToken(value: string) {
+  return value.trim().replace(/[^a-zA-Z0-9_.-]+/g, "-") || "none";
 }

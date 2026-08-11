@@ -13,12 +13,16 @@ import {
   NEWS_READER_CANVAS_ID,
   SEC_READER_CANVAS_ID,
   canvasLinkGroupDefinition,
+  canvasRuntimeRegistryStorageKey,
+  canvasRuntimeWorkspaceStorageKey,
   canvasWorkspaceStorageKey,
   createCanvasRecord,
   focusCanvasUrl,
   ensureNewsReaderCanvas,
   readCanvasRegistry,
+  readCanvasRuntimeRegistry,
   readCanvasWorkspaceState,
+  readCanvasWorkspaceStateByStorageKey,
   readReplayCanvasFocusHandoff,
   removeCanvasRecord,
   replayFocusCanvasUrl,
@@ -1335,6 +1339,16 @@ export function CanvasConfigurationPage() {
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager />;
 }
 
+type ApprovedCanvasProfile = {
+  available: boolean;
+  canvas_revision: string;
+  configuration_revision: number;
+  content_hash: string;
+  profile: CanvasRegistry;
+  revision_id: string;
+  schema_version: number;
+};
+
 export function CanvasFocusPage() {
   const params = new URLSearchParams(window.location.search);
   const replayRunId = params.get("replay_run") || undefined;
@@ -1345,7 +1359,26 @@ export function CanvasFocusPage() {
   const requestedNewsId = params.get("news") || undefined;
   const requestedSecCik = params.get("sec_cik") || undefined;
   const requestedSecAccession = params.get("sec_accession") || undefined;
-  return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
+  return <ApprovedCanvasFocusPage canvasId={canvasId} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
+}
+
+function ApprovedCanvasFocusPage({ canvasId, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik }: { canvasId: string; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string }) {
+  const [approved, setApproved] = useState<ApprovedCanvasProfile | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    api<ApprovedCanvasProfile>("/api/trading/configuration/canvas-profile", { timeoutMs: 20_000 })
+      .then((payload) => {
+        if (cancelled) return;
+        if (!payload.available || !payload.profile) throw new Error("Publish an approved configuration with a Canvas profile before opening a trading workspace.");
+        setApproved(payload);
+      })
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { cancelled = true; };
+  }, []);
+  if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
+  if (!approved) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Loading approved Canvas</strong><span>Resolving the published default and this workspace's saved overlay.</span></div></div>;
+  return <CanvasWorkspaceSurface approvedCanvas={approved} canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
 }
 
 function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runId: string }) {
@@ -1372,14 +1405,24 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
 
   if (error && !run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
   if (!run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Opening Replay focus canvas</strong><span>Restoring the selected container against the active run clock.</span></div></div>;
-  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} replayRun={run} />;
+  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} replayRun={run} runtimeWorkspaceId={focusToken} />;
 }
 
-export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik }: { canvasId: string; manager: boolean; modeControls?: ReactNode; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string }) {
-  const [initialCanvasState] = useState<CanvasWorkspaceState | null>(() => replayRun
-    ? replayRun.canvas_profile.defaultState ?? replayRun.canvas_profile.workspaceStates?.[canvasId] ?? null
-    : focusCanvasState(canvasId, requestedInstanceId));
-  const [registry, setRegistry] = useState<CanvasRegistry>(() => replayRun?.canvas_profile ?? readCanvasRegistry());
+export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, modeControls, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeWorkspaceId }: { approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeWorkspaceId?: string }) {
+  const runtimeBase = replayRun?.canvas_profile ?? approvedCanvas?.profile;
+  const runtimeRevision = replayRun?.configuration_content_hash || replayRun?.canvas_revision || approvedCanvas?.content_hash || approvedCanvas?.canvas_revision || "draft";
+  const runtimeScope = replayRun ? `replay.${replayRun.run_id}.${runtimeWorkspaceId || "main"}` : approvedCanvas ? "canvas" : "configuration";
+  const runtimeRegistryStorageKey = runtimeBase ? canvasRuntimeRegistryStorageKey(runtimeScope, runtimeRevision) : "";
+  const workspaceStorageKey = runtimeBase
+    ? canvasRuntimeWorkspaceStorageKey(runtimeScope, runtimeRevision, canvasId)
+    : canvasWorkspaceStorageKey(canvasId);
+  const [overlayEpoch, setOverlayEpoch] = useState(0);
+  const initialCanvasState = useMemo<CanvasWorkspaceState | null>(() => runtimeBase
+    ? runtimeCanvasState(runtimeBase, workspaceStorageKey, canvasId, requestedInstanceId)
+    : focusCanvasState(canvasId, requestedInstanceId), [canvasId, overlayEpoch, requestedInstanceId, runtimeBase, workspaceStorageKey]);
+  const [registry, setRegistry] = useState<CanvasRegistry>(() => runtimeBase
+    ? readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
+    : readCanvasRegistry());
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => replayRun ? replayPreviewContext(replayRun) : readPreviewContext());
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
   const [contextReady, setContextReady] = useState(Boolean(replayRun));
@@ -1391,7 +1434,7 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
   const [managementOpen, setManagementOpen] = useState(false);
   const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<string | null>(null);
   const [settingsContainerId, setSettingsContainerId] = useState<string | null>(null);
-  const managementEnabled = manager || Boolean(replayRun);
+  const managementEnabled = manager || Boolean(runtimeBase);
 
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
@@ -1435,15 +1478,19 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
     : livePerformance;
 
   useEffect(() => {
+    if (runtimeBase) return;
     if (canvasId !== NEWS_READER_CANVAS_ID && canvasId !== SEC_READER_CANVAS_ID) return;
     if (canvasId === NEWS_READER_CANVAS_ID) ensureNewsReaderCanvas();
     setRegistry(readCanvasRegistry());
-  }, [canvasId]);
+  }, [canvasId, runtimeBase]);
 
   useEffect(() => {
-    if (replayRun) return;
+    if (runtimeBase && runtimeRegistryStorageKey) {
+      window.localStorage.setItem(runtimeRegistryStorageKey, JSON.stringify(registry));
+      return;
+    }
     writeCanvasRegistry(registry);
-  }, [registry, replayRun]);
+  }, [registry, runtimeBase, runtimeRegistryStorageKey]);
 
   useEffect(() => {
     if (replayRun) return;
@@ -1473,7 +1520,13 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
   }, [linkPopoverContainerId]);
 
   useEffect(() => {
-    if (replayRun) return;
+    if (runtimeBase) {
+      const syncRuntimeCanvasRegistry = (event: StorageEvent) => {
+        if (event.key === runtimeRegistryStorageKey) setRegistry(readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey));
+      };
+      window.addEventListener("storage", syncRuntimeCanvasRegistry);
+      return () => window.removeEventListener("storage", syncRuntimeCanvasRegistry);
+    }
     const syncSharedCanvasState = (event: StorageEvent) => {
       if (event.key === CANVAS_REGISTRY_STORAGE_KEY) setRegistry(readCanvasRegistry());
       if (event.key === CANVAS_PREVIEW_CONTEXT_STORAGE_KEY) setPreviewContext(readPreviewContext());
@@ -1485,7 +1538,7 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
       window.removeEventListener("storage", syncSharedCanvasState);
       window.removeEventListener(CANVAS_REGISTRY_UPDATED_EVENT, syncLocalCanvasRegistry);
     };
-  }, [replayRun]);
+  }, [runtimeBase, runtimeRegistryStorageKey]);
 
   useEffect(() => {
     if (replayRun) return;
@@ -1809,6 +1862,23 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
     if (state) openReplayFocus(registry, snapshotCanvasWorkspaceState(state));
   }
 
+  function openRuntimeConfiguredCanvas(targetCanvasId: string) {
+    if (replayRun) {
+      openReplayConfiguredCanvas(targetCanvasId);
+      return;
+    }
+    window.open(focusCanvasUrl(targetCanvasId), "_blank", "noopener,noreferrer");
+  }
+
+  function resetRuntimeOverlay() {
+    if (!runtimeBase) return;
+    window.localStorage.removeItem(runtimeRegistryStorageKey);
+    window.localStorage.removeItem(workspaceStorageKey);
+    setRegistry(runtimeBase);
+    setWorkspaceState(runtimeCanvasState(runtimeBase, workspaceStorageKey, canvasId, requestedInstanceId, false));
+    setOverlayEpoch((value) => value + 1);
+  }
+
   function saveDefaultLayout() {
     if (!workspaceState) return;
     const defaultState = snapshotCanvasWorkspaceState(workspaceState);
@@ -1841,9 +1911,10 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
       {error ? <div className="canvas-inline-error">{error}</div> : null}
 
       <TradingWorkspace
+        key={`${workspaceStorageKey}:${overlayEpoch}`}
         allowMultipleInstances
-        canPopOut
-        canvasTargets={replayRun ? [] : canvasTargets}
+        canPopOut={!runtimeBase || Boolean(replayRun)}
+        canvasTargets={runtimeBase ? [] : canvasTargets}
         clockLabel=""
         commandBarVisible={false}
         compact
@@ -1855,18 +1926,18 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
         layoutPreset={managementEnabled ? "global" : "focus"}
         managementContent={manager
           ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} />
-          : replayRun
-            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openReplayConfiguredCanvas} /><ReplayCanvasManager revision={replayRun.canvas_revision} /></>
+          : runtimeBase
+            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={replayRun ? "Replay" : "Canvas"} onReset={resetRuntimeOverlay} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
             : null}
         managementOpen={managementEnabled && managementOpen}
         metaForContainer={metaForContainer}
         mode="replay"
         onContainerAdded={registerContainerInstance}
-        onMoveContainerToCanvas={replayRun ? undefined : moveContainer}
-        onMoveGroupToCanvas={replayRun ? undefined : moveGroup}
+        onMoveContainerToCanvas={runtimeBase ? undefined : moveContainer}
+        onMoveGroupToCanvas={runtimeBase ? undefined : moveGroup}
         onManagementClose={() => setManagementOpen(false)}
-        onPopOutContainer={replayRun ? openReplayContainerCanvas : openNewCanvas}
-        onPopOutGroup={replayRun ? openReplayGroupCanvas : openGroupCanvas}
+        onPopOutContainer={replayRun ? openReplayContainerCanvas : runtimeBase ? undefined : openNewCanvas}
+        onPopOutGroup={replayRun ? openReplayGroupCanvas : runtimeBase ? undefined : openGroupCanvas}
         onStateChange={setWorkspaceState}
         renderContainer={(definition, instanceId) => {
           const settings = instanceSettings(registry, instanceId);
@@ -1930,7 +2001,7 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
         runLabel={currentCanvas.label}
         runStatus={preview ? "running" : "idle"}
         showHealth={false}
-        storageKeyOverride={canvasWorkspaceStorageKey(canvasId)}
+        storageKeyOverride={workspaceStorageKey}
         linkColorForContainer={(definition, instanceId) => containerSupportsCanvasLink(definition.id) ? canvasLinkGroupDefinition(registry.linkAssignments[instanceId] ?? "none")?.color : undefined}
         titleBarActionsForContainer={(definition, instanceId) => {
           const linkable = containerSupportsCanvasLink(definition.id);
@@ -1961,7 +2032,7 @@ export function CanvasWorkspaceSurface({ canvasId, manager, modeControls, replay
           </>;
         }}
         titleForContainer={(definition, instanceId) => containerInstanceTitle(definition.id, instanceId, workspaceState, registry)}
-        workspaceBadge={replayRun ? "Replay" : manager ? "Main" : "Focus"}
+        workspaceBadge={replayRun ? "Replay" : approvedCanvas ? "Canvas" : manager ? "Main" : "Focus"}
       />
     </div>
   );
@@ -1983,10 +2054,11 @@ function CanvasManager({ availableCanvasIds, onCreate, onOpen, onRemove, registr
   </section>;
 }
 
-function ReplayCanvasManager({ revision }: { revision: string }) {
-  return <section aria-label="Replay layout scope" className="replay-layout-scope">
+function RuntimeCanvasScope({ mode, onReset, revision }: { mode: "Canvas" | "Replay"; onReset: () => void; revision: string }) {
+  return <section aria-label={`${mode} layout scope`} className="replay-layout-scope">
     <ShieldCheck aria-hidden="true" size={15} />
-    <div><strong>Replay session layout</strong><small>Starts from approved Canvas {revision.slice(0, 10)}. Changes stay local to this open Replay workspace and do not rewrite Canvas defaults.</small></div>
+    <div><strong>{mode} workspace overlay</strong><small>Starts from approved Canvas {revision.slice(0, 10)}. Changes persist only for this revision and never rewrite Configuration defaults.</small></div>
+    <button className="button secondary compact" onClick={onReset} type="button"><RefreshCcw size={12} /> Reset to approved</button>
   </section>;
 }
 
@@ -4375,6 +4447,13 @@ function focusCanvasState(canvasId: string, requestedInstanceId?: string): Canva
   const stored = readCanvasWorkspaceState(canvasId);
   if (!requestedInstanceId) return stored;
   const kind = workspaceContainerKind(requestedInstanceId, stored);
+  return { groups: {}, instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
+}
+function runtimeCanvasState(profile: CanvasRegistry, storageKey: string, canvasId: string, requestedInstanceId?: string, useStored = true): CanvasWorkspaceState | null {
+  const approved = profile.workspaceStates?.[canvasId] ?? (canvasId === MAIN_CANVAS_ID ? profile.defaultState : undefined) ?? null;
+  const state = (useStored ? readCanvasWorkspaceStateByStorageKey(storageKey) : null) ?? approved;
+  if (!requestedInstanceId) return state;
+  const kind = workspaceContainerKind(requestedInstanceId, state);
   return { groups: {}, instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
 }
 function normalizeInheritedLayouts(layouts: Record<string, WorkspaceWindowLayout>, ids: string[]) {

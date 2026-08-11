@@ -6,6 +6,8 @@ export type CanvasReplayRun = {
   account_ids: string[];
   canvas_revision: string;
   canvas_profile: CanvasRegistry;
+  configuration_content_hash?: string;
+  configuration_revision_id?: string;
   current_time: string;
   error: string;
   progress: number;

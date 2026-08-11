@@ -14,6 +14,7 @@ from src.backend.trading_configuration_service import (
     _resolved_source_account_id,
     _validate_draft,
     _validate_market_discovery,
+    approved_canvas_profile,
     approved_configuration,
     capability_catalog,
     configuration_base,
@@ -413,6 +414,31 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertTrue(published["payload"]["run_plans"]["plans"][0]["compiled"])
         self.assertEqual(saved_draft["run_plans"], published["payload"]["run_plans"])
+
+    def test_approved_canvas_projection_exposes_only_published_profile_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            draft = self._draft()
+            canvas_profile = {
+                "version": 3,
+                "canvases": [{"id": "main", "label": "Main"}],
+                "workspaceStates": {"main": {"openIds": ["chart"]}},
+            }
+            with self._service_patches(journal):
+                published = publish_configuration(
+                    label="Canvas runtime default",
+                    canvas_revision="canvas-approved-1",
+                    canvas_profile=canvas_profile,
+                    configuration=draft,
+                )
+                projection = approved_canvas_profile()
+            journal.close()
+
+        self.assertTrue(projection["available"])
+        self.assertEqual(projection["revision_id"], published["revision_id"])
+        self.assertEqual(projection["canvas_revision"], "canvas-approved-1")
+        self.assertEqual(projection["profile"], canvas_profile)
+        self.assertNotIn("accounts", projection)
 
     def test_publish_is_idempotent_for_identical_content(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

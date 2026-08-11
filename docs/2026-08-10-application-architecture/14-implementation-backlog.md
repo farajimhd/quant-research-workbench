@@ -43,8 +43,8 @@ separate explicit authorization.
 - [ ] Expose the registries through backend catalog APIs.
 - [ ] Generate frontend choices and statuses from the backend catalogs.
 - [ ] Remove competing handwritten frontend/backend/QMD availability catalogs.
-- [ ] Version approved configuration releases and compute deterministic hashes.
-- [ ] Compile immutable Run Plans and preserve migration for saved configurations.
+- [x] Version approved configuration releases and compute deterministic hashes.
+- [x] Compile immutable Run Plans and preserve migration for saved configurations.
 
 Acceptance gate: every visible Market Discovery and Canvas option resolves to
 one backend registry record and one executable implementation status.
@@ -184,8 +184,16 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
 - [ ] Publish a versioned Canvas container catalog.
 - [ ] Define typed input/output links and mode compatibility.
 - [ ] Implement draft, validate, preview, publish, reset, and rebase.
+  - [x] Draft, validate, preview, publish, and reset-to-approved are wired.
+  - [ ] Add explicit overlay rebase/conflict presentation and save-as-workspace.
 - [ ] Instantiate published defaults in Live, Replay, Backtest, and research workspaces.
+  - [x] Standalone Canvas resolves the approved profile; Replay uses its pinned
+        release profile.
+  - [ ] Migrate Live/Paper and Backtest/research workspaces to the same resolver.
 - [ ] Persist user/workspace overlays separately from defaults.
+  - [x] Standalone Canvas and Replay overlays are isolated by workspace/run and approved revision
+        and can be reset without changing Configuration defaults.
+  - [ ] Apply the same overlay contract to remaining mode workspaces.
 - [x] Route intraday historical charts through QMD History source planning and
       its shared derived cache.
 - [x] Return base bars first and progressively add requested indicators,
@@ -282,7 +290,8 @@ one fenced decision.
 - [x] Recover and reconcile uncertain orders after reconnect.
 - [x] Fail closed when broker, Portfolio reservation, or journal truth is uncertain.
 - [x] Journal commands and every lifecycle/reconciliation result.
-- [ ] Build order, execution, protection, and reconciliation UI projections.
+- [x] Build order, execution, protection, and reconciliation UI projections in
+      the canonical Canvas trading containers.
 - [x] Test Portfolio authority, idempotency, restart, disconnect, partial fills, and protections.
 
 Acceptance gate: no chart, strategy, model output, or backend route can issue a
