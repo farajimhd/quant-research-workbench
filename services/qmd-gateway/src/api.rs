@@ -1,6 +1,5 @@
 use crate::bars::TradeAggregationRules;
 use crate::bars::{BarSnapshot, SharedBarStore};
-use crate::capability_catalog::ExecutionScope;
 use crate::capability_catalog::{computation_capability_catalog, ComputationCapability};
 use crate::compact_event::{
     CompactEventDecoder, CompactEventMarketPage, CompactEventPage, LiveCompactEvent,
@@ -242,17 +241,24 @@ async fn replace_computation_target(
         .computation_targets
         .replace(request)
         .map_err(|error| (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))))?;
-    if lease.scope == ExecutionScope::Request {
-        for ticker in &lease.tickers {
-            for timeframe in &lease.timeframes {
-                let bars = state.bars.snapshot(ticker, timeframe, 500).await;
-                state
-                    .indicators
-                    .warm_from_bars(ticker, timeframe, bars.history)
-                    .await;
+    for ticker in &lease.tickers {
+        for timeframe in &lease.timeframes {
+            if !state.indicators.needs_warm(ticker, timeframe).await {
+                continue;
             }
+            let bars = state.bars.snapshot(ticker, timeframe, 500).await;
+            state
+                .indicators
+                .warm_from_bars(ticker, timeframe, bars.history)
+                .await;
         }
     }
+    // Replacing a target can narrow its symbol/timeframe set. Reclaim the old
+    // state after warming the current lease; overlapping leases remain intact.
+    state
+        .indicators
+        .reclaim_unused(&state.computation_targets)
+        .await;
     Ok(Json(lease))
 }
 
@@ -260,8 +266,14 @@ async fn remove_computation_target(
     State(state): State<Arc<AppState>>,
     Path(target_id): Path<String>,
 ) -> Json<Value> {
+    let removed = state.computation_targets.remove(&target_id);
+    let reclaimed = state
+        .indicators
+        .reclaim_unused(&state.computation_targets)
+        .await;
     Json(json!({
-        "removed": state.computation_targets.remove(&target_id),
+        "removed": removed,
+        "reclaimed_indicator_state": reclaimed,
         "target_id": target_id,
     }))
 }

@@ -116,6 +116,8 @@ screen.
 | `GET /snapshot/ticker/AAPL` | Latest quote/trade state for one ticker. |
 | `GET /snapshot/ticker-state/AAPL` | Versioned latest-state envelope with Scanner sequence, authority, freshness, and explicit missing state. |
 | `GET /computation-targets` | Active focused-computation leases, per-scope symbol/capability counts, and weighted demand units. |
+| `PUT /computation-targets` | Replace one lease, warm newly active ticker/timeframe state once, and reclaim state removed by a narrowed replacement. |
+| `DELETE /computation-targets/{target_id}` | Remove one lease and return exact reclaimed indicator-state counts; overlapping demand remains resident. |
 | `GET /snapshot/bars/AAPL?timeframe=1m&limit=500` | Recent in-memory closed bars for one ticker/timeframe. |
 | `GET /snapshot/indicators/AAPL?timeframe=1m&limit=500` | Recent indicator state for one ticker/timeframe. |
 | `GET /snapshot/live-market-state?limit=250` | Active and recent abnormal market-state transitions. |

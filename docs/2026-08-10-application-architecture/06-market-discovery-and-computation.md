@@ -208,8 +208,8 @@ offline calculation is available in its proper scope.
   publishers send deterministic hashes for the exact capability/timeframe set,
   the New York session anchor, and the advancing-live revision class. A bar-only lease also no
   longer enables the per-tick indicator path; only capabilities whose catalog
-  cadence is `on_event_or_state_change` do so. Offline QMD History demand and
-  post-lease state reclamation remain open parts of the complete planner.
+  cadence is `on_event_or_state_change` do so. Offline QMD History demand
+  remains a separate planner projection.
 - Live/Paper scheduling resolves configured Watchlists, journals membership,
   and publishes bounded focused QMD leases. Replay resolves the same rules
   against its point-in-time Scanner and enrichment clock.
@@ -257,8 +257,15 @@ offline calculation is available in its proper scope.
   timeframe count including the canonical 100 ms dependency. It is a demand
   estimate for comparing funnel pressure, not a claim about measured CPU time.
   Market Discovery displays the live totals and exposes missing evidence.
-- Expired or removed live leases stop new focused routing, but retained warm
-  indicator/structure state is not yet reclaimed.
+- Explicitly removed or narrowed live leases now reclaim unused indicator,
+  history, base-row, tick, and microstructure state immediately; TTL expiry is
+  reclaimed by a bounded 30-second sweep. The shard-local cleanup rechecks the
+  current reference counts, and activation of every scope warms missing
+  ticker/timeframe state once from the authoritative core bar cache. Workers
+  recheck demand after dequeue so pre-removal queue entries cannot recreate
+  released state. Generic
+  Structure is intentionally excluded from this claim because it remains in
+  the broad bar path pending its separate sequence-barrier migration.
 - The UI now separates implementation, execution scope, configuration policy,
   operation, and coverage, and reads Watchlist membership/history from the
   runtime projection. Scanner history and enrichment null-reason views remain.

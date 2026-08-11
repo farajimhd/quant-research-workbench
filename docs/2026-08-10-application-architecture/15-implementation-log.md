@@ -664,6 +664,18 @@ bounded direct ClickHouse paths remain documented in
     server-owned database and call the shared builders. Python compile and all
     22 focused registry, plan, compatibility-caller, market-data configuration,
     Live preflight, and order-authority tests passed.
+89. Closed the focused-computation state lifecycle in QMD Live. Removing or
+    narrowing a lease now immediately reclaims unreferenced indicator
+    calculators, history series, base rows, microstructure aggregates, tick
+    windows, and microstructure windows; a 30-second sweep handles silent TTL
+    expiry. Cleanup checks the current target set while holding each indicator
+    shard, so concurrent or overlapping activation wins safely; workers also
+    recheck the lease after dequeue so pre-removal queue entries cannot recreate
+    state. Every lease
+    scope now warms a missing ticker/timeframe once from authoritative core bars
+    while repeated refreshes avoid copying the same 500-bar window. DELETE
+    responses expose exact reclaimed counts. Cargo formatting passed and all 96
+    QMD Gateway library tests passed using the external runtime target.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

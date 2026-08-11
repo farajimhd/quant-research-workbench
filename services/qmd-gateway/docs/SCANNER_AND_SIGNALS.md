@@ -82,16 +82,24 @@ lineage. QMD validates
 requested capabilities against their allowed scopes, unions overlapping symbol
 demand, and rejects unrelated finalized timeframes before indicator shards.
 When the last lease for a symbol expires or is removed, QMD stops routing that
-symbol through the non-core indicator and signal engine. Reclaiming its retained
-warm state is still pending and must not be described as implemented. Generic
+symbol through the non-core indicator and signal engine. QMD now reclaims its
+indicator calculators, history series, base rows, microstructure aggregates,
+tick windows, and microstructure windows immediately on explicit lease changes
+and within 30 seconds after TTL expiry. A current overlapping lease is checked
+while the owning shard is locked, so cleanup cannot erase a concurrent
+reactivation. Indicator workers recheck the lease after dequeuing, preventing a
+row queued before removal from recreating discarded state. Every newly active
+scope is warmed once from authoritative core
+bar history before focused publication; repeated lease refreshes skip the bar
+copy when state is already warm. Generic
 structure remains in the universal bar path until lease activation can establish
 an atomic event-sequence barrier and replay every event since its checkpoint.
 
 The compact Core Scanner remains independent and does not fetch indicator or
 signal cross-sections during an ordinary refresh. Consumers that explicitly
 request those projections receive only already-focused state. A single-symbol
-chart lease is warmed once from QMD's authoritative in-memory core bar history
-before its indicator snapshot is returned.
+chart, Watchlist, or Strategy lease is warmed once from QMD's authoritative
+in-memory core bar history before its indicator snapshot is returned.
 
 The Canvas Scanner can join the strongest active focused QMD lifecycle and sort
 its Signals preset by `rank_score`; Signal Stream shows lifecycle events and the

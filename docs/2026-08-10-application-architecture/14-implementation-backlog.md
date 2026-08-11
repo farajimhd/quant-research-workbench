@@ -197,10 +197,16 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
   - [x] Add parameter hash, anchor, and source revision to the effective identity.
         QMD demand schema v4 includes all three in reference-count keys; current
         Watchlist, Strategy, and chart publishers provide deterministic values.
-- [ ] Reference-count subscriptions and release unused state.
-      Overlapping leases are reference-counted for routing, but retained warm
-      indicator/structure state is not reclaimed after the final lease ends.
+- [x] Reference-count subscriptions and release unused state. Explicit removal
+      or narrowing reclaims focused indicator/tick state immediately, and TTL
+      expiry is reclaimed within 30 seconds. Cleanup rechecks current leases
+      under each state shard so an overlapping or concurrent lease remains
+      resident; workers recheck demand after dequeue so stale queued rows cannot
+      recreate released state. Generic Structure is tracked by its separate all-market-path
+      migration item rather than being mislabeled as focused retained state.
   - [x] Prevent bar-only leases from enabling per-tick indicator processing.
+  - [x] Warm missing ticker/timeframe state once for every newly active scope
+        and skip repeated core-bar copies for already-warm lease refreshes.
 - [x] Reject unapproved moves to broader populations.
 - [ ] Trigger targeted recomputation from relevant enrichment changes.
 - [x] Preserve compact Scanner/Watchlist history and explicitly approved

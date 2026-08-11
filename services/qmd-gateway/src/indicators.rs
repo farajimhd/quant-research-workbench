@@ -20,10 +20,11 @@ use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::{interval, sleep, Duration};
+use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 
 pub const INDICATOR_SCHEMA_VERSION: u16 = 18;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
+const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
 #[derive(Clone, Debug, Serialize)]
@@ -645,6 +646,27 @@ pub struct SharedIndicatorStore {
     shards: Arc<Vec<IndicatorShardStore>>,
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct IndicatorStateReclaim {
+    pub bar_calculators: usize,
+    pub base_indicator_rows: usize,
+    pub history_series: usize,
+    pub microstructure_aggregates: usize,
+    pub microstructure_windows: usize,
+    pub tick_states: usize,
+}
+
+impl IndicatorStateReclaim {
+    pub fn total(&self) -> usize {
+        self.bar_calculators
+            + self.base_indicator_rows
+            + self.history_series
+            + self.microstructure_aggregates
+            + self.microstructure_windows
+            + self.tick_states
+    }
+}
+
 #[derive(Clone)]
 pub struct IndicatorEventRouter {
     bar_sender: mpsc::Sender<BarRow>,
@@ -921,6 +943,21 @@ impl SharedIndicatorStore {
         count
     }
 
+    pub async fn needs_warm(&self, ticker: &str, timeframe: &str) -> bool {
+        let ticker = ticker.to_ascii_uppercase();
+        let timeframe = canonical_timeframe(timeframe);
+        let shard = self.shard_for_ticker(&ticker);
+        let store = shard.inner.lock().await;
+        let key = IndicatorKey {
+            sym: ticker,
+            timeframe,
+        };
+        !store
+            .history
+            .get(&key)
+            .is_some_and(|history| !history.is_empty())
+    }
+
     pub async fn replace_market_structure_references(
         &self,
         references: HashMap<String, MarketStructureReferenceLevels>,
@@ -947,6 +984,59 @@ impl SharedIndicatorStore {
                 );
             }
         }
+    }
+
+    /// Reclaim focused state only after checking the current lease set while
+    /// each state shard is locked. A concurrent lease activation either becomes
+    /// visible before the retain decision or waits for the shard and warms the
+    /// newly active state afterwards, so cleanup cannot erase a new activation.
+    pub async fn reclaim_unused(
+        &self,
+        computation_targets: &SharedComputationTargets,
+    ) -> IndicatorStateReclaim {
+        let mut reclaimed = IndicatorStateReclaim::default();
+        for shard in self.shards.iter() {
+            let mut store = shard.inner.lock().await;
+
+            let before = store.bars.len();
+            store.bars.retain(|key, _| {
+                computation_targets.requires_bar_computation(&key.sym, &key.timeframe)
+            });
+            reclaimed.bar_calculators += before.saturating_sub(store.bars.len());
+
+            let before = store.history.len();
+            store.history.retain(|key, _| {
+                computation_targets.requires_bar_computation(&key.sym, &key.timeframe)
+            });
+            reclaimed.history_series += before.saturating_sub(store.history.len());
+
+            let before = store.microstructure_aggregates.len();
+            store.microstructure_aggregates.retain(|key, _| {
+                computation_targets.requires_bar_computation(&key.sym, &key.timeframe)
+            });
+            reclaimed.microstructure_aggregates +=
+                before.saturating_sub(store.microstructure_aggregates.len());
+
+            let before = store.last_base_indicators.len();
+            store
+                .last_base_indicators
+                .retain(|ticker, _| computation_targets.requires_bar_computation(ticker, "100ms"));
+            reclaimed.base_indicator_rows +=
+                before.saturating_sub(store.last_base_indicators.len());
+
+            let before = store.ticks.len();
+            store
+                .ticks
+                .retain(|ticker, _| computation_targets.requires_event_computation(ticker));
+            reclaimed.tick_states += before.saturating_sub(store.ticks.len());
+
+            let before = store.microstructure.len();
+            store
+                .microstructure
+                .retain(|ticker, _| computation_targets.requires_event_computation(ticker));
+            reclaimed.microstructure_windows += before.saturating_sub(store.microstructure.len());
+        }
+        reclaimed
     }
 
     fn shard_for_ticker(&self, ticker: &str) -> IndicatorShardStore {
@@ -1906,6 +1996,7 @@ pub fn spawn_indicator_engines(
         tokio::spawn(run_indicator_engine(
             shard_id,
             indicators.shard(shard_id),
+            computation_targets.clone(),
             event_receiver,
             bar_receiver,
             writer_sender.clone(),
@@ -1919,10 +2010,35 @@ pub fn spawn_indicator_engines(
         Arc::new(bar_senders),
         computation_targets.clone(),
     ));
+    tokio::spawn(reclaim_unused_indicator_state(
+        indicators.clone(),
+        computation_targets.clone(),
+    ));
     IndicatorEventRouter {
         bar_sender,
         computation_targets,
         event_senders: Arc::new(event_senders),
+    }
+}
+
+async fn reclaim_unused_indicator_state(
+    indicators: SharedIndicatorStore,
+    computation_targets: SharedComputationTargets,
+) {
+    let mut timer = interval(Duration::from_secs(
+        INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS,
+    ));
+    timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // The first tick is immediate; all stores are initially empty.
+    loop {
+        timer.tick().await;
+        let reclaimed = indicators.reclaim_unused(&computation_targets).await;
+        if reclaimed.total() > 0 {
+            eprintln!(
+                "Reclaimed {} inactive focused indicator state entries.",
+                reclaimed.total()
+            );
+        }
     }
 }
 
@@ -1945,6 +2061,7 @@ async fn route_indicator_bars(
 async fn run_indicator_engine(
     shard_id: usize,
     shard: IndicatorShardStore,
+    computation_targets: SharedComputationTargets,
     mut event_receiver: mpsc::Receiver<MarketEvent>,
     mut bar_receiver: mpsc::Receiver<BarRow>,
     writer_sender: mpsc::Sender<IndicatorRow>,
@@ -1955,13 +2072,20 @@ async fn run_indicator_engine(
         tokio::select! {
             event = event_receiver.recv() => {
                 match event {
-                    Some(event) => shard.apply_event(&event).await,
+                    Some(event) => {
+                        if computation_targets.requires_event_computation(event.ticker()) {
+                            shard.apply_event(&event).await;
+                        }
+                    }
                     None => return,
                 }
             }
             bar = bar_receiver.recv() => {
                 match bar {
                     Some(bar) => {
+                        if !computation_targets.requires_bar_computation(&bar.sym, &bar.timeframe) {
+                            continue;
+                        }
                         let source_bar = bar.clone();
                         let row = shard.apply_bar(bar).await;
                         if scanner_sender
@@ -2694,9 +2818,15 @@ mod tests {
         anchored_flow_relationship, anchored_market_session_date,
         calculate_flow_structure_composite, market_structure_reference_sql,
         parse_market_structure_reference_rows, summarize_canonical_composites,
-        MicrostructureCumulativeFlow, SessionVwapState,
+        BarIndicatorCalculator, IndicatorKey, MicrostructureCumulativeFlow,
+        MicrostructureSampleAggregate, SessionVwapState, SharedIndicatorStore, TickState,
     };
+    use crate::bars::{TradeAggregationRules, TradeUpdateRule};
+    use crate::capability_catalog::ExecutionScope;
+    use crate::computation_targets::{ComputationTargetRequest, SharedComputationTargets};
+    use crate::microstructure_interval::MicrostructureIntervalWindow;
     use chrono::{TimeZone, Utc};
+    use std::collections::{HashMap, VecDeque};
 
     #[test]
     fn daily_structure_reference_contract_is_causal_and_parseable() {
@@ -2721,6 +2851,82 @@ mod tests {
         let aapl = rows.get("AAPL").unwrap();
         assert_eq!(aapl.high_52_week, 331.78);
         assert_eq!(aapl.prior_month_close, 289.0);
+    }
+
+    #[tokio::test]
+    async fn focused_state_is_reclaimed_only_after_the_last_current_lease() {
+        let indicators = SharedIndicatorStore::new(
+            10,
+            HashMap::new(),
+            60,
+            1,
+            TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap(),
+            HashMap::new(),
+        );
+        let shard = indicators.shard_for_ticker("AAPL");
+        {
+            let mut store = shard.inner.lock().await;
+            for ticker in ["AAPL", "MSFT"] {
+                let key = IndicatorKey {
+                    sym: ticker.to_string(),
+                    timeframe: "1m".to_string(),
+                };
+                store
+                    .bars
+                    .insert(key.clone(), BarIndicatorCalculator::new());
+                store.history.insert(key.clone(), VecDeque::new());
+                store
+                    .microstructure_aggregates
+                    .insert(key, MicrostructureSampleAggregate::default());
+                store.ticks.insert(ticker.to_string(), TickState::new(60));
+                store
+                    .microstructure
+                    .insert(ticker.to_string(), MicrostructureIntervalWindow::default());
+            }
+        }
+
+        let targets = SharedComputationTargets::default();
+        targets
+            .replace(ComputationTargetRequest {
+                target_id: "watchlist:aapl".to_string(),
+                owner: "test".to_string(),
+                scope: ExecutionScope::Watchlist,
+                tickers: vec!["AAPL".to_string()],
+                capabilities: vec!["opening_range".to_string()],
+                timeframes: vec!["1m".to_string()],
+                parameter_hash: "test".to_string(),
+                anchor: "new_york_session".to_string(),
+                source_revision: "advancing_live".to_string(),
+                ttl_seconds: None,
+                correlation_id: String::new(),
+                causation_id: String::new(),
+            })
+            .unwrap();
+
+        let first = indicators.reclaim_unused(&targets).await;
+        assert_eq!(first.bar_calculators, 1);
+        assert_eq!(first.history_series, 1);
+        assert_eq!(first.microstructure_aggregates, 1);
+        assert_eq!(first.tick_states, 2);
+        assert_eq!(first.microstructure_windows, 2);
+        {
+            let store = shard.inner.lock().await;
+            assert!(store.bars.contains_key(&IndicatorKey {
+                sym: "AAPL".to_string(),
+                timeframe: "1m".to_string(),
+            }));
+            assert!(!store.bars.contains_key(&IndicatorKey {
+                sym: "MSFT".to_string(),
+                timeframe: "1m".to_string(),
+            }));
+        }
+        assert!(targets.remove("watchlist:aapl"));
+
+        let final_reclaim = indicators.reclaim_unused(&targets).await;
+        assert_eq!(final_reclaim.bar_calculators, 1);
+        assert_eq!(final_reclaim.history_series, 1);
+        assert_eq!(final_reclaim.microstructure_aggregates, 1);
+        assert_eq!(final_reclaim.total(), 3);
     }
 
     #[test]
