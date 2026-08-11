@@ -34,7 +34,6 @@ from research.bar_gpt.v1.targets import (
 
 
 DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v9_pilot")
-DEFAULT_MAX_ABSOLUTE_RETURN_BPS = 2_000.0
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -59,24 +58,6 @@ def _require_ohlc_geometry(values: torch.Tensor, mask: torch.Tensor, label: str)
         _require(not bool(invalid.any()), f"{label}/{family}: invalid OHLC return geometry")
 
 
-def _require_bounded_returns(
-    values: torch.Tensor,
-    mask: torch.Tensor,
-    label: str,
-    max_absolute_return_bps: float,
-) -> None:
-    width = len(PRICE_FAMILIES) * len(OHLC_FIELDS)
-    transformed = values[..., :width]
-    selected = mask[..., :width]
-    return_bps = torch.sinh(transformed.float()) * 100.0
-    invalid = selected & (return_bps.abs() > float(max_absolute_return_bps))
-    _require(
-        not bool(invalid.any()),
-        f"{label}: absolute OHLC return exceeds {max_absolute_return_bps:g} bps; "
-        "possible condition, quote, or split contamination",
-    )
-
-
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fail-closed structural and causal audit of a bounded BarGPT offline-shard sample."
@@ -97,7 +78,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Require every audited origin to have complete 1D, 1W, and 1MO context.",
     )
-    parser.add_argument("--max-absolute-return-bps", type=float, default=DEFAULT_MAX_ABSOLUTE_RETURN_BPS)
     parser.add_argument(
         "--verify-direct-source",
         action="store_true",
@@ -107,8 +87,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.max_shards <= 0:
         parser.error("--max-shards must be positive")
-    if args.max_absolute_return_bps <= 0:
-        parser.error("--max-absolute-return-bps must be positive")
     if bool(args.start_date) != bool(args.end_date):
         parser.error("--start-date and --end-date must be provided together")
     if args.start_date:
@@ -167,8 +145,11 @@ def audit_shard(
     *,
     verify_sha256: bool = True,
     require_calendar_context: bool = False,
-    max_absolute_return_bps: float = DEFAULT_MAX_ABSOLUTE_RETURN_BPS,
+    max_absolute_return_bps: float | None = None,
 ) -> dict[str, Any]:
+    # Compatibility-only argument for older programmatic callers. Return
+    # magnitude is intentionally not bounded; valid extreme moves remain data.
+    del max_absolute_return_bps
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
     unit_key = str(sidecar.get("unit_key", ""))
     shard_path = sidecar_path.with_suffix(".pt")
@@ -326,9 +307,6 @@ def audit_shard(
                     f"{label}/{name}: masked AR target contains a nonzero value",
                 )
                 _require_ohlc_geometry(ar_targets, ar_mask, f"{label}/{name}/autoregressive")
-                _require_bounded_returns(
-                    ar_targets, ar_mask, f"{label}/{name}/autoregressive", max_absolute_return_bps
-                )
             accumulator = feature_accumulators[name]
             for left in range(0, int(features.shape[0]), 65_536):
                 chunk = features[left : left + 65_536]
@@ -435,9 +413,6 @@ def audit_shard(
                 f"{block_label}: masked horizon target contains a nonzero value",
             )
             _require_ohlc_geometry(horizon_targets, horizon_mask, f"{block_label}/physical")
-            _require_bounded_returns(
-                horizon_targets, horizon_mask, f"{block_label}/physical", max_absolute_return_bps
-            )
             target_valid += horizon_mask.to(torch.long).sum(dim=0)
             target_total += int(origin_timestamps.numel())
             origins += int(origin_timestamps.numel())
@@ -594,7 +569,6 @@ def run_audit(
     limit: int = 2,
     verify_sha256: bool = True,
     require_calendar_context: bool = False,
-    max_absolute_return_bps: float = DEFAULT_MAX_ABSOLUTE_RETURN_BPS,
     output: Path | None = None,
     verify_direct_events: bool = False,
 ) -> dict[str, Any]:
@@ -611,7 +585,6 @@ def run_audit(
             path,
             verify_sha256=verify_sha256,
             require_calendar_context=require_calendar_context,
-            max_absolute_return_bps=max_absolute_return_bps,
         )
         for path in sidecars
     ]
@@ -647,7 +620,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         limit=int(args.max_shards),
         verify_sha256=bool(args.verify_sha256),
         require_calendar_context=bool(args.require_calendar_context),
-        max_absolute_return_bps=float(args.max_absolute_return_bps),
         output=args.output.resolve() if args.output is not None else None,
         verify_direct_events=bool(args.verify_direct_source),
     )

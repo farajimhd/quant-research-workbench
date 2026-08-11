@@ -325,8 +325,9 @@ only bounds ticker/month scope. Automated audit must verify:
 * no zero-event origin or intraday context token;
 * direct reconstruction of every audited origin from an eligible trade second,
   and no Form-T/Manual-Bid-Ask contribution in reconstructed ClickHouse samples;
-* no implausible quote/condition/split return outlier above the configured
-  fail-closed audit threshold;
+* all returns are finite and preserve their complete magnitude; the audit has
+  no absolute-return cutoff, while source eligibility and OHLC geometry remain
+  fail-closed;
 * interval ordering, availability, exact configured context, block continuity,
   split basis, and causal as-of relationships;
 * signed input high/low geometry and physical/AR OHLC ordering;

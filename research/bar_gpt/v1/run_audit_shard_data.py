@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Sequence
 
-from research.bar_gpt.v1.audit_offline_shards import DEFAULT_MAX_ABSOLUTE_RETURN_BPS, audit_shard
+from research.bar_gpt.v1.audit_offline_shards import audit_shard
 from research.bar_gpt.v1.shard_data_audit import (
     autoregressive_target_diagnostics,
     compare_loaded_to_clickhouse,
@@ -44,12 +44,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-samples", type=int, default=2)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--verify-sha256", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--max-absolute-return-bps", type=float, default=DEFAULT_MAX_ABSOLUTE_RETURN_BPS)
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.max_shards <= 0 or args.samples_per_shard <= 0 or args.clickhouse_samples < 0:
         parser.error("shard/sample counts must be positive and ClickHouse samples cannot be negative")
-    if args.max_absolute_return_bps <= 0:
-        parser.error("--max-absolute-return-bps must be positive")
     return args
 
 
@@ -85,7 +82,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             structural = audit_shard(
                 sidecar,
                 verify_sha256=bool(args.verify_sha256),
-                max_absolute_return_bps=float(args.max_absolute_return_bps),
             )
             audited_sidecars.add(sidecar)
         row = {
