@@ -66,6 +66,12 @@ Load shedding is semantic:
 - reject new expensive work with a typed capacity response;
 - never silently truncate a supposedly complete result.
 
+QMD's top-level fan-out admits compact and optional raw source persistence
+before awaiting live-state, bar, or indicator consumers. UI/event broadcasts
+remain non-blocking and lagging consumers must resnapshot. Scanner and canonical
+bar inputs are not shed: they are bounded authoritative derived state, so
+dropping them would corrupt the computation funnel.
+
 Historical Scanner and QMD cross-sectional materialization coordination is
 bounded independently from durable ClickHouse results. Each family admits at
 most four active background builds, reports `capacity_limited` for retryable

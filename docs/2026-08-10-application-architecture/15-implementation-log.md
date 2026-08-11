@@ -885,6 +885,13 @@ bounded direct ClickHouse paths remain documented in
      remain an explicit acceptance gate; the harness does not manufacture a
      parity verdict when QMD is unavailable or the requested population is
      truncated.
+112. Corrected QMD fan-out priority under backpressure. After the minimal Core
+     Scan state update, compact and optional raw persistence are now admitted
+     before live-state, bar, and indicator consumers can block the producer.
+     Replaceable broadcasts stay non-blocking and require resnapshot; canonical
+     Scanner and bar events remain lossless rather than being dropped. A new
+     bounded-channel regression test proved compact admission while the raw
+     lane was saturated; all 98 QMD tests and formatting validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

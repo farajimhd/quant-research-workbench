@@ -682,7 +682,11 @@ broker command outside OMS.
   - [x] Bound the market-data background-job collection endpoint to an
         explicitly validated 1-500 row window (100 by default) and select the
         newest job files before reading their payload/event summaries.
-- [ ] Shed replaceable projections before authoritative events or journal writes.
+- [x] Shed replaceable projections before authoritative events or journal
+      writes. QMD now admits compact and optional raw persistence queues before
+      any derived router can apply backpressure; broadcast projections remain
+      non-blocking and lagging clients resnapshot. Canonical Scanner/bar state
+      remains lossless and bounded rather than being mislabeled replaceable.
 - [ ] Test QMD boundaries, retention, and live/history parity.
   - [x] Add a read-only, fail-closed acceptance runner that records Live and
         History readiness/operations, exact source-plan tiling, coverage,

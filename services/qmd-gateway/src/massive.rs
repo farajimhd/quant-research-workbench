@@ -138,6 +138,17 @@ pub async fn fanout_market_event(event: MarketEvent, fanout: &MarketEventFanout)
             .sampled_timing(TimingTarget::CoreScanEvent, 1_024);
         fanout.state.apply_event(&event).await
     };
+    // Admit the authoritative compact/raw records before any derived consumer
+    // can apply backpressure. These bounded sends intentionally slow ingest
+    // rather than dropping source events; replaceable broadcasts below remain
+    // non-blocking and require lagging clients to resnapshot.
+    enqueue_authoritative_event(
+        event.clone(),
+        fanout.compact_writer_sender.as_ref(),
+        fanout.writer_sender.as_ref(),
+        &fanout.metrics,
+    )
+    .await;
     if fanout.scanner_delta_sender.send(scanner_delta).is_err() {
         fanout.metrics.inc_event_broadcast_dropped();
     }
@@ -165,18 +176,80 @@ pub async fn fanout_market_event(event: MarketEvent, fanout: &MarketEventFanout)
         fanout.metrics.inc_indicator_event_dropped();
         eprintln!("Indicator shard receiver closed; could not route one indicator event.");
     }
-    if let Some(sender) = &fanout.compact_writer_sender {
+}
+
+async fn enqueue_authoritative_event(
+    event: MarketEvent,
+    compact_writer_sender: Option<&mpsc::Sender<MarketEvent>>,
+    writer_sender: Option<&mpsc::Sender<MarketEvent>>,
+    metrics: &SharedMetrics,
+) {
+    if let Some(sender) = compact_writer_sender {
         if sender.send(event.clone()).await.is_err() {
-            fanout.metrics.inc_compact_event_queue_dropped();
+            metrics.inc_compact_event_queue_dropped();
             eprintln!("Compact event writer receiver closed; could not route one compact event.");
         }
     }
-    if let Some(sender) = &fanout.writer_sender {
+    if let Some(sender) = writer_sender {
         if sender.send(event).await.is_err() {
-            fanout.metrics.inc_clickhouse_event_dropped();
+            metrics.inc_clickhouse_event_dropped();
             eprintln!(
                 "Raw ClickHouse writer receiver closed; could not route one raw persistence event."
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::TradeEvent;
+    use chrono::{TimeZone, Utc};
+    use serde_json::json;
+
+    fn trade(sequence: u64) -> MarketEvent {
+        let ts = Utc.with_ymd_and_hms(2026, 8, 11, 15, 0, 0).unwrap();
+        MarketEvent::Trade(TradeEvent {
+            conditions: vec![],
+            exchange: 4,
+            ingest_ts: ts,
+            participant_ts: None,
+            price: 100.0,
+            raw: json!({}),
+            sequence,
+            size: 10.0,
+            tape: 1,
+            ticker: "AAPL".to_string(),
+            trade_id: sequence.to_string(),
+            trf_id: 0,
+            trf_ts: None,
+            ts,
+        })
+    }
+
+    #[tokio::test]
+    async fn compact_authority_is_admitted_before_raw_backpressure() {
+        let (compact_sender, mut compact_receiver) = mpsc::channel(1);
+        let (raw_sender, mut raw_receiver) = mpsc::channel(1);
+        raw_sender.send(trade(1)).await.unwrap();
+
+        let event = trade(2);
+        let metrics = SharedMetrics::new();
+        let task = tokio::spawn(async move {
+            enqueue_authoritative_event(event, Some(&compact_sender), Some(&raw_sender), &metrics)
+                .await;
+        });
+
+        let admitted = tokio::time::timeout(Duration::from_millis(100), compact_receiver.recv())
+            .await
+            .expect("compact authority was blocked behind the full raw queue")
+            .expect("compact receiver closed");
+        assert_eq!(admitted.ticker(), "AAPL");
+        assert!(
+            !task.is_finished(),
+            "raw backpressure should remain lossless"
+        );
+        raw_receiver.recv().await.unwrap();
+        task.await.unwrap();
     }
 }

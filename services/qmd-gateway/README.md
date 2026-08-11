@@ -12,6 +12,11 @@ Review documentation lives in [docs/README.md](docs/README.md). Start there for 
 The gateway runs as one OS process. Inside that process, Tokio runs async tasks
 for websocket ingest, ClickHouse persistence, and local API/WebSocket serving.
 
+Under backpressure, the top-level fan-out admits compact and optional raw
+persistence before awaiting derived live-state, bar, or indicator routers.
+Broadcast projections are non-blocking and lagging clients must resnapshot;
+canonical Scanner/bar inputs are bounded but never intentionally dropped.
+
 Current responsibilities:
 
 - subscribe to Massive stock websocket channels
