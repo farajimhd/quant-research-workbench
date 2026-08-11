@@ -22,6 +22,8 @@ type ServiceRegistry = {
 
 type ServiceStatusTone = "active" | "error" | "idle" | "ok" | "waiting" | "warn";
 
+type ServiceReadinessDimension = { evidence: string; source: string; status: string };
+
 type ServiceStatusPayload = {
   checked_at_utc: string;
   current_operation: Record<string, unknown>;
@@ -32,6 +34,13 @@ type ServiceStatusPayload = {
   logs?: ServiceLogPayload;
   metrics: Record<string, unknown>;
   online: boolean;
+  readiness?: {
+    schema_version: number;
+    liveness: ServiceReadinessDimension;
+    dependencies: ServiceReadinessDimension;
+    data: ServiceReadinessDimension;
+    execution: ServiceReadinessDimension;
+  };
   recent: unknown;
   registry: ServiceRegistry;
   snapshot: Record<string, unknown>;
@@ -245,10 +254,14 @@ function ServicePageApiFailure({ message }: { message: string }) {
 
 function mergeServiceDetailPayload(next: ServiceStatusPayload, current: ServiceStatusPayload | null, full: boolean): ServiceStatusPayload {
   if (full || current?.registry.id !== next.registry.id) return next;
+  const readiness = next.readiness && current.readiness && next.readiness.data.status === "unknown"
+    ? { ...next.readiness, data: current.readiness.data }
+    : next.readiness;
   return {
     ...next,
     database_tables: current.database_tables ?? next.database_tables,
     logs: current.logs ?? next.logs,
+    readiness,
     recent: current.recent ?? next.recent,
   };
 }
@@ -354,10 +367,25 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
           <div><span>Overall</span><strong>{database.overall}</strong></div>
           <div><span>Latest</span><strong>{database.latest}</strong></div>
         </div>
+        {service.readiness ? <div className="service-readiness-strip" aria-label={`${service.registry.label} readiness dimensions`}>
+          {([
+            ["Live", service.readiness.liveness],
+            ["Dependencies", service.readiness.dependencies],
+            ["Data", service.readiness.data],
+            ["Execution", service.readiness.execution],
+          ] as Array<[string, ServiceReadinessDimension]>).map(([label, dimension]) => <span className={`tone-${readinessTone(dimension.status)}`} key={label} title={`${dimension.evidence} Source: ${dimension.source}`}><small>{label}</small><strong>{displayName(dimension.status)}</strong></span>)}
+        </div> : null}
         <ArrowUpRight aria-hidden="true" className="service-fleet-open-icon" size={13} />
       </button>
     </article>
   );
+}
+
+function readinessTone(status: string) {
+  const normalized = status.toLowerCase();
+  if (normalized === "ready") return "ok";
+  if (["blocked", "degraded", "offline"].includes(normalized)) return "warn";
+  return "neutral";
 }
 
 function ServiceDetail({ pageError, service }: { pageError: string; service: ServiceStatusPayload }) {

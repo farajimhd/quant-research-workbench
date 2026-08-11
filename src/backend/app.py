@@ -3098,6 +3098,12 @@ def service_status_payload(service_id: str, *, include_database_tables: bool = T
         status = "NOT_STARTED"
     runtime_logs = service_runtime_logs(normalized_snapshot, metrics, recent_payload, health_payload, service_id=service_id) if include_logs else {"path": "", "rows": [], "error": ""}
     database_tables = service_database_table_state(service_id) if include_database_tables else {"rows": [], "error": ""}
+    errors = {
+        "snapshot": snapshot_error,
+        "health": health_error,
+        "metrics": metrics_error,
+        "recent": recent_error,
+    }
     return {
         "registry": {
             "id": service["id"],
@@ -3116,13 +3122,130 @@ def service_status_payload(service_id: str, *, include_database_tables: bool = T
         "recent": recent_payload if recent_payload is not None else {},
         "logs": runtime_logs,
         "database_tables": database_tables,
-        "errors": {
-            "snapshot": snapshot_error,
-            "health": health_error,
-            "metrics": metrics_error,
-            "recent": recent_error,
-        },
+        "readiness": service_readiness_payload(
+            service_id,
+            online=online,
+            service_status=status,
+            snapshot=normalized_snapshot,
+            health=health_payload if isinstance(health_payload, dict) else {},
+            metrics=metrics if isinstance(metrics, dict) else {},
+            database_tables=database_tables,
+            errors=errors,
+        ),
+        "errors": errors,
         "checked_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+
+
+def service_readiness_payload(
+    service_id: str,
+    *,
+    online: bool,
+    service_status: str,
+    snapshot: dict[str, Any],
+    health: dict[str, Any],
+    metrics: dict[str, Any],
+    database_tables: dict[str, Any],
+    errors: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep process liveness separate from declared dependency/data authority."""
+
+    normalized_status = str(service_status or "unknown").strip().lower()
+    liveness = {
+        "status": "ready" if online else "offline",
+        "evidence": "At least one declared service endpoint answered."
+        if online
+        else str(errors.get("snapshot") or errors.get("health") or "No endpoint answered."),
+        "source": "service_transport",
+    }
+    attention = [row for row in snapshot.get("attention") or [] if isinstance(row, dict)]
+    error_state = snapshot.get("error_state") if isinstance(snapshot.get("error_state"), dict) else {}
+    dependency_failures = [
+        row
+        for row in attention
+        if str(row.get("status") or row.get("severity") or "").lower()
+        in {"action_required", "blocked", "degraded", "error", "failed", "warning"}
+    ]
+    if not online:
+        dependency_status = "blocked"
+        dependency_evidence = "Dependency state cannot be trusted while the service is offline."
+    elif bool(error_state.get("active")) or dependency_failures:
+        dependency_status = "degraded"
+        dependency_evidence = str(
+            error_state.get("message")
+            or dependency_failures[0].get("message")
+            or dependency_failures[0].get("detail")
+            or "The service declared dependency attention."
+        )
+    elif snapshot:
+        dependency_status = "ready"
+        dependency_evidence = "The service status contract reports no active required dependency failure."
+    else:
+        dependency_status = "unknown"
+        dependency_evidence = "This service has not published a structured dependency contract."
+    coverage = snapshot.get("coverage") if isinstance(snapshot.get("coverage"), dict) else {}
+    coverage_status = str(coverage.get("status") or "").lower()
+    table_rows = [
+        row
+        for row in database_tables.get("rows") or []
+        if isinstance(row, dict)
+    ]
+    bad_tables = [
+        row for row in table_rows
+        if str(row.get("status") or "").lower() in {"empty", "error", "missing", "unavailable"}
+    ]
+    if not online:
+        data_status = "unknown"
+        data_evidence = "Data readiness is independent and was not verified while offline."
+    elif bad_tables:
+        data_status = "degraded"
+        data_evidence = f"{len(bad_tables)} declared database product(s) are missing, empty, or unavailable."
+    elif coverage_status in {"action_required", "blocked", "degraded", "error", "failed", "retention_blocked"}:
+        data_status = "degraded"
+        data_evidence = str(coverage.get("message") or f"Coverage status: {coverage_status}")
+    elif table_rows:
+        data_status = "ready"
+        data_evidence = f"{len(table_rows)} declared database product(s) passed the dashboard table check."
+    elif coverage:
+        data_status = "ready" if coverage_status in {"complete", "completed", "healthy", "ready", "running"} else "unknown"
+        data_evidence = str(coverage.get("message") or f"Coverage status: {coverage_status or 'not declared'}")
+    else:
+        data_status = "unknown"
+        data_evidence = "No coverage or database-product contract was included in this check."
+    if service_id != "ibkr":
+        execution = {
+            "status": "not_applicable",
+            "evidence": "This service does not own broker execution authority.",
+            "source": "service_registry",
+        }
+    else:
+        auth_status = str(metrics.get("auth_status") or health.get("auth_status") or "").lower()
+        account_status = str(metrics.get("account_status") or health.get("account_status") or "").lower()
+        explicitly_ready = auth_status in {"authenticated", "ready", "ok"} and account_status in {"ready", "ok", "matched"}
+        execution = {
+            "status": "ready" if online and explicitly_ready else "blocked" if not online else "unknown",
+            "evidence": (
+                "IBKR reported authenticated session and account routing readiness."
+                if explicitly_ready
+                else "Execution readiness requires explicit authenticated-session and account-routing evidence."
+            ),
+            "source": "ibkr_declared_metrics",
+        }
+    return {
+        "schema_version": 1,
+        "service_status": normalized_status,
+        "liveness": liveness,
+        "dependencies": {
+            "status": dependency_status,
+            "evidence": dependency_evidence,
+            "source": "service_status_contract",
+        },
+        "data": {
+            "status": data_status,
+            "evidence": data_evidence,
+            "source": "coverage_and_database_contracts",
+        },
+        "execution": execution,
     }
 
 
@@ -3169,6 +3292,14 @@ def service_status_error_payload(service_id: str, exc: Exception) -> dict[str, A
         "recent": {},
         "logs": {"path": "", "rows": [], "error": ""},
         "database_tables": {"rows": [], "error": ""},
+        "readiness": {
+            "schema_version": 1,
+            "service_status": "degraded",
+            "liveness": {"status": "offline", "evidence": detail, "source": "status_collection"},
+            "dependencies": {"status": "blocked", "evidence": "Status collection failed.", "source": "status_collection"},
+            "data": {"status": "unknown", "evidence": "Data readiness was not verified.", "source": "status_collection"},
+            "execution": {"status": "blocked" if service_id == "ibkr" else "not_applicable", "evidence": "Execution readiness was not verified.", "source": "status_collection"},
+        },
         "errors": {
             "collection": detail,
             "snapshot": None,

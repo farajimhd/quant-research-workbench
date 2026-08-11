@@ -108,10 +108,27 @@ Environment identity, code commit, configuration release and data/model versions
 
 A release records code commit, schema migrations, configuration/catalog versions, artifact hashes and validation evidence. Apply schema-compatible services before dependent configuration/UI. Rollback restores executable configuration and service version while preserving newer append-only source/journal records; destructive data rollback is not a normal deployment mechanism.
 
-## 10. Current drift
+## 10. Current implementation and remaining drift
 
-- Individual services have useful launchers, health endpoints and audits, but readiness fields and central presentation are inconsistent.
-- Data coverage and trading authority checks are not yet unified into one operations view.
+The backend now projects a versioned readiness envelope for every registered
+service and the existing Services dashboard displays its four independent
+dimensions: liveness, dependencies, data and execution. Unknown evidence stays
+unknown; an answering endpoint is not promoted to data or execution readiness.
+Services that do not own broker authority explicitly report execution as not
+applicable. IBKR execution readiness requires explicit authentication and
+account-routing evidence from its existing contracts.
+
+This is an application-side composition layer only. It does not change any
+producer service. Existing service status, coverage and database contracts are
+used when present, and absent structured evidence remains visible as unknown.
+
+Remaining drift:
+
+- Producer status contracts still vary, so configuration/schema compatibility,
+  watermarks, queue depth and checkpoint evidence are not uniformly available.
+- Data coverage and trading authority evidence share one operations view, but
+  deeper product-level coverage and command-authority diagnostics remain to be
+  projected consistently.
 - Some operational documentation reflects earlier service maturity and must not override current code or verified runtime behavior.
 
 ---

@@ -155,7 +155,7 @@ budgets and invalid scope broadening fails configuration validation.
 - [ ] Bound and version caches.
 - [ ] Enforce user, workspace, environment, mode, account, and command authority.
 - [ ] Resolve secrets and broker identifiers server-side.
-- [ ] Aggregate service readiness separately from data readiness.
+- [x] Aggregate service readiness separately from data readiness.
 
 Acceptance gate: browser code knows no database table, service credential,
 internal topology, or producer formula.
@@ -289,9 +289,9 @@ broker command outside OMS.
 
 ## 10. Operations, migration, and validation
 
-- [ ] Separate liveness from dependency/data/execution readiness.
+- [x] Separate liveness from dependency/data/execution readiness.
 - [ ] Report coverage, freshness, queues, checkpoints, degradation, and authority.
-- [ ] Build a central backend/frontend readiness view.
+- [x] Build a central backend/frontend readiness view.
 - [ ] Propagate end-to-end correlation and causation IDs.
 - [ ] Add QMD transition/gap/lag/cache/queue metrics.
 - [ ] Add discovery computation-cost metrics.

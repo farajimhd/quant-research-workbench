@@ -162,7 +162,7 @@
 .service-fleet-database {
   background: color-mix(in oklab, var(--surface-alt) 78%, var(--surface));
   border-top: 1px solid var(--surface-border);
-  border-radius: 0 0 7px 7px;
+  border-radius: 0;
   display: grid;
   gap: 0;
   grid-template-columns: 1.2fr .75fr .75fr 1fr;
@@ -176,6 +176,31 @@
 .service-fleet-database strong { font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 720; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .service-fleet-database.good > div:first-child strong { color: var(--badge-success-fg); }
 
+.service-readiness-strip {
+  border-radius: 0 0 7px 7px;
+  border-top: 1px solid var(--surface-border);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 8px -11px -8px;
+  padding: 7px 29px 7px 11px;
+}
+.service-readiness-strip > span { display: grid; gap: 1px; min-width: 0; padding: 0 10px; }
+.service-readiness-strip > span:first-child { padding-left: 0; }
+.service-readiness-strip > span + span { border-left: 1px solid var(--surface-border); }
+.service-readiness-strip small {
+  color: var(--muted-foreground);
+  font-size: 8px;
+  font-weight: 720;
+  letter-spacing: .065em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.service-readiness-strip strong { font-size: 10px; font-weight: 720; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.service-readiness-strip .tone-ok strong { color: var(--badge-success-fg); }
+.service-readiness-strip .tone-warn strong { color: var(--badge-warning-fg); }
+
 .service-fleet-open-icon { color: var(--muted-foreground); position: absolute; right: 10px; top: 10px; }
 
 @media (max-width: 1120px) {
@@ -185,10 +210,13 @@
 @media (max-width: 820px) {
   .service-fleet-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .service-fleet-database { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .service-readiness-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .service-fleet-metric:nth-child(odd),
-  .service-fleet-database > div:nth-child(odd) { border-left: 0; padding-left: 0; }
+  .service-fleet-database > div:nth-child(odd),
+  .service-readiness-strip > span:nth-child(odd) { border-left: 0; padding-left: 0; }
   .service-fleet-metric:nth-child(n+3),
-  .service-fleet-database > div:nth-child(n+3) { border-top: 1px solid var(--surface-border); margin-top: 6px; padding-top: 6px; }
+  .service-fleet-database > div:nth-child(n+3),
+  .service-readiness-strip > span:nth-child(n+3) { border-top: 1px solid var(--surface-border); margin-top: 6px; padding-top: 6px; }
 }
 
 

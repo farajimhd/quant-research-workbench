@@ -56,6 +56,10 @@ bounded direct ClickHouse paths remain documented in
    controller migration and separate broker authorization.
 10. Added Backtest result projection and UI summaries directly from the run's
     canonical Portfolio/OMS journal state; strategy attribution remains open.
+11. Added a versioned backend readiness envelope and a central Services UI that
+    keeps liveness, dependency, data and execution readiness separate. Missing
+    producer evidence remains unknown, and non-broker services report execution
+    as not applicable.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
