@@ -905,8 +905,13 @@ impl SharedIndicatorStore {
         });
         let total_symbols = rows.len();
         rows.truncate(limit);
-        rows.iter_mut()
-            .for_each(|row| row.qmd_structure_active_levels.clear());
+        rows.iter_mut().for_each(|row| {
+            // Scanner/Watchlist consumers need the scalar structure fields,
+            // not the full per-timeframe chart state. Keep that detailed
+            // request-scoped payload on the per-ticker indicator endpoint.
+            row.qmd_structure_active_levels.clear();
+            row.qmd_structure_timeframe_states.clear();
+        });
         let as_of = rows
             .iter()
             .map(|row| row.bar_end)

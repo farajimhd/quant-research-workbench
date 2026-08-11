@@ -711,13 +711,21 @@ class QmdGatewayClientTests(unittest.TestCase):
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_scanner_indicator_projection_is_explicit_and_focused(self, get_json) -> None:
         get_json.return_value = {
-            "rows": [{"sym": "AAPL", "timeframe": "1s", "vwap": 101.5}]
+            "rows": [{
+                "sym": "AAPL",
+                "timeframe": "1s",
+                "vwap": 101.5,
+                "qmd_structure_active_levels": [{"price": 101.0}],
+                "qmd_structure_timeframe_states": [{"timeframe": "1s"}],
+            }]
         }
 
         rows = qmd_scanner_indicators(timeframe="1s", row_limit=99_999)
 
         self.assertEqual(rows[0]["ticker"], "AAPL")
         self.assertEqual(rows[0]["vwap"], 101.5)
+        self.assertNotIn("qmd_structure_active_levels", rows[0])
+        self.assertNotIn("qmd_structure_timeframe_states", rows[0])
         get_json.assert_called_once_with(
             "/snapshot/scanner-indicators",
             {"limit": 5_000, "timeframe": "1s"},

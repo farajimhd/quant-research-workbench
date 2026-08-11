@@ -32,6 +32,12 @@ from src.trading_runtime.watchlist_resolver import (
 
 REFERENCE_CACHE_SECONDS = 60.0
 MEMBERSHIP_HISTORY_LIMIT = 10_000
+WATCHLIST_MEMBER_IDENTITY_FIELDS = (
+    "symbol_id",
+    "listing_id",
+    "security_id",
+    "issuer_id",
+)
 NEW_YORK = ZoneInfo("America/New_York")
 _REFERENCE_CACHE = BoundedTtlCache[str, dict[str, dict[str, Any]]](
     max_entries=4,
@@ -112,6 +118,11 @@ class WatchlistRuntime:
                     if str(row.get("ticker") or "").strip()
                 }
                 previous = self._members.get(watchlist_id, {})
+                member_fields = watchlist_dependency_fields(watchlist, rule_sets)
+                current = {
+                    ticker: compact_watchlist_member(row, member_fields)
+                    for ticker, row in current.items()
+                }
                 current = retain_unconfirmed_members(
                     watchlist,
                     previous,
@@ -473,6 +484,23 @@ def watchlist_candidate_fingerprint(
         default=str,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def compact_watchlist_member(
+    row: dict[str, Any], dependency_fields: tuple[str, ...]
+) -> dict[str, Any]:
+    """Keep causal membership evidence without retaining a wide Scanner row."""
+
+    fields = {
+        *dependency_fields,
+        *WATCHLIST_MEMBER_IDENTITY_FIELDS,
+        "watchlist_id",
+        "membership_reason",
+        "confirmed_at",
+        "expires_at",
+        "rank",
+    }
+    return {field: row.get(field) for field in fields if row.get(field) is not None}
 
 
 def normalize_watchlist_candidate(row: dict[str, Any]) -> dict[str, Any]:

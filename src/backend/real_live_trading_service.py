@@ -291,12 +291,14 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
                 {
                     "rows": limited_rows,
                     "row_count": len(limited_rows),
-                    "market_rows": limited_rows,
-                    "market_row_count": len(limited_rows),
                     "core_population_count": len(rows),
                     "watchlist_runtime": watchlist_runtime,
                 }
             )
+            # The Live UI derives its market-state view from the same compact
+            # rows. Do not serialize an identical second array on every poll.
+            filtered.pop("market_rows", None)
+            filtered.pop("market_row_count", None)
             if reference_error:
                 filtered["reference_enrichment_error"] = reference_error
             filtered["feature_projection"] = compact_feature_projection(

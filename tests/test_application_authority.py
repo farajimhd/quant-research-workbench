@@ -5,7 +5,7 @@ import unittest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from src.backend.app import app
+from src.backend.app import app, bounded_computation_planner_summary
 from src.backend.application_authority import (
     AuthorityDenied,
     AuthorityPolicy,
@@ -15,6 +15,31 @@ from src.backend.application_authority import (
 
 
 class ApplicationAuthorityTests(unittest.TestCase):
+    def test_watchlist_planner_summary_omits_wide_requirement_and_target_rows(self) -> None:
+        requirements, demand = bounded_computation_planner_summary({
+            "schema_version": 1,
+            "complete": True,
+            "active_requirement_count": 2,
+            "live_requirement_count": 2,
+            "offline_requirement_count": 0,
+            "requirements": [{"requirement_id": "wide"}],
+            "live_demand": {
+                "active_symbol_count": 5,
+                "active_target_count": 1,
+                "active_requirement_count": 2,
+                "requirements": [{"requirement_id": "wide"}],
+                "requirement_ref_counts": {"wide": 2},
+                "targets": [{"target_id": "wide"}],
+            },
+        })
+
+        self.assertEqual(requirements["active_requirement_count"], 2)
+        self.assertNotIn("requirements", requirements)
+        self.assertEqual(demand["active_symbol_count"], 5)
+        self.assertNotIn("requirements", demand)
+        self.assertNotIn("requirement_ref_counts", demand)
+        self.assertNotIn("targets", demand)
+
     def test_local_policy_uses_system_identity_and_infers_command_scope(self) -> None:
         policy = AuthorityPolicy.from_environment({})
         authority = policy.authorize(

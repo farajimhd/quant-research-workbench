@@ -1503,6 +1503,7 @@ def normalize_qmd_market_signal(row: dict[str, Any]) -> dict[str, Any]:
 def normalize_qmd_indicator_scanner_row(row: dict[str, Any]) -> dict[str, Any]:
     payload = dict(row)
     payload.pop("qmd_structure_active_levels", None)
+    payload.pop("qmd_structure_timeframe_states", None)
     payload["ticker"] = str(row.get("sym") or "").strip().upper()
     payload["indicator_timeframe"] = str(row.get("timeframe") or "")
     payload["indicator_as_of"] = str(row.get("bar_end") or "")

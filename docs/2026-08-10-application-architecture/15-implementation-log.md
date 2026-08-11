@@ -1563,6 +1563,33 @@ it does not imply all application work is complete.
      repair is incomplete, so the combined production boundary gate remains
      open rather than being inferred from the two passing scopes.
 
+155. Removed wide chart-state and duplicated planner payloads from the
+     interactive Scanner/Watchlist path. QMD's focused Scanner indicator
+     snapshot now preserves scalar Generic Structure evidence but omits the
+     active-level and per-timeframe state arrays; detailed per-ticker chart
+     requests retain their complete state. The backend defensively enforces
+     the same projection. Current Watchlist members now store only fields that
+     can affect their declared rules or rank, stable identity, and membership
+     lifecycle evidence instead of retaining the complete wide Scanner row.
+
+     The Live Scanner no longer serializes an identical `market_rows` array;
+     the existing frontend already treats that field as optional and derives
+     its market view from `rows`. Market Discovery Watchlist runtime now returns
+     bounded computation summaries rather than duplicating 17,000-plus
+     per-symbol requirements in both `computation_requirements` and
+     `computation_demand`; full requirement detail remains available from
+     `/api/system/computation-requirements`.
+
+     Under the same active QMD process, the 5,000-row focused-indicator payload
+     dropped from roughly 3.21 MB to 334 KB and from 1.54-1.65 seconds to
+     0.206-0.210 seconds. The resolved Watchlist endpoint dropped from roughly
+     29.8 MB/3.25 seconds to 312 KB/0.79 seconds, and the 250-row Live Scanner
+     response dropped from roughly 6.7 MB to 2.2 MB. Warm end-to-end Scanner
+     latency remained 1.4-2.6 seconds while QMD was catching up, so the wider
+     steady-state load gate remains open. All 100 QMD library tests and 63
+     backend Watchlist, QMD-client, authority, and summary-contract tests
+     passed; changed Python modules compiled with bytecode writes disabled.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

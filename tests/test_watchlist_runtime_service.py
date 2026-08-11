@@ -88,7 +88,12 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         runtime = WatchlistRuntime()
         journal = FakeJournal()
         candidates = [
-            {"ticker": "AAA", "market_cap": 1_000_000_000, "change_pct": 4.0},
+            {
+                "ticker": "AAA",
+                "market_cap": 1_000_000_000,
+                "change_pct": 4.0,
+                "qmd_structure_timeframe_states": [{"timeframe": "1s"}],
+            },
             {"ticker": "BBB", "market_cap": 500_000_000, "change_pct": 9.0},
             {"ticker": "CCC", "market_cap": 900_000_000, "change_pct": 6.0},
         ]
@@ -103,6 +108,9 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
 
         watchlist = snapshot["watchlists"][0]
         self.assertEqual([row["ticker"] for row in watchlist["members"]], ["BBB", "CCC"])
+        self.assertNotIn("qmd_structure_timeframe_states", watchlist["members"][0])
+        self.assertIn("market_cap", watchlist["members"][0])
+        self.assertIn("change_pct", watchlist["members"][0])
         self.assertEqual(len(journal.rows), 2)
         self.assertTrue(all(row["category"] == "watchlist_membership" for row in journal.rows))
         publish.assert_called_once()

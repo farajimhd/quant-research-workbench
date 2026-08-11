@@ -3944,12 +3944,51 @@ def market_discovery_watchlist_runtime() -> dict[str, Any]:
 
     payload = WATCHLIST_RUNTIME.snapshot()
     planner = qmd_computation_requirements()
-    payload["computation_requirements"] = planner
+    requirement_summary, demand_summary = bounded_computation_planner_summary(planner)
+    payload["computation_requirements"] = requirement_summary
     if isinstance(planner.get("live_demand"), dict):
-        payload["computation_demand"] = planner["live_demand"]
+        payload["computation_demand"] = demand_summary
     elif planner.get("errors", {}).get("qmd_gateway"):
         payload["computation_demand_error"] = planner["errors"]["qmd_gateway"]
     return payload
+
+
+def bounded_computation_planner_summary(
+    planner: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Project UI decision evidence without duplicating per-symbol requirements."""
+
+    requirement_keys = (
+        "schema_version",
+        "as_of",
+        "complete",
+        "authorities",
+        "active_requirement_count",
+        "live_requirement_count",
+        "offline_requirement_count",
+        "errors",
+    )
+    demand_keys = (
+        "schema_version",
+        "as_of",
+        "active_symbol_count",
+        "active_target_count",
+        "active_requirement_count",
+        "requested_demand_units",
+        "estimated_demand_units",
+        "deduplicated_demand_units_saved",
+        "capability_ref_counts",
+        "scope_capability_counts",
+        "scope_estimated_demand_units",
+        "scope_symbol_counts",
+        "scope_target_counts",
+        "target_estimated_demand_units",
+    )
+    live_demand = dict(planner.get("live_demand") or {})
+    return (
+        {key: planner.get(key) for key in requirement_keys},
+        {key: live_demand.get(key) for key in demand_keys},
+    )
 
 
 @app.get("/api/system/computation-requirements")

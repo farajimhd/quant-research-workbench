@@ -883,7 +883,7 @@ broker command outside OMS.
 - [x] Add QMD transition/gap/lag/cache/queue metrics.
 - [x] Add discovery computation-cost metrics.
 - [x] Add Portfolio disposition/reservation and OMS reconciliation metrics.
-- [ ] Bound queues, caches, subscriptions, retries, concurrency, and result sets.
+- [x] Bound queues, caches, subscriptions, retries, concurrency, and result sets.
   - [x] Expose the enforced backend command, discovery, chart, simulation,
         offline, and general admission lanes on the Services dashboard with
         active/limit, availability, completion, rejection, and wait evidence;
@@ -899,6 +899,13 @@ broker command outside OMS.
   - [x] Bound the market-data background-job collection endpoint to an
         explicitly validated 1-500 row window (100 by default) and select the
         newest job files before reading their payload/event summaries.
+  - [x] Bound interactive Scanner and Watchlist projections. QMD's focused
+        Scanner endpoint omits chart-only active-level and multi-timeframe
+        Structure arrays; current Watchlist members retain only declared
+        rule/rank dependencies, stable identity, and lifecycle evidence. The
+        Live Scanner no longer serializes an identical `market_rows` copy, and
+        the Watchlist endpoint returns computation counts/maps while the full
+        per-symbol requirement graph remains on the dedicated system endpoint.
 - [x] Shed replaceable projections before authoritative events or journal
       writes. QMD now admits compact and optional raw persistence queues before
       any derived router can apply backpressure; broadcast projections remain
@@ -933,6 +940,14 @@ broker command outside OMS.
         deferred News Synthesis v48 `provider_tags` test drift when intelligence
         work resumes; it is not changed by this active implementation goal.
 - [ ] Test scanner population, cost, and performance.
+  - [x] Measure and reduce interactive projection amplification under active
+        traffic. The 5,000-row focused-indicator response fell from about
+        3.21 MB and 1.54-1.65 seconds to 334 KB and 0.206-0.210 seconds;
+        Watchlist runtime fell from about 29.8 MB and 3.25 seconds to 312 KB
+        and 0.79 seconds; the 250-row Live Scanner fell from about 6.7 MB to
+        2.2 MB. Its warm end-to-end latency still varied from 1.4 to 2.6
+        seconds while QMD startup catch-up was active, so the representative
+        steady-state budget gate remains open.
 - [x] Test streaming reconnect and resnapshot. QMD unit coverage proves typed
       terminal lag/sequence-gap frames; an actual backend WebSocket route test
       proves upstream subscription precedes snapshot capture and forwards the
