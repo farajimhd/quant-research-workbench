@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import urllib.error
+from io import BytesIO
 from datetime import datetime
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -23,6 +24,7 @@ from src.backend.qmd_gateway_client import (
     qmd_indicators,
     qmd_market_signals,
     qmd_product_request,
+    qmd_put_json,
     qmd_scanner_snapshot,
     qmd_scanner_indicators,
     qmd_websocket_url,
@@ -141,6 +143,37 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(raised.exception.path, "/snapshot/scanner")
         self.assertTrue(raised.exception.retryable)
         self.assertEqual(raised.exception.as_detail()["service"], "QMD")
+
+    @patch("src.backend.qmd_gateway_client.qmd_enabled", return_value=False)
+    def test_disabled_gateway_is_a_typed_non_retryable_error(self, _enabled) -> None:
+        from src.backend.qmd_gateway_client import qmd_get_json
+
+        with self.assertRaises(QmdServiceError) as raised:
+            qmd_get_json("/health")
+
+        self.assertEqual(raised.exception.code, "qmd_disabled")
+        self.assertFalse(raised.exception.retryable)
+
+    @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
+    @patch("src.backend.qmd_gateway_client.qmd_enabled", return_value=True)
+    @patch("src.backend.qmd_gateway_client.qmd_base_url", return_value="http://127.0.0.1:8795")
+    def test_mutation_transport_raises_typed_http_error(
+        self, _base_url, _enabled, urlopen
+    ) -> None:
+        urlopen.side_effect = urllib.error.HTTPError(
+            "http://127.0.0.1:8795/computation-targets",
+            429,
+            "Too Many Requests",
+            {},
+            BytesIO(b'{"error":"capacity"}'),
+        )
+
+        with self.assertRaises(QmdServiceError) as raised:
+            qmd_put_json("/computation-targets", {"target_id": "chart:aapl"})
+
+        self.assertEqual(raised.exception.operation, "PUT")
+        self.assertEqual(raised.exception.upstream_status, 429)
+        self.assertTrue(raised.exception.retryable)
 
     @patch("src.backend.qmd_gateway_client.qmd_history_get_json")
     def test_typed_product_response_projects_standard_metadata(self, get_json) -> None:

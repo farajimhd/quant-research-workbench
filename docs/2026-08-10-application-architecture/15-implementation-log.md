@@ -295,6 +295,15 @@ bounded direct ClickHouse paths remain documented in
     backend routes, and the frontend displays their message. Other transports
     and services remain explicitly open. Sixty-nine focused backend tests and
     the managed TypeScript/Vite production build passed.
+49. Completed the remaining QMD transport portion of the typed response
+    boundary. Computation-lease PUT and DELETE calls now raise the same stable
+    service/code/path/retryability/upstream-status error as GET requests, and
+    invalid mutation responses fail as typed invalid JSON. Proxied QMD Live and
+    History WebSockets now emit schema-v1 terminal error frames with structured
+    detail while preserving the existing `error` string for current consumers.
+    The application-wide response item remains open for non-QMD clients and
+    uniform success envelopes. Seventy-one focused backend tests, Python compile,
+    and a direct typed-stream boundary smoke check passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

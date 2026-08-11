@@ -378,7 +378,7 @@ def qmd_history_base_url() -> str:
 
 def qmd_get_json(path: str, params: dict[str, Any] | None = None, *, timeout: int = 3) -> Any:
     if not qmd_enabled():
-        raise RuntimeError("QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.")
+        raise _qmd_disabled_error("GET", path)
     return _qmd_service_get_json(
         qmd_base_url(),
         path,
@@ -424,48 +424,17 @@ def _qmd_service_get_json(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             text = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise QmdServiceError(
-            service=service_label,
-            operation="GET",
-            path=path,
-            code="qmd_upstream_http_error",
-            message=f"{service_label} GET {safe_qmd_url(url)} failed with HTTP {exc.code}: {body[:500]}",
-            retryable=exc.code in {408, 425, 429} or exc.code >= 500,
-            upstream_status=exc.code,
-        ) from exc
+        raise _qmd_http_error(service_label, "GET", path, url, exc) from exc
     except urllib.error.URLError as exc:
-        if service_label == "QMD History":
-            message = (
-                f"QMD History gateway is not reachable at {base_url.rstrip('/')}. "
-                "Start scripts/run_qmd_history_gateway.ps1 and wait for its /health status to be ready."
-            )
-        else:
-            message = f"{service_label} GET {safe_qmd_url(url)} failed: {exc.reason}"
-        raise QmdServiceError(
-            service=service_label,
-            operation="GET",
-            path=path,
-            code="qmd_upstream_unavailable",
-            message=message,
-            retryable=True,
+        raise _qmd_unavailable_error(
+            service_label, "GET", path, url, exc, base_url=base_url
         ) from exc
-    try:
-        return json.loads(text) if text.strip() else {}
-    except json.JSONDecodeError as exc:
-        raise QmdServiceError(
-            service=service_label,
-            operation="GET",
-            path=path,
-            code="qmd_invalid_json",
-            message=f"{service_label} GET {path} returned invalid JSON.",
-            retryable=False,
-        ) from exc
+    return _qmd_decode_json(text, service_label=service_label, operation="GET", path=path)
 
 
 def qmd_put_json(path: str, payload: dict[str, Any], *, timeout: int = 3) -> Any:
     if not qmd_enabled():
-        raise RuntimeError("QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.")
+        raise _qmd_disabled_error("PUT", path)
     url = f"{qmd_base_url().rstrip('/')}{path}"
     request = urllib.request.Request(
         url,
@@ -477,18 +446,15 @@ def qmd_put_json(path: str, payload: dict[str, Any], *, timeout: int = 3) -> Any
         with urllib.request.urlopen(request, timeout=timeout) as response:
             text = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"QMD PUT {safe_qmd_url(url)} failed with HTTP {exc.code}: {body[:500]}"
-        ) from exc
+        raise _qmd_http_error("QMD", "PUT", path, url, exc) from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"QMD PUT {safe_qmd_url(url)} failed: {exc.reason}") from exc
-    return json.loads(text) if text.strip() else {}
+        raise _qmd_unavailable_error("QMD", "PUT", path, url, exc) from exc
+    return _qmd_decode_json(text, service_label="QMD", operation="PUT", path=path)
 
 
 def qmd_delete_json(path: str, *, timeout: int = 3) -> Any:
     if not qmd_enabled():
-        raise RuntimeError("QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.")
+        raise _qmd_disabled_error("DELETE", path)
     url = f"{qmd_base_url().rstrip('/')}{path}"
     request = urllib.request.Request(
         url,
@@ -499,18 +465,96 @@ def qmd_delete_json(path: str, *, timeout: int = 3) -> Any:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             text = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"QMD DELETE {safe_qmd_url(url)} failed with HTTP {exc.code}: {body[:500]}"
-        ) from exc
+        raise _qmd_http_error("QMD", "DELETE", path, url, exc) from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"QMD DELETE {safe_qmd_url(url)} failed: {exc.reason}") from exc
-    return json.loads(text) if text.strip() else {}
+        raise _qmd_unavailable_error("QMD", "DELETE", path, url, exc) from exc
+    return _qmd_decode_json(text, service_label="QMD", operation="DELETE", path=path)
+
+
+def _qmd_http_error(
+    service_label: str,
+    operation: str,
+    path: str,
+    url: str,
+    error: urllib.error.HTTPError,
+) -> QmdServiceError:
+    body = error.read().decode("utf-8", errors="replace")
+    return QmdServiceError(
+        service=service_label,
+        operation=operation,
+        path=path,
+        code="qmd_upstream_http_error",
+        message=(
+            f"{service_label} {operation} {safe_qmd_url(url)} failed with HTTP "
+            f"{error.code}: {body[:500]}"
+        ),
+        retryable=error.code in {408, 425, 429} or error.code >= 500,
+        upstream_status=error.code,
+    )
+
+
+def _qmd_unavailable_error(
+    service_label: str,
+    operation: str,
+    path: str,
+    url: str,
+    error: urllib.error.URLError,
+    *,
+    base_url: str = "",
+) -> QmdServiceError:
+    if service_label == "QMD History" and base_url:
+        message = (
+            f"QMD History gateway is not reachable at {base_url.rstrip('/')}. "
+            "Start scripts/run_qmd_history_gateway.ps1 and wait for its /health status to be ready."
+        )
+    else:
+        message = (
+            f"{service_label} {operation} {safe_qmd_url(url)} failed: {error.reason}"
+        )
+    return QmdServiceError(
+        service=service_label,
+        operation=operation,
+        path=path,
+        code="qmd_upstream_unavailable",
+        message=message,
+        retryable=True,
+    )
+
+
+def _qmd_decode_json(
+    text: str,
+    *,
+    service_label: str,
+    operation: str,
+    path: str,
+) -> Any:
+    try:
+        return json.loads(text) if text.strip() else {}
+    except json.JSONDecodeError as exc:
+        raise QmdServiceError(
+            service=service_label,
+            operation=operation,
+            path=path,
+            code="qmd_invalid_json",
+            message=f"{service_label} {operation} {path} returned invalid JSON.",
+            retryable=False,
+        ) from exc
+
+
+def _qmd_disabled_error(operation: str, path: str) -> QmdServiceError:
+    return QmdServiceError(
+        service="QMD",
+        operation=operation,
+        path=path,
+        code="qmd_disabled",
+        message="QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.",
+        retryable=False,
+    )
 
 
 def qmd_websocket_url(path: str, params: dict[str, Any] | None = None) -> str:
     if not qmd_enabled():
-        raise RuntimeError("QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.")
+        raise _qmd_disabled_error("STREAM", path)
     return _qmd_service_websocket_url(qmd_base_url(), path, params, service_label="QMD")
 
 

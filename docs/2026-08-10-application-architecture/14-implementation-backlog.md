@@ -208,9 +208,11 @@ budgets and invalid scope broadening fails configuration validation.
 - [ ] Standardize response envelopes, warnings, partial coverage, and typed errors.
       The shared QMD product response is now schema v2 with completeness,
       warnings, coverage status and source revision, and QMD GET transport
-      failures are typed through backend HTTP routes. Mutation transports,
-      non-QMD clients, WebSocket terminal frames, and application-wide success
-      envelopes still need the same contract before this broad item is closed.
+      failures are typed through backend HTTP routes. QMD lease mutations use
+      the same typed boundary and proxied QMD streams emit schema-v1 terminal
+      error frames while retaining the compatible `error` string. Non-QMD
+      clients and application-wide success envelopes still need the same
+      contract before this broad item is closed.
 - [ ] Implement HTTP snapshot plus sequenced delta streams.
 - [ ] Fill reconnect gaps or require resnapshot.
 - [ ] Isolate budgets for commands, discovery, charts, simulation, and offline work.

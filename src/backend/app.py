@@ -420,9 +420,35 @@ app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
 
 def _qmd_http_exception(error: QmdServiceError) -> HTTPException:
     return HTTPException(
-        status_code=503 if error.code == "qmd_upstream_unavailable" else 502,
+        status_code=(
+            503
+            if error.code in {"qmd_disabled", "qmd_upstream_unavailable"}
+            else 502
+        ),
         detail=error.as_detail(),
     )
+
+
+def _qmd_stream_error(error: Exception, *, stream: str) -> dict[str, Any]:
+    detail = (
+        error.as_detail()
+        if isinstance(error, QmdServiceError)
+        else {
+            "code": "qmd_stream_unavailable",
+            "message": f"{stream} unavailable: {error}",
+            "operation": "STREAM",
+            "path": stream,
+            "retryable": True,
+            "service": "QMD",
+            "upstream_status": None,
+        }
+    )
+    return {
+        "schema_version": 1,
+        "type": "error",
+        "error": str(detail["message"]),
+        "error_detail": detail,
+    }
 
 
 replay_run_service = ReplayRunService()
@@ -5570,7 +5596,9 @@ async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, sy
         return
     except Exception as exc:
         try:
-            await websocket.send_json({"error": f"QMD live {stream} stream unavailable: {exc}"})
+            await websocket.send_json(
+                _qmd_stream_error(exc, stream=f"QMD live {stream} stream")
+            )
             await websocket.close(code=1011)
         except Exception:
             return
@@ -5596,7 +5624,9 @@ async def trading_canvas_market_events_stream(websocket: WebSocket, symbol: str)
         return
     except Exception as exc:
         try:
-            await websocket.send_json({"error": f"QMD compact-event stream unavailable: {exc}"})
+            await websocket.send_json(
+                _qmd_stream_error(exc, stream="QMD compact-event stream")
+            )
             await websocket.close(code=1011)
         except Exception:
             return
@@ -5632,7 +5662,9 @@ async def trading_canvas_market_signals_stream(websocket: WebSocket, symbol: str
         return
     except Exception as exc:
         try:
-            await websocket.send_json({"error": f"QMD market-signal stream unavailable: {exc}"})
+            await websocket.send_json(
+                _qmd_stream_error(exc, stream="QMD market-signal stream")
+            )
             await websocket.close(code=1011)
         except Exception:
             return
@@ -5739,7 +5771,9 @@ async def trading_historical_stream(websocket: WebSocket, symbol: str) -> None:
         return
     except Exception as exc:
         try:
-            await websocket.send_json({"error": f"QMD History stream unavailable: {exc}"})
+            await websocket.send_json(
+                _qmd_stream_error(exc, stream="QMD History stream")
+            )
             await websocket.close(code=1011)
         except Exception:
             return

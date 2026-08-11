@@ -97,7 +97,10 @@ and History GET failures now cross the backend boundary as `QmdServiceError`
 with stable code, service, operation, path, retryability and upstream status.
 QMD-facing HTTP routes return that structured detail while retaining the
 request correlation header; the frontend renders its message without discarding
-the machine-readable error fields.
+the machine-readable error fields. PUT and DELETE lease mutations use the same
+typed transport, and proxied QMD WebSockets preserve the legacy human-readable
+`error` field inside a schema-v1 terminal frame with machine-readable
+`error_detail`.
 
 ## 6. Configuration registry and compiler
 
