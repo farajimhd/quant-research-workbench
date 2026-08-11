@@ -11,8 +11,9 @@ from src.backend.application_registry import FIELD_DEFINITIONS, QUERY_PLANS
 from src.trading_runtime.watchlist_resolver import SOURCE_FIELDS
 
 
-HISTORICAL_WATCHLIST_PLAN_SCHEMA_VERSION = 2
+HISTORICAL_WATCHLIST_PLAN_SCHEMA_VERSION = 3
 MAX_EVALUATIONS_PER_CHUNK = 1_800
+FOCUSED_SEED_MULTIPLIER = 5
 NEW_YORK = ZoneInfo("America/New_York")
 SUPPORTED_COMPARATORS = {
     "above_by_bps",
@@ -121,6 +122,7 @@ def compile_historical_watchlist_plan(
         "ranking_field": str(watchlist.get("ranking_field") or ""),
         "ranking_direction": str(watchlist.get("ranking_direction") or "descending"),
         "maximum_size": max(1, int(watchlist.get("maximum_size") or 1)),
+        "focused_seed_multiplier": FOCUSED_SEED_MULTIPLIER,
         "membership_expiry": str(watchlist.get("membership_expiry") or "end_of_trading_day"),
         "membership_ttl_ms": max(0, int(watchlist.get("membership_ttl_ms") or 0)),
         "manual_inclusions": sorted({str(value).strip().upper() for value in watchlist.get("manual_inclusions") or [] if str(value).strip()}),

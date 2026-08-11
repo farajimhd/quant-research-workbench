@@ -30,7 +30,7 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         self.assertEqual(plan["plan_hash"], repeated["plan_hash"])
         self.assertEqual(
             plan["plan_hash"],
-            "sha256:b67fc34277bb71eaa45101875ab0b4b96167872ae26f80d28867e511e2b578bf",
+            "sha256:b270dd23d868057aed8ae5930b75f879c2d152f71586f4423683b2f822718d91",
         )
         self.assertEqual(plan["qmd_sources"], ["liquidity-rank"])
         self.assertEqual(plan["external_features"][0]["field_id"], "reference.float_shares")
@@ -71,7 +71,8 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
             end=datetime(2026, 8, 11, 0, 0, tzinfo=UTC),
         )
 
-        self.assertEqual(plan["schema_version"], 2)
+        self.assertEqual(plan["schema_version"], 3)
+        self.assertEqual(plan["focused_seed_multiplier"], 5)
         self.assertEqual(len(plan["evaluation_windows"]), 2)
         self.assertEqual(plan["evaluation_windows"][0]["start"], "2026-08-07T04:00:00-04:00")
         self.assertEqual(plan["evaluation_windows"][1]["start"], "2026-08-10T04:00:00-04:00")

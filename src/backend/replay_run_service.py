@@ -2327,11 +2327,17 @@ def _historical_watchlist_membership_timeline_from_plans(
                     batch.get("batch_materialization_id") or ""
                 ),
                 "source_revision": dict(materialized.get("source_revision") or {}),
+                "dependency_source_revision": dict(
+                    batch.get("dependency_source_revision") or {}
+                ),
                 "external_feature_revisions": list(
                     materialized.get("external_feature_revisions") or []
                 ),
                 "identity_revision": dict(
                     materialized.get("identity_revision") or {}
+                ),
+                "relative_volume_revisions": list(
+                    materialized.get("relative_volume_revisions") or []
                 ),
                 "calculation_revision": str(
                     materialized.get("calculation_revision") or ""

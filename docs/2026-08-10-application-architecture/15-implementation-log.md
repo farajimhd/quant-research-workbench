@@ -1163,6 +1163,31 @@ bounded direct ClickHouse paths remain documented in
      256 MiB, and retain at most 64 exact materializations. Eighty-four focused
      backend tests and all 36 QMD History Rust tests passed; the changed Python
      modules compiled.
+132. Implemented causal historical aligned relative volume and restored the
+     intended focused-computation funnel. Historical Watchlist plan schema v3
+     content-hashes the live runtime's five-times-maximum-size liquidity seed.
+     QMD History maintains an incremental all-market liquidity rank using only
+     compact Core state, evaluates VWAP/relative-volume Watchlists over that
+     bounded seed plus retained/manual members, removes tickers that leave the
+     seed, and prewarms a two-seed-width buffer capped at 2,000 tickers to avoid
+     per-clock churn queries. Aggregate focused evaluation slots are separately
+     bounded.
+
+     For each needed ticker/session, QMD selects the exact prior 20 completed
+     three-segment sessions from daily authority, reads their pinned archive or
+     recent event plan, applies the shared Massive trade-condition
+     `update_volume` rule, constructs cumulative 10-second elapsed-session
+     profiles, and divides current causal session volume by their mean. Zero or
+     incomplete baselines remain missing evidence; daily-volume proration is
+     never substituted. Per-session ticker hashes and source revisions enter
+     each Watchlist materialization identity, and the backend durable cache
+     conservatively binds the entire 45-day dependency window and rechecks it
+     after replay.
+
+     Eighty-nine focused backend tests, all 37 QMD History tests, and all 99
+     shared QMD tests passed. Representative database/load acceptance and
+     multi-session baseline build optimization remain under the explicit
+     sharding/performance gate rather than being inferred from unit coverage.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

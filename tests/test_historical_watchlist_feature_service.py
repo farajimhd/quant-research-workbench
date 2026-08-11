@@ -87,7 +87,13 @@ class HistoricalWatchlistFeatureServiceTests(unittest.TestCase):
             ],
         }
         plans = [
-            {"watchlist_id": value, "plan_hash": f"sha256:{value}-unique"}
+            {
+                "watchlist_id": value,
+                "plan_hash": f"sha256:{value}-unique",
+                "start": "2026-08-07T13:30:00+00:00",
+                "end": "2026-08-07T13:32:00+00:00",
+                "qmd_sources": [],
+            }
             for value in ("one", "two")
         ]
 

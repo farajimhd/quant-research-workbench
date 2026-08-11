@@ -6,7 +6,7 @@ use crate::watchlist_timeline::{
     HistoricalWatchlistTimelineRequest, WatchlistCandidate, WatchlistCandidateDeltaFrame,
     WatchlistTimelineChunk, WatchlistTimelineReducer,
 };
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
 use qmd_core::bars::{BarRow, SharedBarStore, TradeAggregationRules};
 use qmd_core::event::MarketEvent;
@@ -30,6 +30,11 @@ const SCANNER_TIMEFRAMES: [&str; 5] = ["100ms", "1s", "10s", "30s", "1m"];
 const SCANNER_INDICATOR_TIMEFRAME: &str = "100ms";
 const WATCHLIST_BATCH_MAX_EVALUATIONS: u64 = 5_000_000;
 const WATCHLIST_BATCH_MAX_MEMBERSHIP_SLOTS: u64 = 10_000_000;
+const WATCHLIST_BATCH_MAX_FOCUSED_SLOTS: u64 = 1_000_000_000;
+const ALIGNED_VOLUME_SESSION_COUNT: usize = 20;
+const ALIGNED_VOLUME_BUCKET_SECONDS: usize = 10;
+const ALIGNED_VOLUME_BUCKET_COUNT: usize = 16 * 60 * 60 / ALIGNED_VOLUME_BUCKET_SECONDS;
+const ALIGNED_VOLUME_MAX_TICKERS: usize = 2_000;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct HistoricalScannerDerivedSnapshot {
@@ -56,10 +61,22 @@ pub struct HistoricalWatchlistTimelineMaterialization {
     pub external_feature_revisions: Vec<ExternalFeatureRevisionEvidence>,
     pub materialization_id: String,
     pub plan_hash: String,
+    pub relative_volume_revisions: Vec<RelativeVolumeRevisionEvidence>,
     pub schema_version: u16,
     pub source_revision: SourceRevision,
     pub transition_count: usize,
     pub watchlist_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RelativeVolumeRevisionEvidence {
+    pub baseline_session_count: usize,
+    pub end: DateTime<Utc>,
+    pub session_date: NaiveDate,
+    pub source_revision: SourceRevision,
+    pub start: DateTime<Utc>,
+    pub ticker_count: usize,
+    pub ticker_hash: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -150,6 +167,8 @@ struct CrossSectionEngine {
     market_state: SharedMarketState,
     microstructure: HashMap<String, MicrostructureIntervalWindow>,
     recent_signal_events: VecDeque<MarketSignalEvent>,
+    relative_volume_baselines: HashMap<(NaiveDate, String), Arc<Vec<f64>>>,
+    relative_volume_evidence: HashMap<(NaiveDate, String), RelativeVolumeRevisionEvidence>,
     trade_rules: qmd_core::bars::TradeAggregationRules,
 }
 
@@ -206,6 +225,8 @@ impl CrossSectionEngine {
             market_state: SharedMarketState::new(),
             microstructure: HashMap::new(),
             recent_signal_events: VecDeque::with_capacity(SIGNAL_EVENT_LIMIT),
+            relative_volume_baselines: HashMap::new(),
+            relative_volume_evidence: HashMap::new(),
             trade_rules,
         }
     }
@@ -261,10 +282,14 @@ impl CrossSectionEngine {
                     Some((market.last_price / references.previous_session_close - 1.0) * 100.0)
                 }
                 "market.relative_volume" => {
-                    return Err(
-                        "historical Watchlist aligned relative-volume baseline is unavailable"
-                            .to_string(),
-                    );
+                    let session = session_date(as_of);
+                    let bucket = aligned_volume_bucket(as_of);
+                    self.relative_volume_baselines
+                        .get(&(session, ticker.clone()))
+                        .and_then(|profile| bucket.and_then(|index| profile.get(index)))
+                        .copied()
+                        .filter(|baseline| baseline.is_finite() && *baseline > 0.0)
+                        .map(|baseline| market.day_volume / baseline)
                 }
                 _ => None,
             };
@@ -273,6 +298,58 @@ impl CrossSectionEngine {
             }
         }
         Ok(Some(WatchlistCandidate { ticker, values }))
+    }
+
+    async fn liquidity_score(&self, ticker: &str, as_of: DateTime<Utc>) -> Option<f64> {
+        self.market_state
+            .ticker_snapshot_at(ticker, as_of)
+            .await
+            .map(|market| market.day_dollar_volume / 1_000_000.0 + market.trade_rate_10s * 100.0)
+            .filter(|value| value.is_finite())
+    }
+
+    fn has_relative_volume_baseline(&self, ticker: &str, as_of: DateTime<Utc>) -> bool {
+        self.relative_volume_baselines
+            .contains_key(&(session_date(as_of), ticker.to_ascii_uppercase()))
+    }
+
+    fn install_relative_volume_baselines(
+        &mut self,
+        as_of: DateTime<Utc>,
+        baselines: HashMap<String, Vec<f64>>,
+        evidence: &RelativeVolumeRevisionEvidence,
+    ) {
+        let session = session_date(as_of);
+        for (ticker, profile) in baselines {
+            let key = (session, ticker.to_ascii_uppercase());
+            self.relative_volume_baselines
+                .insert(key.clone(), Arc::new(profile));
+            self.relative_volume_evidence.insert(key, evidence.clone());
+        }
+    }
+
+    fn relative_volume_evidence_for(
+        &self,
+        tickers: &BTreeSet<String>,
+        as_of: DateTime<Utc>,
+    ) -> Vec<RelativeVolumeRevisionEvidence> {
+        let session = session_date(as_of);
+        let mut unique = BTreeMap::new();
+        for ticker in tickers {
+            if let Some(evidence) = self
+                .relative_volume_evidence
+                .get(&(session, ticker.to_ascii_uppercase()))
+            {
+                unique
+                    .entry((
+                        evidence.session_date,
+                        evidence.ticker_hash.clone(),
+                        evidence.source_revision.token.clone(),
+                    ))
+                    .or_insert_with(|| evidence.clone());
+            }
+        }
+        unique.into_values().collect()
     }
 
     async fn finalize(&mut self, as_of: DateTime<Utc>) -> Result<(), String> {
@@ -540,6 +617,25 @@ pub async fn materialize_watchlist_timeline(
     source: HistoricalEventSource,
     request: HistoricalWatchlistTimelineRequest,
 ) -> Result<HistoricalWatchlistTimelineMaterialization, String> {
+    if request.plan.qmd_sources.iter().any(|source| {
+        matches!(
+            source.as_str(),
+            "indicator.vwap.value" | "market.relative_volume"
+        )
+    }) {
+        return materialize_watchlist_timelines(
+            config,
+            source,
+            HistoricalWatchlistTimelineBatchRequest {
+                requests: vec![request],
+            },
+        )
+        .await?
+        .materializations
+        .into_iter()
+        .next()
+        .ok_or_else(|| "historical Watchlist batch returned no materialization".to_string());
+    }
     let validation = validate_plan(&request.plan)?;
     let start = request
         .plan
@@ -685,6 +781,7 @@ pub async fn materialize_watchlist_timeline(
         &request.plan.plan_hash,
         &source_revision,
         &external_revisions,
+        &[],
     )?;
     Ok(HistoricalWatchlistTimelineMaterialization {
         calculation_revision: HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION,
@@ -696,6 +793,7 @@ pub async fn materialize_watchlist_timeline(
         external_feature_revisions: external_revisions,
         materialization_id,
         plan_hash: request.plan.plan_hash,
+        relative_volume_revisions: Vec::new(),
         schema_version: 1,
         source_revision,
         transition_count,
@@ -710,10 +808,74 @@ struct BatchPlanRuntime<'a> {
     dirty: BTreeSet<String>,
     evaluation_index: u64,
     external: ExternalIntervalIndex,
+    focused_seed_limit: usize,
     qmd_sources: BTreeSet<String>,
     reducer: Option<WatchlistTimelineReducer<'a>>,
+    relative_volume_revisions: Vec<RelativeVolumeRevisionEvidence>,
     request: &'a HistoricalWatchlistTimelineRequest,
+    seed_tickers: BTreeSet<String>,
     validation: HistoricalWatchlistPlanValidation,
+}
+
+#[derive(Clone, Debug)]
+struct CoreLiquidityKey {
+    normalized_score: f64,
+    ticker: String,
+}
+
+impl PartialEq for CoreLiquidityKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.normalized_score.to_bits() == other.normalized_score.to_bits()
+            && self.ticker == other.ticker
+    }
+}
+
+impl Eq for CoreLiquidityKey {}
+
+impl PartialOrd for CoreLiquidityKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CoreLiquidityKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.normalized_score
+            .total_cmp(&other.normalized_score)
+            .then_with(|| self.ticker.cmp(&other.ticker))
+    }
+}
+
+#[derive(Default)]
+struct CoreLiquidityIndex {
+    by_ticker: HashMap<String, f64>,
+    ranked: BTreeSet<CoreLiquidityKey>,
+}
+
+impl CoreLiquidityIndex {
+    fn update(&mut self, ticker: String, score: Option<f64>) {
+        if let Some(prior) = self.by_ticker.remove(&ticker) {
+            self.ranked.remove(&CoreLiquidityKey {
+                normalized_score: -prior,
+                ticker: ticker.clone(),
+            });
+        }
+        if let Some(score) = score.filter(|value| value.is_finite()) {
+            self.by_ticker.insert(ticker.clone(), score);
+            self.ranked.insert(CoreLiquidityKey {
+                normalized_score: -score,
+                ticker,
+            });
+        }
+    }
+
+    fn top(&self, limit: usize) -> BTreeSet<String> {
+        self.ranked
+            .iter()
+            .take(limit)
+            .map(|key| key.ticker.clone())
+            .collect()
+    }
 }
 
 pub async fn materialize_watchlist_timelines(
@@ -737,6 +899,7 @@ pub async fn materialize_watchlist_timelines(
     let mut runtimes = Vec::with_capacity(batch.requests.len());
     let mut batch_evaluations = 0_u64;
     let mut batch_membership_slots = 0_u64;
+    let mut batch_focused_slots = 0_u64;
     for request in &batch.requests {
         if request.plan.start != first.start || request.plan.end != first.end {
             return Err(
@@ -749,6 +912,35 @@ pub async fn materialize_watchlist_timelines(
             );
         }
         let validation = validate_plan(&request.plan)?;
+        let focused = request.plan.qmd_sources.iter().any(|source| {
+            matches!(
+                source.as_str(),
+                "indicator.vwap.value" | "market.relative_volume"
+            )
+        });
+        let focused_seed_limit = if focused {
+            request
+                .plan
+                .maximum_size
+                .saturating_mul(request.plan.focused_seed_multiplier)
+        } else {
+            0
+        };
+        if focused_seed_limit > ALIGNED_VOLUME_MAX_TICKERS {
+            return Err(format!(
+                "historical Watchlist focused seed exceeds ticker_limit={ALIGNED_VOLUME_MAX_TICKERS}"
+            ));
+        }
+        batch_focused_slots = batch_focused_slots.saturating_add(
+            validation
+                .evaluation_count
+                .saturating_mul(focused_seed_limit as u64),
+        );
+        if batch_focused_slots > WATCHLIST_BATCH_MAX_FOCUSED_SLOTS {
+            return Err(format!(
+                "historical Watchlist batch exceeds focused_slot_limit={WATCHLIST_BATCH_MAX_FOCUSED_SLOTS}"
+            ));
+        }
         batch_evaluations = batch_evaluations.saturating_add(validation.evaluation_count);
         batch_membership_slots = batch_membership_slots.saturating_add(
             validation
@@ -772,9 +964,12 @@ pub async fn materialize_watchlist_timelines(
             dirty,
             evaluation_index: 0,
             external,
+            focused_seed_limit,
             qmd_sources: request.plan.qmd_sources.iter().cloned().collect(),
             reducer: Some(WatchlistTimelineReducer::new(&request.plan, None)?),
+            relative_volume_revisions: Vec::new(),
             request,
+            seed_tickers: BTreeSet::new(),
             validation,
         });
     }
@@ -796,6 +991,7 @@ pub async fn materialize_watchlist_timelines(
         .map_err(|error| format!("historical Watchlist daily references unavailable: {error}"))?;
     let mut engine = CrossSectionEngine::new(&source, references);
     let mut known_tickers = BTreeSet::new();
+    let mut core_liquidity = CoreLiquidityIndex::default();
     let mut recent_until = HashMap::<String, DateTime<Utc>>::new();
     let mut event_count = 0_u64;
     let mut reference_session = session_date(start);
@@ -812,11 +1008,13 @@ pub async fn materialize_watchlist_timelines(
                     break;
                 }
                 advance_batch_clock(
+                    &config,
                     &source,
                     &mut engine,
                     &mut runtimes,
                     clock,
                     &known_tickers,
+                    &mut core_liquidity,
                     &mut recent_until,
                     &mut reference_session,
                 )
@@ -840,11 +1038,13 @@ pub async fn materialize_watchlist_timelines(
     }
     while let Some(clock) = next_batch_clock(&runtimes)? {
         advance_batch_clock(
+            &config,
             &source,
             &mut engine,
             &mut runtimes,
             clock,
             &known_tickers,
+            &mut core_liquidity,
             &mut recent_until,
             &mut reference_session,
         )
@@ -860,10 +1060,18 @@ pub async fn materialize_watchlist_timelines(
             .sum::<usize>();
         let mut external_revisions = runtime.request.external_feature_revisions.clone();
         external_revisions.sort_by(|left, right| left.field_id.cmp(&right.field_id));
+        let mut relative_volume_revisions = runtime.relative_volume_revisions;
+        relative_volume_revisions.sort_by(|left, right| {
+            left.session_date
+                .cmp(&right.session_date)
+                .then_with(|| left.ticker_hash.cmp(&right.ticker_hash))
+                .then_with(|| left.source_revision.token.cmp(&right.source_revision.token))
+        });
         let materialization_id = materialization_id(
             &runtime.request.plan.plan_hash,
             &source_revision,
             &external_revisions,
+            &relative_volume_revisions,
         )?;
         materializations.push(HistoricalWatchlistTimelineMaterialization {
             calculation_revision: HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION,
@@ -875,6 +1083,7 @@ pub async fn materialize_watchlist_timelines(
             external_feature_revisions: external_revisions,
             materialization_id,
             plan_hash: runtime.request.plan.plan_hash.clone(),
+            relative_volume_revisions,
             schema_version: 1,
             source_revision: source_revision.clone(),
             transition_count,
@@ -904,11 +1113,13 @@ fn next_batch_clock(runtimes: &[BatchPlanRuntime<'_>]) -> Result<Option<DateTime
 }
 
 async fn advance_batch_clock(
+    config: &HistoricalGatewayConfig,
     source: &HistoricalEventSource,
     engine: &mut CrossSectionEngine,
     runtimes: &mut [BatchPlanRuntime<'_>],
     clock: DateTime<Utc>,
     known_tickers: &BTreeSet<String>,
+    core_liquidity: &mut CoreLiquidityIndex,
     recent_until: &mut HashMap<String, DateTime<Utc>>,
     reference_session: &mut NaiveDate,
 ) -> Result<(), String> {
@@ -936,6 +1147,14 @@ async fn advance_batch_clock(
     }
     engine.finalize(clock).await?;
     rate_dirty.extend(engine.take_changed_indicator_tickers());
+    let mut core_dirty = rate_dirty.clone();
+    for runtime in runtimes.iter() {
+        core_dirty.extend(runtime.dirty.iter().cloned());
+    }
+    for ticker in core_dirty {
+        let score = engine.liquidity_score(&ticker, clock).await;
+        core_liquidity.update(ticker, score);
+    }
     for runtime in runtimes {
         runtime.dirty.extend(rate_dirty.iter().cloned());
         if runtime.evaluation_index >= runtime.validation.evaluation_count
@@ -949,6 +1168,58 @@ async fn advance_batch_clock(
             clock,
             &mut runtime.dirty,
         );
+        let focused_seed = if runtime.focused_seed_limit > 0 {
+            let mut seed = core_liquidity.top(runtime.focused_seed_limit);
+            if let Some(reducer) = runtime.reducer.as_ref() {
+                seed.extend(reducer.member_tickers().cloned());
+            }
+            seed.extend(
+                runtime
+                    .request
+                    .plan
+                    .manual_inclusions
+                    .iter()
+                    .map(|ticker| ticker.to_ascii_uppercase()),
+            );
+            for ticker in &runtime.request.plan.manual_exclusions {
+                seed.remove(&ticker.to_ascii_uppercase());
+            }
+            runtime
+                .dirty
+                .extend(runtime.seed_tickers.symmetric_difference(&seed).cloned());
+            runtime.seed_tickers = seed;
+            Some(&runtime.seed_tickers)
+        } else {
+            None
+        };
+        if runtime.qmd_sources.contains("market.relative_volume") {
+            let mut preload = core_liquidity.top(
+                runtime
+                    .focused_seed_limit
+                    .saturating_mul(2)
+                    .min(ALIGNED_VOLUME_MAX_TICKERS),
+            );
+            preload.extend(runtime.seed_tickers.iter().cloned());
+            let missing = preload
+                .iter()
+                .filter(|ticker| !engine.has_relative_volume_baseline(ticker, clock))
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            if !missing.is_empty() {
+                let (baselines, revision) =
+                    load_aligned_volume_baselines(config, source, &missing, clock).await?;
+                engine.install_relative_volume_baselines(clock, baselines, &revision);
+            }
+            for evidence in engine.relative_volume_evidence_for(&runtime.seed_tickers, clock) {
+                if !runtime.relative_volume_revisions.iter().any(|existing| {
+                    existing.session_date == evidence.session_date
+                        && existing.ticker_hash == evidence.ticker_hash
+                        && existing.source_revision.token == evidence.source_revision.token
+                }) {
+                    runtime.relative_volume_revisions.push(evidence);
+                }
+            }
+        }
         apply_timeline_candidates(
             engine,
             runtime
@@ -957,6 +1228,7 @@ async fn advance_batch_clock(
                 .ok_or_else(|| "historical Watchlist batch reducer is unavailable".to_string())?,
             &runtime.external,
             &runtime.qmd_sources,
+            focused_seed,
             clock,
             &mut runtime.dirty,
         )
@@ -987,6 +1259,144 @@ fn batch_materialization_id(
     let encoded = serde_json::to_vec(&payload)
         .map_err(|error| format!("historical Watchlist batch identity encoding failed: {error}"))?;
     Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
+}
+
+fn aligned_volume_bucket(clock: DateTime<Utc>) -> Option<usize> {
+    let local = clock.with_timezone(&New_York);
+    let seconds = local.time().num_seconds_from_midnight() as usize;
+    let session_start = 4 * 60 * 60;
+    let session_end = 20 * 60 * 60;
+    (session_start..session_end)
+        .contains(&seconds)
+        .then_some((seconds - session_start) / ALIGNED_VOLUME_BUCKET_SECONDS)
+}
+
+async fn load_aligned_volume_baselines(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    tickers: &BTreeSet<String>,
+    as_of: DateTime<Utc>,
+) -> Result<(HashMap<String, Vec<f64>>, RelativeVolumeRevisionEvidence), String> {
+    if tickers.is_empty() || tickers.len() > ALIGNED_VOLUME_MAX_TICKERS {
+        return Err(format!(
+            "aligned relative-volume baseline requires 1..={ALIGNED_VOLUME_MAX_TICKERS} tickers"
+        ));
+    }
+    let sessions = source
+        .completed_session_dates_before(as_of, ALIGNED_VOLUME_SESSION_COUNT)
+        .await?;
+    if sessions.len() != ALIGNED_VOLUME_SESSION_COUNT {
+        return Err(format!(
+            "aligned relative-volume baseline requires {ALIGNED_VOLUME_SESSION_COUNT} completed sessions; found {}",
+            sessions.len()
+        ));
+    }
+    let first = sessions[0];
+    let last = *sessions.last().expect("completed session list is nonempty");
+    let start = New_York
+        .with_ymd_and_hms(first.year(), first.month(), first.day(), 4, 0, 0)
+        .single()
+        .ok_or_else(|| "invalid aligned-volume first session boundary".to_string())?
+        .with_timezone(&Utc);
+    let end = New_York
+        .with_ymd_and_hms(last.year(), last.month(), last.day(), 20, 0, 0)
+        .single()
+        .ok_or_else(|| "invalid aligned-volume last session boundary".to_string())?
+        .with_timezone(&Utc);
+    let window = EventWindow {
+        start,
+        end,
+        tickers: tickers.iter().cloned().collect(),
+    };
+    let source_revision = source.source_revision(&window).await?;
+    if !source_revision.complete_for_history || !source_revision.request_complete {
+        return Err("aligned relative-volume baseline source window is incomplete".to_string());
+    }
+    let session_set = sessions.iter().copied().collect::<BTreeSet<_>>();
+    let rules = source.trade_aggregation_rules();
+    let mut sums = tickers
+        .iter()
+        .map(|ticker| (ticker.clone(), vec![0.0; ALIGNED_VOLUME_BUCKET_COUNT]))
+        .collect::<HashMap<_, _>>();
+    let mut current_session = None;
+    let mut increments = HashMap::<String, Vec<f64>>::new();
+    let mut event_count = 0_u64;
+    let event_limit = (config.scanner_max_events_per_snapshot as u64).saturating_mul(4);
+    let mut batches = source.stream_ordered(
+        window,
+        config.batch_size.max(100_000),
+        source_revision.live_continuation_sequence,
+    )?;
+    while let Some(events) = batches.recv().await {
+        for compact in events? {
+            let event = source.market_event(&compact);
+            let event_session = session_date(event.ts());
+            if current_session.is_some_and(|session| session != event_session) {
+                accumulate_aligned_volume_session(&mut sums, &mut increments);
+            }
+            current_session = Some(event_session);
+            event_count = event_count.saturating_add(1);
+            if event_count > event_limit {
+                return Err(format!(
+                    "aligned relative-volume baseline exceeded event_limit={event_limit}"
+                ));
+            }
+            let MarketEvent::Trade(trade) = event else {
+                continue;
+            };
+            if !session_set.contains(&event_session)
+                || !rules.resolve(&trade.conditions, trade.ts).update_volume
+                || !trade.size.is_finite()
+                || trade.size <= 0.0
+            {
+                continue;
+            }
+            let Some(bucket) = aligned_volume_bucket(trade.ts) else {
+                continue;
+            };
+            increments
+                .entry(trade.ticker.to_ascii_uppercase())
+                .or_insert_with(|| vec![0.0; ALIGNED_VOLUME_BUCKET_COUNT])[bucket] += trade.size;
+        }
+    }
+    accumulate_aligned_volume_session(&mut sums, &mut increments);
+    for profile in sums.values_mut() {
+        for value in profile {
+            *value /= ALIGNED_VOLUME_SESSION_COUNT as f64;
+        }
+    }
+    let ticker_hash = {
+        let encoded = tickers.iter().cloned().collect::<Vec<_>>().join("\n");
+        format!("sha256:{:x}", Sha256::digest(encoded.as_bytes()))
+    };
+    Ok((
+        sums,
+        RelativeVolumeRevisionEvidence {
+            baseline_session_count: sessions.len(),
+            end,
+            session_date: session_date(as_of),
+            source_revision,
+            start,
+            ticker_count: tickers.len(),
+            ticker_hash,
+        },
+    ))
+}
+
+fn accumulate_aligned_volume_session(
+    sums: &mut HashMap<String, Vec<f64>>,
+    increments: &mut HashMap<String, Vec<f64>>,
+) {
+    for (ticker, profile) in increments.drain() {
+        let Some(sum) = sums.get_mut(&ticker) else {
+            continue;
+        };
+        let mut cumulative = 0.0;
+        for (index, increment) in profile.into_iter().enumerate() {
+            cumulative += increment;
+            sum[index] += cumulative;
+        }
+    }
 }
 
 fn prepare_external_features(
@@ -1105,7 +1515,7 @@ async fn apply_timeline_clock(
 ) -> Result<(), String> {
     engine.finalize(clock).await?;
     dirty.extend(engine.take_changed_indicator_tickers());
-    apply_timeline_candidates(engine, reducer, external, qmd_sources, clock, dirty).await
+    apply_timeline_candidates(engine, reducer, external, qmd_sources, None, clock, dirty).await
 }
 
 async fn apply_timeline_candidates(
@@ -1113,6 +1523,7 @@ async fn apply_timeline_candidates(
     reducer: &mut WatchlistTimelineReducer<'_>,
     external: &ExternalIntervalIndex,
     qmd_sources: &BTreeSet<String>,
+    allowed_tickers: Option<&BTreeSet<String>>,
     clock: DateTime<Utc>,
     dirty: &mut BTreeSet<String>,
 ) -> Result<(), String> {
@@ -1120,6 +1531,10 @@ async fn apply_timeline_candidates(
     let mut upserts = Vec::new();
     let mut removals = Vec::new();
     for ticker in tickers {
+        if allowed_tickers.is_some_and(|allowed| !allowed.contains(&ticker)) {
+            removals.push(ticker);
+            continue;
+        }
         match engine
             .watchlist_candidate(&ticker, clock, qmd_sources)
             .await?
@@ -1219,10 +1634,12 @@ fn materialization_id(
     plan_hash: &str,
     source_revision: &SourceRevision,
     external_revisions: &[ExternalFeatureRevisionEvidence],
+    relative_volume_revisions: &[RelativeVolumeRevisionEvidence],
 ) -> Result<String, String> {
     let payload = serde_json::json!({
         "external_feature_revisions": external_revisions,
         "plan_hash": plan_hash,
+        "relative_volume_revisions": relative_volume_revisions,
         "source_revision": source_revision,
     });
     let encoded = serde_json::to_vec(&payload)
@@ -1312,7 +1729,11 @@ fn scanner_shard_index(ticker: &str, shard_count: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{empty_source_revision, CrossSectionEngine};
+    use super::{
+        accumulate_aligned_volume_session, aligned_volume_bucket, empty_source_revision,
+        CoreLiquidityIndex, CrossSectionEngine, RelativeVolumeRevisionEvidence,
+        ALIGNED_VOLUME_BUCKET_COUNT,
+    };
     use chrono::{TimeZone, Utc};
     use qmd_core::bars::{TradeAggregationRules, TradeUpdateRule};
     use qmd_core::event::{MarketEvent, TradeEvent};
@@ -1373,6 +1794,21 @@ mod tests {
             .finalize(start + chrono::Duration::seconds(1))
             .await
             .unwrap();
+        let mut baseline = vec![0.0; ALIGNED_VOLUME_BUCKET_COUNT];
+        baseline[aligned_volume_bucket(start + chrono::Duration::seconds(1)).unwrap()] = 100.0;
+        engine.install_relative_volume_baselines(
+            start + chrono::Duration::seconds(1),
+            HashMap::from([("AAPL".to_string(), baseline)]),
+            &RelativeVolumeRevisionEvidence {
+                baseline_session_count: 20,
+                end: start,
+                session_date: start.date_naive(),
+                source_revision: empty_source_revision(),
+                start,
+                ticker_count: 1,
+                ticker_hash: "sha256:test".to_string(),
+            },
+        );
 
         let candidate = engine
             .watchlist_candidate(
@@ -1383,6 +1819,7 @@ mod tests {
                     "liquidity-rank".to_string(),
                     "market.change_pct".to_string(),
                     "market.last_price".to_string(),
+                    "market.relative_volume".to_string(),
                     "market.volume".to_string(),
                 ]),
             )
@@ -1391,6 +1828,7 @@ mod tests {
             .unwrap();
         assert_eq!(candidate.values["market.last_price"], json!(201.0));
         assert_eq!(candidate.values["market.volume"], json!(200.0));
+        assert_eq!(candidate.values["market.relative_volume"], json!(2.0));
         assert!((candidate.values["market.change_pct"].as_f64().unwrap() - 0.5).abs() < 1e-9);
         assert!(candidate.values["liquidity-rank"].as_f64().unwrap() > 0.0);
         assert!(candidate.values["indicator.vwap.value"].as_f64().unwrap() > 0.0);
@@ -1407,6 +1845,27 @@ mod tests {
                 .map(|row| row.sym.as_str())
                 .collect::<Vec<_>>(),
             vec!["AAPL", "MSFT"]
+        );
+    }
+
+    #[test]
+    fn aligned_volume_profiles_are_cumulative_and_core_seed_is_bounded() {
+        let mut sums =
+            HashMap::from([("AAPL".to_string(), vec![0.0; ALIGNED_VOLUME_BUCKET_COUNT])]);
+        let mut day = vec![0.0; ALIGNED_VOLUME_BUCKET_COUNT];
+        day[0] = 100.0;
+        day[2] = 50.0;
+        let mut increments = HashMap::from([("AAPL".to_string(), day)]);
+        accumulate_aligned_volume_session(&mut sums, &mut increments);
+        assert_eq!(&sums["AAPL"][0..4], &[100.0, 100.0, 150.0, 150.0]);
+
+        let mut index = CoreLiquidityIndex::default();
+        index.update("LOW".to_string(), Some(1.0));
+        index.update("HIGH".to_string(), Some(10.0));
+        index.update("MID".to_string(), Some(5.0));
+        assert_eq!(
+            index.top(2).into_iter().collect::<Vec<_>>(),
+            vec!["HIGH".to_string(), "MID".to_string()]
         );
     }
 }

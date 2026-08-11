@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 from collections import OrderedDict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from math import isfinite
 from pathlib import Path
 from typing import Any, Callable
@@ -267,12 +267,19 @@ def materialize_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any
     source_revision = qmd_historical_source_revision(
         start=str(plan.get("start") or ""), end=str(plan.get("end") or "")
     )
+    dependency_bounds = _dependency_source_bounds([plan])
+    dependency_source_revision = (
+        qmd_historical_source_revision(**dependency_bounds)
+        if dependency_bounds["start"] != str(plan.get("start") or "")
+        else source_revision
+    )
     cache_key = _content_hash(
         {
             "external_feature_revisions": revisions,
             "identity_revision": bundle["identity_revision"],
             "plan_hash": plan.get("plan_hash"),
             "source_revision": source_revision,
+            "dependency_source_revision": dependency_source_revision,
         }
     )
     with _MATERIALIZATION_CACHE_LOCK:
@@ -295,6 +302,11 @@ def materialize_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any
         identity_revision=bundle["identity_revision"],
     )
     _assert_source_revision(materialized.get("source_revision"), source_revision)
+    _assert_dependency_revision_stable(
+        dependency_source_revision,
+        qmd_historical_source_revision(**dependency_bounds),
+    )
+    materialized["dependency_source_revision"] = dependency_source_revision
     _durable_cache_write(cache_key, materialized, source_revision=source_revision)
     _remember_materialization(cache_key, materialized)
     return materialized
@@ -330,6 +342,12 @@ def materialize_historical_watchlist_plans(
         raise ValueError("historical Watchlist batch plans must share exact bounds")
     start, end = next(iter(bounds))
     source_revision = qmd_historical_source_revision(start=start, end=end)
+    dependency_bounds = _dependency_source_bounds(plans)
+    dependency_source_revision = (
+        qmd_historical_source_revision(**dependency_bounds)
+        if dependency_bounds["start"] != start
+        else source_revision
+    )
     cache_key = _content_hash(
         {
             "batch": [
@@ -341,6 +359,7 @@ def materialize_historical_watchlist_plans(
                 for plan, bundle in zip(plans, bundles, strict=True)
             ],
             "source_revision": source_revision,
+            "dependency_source_revision": dependency_source_revision,
         }
     )
     with _MATERIALIZATION_CACHE_LOCK:
@@ -354,6 +373,10 @@ def materialize_historical_watchlist_plans(
         return durable
     batch = qmd_materialize_historical_watchlist_timelines(requests)
     _assert_source_revision(batch.get("source_revision"), source_revision)
+    _assert_dependency_revision_stable(
+        dependency_source_revision,
+        qmd_historical_source_revision(**dependency_bounds),
+    )
     by_watchlist = {
         str(row.get("watchlist_id") or ""): row
         for row in batch.get("materializations") or []
@@ -381,6 +404,7 @@ def materialize_historical_watchlist_plans(
             ],
         }
     )
+    batch["dependency_source_revision"] = dependency_source_revision
     _durable_cache_write(cache_key, batch, source_revision=source_revision)
     _remember_materialization(cache_key, batch)
     return batch
@@ -477,6 +501,32 @@ def _assert_source_revision(actual: Any, expected: dict[str, Any]) -> None:
             raise RuntimeError(
                 "QMD History source revision changed during Watchlist materialization; retry"
             )
+
+
+def _assert_dependency_revision_stable(
+    before: dict[str, Any], after: dict[str, Any]
+) -> None:
+    for field in ("source_plan_hash", "token"):
+        if str(before.get(field) or "") != str(after.get(field) or ""):
+            raise RuntimeError(
+                "QMD History dependency revision changed during Watchlist materialization; retry"
+            )
+
+
+def _dependency_source_bounds(plans: list[dict[str, Any]]) -> dict[str, str]:
+    start = min(_clock(plan.get("start"), "start") for plan in plans)
+    end = max(_clock(plan.get("end"), "end") for plan in plans)
+    if any(
+        "market.relative_volume" in set(plan.get("qmd_sources") or []) for plan in plans
+    ):
+        # Forty-five calendar days conservatively covers 20 completed US market
+        # sessions plus weekends and common holiday clusters. QMD records the
+        # exact 20-session ticker-filtered revisions in the materialization.
+        start -= timedelta(days=45)
+    return {
+        "start": start.astimezone(UTC).isoformat(),
+        "end": end.astimezone(UTC).isoformat(),
+    }
 
 
 def _clock(value: Any, label: str) -> datetime:

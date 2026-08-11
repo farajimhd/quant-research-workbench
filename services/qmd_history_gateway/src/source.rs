@@ -347,6 +347,51 @@ impl HistoricalEventSource {
         self.trade_rules.clone()
     }
 
+    pub async fn completed_session_dates_before(
+        &self,
+        as_of: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<NaiveDate>, String> {
+        let bounded_limit = limit.clamp(1, 64);
+        let cutoff_date = as_of.with_timezone(&New_York).date_naive();
+        let table = format!(
+            "`{}`.`{}`",
+            self.config.clickhouse_database, self.config.daily_session_bars_table
+        );
+        let sql = format!(
+            r#"SELECT toString(session_date) AS session_date
+            FROM {table} FINAL
+            PREWHERE session_date < toDate('{cutoff_date}')
+            WHERE available_at_us <= toUInt64({available_at_us})
+            GROUP BY session_date
+            HAVING uniqExact(session_kind) = 3
+               AND max(bar_end_us) <= toUInt64({available_at_us})
+               AND countIf(trade_present = 1) > 0
+            ORDER BY session_date DESC
+            LIMIT {bounded_limit}
+            FORMAT JSONEachRow"#,
+            available_at_us = as_of.timestamp_micros().max(0),
+        );
+        #[derive(Deserialize)]
+        struct SessionDateRow {
+            session_date: String,
+        }
+        let mut dates = self
+            .query(&sql)
+            .await?
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let row = serde_json::from_str::<SessionDateRow>(line)
+                    .map_err(|error| format!("invalid completed session row: {error}"))?;
+                NaiveDate::parse_from_str(&row.session_date, "%Y-%m-%d")
+                    .map_err(|error| format!("invalid completed session date: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        dates.reverse();
+        Ok(dates)
+    }
+
     pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;

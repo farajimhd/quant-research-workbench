@@ -4,7 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION: u16 = 2;
+pub const WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION: u16 = 3;
 pub const MAX_EVALUATIONS_PER_CHUNK: u64 = 1_800;
 pub const MAX_MEMBERSHIP_SLOTS_PER_CHUNK: u64 = 2_000_000;
 const QMD_SOURCES: [&str; 6] = [
@@ -53,6 +53,7 @@ pub struct HistoricalWatchlistPlan {
     pub ranking_field: String,
     pub ranking_direction: String,
     pub maximum_size: usize,
+    pub focused_seed_multiplier: usize,
     pub membership_expiry: String,
     pub membership_ttl_ms: u64,
     pub manual_inclusions: Vec<String>,
@@ -253,6 +254,9 @@ pub fn validate_plan(
     }
     if plan.maximum_size == 0 || plan.maximum_size > 5_000 {
         return Err("historical Watchlist maximum_size must be 1..=5000".to_string());
+    }
+    if plan.focused_seed_multiplier == 0 || plan.focused_seed_multiplier > 20 {
+        return Err("historical Watchlist focused_seed_multiplier must be 1..=20".to_string());
     }
     if plan
         .max_evaluations_per_chunk
@@ -641,6 +645,10 @@ impl<'a> WatchlistTimelineReducer<'a> {
                 })
             })
             .collect()
+    }
+
+    pub fn member_tickers(&self) -> impl Iterator<Item = &String> {
+        self.members.keys()
     }
 
     pub fn finish(self) -> Result<WatchlistTimelineChunk, String> {
@@ -1061,7 +1069,7 @@ mod tests {
 
     fn plan() -> HistoricalWatchlistPlan {
         let mut plan = HistoricalWatchlistPlan {
-            schema_version: 2,
+            schema_version: 3,
             watchlist_id: "core-candidates".to_string(),
             start: "2026-08-07T13:30:00+00:00".to_string(),
             end: "2026-08-07T20:00:00+00:00".to_string(),
@@ -1110,6 +1118,7 @@ mod tests {
             ranking_field: "liquidity-rank".to_string(),
             ranking_direction: "descending".to_string(),
             maximum_size: 250,
+            focused_seed_multiplier: 5,
             membership_expiry: "end_of_trading_day".to_string(),
             membership_ttl_ms: 300_000,
             manual_inclusions: Vec::new(),
@@ -1133,7 +1142,7 @@ mod tests {
         rehash(&mut plan);
         assert_eq!(
             plan.plan_hash,
-            "sha256:b67fc34277bb71eaa45101875ab0b4b96167872ae26f80d28867e511e2b578bf"
+            "sha256:b270dd23d868057aed8ae5930b75f879c2d152f71586f4423683b2f822718d91"
         );
         plan
     }

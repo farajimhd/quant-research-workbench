@@ -62,7 +62,7 @@ impl TradeAggregationRules {
         })
     }
 
-    pub(crate) fn resolve(&self, conditions: &[u16], timestamp: DateTime<Utc>) -> TradeUpdateRule {
+    pub fn resolve(&self, conditions: &[u16], timestamp: DateTime<Utc>) -> TradeUpdateRule {
         if conditions.is_empty() {
             return TradeUpdateRule::regular();
         }

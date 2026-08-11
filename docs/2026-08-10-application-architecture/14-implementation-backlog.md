@@ -541,7 +541,7 @@ load progressively without false continuity.
             calculation, configuration, and feature revisions. Repeated
             terminal Scanner snapshots are explicitly invalid.
       - [x] Compile each approved historical Watchlist into a deterministic,
-            content-hashed schema-v2 plan that separates QMD fields from
+            content-hashed schema-v3 plan that separates QMD fields from
             registered point-in-time external features, rejects deferred or
             noncausal sources, carries explicit New York evaluation windows,
             bounds chunk evaluations, and is persisted in Backtest preflight
@@ -568,9 +568,13 @@ load progressively without false continuity.
             nonoverlapping value intervals, and content-hashes per-field
             revisions. Point-in-time stable identity is carried separately as
             control metadata and cannot be used as undeclared rule evidence.
-      - [ ] Implement the causal elapsed-session 20-session relative-volume
-            baseline; QMD History currently rejects this field rather than use
-            a daily-volume approximation.
+      - [x] Implement the causal elapsed-session 20-session relative-volume
+            baseline. Schema-v3 plans content-hash the live-parity focused seed
+            multiplier. QMD selects the prior 20 completed three-segment market
+            sessions, replays only the bounded liquidity seed plus retained and
+            manual members through shared trade-condition volume eligibility,
+            builds cumulative 10-second profiles, and records exact ticker and
+            source revisions. No prorated daily-volume substitute is used.
       - [ ] Partition materialization computation across bounded ticker shards
             and complete representative active-session load acceptance.
       - [x] Persist/reuse the revisioned timeline product and replace Backtest's
