@@ -190,7 +190,7 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
         The backend preserves distinct live/history authority and revision,
         returns partial evidence when one service is unavailable, and exposes
         the result through System and Market Discovery APIs.
-- [ ] Deduplicate by capability, identity, parameters, timeframe, anchor, and revision.
+- [x] Deduplicate by capability, identity, parameters, timeframe, anchor, and revision.
   - [x] Deduplicate live demand by ticker, capability, timeframe, and capability
         implementation version; expose exact requirement reference counts and
         requested-versus-effective weighted cost.
@@ -352,7 +352,8 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
   - [x] Standalone Canvas resolves the approved profile; Replay uses its pinned
         release profile.
   - [x] Migrate Live/Paper to the same resolver after the existing account and
-        service preflight. Backtest/research workspaces remain open.
+        service preflight. Backtest now also uses the resolver; only a future
+        research workspace remains open.
   - [x] Migrate Backtest to the same resolver using its pinned run profile and
         causal run clock.
   - [ ] Migrate a future research workspace to the same resolver.
@@ -360,7 +361,8 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
   - [x] Standalone Canvas and Replay overlays are isolated by workspace/run and approved revision
         and can be reset without changing Configuration defaults.
   - [x] Apply the same overlay contract to Live/Paper using separate
-        mode-and-account-set scopes. Backtest/research remain open.
+        mode-and-account-set scopes. Backtest now has the same contract; only a
+        future research workspace remains open.
   - [x] Apply the same run-and-revision overlay contract to Backtest.
   - [ ] Apply the same overlay contract to a future research workspace.
 - [x] Route intraday historical charts through QMD History source planning and
@@ -380,11 +382,11 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
       Canvas keeps one bounded exact-cursor earlier-page prefetch, consumes it
       only for the matching chart request, and aborts/discards it on navigation.
 - [ ] Bound caches and invalidate by source/corporate-action/calculation revision.
-- [ ] Recover live sequence gaps or resnapshot.
+- [x] Recover live sequence gaps or resnapshot.
   - [x] Resnapshot the active live compact-event Canvas after a typed QMD gap.
   - [x] Resnapshot the merged chart-bar tail from complete bounded QMD Live
         snapshots; a failed refresh retains the last snapshot and reconnects.
-- [ ] Expose partial, stale, corrected, and source-transition states.
+- [x] Expose partial, stale, corrected, and source-transition states.
   - [x] Show source tiers, source-plan completeness, engine/schema revision and
         warm-up state for historical chart indicators.
   - [x] Add live-tail transition, current-bar replacement, partial-indicator,
@@ -400,10 +402,12 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
 - [ ] Revalidate every proposal through Portfolio and OMS.
   - [x] Route confirmed Replay proposals through durable Portfolio admission
         and OMS planning; rejected/deferred proposals never reach the simulator.
-- [ ] Keep Live, Paper, Replay, and Backtest visually and authoritatively isolated.
+- [x] Keep Live, Paper, Replay, and Backtest visually and authoritatively isolated.
   - [x] Live and Paper now render explicit mode badges and use distinct
         account-scoped overlays while retaining canonical trading-state and
-        QMD Live authorities. Backtest migration remains open.
+        QMD Live authorities. Replay and Backtest use run-and-revision scopes,
+        pinned clocks, and explicit mode badges; Backtest commands remain
+        read-only except for its lifecycle controller.
 
 Acceptance gate: the same workspace operates in compatible modes and charts
 load progressively without false continuity.

@@ -628,6 +628,13 @@ bounded direct ClickHouse paths remain documented in
     is last after the planner's `/source-plan` request; no QMD behavior changed.
     Python compile, all 65 historical, journal, checkpoint, and trading-runtime
     tests, and the managed frontend production build passed.
+85. Reconciled implementation-backlog status drift against already shipped
+    code. Full live-demand identity deduplication, live Canvas gap resnapshot,
+    partial/stale/corrected/transition presentation, and cross-mode workspace
+    isolation now have checked parent rows matching their completed subitems.
+    Stale text claiming Backtest still lacked the shared resolver/overlay was
+    corrected. Research workspace adoption, Live/Paper executable proposal
+    migration, and durable historical resume remain explicitly open.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
