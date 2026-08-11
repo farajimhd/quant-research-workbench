@@ -135,7 +135,12 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
 
 - The configuration surfaces already draft many containers, but they are not yet backed by one complete, versioned container registry.
 - Existing trading pages do not all instantiate one published Canvas plus user overlay.
-- Chart loading is not yet one unified archive/recent/live request path with progressive indicators.
+- Intraday historical charts now request a QMD `bars` stage first and render it
+  before requesting the `full` indicator, signal, and structure stage from the
+  same single-flight cache entry. Archive/recent source selection remains owned
+  by QMD History. The remaining chart drift is the explicit watermark merge with
+  the live tail, adjacent-window prefetch, correction/provenance presentation,
+  and published Canvas defaults across every workspace.
 - Manual and semi-automatic chart actions are not yet normalized into the same proposal → Portfolio → OMS path used by strategies.
 
 ---

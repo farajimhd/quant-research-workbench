@@ -185,16 +185,20 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
 - [ ] Implement draft, validate, preview, publish, reset, and rebase.
 - [ ] Instantiate published defaults in Live, Replay, Backtest, and research workspaces.
 - [ ] Persist user/workspace overlays separately from defaults.
-- [ ] Route charts through unified QMD planning.
-- [ ] Return base bars first and progressively add requested indicators.
+- [x] Route intraday historical charts through QMD History source planning and
+      its shared derived cache.
+- [x] Return base bars first and progressively add requested indicators,
+      signals, and structure from the same cache entry.
 - [ ] Merge archive, recent, and live tail by watermark.
-- [ ] Deduplicate identical requests with single-flight execution.
+- [x] Deduplicate identical historical derived requests with QMD History
+      single-flight execution.
 - [ ] Cancel superseded navigation requests and prefetch adjacent windows.
+      Superseded requests are cancelled; adjacent-window prefetch remains.
 - [ ] Bound caches and invalidate by source/corporate-action/calculation revision.
 - [ ] Recover live sequence gaps or resnapshot.
 - [ ] Expose partial, stale, corrected, and source-transition states.
 - [ ] Return indicator provenance and warm-up.
-- [ ] Keep chart indicators request-scoped rather than expanding Core Scan.
+- [x] Keep chart indicators request-scoped rather than expanding Core Scan.
 - [ ] Create chart-originated manual and semi-automatic proposals.
 - [ ] Attach snapshot, identity, price sequence, freshness, and requested protection.
 - [ ] Revalidate every proposal through Portfolio and OMS.

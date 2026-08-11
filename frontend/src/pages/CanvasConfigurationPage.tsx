@@ -262,6 +262,7 @@ type QmdBarHistory = {
   structure_level_history: QmdStructureLevelCandidate[];
   next_before: string;
   previous_session_before: string;
+  stage?: "bars" | "full";
   ticker: string;
   timeframe: string;
 };
@@ -741,9 +742,41 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
-      api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, { signal: historyController.signal, timeoutMs: 120000 })
+      const requestParams = { as_of: new Date(cutoffMs).toISOString(), row_limit: chartPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
+      const progressive = ENRICHED_QMD_TIMEFRAMES.has(timeframe);
+      const barsRequest = progressive
+        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, stage: "bars" })}`, { signal: historyController.signal, timeoutMs: 120000 })
+        : api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 });
+      barsRequest
         .then((payload) => {
           if (!active || requestKeyRef.current !== requestKey) return;
+          updateHistoryCursor(historyCursorRef, payload);
+          const aligned = alignHistoricalChartRows(
+            closedRowsAtCutoff(payload.history, timeframe, cutoffMs),
+            closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs),
+            payload.indicators_available,
+          );
+          setState((current) => {
+            const merged = mergeHistoricalChartPage(current.bars, current.indicators, aligned.bars, aligned.indicators, rowBudget);
+            return {
+              ...current,
+              bars: merged.bars,
+              canLoadEarlier: payload.has_more && !merged.atCapacity,
+              marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
+              historyError: "",
+              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? "Loading requested indicators..." : "",
+              indicators: merged.indicators,
+              indicatorsAvailable: progressive ? current.indicatorsAvailable : payload.indicators_available,
+              structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
+              structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
+              loading: false,
+            };
+          });
+          if (!progressive) return null;
+          return api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 });
+        })
+        .then((payload) => {
+          if (!payload || !active || requestKeyRef.current !== requestKey) return;
           updateHistoryCursor(historyCursorRef, payload);
           const aligned = alignHistoricalChartRows(
             closedRowsAtCutoff(payload.history, timeframe, cutoffMs),
@@ -763,14 +796,13 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
               indicatorsAvailable: payload.indicators_available,
               structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
               structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
-              loading: false,
             };
           });
         })
         .catch((reason) => {
           if (historyController.signal.aborted) return;
           if (!active || requestKeyRef.current !== requestKey) return;
-          setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason), loading: false }));
+          setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason), historyNotice: "", loading: false }));
         })
         .finally(() => {
           historyRequestRef.current = false;
