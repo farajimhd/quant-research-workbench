@@ -164,6 +164,12 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   visible, with per-chart loading and error state. This improves the current
   manual-trading path without representing it as the target QMD/Canvas resolver;
   that migration and live-tail continuity remain open.
+- The active live tape/quote Canvas path now establishes the QMD broadcast
+  subscription before returning a versioned ticker snapshot. The backend
+  forwards terminal control frames even though they carry no ticker, and the
+  browser replaces local state from a new snapshot after `stream_gap` instead
+  of continuing across a hidden hole. Historical-to-live chart-bar watermark
+  merging and its correction/staleness presentation remain open.
 - Replay Canvas now creates manual or semi-automatic semantic proposals from
   the visible closed-bar snapshot, point-in-time conid, price/source sequence,
   freshness, quantity, and optional stop/target. The Replay controller rejects

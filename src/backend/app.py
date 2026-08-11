@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -110,7 +111,7 @@ from src.backend.qmd_gateway_client import (
     normalize_qmd_macro_bar_snapshot,
     qmd_catalogs,
     qmd_chart_bars,
-    qmd_compact_events,
+    qmd_compact_event_page,
     qmd_computation_requirements,
     qmd_indicators,
     qmd_historical_scanner_snapshot,
@@ -5507,12 +5508,19 @@ def trading_canvas_market_events(
                 "source": "qmd-history-gateway",
                 "symbol": ticker,
             }
-        events = qmd_compact_events(ticker, row_limit=row_limit)
+        page = qmd_compact_event_page(ticker, row_limit=row_limit)
         return {
-            "events": events,
+            "buffer_end_arrival_sequence": int(page.get("buffer_end_arrival_sequence") or 0),
+            "buffer_start_arrival_sequence": int(page.get("buffer_start_arrival_sequence") or 0),
+            "complete": not bool(page.get("cursor_expired")) and not bool(page.get("has_more")),
+            "events": page.get("events") or [],
+            "last_sequence": int(page.get("next_after_arrival_sequence") or 0),
             "references": market_event_references(),
+            "schema_version": 1,
+            "snapshot_id": f"qmd-compact:{ticker}:{int(page.get('buffer_end_arrival_sequence') or 0)}",
             "source": "qmd-gateway",
             "symbol": ticker,
+            "truncated_before": bool(page.get("truncated_before")),
         }
     except QmdServiceError as exc:
         raise _qmd_http_exception(exc) from exc
@@ -5694,10 +5702,25 @@ async def trading_canvas_market_events_stream(websocket: WebSocket, symbol: str)
     try:
         upstream_url = qmd_websocket_url("/stream/compact-events")
         async with websockets.connect(upstream_url, ping_interval=20, ping_timeout=20, max_size=2 * 1024 * 1024) as upstream:
-            await websocket.send_json({"status": "connected", "ticker": ticker})
+            page = await asyncio.to_thread(
+                qmd_compact_event_page,
+                ticker,
+                row_limit=5000,
+            )
+            await websocket.send_json(
+                {
+                    "events": page.get("events") or [],
+                    "last_sequence": int(page.get("next_after_arrival_sequence") or 0),
+                    "schema_version": 1,
+                    "snapshot_id": f"qmd-compact:{ticker}:{int(page.get('buffer_end_arrival_sequence') or 0)}",
+                    "ticker": ticker,
+                    "truncated_before": bool(page.get("truncated_before")),
+                    "type": "snapshot",
+                }
+            )
             async for message in upstream:
                 payload = json.loads(message.decode("utf-8") if isinstance(message, bytes) else message)
-                if not isinstance(payload, dict) or payload.get("ticker") == ticker or "warning" in payload or "error" in payload:
+                if _qmd_stream_payload_matches_ticker(payload, ticker):
                     await websocket.send_json(payload)
     except WebSocketDisconnect:
         return
@@ -5709,6 +5732,17 @@ async def trading_canvas_market_events_stream(websocket: WebSocket, symbol: str)
             await websocket.close(code=1011)
         except Exception:
             return
+
+
+def _qmd_stream_payload_matches_ticker(payload: Any, ticker: str) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    payload_type = str(payload.get("type") or "").strip().lower()
+    if payload_type in {"stream_gap", "resnapshot_required", "error", "warning"}:
+        return True
+    if "warning" in payload or "error" in payload:
+        return True
+    return str(payload.get("ticker") or "").strip().upper() == ticker.strip().upper()
 
 
 @app.websocket("/api/trading/canvas-market-signals/stream/{symbol}")
@@ -5730,12 +5764,7 @@ async def trading_canvas_market_signals_stream(websocket: WebSocket, symbol: str
             await websocket.send_json({"status": "connected", "ticker": ticker})
             async for message in upstream:
                 payload = json.loads(message.decode("utf-8") if isinstance(message, bytes) else message)
-                if (
-                    not isinstance(payload, dict)
-                    or str(payload.get("ticker") or "").strip().upper() == ticker
-                    or "warning" in payload
-                    or "error" in payload
-                ):
+                if _qmd_stream_payload_matches_ticker(payload, ticker):
                     await websocket.send_json(payload)
     except WebSocketDisconnect:
         return

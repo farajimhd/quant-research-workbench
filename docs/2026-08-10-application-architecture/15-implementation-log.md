@@ -503,6 +503,15 @@ bounded direct ClickHouse paths remain documented in
     retention remains blocked. Empty live partitions produce explicit zero
     fingerprints instead of an unparsable aggregate row. Rust formatting and all
     95 QMD Gateway tests passed using the external Cargo runtime.
+73. Closed the active Canvas tape/quote resnapshot seam. Its backend WebSocket
+    now establishes the QMD subscription first, sends a versioned per-ticker
+    compact-event snapshot with snapshot ID and last sequence, and forwards
+    tickerless terminal control frames instead of filtering them out. The
+    browser replaces its local event window on each connection and reconnects
+    after `stream_gap`, preventing false continuity. Three focused backend
+    contract tests, Python compile, and the managed external-runtime frontend
+    production build passed. The historical-to-live chart-bar merge remains a
+    separate open item.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -243,7 +243,12 @@ budgets and invalid scope broadening fails configuration validation.
       clients and application-wide success envelopes still need the same
       contract before this broad item is closed.
 - [ ] Implement HTTP snapshot plus sequenced delta streams.
+  - [x] Give the live Canvas compact-event path a versioned ticker snapshot
+        with snapshot ID/last sequence and establish its QMD delta subscription
+        before the snapshot is captured.
 - [ ] Fill reconnect gaps or require resnapshot.
+  - [x] Forward tickerless QMD terminal gap frames through the backend and make
+        the live tape/quote Canvas replace state from a new snapshot on reconnect.
 - [x] Isolate budgets for commands, discovery, charts, simulation, and offline work.
   - [x] Enforce independent HTTP admission limits with typed retryable 429
         rejection and expose per-lane active/completed/rejected/wait evidence.
@@ -344,6 +349,8 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
       only for the matching chart request, and aborts/discards it on navigation.
 - [ ] Bound caches and invalidate by source/corporate-action/calculation revision.
 - [ ] Recover live sequence gaps or resnapshot.
+  - [x] Resnapshot the active live compact-event Canvas after a typed QMD gap.
+  - [ ] Apply the same state replacement to the future merged chart-bar tail.
 - [ ] Expose partial, stale, corrected, and source-transition states.
   - [x] Show source tiers, source-plan completeness, engine/schema revision and
         warm-up state for historical chart indicators.

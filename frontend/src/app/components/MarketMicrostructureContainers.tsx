@@ -39,7 +39,8 @@ type ExchangeReference = { acronym: string; mic: string; name: string; participa
 type ConditionReference = { name: string; sip_mapping: string; type: string; update_high_low: boolean; update_last: boolean; update_volume: boolean };
 type MarketReferences = { conditions: Record<string, ConditionReference>; exchanges: Record<string, ExchangeReference> };
 type MarketState = { active?: Array<{ event_type?: string; event_status?: string }>; as_of?: string; is_live_tradable?: boolean; is_tradable?: boolean; luld_active?: boolean; luld_distance_to_lower_pct?: number; luld_distance_to_upper_pct?: number; luld_lower_price?: number; luld_state?: string; luld_upper_price?: number; recent?: Array<{ event_type?: string; event_status?: string }>; trading_status?: string };
-type MarketEventsPayload = { events: CompactEvent[]; references: MarketReferences; source: string; symbol: string };
+type MarketEventsPayload = { events: CompactEvent[]; last_sequence?: number; references: MarketReferences; schema_version?: number; snapshot_id?: string; source: string; symbol: string; truncated_before?: boolean };
+type MarketEventStreamPayload = CompactEvent & { action?: string; error?: string; events?: CompactEvent[]; last_sequence?: number; status?: string; type?: string; warning?: string };
 type ConnectionState = "connecting" | "live" | "point-in-time" | "reconnecting";
 type Direction = "buy" | "mid" | "sell";
 type QuoteUpdate = { ask: number; askExchange: number; askSize: number; bid: number; bidExchange: number; bidSize: number; id: number; issues: number; timestampUs: number };
@@ -597,8 +598,18 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
       socket.onopen = () => { if (active) setConnected("connecting"); };
       socket.onmessage = (message) => {
         if (!active) return;
-        const payload = JSON.parse(String(message.data)) as CompactEvent & { error?: string; status?: string; warning?: string };
+        const payload = JSON.parse(String(message.data)) as MarketEventStreamPayload;
         if (payload.error) setError(MARKET_EVENTS_UNAVAILABLE);
+        else if (payload.type === "stream_gap" || payload.action === "resnapshot_required") {
+          setConnected("reconnecting");
+          socket?.close();
+        }
+        else if (payload.type === "snapshot" && Array.isArray(payload.events)) {
+          retryAttempt = 0;
+          setEvents(payload.events.filter((event) => event.ticker === ticker).sort(compareEvents).slice(-MARKET_EVENT_SOURCE_LIMIT));
+          setConnected("live");
+          setError("");
+        }
         else if (payload.warning) setConnected("reconnecting");
         else if (payload.status === "connected") { retryAttempt = 0; setConnected("live"); setError(""); }
         else { retryAttempt = 0; setConnected("live"); setError(""); merge([payload]); }
